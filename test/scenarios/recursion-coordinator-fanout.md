@@ -96,8 +96,17 @@ default).**"); this card only runs with the raised config below.
    while the workers' 8s sleeps are still running):
 
    > Call job_list with `include_descendants` true. Report EVERY row's
-   > id, type, status, owner_session_id, depth, and parent_delegate_id.
+   > id, type, status, and depth, exactly as the tool printed them.
    > Then end your turn.
+
+   Ask only for what the tool prints. `job_list`'s model-facing output is
+   `formatJobList` (`agent/session_tools_jobs.go#formatJobList`): one line
+   per row of `id  type  status`, plus `depth=N` when non-zero, a label,
+   and a `[started · reason · exit · bytes]` tail. `owner_session_id` and
+   `parent_delegate_id` exist only on the structured state
+   (`agent/session_tools_jobs.go#jobListEntry`), which the model never
+   sees — asking for them invites the runner to invent them, and the
+   ownership assertion below reads them from the durable journal instead.
 4. Turn 3 — wait for the COORDINATOR's own terminal, then inspect what
    the ROOT was actually told (new user prompt):
 
@@ -124,7 +133,7 @@ default).**"); this card only runs with the raised config below.
    > 2. Run the foreground shell command `sleep 12` so COORDINATOR-2
    >    has spawned its workers.
    > 3. Call job_list `include_descendants` true; report every row's
-   >    id, type, status, owner_session_id, depth.
+   >    id, type, status, depth — exactly as the tool printed them.
    > 4. Call job_stop with COORD2 and max_wait_ms 8000. Report the full
    >    result JSON.
    > 5. Call job_list `include_descendants` true again; report the same
@@ -167,24 +176,37 @@ default).**"); this card only runs with the raised config below.
   hole): a worker successfully spawns a grandchild — allowance 0 must
   be a hard leaf ("Design principles" "a leaf delegate (allowance 0,
   the default) cannot delegate").
-- **Visibility — live descendant walk (step 3).** The
-  `include_descendants=true` listing surfaces the live tree at read
-  time ("Nested jobs" "walks the live descendant tree at read time
-  instead of one hop"): the root's OWN coordinator delegate at `depth` 0
-  with `owner_session_id` = `$SID`, and the three worker delegates at
-  `depth` 1 (their owner is the coordinator's child session — one live
-  hop down) with `owner_session_id` = the coordinator's session id
-  (NOT `$SID`) and `parent_delegate_id` = COORD — a delegate row's
-  parent lineage is `parent_delegate_id`, never `parent_job_id`
-  (`agent/session_tools_jobs.go#jobListEntry`; `parent_job_id` is
-  shell-to-shell lineage only — "Vocabulary" "`parent_job_id` never
-  encodes delegate lineage."). Each worker appears EXACTLY
-  ONCE ("Nested jobs" "Dedupe rule: the owner session's durable record
-  is authoritative for a forwarded job"). Falsification: a worker is
-  missing entirely (the live walk didn't recurse into the live child),
-  a worker shows `depth` 0 or `owner_session_id` = `$SID` (the walk
-  mis-attributed ownership), or a worker is listed twice (a forwarded
-  copy wasn't suppressed in favour of the owner record).
+- **Visibility — live descendant walk (step 3).** Two halves, judged
+  from two different sources, because the model-facing listing does not
+  print ownership.
+
+  From the reported listing: the `include_descendants=true` walk
+  surfaces the live tree at read time ("Nested jobs" "walks the live
+  descendant tree at read time instead of one hop") — the root's OWN
+  coordinator delegate at `depth` 0, and the three worker delegates at
+  `depth` 1, each appearing EXACTLY ONCE ("Nested jobs" "Dedupe rule:
+  the owner session's durable record is authoritative for a forwarded
+  job"). Falsification: a worker missing entirely (the live walk did not
+  recurse into the live child), a worker at `depth` 0 (the walk
+  mis-attributed the hop), or a worker listed twice (a forwarded copy
+  was not suppressed in favour of the owner record).
+
+  From the durable journals read in step 6 — NOT from the model's
+  report: each worker's lineage is `parent_delegate_id` = COORD, never
+  `parent_job_id` (`agent/session_tools_jobs.go#jobListEntry`;
+  `parent_job_id` is shell-to-shell lineage only — "Vocabulary"
+  "`parent_job_id` never encodes delegate lineage."). Falsification: a
+  worker whose lineage is recorded under `parent_job_id`.
+
+  > **Unverified, do not score yet.** An earlier revision of this card
+  > asserted here that a worker's `owner_session_id` is the
+  > coordinator's session id and NOT `$SID`. Automated review of the
+  > delegate-resource migration disputed it, arguing nested stable
+  > delegates are recorded against the controller root, which would make
+  > every worker report `$SID` and turn that falsification clause into a
+  > guaranteed failure. Neither reading has been checked against
+  > `agent/jobs_nested.go`. The assertion is withdrawn rather than
+  > guessed at; see kata `4jn0`.
 - **Drive-down — the coordinator receives worker completions in its
   OWN turns (coordinator transcript).** After the coordinator ended its
   turn, the workers finish while it is idle; the coordinator's
