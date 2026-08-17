@@ -580,7 +580,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		return "", errors.New("session is closed")
 	}
 	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
-	// EntryNotification, EntryContinuation, EntryWatchDelivery — is refused here,
+	// EntryNotification or EntryContinuation — is refused here,
 	// before the Processing transition below (processOneInput's
 	// setStateIfOpenLocked(SessionProcessing)) ever runs. No state flip, no event
 	// emission: round 4's bug was that transition firing unconditionally before
@@ -963,8 +963,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Slash-command interception (design §10, P3). Gated on EntryUserInput so
 	// only genuine user-typed text can invoke a plugin command: a queued
 	// follow-up is still EntryUserInput once the drain loop dequeues it (so it
-	// is expanded too), but a goal continuation/notification/watch-delivery's
-	// synthesized text never is.
+	// is expanded too), but a goal continuation's or notification's synthesized
+	// text never is.
 	if kind == EntryUserInput {
 		if expanded, ok := s.expandSlashCommand(ctx, input); ok {
 			input = expanded
@@ -1068,7 +1068,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// warning be the diagnostic.
 			//
 			// A name a pending execution owns is coming back, whether promptly
-			// or once the disk recovers. Retry.
+			// or once the disk recovers. So is a slot an accepted interrupt has
+			// fenced -- and a fence over a turn the daemon never named carries
+			// the EMPTY name that turn had, so the owner check answers false for
+			// it and it needs its own arm. Retry both.
 			//
 			// A name NO pending execution owns is not coming back at all: it
 			// was left by a crash between reserving and releasing, or by a
@@ -1076,8 +1079,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// clears it. Waiting on that is the hot loop with a timer in front
 			// of it, so say so once and let the wake wait for a real one.
 			switch {
-			case refusal == turnNameStoreFailed, s.runningTurnNameHasOwner():
-				s.scheduleRunningTurnNameRetry()
+			case refusal == turnNameStoreFailed:
+				s.scheduleRunningTurnNameRetry(turnNameStoreRetryMaxDelay)
+			case refusal == turnNameFenced, s.runningTurnNameHasOwner():
+				s.scheduleRunningTurnNameRetry(jobNotificationRetryMaxDelay)
 			default:
 				s.emit(events.EventWarning, events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
@@ -1260,7 +1265,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
-			// A bare-text (non-empty) response to a watch-delivery or notification turn
+			// A bare-text (non-empty) response to a notification turn
 			// is the agent acknowledging a frame it has nothing to act on (it often
 			// already read the job's output itself). Finish idle instead of scolding it
 			// toward a no-op communicate — the text is already in the transcript, and a

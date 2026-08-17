@@ -49,8 +49,7 @@ finding without becoming a second author. Driving mechanism:
   `message:` field (that is what the observer audits — it never reads
   the parent's transcript).
 - The observer emits `QUALITY_FINDING` as its terminal
-  `communicate(end_turn=true)`, which the parent sees as an `Observer
-  callback:` block.
+  `communicate(end_turn=true)`, which the parent sees as an `<delegate-notification>` block.
 - The observer does not edit the deliverable or run unrelated tools.
 - The watch is cleared before completion.
 

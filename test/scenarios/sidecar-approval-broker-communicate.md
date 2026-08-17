@@ -73,8 +73,7 @@ hand it back as an observer callback. Driving mechanism:
   Attempts to use `events: [assistant.message]` are rejected before a
   watch is installed.
 - The observer returns `APPROVAL_PACKET` as its terminal
-  `communicate(end_turn=true)`; the parent receives it as an `Observer
-  callback:` block (`agent/session_tools_communicate.go:118`) and
+  `communicate(end_turn=true)`; the parent receives it as an `<delegate-notification>` block (`agent/delegate_delivery.go` #delegateNotificationContent) and
   finishes from it.
 - The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.
