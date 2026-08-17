@@ -75,6 +75,94 @@ func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
 	}
 }
 
+// TestSteerWakesEvenWhileATurnIsRunning covers the race that killed the
+// obvious optimisation. Gating the wake on "no turn is running" looks free --
+// the round loop drains steering between rounds, so why kick? -- but a turn can
+// pass its FINAL steering drain and still own the turn id. A steer arriving in
+// that window is skipped by the gate and then never looked at again, because
+// the turn releases its id without rechecking steering.
+//
+// An unneeded kick is cheap: the wake finds nothing and no-ops. A missed one
+// loses what the user typed.
+func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a running turn: %v", err)
+	}
+	running := s.clientMutations.snapshot().ActiveTurnID
+
+	var mu sync.Mutex
+	notifies := 0
+	s.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "cm-steer-running",
+		ExpectedTurnID:   running,
+		Input:            []appwire.InputItem{{Type: "text", Text: "mid-turn steer"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer against the running turn: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies == 0 {
+		t.Fatal("a steer accepted during a turn woke nothing; if that turn had already passed its final drain, the steer is never looked at again")
+	}
+}
+
+// TestSteerRetryStillProvokesDelivery is the crash case. The store commits, the
+// process dies before the wake, and the client retries with the same
+// clientMutationId. The store replays idempotently and returns early -- which
+// is correct for the record and useless for the user, because the steer is
+// still sitting undelivered. Replay is idempotent in the store; the wake is
+// what makes it idempotent in effect.
+func TestSteerRetryStillProvokesDelivery(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	params := appwire.TurnSteerParams{
+		ClientMutationID: "cm-steer-retry",
+		ExpectedTurnID:   "turn_m1",
+		Input:            []appwire.InputItem{{Type: "text", Text: "retried steer"}},
+	}
+	if _, err := s.AcceptClientMutationSteer(params); err != nil {
+		t.Fatalf("first accept: %v", err)
+	}
+
+	var mu sync.Mutex
+	notifies := 0
+	s.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+
+	if _, err := s.AcceptClientMutationSteer(params); err != nil {
+		t.Fatalf("retry of the same steer: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies == 0 {
+		t.Fatal("the retry replayed the record and woke nothing; a steer stranded by a crash stays stranded no matter how often the client retries")
+	}
+}
+
 // TestSteerStillRefusesADifferentRunningTurn keeps the relaxation narrow. When
 // a turn IS running and the client names a different one, its view is stale in
 // a way that matters -- it is steering something it is not looking at -- and

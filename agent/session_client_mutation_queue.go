@@ -367,19 +367,36 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 		}
 		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
 		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
+		// A retry of a steer that was accepted but never delivered -- the
+		// process died between the commit and the wake -- must still provoke
+		// delivery. Replay is idempotent in the store; the wake is what makes
+		// it idempotent in effect.
+		s.wakeForPendingSteering()
 		return replayed, nil
 	}
 	s.reflectDurableClientSteering()
-	// Accepting is only half of landing. A steer taken while no turn is running
-	// sits in a queue nothing is going to drain -- lost more quietly than the
-	// rejection it replaced. Wake the session so it runs a turn and delivers
-	// it; a wake proceeds on pending steering alone, so no new delivery path is
-	// needed. While a turn IS running, the round loop already drains steering
-	// between rounds (session_tool_round.go) and a kick would be noise.
-	if s.clientMutations.snapshot().ActiveTurnID == "" {
-		s.notify()
-	}
+	s.wakeForPendingSteering()
 	return response, nil
+}
+
+// wakeForPendingSteering asks the session to run a turn when steering is
+// waiting and nothing is going to pick it up on its own.
+//
+// Accepting a steer is only half of landing it: steering sitting in a queue
+// nobody drains is lost more quietly than the rejection it replaced. The kick
+// is unconditional rather than gated on "is a turn running", because that gate
+// loses a race it cannot win -- a turn can pass its final steering drain and
+// still own the turn id, so a steer arriving in that window would be skipped
+// here and then never looked at again.
+//
+// An unneeded kick is cheap and safe: the wake finds nothing to deliver and
+// no-ops, repeated kicks coalesce into one parked send, and a wake that cannot
+// name its turn stands down rather than running unaddressable.
+func (s *Session) wakeForPendingSteering() {
+	if !s.hasPendingSteering() {
+		return
+	}
+	s.notify()
 }
 
 // AcceptClientMutationSteer durably accepts or replays one client-authored
