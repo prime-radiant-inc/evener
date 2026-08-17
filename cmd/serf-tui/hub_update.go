@@ -422,19 +422,19 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnSubmitting = false
 		if msg.err != nil {
 			m.addNotice(noticePanel{
-				Title:      "Spawn failed",
+				Title:      "Start failed",
 				Category:   "launch",
-				Summary:    "Hub spawn failed.",
+				Summary:    "Hub session start failed.",
 				Source:     m.sourceLabelForNotice(),
 				Reason:     msg.err.Error(),
-				NextAction: "Check Hub launch diagnostics, auth status, and spawn options.",
+				NextAction: "Check Hub launch diagnostics, auth status, and launch options.",
 			})
 			return m, nil
 		}
 		m.clearNoticesByCategory("launch")
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
-			m.err = fmt.Errorf("spawn returned invalid ref: %s", msg.resp.Ref)
+			m.err = fmt.Errorf("Start returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
 		return m, fetchHubSession(m.frames, m.client, ref)
@@ -521,7 +521,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubSpawnOptionsMsg:
 		if msg.err != nil {
 			if m.mode == hubModeSpawn {
-				m.err = fmt.Errorf("spawn options failed: %w", msg.err)
+				m.err = fmt.Errorf("launch options failed: %w", msg.err)
 			}
 			return m, nil
 		}

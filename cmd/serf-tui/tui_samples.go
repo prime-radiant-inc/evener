@@ -338,9 +338,9 @@ func sampleDiagnostics() []tuiNoticeSample {
 		{
 			Name:       "launch-failed",
 			Kind:       "error",
-			Summary:    "Spawn failed: model provider is not reported by the Serf launch harness",
+			Summary:    "Start failed: model provider is not reported by the Serf launch harness",
 			Cause:      "selected provider openai was not present in harness discovery",
-			NextAction: "refresh spawn options or choose a reported harness model",
+			NextAction: "refresh launch options or choose a reported harness model",
 			Source:     "serf",
 		},
 		{
@@ -419,7 +419,7 @@ func sampleRenders() []tuiSampleRender {
 		{name: "auth-overlay", width: 100, contains: []string{"OpenAI", "Serf-owned"}},
 		{name: "agents-picker", width: 100, contains: []string{"Select transcript", "main session"}},
 		{name: "help-overlay", width: 100, contains: []string{"Available commands", "/model"}},
-		{name: "diagnostics", width: 100, contains: []string{"Spawn failed", "Action unavailable"}},
+		{name: "diagnostics", width: 100, contains: []string{"Start failed", "Action unavailable"}},
 		{name: "appshell-normal", width: 100, contains: []string{"serf live", "Live now", "ctrl+o dashboard"}},
 		{name: "appshell-loading", width: 100, contains: []string{"serf live", "Loading hub dashboard"}},
 		{name: "appshell-error", width: 100, contains: []string{"Hub unavailable", "Retry"}},
@@ -562,7 +562,7 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		return renderSample(name, width, hubSlashCommandHelp(sampleSessionDetails()["serf-idle"].Capabilities)), true
 	case "diagnostics":
 		view := noticePanel{
-			Title:      "Spawn failed",
+			Title:      "Start failed",
 			Summary:    sampleDiagnostics()[0].Summary,
 			Source:     sampleDiagnostics()[0].Source,
 			Reason:     sampleDiagnostics()[0].Cause,

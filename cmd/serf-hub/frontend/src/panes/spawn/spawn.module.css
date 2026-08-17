@@ -10,6 +10,23 @@
   flex-direction: column;
   gap: var(--space-3);
   max-width: 720px;
+  /* The query container for the Start button's word collapse below: a docked
+   * pane squeezed narrow inside a desktop viewport must compact exactly like
+   * the phone does. inline-size containment is safe here - this box's width
+   * comes from PaneScaffold's content slot, never its content. */
+  container-type: inline-size;
+}
+
+/* The Start button's word. It rides beside the paper-plane glyph while the
+ * pane has room; at the compact boundary (the same 559px the composer's
+ * SessionChrome chips swap at) the word drops and the glyph carries the
+ * button - the button keeps aria-label="Start", so the accessible name
+ * survives. Pane width, not viewport width: a narrow docked pane on a desktop
+ * display needs the same collapse the phone gets. */
+@container (max-width: 559px) {
+  .submitLabel {
+    display: none;
+  }
 }
 
 .actionBand {

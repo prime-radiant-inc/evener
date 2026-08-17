@@ -220,7 +220,7 @@ export function buildCommands(): Command[] {
     {
       id: "new",
       title: "New session",
-      hint: "blank spawn page",
+      hint: "blank session form",
       keywords: [],
       scope: "global",
       run: () => {
@@ -229,13 +229,13 @@ export function buildCommands(): Command[] {
     },
     {
       id: "spawn",
-      title: "Spawn with prompt",
+      title: "Start with prompt",
       hint: "new session, prefilled",
-      keywords: ["start"],
+      keywords: ["start", "spawn"],
       scope: "global",
       args: {
         kind: "free",
-        placeholder: "prompt to spawn…",
+        placeholder: "prompt to start…",
         run: (_ctx, text) => {
           navigate(`/new?prompt=${encodeURIComponent(text || "")}`);
         },

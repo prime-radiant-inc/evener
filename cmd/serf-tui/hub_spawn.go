@@ -164,7 +164,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	if prompt == "" {
 		if reason := m.spawnEmptyTaskUnsupportedReason(); reason != "" {
 			m.err = fmt.Errorf("%s", noticePanel{
-				Title:      "Spawn unavailable",
+				Title:      "Start unavailable",
 				Source:     strings.TrimSpace(m.spawnHarness),
 				Reason:     reason,
 				NextAction: m.spawnEmptyTaskUnsupportedNextAction(),
@@ -173,12 +173,12 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
-		m.err = errors.New("choose a model before spawning")
+		m.err = errors.New("choose a model before starting")
 		return m, nil
 	}
 	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {
 		m.err = fmt.Errorf("%s", noticePanel{
-			Title:      "Spawn unavailable",
+			Title:      "Start unavailable",
 			Source:     strings.TrimSpace(m.spawnHarness),
 			Reason:     "selected model is not available: " + reason,
 			NextAction: "choose an enabled model or resolve the provider requirement",
@@ -293,7 +293,7 @@ func (m hubModel) spawnFieldHint() string {
 	case hubSpawnFieldDir:
 		return "type path  tab: recent/complete  enter: next  ctrl+u clear"
 	default:
-		return "enter: spawn  ctrl+j: newline"
+		return "enter: start  ctrl+j: newline"
 	}
 }
 
@@ -448,7 +448,7 @@ func (m *hubModel) openSpawnModelPicker(models []tuipick.ModelPickerItem) {
 
 func (m hubModel) spawnModelPickerTitle() string {
 	if m.spawnHarnessUsesSerfModels() {
-		return "Select spawn model"
+		return "Select model"
 	}
 	return "Select " + m.spawnHarness + " model"
 }

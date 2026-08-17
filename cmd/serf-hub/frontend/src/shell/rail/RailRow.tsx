@@ -362,7 +362,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 const NO_PROJECT_KEY = "no-project";
 
 // Opens a fresh spawn targeted at this project's working directory, via the
-// same /new?dir= URL prefill the palette's "Spawn with prompt" command
+// same /new?dir= URL prefill the palette's "Start with prompt" command
 // already uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads
 // both off window.location.search (panes/spawn/urlPrefill.ts), never pane
 // params - the spawn pane's own params type is deliberately empty (see

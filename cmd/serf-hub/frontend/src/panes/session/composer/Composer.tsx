@@ -37,7 +37,17 @@ import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
-import { Button, chordLabel, Dropzone, IconButton, PromptCard, Textarea, Tooltip, useToasts } from "../../../widgets";
+import {
+  Button,
+  chordLabel,
+  Dropzone,
+  IconButton,
+  PromptCard,
+  SendIcon,
+  Textarea,
+  Tooltip,
+  useToasts,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
 import { AttachmentTile } from "./AttachmentTile";
@@ -80,6 +90,7 @@ const CLASS = {
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
+  submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
@@ -1138,6 +1149,8 @@ export function Composer({ ref }: ComposerProps) {
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"
                           data-testid="composer-submit"
+                          aria-label="Send"
+                          icon={<SendIcon />}
                           // canCompose comes from the availability table, which
                           // reports both-false for ended/closed: it answers "can
                           // this turn be sent to right now", and a follow-up to a
@@ -1147,7 +1160,7 @@ export function Composer({ ref }: ComposerProps) {
                           // will happily resume shows a permanently dead Send.
                           disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
                         >
-                          Send
+                          <span className={CLASS.submitLabel}>Send</span>
                         </Button>
                       </Tooltip>
                       {showSteer && (

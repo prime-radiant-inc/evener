@@ -78,6 +78,7 @@ export type { RecommendationCardAlternative, RecommendationCardProps } from "./r
 export { RecommendationCard } from "./recommendationcard";
 export type { SelectOption, SelectProps } from "./select";
 export { Select } from "./select";
+export { SendIcon } from "./sendicon";
 export type { SheetProps, SheetSide } from "./sheet";
 export { Sheet } from "./sheet";
 export type { ShellCommandBlockProps } from "./shellcommand";
