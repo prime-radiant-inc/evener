@@ -228,7 +228,11 @@ func fakeCodexLaunchConfig(id, mode string) codexlaunch.CodexLaunchConfig {
 		Args:    []string{"-test.run=TestFakeCodexAppServerHelper", "--"},
 		Listen:  "ws://127.0.0.1:0",
 		Timeout: 5 * time.Second,
-		Env:     map[string]string{"SERF_FAKE_CODEX_APP_SERVER": mode},
+		// The child is this same test binary and will be killed rather than
+		// allowed to exit, so it must not mint a throwaway root of its own --
+		// it would outlive the run. Hand it this one; TestMain leaves an
+		// inherited root for its owner to remove.
+		Env: map[string]string{"SERF_FAKE_CODEX_APP_SERVER": mode, testEnvRootVar: testEnvRoot},
 	}
 }
 
