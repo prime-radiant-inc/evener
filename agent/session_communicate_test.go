@@ -427,6 +427,14 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
+	// The delegate child runs asynchronously and the parent turn does not wait
+	// for it, so Close here would cancel a child that has not yet reached its
+	// model call. Wait for the child's request before closing so the count
+	// assertion observes the delegate turn deterministically.
+	waitForCondition(t, 5*time.Second, "child delegate model request", func() bool {
+		_, _, child := f.requestCounts()
+		return child >= 1
+	})
 	sess.Close()
 
 	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
