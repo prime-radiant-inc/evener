@@ -2,6 +2,7 @@ package identifier
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -39,6 +40,25 @@ func TestJobIDRejectsMalformedShapes(t *testing.T) {
 				t.Fatalf("ValidateJobID(%q) succeeded", id)
 			}
 		})
+	}
+}
+
+// exhaustedReader stands in for an entropy source that has stopped answering.
+type exhaustedReader struct{}
+
+func (exhaustedReader) Read([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
+
+func TestNewJobIDFailsRatherThanMintFromExhaustedEntropy(t *testing.T) {
+	// The suffix is what keeps two jobs from the same session distinct. If a
+	// failing entropy source were ignored, the loop would emit whatever the
+	// zero-filled buffer encodes to — a well-formed ID that is not unique, and
+	// that collides silently with every other ID minted the same way.
+	id, err := newJobID("02wMz5TxvEMoJEDTDGOTil", exhaustedReader{})
+	if err == nil {
+		t.Fatalf("newJobID with a failing reader = %q, want an error", id)
+	}
+	if id != "" {
+		t.Fatalf("newJobID returned %q alongside error %v, want empty", id, err)
 	}
 }
 
