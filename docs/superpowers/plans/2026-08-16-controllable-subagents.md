@@ -47,15 +47,15 @@ establish is that each child gets its own mutation file and that
 > are wrong, and the second would corrupt the transcript it was trying to protect.
 
 **A delegate does not run inside the parent's tool call.** The code says so
-outright: `agent/subagents.go:962-966` reads "Subagent execution must outlive the
-parent tool-call context", and `:967` builds the run context with
+outright: `agent/subagents.go:961-965` reads "Subagent execution must outlive the
+parent tool-call context", and `:966` builds the run context with
 `context.WithCancel(context.Background())`. Stable delegates do the same at
-`agent/delegate_tree_start.go:146`, `:206` and `:486`.
+`agent/delegate_tree_start.go:145`, `:205` and `:485`.
 
-Creation returns before the child finishes. `agent/delegate_runtime.go:923`
+Creation returns before the child finishes. `agent/delegate_runtime.go:924`
 launches the run and immediately returns a result carrying
 `RunningInBackground: true` (`agent/delegate_runtime.go:1533`), and the create
-tool refuses to wait at all — `agent/session_tools.go:176-177` rejects
+tool refuses to wait at all — `agent/session_tools.go:173-174` rejects
 `max_wait_ms` outright.
 
 So there are exactly two cases, and they need different answers:
@@ -68,7 +68,7 @@ So there are exactly two cases, and they need different answers:
    nothing to return.**
 2. **An inline `delegate_send` waiter.** The only call that can still be blocked
    on a child is `delegate_send` with `max_wait_ms > 0`
-   (`agent/session_tools.go:159` → `agent/delegate_runtime.go:638-648`). That
+   (`agent/session_tools.go:156` → `agent/delegate_runtime.go:639-648`). That
    waiter must be resolved. Note it *already* has a graceful degradation for a
    deadline: `agent/delegate_runtime.go:649-652` sets `TimedOut: true` and leaves
    the delegate running in background. A stop needs the analogous shape — resolve
@@ -84,8 +84,8 @@ cases exist.
 | --- | --- |
 | Every mutation handler rejects non-root threads with `SessionUnavailable("thread is not served by this daemon")` | `server/appwire_runtime.go:1087-1104` (`requireRootMutationTarget`), called first by **14** handlers: `:736`, `:773`, `:799`, `:822` (`handleAppTurnInterrupt`), `:840`, `:866`, `:891`, `:917`, `:946`, `:974`, `:987`, `:1012`, `:1049`, `:1067`. Re-derive with `grep -c` before scoping work off this — an earlier revision of this row said "ten", from a `grep | head` that silently truncated. |
 | Nothing routes an accepted mutation to a child session | the mutation path is wired to the root session only |
-| Descendant threads carry **no** capabilities at all | only the root fills them, at `server/appwire_runtime.go:1235`; the descendant list (`:548-552`) and `appThreadForID` (`:640-654`) stamp `ActiveTurnID` and nothing else |
-| Child sessions never mint a name — **and removing the `servedByDaemon()` gate is not enough** | `servedByDaemon()` gates the mint (`agent/session_active_turn.go:47-49`) and the boundary emit (`agent/session_lifecycle.go:1652`), but `mintRunningTurnID` is only *reached* for two entry kinds, and a delegate's primary run is neither. See Task 3. |
+| Descendant threads carry **no** capabilities at all | only the root fills them, at `server/appwire_runtime.go:1236`; the descendant list (`:548-552`) and `appThreadForID` (`:640-654`) stamp `ActiveTurnID` and nothing else |
+| Child sessions never mint a name — **and removing the `servedByDaemon()` gate is not enough** | `servedByDaemon()` gates the mint (`agent/session_active_turn.go:76-78`) and the boundary emit (`agent/session_lifecycle.go:1671`), but `mintRunningTurnID` is only *reached* for two entry kinds, and a delegate's primary run is neither. See Task 3. |
 
 ## Global Constraints
 
@@ -101,7 +101,7 @@ cases exist.
   > exactly one call site, `:229`, on the **root** egress path. Descendant egress
   > (`:311`) calls only `stampAppNotificationTarget`, and descendant `thread/read`
   > is assembled at `:258-289` / `:640-654` and never fills capabilities. Only the
-  > root sets them, at `:1235`.
+  > root sets them, at `:1236`.
 
   So descendant capabilities are **absent** on notifications
   (`ThreadStatusChangedParams.Capabilities` is `*ThreadCapabilities` with
@@ -113,7 +113,7 @@ cases exist.
 
   **Why this is hard, which is the part worth carrying forward.** There is no
   per-thread source of truth to compute a capability set *from*. `appCapabilities`
-  (`server/appwire_runtime.go:1352-1376`) derives every field from server-wide
+  (`server/appwire_runtime.go:1353-1376`) derives every field from server-wide
   state: the callback registrations `s.steerFunc` / `s.steerWithImagesFunc`,
   `s.cancelFunc`, `s.compactFunc`, `s.shutdownFunc`, `s.modelFunc`, `s.nameFunc`,
   `s.queueFunc`, `s.goalFunc`, plus `s.appReservedTurnID` and the `processing`
@@ -159,18 +159,18 @@ cases exist.
 
       **Why the `servedByDaemon()` gate is not the whole blocker.**
       `mintRunningTurnID` is only *reached* for two entry kinds:
-      `EntryNotification` (`agent/session_lifecycle.go:1042`) and
-      `EntryContinuation` (`:1100`). A delegate's initial, resumed and
-      owner-input runs are all `EntryUserInput` (`agent/subagents.go:1425-1428`,
-      reached from `agent/delegate_runtime.go:923`, `:624` and
-      `agent/subagents.go:1130`). That path takes its `StableTurnID` from
-      `queuedClientMutationFromContext` (`agent/session_lifecycle.go:1389`, spent
-      at `:1467`, `:1486`, `:1505`), and the only writers of that context value
+      `EntryNotification` (`agent/session_lifecycle.go:1040`) and
+      `EntryContinuation` (`:1123`). A delegate's initial, resumed and
+      owner-input runs are all `EntryUserInput` (`agent/subagents.go:1424-1426`,
+      reached from `agent/delegate_runtime.go:924`, `:625` and
+      `agent/subagents.go:1129`). That path takes its `StableTurnID` from
+      `queuedClientMutationFromContext` (`agent/session_lifecycle.go:1408`, spent
+      at `:1472`, `:1486`, `:1505`), and the only writers of that context value
       are the two **root** serve-loop entry points —
-      `ProcessClientMutationStart` (`agent/session_client_mutation.go:421`) and
+      `ProcessClientMutationStart` (`agent/session_client_mutation.go:422`) and
       `ProcessPendingUserInput` (`agent/session_client_mutation_queue.go:206`),
-      called only from `cmd/serf/serve.go:1026` and `:1033` — plus the drain-loop
-      re-wraps at `agent/session_lifecycle.go:717` and `:840`. A delegate run
+      called only from `cmd/serf/serve.go:1030` and `:1037` — plus the drain-loop
+      re-wraps at `agent/session_lifecycle.go:719` and `:841`. A delegate run
       context is rooted in `context.Background()` and carries only lease and
       preseed keys, so the field is `""`.
 
@@ -193,17 +193,17 @@ cases exist.
         (`cmd/serf/serve.go:832` → `cancelAndWaitMutationRunner`,
         `cmd/serf/serve.go:662-673`). It reads `mutationRunnerCancel`
         (declared `:646`), whose **only** writer is `setMutationRunner`
-        (`:648-651`), called from four places in the root serve loop: `:1008`,
-        `:1016`, `:1028`, `:1035`. Note `:1008` is the drain-loop re-arm inside
+        (`:648-651`), called from four places in the root serve loop: `:1010`,
+        `:1020`, `:1032`, `:1039`. Note `:1010` is the drain-loop re-arm inside
         `nextTurnCtx` — it re-points the seam at `cancelDrain` mid-drain, and it
         is the path most likely to break when `requireRootMutationTarget` comes
-        down. `srv.SetCancelFunc` (`:1007`, `:1015`, `:1027`, `:1034`) sits beside
+        down. `srv.SetCancelFunc` (`:1009`, `:1019`, `:1031`, `:1038`) sits beside
         these calls but is a **different** seam and does not feed this one; do not
         substitute one for the other;
-      - ordinary child runs cancel via `sub.cancel` (`agent/subagents.go:969`,
-        `:1342`; used by `cancelAgent` at `:1360-1378`);
+      - ordinary child runs cancel via `sub.cancel` (`agent/subagents.go:968`,
+        `:1341`; used by `cancelAgent` at `:1359-1378`);
       - notification-drive child turns use a local `driveCancel`
-        (`agent/subagents.go:1223`, used only at `:1229` and `:1240`) that is
+        (`agent/subagents.go:1222`, used only at `:1228` and `:1239`) that is
         never stored on `sub`, so `sub.cancel` cannot stop one;
       - stable delegates add a fourth, the controller's per-start record cancel
         (`agent/delegate_tree_stop.go:166-167`, `:293-294`, `:308-309`).
@@ -222,9 +222,9 @@ cases exist.
       select the child.
 
 - [ ] **Task 5: Turn separation and status.** Drop the `servedByDaemon()` gate on
-      the boundary emit (`agent/session_lifecycle.go:1652`) and invert
+      the boundary emit (`agent/session_lifecycle.go:1671`) and invert
       `TestUnservedSessionAnnouncesNoBoundary`
-      (`agent/session_turn_boundary_test.go:577`), which pins today's behaviour
+      (`agent/session_turn_boundary_test.go:599`), which pins today's behaviour
       deliberately. Note this also makes unserved *root* sessions (one-shot
       `serf run`) emit the boundary; state it rather than discover it. This gets
       turn *separation* on notification-driven child turns; it does not name any
