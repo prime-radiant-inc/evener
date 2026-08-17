@@ -270,15 +270,15 @@ func TestTranscript_TextMaxFullRendersEveryByte(t *testing.T) {
 
 func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
 	base, sid, turnText, _ := salvagedLoopFixture(t)
-	const cap = 512
+	const textMax = 512
 
-	r, err := Transcript(base, sid, TranscriptOpts{TextMax: cap})
+	r, err := Transcript(base, sid, TranscriptOpts{TextMax: textMax})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.Turns[0].Text, turnText[:cap]+"…"; got != want {
+	if got, want := r.Turns[0].Text, turnText[:textMax]+"…"; got != want {
 		t.Errorf("TextMax=%d turn text = %d bytes (%q), want the first %d bytes plus an ellipsis",
-			cap, len(got), got, cap)
+			textMax, len(got), got, textMax)
 	}
 }
 
