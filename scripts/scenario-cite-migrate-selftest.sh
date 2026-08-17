@@ -7,11 +7,10 @@ set -uo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 source_script="$script_dir/scenario-cite-migrate.sh"
-work="$(mktemp -d -t serf-cite-migrate-selftest.XXXXXX)"
-work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
-
 . "$(dirname "$0")/selftest-lib.sh"
+
+selftest_scratch work serf-cite-migrate-selftest
+trap 'selftest_rm_scratch "$work"' EXIT
 
 repo="$work/repo"
 bin="$work/bin"

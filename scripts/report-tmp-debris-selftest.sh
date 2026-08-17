@@ -12,12 +12,11 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/report-tmp-debris.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t report-tmp-debris-selftest.XXXXXX)"
-# Resolve symlinks now (macOS's /var/folders is a symlink to /private/var/folders):
-# the script prints the paths it was given, and --paths-only is compared by
-# string equality below.
-work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
+# selftest_scratch resolves symlinks (macOS's /var/folders is a symlink to
+# /private/var/folders): the script prints the paths it was given, and
+# --paths-only is compared by string equality below.
+selftest_scratch work report-tmp-debris-selftest
+trap 'selftest_rm_scratch "$work"' EXIT
 
 repo="$work/repo"
 mkdir -p "$repo"

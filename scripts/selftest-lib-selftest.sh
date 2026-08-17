@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# selftest-lib-selftest.sh — tests the scratch guard in scripts/selftest-lib.sh,
+# and pins the one case that must never regress (kata 5hs2).
+#
+# The regression: a suite that built its scratch with an unchecked `mktemp -d`
+# and then canonicalized it with `work="$(cd "$work" && pwd -P)"` resolved $work
+# to its OWN WORKING DIRECTORY when mktemp failed, because `cd ""` succeeds and
+# leaves $PWD alone. The EXIT trap's `rm -rf "$work"` then deleted the checkout.
+#
+# So every guarded suite below is run for real, from a throwaway working
+# directory seeded with sentinel files, with a `mktemp` on PATH that always
+# fails. Each must exit non-zero, say why, and leave every sentinel standing.
+set -uo pipefail
+
+. "$(dirname "$0")/selftest-lib.sh"
+scripts_dir="$(cd "$(dirname "$0")" && pwd -P)"
+selftest_scratch work selftest-lib-selftest
+trap 'selftest_rm_scratch "$work"' EXIT
+
+# The suites converted to the guard. Their protection is behavioural, not
+# textual, so it is checked by running them rather than by grepping them.
+guarded_suites=(
+	agent-test-shards-selftest.sh
+	e2e-webui-turn-controls-selftest.sh
+	fuzz-coverage-global-selftest.sh
+	reclaim-test-debris-selftest.sh
+	report-orphaned-worktrees-selftest.sh
+	report-tmp-debris-selftest.sh
+	scenario-cite-migrate-selftest.sh
+	web-preflight-selftest.sh
+)
+
+# A mktemp that always fails, standing in for a full or read-only TMPDIR, a
+# denied sandbox, or an inherited TMPDIR that does not exist.
+failing_mktemp_bin="$work/failing-mktemp-bin"
+mkdir -p "$failing_mktemp_bin"
+cat >"$failing_mktemp_bin/mktemp" <<'FAILING_MKTEMP'
+#!/bin/sh
+echo "mktemp: no space left on device" >&2
+exit 1
+FAILING_MKTEMP
+chmod +x "$failing_mktemp_bin/mktemp"
+
+# new_victim NAME — a throwaway working directory seeded the way a repo
+# checkout is: a tracked-looking file, a nested directory, and a real git repo.
+# Echoes its path. If a suite's cleanup ever aims at its own $PWD, this is what
+# it destroys, and the assertions below notice.
+#
+# The git repo is real rather than an empty .git so that a suite running git
+# from here can never fail discovery and walk up into the checkout this test is
+# running from.
+new_victim() {
+	local victim="$work/victim-$1"
+	mkdir -p "$victim/nested"
+	printf 'must survive\n' >"$victim/sentinel.txt"
+	printf 'must survive\n' >"$victim/nested/sentinel.txt"
+	git init -q "$victim" >/dev/null 2>&1
+	printf '%s\n' "$victim"
+}
+
+# assert_victim_intact DIR DESC — every seeded file still where it was.
+assert_victim_intact() {
+	local victim="$1" desc="$2"
+	if [ -f "$victim/sentinel.txt" ] && [ -f "$victim/nested/sentinel.txt" ] && [ -d "$victim/.git" ]; then
+		ok "$desc"
+	else
+		bad "$desc (the working directory was damaged)"
+		ls -A "$victim" 2>&1 | sed 's/^/    | /'
+	fi
+}
+
+for suite in "${guarded_suites[@]}"; do
+	victim="$(new_victim "${suite%.sh}")"
+	out="$work/${suite%.sh}.mktemp-failure.out"
+	(
+		cd "$victim" &&
+			PATH="$failing_mktemp_bin:$PATH" bash "$scripts_dir/$suite"
+	) >"$out" 2>&1
+	status=$?
+
+	if [ "$status" -ne 0 ]; then
+		ok "$suite exits non-zero when mktemp fails"
+	else
+		bad "$suite exits zero when mktemp fails"
+	fi
+	assert_has "$out" "${suite%.sh}: " "$suite names itself in the mktemp-failure diagnostic"
+	assert_has "$out" "refusing to continue" "$suite says it is refusing to continue"
+	assert_victim_intact "$victim" "$suite deletes nothing in its working directory when mktemp fails"
+done
+
+# A TMPDIR that does not exist is the other spelling of the same failure, and
+# needs no stub: it is what an inherited TMPDIR from a reaped sandbox looks
+# like. mktemp itself is real here, so this proves the guard rejects the root
+# before it ever asks mktemp for anything.
+for suite in "${guarded_suites[@]}"; do
+	victim="$(new_victim "missing-tmpdir-${suite%.sh}")"
+	out="$work/${suite%.sh}.missing-tmpdir.out"
+	(
+		cd "$victim" &&
+			TMPDIR="$work/tmpdir-that-does-not-exist" bash "$scripts_dir/$suite"
+	) >"$out" 2>&1
+	status=$?
+
+	if [ "$status" -ne 0 ]; then
+		ok "$suite exits non-zero when TMPDIR does not exist"
+	else
+		bad "$suite exits zero when TMPDIR does not exist"
+	fi
+	assert_has "$out" "is not a usable directory" "$suite names the unusable TMPDIR"
+	assert_victim_intact "$victim" "$suite deletes nothing in its working directory when TMPDIR does not exist"
+done
+
+# --- the guard's own behaviour, exercised directly ---------------------------
+
+# run_fixture NAME BODY [PATH_PREFIX] — write BODY as a script that sources the
+# lib the way a suite does, run it from a fresh victim directory with
+# PATH_PREFIX first on PATH; leaves the combined output in $fixture_out and the
+# exit status in $fixture_status.
+fixture_out=""
+fixture_status=0
+fixture_victim=""
+run_fixture() {
+	local name="$1" body="$2" path_prefix="${3:-}"
+	fixture_victim="$(new_victim "fixture-$name")"
+	fixture_out="$work/fixture-$name.out"
+	printf '%s\n' "$body" >"$work/fixture-$name.sh"
+	(
+		cd "$fixture_victim" &&
+			PATH="${path_prefix:+$path_prefix:}$PATH" \
+				bash "$work/fixture-$name.sh" "$scripts_dir"
+	) >"$fixture_out" 2>&1
+	fixture_status=$?
+}
+
+# An mktemp that exits 0 having printed nothing. This is the shape that made
+# the original bug destructive rather than merely broken: the caller's variable
+# ends up empty, `cd ""` succeeds, and the empty path resolves to $PWD.
+empty_mktemp_bin="$work/empty-mktemp-bin"
+mkdir -p "$empty_mktemp_bin"
+printf '#!/bin/sh\nexit 0\n' >"$empty_mktemp_bin/mktemp"
+chmod +x "$empty_mktemp_bin/mktemp"
+
+# An mktemp that exits 0 having printed an existing directory it did not create
+# — the caller's own working directory, which is the path the original bug
+# arrived at, and which can be under TMPDIR like anything else.
+squatting_mktemp_bin="$work/squatting-mktemp-bin"
+mkdir -p "$squatting_mktemp_bin"
+printf '#!/bin/sh\npwd -P\n' >"$squatting_mktemp_bin/mktemp"
+chmod +x "$squatting_mktemp_bin/mktemp"
+
+# An mktemp that exits 0 having printed a correctly-named directory that sits
+# outside the TMPDIR the caller set. The fixture using it gets a TMPDIR of its
+# own so that "outside TMPDIR" can be arranged without writing anywhere but
+# this suite's own scratch.
+straying_mktemp_bin="$work/straying-mktemp-bin"
+strayed_dir="$work/outside-tmpdir-fixture.abcdef"
+fixture_tmpdir="$work/fixture-tmpdir"
+mkdir -p "$straying_mktemp_bin" "$strayed_dir" "$fixture_tmpdir"
+printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$strayed_dir" >"$straying_mktemp_bin/mktemp"
+chmod +x "$straying_mktemp_bin/mktemp"
+
+# The happy path: a real directory under TMPDIR, canonicalized, removable.
+run_fixture happy '#!/usr/bin/env bash
+set -uo pipefail
+. "$1/selftest-lib.sh"
+selftest_scratch dir happy-fixture
+[ -d "$dir" ] || { echo "no directory created"; exit 1; }
+case "$dir" in
+"$(cd "${TMPDIR:-/tmp}" && pwd -P)"/happy-fixture.*) ;;
+*) echo "created outside TMPDIR: $dir"; exit 1 ;;
+esac
+selftest_rm_scratch "$dir"
+[ -e "$dir" ] && { echo "not removed: $dir"; exit 1; }
+echo "happy path complete"
+exit 0'
+assert_eq "$fixture_status" 0 "the happy path creates a canonical scratch under TMPDIR and removes it"
+assert_has "$fixture_out" "happy path complete" "the happy path runs to the end"
+
+# selftest_rm_scratch must refuse anything outside the scratch root, which is
+# what makes it safe to call with a variable another hand may have clobbered.
+run_fixture refuse-outside '#!/usr/bin/env bash
+set -uo pipefail
+. "$1/selftest-lib.sh"
+selftest_scratch dir refuse-fixture
+selftest_rm_scratch "$PWD"
+echo "rm-scratch returned $?"
+selftest_rm_scratch "/"
+echo "rm-scratch on / returned $?"
+selftest_rm_scratch "$HOME"
+echo "rm-scratch on HOME returned $?"
+selftest_rm_scratch ""
+echo "rm-scratch on empty returned $?"
+selftest_rm_scratch "$dir"
+exit 0'
+assert_victim_intact "$fixture_victim" "selftest_rm_scratch leaves the working directory alone"
+assert_has "$fixture_out" "rm-scratch returned 1" "selftest_rm_scratch refuses the working directory"
+assert_has "$fixture_out" "rm-scratch on / returned 1" "selftest_rm_scratch refuses /"
+assert_has "$fixture_out" "rm-scratch on HOME returned 1" "selftest_rm_scratch refuses HOME"
+assert_has "$fixture_out" "rm-scratch on empty returned 0" "selftest_rm_scratch treats an empty path as nothing to do"
+assert_has "$fixture_out" "refusing to delete" "selftest_rm_scratch says why it refused"
+
+# An mktemp that succeeds but hands back nothing must not become $PWD.
+run_fixture empty-result '#!/usr/bin/env bash
+set -uo pipefail
+. "$1/selftest-lib.sh"
+selftest_scratch dir empty-result-fixture
+rm -rf "$dir"
+echo "REACHED THE DELETE"
+exit 0' "$empty_mktemp_bin"
+if [ "$fixture_status" -ne 0 ]; then
+	ok "an mktemp that returns nothing exits non-zero"
+else
+	bad "an mktemp that returns nothing exits zero"
+fi
+assert_has "$fixture_out" "returned no usable directory" "an mktemp that returns nothing is named as such"
+assert_not_has "$fixture_out" "REACHED THE DELETE" "an mktemp that returns nothing stops before any delete"
+assert_victim_intact "$fixture_victim" "an mktemp that returns nothing deletes nothing"
+
+# An mktemp that hands back an existing directory it did not create — here the
+# caller's own, which is under TMPDIR like everything else this suite makes —
+# must be refused rather than adopted as scratch and later deleted.
+run_fixture squatted-dir '#!/usr/bin/env bash
+set -uo pipefail
+. "$1/selftest-lib.sh"
+selftest_scratch dir squatted-fixture
+rm -rf "$dir"
+echo "REACHED THE DELETE"
+exit 0' "$squatting_mktemp_bin"
+if [ "$fixture_status" -ne 0 ]; then
+	ok "an mktemp that returns a directory it did not create exits non-zero"
+else
+	bad "an mktemp that returns a directory it did not create exits zero"
+fi
+assert_has "$fixture_out" "is not the directory it was asked to create" "a squatted scratch directory is named as such"
+assert_not_has "$fixture_out" "REACHED THE DELETE" "a squatted scratch directory stops before any delete"
+assert_victim_intact "$fixture_victim" "a squatted scratch directory deletes nothing"
+
+# An mktemp that hands back a correctly-named directory outside the caller's
+# TMPDIR must be refused too: scratch the wave runner's leak check cannot see
+# is scratch nobody will notice is still there.
+run_fixture outside-tmpdir "#!/usr/bin/env bash
+set -uo pipefail
+export TMPDIR=\"$fixture_tmpdir\"
+. \"\$1/selftest-lib.sh\"
+selftest_scratch dir outside-tmpdir-fixture
+rm -rf \"\$dir\"
+echo \"REACHED THE DELETE\"
+exit 0" "$straying_mktemp_bin"
+if [ "$fixture_status" -ne 0 ]; then
+	ok "an mktemp that returns a path outside TMPDIR exits non-zero"
+else
+	bad "an mktemp that returns a path outside TMPDIR exits zero"
+fi
+assert_has "$fixture_out" "resolved outside TMPDIR" "a scratch path outside TMPDIR is named as such"
+assert_not_has "$fixture_out" "REACHED THE DELETE" "a scratch path outside TMPDIR stops before any delete"
+if [ -d "$strayed_dir" ]; then
+	ok "a scratch path outside TMPDIR is left where it was found"
+else
+	bad "a scratch path outside TMPDIR was deleted"
+fi
+
+# Sourcing the lib after calling the guard is the ordering mistake a future
+# author can make. It must fail in the safe direction: no scratch, no deletion,
+# non-zero exit — which `set -u` delivers on the first unset $dir.
+run_fixture bad-order '#!/usr/bin/env bash
+set -uo pipefail
+selftest_scratch dir bad-order-fixture
+rm -rf "$dir"
+echo "REACHED THE DELETE"
+. "$1/selftest-lib.sh"
+exit 0'
+if [ "$fixture_status" -ne 0 ]; then
+	ok "calling the guard before sourcing the lib exits non-zero"
+else
+	bad "calling the guard before sourcing the lib exits zero"
+fi
+assert_not_has "$fixture_out" "REACHED THE DELETE" "calling the guard before sourcing the lib stops before any delete"
+assert_victim_intact "$fixture_victim" "calling the guard before sourcing the lib deletes nothing"
+
+selftest_summary

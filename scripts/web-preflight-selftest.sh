@@ -16,9 +16,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/web-preflight.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t web-preflight-selftest.XXXXXX)"
-work="$(cd "$work" && pwd -P)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work web-preflight-selftest
+trap 'selftest_rm_scratch "$work"' EXIT
 
 stub_bin="$work/bin"
 mkdir -p "$stub_bin"

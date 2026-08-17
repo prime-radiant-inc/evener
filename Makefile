@@ -226,8 +226,11 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # contract — run-module-lint-selftest.sh alone carries 167 assertions about the
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
-# throwaway worlds rather than touching this repository.
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union
+# throwaway worlds rather than touching this repository. selftest-lib is the odd
+# one out: it tests the shared harness by running eight of the other suites
+# under a failing mktemp, from a throwaway working directory, to prove none of
+# them can be made to delete the checkout (kata 5hs2).
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union selftest-lib
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
