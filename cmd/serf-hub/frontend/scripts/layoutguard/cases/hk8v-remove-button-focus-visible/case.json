@@ -7,18 +7,8 @@
     "panes/session/composer/composer.module.css"
   ],
   "forcePseudoStates": [
-    {
-      "selector": "#hovered-tile",
-      "pseudoClasses": [
-        "hover"
-      ]
-    },
-    {
-      "selector": "#focused-remove",
-      "pseudoClasses": [
-        "focus-visible"
-      ]
-    }
+    { "selector": "#hovered-tile", "pseudoClasses": ["hover"] },
+    { "selector": "#focused-remove", "pseudoClasses": ["focus-visible"] }
   ],
   "mutation": {
     "declaration": "composer.module.css: .removeImageButton:focus-visible { opacity: 1; outline: ... } (rule deleted entirely)",
