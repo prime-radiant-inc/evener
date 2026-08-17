@@ -568,6 +568,22 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 
 func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
 	t.Helper()
+	return startHubStackOnProvider(t, fmt.Sprintf(`schema = 1
+default = "fake"
+
+[instances.fake]
+type = "openai"
+api_style = "chat-completions"
+base_url = %q
+api_key = "fakellm-not-a-secret"
+`, provider.BaseURL()), "fake/"+fakellm.ModelID)
+}
+
+// startHubStackOnProvider is startHubStack with the provider left to the
+// caller, so a live-model test can point the same stack at a real instance
+// whose credential comes from the environment.
+func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack {
+	t.Helper()
 
 	home := t.TempDir()
 	repoRoot, err := filepath.Abs("../..")
@@ -581,15 +597,6 @@ func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
 	if err := os.MkdirAll(serfDir, 0o700); err != nil {
 		t.Fatalf("create hub state root: %v", err)
 	}
-	providersTOML := fmt.Sprintf(`schema = 1
-default = "fake"
-
-[instances.fake]
-type = "openai"
-api_style = "chat-completions"
-base_url = %q
-api_key = "fakellm-not-a-secret"
-`, provider.BaseURL())
 	if err := os.WriteFile(filepath.Join(serfDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
@@ -653,7 +660,7 @@ api_key = "fakellm-not-a-secret"
 		token:        strings.TrimSpace(string(token)),
 		workDir:      workDir,
 		readableFile: readable,
-		model:        "fake/" + fakellm.ModelID,
+		model:        model,
 	}
 }
 
