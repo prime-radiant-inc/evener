@@ -501,7 +501,12 @@ type = %q
 		"Count from 1 to 400. Print one number per line and nothing else. Do not stop early.")
 
 	running := awaitActiveTurn(ctx, t, client, ref, "")
-	t.Logf("live turn in flight: %s", running)
+	// An active turn is published before the model is dispatched, so
+	// interrupting here could cancel a turn that never reached the provider --
+	// and the test would pass without a live model having done anything. Wait
+	// for output the model actually produced.
+	awaitModelOutput(ctx, t, client, ref, running)
+	t.Logf("live turn in flight with model output: %s", running)
 
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              ref,
@@ -538,7 +543,11 @@ type = %q
 	if landedIn == running {
 		t.Fatalf("the steer was folded into the stopped turn %q instead of a later one", running)
 	}
-	t.Logf("live steer landed in turn %s", landedIn)
+	// The steering item is written when the daemon ACCEPTS the steer, so it is
+	// present whether or not the model ever saw it. The model repeating the
+	// marker back is what proves delivery.
+	awaitModelEcho(ctx, t, client, ref, steerText)
+	t.Logf("live steer landed in turn %s and came back from the model", landedIn)
 }
 
 // startLiveThread opens a serf thread on the stack and registers the shutdown
@@ -614,6 +623,61 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 		}
 	}
 	t.Fatalf("turn %s never reached status %q in the transcript; last status %q", turnID, status, seen)
+}
+
+// awaitModelOutput waits for the named turn to carry model-produced output, so
+// a caller can act on a turn the provider has demonstrably started rather than
+// one that has only been announced.
+func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client, ref, turnID string) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
+		if err == nil {
+			for _, turn := range turns.Data {
+				if turn.ID != turnID {
+					continue
+				}
+				for _, item := range turn.Items {
+					if item.Type == "agentMessage" && strings.TrimSpace(item.Text) != "" {
+						return
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for model output in turn %s: %v", turnID, ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatalf("turn %s produced no model output; anything asserted about it would hold for a turn the provider never ran", turnID)
+}
+
+// awaitModelEcho waits for text to come back as model output. Unlike a
+// steering item -- written when the daemon accepts the steer -- this can only
+// appear if the steer reached the model and the model answered it.
+func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
+		if err == nil {
+			for _, turn := range turns.Data {
+				for _, item := range turn.Items {
+					if item.Type == "agentMessage" && strings.Contains(item.Text, text) {
+						return
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for the model to echo %q: %v", text, ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatalf("%q never came back as model output: the steer was accepted and recorded, but nothing proves the model received it", text)
 }
 
 // awaitSteeringItem waits for text to appear as a steering item in the durable
