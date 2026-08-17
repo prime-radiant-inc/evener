@@ -25,6 +25,10 @@ type standDownHarness struct {
 	// which the stand-down fires inline on the caller's goroutine.
 	woken chan struct{}
 
+	// drained receives one value per drain barrier the consumer observes; see
+	// warningsMatching.
+	drained chan struct{}
+
 	mu       sync.Mutex
 	wakes    int
 	warnings []string
@@ -32,12 +36,22 @@ type standDownHarness struct {
 
 func newStandDownHarness(t *testing.T) *standDownHarness {
 	t.Helper()
-	h := &standDownHarness{clock: agenttest.NewFakeClock(), woken: make(chan struct{}, 64)}
+	h := &standDownHarness{
+		clock:   agenttest.NewFakeClock(),
+		woken:   make(chan struct{}, 64),
+		drained: make(chan struct{}, 1),
+	}
 	h.sess = newTestSessionForEnvctx(t)
 	h.sess.clock = h.clock
 	// A real drain, not a flag: ConsumeEventsLossless is the only writer of
 	// authoritativeConsumer, and an unserved session never stands down at all.
 	h.sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		// The drain barrier warningsMatching emits: nothing else in these
+		// tests loads a prompt, so every one of these is a barrier.
+		if ev.Kind == events.EventPromptLoaded {
+			h.drained <- struct{}{}
+			return
+		}
 		if ev.Kind != events.EventWarning {
 			return
 		}
@@ -71,7 +85,17 @@ func (h *standDownHarness) wakeCount() int {
 	return h.wakes
 }
 
+// warningsMatching counts delivered warnings containing substr. A warning
+// travels emit -> the session's buffered event channel -> the
+// ConsumeEventsLossless drain goroutine, so the count trails the emit: a
+// buffered send never yields the processor, and at GOMAXPROCS=1 the drain
+// goroutine stays runnable-but-unscheduled while the test goroutine reads a
+// stale count. The barrier rides the same FIFO stream, so once the consumer
+// hands it back every warning emitted before this call has been counted --
+// which makes the counts exact, not merely eventual.
 func (h *standDownHarness) warningsMatching(substr string) int {
+	h.sess.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: "warningsMatching drain barrier"})
+	<-h.drained
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	n := 0
