@@ -2,6 +2,7 @@
   "name": "composer-desktop-question-replacement",
   "description": "the desktop composer replacement slot fills its footer region, bottom anchors a short question surface, and scrolls a tall one internally",
   "cssFiles": [
+    "styles/global.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "panes/session/composer/composer.module.css",
