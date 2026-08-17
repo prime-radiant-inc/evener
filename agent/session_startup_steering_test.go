@@ -139,3 +139,32 @@ func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 		t.Fatalf("the opening turn/start was refused after startup context: %v", err)
 	}
 }
+
+// TestDaemonSteeringAloneNeverWakes guards the steering wake itself. It fires
+// from every path that adds user steering -- a steer, a drain, a promote -- and
+// from an interrupt once its fence clears, and at that last one the only
+// steering pending can be the daemon's own. Waking there would start a turn to
+// carry context that is meant to ride the next real one.
+func TestDaemonSteeringAloneNeverWakes(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	s.SteerKind("<SYSTEM-REMINDER>daemon context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+
+	wakes := 0
+	s.SetNotifyFunc(func() { wakes++ })
+	s.SetPendingUserInputWakeFunc(func() { wakes++ })
+	if wakes != 0 {
+		t.Fatalf("installing the wakes fired %d times for daemon steering alone", wakes)
+	}
+
+	s.wakeForPendingSteering()
+	if wakes != 0 {
+		t.Fatalf("wakeForPendingSteering fired %d times with only daemon steering pending", wakes)
+	}
+	if !s.hasPendingSteering() {
+		t.Fatal("the daemon steering was consumed; it must stay queued for the next real turn")
+	}
+}
