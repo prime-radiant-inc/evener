@@ -465,3 +465,16 @@ func (s *Session) delegateModelHistorySnapshot() []schema.Turn {
 	defer s.mu.Unlock()
 	return append([]schema.Turn(nil), s.history...)
 }
+
+// liveGenerationOwesSteering reports whether any admission belongs to a
+// generation that can still consume it. An admission carried across a covering
+// stop is excluded: it is held for a successor, not owed by the run that took
+// it, so it must not read as work in flight.
+func liveGenerationOwesSteering(live *delegateLiveState) bool {
+	for _, admission := range live.pendingSteers {
+		if !admission.carriesAcrossGeneration {
+			return true
+		}
+	}
+	return false
+}

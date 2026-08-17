@@ -1216,9 +1216,9 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 // The sibling of the test above, for the other legal ordering. A steer's
 // transcript fsync and the covering stop's FinishGeneration are separate
 // operations on separate goroutines, so CompleteSteerPersistence can land
-// either after the generation is released or before it. Provenance must
-// survive both; releaseGenerationLocked clears live.pendingSteers, so an
-// admission recorded before it would otherwise be erased on the way out.
+// either after the generation is released or before it, and provenance must
+// survive both. This is the before case: releaseGenerationLocked drops the
+// generation's own admissions, and only the carry marking keeps this one.
 func TestDelegateControllerStopFencedSteerKeepsProvenanceWhenItLandsBeforeFinish(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
