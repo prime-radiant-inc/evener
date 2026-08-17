@@ -198,7 +198,7 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 		Provenance: testProvenance("watch_A", "wg_1"),
 	})
 
-	if proceed, _ := s.acceptNotificationInput(context.Background()); !proceed {
+	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
 		t.Fatal("notification input should proceed")
 	}
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
@@ -220,7 +220,7 @@ func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.
 	cfg, _, _ := installCallerSendWatchWithCurrentFrame(t, s.jobManager, "frame-v2")
 	beforeSeq := cfg.nextUpdateSeq
 
-	if proceed, _ := s.acceptNotificationInput(context.Background()); !proceed {
+	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
 		t.Fatal("notification input should proceed")
 	}
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), cfg.watchID, cfg.generation) {
@@ -277,7 +277,7 @@ func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testi
 	}
 	s.jobManager.terminalFlush = map[*watchConfig]bool{cfg: true}
 
-	if proceed, _ := s.acceptNotificationInput(context.Background()); !proceed {
+	if proceed := s.acceptNotificationInput(context.Background(), ""); !proceed {
 		t.Fatal("notification input should proceed for restored caller watch send")
 	}
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_restore", "wg_restore") {

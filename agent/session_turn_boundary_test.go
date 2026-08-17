@@ -301,6 +301,53 @@ func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
 	}
 }
 
+// TestStandDownConsumesNoWakeState is the constraint that decides WHERE the
+// stand-down check goes. beginRootDelegateAttentionTurn (session_lifecycle.go,
+// in processOneInput) runs ahead of acceptNotificationInput and consumes the
+// process-local wake: it clears rootAttentionWake AND cancels any scheduled
+// retry (session_attention.go:518-521). Only finishRootDelegateAttentionTurn
+// re-arms it, and that is skipped unless the wake was accepted.
+//
+// So a stand-down decided after that call strands the very attention it was
+// woken for, with nothing left to raise it again until some unrelated wake
+// happens by. The decision has to come first, while nothing has been consumed.
+func TestStandDownConsumesNoWakeState(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+
+	s.attentionMu.Lock()
+	s.rootAttentionWakeIDs = map[string]struct{}{"att_1": {}}
+	s.rootAttentionWake = true
+	s.attentionMu.Unlock()
+
+	// A user's turn/start already owns the durable name.
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.NextTurnSequence++
+		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed a claimed user turn: %v", err)
+	}
+
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	s.attentionMu.Lock()
+	armed := s.rootAttentionWake
+	pending := len(s.rootAttentionWakeIDs)
+	s.attentionMu.Unlock()
+	if pending == 0 {
+		t.Fatal("the stand-down dropped the pending attention ids outright")
+	}
+	if !armed {
+		t.Fatal("the stand-down consumed the attention wake and cancelled its retry; nothing re-arms it, so this delegate waits on an unrelated wake")
+	}
+}
+
 // TestWakeResumesOnceTheUserTurnReleasesTheName is the other half of standing
 // down, and the half that makes it safe: the wake must be DEFERRED, not
 // dropped. A finished job whose notification is silently discarded is never

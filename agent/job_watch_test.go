@@ -30,7 +30,7 @@ func drainAndAccept(t *testing.T, s *Session) {
 	if err := s.drainPendingWatchSends(context.Background()); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	_, _ = s.acceptNotificationInput(context.Background()) // ok to no-op on empty queue
+	_ = s.acceptNotificationInput(context.Background(), "") // ok to no-op on empty queue
 }
 
 // installWatchBelowValidation installs a watch directly into jm.watches the way

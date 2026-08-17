@@ -1016,9 +1016,33 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
+	// The running turn's durable name, handed back on every exit from here.
+	// Registered before anything mints so no path can return between taking
+	// the name and releasing it; the closure reads the variable at unwind
+	// time, so this one defer covers whichever branch below does the minting.
+	var runningTurnID string
+	defer func() { s.releaseRunningTurnID(runningTurnID) }()
+
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
 	if kind == EntryNotification {
+		// Take the name first, and in ONE atomic take-or-refuse against the
+		// durable store. Asking whether the name is free and then taking it
+		// are two operations with a gap, and a turn/start running on an RPC
+		// goroutine can claim it in that gap -- after which this wake would
+		// proceed unnamed, which is precisely the failure this work exists to
+		// prevent. mintRunningTurnID either takes the name or reports it
+		// taken, with nothing in between.
+		//
+		// Deciding here, before beginRootDelegateAttentionTurn, is the other
+		// half. That call consumes the process-local wake: it clears
+		// rootAttentionWake and cancels any scheduled retry, and only a wake
+		// that is ACCEPTED re-arms them. A stand-down decided after it would
+		// strand the very attention it was woken for.
+		runningTurnID = s.mintRunningTurnID()
+		if s.servedByDaemon() && runningTurnID == "" {
+			return "", false, nil
+		}
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
 		defer func() {
 			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
@@ -1036,13 +1060,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// by its own durable reservation; a goal continuation and a notification
 	// wake have nothing to name them.
 	//
-	// A continuation can be named here because acceptContinuationInput cannot
-	// refuse. A notification wake can: its commonest outcome is an empty-queue
-	// no-op, and it can still refuse after a durable write fails. So it names
-	// itself once every refusal is behind it and hands the id back, rather
-	// than paying a durable reservation for every coalesced wake that turns
-	// out to have nothing to deliver.
-	var runningTurnID string
+	// A continuation is named here because acceptContinuationInput cannot
+	// refuse. A notification wake took its name above, before it consumed any
+	// wake state, so that a wake it cannot name stands down while standing
+	// down is still free.
 	if kind == EntryContinuation {
 		runningTurnID = s.mintRunningTurnID()
 	}
@@ -1050,13 +1071,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
-		proceed, notificationTurnID := s.acceptNotificationInput(ctx)
-		runningTurnID = notificationTurnID
-		if !proceed {
-			// Every refusal inside acceptNotificationInput happens before it
-			// mints, so notificationTurnID is empty here today and there is
-			// nothing to release. The release below covers the proceeding
-			// paths; a refusal added AFTER the mint would need one here too.
+		if !s.acceptNotificationInput(ctx, runningTurnID) {
+			// The name taken above is released by the deferred handback, which
+			// was registered before the mint precisely so this path cannot
+			// leak it.
 			return "", false, nil
 		}
 		rootAttentionAccepted = true
@@ -1065,9 +1083,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
-	// Held for the turn's whole life, then released. A name this turn did not
-	// mint is somebody else's and releaseRunningTurnID leaves it alone.
-	defer s.releaseRunningTurnID(runningTurnID)
 
 	var toolSigs []string
 	var toolSigFailed []bool
@@ -1534,26 +1549,12 @@ func (s *Session) acceptDelegateAttentionInput() {
 // It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
-func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, turnID string) {
-	// A wake runs only when it can be the named running turn. The name is
-	// already spoken for when a client's turn/start has been accepted and is
-	// waiting its turn in the serve loop, and that interleaving is ordinary
-	// rather than exotic: inputCh holds one slot, a wake that finds it full
-	// parks blocked on the send (server.go:768), and when the slot frees that
-	// parked send races the turn/start that just claimed the name.
-	//
-	// Standing down costs nothing. The user's turn is next and already named,
-	// and the drain loop's tail gate (peekNotifications, below) runs the
-	// notification turn inline the moment that turn ends -- by which point the
-	// name is free. Proceeding instead would run a turn that can last minutes
-	// with no Stop and no Steer, because every control is compared against a
-	// name this turn does not hold.
-	//
-	// Nothing is drained above this point, so there is nothing to put back.
-	if s.servedByDaemon() && s.runningTurnNameTaken() {
-		s.finishNotificationNoop()
-		return false, ""
-	}
+// acceptNotificationInput decides whether this wake has anything to deliver and
+// prepares it. turnID is the name processOneInput already took for the turn --
+// empty only for a session no daemon serves, which needs no name. The caller
+// stands down before reaching here when a served session could not be named, so
+// every wake that gets this far can address its own turn.
+func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the
@@ -1578,7 +1579,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, tu
 			s.resetJobNotificationRetry()
 		}
 		s.finishNotificationNoop()
-		return false, ""
+		return false
 	}
 
 	s.repairOrphanedToolResults("before accepting notification")
@@ -1604,7 +1605,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, tu
 		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
-			return false, ""
+			return false
 		}
 	}
 
@@ -1616,7 +1617,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, tu
 	//
 	// The announce precedes every content event of the turn. A boundary that
 	// came after would leave that content attributed to the turn before it.
-	turnID = s.mintRunningTurnID()
 	if s.servedByDaemon() {
 		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	}
@@ -1641,7 +1641,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool, tu
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
-	return true, turnID
+	return true
 }
 
 func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {
