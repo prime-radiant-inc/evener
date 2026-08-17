@@ -13,10 +13,11 @@ import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { discardRecoveryMutation, threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
+  discardRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
@@ -261,6 +262,20 @@ export function QueueStrip({
     }
   }
 
+  // discardRecoveryPendingTurn, not the bare store mutation: it refreshes the
+  // projection unconditionally, so a record another surface already discarded
+  // still leaves the strip instead of sitting there being counted as queued.
+  async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
+    setRowBusy(record.clientMutationId, true);
+    try {
+      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef);
+    } catch (error) {
+      toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
+    } finally {
+      setRowBusy(record.clientMutationId, false);
+    }
+  }
+
   async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
@@ -404,9 +419,7 @@ export function QueueStrip({
                     icon={<span aria-hidden="true">✕</span>}
                     size="sm"
                     disabled={rowBusy}
-                    onClick={() => {
-                      void discardRecoveryMutation(record.clientMutationId, sessionRef);
-                    }}
+                    onClick={() => void handleDismiss(record)}
                   />
                 ) : (
                   <ActionButton

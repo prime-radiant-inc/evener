@@ -15,6 +15,7 @@ import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/st
 import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
+  settlePendingTurnsProjectionForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
@@ -327,6 +328,105 @@ describe("durable recovery rows", () => {
     await user.click(await screen.findByRole("button", { name: "Copy" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("first line\n  second line"));
+  });
+});
+
+// Awaits the durable projection work itself rather than polling the DOM for
+// its effects: the row-clearing refresh is chained onto the discard write, so
+// a round that awaited nothing is the proof that nothing is left. The bound
+// is a tripwire for a livelock rather than a timeout.
+async function settleRecoveryProjection(): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    let awaited = 0;
+    await act(async () => {
+      awaited = await settlePendingTurnsProjectionForTests();
+    });
+    if (awaited === 0) return;
+  }
+  throw new Error("pending-turns projection never settled");
+}
+
+// Dismiss is the ONLY way a rejected Stop's recovery record leaves the strip,
+// so it owes what every other row action here already gives: the row locked
+// while the durable write runs, a failure reported rather than swallowed, and
+// no stale row left behind when the record turns out to be gone already
+// (kata fs0e).
+describe("dismiss a rejected Stop", () => {
+  async function renderRejectedStop(): Promise<{ record: MutationRecoveryRecord; row: HTMLElement }> {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const record = await seedRecovery("rejected", "", { method: "turn/interrupt", reason: "turn is not active" });
+    renderStrip(defaultProps());
+    const text = await screen.findByText(/Stop didn't reach the session/);
+    const row = text.closest("li");
+    if (!row) throw new Error("missing rejected interrupt row");
+    return { record, row };
+  }
+
+  test("locks the row while the discard is in flight, then clears it", async () => {
+    const { row } = await renderRejectedStop();
+    const discardRecovery = MutationOutboxIndexedDB.prototype.discardRecovery;
+    let releaseDiscard!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseDiscard = resolve;
+    });
+    vi.spyOn(MutationOutboxIndexedDB.prototype, "discardRecovery").mockImplementation(async function (
+      this: MutationOutboxIndexedDB,
+      clientMutationId: string,
+    ) {
+      await held;
+      return discardRecovery.call(this, clientMutationId);
+    });
+
+    fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+
+    await vi.waitFor(() => {
+      expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(true);
+    });
+
+    await act(async () => {
+      releaseDiscard();
+    });
+    await settleRecoveryProjection();
+
+    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  test("a discard that fails is reported rather than swallowed", async () => {
+    const { row } = await renderRejectedStop();
+    vi.spyOn(MutationOutboxIndexedDB.prototype, "discardRecovery").mockRejectedValue(new Error("storage is full"));
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await settleRecoveryProjection();
+
+    expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
+      ["error", expect.stringContaining("storage is full")],
+    ]);
+    // The record survived the failure, so the row has to stay clickable.
+    expect(screen.getByText(/Stop didn't reach the session/)).toBeTruthy();
+    expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(false);
+  });
+
+  test("a record already discarded elsewhere still leaves the strip", async () => {
+    const { record, row } = await renderRejectedStop();
+    // Discarded by another surface (a second tab, or this session's own
+    // Composer) after this projection last read: the durable record is gone,
+    // the row on screen is not, and the discard below reports "nothing to do".
+    const storage = new MutationOutboxIndexedDB();
+    expect(await storage.discardRecovery(record.clientMutationId)).toBe(true);
+    storage.close();
+    expect(within(row).getByRole("button", { name: "Dismiss" })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await settleRecoveryProjection();
+
+    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
+    expect(screen.queryByText(/queued messages/i)).toBeNull();
   });
 });
 
