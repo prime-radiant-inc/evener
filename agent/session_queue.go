@@ -704,6 +704,7 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 	}
 	return data
 }
+
 // interruptDrainConfig reports whether an interrupted turn may consume the
 // queue head, and hands back the drain handler to run it under.
 //
