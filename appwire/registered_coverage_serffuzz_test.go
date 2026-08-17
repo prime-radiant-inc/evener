@@ -49,7 +49,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"Cost", TestEstimateCost_FormatsToCents},
 		{"CostNil", TestEstimateCost_NilUsageReturnsEmpty},
 		{"CostUnpriced", TestEstimateCost_UnpricedModelReturnsEmpty},
-		{"ExpectedTurnID", TestExpectedTurnIDUsed},
 		{"FrameRecorder", TestFrameRecorderRoundTrip},
 		{"FrameRecorderJSONL", TestFrameRecorderWritesJSONL},
 		{"IDLess", TestIDLessFrameRoundTrips},

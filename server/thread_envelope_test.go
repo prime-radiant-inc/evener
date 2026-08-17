@@ -924,7 +924,6 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 				return appwire.TurnSteerParams{
 					Ref:              "local:th_1",
 					ClientMutationID: id,
-					ExpectedTurnID:   "turn_1",
 					Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
 				}
 			},
@@ -942,7 +941,6 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 				return appwire.TurnQueueParams{
 					Ref:              "local:th_1",
 					ClientMutationID: id,
-					ExpectedTurnID:   "turn_1",
 					Input:            []appwire.InputItem{{Type: "text", Text: "later"}},
 				}
 			},
@@ -960,7 +958,6 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 				return appwire.TurnInterruptParams{
 					Ref:              "local:th_1",
 					ClientMutationID: id,
-					ExpectedTurnID:   "turn_1",
 				}
 			},
 		},
@@ -977,7 +974,6 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 				return appwire.TurnDrainAsSteerParams{
 					Ref:              "local:th_1",
 					ClientMutationID: id,
-					ExpectedTurnID:   "turn_1",
 				}
 			},
 		},
@@ -995,7 +991,6 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 					Ref:              "local:th_1",
 					Index:            0,
 					ClientMutationID: id,
-					ExpectedTurnID:   "turn_1",
 					ExpectedEntryID:  "entry_1",
 				}
 			},

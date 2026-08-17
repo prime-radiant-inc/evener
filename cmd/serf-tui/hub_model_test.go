@@ -2737,11 +2737,9 @@ func TestHubModelSessionPanelBoundsLongTranscriptToVisibleShell(t *testing.T) {
 
 func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	var methods []string
-	var interruptTurnID string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
 			methods = append(methods, appwire.MethodTurnInterrupt)
-			interruptTurnID = params.ExpectedTurnID
 			return appwire.EmptyResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
@@ -2799,9 +2797,6 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	}, ",")
 	if strings.Join(methods, ",") != want {
 		t.Fatalf("methods=%v", methods)
-	}
-	if interruptTurnID != "turn_active" {
-		t.Fatalf("interrupt turn id=%q", interruptTurnID)
 	}
 }
 
@@ -3866,7 +3861,7 @@ func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
 	if _, ok := cmd().(hubActionMsg); !ok {
 		t.Fatalf("interrupt cmd should produce hubActionMsg")
 	}
-	if calls != 1 || interrupted.Ref != "local:01SEND" || interrupted.ExpectedTurnID != "turn_busy" {
+	if calls != 1 || interrupted.Ref != "local:01SEND" {
 		t.Fatalf("TurnInterrupt calls=%d params=%+v", calls, interrupted)
 	}
 

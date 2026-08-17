@@ -786,31 +786,23 @@ function composerMutationIntent(
       optimisticDisplay: { method: "turn/start", input },
     };
   }
-  const expectedTurnId = model?.activeTurnId ?? "";
   if (route === "queue" || route === "steer") {
     const method = route === "queue" ? "turn/queue" : "turn/steer";
     return {
       ...base,
       method,
-      payload: { ref, expectedTurnId, input },
+      payload: { ref, input },
       optimisticDisplay: { method, input },
     };
   }
-  // Drain steers the ACTIVE turn by contract — the hub and the daemon both
-  // reject an empty expectedTurnId (appwire InvalidParams, "drain: no active
-  // turn to steer"). Minting a durable intent that violates the contract at
-  // birth would poison the outbox head: the rejection names no
-  // clientMutationId, so nothing can ever settle it (kata wr3s). Refuse
-  // before anything durable exists; callers surface this like any submit
-  // failure. Queue and steer intents are NOT gated here: the status-flip /
-  // turn-started race window deliberately lets them race the daemon (see
-  // deriveSendQueueAvailability), and a lost race now lands in recovery.
-  if (!expectedTurnId) throw new Error("Drain failed: no active turn to steer");
+  // Drain's precondition is the queue revision it is swapping against, not a
+  // turn: draining is destructive, so a queue that changed since the user saw
+  // it must be rejected rather than swallowed into a steer they did not intend.
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
     method: "turn/drainAsSteer",
-    payload: { ref, expectedTurnId, expectedQueueRevision, input },
+    payload: { ref, expectedQueueRevision, input },
     optimisticDisplay: { method: "turn/drainAsSteer", input },
   };
 }
@@ -1952,11 +1944,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId) {
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
+    // The entry id is the precondition that matters: it names the message being
+    // promoted, so a queue that shifted underneath is caught without needing a
+    // turn id that would only add a second way to fail.
     await enqueueMutation(
       ref,
       "turn/promoteQueuedAsSteer",
-      { ref, index, expectedTurnId, expectedEntryId },
+      { ref, index, expectedEntryId },
       { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
     );
   },

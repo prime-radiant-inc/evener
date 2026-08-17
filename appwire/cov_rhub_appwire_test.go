@@ -197,8 +197,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
-		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedTurnId":"tn_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedTurnID: "tn_1"})
+		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
 		}},
 		{"TasksList", MethodSerfTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
 			"id": 5, "type": "implement", "description": "Wire up the status row",
@@ -380,18 +380,18 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", Input: []InputItem{{Type: "text", Text: "hello"}}})
 			return err
 		}},
-		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","expectedTurnId":"tn_1","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", ExpectedTurnID: "tn_1", Input: []InputItem{{Type: "text", Text: "steer"}}})
+		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", Input: []InputItem{{Type: "text", Text: "steer"}}})
 		}},
-		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","expectedTurnId":"tn_1","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", ExpectedTurnID: "tn_1", Input: []InputItem{{Type: "text", Text: "queued"}}})
+		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", Input: []InputItem{{Type: "text", Text: "queued"}}})
 		}},
-		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedTurnId":"tn_1","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedTurnID: "tn_1", ExpectedQueueRevision: 7})
+		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedQueueRevision: 7})
 		}},
-		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedTurnId":"tn_1","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{
-				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedTurnID: "tn_1", ExpectedEntryID: "qe_1",
+				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedEntryID: "qe_1",
 			})
 		}},
 		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
@@ -606,22 +606,16 @@ func TestInputParamAccessors(t *testing.T) {
 	if got := ts.TargetRef(); got != "th_1" {
 		t.Fatalf("TurnStartParams.TargetRef=%q", got)
 	}
-	steer := TurnSteerParams{ThreadID: "th_2", ExpectedTurnID: "tn_9", Input: items}
+	steer := TurnSteerParams{ThreadID: "th_2", Input: items}
 	if got := steer.EffectiveInput(); len(got) != 1 {
 		t.Fatalf("TurnSteerParams.EffectiveInput=%+v", got)
 	}
 	if got := steer.TargetRef(); got != "th_2" {
 		t.Fatalf("TurnSteerParams.TargetRef=%q", got)
 	}
-	if got := steer.EffectiveTurnID(); got != "tn_9" {
-		t.Fatalf("TurnSteerParams.EffectiveTurnID=%q", got)
-	}
-	interrupt := TurnInterruptParams{ThreadID: "th_3", ExpectedTurnID: "tn_3"}
+	interrupt := TurnInterruptParams{ThreadID: "th_3"}
 	if got := interrupt.TargetRef(); got != "th_3" {
 		t.Fatalf("TurnInterruptParams.TargetRef=%q", got)
-	}
-	if got := interrupt.EffectiveTurnID(); got != "tn_3" {
-		t.Fatalf("TurnInterruptParams.EffectiveTurnID=%q", got)
 	}
 }
 

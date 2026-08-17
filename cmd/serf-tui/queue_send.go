@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
@@ -45,15 +43,12 @@ type hubDrainAsSteerMsg struct {
 // expectedTurnID is the turn the queue is being appended behind
 // (appwire.ValidateMutationParams requires it): the daemon rejects the enqueue
 // rather than attaching it to a turn that has since been replaced.
-func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, expectedTurnID string) tea.Cmd {
+func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
 		if idErr != nil {
 			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
-		}
-		if strings.TrimSpace(expectedTurnID) == "" {
-			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: errNoActiveTurnToQueueBehind}
 		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
@@ -62,7 +57,6 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 			Ref:              ref.String(),
 			ClientMutationID: mutationID,
-			ExpectedTurnID:   expectedTurnID,
 			Input:            appendTextInput(text, items),
 		})
 		return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
@@ -73,11 +67,10 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 // queued message into a single STEERING message for the in-flight turn.
 // When the composer carries text or attachments (kata re91) they ride on
 // the drain request so the daemon appends and drains atomically.
-// expectedTurnID and expectedQueueRevision are the preconditions
-// appwire.ValidateMutationParams requires. The revision is a CAS token: draining
-// is destructive, so a queue that changed since the user saw it must be rejected
-// rather than silently swallowed into a steer they did not intend.
-func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, expectedTurnID string, expectedQueueRevision uint64, preQueueDepth ...int) tea.Cmd {
+// expectedQueueRevision is a CAS token: draining is destructive, so a queue that
+// changed since the user saw it must be rejected rather than silently swallowed
+// into a steer they did not intend.
+func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, expectedQueueRevision uint64, preQueueDepth ...int) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
@@ -88,9 +81,6 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if idErr != nil {
 			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
 		}
-		if strings.TrimSpace(expectedTurnID) == "" {
-			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: errNoActiveTurnToSteer}
-		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
 			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
@@ -98,7 +88,6 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref:                   ref.String(),
 			ClientMutationID:      mutationID,
-			ExpectedTurnID:        expectedTurnID,
 			ExpectedQueueRevision: expectedQueueRevision,
 			Input:                 appendTextInput(text, items),
 		})
@@ -138,15 +127,3 @@ func buildAttachmentItems(attachments []*clipboard.PastedImage) ([]appwire.Input
 	}
 	return items, nil
 }
-
-// A queue or drain-as-steer is scoped to a specific in-flight turn: the daemon
-// requires expectedTurnId so the message cannot silently attach to a turn other
-// than the one the user was looking at. When the composer has no active turn to
-// name — the session went idle or its turn failed while queue mode was still on
-// screen — the mutation cannot succeed, and sending it earns a raw
-// "expectedTurnId is required" from the wire for something the client already
-// knew. Refuse locally and say so in the composer's own terms instead.
-var (
-	errNoActiveTurnToQueueBehind = errors.New("no active turn to queue behind — the session is idle, so send instead")
-	errNoActiveTurnToSteer       = errors.New("no active turn to steer — the session is idle, so send instead")
-)

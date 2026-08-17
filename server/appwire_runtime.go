@@ -781,9 +781,6 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
 	}
 	params.Input = input.Items
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
-	}
 	if strings.TrimSpace(params.ClientMutationID) == "" {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
@@ -825,13 +822,6 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	// A session-scoped interrupt asks for whatever is running, so it is the one
-	// form that has no turn to name. Every other form still must name one: a
-	// Stop that silently widened to the whole session would cancel a turn the
-	// user never saw.
-	if !params.InterruptRunningTurn && strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
-	}
 	if strings.TrimSpace(params.ClientMutationID) == "" {
 		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
@@ -858,9 +848,6 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
 	params.Input = input.Items
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
-	}
 	if strings.TrimSpace(params.ClientMutationID) == "" {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
@@ -884,9 +871,6 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	params.Input = input.Items
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
-	}
 	if strings.TrimSpace(params.ClientMutationID) == "" {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
@@ -909,9 +893,6 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 	}
 	if params.Index < 0 {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
-	}
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	if strings.TrimSpace(params.ExpectedEntryID) == "" {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")

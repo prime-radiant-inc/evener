@@ -102,10 +102,9 @@ func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t 
 
 func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.T) {
 	sess := newMutationReplaySession(t)
-	turnID := acceptMutationReplayActiveTurn(t, sess)
+	acceptMutationReplayActiveTurn(t, sess)
 	queueParams := appwire.TurnQueueParams{
 		ClientMutationID: "queued-for-rejoin",
-		ExpectedTurnID:   turnID,
 		Input:            []appwire.InputItem{{Type: "text", Text: "durable queued input"}},
 	}
 	if _, err := sess.AcceptClientMutationQueue(queueParams); err != nil {
@@ -158,7 +157,8 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 			name:    "queue",
 			blockAt: 2,
 			accept: func(t *testing.T, sess *agent.Session) string {
-				start, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+				// Started for its side effect: the queue needs a turn to sit behind.
+				_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 					ClientMutationID: "queue-parent-start",
 					Input:            []appwire.InputItem{{Type: "text", Text: "parent start"}},
 				})
@@ -167,7 +167,6 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 				}
 				params := appwire.TurnQueueParams{
 					ClientMutationID: "incorporated-queue",
-					ExpectedTurnID:   start.Turn.ID,
 					Input:            []appwire.InputItem{{Type: "text", Text: "durable queue"}},
 				}
 				if _, err := sess.AcceptClientMutationQueue(params); err != nil {

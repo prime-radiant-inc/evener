@@ -47,8 +47,7 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref: "local:th_qimg",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_qimg",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued describe"}, {
 			Type:      "image",
 			MediaType: "image/png",
@@ -120,8 +119,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref: "local:" + sess.ID(),
+	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:" + sess.ID(),
 		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
 			MediaType: "image/png",
@@ -132,7 +130,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 		raw, _ := json.Marshal(r)
 		t.Fatalf("turn/queue: %s", raw)
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
+	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
 		Ref: "local:" + sess.ID(),
 	})); r.Kind() != appwire.MessageResponse {
 		raw, _ := json.Marshal(r)

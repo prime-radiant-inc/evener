@@ -112,16 +112,11 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
 	}
-	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
 
 	var response appwire.TurnQueueResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
-		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
-			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
 		}
 		if len(params.Input) == 0 {
@@ -315,26 +310,10 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
-	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
 	var response appwire.TurnSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
-		// A steer always lands (Jesse, 2026-08-16). The reachable case is a
-		// race: you press Steer while the agent works, and the turn ends
-		// between the click and the request arriving. Rejecting there loses
-		// what you typed, silently (kata 2f41) -- and a steer means "take this
-		// into account", which the next turn can still honour.
-		//
-		// The relaxation is narrow on purpose. It applies only when NO turn is
-		// running. If a different turn is in flight the client is steering
-		// something it is not looking at, and the compare-and-commit
-		// precondition still has a job.
-		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != "" &&
-			snapshot.ActiveTurnID != params.ExpectedTurnID {
-			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
 		}
 		if len(params.Input) == 0 {
@@ -418,16 +397,11 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
-	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
 	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
 	var response appwire.TurnDrainAsSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
-		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
-			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
 		}
 		if snapshot.QueueRevision != params.ExpectedQueueRevision {
@@ -523,16 +497,11 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
-	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
 	request.Preconditions.ExpectedEntryID = params.ExpectedEntryID
 	var response appwire.TurnPromoteQueuedAsSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
-			return nil
-		}
-		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
-			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
 		}
 		if params.Index < 0 || params.Index >= len(snapshot.InputQueue) {

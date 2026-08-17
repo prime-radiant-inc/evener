@@ -3265,7 +3265,6 @@ test("recovery resend rebuilds queue CAS values from the current thread", async 
   expect((await storage.listOutbox("ref_a"))[0]).toMatchObject({
     method: "turn/queue",
     payload: {
-      expectedTurnId: "turn-current",
       input: [{ type: "text", text: "edited" }],
     },
   });
@@ -3287,7 +3286,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     await threadsStore.getState().ensureThread(ref);
   }
 
-  test("steer sends the tracked model's activeTurnId as expectedTurnId", async () => {
+  test("steer sends turn/steer with the composer input and no turn id", async () => {
     const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
     fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -3299,7 +3298,6 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       input: [{ type: "text", text: "steer text" }],
     });
   });
@@ -3318,7 +3316,6 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       input: [
         { type: "text", text: "steer text" },
         { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
@@ -3355,9 +3352,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
   // InvalidParams and the user could see work they could not stop.
   test("interrupt with no turn id asks the daemon to stop whatever is running", async () => {
     const fake = connectMutationClient();
-    fake.on("thread/read", (params) =>
-      readResponse((params as { ref: string }).ref, { status: { type: "active" } }),
-    );
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref, { status: { type: "active" } }));
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId ?? "").toBe("");
     fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -3373,7 +3368,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
-  test("queue sends turn/queue with the current expectedTurnId", async () => {
+  test("queue sends turn/queue with the composer input and no turn id", async () => {
     const fake = connectMutationClient();
     await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -3385,7 +3380,6 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       input: [{ type: "text", text: "queued text" }],
     });
   });
@@ -3406,7 +3400,6 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "",
       input: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }],
     });
   });
@@ -3443,7 +3436,6 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       expectedQueueRevision: 7,
       input: [
         { type: "text", text: "drain text" },
@@ -3452,11 +3444,6 @@ describe("useThreadsStore.drainAsSteer", () => {
     });
   });
 
-  // The fixture needs the active turn its sibling establishes: this test is
-  // about the empty-composer INPUT shape, and its earlier pin of
-  // expectedTurnId "" blessed exactly the payload the hub rejects before
-  // forwarding — the poison intent kata wr3s exists for. Draining without an
-  // active turn is refused at mint time now (test below).
   test("sends an empty input array when the composer was empty (draining the queue alone)", async () => {
     const fake = connectMutationClient();
     await ensureActiveMutationTarget(fake, "ref_a");
@@ -3469,7 +3456,6 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       expectedQueueRevision: 7,
       input: [],
     });
@@ -3490,7 +3476,6 @@ describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
       ref: "ref_a",
       index: 1,
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
       expectedEntryId: "entry_2",
     });
   });
@@ -5609,7 +5594,6 @@ describe("retry-safe mutation outbox integration", () => {
       method: "turn/queue",
       payload: {
         ref: "ref_a",
-        expectedTurnId: "",
         input: [{ type: "text", text: "queued" }],
       },
       attachments: [],
@@ -5630,23 +5614,6 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
   });
 
-  // turn/drainAsSteer requires an active turn by wire contract (the hub and
-  // the daemon both reject an empty expectedTurnId, and the daemon's legacy
-  // path errors "drain: no active turn to steer"). Minting a durable intent
-  // that violates the contract at birth creates a poison head: every dispatch
-  // bounces off the hub's InvalidParams (which names no clientMutationId) and
-  // the record parks the thread's FIFO forever (kata wr3s). Refuse at mint
-  // time, before anything durable exists.
-  test("drain with no active turn is refused at mint time, never durably queued", async () => {
-    connectFakeClient();
-
-    await expect(threadsStore.getState().drainAsSteer("ref_a", "steer this")).rejects.toThrow(/active turn/i);
-
-    const storage = new MutationOutboxIndexedDB();
-    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
-    storage.close();
-  });
-
   // A blockedUnknown record parks until its outcome is provable. The
   // authoritative read this rejoin performs IS the proof: readResponse's
   // authoritative sets don't contain the id, so the daemon never journaled
@@ -5660,7 +5627,6 @@ describe("retry-safe mutation outbox integration", () => {
       method: "turn/queue",
       payload: {
         ref: "ref_a",
-        expectedTurnId: "",
         input: [{ type: "text", text: "queued before the outage" }],
       },
       attachments: [],

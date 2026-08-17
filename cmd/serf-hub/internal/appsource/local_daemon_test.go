@@ -501,7 +501,7 @@ func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 		}}
 	}, httpServer.Client())
 
-	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
+	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
 	if err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
@@ -857,7 +857,7 @@ func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *tes
 		return []LocalDaemonEntry{{Entry: entry, SessionID: "01INT"}}
 	}, daemon.Client())
 
-	if _, err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "local:01INT"}); err == nil {
+	if _, err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: "local:01INT"}); err == nil {
 		t.Fatal("InterruptTurn without expectedTurnId succeeded")
 	}
 	if called {

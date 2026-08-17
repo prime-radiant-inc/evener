@@ -542,9 +542,8 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	}()
 
 	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{
-		Ref:            appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		ExpectedTurnID: "turn_1",
-		Input:          []appwire.InputItem{{Type: "text", Text: "go check this"}},
+		Ref:   appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Input: []appwire.InputItem{{Type: "text", Text: "go check this"}},
 	}); err == nil {
 		t.Fatal("expected error from TurnSteer")
 	}

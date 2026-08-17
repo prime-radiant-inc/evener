@@ -71,8 +71,11 @@ const (
 	clientMutationDispositionJoined   clientMutationDisposition = "joined"
 )
 
+// clientMutationPreconditions records what a mutation was conditioned on, so a
+// retry can be recognised as the same request. No turn id appears here because
+// control is session-scoped: it applies to whatever the session is running, and
+// the only preconditions left name a real object rather than a moment in time.
 type clientMutationPreconditions struct {
-	ExpectedTurnID        string  `json:"expected_turn_id,omitempty"`
 	ExpectedEntryID       string  `json:"expected_entry_id,omitempty"`
 	ExpectedQueueRevision *uint64 `json:"expected_queue_revision,omitempty"`
 }
@@ -436,41 +439,29 @@ func (s *Session) InterruptClientMutation(
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
-	// A session-scoped interrupt stops whatever is running, so its precondition
-	// is the fact the wire publishes as the thread's status rather than an id
-	// the client may not hold. Sampled here, outside the store serializer,
-	// because WireState reaches for the session lock, the input queue and the
-	// notification set, and the serializer must never wait on any of those. The
-	// turn can settle between this sample and the fence below; a Stop pressed as
-	// its turn ended then cancels nothing, which is the outcome it asked for.
+	// Stop cancels whatever is running, so its precondition is the fact the wire
+	// publishes as the thread's status rather than an id the client may not
+	// hold. Sampled here, outside the store serializer, because WireState
+	// reaches for the session lock, the input queue and the notification set,
+	// and the serializer must never wait on any of those. The turn can settle
+	// between this sample and the fence below; a Stop pressed as its turn ended
+	// then cancels nothing, which is the outcome it asked for.
 	sessionProcessing := s.WireState() == string(SessionProcessing)
 	lookup, err := s.clientMutations.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if !params.InterruptRunningTurn && params.ExpectedTurnID == "" {
-			rejectClientMutation(record, appwire.InvalidParams("expectedTurnId is required"))
-			return nil
-		}
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is already pending"))
 			return nil
 		}
-		// The fence records the turn this interrupt is actually cancelling
-		// either way. The session-scoped form takes the durable name instead of
-		// the client's, and takes the empty name when the running turn has none
-		// — an interrupt that matches no pending execution, which is correct:
-		// the cancellation is what ends the turn, and there is no accepted input
-		// to mark interrupted.
-		target := params.ExpectedTurnID
-		if params.InterruptRunningTurn {
-			if !sessionProcessing {
-				rejectClientMutation(record, appwire.Conflict("session is not processing"))
-				return nil
-			}
-			target = snapshot.ActiveTurnID
-		} else if snapshot.ActiveTurnID != params.ExpectedTurnID {
-			rejectClientMutation(record, appwire.Conflict("turn is not active"))
+		if !sessionProcessing {
+			rejectClientMutation(record, appwire.Conflict("session is not processing"))
 			return nil
 		}
+		// The fence records the turn this interrupt is actually cancelling,
+		// which is the durable name of whatever was running -- and the empty
+		// name when that turn had none. An interrupt that matches no pending
+		// execution is correct there: the cancellation is what ends such a turn,
+		// and there is no accepted input to mark interrupted.
+		target := snapshot.ActiveTurnID
 		record.StableTurnID = target
 		record.ExecutionState = "interruptRequested"
 		snapshot.InterruptFence = &clientMutationInterruptFence{

@@ -105,7 +105,6 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   firstTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
@@ -119,7 +118,6 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	queueReceipt, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   firstTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: queuedText}},
 	})
 	if err != nil {
@@ -164,7 +162,6 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   secondTurn,
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt against the in-flight turn: %v", err)
@@ -255,7 +252,6 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   goalTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
@@ -278,7 +274,6 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   goalTurn,
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt against goal continuation turn %q: %v", goalTurn, err)
@@ -394,7 +389,6 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   notificationTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
 	})
 	if err != nil {
@@ -417,7 +411,6 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	interruptReceipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   notificationTurn,
 	})
 	if err != nil {
 		t.Fatalf("turn/interrupt against notification turn %q: %v", notificationTurn, err)

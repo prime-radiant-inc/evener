@@ -110,7 +110,6 @@ func TestClientMutationStore_SameIDPayloadMismatch(t *testing.T) {
 	store := newTestClientMutationStore(t, clientMutationFaults{})
 	original := testClientMutationRequest(t, "turn/queue", "mutation-1", appwire.TurnQueueParams{
 		ClientMutationID: "mutation-1",
-		ExpectedTurnID:   "turn-1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "first"}},
 	})
 	reserved, err := store.reserve(original)
@@ -127,7 +126,6 @@ func TestClientMutationStore_SameIDPayloadMismatch(t *testing.T) {
 			name: "different payload",
 			request: testClientMutationRequest(t, "turn/queue", "mutation-1", appwire.TurnQueueParams{
 				ClientMutationID: "mutation-1",
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: "different"}},
 			}),
 		},
@@ -155,7 +153,6 @@ func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testin
 	}
 	request := testClientMutationRequest(t, "turn/steer", "mutation-1", appwire.TurnSteerParams{
 		ClientMutationID: "mutation-1",
-		ExpectedTurnID:   "turn-1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "too late"}},
 	})
 	reserved, err := store.reserve(request)
@@ -1159,7 +1156,6 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 	}
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-barrier",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	cancelSignaled := make(chan struct{})
 	serializerReleased := make(chan bool, 1)
@@ -1200,7 +1196,6 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 	<-retryJoined
 	queuedDuringFence := appwire.TurnQueueParams{
 		ClientMutationID: "queue-during-interrupt-fence",
-		ExpectedTurnID:   started.Turn.ID,
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not pass fence"}},
 	}
 	if _, err := sess.clientMutationQueue(queuedDuringFence); err == nil {
@@ -1298,7 +1293,6 @@ func TestClientMutation_InterruptCrashAfterFenceRecoversTerminalReceipt(t *testi
 	sess.clientMutations.faults.AfterReservation = func() error { return injected }
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-crash-after-fence",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	canceled := false
 	if _, err := lifecycle.InterruptClientMutation(context.Background(), interrupt, func() {
@@ -1378,7 +1372,6 @@ func TestClientMutation_InterruptReservationFaultSameProcessRetryTakesOverAndCan
 	}
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-same-process-takeover",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	cancelCalls := 0
 	if _, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
@@ -1426,7 +1419,6 @@ func TestClientMutation_InterruptAcceptedStartFallbackTerminalizesTargetAtomical
 	}
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-accepted-start",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	cancelCalls := 0
 	response, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
@@ -1477,7 +1469,6 @@ func TestClientMutation_InterruptPostSignalEffectFailureDirectRetryDoesNotCancel
 	defer sess.Close()
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-post-signal-direct",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	injected := errors.New("interrupt terminal effect write failed")
 	faulted := false
@@ -1527,7 +1518,6 @@ func TestClientMutation_InterruptPostSignalEffectFailureJoinedRetryDoesNotCancel
 	defer sess.Close()
 	interrupt := appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-post-signal-joined",
-		ExpectedTurnID:   started.Turn.ID,
 	}
 	injected := errors.New("joined interrupt terminal effect write failed")
 	faulted := false
@@ -1686,7 +1676,6 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 		t.Helper()
 		if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 			ClientMutationID: id,
-			ExpectedTurnID:   activeTurn,
 			Input:            text,
 		}); err != nil {
 			t.Fatalf("seed queue entry: %v", err)
@@ -1713,7 +1702,7 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 				t.Helper()
 				setTestClientMutationActiveTurn(t, sess, activeTurn)
 				resp, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
-					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Input: text,
+					ClientMutationID: "subject", Input: text,
 				})
 				if err != nil {
 					t.Fatalf("AcceptClientMutationSteer: %v", err)
@@ -1727,7 +1716,7 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 				t.Helper()
 				setTestClientMutationActiveTurn(t, sess, activeTurn)
 				resp, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
-					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Input: text,
+					ClientMutationID: "subject", Input: text,
 				})
 				if err != nil {
 					t.Fatalf("AcceptClientMutationQueue: %v", err)
@@ -1742,7 +1731,6 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 				setTestClientMutationActiveTurn(t, sess, activeTurn)
 				resp, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 					ClientMutationID:      "subject",
-					ExpectedTurnID:        activeTurn,
 					ExpectedQueueRevision: 0,
 					Input:                 text,
 				})
@@ -1759,7 +1747,7 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 				setTestClientMutationActiveTurn(t, sess, activeTurn)
 				queueOne(t, sess, "queued-for-promote")
 				resp, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
-					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Index: 0,
+					ClientMutationID: "subject", Index: 0,
 				})
 				if err != nil {
 					t.Fatalf("AcceptClientMutationPromoteQueuedAsSteer: %v", err)
@@ -1771,14 +1759,15 @@ func clientMutationProjectionCases() []clientMutationProjectionCase {
 			method: "interrupt", want: appwire.MutationProjectionReflected, projected: false,
 			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
 				t.Helper()
-				started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+				// Started for its side effect: an interrupt needs a turn running.
+				_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 					ClientMutationID: "start-before-interrupt", Input: text,
 				})
 				if err != nil {
 					t.Fatalf("AcceptClientMutationStart: %v", err)
 				}
 				resp, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-					ClientMutationID: "subject", ExpectedTurnID: started.Turn.ID,
+					ClientMutationID: "subject",
 				}, func() {})
 				if err != nil {
 					t.Fatalf("InterruptClientMutation: %v", err)

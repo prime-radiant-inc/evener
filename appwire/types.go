@@ -1020,39 +1020,27 @@ type TurnStartResponse struct {
 	Receipt MutationReceipt `json:"receipt"`
 }
 
+// Control mutations are session-scoped: they apply to whatever the session is
+// running rather than to a turn the client names (Jesse, 2026-08-16). By the
+// time a user's intent reaches the daemon the session may already be on a later
+// turn, and that is fine — the intent should apply as soon as possible instead
+// of bouncing. So none of the types below carries an expected turn id, and the
+// preconditions that survive are the ones naming a real object: the queue
+// revision drainAsSteer swaps against, and the entry promoteQueuedAsSteer moves.
 type TurnSteerParams struct {
 	Ref              string      `json:"ref,omitempty"`
 	ThreadID         string      `json:"threadId,omitempty"`
 	ClientMutationID string      `json:"clientMutationId"`
-	ExpectedTurnID   string      `json:"expectedTurnId"`
 	Input            []InputItem `json:"input,omitempty"`
 }
 
-// TurnInterruptParams cancels a running turn. It has two forms, and the
-// difference is which turn the client is entitled to name.
-//
-// The default form is a compare-and-commit against ExpectedTurnID: the daemon
-// cancels that turn or refuses. It is the right form whenever the client holds
-// a turn id, because it can never cancel a turn the user was not looking at.
-//
-// InterruptRunningTurn is the escape hatch for the moments when no id the
-// client holds is the running turn's — a turn the session started for itself,
-// a boundary between two turns of one drain, a cold client that has seen no
-// turn yet. It asks the daemon to cancel whatever is running, and the daemon
-// records the id it actually cancelled in the receipt, so a Stop is never
-// refused merely because the user could not name their target.
+// TurnInterruptParams cancels whatever turn the session is running. The receipt
+// names the turn actually cancelled, which is how a client learns what it
+// stopped without having had to name it first.
 type TurnInterruptParams struct {
 	Ref              string `json:"ref,omitempty"`
 	ThreadID         string `json:"threadId,omitempty"`
 	ClientMutationID string `json:"clientMutationId"`
-	// ExpectedTurnID is required unless InterruptRunningTurn is set, and is
-	// ignored when it is: the two forms differ precisely in whether the client
-	// gets to choose the target. It is omitempty so the session-scoped form can
-	// leave it out rather than send an empty string every layer rejects;
-	// ValidateMutationParams still requires it of the targeted form, from its
-	// own list, so this tag cannot weaken that.
-	ExpectedTurnID       string `json:"expectedTurnId,omitempty"`
-	InterruptRunningTurn bool   `json:"interruptRunningTurn,omitempty"`
 }
 
 // TurnQueueParams queues a user message during a running turn for processing
@@ -1061,7 +1049,6 @@ type TurnInterruptParams struct {
 type TurnQueueParams struct {
 	Ref              string      `json:"ref"`
 	ClientMutationID string      `json:"clientMutationId"`
-	ExpectedTurnID   string      `json:"expectedTurnId"`
 	Input            []InputItem `json:"input,omitempty"`
 }
 
@@ -1135,7 +1122,6 @@ type GoalSetResponse struct {
 type TurnDrainAsSteerParams struct {
 	Ref                   string      `json:"ref"`
 	ClientMutationID      string      `json:"clientMutationId"`
-	ExpectedTurnID        string      `json:"expectedTurnId"`
 	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
 	Input                 []InputItem `json:"input,omitempty"`
 }
@@ -1160,7 +1146,6 @@ type TurnPromoteQueuedAsSteerParams struct {
 	Ref              string `json:"ref"`
 	Index            int    `json:"index"`
 	ClientMutationID string `json:"clientMutationId"`
-	ExpectedTurnID   string `json:"expectedTurnId"`
 	ExpectedEntryID  string `json:"expectedEntryId"`
 }
 

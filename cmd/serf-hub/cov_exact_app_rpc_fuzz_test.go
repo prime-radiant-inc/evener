@@ -115,12 +115,12 @@ func exactDispatchFailures(t *testing.T, server *appserver.Server) {
 		{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "missing:x", Input: badImage}},
 		{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
 		{appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
-		{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x"}},
+		{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
 		{appwire.MethodSerfSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{Ref: "missing:x"}},
-		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x", Input: badImage}},
-		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x"}},
-		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "missing:x", Input: badImage}},
-		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "missing:x"}},
+		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "missing:x", Input: badImage}},
+		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
+		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "missing:x", Input: badImage}},
+		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "missing:x"}},
 		{appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "missing:x"}},
 		{appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "missing:x"}},
 		{appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: "missing:x"}},
@@ -160,8 +160,8 @@ func FuzzExactAppRPC(f *testing.F) {
 				p any
 			}{
 				{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}}, {appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}},
-				{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "remote:thread"}}, {appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}},
-				{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "remote:thread"}}, {appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "remote:thread"}},
+				{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}}, {appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}},
+				{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: "remote:thread"}}, {appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "remote:thread"}},
 				{appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "remote:thread"}}, {appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: "remote:thread"}},
 				{appwire.MethodSerfThreadNameSet, appwire.ThreadNameSetParams{Ref: "remote:thread"}}, {appwire.MethodGoalSet, appwire.GoalSetParams{Ref: "remote:thread"}},
 			} {

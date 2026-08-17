@@ -629,48 +629,6 @@ func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	var steered []string
-	srv.SetSteerFunc(func(text string) {
-		steered = append(steered, text)
-	})
-	installProjectedMutationCallbacksForTest(srv)
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		Ref:   "local:th_1",
-		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
-	}))
-	startResp := start.Response.Result.(appwire.TurnStartResponse)
-
-	bad := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID + "-stale",
-		Input:          []appwire.InputItem{{Type: "text", Text: "wrong turn"}},
-	}))
-	if bad.Kind() != appwire.MessageError {
-		t.Fatalf("bad steer response=%v", bad.Kind())
-	}
-	if len(steered) != 0 {
-		t.Fatalf("stale steer invoked handler: %v", steered)
-	}
-
-	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID,
-		Input:          []appwire.InputItem{{Type: "text", Text: "right turn"}},
-	}))
-	if good.Kind() != appwire.MessageResponse {
-		t.Fatalf("good steer response=%v error=%+v", good.Kind(), good.Error)
-	}
-	if len(steered) != 1 || steered[0] != "right turn" {
-		t.Fatalf("steered=%v", steered)
-	}
-}
-
 func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
@@ -688,11 +646,10 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
-	startResp := start.Response.Result.(appwire.TurnStartResponse)
+	_ = start.Response.Result.(appwire.TurnStartResponse)
 
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID,
+		Ref: "local:th_1",
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "look at this"},
 			{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")},
@@ -724,12 +681,11 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
-	startResp := start.Response.Result.(appwire.TurnStartResponse)
+	_ = start.Response.Result.(appwire.TurnStartResponse)
 
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID,
-		Input:          []appwire.InputItem{{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")}},
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("steer response=%v, want error", resp.Kind())
@@ -742,26 +698,10 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 	}
 }
 
-func TestServerAppWireTurnSteerRequiresTurnID(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) {})
-
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
-		Ref:   "local:th_1",
-		Input: []appwire.InputItem{{Type: "text", Text: "missing turn"}},
-	}))
-	if resp.Kind() != appwire.MessageError {
-		t.Fatalf("steer without turn id response=%v", resp.Kind())
-	}
-	if resp.Error.Error.Code != appwire.CodeInvalidParams {
-		t.Fatalf("error=%+v", resp.Error.Error)
-	}
-}
-
-func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
+// TestServerAppWireTurnInterruptCancelsTheRunningTurn covers the legacy
+// SetCancelFunc path (not RetrySafeTurnFunctions): an interrupt names no turn,
+// so what it must do is cancel whatever is running -- exactly once.
+func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	cancelled := 0
@@ -774,27 +714,14 @@ func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
-	startResp := start.Response.Result.(appwire.TurnStartResponse)
+	_ = start.Response.Result.(appwire.TurnStartResponse)
 
-	missing := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
-		Ref: "local:th_1",
+	stopped := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		ClientMutationID: "test-mutation",
+		Ref:              "local:th_1",
 	}))
-	if missing.Kind() != appwire.MessageError || missing.Error.Error.Code != appwire.CodeInvalidParams {
-		t.Fatalf("interrupt without turn id=%+v", missing)
-	}
-	stale := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID + "-stale",
-	}))
-	if stale.Kind() != appwire.MessageError || stale.Error.Error.Code != appwire.CodeConflict {
-		t.Fatalf("stale interrupt=%+v", stale)
-	}
-	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(5), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
-		Ref:            "local:th_1",
-		ExpectedTurnID: startResp.Turn.ID,
-	}))
-	if good.Kind() != appwire.MessageResponse {
-		t.Fatalf("good interrupt=%+v", good)
+	if stopped.Kind() != appwire.MessageResponse {
+		t.Fatalf("interrupt=%+v", stopped)
 	}
 	if cancelled != 1 {
 		t.Fatalf("cancelled=%d, want 1", cancelled)
@@ -1539,8 +1466,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref:   "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1567,8 +1493,7 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref:   "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1646,8 +1571,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref:   "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1667,8 +1591,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
-		Ref:   "local:th_1",
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1692,7 +1615,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1716,7 +1639,7 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1744,7 +1667,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1776,7 +1699,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}, {
 			Type:      "image",

@@ -65,15 +65,15 @@ func TestClientMutation_InputShapesMatchDaemonBoundary(t *testing.T) {
 					return err
 				}},
 				{"steer", func() error {
-					_, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer", ExpectedTurnID: "turn_1", Input: invalid.input})
+					_, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer", Input: invalid.input})
 					return err
 				}},
 				{"queue", func() error {
-					_, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "queue", ExpectedTurnID: "turn_1", Input: invalid.input})
+					_, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "queue", Input: invalid.input})
 					return err
 				}},
 				{"drain", func() error {
-					_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", ExpectedTurnID: "turn_1", Input: invalid.input})
+					_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", Input: invalid.input})
 					return err
 				}},
 			}
@@ -100,7 +100,6 @@ func TestClientMutation_DrainRejectsSemanticallyEmptyExtraInputWithEmptyQueue(t 
 
 	_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "empty-drain",
-		ExpectedTurnID:        "turn_1",
 		ExpectedQueueRevision: 0,
 		Input:                 []appwire.InputItem{{Type: "text", Text: " \t\n "}},
 	})
@@ -136,7 +135,7 @@ func TestClientMutation_CanonicalTextAndImagePayloadsArePreserved(t *testing.T) 
 		sess := newQueuePersistTestSession(t, t.TempDir())
 		defer sess.Close()
 		setTestClientMutationActiveTurn(t, sess, "turn_1")
-		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "canonical-steer", ExpectedTurnID: "turn_1", Input: input}); err != nil {
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "canonical-steer", Input: input}); err != nil {
 			t.Fatalf("AcceptClientMutationSteer: %v", err)
 		}
 		assertInput(t, sess.clientMutations.snapshot().PendingExecutions["canonical-steer"].Input)
@@ -145,7 +144,7 @@ func TestClientMutation_CanonicalTextAndImagePayloadsArePreserved(t *testing.T) 
 		sess := newQueuePersistTestSession(t, t.TempDir())
 		defer sess.Close()
 		setTestClientMutationActiveTurn(t, sess, "turn_1")
-		if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "canonical-queue", ExpectedTurnID: "turn_1", Input: input}); err != nil {
+		if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "canonical-queue", Input: input}); err != nil {
 			t.Fatalf("AcceptClientMutationQueue: %v", err)
 		}
 		assertInput(t, sess.clientMutations.snapshot().InputQueue[0].Input)
@@ -175,7 +174,6 @@ func TestClientMutation_QueueRejectsStaleTurnDurably(t *testing.T) {
 	setTestClientMutationActiveTurn(t, sess, "turn-current")
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "mutation-stale",
-		ExpectedTurnID:   "turn-stale",
 		Input:            []appwire.InputItem{{Type: "text", Text: "must not queue"}},
 	}
 
@@ -206,7 +204,6 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 	setTestClientMutationActiveTurn(t, sess, "turn-current")
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "rejected-image",
-		ExpectedTurnID:   "turn-stale",
 		Input: []appwire.InputItem{{
 			Type:      "image",
 			MediaType: "image/png",
@@ -235,7 +232,6 @@ func TestClientMutation_QueueReplayDoesNotDuplicateEffect(t *testing.T) {
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "mutation-replay",
-		ExpectedTurnID:   "turn-1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "once"}},
 	}
 
@@ -276,7 +272,6 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 			<-start
 			_, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 				ClientMutationID: id,
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: id}},
 			})
 			errs <- err
@@ -311,7 +306,6 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 		}
 		_, replayErr := sess.clientMutationQueue(appwire.TurnQueueParams{
 			ClientMutationID: id,
-			ExpectedTurnID:   "turn-1",
 			Input:            []appwire.InputItem{{Type: "text", Text: id}},
 		})
 		var firstShape appwire.WireError
@@ -343,7 +337,6 @@ func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *test
 		<-start
 		_, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 			ClientMutationID: "queue-final-slot",
-			ExpectedTurnID:   "turn-1",
 			Input:            []appwire.InputItem{{Type: "text", Text: "queued"}},
 		})
 		results <- err
@@ -465,7 +458,6 @@ func TestClientMutation_DrainRejectsStaleQueueRevisionDurably(t *testing.T) {
 
 	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "drain-stale",
-		ExpectedTurnID:        "turn-1",
 		ExpectedQueueRevision: 0,
 	})
 	assertClientMutationConflict(t, err)
@@ -491,7 +483,6 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 
 	_, err := sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "drain-boundaries",
-		ExpectedTurnID:        "turn-1",
 		ExpectedQueueRevision: revision,
 		Input:                 []appwire.InputItem{{Type: "text", Text: "charlie"}},
 	})
@@ -522,7 +513,6 @@ func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 	_, err := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-stale",
-		ExpectedTurnID:   "turn-1",
 		ExpectedEntryID:  staleID,
 	})
 	assertClientMutationConflict(t, err)
@@ -539,7 +529,6 @@ func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 			setTestClientMutationActiveTurn(t, sess, "turn-1")
 			queueParams := appwire.TurnQueueParams{
 				ClientMutationID: "queue-source-" + transform,
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: "source payload"}},
 			}
 			queued, err := sess.clientMutationQueue(queueParams)
@@ -559,13 +548,11 @@ func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 				_, err = sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
 					Index:            0,
 					ClientMutationID: "promote-transform",
-					ExpectedTurnID:   "turn-1",
 					ExpectedEntryID:  entryID,
 				})
 			case "drain":
 				_, err = sess.clientMutationDrain(appwire.TurnDrainAsSteerParams{
 					ClientMutationID:      "drain-transform",
-					ExpectedTurnID:        "turn-1",
 					ExpectedQueueRevision: 1,
 				})
 			}
@@ -620,7 +607,6 @@ func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) 
 	if _, err := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-first",
-		ExpectedTurnID:   "turn-1",
 		ExpectedEntryID:  firstID,
 	}); err != nil {
 		t.Fatalf("first promote: %v", err)
@@ -631,7 +617,6 @@ func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) 
 	_, secondErr := sess.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
 		Index:            0,
 		ClientMutationID: "promote-second",
-		ExpectedTurnID:   "turn-1",
 		ExpectedEntryID:  firstID,
 	})
 	assertClientMutationConflict(t, secondErr)
@@ -680,7 +665,6 @@ func TestClientMutation_QueueCrashBoundariesDoNotDuplicateEffect(t *testing.T) {
 			})
 			params := appwire.TurnQueueParams{
 				ClientMutationID: "queue-crash",
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: "once"}},
 			}
 
@@ -715,7 +699,6 @@ func TestClientMutation_QueueRecoveryRunsAfterReservationSeamOnTakeover(t *testi
 	}
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-takeover-seam",
-		ExpectedTurnID:   "turn-1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "once"}},
 	}
 
@@ -744,12 +727,10 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 			setTestClientMutationActiveTurn(t, sess, "turn-1")
 			alpha := appwire.TurnQueueParams{
 				ClientMutationID: "alpha-" + transform,
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: "alpha"}},
 			}
 			bravo := appwire.TurnQueueParams{
 				ClientMutationID: "bravo-" + transform,
-				ExpectedTurnID:   "turn-1",
 				Input:            []appwire.InputItem{{Type: "text", Text: "bravo"}},
 			}
 			alphaResponse, err := sess.clientMutationQueue(alpha)
@@ -774,7 +755,6 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 			case "drain":
 				params := appwire.TurnDrainAsSteerParams{
 					ClientMutationID:      "drain-reserved",
-					ExpectedTurnID:        "turn-1",
 					ExpectedQueueRevision: 2,
 				}
 				retry = func() error {
@@ -785,7 +765,6 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				params := appwire.TurnPromoteQueuedAsSteerParams{
 					Index:            1,
 					ClientMutationID: "promote-reserved",
-					ExpectedTurnID:   "turn-1",
 					ExpectedEntryID:  bravoResponse.Receipt.QueueEntryIDs[0],
 				}
 				retry = func() error {
@@ -820,7 +799,6 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				}
 				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "charlie-drain",
-					ExpectedTurnID:   "turn-1",
 					Input:            []appwire.InputItem{{Type: "text", Text: "charlie"}},
 				}); err != nil {
 					t.Fatalf("intervening queue: %v", err)
@@ -845,7 +823,6 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 				}
 				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 					ClientMutationID: "charlie-" + transform,
-					ExpectedTurnID:   "turn-1",
 					Input:            []appwire.InputItem{{Type: "text", Text: "charlie"}},
 				}); err != nil {
 					t.Fatalf("intervening queue: %v", err)
@@ -1370,7 +1347,6 @@ func TestClientMutation_QueueRestoreFencesPreRestartRevision(t *testing.T) {
 	setTestClientMutationActiveTurn(t, restored, "turn-1")
 	_, err := restored.clientMutationDrain(appwire.TurnDrainAsSteerParams{
 		ClientMutationID:      "stale-pre-restart-drain",
-		ExpectedTurnID:        "turn-1",
 		ExpectedQueueRevision: preRestartRevision,
 	})
 	assertClientMutationConflict(t, err)

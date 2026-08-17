@@ -42,11 +42,10 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 		functions.Steer = func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 			text, images := inputFromItems("", params.Input)
 			s.mu.RLock()
-			activeTurnID := s.appActiveTurnID
 			reservedTurnID := s.appReservedTurnID
 			processing := s.processing
 			s.mu.RUnlock()
-			if !processing && strings.TrimSpace(reservedTurnID) == "" || params.ExpectedTurnID != activeTurnID {
+			if !processing && strings.TrimSpace(reservedTurnID) == "" {
 				return appwire.TurnSteerResponse{}, appwire.Conflict("turn is not active")
 			}
 			if len(images) > 0 && steerImages == nil {
@@ -119,12 +118,17 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 		}
 	}
 	if cancel != nil {
-		functions.Interrupt = func(_ context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+		functions.Interrupt = func(_ context.Context, _ appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+			// An interrupt names no turn, so the precondition is whether
+			// anything is running -- the same signal the steer fake uses, since
+			// this harness marks a started turn by reserving its id rather than
+			// by flipping processing.
 			s.mu.RLock()
-			activeTurnID := s.appActiveTurnID
+			reservedTurnID := s.appReservedTurnID
+			processing := s.processing
 			s.mu.RUnlock()
-			if params.ExpectedTurnID != activeTurnID {
-				return appwire.TurnInterruptResponse{}, appwire.Conflict("turn is not active")
+			if !processing && strings.TrimSpace(reservedTurnID) == "" {
+				return appwire.TurnInterruptResponse{}, appwire.Conflict("session is not processing")
 			}
 			cancel()
 			return appwire.TurnInterruptResponse{}, nil

@@ -81,7 +81,6 @@ func TestE2E_ControlInvariantAcrossATurnBoundary(t *testing.T) {
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   firstTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: queuedText}},
 	}); err != nil {
 		t.Fatalf("turn/queue: %v", err)
@@ -174,7 +173,6 @@ func TestE2E_ControlInvariantAcrossATurnBoundary(t *testing.T) {
 	receipt, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		ExpectedTurnID:   published,
 	})
 	if err != nil {
 		t.Fatalf("STOP IS BROKEN AT THE TURN BOUNDARY: thread/read published activeTurnId=%q with status active, and turn/interrupt against that very id failed: %v", published, err)

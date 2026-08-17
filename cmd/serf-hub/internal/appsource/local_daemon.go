@@ -287,11 +287,6 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	// The session-scoped form names no turn by design; every other form must,
-	// so a Stop cannot silently widen to a turn the user never saw.
-	if !params.InterruptRunningTurn && strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
-	}
 	var out appwire.TurnInterruptResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnInterrupt, params, &out)

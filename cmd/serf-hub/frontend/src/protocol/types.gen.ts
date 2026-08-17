@@ -1367,7 +1367,6 @@ export interface TurnCompletedParams {
 export interface TurnDrainAsSteerParams {
   ref: string;
   clientMutationId: string;
-  expectedTurnId: string;
   expectedQueueRevision: number;
   input?: InputItem[];
 }
@@ -1390,8 +1389,6 @@ export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
-  expectedTurnId?: string;
-  interruptRunningTurn?: boolean;
 }
 
 export interface TurnInterruptResponse {
@@ -1402,7 +1399,6 @@ export interface TurnPromoteQueuedAsSteerParams {
   ref: string;
   index: number;
   clientMutationId: string;
-  expectedTurnId: string;
   expectedEntryId: string;
 }
 
@@ -1413,7 +1409,6 @@ export interface TurnPromoteQueuedAsSteerResponse {
 export interface TurnQueueParams {
   ref: string;
   clientMutationId: string;
-  expectedTurnId: string;
   input?: InputItem[];
 }
 
@@ -1443,7 +1438,6 @@ export interface TurnSteerParams {
   ref?: string;
   threadId?: string;
   clientMutationId: string;
-  expectedTurnId: string;
   input?: InputItem[];
 }
 

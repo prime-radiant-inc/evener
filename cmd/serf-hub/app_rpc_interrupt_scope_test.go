@@ -64,32 +64,17 @@ func TestHubRPCRelaysSessionScopedInterrupt(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	var targeted appwire.TurnInterruptResponse
+	var stopped appwire.TurnInterruptResponse
 	if err := client.Request(context.Background(), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:              "local:th_1",
-		ClientMutationID: "interrupt-targeted",
-	}, &targeted); err == nil || !strings.Contains(err.Error(), "expectedTurnId is required") {
-		t.Fatalf("targeted interrupt with no expectedTurnId = %v, want expectedTurnId is required", err)
-	}
-	if len(seen) != 0 {
-		t.Fatalf("targeted interrupt with no expectedTurnId reached the daemon: %#v", seen)
-	}
-
-	var scoped appwire.TurnInterruptResponse
-	if err := client.Request(context.Background(), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:                  "local:th_1",
-		ClientMutationID:     "interrupt-session-scoped",
-		InterruptRunningTurn: true,
-	}, &scoped); err != nil {
-		t.Fatalf("session-scoped interrupt: %v", err)
+		ClientMutationID: "interrupt-session-scoped",
+	}, &stopped); err != nil {
+		t.Fatalf("interrupt naming no turn: %v", err)
 	}
 	if len(seen) != 1 {
-		t.Fatalf("session-scoped interrupt reached the daemon %d times, want 1", len(seen))
+		t.Fatalf("interrupt reached the daemon %d times, want 1", len(seen))
 	}
-	if !seen[0].InterruptRunningTurn || seen[0].ExpectedTurnID != "" {
-		t.Fatalf("relayed session-scoped interrupt params = %#v", seen[0])
-	}
-	if scoped.Receipt.TurnID != "turn_m1" {
-		t.Fatalf("session-scoped interrupt receipt = %#v, want the turn the daemon cancelled", scoped.Receipt)
+	if stopped.Receipt.TurnID != "turn_m1" {
+		t.Fatalf("interrupt receipt = %#v, want the turn the daemon cancelled", stopped.Receipt)
 	}
 }

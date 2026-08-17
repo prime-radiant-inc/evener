@@ -64,7 +64,6 @@ func TestSteerLandsWhenItsTurnAlreadyEnded(t *testing.T) {
 	// No turn is running: the one the client aimed at has ended.
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-1",
-		ExpectedTurnID:   "turn_m1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "also check the tests"}},
 	}); err != nil {
 		t.Fatalf("a steer whose turn ended under it was refused: %v", err)
@@ -96,7 +95,6 @@ func TestSteerWakesAnIdleSessionToDeliverItself(t *testing.T) {
 
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-2",
-		ExpectedTurnID:   "turn_m1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "also check the tests"}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
@@ -131,7 +129,6 @@ func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed a running turn: %v", err)
 	}
-	running := s.clientMutations.snapshot().ActiveTurnID
 
 	var mu sync.Mutex
 	notifies := 0
@@ -143,7 +140,6 @@ func TestSteerWakesEvenWhileATurnIsRunning(t *testing.T) {
 
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-running",
-		ExpectedTurnID:   running,
 		Input:            []appwire.InputItem{{Type: "text", Text: "mid-turn steer"}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationSteer against the running turn: %v", err)
@@ -171,7 +167,6 @@ func TestSteerRetryStillProvokesDelivery(t *testing.T) {
 
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "cm-steer-retry",
-		ExpectedTurnID:   "turn_m1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "retried steer"}},
 	}
 	if _, err := s.AcceptClientMutationSteer(params); err != nil {
@@ -194,32 +189,5 @@ func TestSteerRetryStillProvokesDelivery(t *testing.T) {
 	defer mu.Unlock()
 	if notifies == 0 {
 		t.Fatal("the retry replayed the record and woke nothing; a steer stranded by a crash stays stranded no matter how often the client retries")
-	}
-}
-
-// TestSteerStillRefusesADifferentRunningTurn keeps the relaxation narrow. When
-// a turn IS running and the client names a different one, its view is stale in
-// a way that matters -- it is steering something it is not looking at -- and
-// the compare-and-commit precondition still applies.
-func TestSteerStillRefusesADifferentRunningTurn(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		snapshot.NextTurnSequence++
-		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
-		return nil
-	}); err != nil {
-		t.Fatalf("seed a running turn: %v", err)
-	}
-
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "cm-steer-3",
-		ExpectedTurnID:   "turn_m99",
-		Input:            []appwire.InputItem{{Type: "text", Text: "steer the wrong turn"}},
-	}); err == nil {
-		t.Fatal("a steer naming a turn that is not the running one was accepted; the precondition still has a job while a turn is in flight")
 	}
 }

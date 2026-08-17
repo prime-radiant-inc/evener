@@ -181,7 +181,6 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 	request := testClientMutationRequest(t, "turn/queue", "mutation-1", appwire.TurnQueueParams{
 		Ref:              "thread-ref",
 		ClientMutationID: "mutation-1",
-		ExpectedTurnID:   "turn-2",
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "inspect this"},
 			{
@@ -194,7 +193,6 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 		},
 	})
 	request.Preconditions = clientMutationPreconditions{
-		ExpectedTurnID:        "turn-2",
 		ExpectedQueueRevision: uint64Pointer(8),
 	}
 
@@ -227,7 +225,6 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 		snapshot.QueueRevision = 9
 		snapshot.InterruptFence = &clientMutationInterruptFence{
 			ClientMutationID: "interrupt-1",
-			ExpectedTurnID:   "turn-2",
 		}
 		snapshot.PendingExecutions["mutation-1"] = appwire.PendingMutation{
 			ClientMutationID: "mutation-1",
@@ -494,7 +491,7 @@ func TestNewSessionMutationSnapshotUsesSnakeCaseStorageKeys(t *testing.T) {
 	defer sess.Close()
 
 	const mutationID = "fresh-session-mutation"
-	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+	_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: mutationID,
 		Input:            []appwire.InputItem{{Type: "text", Text: "persist me"}},
 	})
@@ -505,7 +502,6 @@ func TestNewSessionMutationSnapshotUsesSnakeCaseStorageKeys(t *testing.T) {
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		Ref:              sess.ID(),
 		ClientMutationID: queuedMutationID,
-		ExpectedTurnID:   started.Turn.ID,
 		Input:            []appwire.InputItem{{Type: "text", Text: "queue me"}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)

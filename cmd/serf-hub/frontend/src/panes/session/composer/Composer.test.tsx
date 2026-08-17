@@ -1022,7 +1022,7 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/steer");
-  expect(call?.params).toMatchObject({ ref: "ref_a", expectedTurnId: "turn_1" });
+  expect(call?.params).toMatchObject({ ref: "ref_a" });
 });
 
 test("with enterToSend on, Shift+Enter is a literal newline and does not steer", async () => {
@@ -1390,7 +1390,6 @@ test("sending recovered text uses current Composer routing and consumes the reco
   // handleDiscoveredMutations call), so it is not projection work to await.
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true));
   expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
-    expectedTurnId: "turn-current",
     input: [{ type: "text", text: "retry me" }],
   });
 });

@@ -215,43 +215,69 @@ func TestJobsCatalogEntries(t *testing.T) {
 	}
 }
 
-// TestSessionScopedInterruptWaivesOnlyItsOwnPrecondition pins the flag-day
-// validator's half of the two interrupt forms: a client that names no turn must
-// say so explicitly, and saying so waives nothing else.
-func TestSessionScopedInterruptWaivesOnlyItsOwnPrecondition(t *testing.T) {
+// TestControlMutationsRequireNoTurnID pins the flag-day validator's half of the
+// session-scoped rule: control applies to whatever is running, so no control
+// mutation may demand a turn id -- while the identity every retry-safe mutation
+// needs, and the preconditions that name a real object, are still required.
+func TestControlMutationsRequireNoTurnID(t *testing.T) {
 	tests := []struct {
 		name    string
+		method  string
 		params  string
 		wantErr bool
 	}{
 		{
-			name:   "session scoped needs no expected turn",
-			params: `{"clientMutationId":"m1","interruptRunningTurn":true}`,
+			name:   "interrupt needs no expected turn",
+			method: MethodTurnInterrupt,
+			params: `{"clientMutationId":"m1"}`,
 		},
 		{
-			name:    "targeted still needs its expected turn",
+			name:   "steer needs no expected turn",
+			method: MethodTurnSteer,
+			params: `{"clientMutationId":"m1"}`,
+		},
+		{
+			name:   "queue needs no expected turn",
+			method: MethodTurnQueue,
+			params: `{"clientMutationId":"m1"}`,
+		},
+		{
+			name:    "interrupt still needs an identity",
+			method:  MethodTurnInterrupt,
+			params:  `{}`,
+			wantErr: true,
+		},
+		{
+			name:   "drain needs the queue revision it swaps against, not a turn",
+			method: MethodTurnDrainAsSteer,
+			params: `{"clientMutationId":"m1","expectedQueueRevision":3}`,
+		},
+		{
+			name:    "drain without its queue revision is still refused",
+			method:  MethodTurnDrainAsSteer,
 			params:  `{"clientMutationId":"m1"}`,
 			wantErr: true,
 		},
 		{
-			name:    "opting out explicitly still needs its expected turn",
-			params:  `{"clientMutationId":"m1","interruptRunningTurn":false}`,
-			wantErr: true,
+			name:   "promote needs the entry it moves, not a turn",
+			method: MethodTurnPromoteQueuedAsSteer,
+			params: `{"clientMutationId":"m1","expectedEntryId":"qe_1"}`,
 		},
 		{
-			name:    "session scoped still needs an identity",
-			params:  `{"interruptRunningTurn":true}`,
+			name:    "promote without its entry is still refused",
+			method:  MethodTurnPromoteQueuedAsSteer,
+			params:  `{"clientMutationId":"m1"}`,
 			wantErr: true,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateMutationParams(MethodTurnInterrupt, json.RawMessage(tc.params))
+			err := ValidateMutationParams(tc.method, json.RawMessage(tc.params))
 			if tc.wantErr && err == nil {
-				t.Fatal("invalid interrupt shape accepted")
+				t.Fatal("invalid mutation shape accepted")
 			}
 			if !tc.wantErr && err != nil {
-				t.Fatalf("valid interrupt shape rejected: %v", err)
+				t.Fatalf("valid mutation shape rejected: %v", err)
 			}
 		})
 	}

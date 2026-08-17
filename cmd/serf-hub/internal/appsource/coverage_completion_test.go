@@ -68,19 +68,19 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if _, err := source.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err != nil {
+	if _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn"}); err != nil {
+	if _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err != nil {
+	if _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref}); err != nil {
+	if _, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
@@ -223,15 +223,15 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		},
 		"resolve": func() error { return s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}) },
 		"interrupt": func() error {
-			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref})
+			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref})
 			return err
 		},
 		"queue": func() error {
-			_, err := s.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref})
+			_, err := s.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: ref})
 			return err
 		},
 		"drain": func() error {
-			_, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref})
+			_, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedQueueRevision: 0, Ref: ref})
 			return err
 		},
 		"compact":  func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
@@ -287,13 +287,13 @@ func fuzzScenarioCodexSourceRemainingRPCSurface(t *testing.T) {
 	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
 		t.Fatal("steer without turn accepted")
 	}
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "hi"}}}); err == nil {
 		t.Fatal("codex steer unexpectedly supported")
 	}
-	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err == nil {
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
 		t.Fatal("interrupt without turn accepted")
 	}
-	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn"}); err == nil {
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
 		t.Fatal("codex interrupt unexpectedly supported")
 	}
 	if err := s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {

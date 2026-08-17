@@ -272,23 +272,20 @@ func TestDeletionFenceRejectsMutationWithTargetDeletedOutcome(t *testing.T) {
 			Input: []appwire.InputItem{{Type: "text", Text: "start"}},
 		}},
 		{appwire.MethodTurnSteer, "mutation-steer-after-delete", appwire.TurnSteerParams{
-			Ref: ref, ClientMutationID: "mutation-steer-after-delete", ExpectedTurnID: "turn-before-delete",
-			Input: []appwire.InputItem{{Type: "text", Text: "steer"}},
+			Ref: ref, ClientMutationID: "mutation-steer-after-delete", Input: []appwire.InputItem{{Type: "text", Text: "steer"}},
 		}},
 		{appwire.MethodTurnInterrupt, "mutation-interrupt-after-delete", appwire.TurnInterruptParams{
-			Ref: ref, ClientMutationID: "mutation-interrupt-after-delete", ExpectedTurnID: "turn-before-delete",
-		}},
+			Ref: ref, ClientMutationID: "mutation-interrupt-after-delete"}},
 		{appwire.MethodTurnQueue, "mutation-queue-after-delete", appwire.TurnQueueParams{
-			Ref: ref, ClientMutationID: "mutation-queue-after-delete", ExpectedTurnID: "turn-before-delete",
-			Input: []appwire.InputItem{{Type: "text", Text: "queue"}},
+			Ref: ref, ClientMutationID: "mutation-queue-after-delete", Input: []appwire.InputItem{{Type: "text", Text: "queue"}},
 		}},
 		{appwire.MethodTurnDrainAsSteer, "mutation-drain-after-delete", appwire.TurnDrainAsSteerParams{
 			Ref: ref, ClientMutationID: "mutation-drain-after-delete",
-			ExpectedTurnID: "turn-before-delete", ExpectedQueueRevision: 1,
+			ExpectedQueueRevision: 1,
 		}},
 		{appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote-after-delete", appwire.TurnPromoteQueuedAsSteerParams{
 			Ref: ref, ClientMutationID: "mutation-promote-after-delete",
-			ExpectedTurnID: "turn-before-delete", ExpectedEntryID: "queue-before-delete",
+			ExpectedEntryID: "queue-before-delete",
 		}},
 		{appwire.MethodTurnCancelQueued, "mutation-cancel-after-delete", appwire.TurnCancelQueuedParams{
 			Ref: ref, ClientMutationID: "mutation-cancel-after-delete",
@@ -5749,11 +5746,11 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 		result any
 	}{
 		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
-		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
-		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt", ExpectedTurnID: "turn_1"}, &appwire.TurnInterruptResponse{}},
-		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
-		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedTurnID: "turn_1", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
-		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedTurnID: "turn_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
+		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
+		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt"}, &appwire.TurnInterruptResponse{}},
+		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
+		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
+		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
 		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
 	}
 	for _, tc := range tests {
@@ -5799,7 +5796,6 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	rejected := appwire.TurnQueueParams{
 		Ref:              "local:th_1",
 		ClientMutationID: "mutation-reject",
-		ExpectedTurnID:   "turn_1",
 		Input:            []appwire.InputItem{{Type: "text", Text: "reject"}},
 	}
 	var response appwire.TurnQueueResponse

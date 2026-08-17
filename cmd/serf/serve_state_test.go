@@ -333,7 +333,6 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		if err := lifecycle.client.TurnSteer(lifecycle.ctx, appwire.TurnSteerParams{
 			ClientMutationID: "stable-steer",
 			Ref:              lifecycle.ref,
-			ExpectedTurnID:   activeTurnID,
 			Input:            []appwire.InputItem{{Type: "text", Text: "steer accepted"}},
 		}); err != nil {
 			t.Fatalf("TurnSteer with published active ID %q: %v", activeTurnID, err)
@@ -377,7 +376,6 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			stopDone <- lifecycle.client.TurnInterrupt(lifecycle.ctx, appwire.TurnInterruptParams{
 				ClientMutationID: "stable-stop",
 				Ref:              lifecycle.ref,
-				ExpectedTurnID:   activeTurnID,
 			})
 		}()
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")

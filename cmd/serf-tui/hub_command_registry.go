@@ -220,7 +220,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "interrupt", m.detail.ActiveTurnID)
+			return sendHubAction(m.client, ref, "interrupt")
 		},
 	},
 	{
@@ -238,7 +238,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "compact", "")
+			return sendHubAction(m.client, ref, "compact")
 		},
 	},
 	{
@@ -315,7 +315,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, "shutdown", "")
+			return sendHubAction(m.client, ref, "shutdown")
 		},
 	},
 	{
@@ -342,7 +342,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("Session ref is invalid.")
 				return nil
 			}
-			return sendHubAction(m.client, ref, model, "")
+			return sendHubAction(m.client, ref, model)
 		},
 	},
 	{

@@ -239,7 +239,6 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		_, err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{
 			Ref:              ref,
 			ClientMutationID: clientMutationID,
-			ExpectedTurnID:   strings.TrimSpace(body.TurnID),
 		})
 	case "clear":
 		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: ref})

@@ -598,7 +598,7 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 	return tasks, nil
 }
 
-func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnID string) tea.Cmd {
+func sendHubAction(client *appwire.Client, ref appwire.Ref, action string) tea.Cmd {
 	// Only the interrupt branch is a retry-safe turn mutation; the rest are
 	// thread-level calls the guard does not cover. Minted unconditionally so the
 	// identity is fixed to the action, not to the branch taken at run time.
@@ -613,7 +613,6 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{
 				Ref:              ref.String(),
 				ClientMutationID: mutationID,
-				ExpectedTurnID:   turnID,
 			})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})

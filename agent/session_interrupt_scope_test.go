@@ -37,19 +37,17 @@ func runningStartTurn(t *testing.T, sess *Session, clientMutationID, text string
 	return started.Turn.ID
 }
 
-// TestSessionScopedInterruptStopsATurnItCannotName is Task 1's between-turn
-// gap: the drain loop settled turn 1 (clearing the durable name) while a queued
-// message keeps the session running, so the id every client holds names a turn
-// that is over. The targeted interrupt is refused there by design — the point
-// is that the session-scoped form is not.
-func TestSessionScopedInterruptStopsATurnItCannotName(t *testing.T) {
+// TestInterruptStopsATurnItCannotName is Task 1's between-turn gap: the drain
+// loop settled turn 1 (clearing the durable name) while a queued message keeps
+// the session running, so no id any client holds names the turn that is over.
+// Stop has to work anyway -- the user can see the session working.
+func TestInterruptStopsATurnItCannotName(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
-	firstTurn := runningStartTurn(t, sess, "start-gap-turn-one", "first message")
+	runningStartTurn(t, sess, "start-gap-turn-one", "first message")
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "queue-gap-follow-up",
-		ExpectedTurnID:   firstTurn,
 		Input:            []appwire.InputItem{{Type: "text", Text: "second message"}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue: %v", err)
@@ -65,48 +63,35 @@ func TestSessionScopedInterruptStopsATurnItCannotName(t *testing.T) {
 		t.Fatalf("WireState in the gap = %q, want %q", got, SessionProcessing)
 	}
 
-	staleCancels := 0
-	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID: "interrupt-gap-targeted",
-		ExpectedTurnID:   firstTurn,
-	}, func() { staleCancels++ }); err == nil ||
-		!strings.Contains(err.Error(), "turn is not active") {
-		t.Fatalf("targeted interrupt against the settled turn = %v, want turn is not active", err)
-	}
-	if staleCancels != 0 {
-		t.Fatalf("refused targeted interrupt cancelled %d times, want 0", staleCancels)
-	}
-
 	scopedCancels := 0
 	response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID:     "interrupt-gap-session-scoped",
-		InterruptRunningTurn: true,
+		ClientMutationID: "interrupt-gap-session-scoped",
 	}, func() { scopedCancels++ })
 	if err != nil {
-		t.Fatalf("session-scoped interrupt in the gap: %v", err)
+		t.Fatalf("interrupt in the gap: %v", err)
 	}
 	if scopedCancels != 1 {
-		t.Fatalf("session-scoped interrupt cancelled %d times, want 1", scopedCancels)
+		t.Fatalf("interrupt cancelled %d times, want 1", scopedCancels)
 	}
 	if response.Receipt.Disposition != appwire.MutationDispositionApplied {
-		t.Fatalf("session-scoped interrupt disposition = %q, want applied", response.Receipt.Disposition)
+		t.Fatalf("interrupt disposition = %q, want applied", response.Receipt.Disposition)
 	}
 	snapshot := sess.clientMutations.snapshot()
 	if snapshot.InterruptFence != nil {
-		t.Fatalf("session-scoped interrupt left a fence: %#v", snapshot.InterruptFence)
+		t.Fatalf("interrupt left a fence: %#v", snapshot.InterruptFence)
 	}
 	record := snapshot.Journal["interrupt-gap-session-scoped"]
 	if record.OperationState != clientMutationOperationTerminal ||
 		record.ExecutionState != "interrupted" {
-		t.Fatalf("session-scoped interrupt record = %#v", record)
+		t.Fatalf("interrupt record = %#v", record)
 	}
 }
 
-// TestSessionScopedInterruptFenceRecordsTheTurnItCancelled pins the half of the
+// TestInterruptFenceRecordsTheTurnItCancelled pins the half of the
 // design that keeps finalizeClientMutationInterrupt unchanged: the client does
 // not supply a target, so the fence takes the id the durable store is holding
 // and terminalizes exactly that turn's pending execution.
-func TestSessionScopedInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
+func TestInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -114,17 +99,16 @@ func TestSessionScopedInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 
 	cancels := 0
 	response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID:     "interrupt-named-session-scoped",
-		InterruptRunningTurn: true,
+		ClientMutationID: "interrupt-named-session-scoped",
 	}, func() { cancels++ })
 	if err != nil {
-		t.Fatalf("session-scoped interrupt: %v", err)
+		t.Fatalf("interrupt: %v", err)
 	}
 	if cancels != 1 {
-		t.Fatalf("session-scoped interrupt cancelled %d times, want 1", cancels)
+		t.Fatalf("interrupt cancelled %d times, want 1", cancels)
 	}
 	if response.Receipt.TurnID != turnID {
-		t.Fatalf("session-scoped interrupt receipt turn = %q, want %q", response.Receipt.TurnID, turnID)
+		t.Fatalf("interrupt receipt turn = %q, want %q", response.Receipt.TurnID, turnID)
 	}
 	snapshot := sess.clientMutations.snapshot()
 	if snapshot.ActiveTurnID != "" || snapshot.InterruptFence != nil {
@@ -139,11 +123,11 @@ func TestSessionScopedInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 	}
 }
 
-// TestSessionScopedInterruptIsRefusedOnASettledSession keeps the escape hatch
+// TestInterruptIsRefusedOnASettledSession keeps the escape hatch
 // from being a blanket bypass: with nothing running there is nothing to stop,
 // and an accepted interrupt would clear a turn identity out from under whatever
 // claims it next.
-func TestSessionScopedInterruptIsRefusedOnASettledSession(t *testing.T) {
+func TestInterruptIsRefusedOnASettledSession(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -152,37 +136,35 @@ func TestSessionScopedInterruptIsRefusedOnASettledSession(t *testing.T) {
 	}
 	cancels := 0
 	_, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID:     "interrupt-settled-session-scoped",
-		InterruptRunningTurn: true,
+		ClientMutationID: "interrupt-settled-session-scoped",
 	}, func() { cancels++ })
 	if err == nil || !strings.Contains(err.Error(), "session is not processing") {
-		t.Fatalf("session-scoped interrupt on a settled session = %v, want session is not processing", err)
+		t.Fatalf("interrupt on a settled session = %v, want session is not processing", err)
 	}
 	if cancels != 0 {
-		t.Fatalf("refused session-scoped interrupt cancelled %d times, want 0", cancels)
+		t.Fatalf("refused interrupt cancelled %d times, want 0", cancels)
 	}
 	if fence := sess.clientMutations.snapshot().InterruptFence; fence != nil {
-		t.Fatalf("refused session-scoped interrupt left a fence: %#v", fence)
+		t.Fatalf("refused interrupt left a fence: %#v", fence)
 	}
 }
 
-// TestSessionScopedInterruptRetryStopsNothingTwice is the property the rejected
+// TestInterruptRetryStopsNothingTwice is the property the rejected
 // "just make expectedTurnId optional" shape could not hold. A retry of the same
 // clientMutationId must replay the first interrupt's receipt, not cancel
 // whatever turn happens to be running when the retry lands.
-func TestSessionScopedInterruptRetryStopsNothingTwice(t *testing.T) {
+func TestInterruptRetryStopsNothingTwice(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
 	firstTurn := runningStartTurn(t, sess, "start-idempotence-one", "first message")
 	interrupt := appwire.TurnInterruptParams{
-		ClientMutationID:     "interrupt-idempotence",
-		InterruptRunningTurn: true,
+		ClientMutationID: "interrupt-idempotence",
 	}
 	cancels := 0
 	first, err := sess.InterruptClientMutation(context.Background(), interrupt, func() { cancels++ })
 	if err != nil {
-		t.Fatalf("first session-scoped interrupt: %v", err)
+		t.Fatalf("first interrupt: %v", err)
 	}
 	if first.Receipt.TurnID != firstTurn {
 		t.Fatalf("first interrupt receipt turn = %q, want %q", first.Receipt.TurnID, firstTurn)
@@ -192,10 +174,10 @@ func TestSessionScopedInterruptRetryStopsNothingTwice(t *testing.T) {
 
 	retry, err := sess.InterruptClientMutation(context.Background(), interrupt, func() { cancels++ })
 	if err != nil {
-		t.Fatalf("retried session-scoped interrupt: %v", err)
+		t.Fatalf("retried interrupt: %v", err)
 	}
 	if cancels != 1 {
-		t.Fatalf("retried session-scoped interrupt cancelled %d times, want 1", cancels)
+		t.Fatalf("retried interrupt cancelled %d times, want 1", cancels)
 	}
 	if retry.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("retry disposition = %q, want replayed", retry.Receipt.Disposition)
@@ -233,7 +215,6 @@ func TestTargetedInterruptKeepsItsExactMatchPrecondition(t *testing.T) {
 	}
 	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
 		ClientMutationID: "interrupt-targeted-stale",
-		ExpectedTurnID:   "turn_m99",
 	}, func() { t.Error("interrupt against a stale turn cancelled the session") }); err == nil ||
 		!strings.Contains(err.Error(), "turn is not active") {
 		t.Fatalf("targeted interrupt against a stale id = %v, want turn is not active", err)

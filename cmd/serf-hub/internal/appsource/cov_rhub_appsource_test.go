@@ -439,14 +439,14 @@ func fuzzScenarioCodexSourceTurnActionPreConnectValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Bad ref (wrong source) fails before any dial.
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "other:th_1", ExpectedTurnID: "tn_1"}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "other:th_1"}); err == nil {
 		t.Error("SteerTurn with foreign ref should error")
 	}
 	// Missing expectedTurnId is rejected even with a valid ref.
 	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "codex:th_1"}); err == nil {
 		t.Error("SteerTurn without expectedTurnId should error")
 	}
-	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "codex:th_1"}); err == nil {
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: "codex:th_1"}); err == nil {
 		t.Error("InterruptTurn without expectedTurnId should error")
 	}
 	if err := s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: "other:th_1"}); err == nil {

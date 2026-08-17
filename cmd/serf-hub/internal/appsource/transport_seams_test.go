@@ -207,7 +207,7 @@ func fuzzScenarioCodexRPCFailureAndValidationBranches(t *testing.T) {
 	if _, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
 		t.Fatal("startTurnWithClient accepted invalid input")
 	}
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn", Input: badInput}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
 		t.Fatal("SteerTurn accepted invalid input")
 	}
 }

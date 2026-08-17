@@ -396,9 +396,6 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		if strings.TrimSpace(params.ExpectedTurnID) == "" {
-			return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
-		}
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
 			if err != nil {
@@ -410,11 +407,6 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		// The session-scoped form names no turn by design; every other form
-		// must, so a Stop cannot silently widen to a turn the user never saw.
-		if !params.InterruptRunningTurn && strings.TrimSpace(params.ExpectedTurnID) == "" {
-			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
@@ -440,9 +432,6 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		if strings.TrimSpace(params.ExpectedTurnID) == "" {
-			return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
-		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 			if err != nil {
@@ -458,9 +447,6 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		if strings.TrimSpace(params.ExpectedTurnID) == "" {
-			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
-		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 			if err != nil {
@@ -475,9 +461,6 @@ func registerThreadHandlers(
 		}
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		if strings.TrimSpace(params.ExpectedTurnID) == "" {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
