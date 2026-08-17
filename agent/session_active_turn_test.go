@@ -188,17 +188,6 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 	}
 }
 
-// TestMintRunningTurnIDSkipsUnservedSessions keeps in-process subagents off
-// the durable store entirely. They share the parent's StateDir
-// (subagents.go:581) and drive a turn per delegate wake; a turn no client can
-// address needs no name and must not cost two fsyncs.
-func TestMintRunningTurnIDSkipsUnservedSessions(t *testing.T) {
-	s := newTestSessionForEnvctx(t) // no daemon draining this one
-	if got := s.mintRunningTurnID(); got != "" {
-		t.Fatalf("mintRunningTurnID = %q for an unserved session, want empty", got)
-	}
-}
-
 // TestLoadClearsARunningTurnNoPendingExecutionOwns is the crash guard: an
 // ungraceful exit mid-turn must not brick every future turn/start. Without
 // it a record-less ActiveTurnID survives restart with nothing left that can

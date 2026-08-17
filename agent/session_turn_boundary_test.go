@@ -545,8 +545,16 @@ func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
 
 // TestUnservedSessionNamesNoTurn keeps in-process subagents off both halves of
 // this machinery. They run EntryNotification per delegate wake and share the
-// parent's StateDir, so naming their turns would cost a durable write each and
-// publish turn frames on a thread no client can address.
+// parent's StateDir (subagents.go), so naming their turns would cost a durable
+// write per wake and publish turn frames on a thread no client can address.
+//
+// It asserts the gate (servedByDaemon) and its consequence (no name) together,
+// because the second is only correct while the first holds. That pairing is why
+// this is the surviving test of what used to be two.
+//
+// NOTE: `docs/superpowers/plans/2026-08-16-controllable-subagents.md` proposes
+// reversing this deliberately — delegates would take durable names so they can
+// be stopped. When that lands, this test inverts rather than being deleted.
 func TestUnservedSessionNamesNoTurn(t *testing.T) {
 	s := newTestSessionForEnvctx(t) // no drain registered
 

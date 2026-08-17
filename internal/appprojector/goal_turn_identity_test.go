@@ -4,32 +4,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
 )
-
-// startedTurnID pulls the turn id out of the turn/started notification in a
-// projection, failing the test if there is not exactly one.
-func startedTurnID(t *testing.T, out []AppNotification) string {
-	t.Helper()
-	var found string
-	for _, n := range out {
-		if n.Method != appwire.NotifyTurnStarted {
-			continue
-		}
-		params, ok := n.Params.(appwire.TurnStartedParams)
-		if !ok {
-			t.Fatalf("turn/started params are %T, want appwire.TurnStartedParams", n.Params)
-		}
-		if found != "" {
-			t.Fatalf("two turn/started notifications in one projection: %q and %q", found, params.Turn.ID)
-		}
-		found = params.Turn.ID
-	}
-	if found == "" {
-		t.Fatalf("no turn/started in projection %+v", out)
-	}
-	return found
-}
 
 // TestGoalContinuationAdoptsItsDaemonTurnID is the projector half of the fix
 // for kata c2ty's remainder. A goal continuation the daemon has already named
@@ -46,7 +21,7 @@ func TestGoalContinuationAdoptsItsDaemonTurnID(t *testing.T) {
 		Data:      events.GoalContinuationData{Text: "Continuing toward: ship it", StableTurnID: "turn_m9"},
 	})
 
-	if got := startedTurnID(t, out); got != "turn_m9" {
+	if got := turnStartedID(t, out); got != "turn_m9" {
 		t.Fatalf("goal continuation opened turn %q, want the daemon's own turn_m9", got)
 	}
 	if got := projector.ActiveTurnID(); got != "turn_m9" {
@@ -65,7 +40,7 @@ func TestGoalContinuationWithoutAnIDStillMints(t *testing.T) {
 		Data:      events.GoalContinuationData{Text: "Continuing toward: ship it"},
 	})
 
-	if got := startedTurnID(t, out); got != "turn_1" {
+	if got := turnStartedID(t, out); got != "turn_1" {
 		t.Fatalf("unnamed goal continuation opened turn %q, want the projector's own turn_1", got)
 	}
 }
@@ -87,25 +62,10 @@ func TestGoalContinuationCompletesThePreviousTurnUnderItsOwnID(t *testing.T) {
 		Data:      events.GoalContinuationData{Text: "Continuing", StableTurnID: "turn_m2"},
 	})
 
-	var completed string
-	for _, n := range out {
-		if n.Method != appwire.NotifyTurnCompleted {
-			continue
-		}
-		params, ok := n.Params.(map[string]any)
-		if !ok {
-			t.Fatalf("turn/completed params are %T, want map[string]any", n.Params)
-		}
-		turn, ok := params["turn"].(appwire.Turn)
-		if !ok {
-			t.Fatalf("turn/completed carries %T, want appwire.Turn", params["turn"])
-		}
-		completed = turn.ID
-	}
-	if completed != "turn_m1" {
+	if completed := completedTurnID(out); completed != "turn_m1" {
 		t.Fatalf("previous turn completed as %q, want turn_m1", completed)
 	}
-	if got := startedTurnID(t, out); got != "turn_m2" {
+	if got := turnStartedID(t, out); got != "turn_m2" {
 		t.Fatalf("continuation opened turn %q, want turn_m2", got)
 	}
 }
@@ -130,7 +90,7 @@ func TestSteeringInjectedNeverNamesATurn(t *testing.T) {
 		Data:      events.AssistantTextStartData{Model: "gpt-5"},
 	})
 
-	if got := startedTurnID(t, out); got == "turn_m77" {
+	if got := turnStartedID(t, out); got == "turn_m77" {
 		t.Fatal("a steering mutation's own id was adopted as the turn id; a steer names itself, not the turn it lands in")
 	}
 }
