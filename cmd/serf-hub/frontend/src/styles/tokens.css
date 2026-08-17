@@ -254,7 +254,13 @@
    * neutral that clears it. */
   --ink-low: #86898F;
 
-  --attention: #EF720C;
+  /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
+   * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
+   * system's own vocabulary for this hue is "amber" (design-system.md §4).
+   * #F59E0B (hue ~70deg) tints to a true amber; --attention-ink #AD5209 still
+   * clears AA (4.75:1) on the new tint. Dark keeps #F68F3C, which already
+   * reads amber on dark surfaces. See decisions.md's 2026-08-16 entry. */
+  --attention: #F59E0B;
   --alive: #189A4D;
   --danger: #E3474C;
   --accent: #0285FF;
