@@ -30,7 +30,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
@@ -41,6 +41,7 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -271,6 +272,53 @@ test("a working session offers Stop before its turn has announced a name", async
     activeTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+});
+
+// The breadcrumb for kata 5gdv, wired end to end rather than unit-tested in
+// isolation: drive the composer into the exact reported shape -- a working
+// session advertising steer and not interrupt -- and check that the sighting it
+// leaves behind names the frame that put it there.
+//
+// This state is not reachable from a correct daemon any more, which is why the
+// frame is hand-built here. That is the point of the breadcrumb: it exists for
+// the trigger nobody has found yet.
+test("a working session drawn with no Stop leaves a sighting naming the frame that did it", () => {
+  resetStoplessComposerSightingsForTests();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("thread/read", () => ({ thread: thread("idle", daemonCapabilities(false)) }) as ThreadReadResponse);
+    return threadsStore
+      .getState()
+      .ensureThread(REF)
+      .then(() => {
+        render(<Composer ref={REF} />);
+        act(() => {
+          fake.emitNotification({
+            method: "thread/status/changed",
+            params: {
+              threadId: `thr_${REF}`,
+              ref: REF,
+              status: { type: "active" },
+              capabilities: { ...daemonCapabilities(true), interrupt: false },
+            },
+          });
+        });
+
+        expect(screen.queryByTestId("composer-stop")).toBeNull();
+        const sightings = stoplessComposerSightings();
+        expect(sightings).toHaveLength(1);
+        expect(sightings[0]).toMatchObject({
+          ref: REF,
+          status: "active",
+          capabilitySource: "statusFrame",
+          capabilities: { interrupt: false, steer: true },
+        });
+      });
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 // Both directions, or the fix is just a latch that turns everything on. The

@@ -186,6 +186,14 @@ export interface ModelRetryState {
   receivedAt: number;
 }
 
+// CapabilitySource names the frame that last wrote ThreadModel.capabilities.
+// "read" is a thread/read snapshot, "statusFrame" a thread/status/changed that
+// carried a set, and "none" a model that has only ever held what its first read
+// gave it. The two writers are the only ones there are (reducer.ts), which is
+// itself the point: if a client is holding a set that disagrees with the status
+// beside it, one of exactly two frames put it there.
+export type CapabilitySource = "read" | "statusFrame" | "none";
+
 export interface ThreadModel {
   ref: string;
   threadId: string;
@@ -247,6 +255,17 @@ export interface ThreadModel {
   // describes a session that no longer exists by the time the composer reads
   // it back. Absent on a status frame still means "no update".
   capabilities: ThreadCapabilities;
+  // Which frame last WROTE capabilities, for kata 5gdv. The symptom there is a
+  // working session drawn with no Stop, reported from live use and not
+  // reproduced in three live measurements -- so the set itself is not enough
+  // evidence: what matters is where it came from and what the thread looked
+  // like when it arrived. Purely diagnostic; nothing renders off it.
+  //
+  // Optional because it is a breadcrumb rather than state: a model assembled
+  // without one (test fixtures, and any future construction site with nothing
+  // to say) reads as "none" rather than forcing every builder to answer a
+  // question about provenance it does not have.
+  capabilitySource?: CapabilitySource;
   // Goal is null when no /goal objective is set (wire: SerfThread.Goal
   // *GoalState, omitempty). No live push exists (goal/set's response
   // carries only {started}, and appwire/protocol.go's Notifications catalog

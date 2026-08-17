@@ -78,6 +78,7 @@ import {
   type SlashToken,
   spliceSlashCommand,
 } from "./slashCompletion";
+import { recordStoplessComposer } from "./stoplessComposer";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -598,6 +599,20 @@ export function Composer({ ref }: ComposerProps) {
   // it in the next turn.
   const showStop = model.status.type === "active" && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
+  // The one state kata 5gdv is about, described by the only code that can see
+  // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
+  // rather than another attempt to provoke it.
+  if (model.status.type === "active" && !showStop) {
+    recordStoplessComposer({
+      ref,
+      status: model.status.type,
+      activeTurnId,
+      capabilities: model.capabilities,
+      capabilitySource: model.capabilitySource ?? "none",
+      showSteer,
+      ended,
+    });
+  }
   // Send keeps ONE label in every state. While a turn runs it queues rather
   // than sending now, but that is a change of TIMING, not of verb - a label
   // that flips to "Queue" made the same button mean two different things
