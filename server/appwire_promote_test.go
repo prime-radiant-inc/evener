@@ -181,6 +181,11 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
 
+	// Both enqueues must be visible in the durable queue before the envelope is
+	// published, or the ids the promote compares against come from a queue that
+	// was still filling. Poll for the condition rather than sleeping.
+	waitForQueueDepth(t, sess, 2)
+
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
@@ -207,9 +212,21 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", ids)
 	}
 
+	// The promote below is a compare-and-commit against the queue as it is when
+	// the request lands, so the ids it names must come from that same moment.
+	// Reading them once above and reusing them makes the assertion depend on
+	// nothing having touched the queue in between -- and this test drives a LIVE
+	// session whose own drain loop shares that queue, which is how it went flaky
+	// under full-suite load (kata n1zs). Re-read here instead, and say so loudly
+	// if the queue is not the two entries this case is about.
+	live := sess.QueueIDs()
+	if len(live) != 2 || live[0] != ids[0] || live[1] != ids[1] {
+		t.Fatalf("queue changed between the read and the promote: live=%#v, published=%#v", live, ids)
+	}
+
 	// Review F1: a promote naming the WRONG entry id (a stale snapshot) is a
 	// Conflict and leaves the queue fully intact — nothing is steered.
-	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[1]})
+	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: live[1]})
 	if mismatch.Kind() != appwire.MessageError {
 		t.Fatalf("mismatch promote: expected error, got %v", mismatch.Kind())
 	}
@@ -239,5 +256,23 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	case <-adapter.done:
 	case <-time.After(time.Second):
 		t.Fatal("active turn did not stop after cancellation")
+	}
+}
+
+// waitForQueueDepth blocks until the session's durable queue holds exactly want
+// entries. A poll, not a sleep: the condition is what the caller needs, and a
+// fixed delay is either too short under load or wasted when it is not.
+func waitForQueueDepth(t *testing.T, sess *agent.Session, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := len(sess.QueueIDs())
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue depth = %d, want %d", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
