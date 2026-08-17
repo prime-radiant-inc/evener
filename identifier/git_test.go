@@ -133,6 +133,138 @@ func TestMainCheckoutLocal_MalformedPointer(t *testing.T) {
 	}
 }
 
+// TestMainCheckoutLocalRejectsPointersThatDoNotDescribeARealCheckout covers the
+// guards between a `.git` FILE and a project identity.
+//
+// A pointer file is plain text that anything can write, and mainCheckoutLocal
+// turns it into the directory whose path becomes the project ID. Each rejection
+// below is therefore the difference between refusing an unusable repository and
+// silently filing a session under some other project's identity — including one
+// outside the checkout entirely.
+//
+// No git binary is involved: every case is a directory shape on disk, which is
+// exactly what the validators inspect.
+func TestMainCheckoutLocalRejectsPointersThatDoNotDescribeARealCheckout(t *testing.T) {
+	// A worktree-shaped pointer (…/worktrees/<name>) takes the linked-worktree
+	// path; anything else falls through to the submodule check.
+	for _, tc := range []struct {
+		name    string
+		build   func(t *testing.T, dir string) string // returns the pointer target
+		wantErr string
+	}{
+		{
+			name: "linked worktree gitdir does not exist",
+			build: func(t *testing.T, dir string) string {
+				return filepath.Join(dir, "main", ".git", "worktrees", "wt")
+			},
+			wantErr: "linked worktree Git directory",
+		},
+		{
+			name: "linked worktree gitdir is a file",
+			build: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "main", ".git", "worktrees", "wt")
+				mustDir(t, filepath.Dir(target))
+				mustFile(t, target)
+				return target
+			},
+			wantErr: "is not a directory",
+		},
+		{
+			// The pointer is worktree-shaped, but the checkout it implies has no
+			// .git of its own — so nothing anchors it to a real repository.
+			name: "implied main checkout has no .git",
+			build: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "main", "notgit", "worktrees", "wt")
+				mustDir(t, target)
+				return target
+			},
+			wantErr: "main checkout Git directory",
+		},
+		{
+			// Both exist, but the pointer's common directory is not the main
+			// checkout's .git — the shape a pointer copied between repositories
+			// produces, and the one that would silently borrow another project's
+			// identity.
+			name: "gitdir belongs to a different checkout",
+			build: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "main", "notgit", "worktrees", "wt")
+				mustDir(t, target)
+				mustDir(t, filepath.Join(dir, "main", ".git"))
+				return target
+			},
+			wantErr: "does not match main checkout",
+		},
+		{
+			name: "submodule pointer target does not exist",
+			build: func(t *testing.T, dir string) string {
+				return filepath.Join(dir, "nowhere", "modules", "sub")
+			},
+			wantErr: "git pointer target",
+		},
+		{
+			name: "submodule pointer target is a file",
+			build: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "store", "sub")
+				mustDir(t, filepath.Dir(target))
+				mustFile(t, target)
+				return target
+			},
+			wantErr: "is not a directory",
+		},
+		{
+			name: "submodule pointer target is not shaped like a submodule gitdir",
+			build: func(t *testing.T, dir string) string {
+				target := filepath.Join(dir, "somewhere", "else")
+				mustDir(t, target)
+				return target
+			},
+			wantErr: "not a submodule Git directory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			work := filepath.Join(root, "work")
+			mustDir(t, work)
+			target := tc.build(t, root)
+			mustFile(t, filepath.Join(work, ".git"))
+			if err := os.WriteFile(filepath.Join(work, ".git"), []byte("gitdir: "+target+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			gotRoot, isGit, err := mainCheckoutLocal(work)
+			if err == nil {
+				t.Fatalf("accepted pointer to %q: root=%q isGit=%v", target, gotRoot, isGit)
+			}
+			if gotRoot != "" {
+				t.Fatalf("returned root %q alongside error %v, want empty", gotRoot, err)
+			}
+			if !isGit {
+				t.Fatalf("isGit=false for a directory that carries a .git pointer (err=%v)", err)
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func mustDir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
 	input := []string{
 		"PATH=/bin", "gIt_DiR=/hostile/dir", "git_work_tree=/hostile/tree",
