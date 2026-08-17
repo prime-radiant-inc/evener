@@ -717,13 +717,13 @@ func (s *Session) SetNotifyFunc(f func()) {
 	s.pendingJobNotifsMu.Lock()
 	pending := len(s.pendingJobNotifs) > 0
 	s.pendingJobNotifsMu.Unlock()
-	// Steering counts as pending work here for the same reason the rest does.
-	// A steer accepted durably and then lost to a crash is rebuilt into the
-	// queue by restoreDurableClientMutationQueues, and nothing else asks the
-	// session to run: the client may never retry, and the round loop only
-	// drains steering inside a turn that is not going to start on its own.
-	// Registering the callback is the moment a wake can provably be delivered.
-	if pending || s.hasPendingSteering() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	// Steering and queued input both count as pending work here for the same
+	// reason the rest does. Either one accepted durably and then lost to a crash
+	// is rebuilt by restoreDurableClientMutationQueues, and nothing else asks the
+	// session to run: the client may never retry, and the round loop only drains
+	// steering inside a turn that is not going to start on its own. Registering
+	// the callback is the moment a wake can provably be delivered.
+	if pending || s.hasPendingSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

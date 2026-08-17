@@ -157,9 +157,15 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 		return appwire.TurnQueueResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
+		// A retry of a queue that was accepted but never run -- the process died
+		// between the commit and the wake -- must still provoke a run. Replay is
+		// idempotent in the store; the wake is what makes it idempotent in
+		// effect.
+		s.wakeForPendingQueuedInput()
 		return queueResponseFromRecord(s.ID(), lookup.Record, appwire.MutationDispositionReplayed)
 	}
 	s.reflectDurableInputQueue()
+	s.wakeForPendingQueuedInput()
 	return response, nil
 }
 
@@ -378,6 +384,23 @@ func (s *Session) wakeForPendingSteering() {
 	s.notify()
 }
 
+// wakeForPendingQueuedInput is wakeForPendingSteering's counterpart for
+// turn/queue. Control is session-scoped, so a queue is accepted with no turn
+// running -- and an idle session is parked awaiting input, so nothing runs what
+// was just accepted unless it is asked to.
+//
+// It is unconditional on turn state for the same reason steering's is: a turn
+// can pass its final queue check and still own the turn id, so gating on "is a
+// turn running" would skip exactly the arrival that needs the kick. An unneeded
+// wake is cheap -- it finds nothing runnable and no-ops, and repeated wakes
+// coalesce into one parked send.
+func (s *Session) wakeForPendingQueuedInput() {
+	if s.QueueDepth() == 0 {
+		return
+	}
+	s.notify()
+}
+
 // AcceptClientMutationSteer durably accepts or replays one client-authored
 // steering input.
 func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
@@ -456,10 +479,15 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		}
 		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
 		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
+		// A retry of steering that was accepted but never delivered must still
+		// provoke delivery; replay is idempotent in the store and useless to the
+		// user without the wake.
+		s.wakeForPendingSteering()
 		return replayed, nil
 	}
 	s.reflectDurableInputQueue()
 	s.reflectDurableClientSteering()
+	s.wakeForPendingSteering()
 	return response, nil
 }
 
@@ -553,10 +581,15 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		}
 		replayed.Receipt.Disposition = appwire.MutationDispositionReplayed
 		replayed.Receipt.ProjectionState = lookup.Record.ProjectionState
+		// A retry of steering that was accepted but never delivered must still
+		// provoke delivery; replay is idempotent in the store and useless to the
+		// user without the wake.
+		s.wakeForPendingSteering()
 		return replayed, nil
 	}
 	s.reflectDurableInputQueue()
 	s.reflectDurableClientSteering()
+	s.wakeForPendingSteering()
 	return response, nil
 }
 
@@ -636,6 +669,7 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 		return replayed, nil
 	}
 	s.reflectDurableInputQueue()
+	s.wakeForPendingQueuedInput()
 	return response, nil
 }
 
