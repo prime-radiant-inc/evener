@@ -102,7 +102,7 @@ no router (reserved).
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
 | `turn/steer` | both | `TurnSteerParams` | `TurnSteerResponse` | Injects a steering message into the active turn. |
-| `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels the active turn matching expectedTurnId. |
+| `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels the active turn matching expectedTurnId, or — with `interruptRunningTurn: true`, which needs no expectedTurnId — whatever turn is running, so Stop works from a client that holds no current turn id. The receipt names the turn actually cancelled. |
 | `turn/queue` | both | `TurnQueueParams` | `TurnQueueResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `TurnDrainAsSteerResponse` | Drains the input queue and injects it as a single steering message. |
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
@@ -1467,6 +1467,7 @@ _(no fields)_
 | `threadId` | `string` | yes |  |
 | `clientMutationId` | `string` |  |  |
 | `expectedTurnId` | `string` |  |  |
+| `interruptRunningTurn` | `bool` | yes |  |
 
 
 ### `TurnInterruptResponse`

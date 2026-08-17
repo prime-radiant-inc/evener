@@ -214,3 +214,45 @@ func TestJobsCatalogEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionScopedInterruptWaivesOnlyItsOwnPrecondition pins the flag-day
+// validator's half of the two interrupt forms: a client that names no turn must
+// say so explicitly, and saying so waives nothing else.
+func TestSessionScopedInterruptWaivesOnlyItsOwnPrecondition(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  string
+		wantErr bool
+	}{
+		{
+			name:   "session scoped needs no expected turn",
+			params: `{"clientMutationId":"m1","interruptRunningTurn":true}`,
+		},
+		{
+			name:    "targeted still needs its expected turn",
+			params:  `{"clientMutationId":"m1"}`,
+			wantErr: true,
+		},
+		{
+			name:    "opting out explicitly still needs its expected turn",
+			params:  `{"clientMutationId":"m1","interruptRunningTurn":false}`,
+			wantErr: true,
+		},
+		{
+			name:    "session scoped still needs an identity",
+			params:  `{"interruptRunningTurn":true}`,
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMutationParams(MethodTurnInterrupt, json.RawMessage(tc.params))
+			if tc.wantErr && err == nil {
+				t.Fatal("invalid interrupt shape accepted")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("valid interrupt shape rejected: %v", err)
+			}
+		})
+	}
+}

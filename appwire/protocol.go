@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -106,7 +107,7 @@ var Methods = []MethodSpec{
 	{MethodThreadShutdown, ThreadShutdownParams{}, EmptyResponse{}, ScopeBoth, "Shuts the session down (the daemon runs it asynchronously)."},
 	{MethodTurnStart, TurnStartParams{}, TurnStartResponse{}, ScopeBoth, "Starts a new user turn and reserves a turn ID."},
 	{MethodTurnSteer, TurnSteerParams{}, TurnSteerResponse{}, ScopeBoth, "Injects a steering message into the active turn."},
-	{MethodTurnInterrupt, TurnInterruptParams{}, TurnInterruptResponse{}, ScopeBoth, "Cancels the active turn matching expectedTurnId."},
+	{MethodTurnInterrupt, TurnInterruptParams{}, TurnInterruptResponse{}, ScopeBoth, "Cancels the active turn matching expectedTurnId, or — with `interruptRunningTurn: true`, which needs no expectedTurnId — whatever turn is running, so Stop works from a client that holds no current turn id. The receipt names the turn actually cancelled."},
 	{MethodTurnQueue, TurnQueueParams{}, TurnQueueResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
 	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, TurnDrainAsSteerResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
 	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
@@ -179,6 +180,15 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
+	// The session-scoped interrupt names no turn — that is what it is for — so
+	// expectedTurnId cannot be required of it. Removing that one entry rather
+	// than substituting a shorter list keeps every other identity and
+	// precondition this method grows in future required of both forms.
+	if method == MethodTurnInterrupt && sessionScopedInterrupt(fields) {
+		required = slices.DeleteFunc(slices.Clone(required), func(name string) bool {
+			return name == "expectedTurnId"
+		})
+	}
 	for _, name := range required {
 		value, ok := fields[name]
 		if !ok {
@@ -197,6 +207,15 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// sessionScopedInterrupt reports whether a turn/interrupt asked the daemon to
+// cancel whatever is running instead of a turn the client named. A missing or
+// non-boolean field is the targeted form, so a malformed opt-in never widens
+// what the request is allowed to omit.
+func sessionScopedInterrupt(fields map[string]json.RawMessage) bool {
+	var scoped bool
+	return json.Unmarshal(fields["interruptRunningTurn"], &scoped) == nil && scoped
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil

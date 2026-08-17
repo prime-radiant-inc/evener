@@ -1028,11 +1028,28 @@ type TurnSteerParams struct {
 	Input            []InputItem `json:"input,omitempty"`
 }
 
+// TurnInterruptParams cancels a running turn. It has two forms, and the
+// difference is which turn the client is entitled to name.
+//
+// The default form is a compare-and-commit against ExpectedTurnID: the daemon
+// cancels that turn or refuses. It is the right form whenever the client holds
+// a turn id, because it can never cancel a turn the user was not looking at.
+//
+// InterruptRunningTurn is the escape hatch for the moments when no id the
+// client holds is the running turn's — a turn the session started for itself,
+// a boundary between two turns of one drain, a cold client that has seen no
+// turn yet. It asks the daemon to cancel whatever is running, and the daemon
+// records the id it actually cancelled in the receipt, so a Stop is never
+// refused merely because the user could not name their target.
 type TurnInterruptParams struct {
 	Ref              string `json:"ref,omitempty"`
 	ThreadID         string `json:"threadId,omitempty"`
 	ClientMutationID string `json:"clientMutationId"`
-	ExpectedTurnID   string `json:"expectedTurnId"`
+	// ExpectedTurnID is required unless InterruptRunningTurn is set, and is
+	// ignored when it is: the two forms differ precisely in whether the client
+	// gets to choose the target.
+	ExpectedTurnID       string `json:"expectedTurnId"`
+	InterruptRunningTurn bool   `json:"interruptRunningTurn,omitempty"`
 }
 
 // TurnQueueParams queues a user message during a running turn for processing

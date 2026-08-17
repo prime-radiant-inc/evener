@@ -1391,6 +1391,7 @@ export interface TurnInterruptParams {
   threadId?: string;
   clientMutationId: string;
   expectedTurnId: string;
+  interruptRunningTurn?: boolean;
 }
 
 export interface TurnInterruptResponse {

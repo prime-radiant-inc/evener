@@ -825,7 +825,11 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+	// A session-scoped interrupt asks for whatever is running, so it is the one
+	// form that has no turn to name. Every other form still must name one: a
+	// Stop that silently widened to the whole session would cancel a turn the
+	// user never saw.
+	if !params.InterruptRunningTurn && strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	if strings.TrimSpace(params.ClientMutationID) == "" {

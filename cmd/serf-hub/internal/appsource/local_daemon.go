@@ -287,7 +287,9 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+	// The session-scoped form names no turn by design; every other form must,
+	// so a Stop cannot silently widen to a turn the user never saw.
+	if !params.InterruptRunningTurn && strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	var out appwire.TurnInterruptResponse
