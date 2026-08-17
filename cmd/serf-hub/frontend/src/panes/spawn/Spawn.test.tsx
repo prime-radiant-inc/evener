@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../protocol/types.gen";
+import type { Thread, ThreadCapabilities, ThreadStartParams, ThreadStartResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -1546,10 +1546,10 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
     // the select falls back to the guessed minimal/low/medium/high ladder.
     { provider: "anthropic", model: "claude-sonnet-4-5" },
   ]);
-  let started: Record<string, unknown> | undefined;
+  let started: ThreadStartParams | undefined;
   renderSpawn(
     readyClient((fake) => {
-      fake.on("thread/start", (params: Record<string, unknown>) => {
+      fake.on("thread/start", (params) => {
         started = params;
         return startResponse("local:abc123");
       });
@@ -1573,7 +1573,7 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
   await user.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(started).toBeDefined());
-  expect((started?.reasoningEffort as string | undefined) ?? "").toBe(displayed);
+  expect(started?.reasoningEffort ?? "").toBe(displayed);
 });
 
 // The Effort ladder needs the merged model catalog, and the effect that loads it
