@@ -83,26 +83,44 @@ func (h *namerQuotaHarness) namerFailureAdvisories(t *testing.T) int {
 	return count
 }
 
-// awaitFailedAttempts blocks until want failure advisories have been written.
+// namerIdle reports whether no naming call is still in flight.
+func (h *namerQuotaHarness) namerIdle() bool {
+	h.sess.mu.Lock()
+	defer h.sess.mu.Unlock()
+	return !h.sess.naming.promptPending
+}
+
+// awaitSettledFailures blocks until want failure advisories have been written
+// AND no naming call is still in flight.
 //
-// The advisory is appended AFTER the suppression decision is recorded (see
-// nameSessionFromText), so observing it means the session has finished
-// reacting to the failure. That ordering is what lets these tests launch the
-// next attempt without racing the previous one -- and it matters: without the
-// wait, a second launch would be suppressed by the in-flight promptPending
-// guard instead of by the quota state, and the test would pass green today
-// for entirely the wrong reason.
-func (h *namerQuotaHarness) awaitFailedAttempts(t *testing.T, want int) {
+// Both conditions are load-bearing, and waiting on the advisory alone is a race.
+// nameSessionFromText writes the advisory and returns; only then does the
+// launcher goroutine call clearPromptNamePendingAfterAttempt
+// (session_namer.go:232-233). Between those two steps the advisory is already
+// visible on disk while promptPending is still set, so an advisory-only wait can
+// resume inside that window -- and the next launch would then be suppressed by
+// the in-flight pending guard rather than by the quota state.
+//
+// That is a different mechanism, and it makes these tests measure the wrong
+// thing in both directions: the quota tests would pass even without the
+// suppression fix, and the transient test would fail even with it. Observed
+// once as exactly that failure under -tags serffuzz. It is load-dependent, so
+// the proof of record is a mutation: inject a delay between those two lines and
+// an advisory-only wait fails while this one holds.
+//
+// The suppression decision itself is recorded before the advisory is written, so
+// once both conditions hold the session has fully settled.
+func (h *namerQuotaHarness) awaitSettledFailures(t *testing.T, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if h.namerFailureAdvisories(t) >= want {
+		if h.namerFailureAdvisories(t) >= want && h.namerIdle() {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %d namer failure advisories; got %d after %d provider calls",
-		want, h.namerFailureAdvisories(t), h.callCount())
+	t.Fatalf("timed out waiting for %d settled namer failures; advisories=%d idle=%v provider calls=%d",
+		want, h.namerFailureAdvisories(t), h.namerIdle(), h.callCount())
 }
 
 // quotaExhausted429 is the error a provider returns when the plan allowance is
@@ -135,7 +153,7 @@ func TestSessionNamerStopsAfterQuotaExhaustionOnPromptPath(t *testing.T) {
 	h := newNamerQuotaHarness(t, quotaExhausted429())
 
 	h.sess.launchInitialPromptNamer(context.Background(), "first task")
-	h.awaitFailedAttempts(t, 1)
+	h.awaitSettledFailures(t, 1)
 
 	// Two more turns, each launched only after the previous attempt settled.
 	h.sess.launchInitialPromptNamer(context.Background(), "second task")
@@ -159,7 +177,7 @@ func TestSessionNamerStopsAfterQuotaExhaustionOnCompactionPath(t *testing.T) {
 
 	turn := schema.Turn{Kind: schema.TurnSummary, Message: llm.Assistant("a compaction summary")}
 	h.sess.launchCompactionNamer(context.Background(), turn)
-	h.awaitFailedAttempts(t, 1)
+	h.awaitSettledFailures(t, 1)
 
 	h.sess.launchCompactionNamer(context.Background(), turn)
 	h.sess.launchCompactionNamer(context.Background(), turn)
@@ -182,11 +200,11 @@ func TestSessionNamerKeepsRetryingAfterTransientRateLimit(t *testing.T) {
 	h := newNamerQuotaHarness(t, transientRateLimit429())
 
 	h.sess.launchInitialPromptNamer(context.Background(), "first task")
-	h.awaitFailedAttempts(t, 1)
+	h.awaitSettledFailures(t, 1)
 	afterFirst := h.callCount()
 
 	h.sess.launchInitialPromptNamer(context.Background(), "second task")
-	h.awaitFailedAttempts(t, 2)
+	h.awaitSettledFailures(t, 2)
 	h.sess.Close()
 
 	if got := h.callCount(); got <= afterFirst {
