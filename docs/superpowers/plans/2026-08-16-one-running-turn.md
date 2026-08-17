@@ -1,6 +1,21 @@
-# One Running Turn Implementation Plan
+# One Running Turn Implementation Plan — SUPERSEDED
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **SUPERSEDED by `2026-08-16-stop-always-works.md`. Do NOT execute this plan.**
+>
+> Two independent reviews established that its premise was false: on a served
+> root session every production turn kind is already named, and the plan's own
+> declared failing target — the drain-loop queued path — is already proven
+> working by a live e2e test (`TestE2E_TurnControlReachesTheSession`).
+>
+> Its central mechanism was also unworkable. A client-started turn's name is
+> created before `processOneInput` on a different goroutine and released after
+> it, so the proposed per-turn handle could not own it; and Open Call 1's
+> "refuse a turn that cannot be named", applied to every entry kind as Task 3
+> directed, would have refused every user message, because `mintRunningTurnID`
+> returns empty for an already-named turn by design.
+>
+> Kept for its diagnosis of the four representations and its rejected-options
+> record, both carried forward. The task list is not safe to follow.
 
 **Supersedes** `2026-08-16-busy-means-named.md`, which tried to keep four
 representations of "the running turn" in step with each other. Two independent
