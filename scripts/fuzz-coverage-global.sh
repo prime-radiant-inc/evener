@@ -77,7 +77,9 @@ die() {
 }
 
 usage() {
-	sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+	# Scan for the header's end rather than hardcoding a line range: this one had
+	# already drifted past the header and was printing the script body.
+	awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
 }
 
 is_workspace_module() {

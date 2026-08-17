@@ -34,7 +34,7 @@
 #
 # invariant is deliberately absent: Hold compiles to an empty function in a
 # production build, so the module has zero statements and no floor is definable.
-. 79.6
+. 80.0
 agent 87.9
 auth 94.8
 envvars 100.0
