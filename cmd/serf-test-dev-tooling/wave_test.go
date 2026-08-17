@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,28 +126,102 @@ func mkFixtureFifos(t *testing.T, names ...string) string {
 	return dir
 }
 
-// readFifoLine blocks until one line arrives on the FIFO. Opening a FIFO for
-// reading blocks until a writer appears, so this is pure event sync.
-func readFifoLine(t *testing.T, path string) string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	buf := make([]byte, 256)
-	n, err := f.Read(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(buf[:n]))
+// fifoReadTripwire bounds a FIFO read that should complete in milliseconds. It
+// is a tripwire, never the synchronisation mechanism: the wave's exit is what
+// actually tells us a writer is never coming (see readFifoLineOrExit). Generous
+// on purpose, so a loaded machine never trips it before the real signal lands.
+const fifoReadTripwire = 60 * time.Second
+
+// postExitGrace bounds how long a descendant that outlived the wave may still
+// take to write. An orphan already past its TERM trap writes within
+// milliseconds, so this only elapses when no writer exists at all.
+const postExitGrace = 5 * time.Second
+
+// waveRun is a running wave whose exit any number of waiters can observe.
+// A plain exit-code channel could be received only once, which is why the FIFO
+// reads could not consult it and blocked forever instead.
+type waveRun struct {
+	done chan struct{}
+	code int
 }
 
-// startWave runs runWave in a goroutine and returns the exit-code channel.
-func startWave(cfg waveConfig) chan int {
-	codes := make(chan int, 1)
-	go func() { codes <- runWave(cfg) }()
-	return codes
+// wait blocks until the wave exits and returns its exit code.
+func (w *waveRun) wait() int {
+	<-w.done
+	return w.code
+}
+
+// readFifoLineOrExit blocks until one line arrives on the FIFO, the wave exits,
+// or the tripwire fires.
+//
+// Opening a FIFO for reading blocks until a writer appears, which is the sync
+// this fixture wants and also the hazard: a suite that dies before writing
+// leaves the open blocked forever. So the open runs on its own goroutine and
+// races the wave's exit. Once the wave is done no writer can ever appear, and
+// that is reported immediately with the exit code rather than as a timeout.
+//
+// The goroutine may outlive this call, blocked in open() on a FIFO nobody will
+// ever write to. That is deliberate: it holds only a file descriptor, the test
+// binary is about to exit, and the alternative (a non-blocking open plus a
+// readiness poll) would reintroduce polling where an awaitable event exists.
+func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	lines := make(chan result, 1)
+	go func() {
+		f, err := os.Open(path)
+		if err != nil {
+			lines <- result{err: err}
+			return
+		}
+		defer f.Close()
+		buf := make([]byte, 256)
+		n, err := f.Read(buf)
+		lines <- result{line: strings.TrimSpace(string(buf[:n])), err: err}
+	}()
+
+	select {
+	case got := <-lines:
+		return got.line, got.err
+	case <-run.done:
+		// Wave exit does NOT prove a writer is never coming: a forked descendant
+		// is reaped via the process group and can still write after runWave
+		// returns (TestForkedDescendantIsReaped depends on exactly that). So exit
+		// demotes the wait to a short grace instead of ending it. The grace only
+		// ever elapses on a genuinely absent writer, which is the case that used
+		// to hang until the package timeout.
+		select {
+		case got := <-lines:
+			return got.line, got.err
+		case <-time.After(postExitGrace):
+			return "", fmt.Errorf("wave exited (code %d) and nothing wrote to %s within %s of its exit",
+				run.code, filepath.Base(path), postExitGrace)
+		}
+	case <-time.After(tripwire):
+		return "", fmt.Errorf("no line on %s within %s and the wave is still running", filepath.Base(path), tripwire)
+	}
+}
+
+// readFifoLine is readFifoLineOrExit's fatal wrapper for the fixture tests.
+func readFifoLine(t *testing.T, path string, run *waveRun) string {
+	t.Helper()
+	line, err := readFifoLineOrExit(path, run, fifoReadTripwire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return line
+}
+
+// startWave runs runWave in a goroutine and returns the running wave.
+func startWave(cfg waveConfig) *waveRun {
+	run := &waveRun{done: make(chan struct{})}
+	go func() {
+		run.code = runWave(cfg)
+		close(run.done)
+	}()
+	return run
 }
 
 func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
@@ -158,15 +233,15 @@ func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
 			"read _ <"+fx+"/hold\n")
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: time.Minute, Out: &out, Signals: signals})
-	if got := readFifoLine(t, filepath.Join(fx, "ready")); got != "ready" {
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	if got := readFifoLine(t, filepath.Join(fx, "ready"), run); got != "ready" {
 		t.Fatalf("readiness handshake got %q", got)
 	}
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events")); got != "suite-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "suite-termed" {
 		t.Fatalf("suite never saw TERM, got %q", got)
 	}
-	if code := <-codes; code != 143 {
+	if code := run.wait(); code != 143 {
 		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
 	}
 }
@@ -182,14 +257,14 @@ func TestForkedDescendantIsReaped(t *testing.T) {
 			"read _ <"+fx+"/hold\n")
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: time.Minute, Out: &out, Signals: signals})
-	readFifoLine(t, filepath.Join(fx, "ready"))
-	readFifoLine(t, filepath.Join(fx, "ready2"))
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	readFifoLine(t, filepath.Join(fx, "ready"), run)
+	readFifoLine(t, filepath.Join(fx, "ready2"), run)
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events")); got != "grandchild-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "grandchild-termed" {
 		t.Fatalf("forked descendant never saw TERM, got %q", got)
 	}
-	if code := <-codes; code != 143 {
+	if code := run.wait(); code != 143 {
 		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
 	}
 }
@@ -203,12 +278,12 @@ func TestTermIgnoringSuiteIsKilledAfterGrace(t *testing.T) {
 			"read _ <"+fx+"/hold\n")
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	codes := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"stubborn"}, KillGrace: 50 * time.Millisecond, Out: &out, Signals: signals})
-	readFifoLine(t, filepath.Join(fx, "ready"))
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"stubborn"}, KillGrace: 50 * time.Millisecond, Out: &out, Signals: signals})
+	readFifoLine(t, filepath.Join(fx, "ready"), run)
 	signals <- syscall.SIGTERM
 	// runWave only returns once the KILLed suite is reaped; no clock here
 	// beyond the injected grace.
-	if code := <-codes; code != 143 {
+	if code := run.wait(); code != 143 {
 		t.Fatalf("exit %d, want 143; output:\n%s", code, out.String())
 	}
 }
@@ -304,5 +379,71 @@ func TestWaveCompletesDespiteBlockedLeakCheck(t *testing.T) {
 	// Verify the wave exits with failure (one suite failed).
 	if code == 0 {
 		t.Fatalf("wave must exit nonzero when a suite fails; got %d", code)
+	}
+}
+
+// TestReadFifoLineFailsWhenWaveExitsWithoutWriting pins the mechanism behind a
+// flake that cost a whole module: readFifoLine opened a FIFO with no ceiling and
+// no awareness of the wave, so a suite that died before writing left the test
+// blocked in os.Open until the 600s package timeout, taking every other test in
+// the package down with it.
+//
+// The wave's exit is the awaitable completion that was going unawaited: once the
+// wave is done, no writer is ever coming, and the read can fail immediately with
+// a real diagnosis instead of a timeout mystery.
+//
+// Restoring the unbounded os.Open, or dropping the run argument, hangs this test.
+func TestReadFifoLineFailsWhenWaveExitsWithoutWriting(t *testing.T) {
+	fx := mkFixtureFifos(t, "never-written")
+	dead := &waveRun{done: make(chan struct{}), code: 7}
+	close(dead.done) // the wave is already over; nobody will ever open for write
+
+	start := time.Now()
+	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected an error when the wave exited without writing")
+	}
+	if !strings.Contains(err.Error(), "7") {
+		t.Errorf("error should name the wave's exit code so the failure is diagnosable, got: %v", err)
+	}
+	// The tripwire is a minute; returning anywhere near it means the wave-exit
+	// path is not wired and we fell through to the ceiling instead.
+	if elapsed > 10*time.Second {
+		t.Errorf("took %v: fell through to the tripwire instead of noticing the wave had exited", elapsed)
+	}
+}
+
+// TestReadFifoLineWaitsForWriterThatOutlivesTheWave guards the other half of the
+// contract. A forked descendant is reaped via the process group, not by the wave
+// goroutine, so it can legitimately write AFTER runWave has returned — which is
+// exactly what TestForkedDescendantIsReaped exercises. Treating wave exit as
+// proof that no writer will ever appear turns that into a spurious failure,
+// observed at 1 run in 5 while developing this fix.
+//
+// So wave exit demotes the read to a bounded grace rather than ending it.
+func TestReadFifoLineWaitsForWriterThatOutlivesTheWave(t *testing.T) {
+	fx := mkFixtureFifos(t, "late")
+	path := filepath.Join(fx, "late")
+	dead := &waveRun{done: make(chan struct{}), code: 143}
+	close(dead.done) // the wave is already over ...
+
+	go func() { // ... but an orphaned descendant still writes
+		time.Sleep(150 * time.Millisecond)
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString("late-descendant\n")
+	}()
+
+	line, err := readFifoLineOrExit(path, dead, time.Minute)
+	if err != nil {
+		t.Fatalf("read failed on a writer that outlived the wave: %v", err)
+	}
+	if line != "late-descendant" {
+		t.Fatalf("got %q, want %q", line, "late-descendant")
 	}
 }
