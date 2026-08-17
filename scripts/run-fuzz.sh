@@ -709,6 +709,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzSessionTreePass3::"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatDeterministicUnion::"
 	"native:agent:.:FuzzAgentMiscProgram::"
+	"native:agent:.:FuzzAgentClonesShareNoMutableState::session_client_mutation.go;delegate_tree_start.go;delegate_tree_finish.go;job_watch.go"
 	"native:agent:.:FuzzSessionToolsAuxExact::session_tools_find.go;session_tools_communicate.go;tool_web_fetch.go;session_tools_ask.go;session_tools_goal.go;session_tools_task.go;session_tool_repair.go"
 	"native:.:./cmd/serf-tui:FuzzCommandRegistryProgram::"
 	"native:.:./cmd/serf-tui:FuzzHubControlProgram::"
