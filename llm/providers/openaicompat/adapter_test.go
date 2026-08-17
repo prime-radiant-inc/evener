@@ -541,6 +541,98 @@ func TestAdapter_Complete_ToolResults(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBody_RejectsToolResultImage(t *testing.T) {
+	tests := []struct {
+		name           string
+		imageMediaType string
+	}{
+		{name: "explicit media type", imageMediaType: "image/png"},
+		{name: "defaulted/empty media type", imageMediaType: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := llm.Request{
+				Model: "gpt-4.1-mini",
+				Messages: []llm.Message{{
+					Role: llm.RoleTool,
+					Content: []llm.ContentPart{{
+						Kind: llm.ContentToolResult,
+						ToolResult: &llm.ToolResultData{
+							ToolCallID:     "call_img",
+							Content:        "screenshot",
+							ImageData:      []byte{0x89, 0x50, 0x4e, 0x47},
+							ImageMediaType: tt.imageMediaType,
+						},
+					}},
+				}},
+			}
+			_, err := buildRequestBody(req, true, ModelCompat{})
+			if err == nil {
+				t.Fatal("buildRequestBody accepted tool-result image")
+			}
+			if !strings.Contains(err.Error(), "tool-result images") {
+				t.Fatalf("error=%v, want tool-result image explanation", err)
+			}
+			var configErr *llm.ConfigurationError
+			if !errors.As(err, &configErr) {
+				t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestAdapter_Complete_ToolResultImage_ReturnsErrorWithoutDispatch(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Complete(context.Background(), llm.Request{
+		Model: "gpt-4.1-mini",
+		Messages: []llm.Message{{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID:     "call_img",
+					Content:        "screenshot",
+					ImageData:      []byte{0x89, 0x50, 0x4e, 0x47},
+					ImageMediaType: "image/png",
+				},
+			}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("Complete accepted tool-result image")
+	}
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
+	}
+}
+
+func TestAdapter_Stream_ToolResultImage_ReturnsErrorWithoutDispatch(t *testing.T) {
+	a := &Adapter{APIKey: "k", BaseURL: "http://unused"}
+	_, err := a.Stream(context.Background(), llm.Request{
+		Model: "gpt-4.1-mini",
+		Messages: []llm.Message{{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID:     "call_img",
+					Content:        "screenshot",
+					ImageData:      []byte{0x89, 0x50, 0x4e, 0x47},
+					ImageMediaType: "image/png",
+				},
+			}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("Stream accepted tool-result image")
+	}
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("expected ConfigurationError, got %T: %v", err, err)
+	}
+}
+
 func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
 	body, err := buildRequestBody(llm.Request{
 		Model: "m",
