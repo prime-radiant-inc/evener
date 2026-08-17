@@ -112,7 +112,7 @@ func TestSummarizeTurn_SkipsNilParts(t *testing.T) {
 			{Kind: llm.ContentText, Text: "hi"},
 		},
 	})}
-	ts := summarizeTurn(1, e, "communicate")
+	ts := summarizeTurn(1, e, "communicate", DefaultTextMax)
 	if len(ts.ToolCalls) != 0 || len(ts.ToolResults) != 0 {
 		t.Errorf("nil parts should be skipped: %+v", ts)
 	}

@@ -207,6 +207,81 @@ func TestTranscript_RendersToolResultPreviews(t *testing.T) {
 	}
 }
 
+// salvagedLoopFixture writes a session whose one assistant turn carries text
+// far past DefaultTextMax, plus an equally long tool result. This is the shape
+// of a salvaged partial response (agent/salvage.go): the model's repeated tool
+// calls survive as *text*, never as structural tool-call parts, so no
+// tool-call metric can see the repetition and only the full turn text can.
+func salvagedLoopFixture(t *testing.T) (base, sid, turnText, resultText string) {
+	t.Helper()
+	base = t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid = sidB
+	turnText = strings.Repeat(`manage_worktree({"op":"list"}) `, 60) + "END_OF_SALVAGED_TEXT"
+	resultText = strings.Repeat("worktree-row ", 40) + "END_OF_RESULT"
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			assistantText(turnText),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("manage_worktree", resultText, false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+	return base, sid, turnText, resultText
+}
+
+func TestTranscript_TextMaxDefaultTruncates(t *testing.T) {
+	base, sid, turnText, resultText := salvagedLoopFixture(t)
+
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.Turns[0].Text, turnText[:DefaultTextMax]+"…"; got != want {
+		t.Errorf("default turn text = %q, want the first %d bytes plus an ellipsis (%q)",
+			got, DefaultTextMax, want)
+	}
+	if got, want := r.Turns[1].ToolResults[0].ContentPreview, resultText[:DefaultTextMax]+"…"; got != want {
+		t.Errorf("default tool-result preview = %q, want %q", got, want)
+	}
+}
+
+func TestTranscript_TextMaxFullRendersEveryByte(t *testing.T) {
+	base, sid, turnText, resultText := salvagedLoopFixture(t)
+
+	r, err := Transcript(base, sid, TranscriptOpts{TextMax: TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Turns[0].Text; got != turnText {
+		t.Errorf("TextMaxFull turn text is not the whole turn: got %d bytes, want %d\ngot:  %q\nwant: %q",
+			len(got), len(turnText), got, turnText)
+	}
+	if got := r.Turns[1].ToolResults[0].ContentPreview; got != resultText {
+		t.Errorf("TextMaxFull tool-result preview is not the whole result: got %d bytes, want %d",
+			len(got), len(resultText))
+	}
+	// The rendered output is what an operator actually reads.
+	if out := RenderTranscript(r, "markdown"); !strings.Contains(out, "END_OF_SALVAGED_TEXT") {
+		t.Errorf("markdown render dropped the tail of the turn text:\n%s", out)
+	}
+}
+
+func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
+	base, sid, turnText, _ := salvagedLoopFixture(t)
+	const textMax = 512
+
+	r, err := Transcript(base, sid, TranscriptOpts{TextMax: textMax})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.Turns[0].Text, turnText[:textMax]+"…"; got != want {
+		t.Errorf("TextMax=%d turn text = %d bytes (%q), want the first %d bytes plus an ellipsis",
+			textMax, len(got), got, textMax)
+	}
+}
+
 func TestTranscript_ResultToolFromMeta(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)

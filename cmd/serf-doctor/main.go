@@ -8,7 +8,7 @@
 // Usage:
 //
 //	serf-doctor locate     <selector>
-//	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B]
+//	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B] [--text-max N] [--full-text]
 //	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
 //	serf-doctor jobs       <selector> [--job <id>]
 //	serf-doctor mutations  <selector>
@@ -215,11 +215,20 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	health := fs.Bool("health", false, "print mechanical per-session health metrics (tool errors, identical-run loops, truncation, steering, jobs, stale notifications) and exit")
 	format := fs.String("format", "markdown", "render format: outline | markdown")
 	rangeArg := fs.String("range", "", "turn window: last:N | start:N | A-B")
+	textMax := fs.Int("text-max", doctor.DefaultTextMax, "byte cap on each turn's rendered text and each tool-result preview")
+	fullText := fs.Bool("full-text", false, "render every turn's text and tool-result preview whole, with no byte cap; takes precedence over --text-max. Reads past the cap that hides a repetition loop inside one response, whose repeated calls are salvaged into turn text and so are counted by no tool-call metric -- narrow with --range first, a turn can run to tens of kilobytes")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
+
+	// A non-positive cap reads as "no cap" by the usual CLI convention, but the
+	// library spells unbounded as --full-text; silently applying the 200-byte
+	// default instead would hide the very loop this flag exists to expose.
+	if *textMax <= 0 {
+		return fail(stderr, "transcript", errors.New("--text-max must be positive; use --full-text to render turns with no cap"))
+	}
 
 	if *count != "" {
 		res, err := doctor.Count(base, sel, *count)
@@ -243,7 +252,11 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 		return writeText(stdout, doctor.RenderHealth(res))
 	}
 
-	res, err := doctor.Transcript(base, sel, doctor.TranscriptOpts{Format: *format, Range: *rangeArg})
+	opts := doctor.TranscriptOpts{Format: *format, Range: *rangeArg, TextMax: *textMax}
+	if *fullText {
+		opts.TextMax = doctor.TextMaxFull
+	}
+	res, err := doctor.Transcript(base, sel, opts)
 	if err != nil {
 		return fail(stderr, "transcript", err)
 	}
