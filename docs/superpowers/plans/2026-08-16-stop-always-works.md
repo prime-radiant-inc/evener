@@ -27,6 +27,32 @@ two minters).
 
 ---
 
+## STATUS at 2026-08-17 (read this first)
+
+Branch is 64 commits ahead of `6af43a95a`. Nothing merged, nothing pushed.
+
+| Task | State |
+| --- | --- |
+| 1 measure the invariant | **Done, and the gate fired** (RESULT block below). A later review then showed the harness asserts less than it claims -- it interrupts only AFTER the boundary -- so "the gap is unreachable" is NOT established. |
+| 2 Stop escape hatch | **Uncommitted work in the worktree** from a subagent. Review before committing. |
+| 3 steer always lands | **Done** -- `ddc68ae68`, `d131a80fc`, `e9ce2994b`. |
+| 4 EventError turn-scoped state | **Done** -- `7ff6d0128`. |
+| 5 kata 2f41 | **Done** -- `af56bffe7`, `402d6c8e7`. |
+| 6 client double-send | **REVERTED** -- `8218cefd6`. It disabled Send in the window it targeted; kata `8c65` records what a correct fix needs. |
+| 7 subagents | Split to `2026-08-16-controllable-subagents.md`. Kata `tb2k` records two false premises in it. |
+| 8, 9 coverage and docs | Mostly done (`77fded8`, `f98ef83`, `b9b9f06`, `85bdecc`, `7807c6f`). |
+
+**Before landing:** a live browser pass. Nothing after the first half has been
+verified in a browser, and the original bug existed while the suite was green.
+Then e2e coverage for the newer behaviours, then the gates (`make lint` runs
+NINE targets), then merge -- kata `tx4q` (P0) means main refills the disk on
+every full-suite run until this lands.
+
+**The failure mode this branch kept hitting:** three fixes were wrong in ways
+their own tests missed, each because the test asserted something easier than the
+claim, or used a fixture that cannot occur in production. Check that a green
+test's setup is reachable before believing it.
+
 ## What was already true, and how that was missed
 
 Two adversarial reviews established that on a served root session **every
