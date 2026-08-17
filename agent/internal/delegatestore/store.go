@@ -140,22 +140,7 @@ func (s *Store) initializeOrRecover() error {
 		return fmt.Errorf("delegatestore: stat %s: %w", s.path, err)
 	}
 	if info.Size() == 0 {
-		header, err := json.Marshal(versionRecord{Version: CurrentVersion})
-		if err != nil {
-			return fmt.Errorf("delegatestore: marshal version header: %w", err)
-		}
-		header = append(header, '\n')
-		n, err := s.ops.write(s.f, header)
-		if err == nil && n != len(header) {
-			err = io.ErrShortWrite
-		}
-		if err != nil {
-			return fmt.Errorf("delegatestore: write version header: %w", err)
-		}
-		if err := s.ops.sync(s.f); err != nil {
-			return fmt.Errorf("delegatestore: sync version header: %w", err)
-		}
-		return nil
+		return s.writeVersionHeader()
 	}
 
 	raw, err := os.ReadFile(s.path)
@@ -167,7 +152,14 @@ func (s *Store) initializeOrRecover() error {
 	if raw[len(raw)-1] != '\n' {
 		lastNewline := bytes.LastIndexByte(raw, '\n')
 		if lastNewline < 0 {
-			return errors.New("delegatestore: unterminated version header")
+			// A file with no newline at all can only be the initial version
+			// header write torn by a crash before its sync: every later append
+			// lands after a terminated header line. No committed events can
+			// exist, so truncating to zero and rewriting the header is lossless.
+			if err := s.ops.truncate(s.f, 0); err != nil {
+				return fmt.Errorf("delegatestore: truncate torn version header: %w", err)
+			}
+			return s.writeVersionHeader()
 		}
 		committed = raw[:lastNewline+1]
 		recoverOffset = int64(lastNewline + 1)
@@ -192,6 +184,27 @@ func (s *Store) initializeOrRecover() error {
 	}
 	if len(events) > 0 {
 		s.seq = events[len(events)-1].Seq
+	}
+	return nil
+}
+
+// writeVersionHeader writes and syncs a fresh version header. Callers must
+// ensure the file is empty with its offset at zero.
+func (s *Store) writeVersionHeader() error {
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		return fmt.Errorf("delegatestore: marshal version header: %w", err)
+	}
+	header = append(header, '\n')
+	n, err := s.ops.write(s.f, header)
+	if err == nil && n != len(header) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return fmt.Errorf("delegatestore: write version header: %w", err)
+	}
+	if err := s.ops.sync(s.f); err != nil {
+		return fmt.Errorf("delegatestore: sync version header: %w", err)
 	}
 	return nil
 }

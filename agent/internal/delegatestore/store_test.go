@@ -377,6 +377,93 @@ func TestOpenRecoversOnlyUnterminatedTrailingBatch(t *testing.T) {
 	}
 }
 
+func TestOpenRecoversTornVersionHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	if err := os.WriteFile(path, []byte(`{"vers`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with torn header: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	raw := mustReadFile(t, path)
+	if want := []byte("{\"version\":1}\n"); !bytes.Equal(raw, want) {
+		t.Fatalf("recovered bytes = %q, want fresh header %q", raw, want)
+	}
+	events, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want empty store after torn-header recovery", events)
+	}
+	assigned, _, err := store.Append(make(State), createdEvent("dlg_alpha", ""))
+	if err != nil {
+		t.Fatalf("Append after recovery: %v", err)
+	}
+	if assigned.Seq != 1 {
+		t.Fatalf("assigned seq = %d, want 1", assigned.Seq)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen after recovery: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	events, err = reopened.Load()
+	if err != nil {
+		t.Fatalf("Load reopened: %v", err)
+	}
+	if len(events) != 1 || events[0].Seq != 1 || events[0].DelegateID != "dlg_alpha" {
+		t.Fatalf("reopened events = %#v, want the single appended create", events)
+	}
+}
+
+func TestOpenRecoversTornFirstBatchAfterCompleteHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	header := []byte("{\"version\":1}\n")
+	raw := append(append([]byte(nil), header...), `{"events":[{"kind`...)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with torn first batch: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if got := mustReadFile(t, path); !bytes.Equal(got, header) {
+		t.Fatalf("recovered bytes = %q, want header only %q", got, header)
+	}
+	events, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events = %#v, want torn first batch discarded", events)
+	}
+}
+
+func TestOpenRejectsTerminatedMalformedHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	raw := []byte("{\"version\":}\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "version header") {
+		t.Fatalf("Open error = %v, want malformed terminated header rejection", err)
+	}
+	if got := mustReadFile(t, path); !bytes.Equal(got, raw) {
+		t.Fatalf("malformed terminated header bytes changed:\n got %q\nwant %q", got, raw)
+	}
+}
+
 func TestOpenRejectsTerminatedMalformedBatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	raw := []byte("{\"version\":1}\n{\"events\":[}\n")
