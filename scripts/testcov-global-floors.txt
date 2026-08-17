@@ -36,7 +36,7 @@
 # production build, so the module has zero statements and no floor is definable.
 . 79.6
 agent 87.9
-llm 89.9
 auth 94.8
 envvars 100.0
-identifier 89.5
+identifier 92.6
+llm 89.9

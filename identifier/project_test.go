@@ -305,4 +305,53 @@ func TestValidateProjectID(t *testing.T) {
 	}
 }
 
+func TestProjectIDReturnsResolvedIDAndPropagatesResolutionFailure(t *testing.T) {
+	dir := t.TempDir()
+	resolved, err := ResolveProject(dir)
+	if err != nil {
+		t.Fatalf("ResolveProject(%q): %v", dir, err)
+	}
+	got, err := ProjectID(dir)
+	if err != nil {
+		t.Fatalf("ProjectID(%q): %v", dir, err)
+	}
+	// ProjectID exists to hand back only the ID half of ResolveProject, so the
+	// contract worth pinning is that it agrees with the resolver rather than
+	// deriving an identifier of its own.
+	if got != resolved.ID {
+		t.Fatalf("ProjectID = %q, ResolveProject.ID = %q", got, resolved.ID)
+	}
+	if err := ValidateProjectID(got); err != nil {
+		t.Fatalf("ProjectID returned %q, which ValidateProjectID rejects: %v", got, err)
+	}
+
+	// A resolution failure must surface, not be flattened into an empty ID that
+	// a caller could mistake for a real project.
+	missing := filepath.Join(dir, "no-such-directory")
+	id, err := ProjectID(missing)
+	if err == nil {
+		t.Fatalf("ProjectID(%q) = %q, want an error for a path that does not exist", missing, id)
+	}
+	if id != "" {
+		t.Fatalf("ProjectID returned %q alongside error %v, want empty", id, err)
+	}
+}
+
+func TestResolveProjectRejectsAPathThatIsAFileNotADirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file resolves and stats perfectly well, so without the directory
+	// check it would sail through and yield a project ID for something that can
+	// never hold one.
+	project, err := ResolveProject(file)
+	if err == nil {
+		t.Fatalf("ResolveProject(%q) = %+v, want an error for a regular file", file, project)
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("ResolveProject(%q) error = %v, want it to say the path is not a directory", file, err)
+	}
+}
+
 var _ Resolver = (*pipelineResolver)(nil)
