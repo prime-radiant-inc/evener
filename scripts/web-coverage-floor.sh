@@ -96,7 +96,12 @@ print("total", grand_c, grand_t, "%.1f" % (100.0 * grand_c / grand_t) if grand_t
 PY
 }
 
-rollup_file="$(mktemp -t serf-webcov.XXXXXX)"
+# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
+# uses the Darwin per-user temp directory instead, which puts the scratch outside
+# the dev-tooling wave's per-suite isolation — and so outside the leftover check
+# the trap below is written to satisfy.
+tmpbase=${TMPDIR:-/tmp}
+rollup_file="$(mktemp "${tmpbase%/}/serf-webcov.XXXXXX")"
 # Removed on every exit path, not just the happy one: the dev-tooling wave fails
 # a suite that leaves anything behind, and this script runs inside one.
 trap 'rm -f "$rollup_file"' EXIT
@@ -117,7 +122,7 @@ while read -r area c t pct; do
 done <"$rollup_file"
 
 if $bless; then
-	tmp="$(mktemp)"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
 	{
 		echo "# Frontend (vitest) per-area LINE coverage floors."
 		echo "# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;"

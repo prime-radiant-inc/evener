@@ -17,7 +17,12 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-profiles_dir="$(mktemp -d -t serf-fuzzcov.XXXXXX)"
+# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
+# uses the Darwin per-user temp directory instead, which puts the scratch outside
+# the dev-tooling wave's per-suite isolation — and so outside the leftover check
+# the trap below is written to satisfy.
+tmpbase=${TMPDIR:-/tmp}
+profiles_dir="$(mktemp -d "${tmpbase%/}/serf-fuzzcov.XXXXXX")"
 manifest="$profiles_dir/manifest.tsv"
 trap 'rm -rf "$profiles_dir"' EXIT
 

@@ -8,7 +8,7 @@ runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
 makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t fuzzcov-global-selftest.XXXXXX)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/fuzzcov-global-selftest.XXXXXX")"
 # Canonicalize: the runner resolves its repo root with pwd -P, so the fixture's
 # spelling must be physical too or the fake go's exact-$PWD dispatch never
 # matches (macOS $TMPDIR lives behind the /var -> /private/var symlink).

@@ -59,7 +59,12 @@ measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; 
 # argument list as a redirection to a file named "0".
 pct_of() { awk -v c="$1" -v t="$2" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}'; }
 
-work_dir="$(mktemp -d -t serf-covunion.XXXXXX)"
+# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
+# uses the Darwin per-user temp directory instead, which put every run's scratch
+# outside the dev-tooling wave's per-suite isolation — and so outside the leftover
+# check that is supposed to catch exactly this.
+tmpbase=${TMPDIR:-/tmp}
+work_dir="$(mktemp -d "${tmpbase%/}/serf-covunion.XXXXXX")"
 measured_file="$work_dir/measured.txt"
 : >"$measured_file"
 fail=0
@@ -140,7 +145,7 @@ for m in $modules; do
 done
 
 if $bless; then
-	tmp="$(mktemp)"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
 	{
 		if grep -q '^#' "$floors_file" 2>/dev/null; then
 			awk '/^#/{print; next} {exit}' "$floors_file"

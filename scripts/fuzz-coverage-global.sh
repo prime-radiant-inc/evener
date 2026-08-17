@@ -268,7 +268,12 @@ case "$go_arch" in
 		;;
 esac
 
-work="$(mktemp -d -t serf-fuzzcov-global.XXXXXX)"
+# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
+# uses the Darwin per-user temp directory instead, which puts the scratch outside
+# the dev-tooling wave's per-suite isolation — and so outside the leftover check
+# that is supposed to catch exactly this.
+tmpbase=${TMPDIR:-/tmp}
+work="$(mktemp -d "${tmpbase%/}/serf-fuzzcov-global.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 plan="$work/targets.tsv"
 groups="$work/groups.tsv"

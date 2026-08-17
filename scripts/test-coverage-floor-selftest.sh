@@ -16,7 +16,7 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/test-coverage-floor.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t serf-testcov-selftest.XXXXXX)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/serf-testcov-selftest.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 # The script derives repo_root and the floors path from its OWN location, so the
@@ -52,6 +52,9 @@ prof=""
 for a in "$@"; do
 	case "$a" in -coverprofile=*) prof="${a#-coverprofile=}" ;; esac
 done
+# FAKE_GO_SLEEP holds a measurement open so the run can be observed and
+# signalled while its scratch directory exists.
+[ -n "${FAKE_GO_SLEEP:-}" ] && sleep "$FAKE_GO_SLEEP"
 [ -n "$prof" ] || { echo "fake go: no -coverprofile in: $*" >&2; exit 2; }
 case "$(basename "$PWD")" in
 	repo)  cov=1 ;;   # the "." module: 1 of 4 statements -> 25.0%
@@ -120,9 +123,26 @@ else
 	ok "the root module is measured without -short"
 fi
 
+assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
+
+# ...which only means something if the scratch would have landed in $tmphome at
+# all. See scratch-selftest-lib.sh: it did not, and the line above passed for as
+# long as the bug existed.
+. "$(dirname "$0")/scratch-selftest-lib.sh"
+start_scratch_run() {
+	set -m   # give the run its own process group, so a signal reaches the group
+	PATH="$fake_bin:$PATH" FAKE_GO_SLEEP=30 TMPDIR="$tmphome" \
+		bash "$script" --modules ". agent" >"$out" 2>&1 &
+	run_pid=$!
+	set +m
+}
+assert_scratch_inside_tmpdir
+assert_killed_run_cleans_up TERM
+assert_killed_run_cleans_up INT
+assert_killed_run_cleans_up HUP
+
 # --bless must carry the MEASURED percentages through; the associative-array bug
 # silently wrote back stale floors here even when the rows above looked right.
-assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
 
 run --bless >"$out" 2>&1
 assert_has "$floors" ". 25.0" "bless records the measured \".\" floor"
