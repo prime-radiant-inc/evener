@@ -345,9 +345,14 @@ type Server struct {
 	// notification kick that found the input slot full. It coalesces further
 	// drops into that one parked send. See SubmitNotification.
 	notifyWakeRearmed bool
-	inputCh           chan InputMessage
-	hubToken          string
-	sameOrigin        httpguard.SameOriginPolicy
+	// pendingUserInputWakeRearmed is notifyWakeRearmed's counterpart for the
+	// queued-input wake. Each guaranteed wake needs its own flag: one shared
+	// flag would let a parked notification swallow a queued-input kick, which is
+	// the very drop both are here to prevent. See SubmitPendingUserInput.
+	pendingUserInputWakeRearmed bool
+	inputCh                     chan InputMessage
+	hubToken                    string
+	sameOrigin                  httpguard.SameOriginPolicy
 }
 
 // SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
@@ -758,43 +763,32 @@ func (s *Server) SubmitContinuation(prompt string) {
 // 1-slot input channel. It is wired from serve.go via Session.SetNotifyFunc
 // (the agent module must not import server).
 //
-// The wake is GUARANTEED, not best-effort. A kick that finds the slot occupied
-// is re-armed on a goroutine that parks on the send and completes it the moment
-// the slot frees. Dropping it outright is only safe for a session that is
-// mid-turn, where the drain loop's tail gate re-checks the queue; an idle
-// session has no tail to run, so a dropped kick leaves a finished job unheard
-// until some unrelated input happens along. There is no timer and no poll here:
-// the parked send IS the wait for channel availability.
+// The wake is GUARANTEED, not best-effort (see submitGuaranteedWake for how).
+// Dropping it outright is only safe for a session that is mid-turn, where the
+// drain loop's tail gate re-checks the queue; an idle session has no tail to
+// run, so a dropped kick leaves a finished job unheard until some unrelated
+// input happens along.
 //
-// The call itself never blocks, and repeated drops coalesce into the one parked
-// send — the queue that wake drains is drained whole, so one wake settles any
-// number of dropped kicks.
+// Repeated drops coalescing into one parked send is safe here because the queue
+// that wake drains is drained whole, so one wake settles any number of dropped
+// kicks.
 func (s *Server) SubmitNotification() {
-	select {
-	case s.inputCh <- InputMessage{Kind: agent.EntryNotification}:
-		return
-	default:
-	}
-	s.mu.Lock()
-	if s.notifyWakeRearmed {
-		s.mu.Unlock()
-		return
-	}
-	s.notifyWakeRearmed = true
-	s.mu.Unlock()
-	go func() {
-		s.inputCh <- InputMessage{Kind: agent.EntryNotification}
-		// Cleared only after the send lands, so every kick dropped while this
-		// one was parked is covered by it.
-		s.mu.Lock()
-		s.notifyWakeRearmed = false
-		s.mu.Unlock()
-	}()
+	s.submitGuaranteedWake(InputMessage{Kind: agent.EntryNotification}, &s.notifyWakeRearmed)
 }
 
 // SubmitClientMutationStart wakes the serve loop after a turn/start intent is
 // durably accepted. The loop claims the stored payload and identity from the
 // named session rather than carrying either through this process-local signal.
+//
+// This wake is best-effort, and deliberately so: the serve loop probes for a
+// runnable durable start at the top of every iteration, before it blocks on this
+// channel (processNextServeInput). That probe is the backstop, and it is a
+// complete one — for a kick to be dropped here the channel must be non-empty, so
+// the loop cannot be blocked indefinitely; it consumes that message and probes
+// again. Re-arming this wake the way the two guaranteed ones are re-armed would
+// make it worse rather than redundant: the parked message names a session, the
+// loop discards a start message whose SessionID is not the live session, and the
+// coalescing flag would meanwhile have suppressed the later, correct kick.
 func (s *Server) SubmitClientMutationStart(sessionID string) {
 	select {
 	case s.inputCh <- InputMessage{ClientMutationStart: true, SessionID: sessionID}:
@@ -806,9 +800,65 @@ func (s *Server) SubmitClientMutationStart(sessionID string) {
 // SubmitClientMutationStart it names the session rather than carrying the
 // payload, so the loop reads whatever the journal actually owns at the moment
 // it claims.
+//
+// The wake is GUARANTEED, for the same reason SubmitNotification's is and with
+// more at stake. A QueuedInput message is the only thing that reaches
+// ProcessPendingUserInput; unlike a durable start there is no probe, so nothing
+// comes back for a dropped kick. The stranding is real and quiet: a job
+// notification occupying the slot while a question is pending is refused by the
+// entry gate, so no turn runs, so no drain tail sweeps the queue — and the
+// client has already been handed a receipt saying its message was accepted.
+//
+// One wake settles any number of dropped ones. The wake runs the queue head as
+// its own turn and that turn's drain tail runs the rest: selectDrainNextAction
+// returns runQueued at every tail, and its awaiting branch keeps the
+// queued-input rung live while holding every other rung.
 func (s *Server) SubmitPendingUserInput(sessionID string) {
+	s.submitGuaranteedWake(
+		InputMessage{QueuedInput: true, SessionID: sessionID},
+		&s.pendingUserInputWakeRearmed,
+	)
+}
+
+// submitGuaranteedWake delivers msg on the 1-slot input channel without ever
+// blocking its caller and without ever dropping the wake. It is the shared shape
+// behind SubmitNotification and SubmitPendingUserInput; each passes its own
+// re-arm flag, which must be guarded by s.mu and used by that wake alone.
+//
+// A kick that finds the slot occupied is re-armed on a goroutine that parks on
+// the send and completes it the moment the slot frees. There is no timer and no
+// poll: the parked send IS the wait for channel availability. Not blocking the
+// caller is a requirement, not an optimization — these wakes run synchronously
+// on the AppWire request handler goroutine, and a blocking send there would
+// stall a client's response behind the serve loop.
+//
+// rearmed is cleared only after the send lands, so every kick dropped while this
+// one was parked is covered by it. That coalescing is safe only for a wake whose
+// work is drained whole rather than one item at a time; both callers document
+// why theirs is.
+//
+// The parked goroutine outlives a serve loop that stops reading, for the life of
+// the process. Server has no shutdown lifecycle to select against, and inventing
+// one to close a per-process-exit goroutine is a worse trade than the goroutine.
+// Consolidating both wakes here means that exposure is one fact about this
+// codebase, and one line to change if Server ever grows such a lifecycle.
+func (s *Server) submitGuaranteedWake(msg InputMessage, rearmed *bool) {
 	select {
-	case s.inputCh <- InputMessage{QueuedInput: true, SessionID: sessionID}:
+	case s.inputCh <- msg:
+		return
 	default:
 	}
+	s.mu.Lock()
+	if *rearmed {
+		s.mu.Unlock()
+		return
+	}
+	*rearmed = true
+	s.mu.Unlock()
+	go func() {
+		s.inputCh <- msg
+		s.mu.Lock()
+		*rearmed = false
+		s.mu.Unlock()
+	}()
 }
