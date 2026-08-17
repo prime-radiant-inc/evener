@@ -80,14 +80,21 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 	// "127.0.0.1:0" and needs the port the kernel actually handed back.
 	log.Printf("fakellm listening on %s (base_url %s)", srv.Addr(), srv.BaseURL())
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return serve(ctx, srv, hold, rounds, jobRelease)
+}
+
+// serve answers every round the fake receives until ctx is cancelled or the
+// server closes. It is separate from run so a test can drive it on a server
+// it holds itself.
+func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds int, jobRelease string) error {
 	notesDir, err := os.MkdirTemp("", "fakellm-notes-")
 	if err != nil {
 		return fmt.Errorf("create notes dir: %w", err)
 	}
 	defer os.RemoveAll(notesDir) //nolint:errcheck // throwaway fixture directory
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	round := 0
 	for {
