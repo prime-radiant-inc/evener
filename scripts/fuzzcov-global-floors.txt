@@ -50,7 +50,7 @@
 # (project, uuid) against 363 statements.
 . 84.1
 agent 72.6
-llm 80.8
+llm 81.5
 auth 100.0
 envvars 96.0
 fuzz 100.0
