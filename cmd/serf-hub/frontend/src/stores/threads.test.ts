@@ -3326,9 +3326,14 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
-  test("interrupt sends the tracked model's activeTurnId as expectedTurnId", async () => {
+  // Stop never names a turn, even here, where this client is tracking one.
+  // Naming it could only ever make Stop fail -- the id goes stale when a turn
+  // rolls over between the click and the request -- and a refused Stop is the
+  // failure the button exists to prevent.
+  test("interrupt asks for whatever is running even when this client knows the turn id", async () => {
     const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
     fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().interrupt("ref_a");
@@ -3338,7 +3343,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "turn_1",
+      interruptRunningTurn: true,
     });
   });
 

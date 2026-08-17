@@ -1938,16 +1938,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async interrupt(ref) {
-    // Stop targets the turn on screen when this client knows which one that
-    // is, so it can never cancel a turn the user was not looking at. When no
-    // turn id has reached us the session can still be working -- a turn it
-    // started for itself, a boundary between two turns of one drain -- and the
-    // empty string is not a turn any layer will accept. Ask for whatever is
-    // running instead: a Stop the user can see is a Stop that must work
-    // (Jesse, 2026-08-16).
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
-    const params = expectedTurnId ? { ref, expectedTurnId } : { ref, interruptRunningTurn: true };
-    await enqueueMutation(ref, "turn/interrupt", params, { method: "turn/interrupt" });
+    // Stop is session-scoped, always (Jesse, 2026-08-16). Naming a turn here
+    // only ever made Stop fail: the id is missing in the windows Stop matters
+    // most -- a turn the session started for itself, a boundary between two
+    // turns of one drain, a cold client -- and stale in the race where a turn
+    // rolls over between the click and the request. Neither refusal is what
+    // the button means. "Stop" means stop what you are doing.
+    await enqueueMutation(ref, "turn/interrupt", { ref, interruptRunningTurn: true }, { method: "turn/interrupt" });
   },
 
   async drainAsSteer(ref, text, attachments) {
