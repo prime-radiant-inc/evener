@@ -688,3 +688,20 @@ closes) — they get ONE row, "Continue in the composer: /goal …", that
 inserts their own typed text into the focused session's composer and moves
 focus there. With no session focused, the row says so instead of silently
 doing nothing. The palette never executes a session mutation itself again.
+
+## 2026-08-16 light-theme --attention goes from salmon to true amber
+
+Beautiful UI's light-theme orange `#EF720C` was adopted 1:1 in the
+2026-08-13 re-theme, but on white surfaces its tints betray the design
+system's own vocabulary: every doc calls this hue "amber", yet the 15%
+`--attention-bg` wash (badges, chips, toasts) rendered `#FFEBE0` and the
+AskDock batch's deliberate 24%/55% amber envelope rendered `#FFDFCD` —
+salmon/peach (oklch hue ~51°), not amber. The color-is-attention
+semantics are untouched (amber still means exactly "a human is needed");
+the fix is one token. Light-theme `--attention` is now `#F59E0B` (oklch
+hue ~70°, true amber), so every `color-mix(var(--attention) …)` consumer
+— badges, toasts, chips, `--attention-edge`, and AskDock's local mixes —
+follows automatically. Dark keeps `#F68F3C`, which already reads amber
+against dark surfaces; `--attention-ink` stays `#AD5209` (still 4.75:1 AA
+on the new tint). The re-theme spec's palette table is a historical
+record; this entry supersedes its light `--attention` cell.
