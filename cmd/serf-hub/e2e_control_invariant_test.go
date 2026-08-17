@@ -107,7 +107,7 @@ func TestE2E_ControlInvariantAcrossATurnBoundary(t *testing.T) {
 				continue
 			}
 			select {
-			case samples <- sample{status: string(read.Thread.Status.Type), turnID: read.Thread.Serf.ActiveTurnID}:
+			case samples <- sample{status: read.Thread.Status.Type, turnID: read.Thread.Serf.ActiveTurnID}:
 			default:
 			}
 		}
