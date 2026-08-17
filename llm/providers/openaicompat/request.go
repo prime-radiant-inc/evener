@@ -10,6 +10,10 @@ import (
 )
 
 func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]any, error) {
+	if requestHasToolResultImages(req) {
+		return nil, &llm.ConfigurationError{Message: "openai-compatible chat completions does not support tool-result images"}
+	}
+
 	quirks := mc.Quirks
 	body := map[string]any{
 		"model": req.Model,
@@ -559,6 +563,26 @@ func buildMultimodalParts(parts []llm.ContentPart) []map[string]any {
 		}
 	}
 	return out
+}
+
+// requestHasToolResultImages reports whether any tool-result content part in
+// req carries inline image bytes. The Chat Completions wire format only
+// permits text content on a "role":"tool" message, so a tool result with
+// non-empty ImageData cannot be represented and must be rejected explicitly
+// (mirroring the first-party OpenAI Chat Completions fallback in
+// providers/openai) rather than silently dropped by toChatMessages.
+func requestHasToolResultImages(req llm.Request) bool {
+	for _, m := range req.Messages {
+		if m.Role != llm.RoleTool {
+			continue
+		}
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
