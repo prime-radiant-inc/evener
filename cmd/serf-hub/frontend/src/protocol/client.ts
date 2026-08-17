@@ -33,6 +33,20 @@ class ProtocolVersionMismatchError extends Error {
   }
 }
 
+// HandshakeRejectedError marks an initialize the server REFUSED, as opposed to
+// one it answered with a version we do not speak. A daemon that disagrees about
+// the protocol rejects with InvalidRequest rather than replying with its own
+// version, so this is the shape a real skew actually produces -- and retrying is
+// pointless either way, because the frame we would resend is byte-identical.
+class HandshakeRejectedError extends Error {
+  constructor(cause: WireError) {
+    super(`AppwireClient: the server rejected the handshake: ${cause.message}`);
+    this.name = "HandshakeRejectedError";
+  }
+}
+
+const CODE_INVALID_REQUEST = -32600;
+
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
 // forever with no notifications flowing; the heartbeat sends a cheap app-level
@@ -296,6 +310,11 @@ export class AppwireClient {
       protocolVersion: APPWIRE_PROTOCOL_VERSION,
       clientInfo: this.clientInfo,
       capabilities: DEFAULT_CAPABILITIES,
+    }).catch((error: unknown) => {
+      if (error instanceof WireError && error.code === CODE_INVALID_REQUEST) {
+        throw new HandshakeRejectedError(error);
+      }
+      throw error;
     });
     if (result.protocolVersion !== APPWIRE_PROTOCOL_VERSION) {
       throw new ProtocolVersionMismatchError(result.protocolVersion);
@@ -367,7 +386,7 @@ export class AppwireClient {
       // that instead of scheduling another attempt on a closed client.
       if (this.isClosed()) return;
       this.teardownFailedSocket();
-      if (error instanceof ProtocolVersionMismatchError) {
+      if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
         this.setState("closed");
         return;
       }

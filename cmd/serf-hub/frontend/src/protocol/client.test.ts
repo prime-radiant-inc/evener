@@ -112,6 +112,32 @@ describe("AppwireClient", () => {
     expect(client.state).toBe("closed");
   });
 
+  // The shape above is the one a server never sends: a daemon that disagrees
+  // about the protocol REJECTS initialize (appwire.InvalidRequest, from
+  // internal/appserver/server.go) rather than answering with a different
+  // version. Retrying that handshake can never succeed -- the frame is
+  // byte-identical every time -- so it has to be terminal, or an operator who
+  // upgrades the hub under an open browser gets "Reconnecting" forever instead
+  // of something they can act on.
+  test("connect gives up when the server rejects the handshake as invalid", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    const frame = lastSentFrame(fake);
+    fake.receive({
+      id: frame.id,
+      error: {
+        code: -32600,
+        message: `protocol version "serf-appwire-v3" is incompatible; want "serf-appwire-v4"`,
+      },
+    });
+
+    await expect(connecting).rejects.toThrow(/incompatible/);
+    expect(client.state).toBe("closed");
+  });
+
   test("connect is idempotent across concurrent callers", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     let socketsCreated = 0;
@@ -418,6 +444,45 @@ describe("AppwireClient", () => {
     sockets[1]?.receive({
       id: initialize.id,
       result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "serf-appwire-v1" },
+    });
+    await flushUntil(() => client.state === "closed");
+
+    expect(client.state).toBe("closed");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
+  });
+
+  // The sibling above simulates a response shape no server produces. A daemon
+  // that disagrees about the protocol REJECTS initialize with InvalidRequest
+  // (internal/appserver/server.go), and retrying that handshake can never
+  // succeed because the frame is byte-identical every time. Upgrading the hub
+  // under an open browser is the ordinary way to reach it -- without this the
+  // browser shows "Reconnecting" forever instead of something actionable.
+  test("a rejected handshake during reconnect closes terminally without another dial", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    sockets[1]?.open();
+    await flushUntil(() => Boolean(sockets[1]?.sent.length));
+    const initialize = lastSentFrame(sockets[1]!);
+    sockets[1]?.receive({
+      id: initialize.id,
+      error: {
+        code: -32600,
+        message: `protocol version "serf-appwire-v3" is incompatible; want "serf-appwire-v4"`,
+      },
     });
     await flushUntil(() => client.state === "closed");
 
