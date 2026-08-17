@@ -32,18 +32,21 @@ orientation `job_status` call (ideally zero) and then goes idle.
    > it's done. Do not do the work yourself. The task: "Run `sleep 30` via the
    > shell tool, then communicate the exact text `DELEGATE_DONE_77`."
 
-3. Capture the parent's tool calls from the moment `delegate` returns a `job_id`
-   up to the point it stops producing tool calls (goes idle). Use the on-disk
-   transcript as ground truth — `serf-doctor transcript <id> --count job_status`
-   and `--format outline` — not just the rendered UI.
-4. Wait for the delegate to finish, for Serf to inject the `<job-notification>`,
-   and for the parent's follow-up turn.
+3. Capture the parent's tool calls from the moment `delegate` returns a
+   `delegate_id` up to the point it stops producing tool calls (goes idle). Use
+   the on-disk transcript as ground truth — `serf-doctor transcript <id> --count
+   job_status` and `--format outline` — not just the rendered UI.
+4. Wait for the delegate to finish, for Serf to inject the
+   `<delegate-notification>`, and for the parent's follow-up turn.
 
 ## Expected
 
-- The first parent turn calls `delegate` and returns a `job_id`. Whether it sets
-  `max_wait_ms` or not is fine; what matters is what happens **after** the job is
-  running.
+- The first parent turn calls `delegate`, which returns a `delegate_id` and no
+  job identity at all (`agent/session_tools.go#stableDelegateCreateResult`). It
+  cannot have set `max_wait_ms`: creation rejects the key outright with
+  `invalid_request: delegate creation does not accept max_wait_ms`
+  (`agent/session_tools.go#stableDelegateCreateTool`). What matters is what
+  happens **after** the delegate is running.
 - **The parent goes idle without a poll loop.** Between the `delegate` result and
   the completion notification it makes **at most one** `job_status`/`job_list`
   call (a single orientation check), then ends its turn.
@@ -53,8 +56,11 @@ orientation `job_status` call (ideally zero) and then goes idle.
     ≥3 across the whole session is an outright fail. A single nudge about
     "reading without acting" firing during the wait is also a fail signal: it
     means the parent kept its turn alive instead of going idle.
-- A later steering/system entry contains a `<job-notification ...>` for the
-  delegate `job_id` with terminal status.
+- A later steering/system entry contains a
+  `<delegate-notification delegate_id="dlg_...">` frame for the delegate. A
+  direct delegate's terminal renders as that frame, never as
+  `<job-notification>` (`agent/delegate_delivery.go#delegateNotificationContent`;
+  "Notifications" "It never carries `job_id` or `job_type="delegate"`.").
 - The follow-up parent turn surfaces `DELEGATE_DONE_77` to the user, with the
   notification (excerpt or a single post-notification read) as provenance — not
   invention, and not the product of polling.
@@ -67,9 +73,10 @@ untouched.
 
 ## Sharp edges
 
-- `sleep 30` must outlast any short inline wait the model might choose
-  (`max_wait_ms`), so a timed-out wait still leaves the model holding a running
-  job — that is the exact moment the old trace started polling.
+- `sleep 30` keeps the delegate running long enough that the parent is left
+  holding a live child with nothing to report — that is the exact moment the old
+  trace started polling. It is not there to outlast an inline wait: creation
+  cannot wait at all, so the parent reaches that moment on every run.
 - Keep the inducing prompt neutral. If it hints "end your turn" or "wait for the
   notification," the card stops testing the prompt and starts testing the
   instruction.

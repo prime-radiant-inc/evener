@@ -5,8 +5,9 @@
 nested job ONLY via `job_list(include_nested=true)` (`job_list`
 "Default `include_nested=false`"; "Nested jobs" "Parent-visible job
 lists may include nested jobs when `include_nested=true`"), with
-`parent_job_id` linking it to the delegate ("Nested jobs" "A nested
-job records the job that caused it in `parent_job_id`"); (b) the
+`parent_delegate_id` linking it to the delegate that started it
+("Vocabulary" "a delegate-owned shell carries `parent_delegate_id=dlg_...`"
+and "`parent_job_id` never encodes delegate lineage."); (b) the
 parent reads its output by the one parent-visible `job_id` ("Job
 identity and visibility"); (c) parent `job_stop` on the nested job
 routes to the live owner runtime and stops it — "Nested jobs" "Parent
@@ -40,8 +41,8 @@ grant a `job.notification` delivery mints — is covered by
    > mode: "background", description nested-probe, and this command:
    > `sh -c 'echo NEST_TOKEN_1; sleep 300; echo NEST_TOKEN_2'`.
    > Then communicate exactly 'NESTED_JOB <its job_id>' and finish."
-   > Report the delegate's job_id, then end your turn and wait for its
-   > completion notification.
+   > Report the delegate's delegate_id, then end your turn and wait for
+   > its completion notification.
 3. Turn 2 — visibility, read, stop, and post-terminal read (new user
    prompt after the delegate's terminal notification):
 
@@ -49,7 +50,8 @@ grant a `job.notification` delivery mints — is covered by
    > 1. Call job_list with NO include_nested and report every job_id
    >    and type.
    > 2. Call job_list with include_nested true and report every
-   >    job_id, type, status, parent_job_id, and owner_session_id.
+   >    job_id, type, status, parent_delegate_id, parent_job_id, and
+   >    owner_session_id.
    > 3. Call read_transcript with transcript_ref "job:<the NESTED
    >    shell job's job_id>" (from step 2 / the delegate's report).
    >    Report the full JSON.
@@ -65,10 +67,16 @@ grant a `job.notification` delivery mints — is covered by
 ## Expected
 
 - Arm (a): the step-1 listing (default `include_nested=false`)
-  contains the DELEGATE job (terminal `completed`) and NOT the nested
+  contains the DELEGATE row (a `dlg_...` id, `type` `delegate`, lifecycle
+  `idle` once it has reported) and NOT the nested
   shell job. The step-2 listing adds exactly one more row: the nested
-  job with `type` `"shell"`, `status` `"running"`, `parent_job_id`
-  equal to the delegate's job_id, and `owner_session_id` NOT equal to
+  job with `type` `"shell"`, `status` `"running"`, `parent_delegate_id`
+  equal to the delegate's `delegate_id` and an EMPTY `parent_job_id` —
+  a delegate-owned shell is bound with `parentJobID` cleared and
+  `parentDelegateID` set to the delegate's lease
+  (`agent/jobs.go#jobManager.bindStableDelegateParent`), and
+  "`parent_job_id` never encodes delegate lineage" ("Vocabulary").
+  `parent_job_id` is shell-to-shell only. And `owner_session_id` NOT equal to
   `$SID` (the child session owns the runtime — "Vocabulary" "For a
   nested forwarded job, `owner_session_id` is the child/delegate
   session that owns the runtime"). Do not ask for
@@ -118,7 +126,8 @@ grant a `job.notification` delivery mints — is covered by
   output).
 - Durable forwarding: the parent's `jobs.jsonl` contains forwarded
   `job_started` and `job_finished` events for the nested job_id with
-  `parent_job_id` = the delegate job and `owner_session_id` = the
+  `parent_delegate_id` = the delegate's `delegate_id`, no
+  `parent_job_id`, and `owner_session_id` = the
   child session — the durable substrate behind parent visibility
   ("Nested jobs" "Shell jobs created by subagents are visible to the
   parent through forwarded durable job events").

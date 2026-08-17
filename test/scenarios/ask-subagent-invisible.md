@@ -81,8 +81,10 @@ delegation-only tools for a coordinator.
    and its property list is exactly `task, agent_type, model, reasoning_effort,
    delegation_allowance, watch_parent, isolation, sandbox, sandbox_net, result_schema`
    (`agent/internal/tool/definitions.go#DefDelegate`) — note there is no `max_wait_ms`
-   either, which is why creation cannot be made to wait: the schema rejects the key before
-   `stableDelegateCreateTool`'s own `invalid_request` check ever fires. There is no
+   either. That `additionalProperties: false` is advisory, not enforced: `DefDelegate`
+   ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
+   what actually fires for `max_wait_ms` is serf's own `invalid_request` check in
+   `agent/session_tools.go#stableDelegateCreateTool`. There is no
    `grant_tools` property, and `delegateTool`'s Go
    handler (`agent/session_tools_jobs.go`) never reads one from `args`. The one live call
    that could pass the `grantTools []string` parameter,

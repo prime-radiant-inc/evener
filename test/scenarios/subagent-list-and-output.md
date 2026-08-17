@@ -49,11 +49,13 @@ one value, `shell` (`agent/internal/jobstore/record.go#JobType`).
   `idle` once it has reported, never `completed`
   (`agent/delegate_tree_controller.go#captureDelegateSnapshot`). The run's
   outcome reason rides the row's `[started · reason · exit · bytes]` tail,
-  not the status column. Do not expect a `task` key: `formatJobList`
-  prints a label taken from `jobListEntry.Description`, which for a
-  delegate comes from the descriptor's `description`, and the task text
-  lives on the descriptor rather than any listed field — read the child's
-  transcript for it.
+  not the status column. The row's structured state does carry `task`,
+  populated from the descriptor (`agent/session_tools_jobs.go#jobListEntry`;
+  `agent/session_tools_jobs.go#projectStableDelegateListItem`), but
+  `formatJobList` never prints it — the model-facing line shows a label
+  taken from `description`. Assert on the printed line, and read the task
+  text from the child's transcript rather than expecting the listing to
+  show it.
 - Both `read_transcript` calls on the delegate's `transcript_ref` return
   the same envelope — the child's semantic transcript in markdown,
   containing the shell call and the `RESULT=hello-from-child` communicate.

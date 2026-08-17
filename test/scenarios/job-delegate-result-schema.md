@@ -68,7 +68,7 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 5. Turn 4 — arm (c), schema inheritance on explicit follow-up (new user
    prompt):
 
-   > Call delegate_send with `to` set to DLG1, max_wait_ms 120000, and
+   > Call delegate_send with `to` set to DLG1, max_wait_ms 60000, and
    > this message: "Follow-up: report a structured result with verdict
    > resumed and count 21." Report the full result verbatim — both the
    > text the tool printed and, if your client exposes it, the
@@ -86,22 +86,32 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   (`agent/delegate_delivery.go#delegateNotificationContent`). That JSON
   has `"structured_result":{"verdict":"ok","count":7}` and
   `"structured_result_valid":true`, and no `structured_result_reason`.
-  The root's `delegates.jsonl` carries the same pair on DLG1's
-  `delegate_run_finished` event — durable, not recomputed per read
-  (`agent/internal/delegatestore/record.go#TerminalPacket`). The child's
+  The root's `delegates.jsonl` carries the same pair durably — on the
+  `delegate_terminal_prepared` event for DLG1's generation, under
+  `terminal_prepared.packet`. **Not** on `delegate_run_finished`: a
+  normally-reported delegate finishes through the settling branch, which
+  passes a nil packet, so its `run_finished.packet` is absent entirely
+  (`agent/delegate_tree_finish.go#delegateTreeController.FinishGeneration`
+  — only the stopping branch attaches one, and that packet is the
+  stopped-by-parent boilerplate with no structured result). Match on the
+  prepared event, or accept either event within the generation; asserting
+  the pair on `run_finished` alone fails a healthy run. The child's
   own transcript, read through the `transcript_ref` creation returned,
   shows the `communicate` call it made. Falsification: `structured_result`
   absent from the frame, or carrying the default communicate envelope
   keys (`message`/`data`/`artifacts`) instead of the schema's own fields.
 - Arm (b): DLG2's frame shows the delegate TURN ended normally — the
-  packet's `kind` is the reported kind and the delegate's outcome is
-  `completed` — while the structured fields report the violation: NO
+  packet's `"kind"` is `"reported"`, not `"terminal_error"`, and the
+  delegate's outcome is `completed`
+  (`agent/internal/delegatestore/record.go#PacketKind` has exactly those
+  two values) — while the structured fields report the violation: NO
   `"structured_result"` key at all, `"structured_result_valid":false`,
   and `"structured_result_reason":"schema_validation_failed"` in its
   place (`agent/subagents.go#captureDelegateStructuredResult`). The prose
-  report is still there as the packet's `message`. `delegates.jsonl`'s
-  `delegate_run_finished` for DLG2 carries the same durable valid/reason
-  pair.
+  report is still there as the packet's `message`. `delegates.jsonl` carries
+  the same durable valid/reason pair for DLG2 on its
+  `delegate_terminal_prepared` event, for the reason given under arm (a) —
+  `delegate_run_finished` carries no packet on this path.
   <!-- pin: the reason vocabulary is implementation-defined
        machine-readable text; shipped values today are
        schema_validation_failed / schema_result_missing /
@@ -119,8 +129,11 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
 - Arm (c): the `delegate_send` result names the SAME `delegate_id` as
   turn 1 and carries no job identity of any kind — the stable result has
   no `job_id`, `started_job_id` or `current_job_id` field to carry one
-  (`agent/session_tools_jobs.go#marshalDelegateSendResult`). With
-  `max_wait_ms 120000` satisfied in time it reads `action` `"completed"`
+  (`agent/session_tools_jobs.go#marshalDelegateSendResult`). Ask for at
+  most 60000 ms: `clampJobBlockTimeout` caps any inline wait at
+  `maxJobBlockTimeoutMS` (`agent/session_tools_jobs.go#clampJobBlockTimeout`),
+  so a larger number silently buys nothing. With the wait satisfied in
+  time it reads `action` `"completed"`
   and `running_in_background` false, and the text the tool printed ends
   with a `[delegate_id <DLG1> · completed · completed]` footer and a
   trailing `structured_result (valid=true): {"verdict":"resumed","count":21}`

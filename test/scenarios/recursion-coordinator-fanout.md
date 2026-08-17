@@ -139,9 +139,14 @@ default).**"); this card only runs with the raised config below.
    >    verbatim, exactly as the tool printed it.
    > 4. Call job_stop with COORD2 and max_wait_ms 8000. Report the full
    >    result JSON.
-   > 5. Call job_list `include_descendants` true again; report the same
-   >    fields.
-   > 6. End your turn.
+   > 5. Call job_list `include_descendants` true again; report every row
+   >    verbatim, exactly as the tool printed it.
+   > 6. Call job_status once for EACH of COORDINATOR-2's two worker
+   >    delegate_ids (from its COORD2_WORKERS message) and report each
+   >    full JSON, including `last_outcome`. This is the only place the
+   >    stopped RUN's outcome is observable — the listing shows the
+   >    reusable resource's lifecycle instead.
+   > 7. End your turn.
 6. Read the durable logs and the transcripts:
    - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`
      for delegate lifecycle — COORD/COORD2 and every worker live in
@@ -150,6 +155,17 @@ default).**"); this card only runs with the raised config below.
      session inherits its root's delegate controller instead of
      opening its own store). `jobs.jsonl` under `$SID` or a descendant
      session dir is shell-job evidence only.
+
+     **The journal and `job_status` can disagree about a stopped run's
+     outcome, and both are right.** `delegate_run_finished` records the
+     outcome as SUBMITTED (`agent/internal/delegatestore/event.go#RunFinished.Outcome`),
+     so a worker whose run died of context cancellation is written to disk
+     as `cancelled`. The stopping-phase override to
+     `stopped`/`stopped_by_parent` happens in the in-memory fold
+     (`agent/internal/delegatestore/fold.go#applyRunFinished`) and reaches
+     `LatestOutcome`, which is what `job_status` projects. Assert the
+     stopped pair against `job_status`; read the journal for lineage and
+     ordering, and do not score an on-disk `cancelled` as a contradiction.
    - the coordinator's transcript via its `transcript_ref` (from the
      turn-1 delegate result / the turn-3 `job_status` result).
 
@@ -302,10 +318,19 @@ default).**"); this card only runs with the raised config below.
 
   The step-5.4 stop RESULT is a third shape again and is the one place
   the word cancel appears: `status` `idle`, `reason` `stopped_by_parent`,
-  `previous_status` `running`, and `outcome` `cancelled_by_request` —
-  meaning the request cancelled live runs in the subtree, versus
-  `already_idle` when it found none
-  (`agent/session_tools_jobs.go#stableDelegateStopResult`). If the stop
+  and `outcome` `cancelled_by_request` — meaning the request cancelled
+  live runs in the subtree, versus `already_idle` when it found none
+  (`agent/session_tools_jobs.go#stableDelegateStopResult`). Expect
+  `previous_status` `idle`, NOT `running`: it is computed from the
+  TARGET's own open run, while the outcome is computed from the whole
+  subtree's (`agent/delegate_tree_stop.go#classifyDelegateStopAdmission`).
+  COORD2 is fire-and-return — step 5.1 has it communicate and end its
+  turn, and step 5.2 sleeps 12s — so its own run is closed well before
+  5.4 even though its workers are still live. That asymmetry is the
+  point: `already_idle` would mean the cascade found nothing to stop.
+  (Contrast `subagent-cancel-runaway.md`, where the same triple reads
+  `previous_status` `running` because that delegate is stopped mid-sleep.)
+  If the stop
   does not confirm inside `max_wait_ms` the result reads `status`
   `running` / `reason` `stop_pending` / `outcome` `stop_requested`
   instead; that is an unfinished stop, so poll before judging rather than
