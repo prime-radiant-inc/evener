@@ -127,6 +127,16 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 // produced on the post-completion <delegate-notification> turn, so its presence on
 // stdout proves the drain ran.
 func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
+	delegateDrainScenario(t, nil)
+}
+
+// delegateDrainScenario drives the delegate-drain scenario and asserts the
+// delegate ran to completion and its notification produced the coordinator's
+// real final answer. tweak, when non-nil, adjusts the run config before the run
+// so a variant can change how the request is assembled without restating the
+// choreography.
+func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) {
+	t.Helper()
 	tmp := t.TempDir()
 	childArtifact := filepath.Join(tmp, "child-artifact.txt")
 
@@ -170,14 +180,18 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: steps})
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), runConfig{
+	cfg := runConfig{
 		prompt:  rootPrompt + ": delegate the build to a subagent and report BUILD-COMPLETE when it finishes.",
 		model:   "openai/gpt-test",
 		workDir: tmp,
 		verbose: true,
 		stdout:  &stdout,
 		stderr:  &stderr,
-	})
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	err := run(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
@@ -204,54 +218,66 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output := "shell-ok"
-			exit := 0
-			if tt.wantStatus == "failed" {
-				output = "shell-failed"
-				exit = 7
-			}
-			installHeldRunShell(t, newHeldShellExecutor(tt.command, output, exit))
-			adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response {
-					if strings.Contains(requestFullText(req), "<job-notification") {
-						t.Fatal("initial request unexpectedly contained a job notification")
-					}
-					return scriptedToolCalls(scriptedShellCall("shell_1", tt.command, "background"))
-				},
-				func(req llm.Request) llm.Response {
-					if strings.Contains(requestFullText(req), "<job-notification") {
-						t.Fatal("tool-result request unexpectedly contained a job notification")
-					}
-					return scriptedCommunicate("waiting for shell")
-				},
-				func(req llm.Request) llm.Response {
-					text := requestFullText(req)
-					if !strings.Contains(text, "<job-notification") || !strings.Contains(text, `job_type="shell"`) || !strings.Contains(text, `status="`+tt.wantStatus+`"`) {
-						t.Fatalf("notification request missing terminal shell status %q:\n%s", tt.wantStatus, text)
-					}
-					return scriptedCommunicate("shell notification handled")
-				},
-			}}
-			installRunScriptedProvider(t, adapter)
-
-			var stdout, stderr bytes.Buffer
-			err := run(context.Background(), runConfig{
-				prompt:  "run the managed shell and handle its completion",
-				model:   "openai/gpt-test",
-				workDir: t.TempDir(),
-				stdout:  &stdout,
-				stderr:  &stderr,
-			})
-			if err != nil {
-				t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
-			}
-			if got := stdout.String(); !strings.Contains(got, "shell notification handled") {
-				t.Fatalf("stdout = %q, want final notification-turn result", got)
-			}
-			if got := len(adapter.Requests()); got != 3 {
-				t.Fatalf("model requests = %d, want exactly three", got)
-			}
+			managedShellDrainScenario(t, tt.command, tt.wantStatus, nil)
 		})
+	}
+}
+
+// managedShellDrainScenario drives the managed-shell drain and asserts the
+// terminal job notification reached the model on its own third round. tweak,
+// when non-nil, adjusts the run config before the run so a variant can change
+// how the request is assembled without restating the choreography.
+func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak func(*runConfig)) {
+	t.Helper()
+	output := "shell-ok"
+	exit := 0
+	if wantStatus == "failed" {
+		output = "shell-failed"
+		exit = 7
+	}
+	installHeldRunShell(t, newHeldShellExecutor(command, output, exit))
+	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if strings.Contains(requestFullText(req), "<job-notification") {
+				t.Fatal("initial request unexpectedly contained a job notification")
+			}
+			return scriptedToolCalls(scriptedShellCall("shell_1", command, "background"))
+		},
+		func(req llm.Request) llm.Response {
+			if strings.Contains(requestFullText(req), "<job-notification") {
+				t.Fatal("tool-result request unexpectedly contained a job notification")
+			}
+			return scriptedCommunicate("waiting for shell")
+		},
+		func(req llm.Request) llm.Response {
+			text := requestFullText(req)
+			if !strings.Contains(text, "<job-notification") || !strings.Contains(text, `job_type="shell"`) || !strings.Contains(text, `status="`+wantStatus+`"`) {
+				t.Fatalf("notification request missing terminal shell status %q:\n%s", wantStatus, text)
+			}
+			return scriptedCommunicate("shell notification handled")
+		},
+	}}
+	installRunScriptedProvider(t, adapter)
+
+	var stdout, stderr bytes.Buffer
+	cfg := runConfig{
+		prompt:  "run the managed shell and handle its completion",
+		model:   "openai/gpt-test",
+		workDir: t.TempDir(),
+		stdout:  &stdout,
+		stderr:  &stderr,
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if got := stdout.String(); !strings.Contains(got, "shell notification handled") {
+		t.Fatalf("stdout = %q, want final notification-turn result", got)
+	}
+	if got := len(adapter.Requests()); got != 3 {
+		t.Fatalf("model requests = %d, want exactly three", got)
 	}
 }
 
