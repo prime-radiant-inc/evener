@@ -920,6 +920,34 @@ test("navigating from Settings to /new replaces Settings and clears secondary pa
   expect(workspaceStore.getState().mainPane()?.slot).toBe("main");
 });
 
+// A characterization pin for pre-existing glue the 2026-08-16 settings
+// mobile-nav design now depends on: settings' two URL levels (/settings and
+// /settings/{section}) swap the SINGLETON pane's params in place via
+// replacePrimary on every popstate - the pane id never changes, which is
+// exactly why StackHost's focus-keyed back-stack can't see the transition
+// and the pane publishes paneBack instead (see chromeStore.ts). The pane-
+// level halves of this contract are covered red-first in Settings.test.tsx;
+// this covers the routing glue between them.
+test("popstate between settings URL levels updates the singleton pane's params in place", async () => {
+  window.history.pushState({}, "", "/settings/storage");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ section: "storage" });
+  });
+  const settingsId = workspaceStore.getState().mainPane()?.id;
+
+  act(() => {
+    window.history.pushState({}, "", "/settings");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({});
+  });
+  expect(workspaceStore.getState().mainPane()?.id).toBe(settingsId);
+});
+
 test("a saved session layout is replaced by /settings with Settings as the only main pane", async () => {
   await saveRealSessionLayout();
 

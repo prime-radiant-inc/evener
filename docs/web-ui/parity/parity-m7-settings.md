@@ -83,6 +83,14 @@ Files: `templates/partials/settings.html`, `assets/settings-shell.js`. Appwire: 
 - [ ] Back-button click resets pane to `"nav"`, re-hides itself, and does a **client-only**
       `history.pushState({}, "", "/settings")` — explicitly not an htmx fetch; the nav DOM already
       present is reused, nothing is re-fetched — `assets/settings-shell.js:51-61`
+  - **Deliberate divergence (2026-08-16 settings mobile-nav redesign):** the React pane replaces
+    all three of these legacy mechanics. Mobile is a URL-derived master-detail: bare `/settings`
+    IS the full-width section list (the root — mobile no longer lands content-first), and
+    `/settings/{section}` is the detail. Back lives in the shell's top bar via the chrome store's
+    `paneBack` channel (the legacy's in-content back button scrolled away with the content and
+    duplicated the shell chevron, which ejects from settings); there is no in-content back button.
+    The list is CSS-hidden while a detail shows, never unmounted, so its filter text and scroll
+    position survive the round trip (legacy's client-only reset always cleared them).
 - [ ] `syncPane()` reruns on `DOMContentLoaded` and on every `htmx:afterSwap` whose target id is
       `workspace` or `settings-content` — `assets/settings-shell.js:65-74`
 
