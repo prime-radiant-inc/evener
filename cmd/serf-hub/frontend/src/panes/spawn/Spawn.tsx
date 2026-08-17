@@ -81,6 +81,12 @@ const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 // across renders (the stale-effort effect below keys off it).
 const NO_EFFORT_LEVELS: string[] = [];
 
+// How long the working-directory field must be quiet before the pane reloads
+// the model catalog behind the Effort ladder. Long enough to collapse a typed
+// path into one load, short enough that the ladder is right by the time anyone
+// opens the select.
+const CATALOG_SETTLE_MS = 250;
+
 // The effort levels a catalog entry authorizes: the model's own named ladder
 // when it has one, an EMPTY list when the catalog says the model cannot
 // reason at all, and null when the hub can't say (enrichment failed, or the
@@ -357,16 +363,26 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // only provider/model pairs). Reloads with the harness/cwd scope, exactly
   // like loadCatalog itself. Fail-open: a rejected load leaves modelCatalog
   // null and the select on the fallback ladder.
+  // Debounced, because loadCatalog closes over cwd and cwd updates straight
+  // from the path field's onChange: undelayed, this costs one model/list RPC
+  // plus one /api/models fetch per CHARACTER typed into the working directory.
+  // The catalog is scoped by harness+cwd so it cannot simply stop tracking cwd,
+  // and its only reader here is the Effort ladder, which nobody consults
+  // mid-keystroke -- so it settles with the path instead of chasing it. The
+  // model pickers keep calling loadCatalog on demand and are unaffected.
   useEffect(() => {
     let active = true;
-    loadCatalog().then(
-      (catalog) => {
-        if (active) setModelCatalog(catalog);
-      },
-      () => {},
-    );
+    const settle = setTimeout(() => {
+      loadCatalog().then(
+        (catalog) => {
+          if (active) setModelCatalog(catalog);
+        },
+        () => {},
+      );
+    }, CATALOG_SETTLE_MS);
     return () => {
       active = false;
+      clearTimeout(settle);
     };
   }, [loadCatalog]);
 
@@ -465,9 +481,23 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
   const effortDisabled = !usesSerfModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
+  // An effort the ladder doesn't name but state still holds. Only the FALLBACK
+  // ladder produces one: the reset effect below deliberately skips when the
+  // catalog knows nothing about the model, because clobbering a sticky default
+  // on a guessed ladder loses the user's setting.
+  //
+  // Such a value must still be OFFERED. A native select handed a value with no
+  // matching <option> renders its first one instead, so the field would read
+  // "(default)" while thread/start receives the preserved level -- the select
+  // must never show one effort and submit another.
+  const preservedEffort =
+    reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
+      ? reasoningEffort
+      : null;
   const effortOptions = [
     { value: "", label: "(default)" },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
+    ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: "none" },
   ];
 

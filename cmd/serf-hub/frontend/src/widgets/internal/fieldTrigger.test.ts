@@ -78,6 +78,10 @@ for (const { widget, face } of COMPOSERS) {
   // copies that can drift.
   test(`${widget} does not re-declare the shared box locally`, () => {
     const trigger = css.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+    // Every assertion in this loop is negative, so without a non-empty guard a
+    // widget whose .trigger rule disappeared would pass "does not re-declare"
+    // by having no rule at all.
+    expect(trigger).not.toBe("");
     for (const dropped of ["height:", "padding:", "border:", "border-radius:", "background:", "box-sizing:"]) {
       expect(trigger).not.toContain(dropped);
     }

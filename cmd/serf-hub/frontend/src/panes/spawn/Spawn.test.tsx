@@ -1524,3 +1524,94 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
   release();
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 });
+
+// A preserved effort the fallback ladder cannot name is a lie on screen. The
+// stale-effort effect deliberately skips when the catalog has no ladder for the
+// model (knownEffortLevels === null): the fallback is a guess, and clobbering a
+// sticky default on a guess would lose the user's setting. But the OPTIONS came
+// from that guess too, so an effort like xhigh survived in state with no
+// <option> to render it -- the select fell back to its first entry and showed
+// "(default)" while thread/start still received xhigh. What is shown and what
+// is sent must be the same value.
+test("an effort the fallback ladder cannot name is still offered, not silently sent as (default)", async () => {
+  const user = userEvent.setup();
+  stubModelsApi([
+    {
+      provider: "openai",
+      model: "gpt-5",
+      supports_reasoning: true,
+      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    // No reasoning metadata at all: catalogEffortLevels returns null here, so
+    // the select falls back to the guessed minimal/low/medium/high ladder.
+    { provider: "anthropic", model: "claude-sonnet-4-5" },
+  ]);
+  let started: Record<string, unknown> | undefined;
+  renderSpawn(
+    readyClient((fake) => {
+      fake.on("thread/start", (params: Record<string, unknown>) => {
+        started = params;
+        return startResponse("local:abc123");
+      });
+    }),
+  );
+  await settled();
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await waitFor(() => expect(effortOptionLabels()).toContain("xhigh"));
+  await user.selectOptions(effortSelect(), "xhigh");
+
+  await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
+  // The fallback ladder took over (it starts at "minimal", the real one did
+  // not) and still offers the preserved level, because state still holds it.
+  await waitFor(() => expect(effortOptionLabels()).toContain("minimal"));
+  expect(effortOptionLabels()).toContain("xhigh");
+
+  const displayed = effortSelect().value;
+  expect(displayed).toBe("xhigh");
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
+  await user.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(started).toBeDefined());
+  expect((started?.reasoningEffort as string | undefined) ?? "").toBe(displayed);
+});
+
+// The Effort ladder needs the merged model catalog, and the effect that loads it
+// is keyed on loadCatalog -- a useCallback over [loadModels, harness, cwd],
+// where loadModels is itself over [client, harness, cwd]. cwd updates straight
+// from the field's onChange, so every character typed into the working-directory
+// path mints a new callback identity and refires the effect: one model/list RPC
+// plus one /api/models fetch per keystroke, to learn a ladder that only matters
+// when the Effort select is used.
+test("typing a working directory does not reload the model catalog per keystroke", async () => {
+  const user = userEvent.setup();
+  let catalogFetches = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.startsWith("/api/git/head")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
+      }
+      if (url.startsWith("/api/models")) {
+        catalogFetches++;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ models: [], recent: [], diagnostics: [] }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    }),
+  );
+  renderSpawn(readyClient());
+  await settled();
+
+  const baseline = catalogFetches;
+  await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
+  await settled();
+
+  // 17 characters typed. One reload for the settled path is the contract; a
+  // reload per character is the defect.
+  const perKeystroke = catalogFetches - baseline;
+  expect(perKeystroke).toBeLessThanOrEqual(1);
+});

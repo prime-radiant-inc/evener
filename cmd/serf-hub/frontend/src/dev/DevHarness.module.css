@@ -1,5 +1,16 @@
-/* DevHarness is temporary scaffolding (Wave 2 replaces it) — monospace only,
-   no other design investment. */
+/* DevHarness is permanent, and deliberately undesigned: monospace only, no
+   other design investment.
+
+   It was introduced as "temporary scaffolding (Wave 2 replaces it)". The waves
+   landed and the replacement never did, while src/dev grew into the home of the
+   surface and gallery sections, ThemeFlip, and the three guard entrypoints
+   (spawnguard-entry, overflowharness-entry, k7harness-entry) that the browser
+   guards render against. Nothing here is on its way out.
+
+   The lack of styling is the point and not an omission: this harness exists to
+   show component CSS against nothing, so a rule that only looks right inside
+   the app's own chrome has nowhere to hide. Do not invest design here (kata
+   j3t1). */
 .harness {
   font-family: monospace;
 }
