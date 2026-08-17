@@ -7,9 +7,15 @@
 # Nothing here builds serf or starts a real hub. A fixture `go` on PATH copies
 # throwaway shell "binaries" into the run directory, so what is under test is
 # the script's own ordering, guards, and the environment it hands its
-# children — not the daemons. The only processes this suite signals are
-# sleepers it spawned itself; a sleeper stands in for the real pid a mistyped
-# --stop would otherwise reach.
+# children — not the daemons.
+#
+# EVERY pid this suite puts in front of the script belongs to a process the
+# suite started: a sleeper for the pid a mistyped --stop would reach, and a
+# stand-in daemon (exec'd from the run directory, announced in hub.log the way
+# the real hub announces one) for the pid a correct --stop must reap. A
+# hardcoded pid constant would be live ammunition — unreachable on a machine
+# whose pid ceiling is low, an ordinary running process on one whose ceiling
+# is not.
 set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/e2e-webui-turn-controls.sh"
@@ -17,6 +23,11 @@ script="$(cd "$(dirname "$0")" && pwd)/e2e-webui-turn-controls.sh"
 
 work="$(mktemp -d -t e2e-webui-turn-controls-selftest.XXXXXX)"
 work="$(cd "$work" && pwd -P)"
+
+# Where the fixture binaries record what they saw, including the pid of the
+# stand-in daemon the fake hub spawns. Defined before cleanup, which sweeps it.
+state="$work/state"
+mkdir -p "$state"
 
 # Run directories the script made under its own mktemp; reaped on the way out
 # so a failing assertion cannot leave a sleeper or a directory behind.
@@ -30,7 +41,7 @@ cleanup() {
 		done
 		rm -rf "$dir"
 	done
-	for pidfile in "$work"/sleeper-*.pid; do
+	for pidfile in "$work"/sleeper-*.pid "$state"/*.pid; do
 		[ -f "$pidfile" ] || continue
 		kill "$(cat "$pidfile")" 2>/dev/null
 	done
@@ -124,16 +135,27 @@ if [ "${FAKE_HUB_MODE:-}" = "die" ]; then
 fi
 printf 'fake-auth-token\n' >"$HOME/.serf/auth-token"
 echo "serf-hub listening on 127.0.0.1:14002" >&2
-echo "daemon session=s-fixture pid=999999" >&2
+
+# Stand in for a spawned session daemon, which is what makes --stop's log
+# scrape worth testing: a grandchild the hub deliberately outlives, exec'd
+# from the run directory the way the real hub execs the serf it was pointed
+# at, and announced in this log in the real hub's format
+# (cmd/serf-hub/spawn_daemonlog.go). It is a process this suite started, so
+# --stop reaping it is a real assertion and no bystander is ever at risk.
+run_dir="$(dirname "$0")"
+("$run_dir/serf" serve --session s-fixture >/dev/null 2>&1 & printf '%s' "$!" >"$FAKE_STATE/daemon.pid")
+echo "daemon session=s-fixture pid=$(cat "$FAKE_STATE/daemon.pid")" >&2
 while :; do sleep 1; done
 FAKE_HUB
 
-# The daemon binary the hub is pointed at; never executed by this fixture.
-printf '#!/usr/bin/env bash\nexit 0\n' >"$fixtures/serf"
+# The daemon binary the hub is pointed at. It parks like a real daemon so the
+# reap can be observed, and it carries the run directory in its argv exactly
+# as the real one does -- which is what --stop's ownership check reads.
+cat >"$fixtures/serf" <<'FAKE_SERF'
+#!/usr/bin/env bash
+while :; do sleep 1; done
+FAKE_SERF
 chmod +x "$fakebin"/* "$fixtures"/*
-
-state="$work/state"
-mkdir -p "$state"
 
 # run_script ARGS... — run the script under test with the fixture toolchain
 # first on PATH and with every redirect-serf-elsewhere variable exported. That
@@ -144,7 +166,7 @@ leaked_providers="$work/real-providers.toml"
 printf 'schema = 1\ndefault = "expensive-real-provider"\n' >"$leaked_providers"
 run_script() {
 	env PATH="$fakebin:$PATH" \
-		FAKE_STATE="$state" FAKE_FIXTURES="$fixtures" \
+		FAKE_STATE="$state" FAKE_FIXTURES="${FAKE_FIXTURES:-$fixtures}" \
 		SERF_PROVIDERS_CONFIG="$leaked_providers" \
 		SERF_STATE_DIR="$work/real-state" \
 		SERF_RUN_DIR="$work/real-run" \
@@ -227,10 +249,17 @@ assert_has "$out" "Ready." "the start reports Ready"
 
 hub_pid="$(cat "$run/hub.pid" 2>/dev/null)"
 fakellm_pid="$(cat "$run/fakellm.pid" 2>/dev/null)"
+daemon_pid="$(cat "$state/daemon.pid" 2>/dev/null)"
 if kill -0 "$hub_pid" 2>/dev/null && kill -0 "$fakellm_pid" 2>/dev/null; then
 	ok "both children are left running after a successful start"
 else
 	bad "a child was not left running after a successful start"
+fi
+assert_has "$run/hub.log" "daemon session=s-fixture pid=$daemon_pid" "the hub announced its daemon's pid in hub.log"
+if kill -0 "$daemon_pid" 2>/dev/null; then
+	ok "the stand-in daemon outlives its parent hub, as a real one does"
+else
+	bad "the stand-in daemon was not running before --stop"
 fi
 
 run_script --stop "$run"
@@ -241,14 +270,69 @@ assert_eq "$rc" "0" "--stop on a marked run directory exits 0"
 sleep 0.3
 if kill -0 "$hub_pid" 2>/dev/null; then bad "--stop left the hub running"; else ok "--stop stopped the hub"; fi
 if kill -0 "$fakellm_pid" 2>/dev/null; then bad "--stop left fakellm running"; else ok "--stop stopped fakellm"; fi
+# The daemon is the pid --stop scrapes out of hub.log rather than one it wrote
+# itself, and it is the one the hub does not take down with it.
+if kill -0 "$daemon_pid" 2>/dev/null; then bad "--stop left the daemon running"; else ok "--stop reaps the daemon named in hub.log"; fi
+assert_has "$out" "stopped daemon (pid $daemon_pid)" "--stop reports the daemon it reaped"
 
-# --- scenario 5: a failed startup does not orphan fakellm -------------------
+# --- scenario 4b: a marked run directory naming somebody else's pid ---------
+# Pid reuse is the ordinary case here, not an exotic one: hub.log accumulates
+# a daemon line per session for the whole life of a run this script advertises
+# as lasting tens of minutes. A pid that has been recycled since must not be
+# signalled just because something is alive at it.
+recycled="$work/marked-but-recycled"
+mkdir -p "$recycled"
+touch "$recycled/.e2e-webui-turn-controls"
+spawn_sleeper
+sleeper="$sleeper_pidfile"
+cat "$sleeper" >"$recycled/hub.pid"
+printf 'daemon session=recycled pid=%s\n' "$(cat "$sleeper")" >"$recycled/hub.log"
+run_script --stop "$recycled"
+rc=$?
+assert_eq "$rc" "0" "--stop on a marked directory exits 0 even when its pids are stale"
+if alive "$sleeper"; then
+	ok "--stop leaves a live pid alone when the process is not this run's"
+else
+	bad "--stop signalled a live pid that was not one of the run's processes"
+fi
+assert_has "$out" "not this run" "the skip says why the pid was left alone"
+[ ! -e "$recycled" ] && ok "--stop still removes the marked directory" || bad "--stop kept the marked directory"
+kill "$(cat "$sleeper")" 2>/dev/null
+
+# --- scenario 4c: a flag that takes a value, without one --------------------
+for flag in --stop --hold --rounds; do
+	run_script "$flag"
+	rc=$?
+	assert_eq "$rc" "2" "$flag with no value exits 2"
+	assert_has "$out" "$flag needs a value" "$flag with no value says what is missing"
+	assert_not_has "$out" "unbound variable" "$flag with no value fails cleanly, not with a shell error"
+done
+
+# --- scenario 4d: --stop with an empty path is a refusal, not a start -------
+# `--stop "$dir"` with an unset variable is the realistic way this happens,
+# and a teardown that stands up a stack instead is the opposite of the ask.
+run_script --stop ""
+rc=$?
+empty_run="$(grep -oE 'run directory .*' "$out" | head -1 | sed 's/^run directory //')"
+if [ -n "$empty_run" ] && [ -d "$empty_run" ]; then
+	run_dirs+=("$empty_run") # a regression here would otherwise leak a stack
+fi
+assert_eq "$rc" "2" "--stop with an empty path exits 2"
+assert_not_has "$out" "Ready." "--stop with an empty path does not start a stack"
+# The refusal message itself says "run directory", so match the line the
+# script prints when it has actually made one.
+assert_not_has "$out" "controls: run directory " "--stop with an empty path makes no run directory"
+
+# --- scenario 5: a failed startup reaps, and says how to remove what is left -
 rm -f "$state"/*.env
 FAKE_HUB_MODE=die run_script --skip-web
 rc=$?
 if [ "$rc" -ne 0 ]; then ok "a hub that never listens fails the start"; else bad "a hub that never listens still exited 0"; fi
 failed_run="$(grep -oE 'run directory .*' "$out" | head -1 | sed 's/^run directory //')"
 if [ -n "$failed_run" ] && [ -d "$failed_run" ]; then
+	# Registered as a backstop for a failing assertion below. The normal path
+	# through this scenario removes it by following the script's own printed
+	# instruction, so the leak is not hidden from the wave runner's check.
 	run_dirs+=("$failed_run")
 else
 	bad "the failed start did not print a usable run directory"
@@ -259,5 +343,31 @@ if alive "$failed_run/fakellm.pid"; then
 else
 	ok "a failed startup reaps fakellm"
 fi
+# The logs are the reason the directory survives a failure, so the operator
+# has to be told it is there and how to remove it -- the run directory line
+# was printed pages earlier, and the --stop line only ever printed at Ready.
+assert_has "$out" "--stop \"$failed_run\"" "a failed startup prints the --stop line for what it left behind"
+run_script --stop "$failed_run"
+rc=$?
+assert_eq "$rc" "0" "the --stop line a failed startup prints works"
+[ ! -e "$failed_run" ] && ok "following it removes the failed run directory" || bad "the failed run directory survived its own --stop line"
+
+# --- scenario 6: a failure before any process starts says the same ----------
+# The reaper has to be armed from the moment the run directory exists, not
+# from the first background process: a build that fails leaves the directory
+# too, and that operator has even less reason to go looking for it.
+mkdir -p "$work/no-fixtures"
+FAKE_FIXTURES="$work/no-fixtures" run_script --skip-web
+rc=$?
+if [ "$rc" -ne 0 ]; then ok "a build that fails fails the start"; else bad "a build that fails still exited 0"; fi
+build_run="$(grep -oE 'run directory .*' "$out" | head -1 | sed 's/^run directory //')"
+if [ -n "$build_run" ] && [ -d "$build_run" ]; then
+	run_dirs+=("$build_run")
+else
+	bad "the failed build did not print a usable run directory"
+fi
+assert_has "$out" "--stop \"$build_run\"" "a failed build prints the --stop line for its run directory"
+run_script --stop "$build_run"
+[ ! -e "$build_run" ] && ok "following it removes the failed build's run directory" || bad "the failed build's run directory survived its own --stop line"
 
 selftest_summary

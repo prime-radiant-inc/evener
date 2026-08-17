@@ -47,13 +47,55 @@ rounds=20
 background_job=0
 skip_web=0
 stop_dir=""
+
+# need_value FLAG REMAINING — a flag that takes one must have one. Without
+# this, `set -u` aborts on "$2" with a raw "line NN: $2: unbound variable",
+# which tells the operator nothing about which flag they left dangling.
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		echo "e2e-webui-turn-controls: $1 needs a value" >&2
+		exit 2
+	fi
+}
+
+# stop_owned_pid PID LABEL RUN_TAG — signal PID, but only while it is still
+# one of this run's own processes.
+#
+# `kill -0` answers "is anything alive at this pid", which is the wrong
+# question by the time --stop is typed. hub.log accumulates one
+# `daemon session=<id> pid=<n>` line per session for the whole life of a run
+# this script advertises as lasting tens of minutes, and a pid belonging to a
+# session that finished an hour ago may since have been recycled by anything
+# on the machine. Same for fakellm.pid and hub.pid after a crash.
+#
+# The run directory's name is the ownership proof: mktemp made it unique, and
+# every process this script starts carries it in argv — fakellm and the hub
+# because they are exec'd from it, and each daemon because the hub execs the
+# `-serf` binary out of it. Matching the basename rather than the path keeps
+# it working where the two differ (macOS hands out /var/... and reports
+# /private/var/...).
+stop_owned_pid() {
+	pid="$1"
+	label="$2"
+	tag="$3"
+	kill -0 "$pid" 2>/dev/null || return 0
+	if ! ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "$tag"; then
+		echo "e2e-webui-turn-controls: pid $pid is alive but is not this run's $label (recycled pid); leaving it alone" >&2
+		return 0
+	fi
+	kill "$pid"
+	echo "e2e-webui-turn-controls: stopped $label (pid $pid)" >&2
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--hold)
+		need_value --hold $#
 		hold="$2"
 		shift 2
 		;;
 	--rounds)
+		need_value --rounds $#
 		rounds="$2"
 		shift 2
 		;;
@@ -66,7 +108,16 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	--stop)
+		need_value --stop $#
 		stop_dir="$2"
+		# An empty path is how `--stop "$dir"` fails when $dir was never set.
+		# Falling through to the start path would have a teardown command
+		# build binaries and stand up a stack, which is the opposite of the
+		# one thing it was asked to do.
+		if [ -z "$stop_dir" ]; then
+			echo "e2e-webui-turn-controls: --stop needs a run directory, got an empty path" >&2
+			exit 2
+		fi
 		shift 2
 		;;
 	-h | --help)
@@ -104,19 +155,12 @@ if [ -n "$stop_dir" ]; then
 	if [ -f "$stop_dir/hub.log" ]; then
 		while read -r pid; do
 			[ -n "$pid" ] || continue
-			if kill -0 "$pid" 2>/dev/null; then
-				kill "$pid"
-				echo "e2e-webui-turn-controls: stopped daemon (pid $pid)" >&2
-			fi
+			stop_owned_pid "$pid" daemon "$(basename "$stop_dir")"
 		done < <(grep -oE 'daemon session=[^ ]+ pid=[0-9]+' "$stop_dir/hub.log" | grep -oE '[0-9]+$')
 	fi
 	for pidfile in "$stop_dir/fakellm.pid" "$stop_dir/hub.pid"; do
 		[ -f "$pidfile" ] || continue
-		pid="$(cat "$pidfile")"
-		if kill -0 "$pid" 2>/dev/null; then
-			kill "$pid"
-			echo "e2e-webui-turn-controls: stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
-		fi
+		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$stop_dir")"
 	done
 	rm -rf "$stop_dir"
 	echo "e2e-webui-turn-controls: removed $stop_dir" >&2
@@ -133,6 +177,30 @@ done
 run="$(mktemp -d -t serf-e2e-webui.XXXXXX)"
 touch "$run/.e2e-webui-turn-controls" # the marker --stop refuses to delete without
 echo "e2e-webui-turn-controls: run directory $run" >&2
+
+# Nothing below here may leave a half-built stack behind. Every failure
+# between this line and the "Ready" banner is a bare exit, and the operator
+# who just read "build serf-hub failed" is the least likely person to go
+# looking for a fakellm still running or a run directory still on disk. The
+# directory itself is deliberately NOT removed — its logs are the only record
+# of what failed — so the reaper prints the one command that removes it.
+# Armed here rather than at the first background process so a failed build,
+# which starts nothing but still leaves a directory, says the same thing.
+# Disarmed at Ready, the state this script's contract says the processes are
+# deliberately left alive in.
+started_ready=0
+on_failed_start() {
+	[ "$started_ready" -eq 1 ] && return 0
+	started_ready=1 # never run twice: INT runs this, then so does EXIT
+	for pidfile in "$run/fakellm.pid" "$run/hub.pid"; do
+		[ -f "$pidfile" ] || continue
+		stop_owned_pid "$(cat "$pidfile")" "$(basename "$pidfile" .pid)" "$(basename "$run")"
+	done
+	echo "e2e-webui-turn-controls: startup failed; its logs are in $run. Remove it with" >&2
+	echo "    $repo_root/scripts/e2e-webui-turn-controls.sh --stop \"$run\"" >&2
+}
+trap on_failed_start EXIT
+trap 'on_failed_start; exit 130' INT TERM
 
 if [ "$skip_web" -eq 0 ]; then
 	echo "==> building the SPA (make build-web)" >&2
@@ -182,28 +250,6 @@ workspace="$run/workspace"
 mkdir -p "$workspace"
 echo "notes for the fake tool round" >"$workspace/NOTES.md"
 
-# Reap a half-built stack. Every failure between the first background process
-# and the "Ready" banner below is a bare exit, and the operator who just read
-# "build serf-hub failed" is the least likely person to notice a fakellm still
-# running. Armed before anything is started and disarmed at Ready, which is
-# the state this script's contract says processes are deliberately left alive
-# in.
-started_ready=0
-reap_partial_start() {
-	[ "$started_ready" -eq 1 ] && return 0
-	for pidfile in "$run/fakellm.pid" "$run/hub.pid"; do
-		[ -f "$pidfile" ] || continue
-		pid="$(cat "$pidfile")"
-		if kill -0 "$pid" 2>/dev/null; then
-			kill "$pid"
-			echo "e2e-webui-turn-controls: startup failed; stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
-		fi
-	done
-	started_ready=1 # never reap twice: INT runs this, then so does EXIT
-}
-trap reap_partial_start EXIT
-trap 'reap_partial_start; exit 130' INT TERM
-
 echo "==> starting fakellm (hold=${hold}s rounds=${rounds})" >&2
 # Flags BEFORE the positional address: Go's flag package stops parsing at the
 # first non-flag argument, so the other order silently ran with the defaults
@@ -221,6 +267,14 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 
 # Read the real port back from fakellm's own startup log line — never a fixed
 # port (kata 68fm). Poll rather than sleep a guessed interval.
+#
+# The ceiling is a guess: 50 x 0.1s is about six seconds of wall clock, and a
+# process that binds slower than that is declared dead. That was merely noisy
+# when a timed-out start left everything running; now the reaper takes the
+# stack down with it, so a healthy-but-slow hub on a loaded machine loses its
+# fakellm too. Six seconds to bind a loopback port is a long time for these
+# three binaries, but if this ever fires on a machine that was simply busy,
+# raise the count — do not remove the reaper.
 fakellm_port=""
 for _ in $(seq 1 50); do
 	fakellm_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/fakellm.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
