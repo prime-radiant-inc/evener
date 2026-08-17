@@ -62,7 +62,7 @@ func TestGoalContinuationCompletesThePreviousTurnUnderItsOwnID(t *testing.T) {
 		Data:      events.GoalContinuationData{Text: "Continuing", StableTurnID: "turn_m2"},
 	})
 
-	if completed := completedTurnID(out); completed != "turn_m1" {
+	if completed := completedTurnID(t, out); completed != "turn_m1" {
 		t.Fatalf("previous turn completed as %q, want turn_m1", completed)
 	}
 	if got := turnStartedID(t, out); got != "turn_m2" {

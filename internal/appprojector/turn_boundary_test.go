@@ -29,20 +29,34 @@ func turnStartedID(t *testing.T, out []AppNotification) string {
 	return found
 }
 
-func completedTurnID(out []AppNotification) string {
+// completedTurnID pulls the turn id out of the turn/completed notification in a
+// projection. It fails the test on a malformed frame rather than skipping it,
+// and on a second completion in one projection: silently returning the first
+// valid one would let a projection that also emits a malformed or duplicate
+// completion pass.
+func completedTurnID(t *testing.T, out []AppNotification) string {
+	t.Helper()
+	var found string
+	var seen int
 	for _, n := range out {
 		if n.Method != appwire.NotifyTurnCompleted {
 			continue
 		}
 		params, ok := n.Params.(map[string]any)
 		if !ok {
-			continue
+			t.Fatalf("turn/completed params are %T, want map[string]any", n.Params)
 		}
-		if turn, ok := params["turn"].(appwire.Turn); ok {
-			return turn.ID
+		turn, ok := params["turn"].(appwire.Turn)
+		if !ok {
+			t.Fatalf("turn/completed carries %T, want appwire.Turn", params["turn"])
 		}
+		seen++
+		if seen > 1 {
+			t.Fatalf("two turn/completed notifications in one projection: %q and %q", found, turn.ID)
+		}
+		found = turn.ID
 	}
-	return ""
+	return found
 }
 
 func statusChangedType(out []AppNotification) string {
@@ -151,7 +165,7 @@ func TestTurnBoundaryCompletesThePreviousTurn(t *testing.T) {
 		Data:      events.TurnStartedData{TurnID: "turn_m2"},
 	})
 
-	if got := completedTurnID(out); got != "turn_m1" {
+	if got := completedTurnID(t, out); got != "turn_m1" {
 		t.Fatalf("previous turn completed as %q, want turn_m1", got)
 	}
 	if got := turnStartedID(t, out); got != "turn_m2" {
