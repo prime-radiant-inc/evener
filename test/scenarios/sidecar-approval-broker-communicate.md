@@ -78,15 +78,25 @@ hand it back as an observer callback. Driving mechanism:
 - The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.
 - The watch has no dropped deliveries or self-loop verdict.
-- Falsification (dead surface): if the task asks the observer for
-  `delegate_send(to="caller")`, the call fails
-  `invalid_request: delegate_send sends to child delegate_id only;
-  observer callbacks use communicate(end_turn=true)`
-  (`agent/session_tools_jobs.go:163`). If the parent tries to install
+- Wrong-mechanism check: `delegate_send(to="caller")` is a LIVE route,
+  not an error — from inside a delegate it returns `action: "delivered"`
+  and injects a NON-terminal steering update into the parent
+  (`agent/session_tools.go#stableDelegateSendTool` routes the `caller`
+  alias through
+  `agent/delegate_tree_steer.go#delegateTreeController.SteerCaller`;
+  `docs/job-control.md` "From inside a delegate, the contextual `caller`
+  target sends a non-terminal update to that delegate's controlling
+  caller"). It does not end the observer's turn and it is NOT the
+  callback: an observer that "replies" that way never delivers the
+  terminal packet, so the parent gets a steering message instead of a
+  `<delegate-notification>` block. Score that as observer noncompliance
+  with the callback contract — never as a tool error; expecting an
+  `invalid_request` rejection here is pre-`78342bbd3` rot. If the parent
+  tries to install
   the watch itself with `target`/`send`, the schema rejects it with
   `additionalProperties 'target' not allowed` /
   `additionalProperties 'send' not allowed`
-  (`agent/session_tools_jobs_watch_test.go:239-240`). Either error means
+  (`agent/session_tools_jobs_watch_test.go:240-241`). That error means
   the run is following a pre-`9d0d777c6` recipe.
 
 ## Doctor audit
