@@ -174,6 +174,11 @@ test("mobile: the drill-in chevron shows only below the breakpoint", () => {
   const base = /\.linkChevron\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(base).toContain("display: none");
   const mobile = /\.linkChevron\s*\{([^}]*)\}/.exec(mobileBlock(css))?.[1] ?? "";
+  // The `?? ""` makes the negative assertion below vacuous on its own: delete
+  // the mobile rule entirely and "" satisfies not.toContain, so this test could
+  // not fail on the chevron never showing -- the one thing it is named for.
+  // Assert the rule EXISTS first (markdown.module.css's test already does).
+  expect(mobile).not.toBe("");
   expect(mobile).not.toContain("display: none");
 });
 
