@@ -322,7 +322,18 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
 			return nil
 		}
-		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
+		// A steer always lands (Jesse, 2026-08-16). The reachable case is a
+		// race: you press Steer while the agent works, and the turn ends
+		// between the click and the request arriving. Rejecting there loses
+		// what you typed, silently (kata 2f41) -- and a steer means "take this
+		// into account", which the next turn can still honour.
+		//
+		// The relaxation is narrow on purpose. It applies only when NO turn is
+		// running. If a different turn is in flight the client is steering
+		// something it is not looking at, and the compare-and-commit
+		// precondition still has a job.
+		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != "" &&
+			snapshot.ActiveTurnID != params.ExpectedTurnID {
 			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
 		}
@@ -359,6 +370,15 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 		return replayed, nil
 	}
 	s.reflectDurableClientSteering()
+	// Accepting is only half of landing. A steer taken while no turn is running
+	// sits in a queue nothing is going to drain -- lost more quietly than the
+	// rejection it replaced. Wake the session so it runs a turn and delivers
+	// it; a wake proceeds on pending steering alone, so no new delivery path is
+	// needed. While a turn IS running, the round loop already drains steering
+	// between rounds (session_tool_round.go) and a kick would be noise.
+	if s.clientMutations.snapshot().ActiveTurnID == "" {
+		s.notify()
+	}
 	return response, nil
 }
 
