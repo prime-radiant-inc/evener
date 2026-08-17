@@ -32,7 +32,11 @@
 //   node scripts/layoutguard/run.mjs p6g8-formrow-overlap   # run one case
 //
 // ADDING A CASE: make a directory under cases/<name>/ with:
-//   - case.json    { "cssFiles": [...paths relative to frontend/src] }, plus
+//   - case.json    { "cssFiles": [...paths relative to frontend/src] } -
+//                  ALWAYS including "styles/global.css", which is what wires
+//                  the @font-face rules; without it the case renders in a host
+//                  fallback font the product never ships, and waitForFonts
+//                  fails saying so (kata e4sh). Plus
 //                  an optional "viewport": { "width": 390, "height": 844,
 //                  "deviceScaleFactor": 2, "mobile": true } and/or
 //                  optional "forcePseudoStates":

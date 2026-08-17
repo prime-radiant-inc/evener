@@ -116,8 +116,9 @@ export async function evaluate(send, expression) {
 }
 
 /**
- * Block until the page's web fonts have settled, and fail if one the page
- * actually asked for could not be fetched.
+ * Block until the page's web fonts have settled, and fail if the page is not
+ * measuring the product's own fonts - either because a face it asked for could
+ * not be fetched, or because it never asked for any.
  *
  * Page.loadEventFired does not mean the text is in its final font. Both faces
  * in global.css declare `font-display: swap`, so the document paints with the
@@ -126,32 +127,55 @@ export async function evaluate(send, expression) {
  * the two. Measuring on load is a coin flip decided by whether the font was
  * warm in Chrome's cache.
  *
- * COVERAGE LIMIT: a page that declares no @font-face at all has an empty
- * document.fonts, so this check passes without asserting anything. Ten of
- * layoutguard's fourteen cases omit styles/global.css from case.json and are in
- * exactly that position -- they render text in a system font and this guard is
- * silent about it. That is deterministic rather than racy, so it is not the bug
- * this function exists for, but it does mean the check covers four cases today.
- * See kata for adding global.css to the rest and re-baselining them.
+ * AN EMPTY FONT SET IS A FAILURE, NOT A PASS (kata e4sh). A page declaring no
+ * @font-face has an empty document.fonts, so awaiting it and finding nothing
+ * broken used to read as success while the page rendered every glyph in a host
+ * fallback the product never ships. Ten of layoutguard's fourteen cases sat in
+ * exactly that position. Nothing but this check stops the eleventh from being
+ * added the same way, so "no fonts" now says so instead of saying nothing.
  *
- * Deliberately NOT a hardcoded family list. A face loads only when some text
- * actually uses it, so a case whose markup is all sans legitimately leaves the
- * mono face "unloaded" forever - demanding both families failed two of
- * layoutguard's fourteen honest cases. What must never pass is a face the page
- * DID request failing to arrive: that is the 404 which would otherwise leave
- * every guard green and permanently measuring the fallback, and it reports as
- * status "error".
+ * Same-origin frames count as part of the page. A case may build its fixtures
+ * inside srcdoc iframes - layoutguard's activity-tree-responsive does - where
+ * both the faces and the measured boxes live, leaving the top document's own
+ * font set empty. The page's load event, which every caller has already
+ * awaited, does not fire until subframes have loaded, so their documents are
+ * complete here and need no readiness dance of their own.
+ *
+ * Deliberately NOT a hardcoded family list, and deliberately not "a face must
+ * have LOADED". A face loads only when some text actually uses it, so a case
+ * whose markup is all mono legitimately leaves the sans face "unloaded"
+ * forever - measured: three of layoutguard's fourteen honest cases load the
+ * mono face alone. What must never pass is a face the page DID request failing
+ * to arrive: that is the 404 which would otherwise leave every guard green and
+ * permanently measuring the fallback, and it reports as status "error".
  */
 export async function waitForFonts(send) {
-  const failed = await evaluate(
+  const faces = await evaluate(
     send,
     `(async () => {
-       await document.fonts.ready;
-       const broken = [];
-       document.fonts.forEach((face) => { if (face.status === "error") broken.push(face.family); });
-       return broken;
+       const documents = [document];
+       for (const frame of document.querySelectorAll("iframe")) {
+         try {
+           if (frame.contentDocument) documents.push(frame.contentDocument);
+         } catch {
+           // Cross-origin: not reachable, and not something a guard builds.
+         }
+       }
+       await Promise.all(documents.map((doc) => doc.fonts.ready));
+       const all = [];
+       for (const doc of documents) doc.fonts.forEach((face) => all.push({ family: face.family, status: face.status }));
+       return all;
      })()`,
   );
+  if (faces.length === 0) {
+    throw new Error(
+      `this page declares no web fonts, so every text measurement below would be taken in a host fallback ` +
+        `font rather than the one the product ships - and this check would have asserted nothing. ` +
+        `A layoutguard case needs "styles/global.css" in its case.json cssFiles; a harness entrypoint ` +
+        `needs to import ../styles/global.css.`,
+    );
+  }
+  const failed = faces.filter((face) => face.status === "error").map((face) => face.family);
   if (failed.length > 0) {
     throw new Error(
       `environment problem, not a test case failure: a web font this page requested failed to load (${failed.join(", ")}). ` +
