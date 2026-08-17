@@ -325,12 +325,85 @@ interface FooterContract {
   modelClientWidth: number;
 }
 
+// Whether a required footer fact (effort, context, queue) is actually on the
+// screen. The whole weight of footer.*Visible rests on this one predicate, so
+// it gets its own live fixture below rather than a line in MUTATIONS.md.
+//
+// RENDERED GEOMETRY, NOT THE ELEMENT'S OWN `display` (kata bsq9). Asking an
+// element for its computed display answers a question about that element
+// alone: an ancestor's `display: none` never changes it, so a fact inside a
+// collapsed subtree still computes `flex`/`inline` and reported visible while
+// nothing was on the screen. Box generation, unlike the display property, IS
+// inherited down the tree - an element inside a `display: none` subtree
+// generates no box at any depth, so it has no client rects.
+//
+// Deliberately client rects and not "a box bigger than n pixels": the standard
+// visually-hidden recipe (position:absolute, 1x1, clip: rect(0,0,0,0)) is what
+// statusrow.module.css itself uses for the effort label, and it is present for
+// the reader it is written for, not missing. It has a client rect, so it stays
+// on the visible side of this line on purpose. visibilityProbe() pins both
+// halves, every run.
+const visible = (el: HTMLElement | null) => el !== null && el.getClientRects().length > 0;
+
+interface VisibilityProbe {
+  rendered: boolean;
+  ancestorHidden: boolean;
+  visuallyHidden: boolean;
+}
+
+function probeSpan(cssText: string): HTMLSpanElement {
+  const el = document.createElement("span");
+  el.style.cssText = cssText;
+  el.textContent = "probe";
+  return el;
+}
+
+/**
+ * A mutation test for `visible`, run every sweep instead of recorded once.
+ *
+ * Three probes, and all three are load-bearing. `ancestorHidden` is the
+ * regression (kata bsq9): a span whose OWN computed display is `flex` sitting
+ * inside a `display: none` div, which is the exact shape a footer fact takes
+ * when its subtree collapses. `visuallyHidden` is statusrow.module.css's own
+ * `.srOnly` recipe verbatim - a 1x1 clipped box that is legitimately present
+ * for the reader it is written for, and must not be mistaken for a missing
+ * fact. `rendered` is the positive control: without it, a predicate that
+ * answered "not visible" to everything would satisfy the other two.
+ *
+ * Mounted outside #oh-pane and position:fixed, so it is invisible to the
+ * horizontal-overflow scan and adds nothing to the document's scroll size.
+ */
+function visibilityProbe(): VisibilityProbe {
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;top:0;left:0";
+  const rendered = probeSpan("");
+  const hiddenAncestor = document.createElement("div");
+  hiddenAncestor.style.cssText = "display:none";
+  const underHiddenAncestor = probeSpan("display:flex");
+  hiddenAncestor.appendChild(underHiddenAncestor);
+  const visuallyHidden = probeSpan(
+    "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0",
+  );
+  host.append(rendered, hiddenAncestor, visuallyHidden);
+  document.body.appendChild(host);
+  try {
+    return {
+      rendered: visible(rendered),
+      ancestorHidden: visible(underHiddenAncestor),
+      visuallyHidden: visible(visuallyHidden),
+    };
+  } finally {
+    host.remove();
+  }
+}
+
 function measure(): {
   width: number;
   scrollers: Scroller[];
   ignored: string[];
   disclosures: DisclosureContract[];
   footer: FooterContract;
+  visibility: VisibilityProbe;
 } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -419,12 +492,12 @@ function measure(): {
   const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
   const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
-  const visible = (el: HTMLElement | null) => el !== null && getComputedStyle(el).display !== "none";
   return {
     width,
     scrollers,
     ignored,
     disclosures,
+    visibility: visibilityProbe(),
     footer: {
       effortVisible: visible(effort),
       contextVisible: visible(context),

@@ -67,25 +67,42 @@ incidentally during the core-scan mutation above
 real DOM it can see failing. Left as a follow-up if Jesse wants a dedicated
 mutation for the dock-split threshold itself.
 
-## bsq9 concern — in scope for this audit, not fixed here
+## Footer visibility predicate (`visible()` in `overflowharness-entry.tsx`) — kata bsq9
 
-`overflowharness-entry.tsx`'s `visible()` helper (used for
-`footer.effortVisible`/`contextVisible`/`queueVisible`) is:
+`footer.effortVisible` / `contextVisible` / `queueVisible` all rest on one
+predicate, which used to be:
 
 ```ts
 const visible = (el: HTMLElement | null) => el !== null && getComputedStyle(el).display !== "none";
 ```
 
-This checks only the element's OWN computed `display`, not any ancestor's.
-An ancestor with `display: none` would make the element itself report a
-non-`"none"` `display` (its own declared value, uncomputed-through-ancestor)
-while it is not actually visible — the exact false-green bsq9 describes.
-Confirmed this helper is the one and only visibility check `footer.*Visible`
-depends on; per the kata brief, bsq9 itself is out of scope and NOT fixed by
-this commit.
+That asks the element about ITSELF. An ancestor's `display: none` never
+changes a descendant's own computed display, so a fact inside a collapsed
+subtree still computed `flex`/`inline` and reported visible. It is now
+rendered geometry — `el.getClientRects().length > 0` — which no descendant of
+a `display: none` subtree has, at any depth.
 
-No other assertion in this guard depends on `visible()` — the scroller scan
-uses `clientWidth`/`scrollWidth` (which already read as 0/0 under an
-ancestor `display:none`, so the scan itself doesn't have this defect), and
-the disclosure contract reads `getComputedStyle` values directly off the
-elements it already knows are attached and open.
+**Mutation performed:** appended
+`[data-testid="status-row"] { display: none }` to the harness document, so
+the REAL effort/context/queue elements sit under a `display: none` ancestor,
+and ran the sweep against both predicates.
+
+**Result with the OLD predicate:** the footer check stayed SILENT —
+`effort`/`context`/`queue` all read visible with the row collapsed. That is
+the false green bsq9 describes, reproduced.
+
+**Result with the NEW predicate:** `390px ... FAIL - pressured footer facts
+missing: effort=false, context=false, queue=false` (and the same at 700, 1024
+and 1400).
+
+**Verified:** 2026-08-16. **Expect:** fail.
+
+The predicate also carries a live fixture, `visibilityProbe()`, asserted at
+every width by `run.mjs` — so unlike the groups above it does not depend on
+this file staying current. Three probes: an element under a `display: none`
+ancestor (must read missing), statusrow.module.css's own `.srOnly` recipe
+(1x1 clipped, must read present — a size threshold would have called it
+missing), and a plainly rendered element as the positive control, without
+which a predicate that answered "not visible" to everything would pass. Its
+own red-before-green: with the old predicate the probe reported
+`ancestorHidden=true` at all four widths.

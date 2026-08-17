@@ -267,6 +267,21 @@ async function main() {
           `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
         );
       }
+      // The footer checks below are only worth what the predicate behind them
+      // is worth, so the predicate is exercised against its own fixture first
+      // (kata bsq9). A fact under a display:none ancestor must read as missing;
+      // an intentionally visually-hidden one must not.
+      const probe = result.visibility;
+      if (!probe.rendered || probe.ancestorHidden || !probe.visuallyHidden) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - the visible() predicate behind the footer checks is broken: ` +
+            `rendered=${probe.rendered} (expected true), ` +
+            `ancestorHidden=${probe.ancestorHidden} (expected false - an element under a display:none ` +
+            `ancestor is not visible), visuallyHidden=${probe.visuallyHidden} (expected true - the sr-only ` +
+            `recipe is present, not missing)`,
+        );
+      }
       if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
         widthFailed = true;
         console.log(
