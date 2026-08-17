@@ -2,30 +2,6 @@ package agent
 
 import "primeradiant.com/serf/agent/provenance"
 
-func (s *Session) setActiveEntryKind(kind EntryKind) {
-	s.mu.Lock()
-	s.activeEntryKind = kind
-	s.mu.Unlock()
-}
-
-func (s *Session) currentEntryKind() EntryKind {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.activeEntryKind
-}
-
-func (s *Session) markWatchCallbackDeliveredForCurrentTurn() {
-	s.mu.Lock()
-	s.watchCallbackDelivered = true
-	s.mu.Unlock()
-}
-
-func (s *Session) watchCallbackDeliveredForCurrentTurn() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.watchCallbackDelivered
-}
-
 // activeCausalProvenance returns a clone of the provenance carried by the input
 // currently being processed, or nil when the active set is empty. Emitted events
 // are stamped with this value (see sendEvent).

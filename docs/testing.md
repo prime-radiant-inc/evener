@@ -90,6 +90,9 @@ capacity, browser availability, and CI tool setup are explicit prerequisites.
 | <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs | Serf CI/tooling; no new follow-up currently |
 | <code>make dist DIST_GOOS=... DIST_GOARCH=...</code> | Release/distribution binaries | The archive contains serf, serf-hub, serf-tui, and serf-doctor built for the requested target with a fresh SPA | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Serf launcher work is implied |
 | <code>scripts/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Serf |
+| <code>make test-coverage-floor</code> (<code>CHECK=1</code> to gate, <code>BLESS=1</code> to raise) | Whole-module Go statement coverage for every module in <code>GO_MODULES</code> | Full-suite statement coverage has not regressed below <code>scripts/testcov-global-floors.txt</code>. Measures the surface <code>ROOT_FULL=1 make test</code> proves, reusing that gate's own <code>-run</code>/<code>-skip</code> selection from <code>scripts/gate-surface-lib.sh</code> — <code>-short</code> on every module except the root | Local/on-demand; not required CI (heavier than <code>make test</code>) | Deterministic; no provider calls. Requires <code>-count=1</code> because cached coverage profiles report stale numbers. Runs no fuzz-family work: without the gate's <code>-run</code> filter <code>go test</code> would also execute every native Fuzz seed corpus | A module below its floor beyond the tolerance band is nonzero; a failing module keeps its full <code>go test</code> output in a named log rather than discarding it | Serf CI/tooling; floors for <code>invariant</code> are undefined by design (zero statements in a production build) |
+| <code>make coverage-union</code> (<code>CHECK=1</code> to gate, <code>BLESS=1</code> to raise) | Whole-module Go statement coverage reached by ANY deterministic test — the test track unioned with the fuzz track | How much of a module is exercised at all. Both other Go ratchets understate this on their own: <code>test-coverage-floor</code>'s <code>-run '^(Test|Example)'</code> filter excludes every fuzz target, and this repo keeps whole families of behavioural checks in <code>check*</code> functions that only a serffuzz-tagged "program" fuzz target calls, so those packages read far lower on the test track than they are | Local/on-demand; not required CI. The heaviest of the three — two full runs per module | Deterministic; no provider calls. The fuzz half replays committed seed corpora only (<code>go test</code> without <code>-fuzz</code>), never a search | A module below its floor beyond the tolerance band is nonzero. A union denominator materially larger than either track's means the tagged and untagged builds disagree about block boundaries; that fails loudly rather than reporting a nonsense percentage | Serf CI/tooling; no new follow-up currently |
+| <code>make web-coverage-floor</code> (<code>CHECK=1</code>, <code>BLESS=1</code>, <code>REUSE=1</code>) | Frontend per-area line coverage (vitest + the v8 provider) | Per-area line coverage has not regressed below <code>scripts/webcov-floors.txt</code>. Areas are the top-level directories under <code>src/</code>, so a well-tested area cannot subsidise an untested one the way a single whole-app number would | Local/on-demand; not required CI | Deterministic; no provider calls or browser. <code>coverage.include</code> names the whole source tree, so a file no test loads counts as 0% instead of being absent from the report — Vitest 4 removed <code>coverage.all</code>, and an explicit include is the only lever for this | An area below its floor beyond the tolerance band is nonzero. <code>reportOnFailure</code> keeps a usable report on a red suite so one bad test does not lose the whole measurement | Serf CI/tooling and frontend; no new follow-up currently |
 | <code>SERF_LIVE_TESTS=1</code> (umbrella opt-in)<br><code>SERF_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v</code><br><code>SERF_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v</code><br><code>SERF_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v</code> | Provider/live/e2e | Real MCP and provider wire/API behavior, credentials, and model/provider contracts | Explicit manual/nightly opt-in; never default CI; <code>SERF_LIVE_TESTS=1</code> also enables applicable live suites | Requires the named opt-in plus the corresponding tool, credentials, model access, and network; provider keys alone do not enable it | Tests without opt-in skip explicitly. With opt-in, configuration/API failures are nonzero; unavailable optional tools or credentials must be reported as skips/limitations, not passes | Provider owners; no default-gate follow-up |
 | <code>SERF_E2E_LIVE=1 scripts/e2e-cover.sh --merge-unit</code><br><code>SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v</code> | Live service coverage and host sandbox parity | Exercises real binaries/services or the host Seatbelt backend beyond deterministic unit coverage | Manual/platform-specific; not required CI | Needs provider/network services for live scenario scripts or macOS Seatbelt; SERF_E2E_LIVE is not a correctness gate because the coverage script intentionally continues past scenario failures | Missing platform/service is a limitation; live scenario failures must be read from script output rather than treated as coverage success | E2E/sandbox owners; hardening the coverage script is a separate follow-up |
 | Launcher health checks, managed-service restart, SDD/Kata semantics | Operational/external workflow | None are Serf-owned gate proofs in the current Makefile or workflows | Outside this repository's gates | Owned by the launcher, worktree manager, or SDD/Kata tooling | Do not add or silently imply these checks in Serf CI | Launcher/worktree manager/SDD owners; outside this change |
@@ -284,6 +287,20 @@ target loop is `[ "$tag" = native ] || continue`, so it replays only native
 `FuzzXxx` corpora and never touches a Rapid target, gated or not. Do not read
 a default-gate coverage number as "whole-repo coverage including fuzz" — it
 never was, and now it's explicit.
+
+The corollary runs the other way too, and it is the one that misleads: a
+default-gate number is not "how much of this package is tested". Several
+packages keep whole families of behavioural checks in `check*` functions that
+only a serffuzz-tagged *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
+invokes about thirty. `-run '^(Test|Example)'` never matches those names, so the
+test track cannot see that work at all: `cmd/serf-hub/internal/appsource` reads
+66.4% there and 83.1% under its own program target, and four modules that look
+incomplete on both tracks separately are in fact fully covered.
+
+So before concluding a package is under-tested — and certainly before writing a
+test to raise its number — read `make coverage-union`, which unions the two
+tracks. The test you were about to write may already exist under the other build
+tag.
 
 ## Proving a Type Survives a Round Trip
 
@@ -539,6 +556,36 @@ been tested. Two corollaries, both from real incidents here:
   An "onAdd called once" assertion passed with validation entirely removed,
   because committing the add unmounted the panel either way. Asserting the
   validate call itself distinguishes them.
+
+**A fixture whose content nothing reads.** `read_file`'s PDF fixture was
+`[]byte("pdf")` for years and every assertion around it passed, because the
+document path examines its payload in exactly one place and it is not where
+anyone looks. `execenv.detectDocumentFormat` decides on the FILENAME first
+(`.pdf` wins outright) and only sniffs the five-byte `%PDF-` signature when the
+extension does not claim a PDF; downstream, `tool.dispatchedResult` exempts
+`application/pdf` from raster decoding entirely, so nothing past the environment
+ever looks at the bytes again. That exemption is deliberate — a PDF is not
+something `llm.RasterMediaType` can decode — and it is now pinned as a stated
+contract rather than left to be rediscovered.
+
+The consequence for anyone writing a case here: a document test named `*.pdf`
+cannot be byte-sensitive, whatever you put in it. The only oracle that reads the
+content is the same path with an extension that does NOT claim a PDF, run twice
+against different bytes (`TestReadFile_RealPDF_DetectedByItsBytes`). The
+exemption is also stated as a contract next to the fixture that used to imply
+it, in `session_tools_core_exact_fuzz_test.go` — but that file is
+`//go:build serffuzz`, so it is read by `make fuzz-seeds`, not `make test`.
+Several untagged tests hold the same rule, so nothing is lost by the tag;
+the statement is there for the reader, not for the gate. And beware
+the size of the claim a passing case licenses: five bytes are checked, so
+"handles a real PDF" means "accepts the signature", and a fixture is only
+honestly a PDF if something proved it parses — `validPDFFixture` computes its
+cross-reference offsets from the bytes as they are written and
+`TestValidPDFFixtureCrossReferencesResolve` resolves them back. A previous
+attempt pasted an opaque blob whose comment claimed validity while three of its
+four offsets pointed at nothing; every `%PDF`/`xref`/`trailer`/`startxref`
+marker was present, which is why grepping for markers is not validation.
+
 ## Real `git` in Worktree Tests
 
 `git` is an external dependency like the LLM provider, and the same boundary rule

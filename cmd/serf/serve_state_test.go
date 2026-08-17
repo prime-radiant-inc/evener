@@ -550,7 +550,7 @@ func TestHoldServeStateForAwaitingWake(t *testing.T) {
 	}{
 		{"notification wake with a pending ask is held", agent.EntryNotification, true, true},
 		{"continuation wake with a pending ask is held", agent.EntryContinuation, true, true},
-		{"watch delivery with a pending ask is held", agent.EntryWatchDelivery, true, true},
+		{"delegate attention with a pending ask is held", agent.EntryDelegateAttention, true, true},
 		{"user input with a pending ask is not held (resolves the question)", agent.EntryUserInput, true, false},
 		{"notification wake with no pending ask is not held (general awaiting re-arms freely)", agent.EntryNotification, false, false},
 		{"user input with no pending ask is not held", agent.EntryUserInput, false, false},

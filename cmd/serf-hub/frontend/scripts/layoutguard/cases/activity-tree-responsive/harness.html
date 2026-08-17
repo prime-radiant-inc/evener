@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=1600, initial-scale=1">
 <title>activity tree responsive layoutguard harness</title>
+<!-- This document is the chrome AROUND the fixtures - the three measured trees
+     live in the srcdoc iframes below, which link these same two sheets for
+     themselves. It links them too so that every document on the page declares
+     the product's @font-face rules for itself, which is what waitForFonts now
+     requires per document rather than pooled (kata e4sh): pooled, one fixture
+     frame could lose its stylesheet and be carried by its siblings.
+     Deliberately BEFORE the block below, so the outer chrome's own deliberate
+     system-ui labelling still wins on order. -->
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; background: #10151C; }

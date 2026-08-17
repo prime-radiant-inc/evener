@@ -5,10 +5,23 @@
 # `go test` suite drives, so a PR that deletes tests or adds untested code fails
 # the gate instead of silently eroding the numbers the coverage campaign won.
 #
-# It measures each module with `go test -count=1 -coverpkg=./... ./...` (the
-# -count=1 is REQUIRED — cached coverage profiles report stale numbers) and dedups
-# the -coverpkg duplicate blocks by position (a block is covered if ANY test hit
-# it) before computing the percentage, the same way fuzz-coverage-global.sh does.
+# It measures the SAME surface `ROOT_FULL=1 make test` proves — the contract
+# make merge-approval-gate runs — by reusing the gate's own test selection from
+# gate-surface-lib.sh: ordinary Test/Example functions, fuzz-owned names skipped,
+# and -short on every module except the root. Matching the gate is the whole
+# point: a floor blessed against a surface no gate reproduces cannot be defended
+# when it moves, and bare `go test ./...` here also ran every native Fuzz seed
+# corpus and the rapid/seqfuzz family, which are make fuzz's job.
+#
+# Each module is measured against ITS OWN packages (`go list ./...`), not against
+# the `./...` filesystem pattern, which under go.work also matches every nested
+# module beneath the root and made the root row a whole-repo number.
+#
+# The -count=1 is REQUIRED — cached coverage profiles report stale numbers. It
+# dedups the -coverpkg duplicate blocks by position (a block is covered if ANY
+# test hit it) before computing the percentage, the same way
+# fuzz-coverage-global.sh does. A failing module keeps its full `go test` output
+# in a log whose path is printed, rather than discarding it.
 #
 # Usage:
 #   scripts/test-coverage-floor.sh                     # measure + print (all modules)
@@ -43,6 +56,13 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# The gate's test-selection surface, shared with run-module-tests.sh so this
+# ratchet cannot drift into measuring something no gate proves.
+. "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
+# How a coverage number is counted, shared with every other script that
+# reports one; see covstmt-lib.sh for why a second copy is a hazard.
+. "$(dirname "${BASH_SOURCE[0]}")/covstmt-lib.sh"
+
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 
 # Measured percentages accumulate in a "<module> <pct>" file rather than an
@@ -50,34 +70,48 @@ floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 # is unavailable. Reusing the floor_for lookup shape keeps both reads identical.
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
-# stmt_counts dedups -coverpkg duplicate blocks by position and prints "covered total".
-stmt_counts() {
-	python3 - "$1" <<'PY'
-import re, sys
-seen = {}
-for l in open(sys.argv[1]):
-	m = re.match(r'^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$', l)
-	if not m:
-		continue
-	f, sl, sc, el, ec, ns, cnt = m.groups()
-	key = (f, sl, sc, el, ec)
-	seen[key] = (int(ns), seen.get(key, (0, False))[1] or int(cnt) > 0)
-tot = sum(n for n, _ in seen.values())
-cov = sum(n for n, c in seen.values() if c)
-print(cov, tot)
-PY
-}
 
 profiles_dir="$(mktemp -d -t serf-testcov.XXXXXX)"
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 fail=0
+# A clean run leaves nothing behind; a failed one keeps the profiles and the
+# per-module go test logs, because the failure line just printed their path and
+# they are the only record of why. Without this the directory leaked on every
+# invocation — including every selftest run, which the dev-tooling wave fails a
+# suite for.
+cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
+trap cleanup_profiles EXIT
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
-	prof="$profiles_dir/${m//\//_}.cov"
-	if ! ( cd "$repo_root/$m" && go test -count=1 -coverpkg=./... -coverprofile="$prof" ./... ) >/dev/null 2>&1; then
-		printf '%-10s %s\n' "$m" "TEST FAILED (see: cd $m && go test -coverpkg=./... ./...)"
+	name="$m"
+	[ "$name" = "." ] && name="root"   # or the profile and log land as dotfiles
+	prof="$profiles_dir/$(printf '%s' "$name" | tr / _).cov"
+	log="$profiles_dir/$(printf '%s' "$name" | tr / _).log"
+	# -coverpkg takes FILESYSTEM patterns, and under go.work `./...` matches every
+	# package in the tree below the module — which for the root module means
+	# agent/, llm/, auth/ and every other nested module too. The root row was
+	# therefore a whole-repo figure diluted by code the root module's own tests
+	# never run (50.9% against a 82603-statement denominator, versus 79.7% of the
+	# 33141 statements it actually owns). `go list ./...` resolves within the
+	# module, so it names this module's packages and nothing else.
+	pkgs="$( cd "$repo_root/$m" && go list ./... 2>/dev/null | paste -sd, - )"
+	if [ -z "$pkgs" ]; then
+		printf '%-10s %s\n' "$m" "cannot list packages (see: cd $m && go list ./...)"
+		fail=1; continue
+	fi
+	# -short everywhere except the root module, mirroring run-module-tests.sh's
+	# module_test_flags under ROOT_FULL=1 — the surface make merge-approval-gate
+	# proves. Bare `go test ./...` would additionally run every native Fuzz
+	# target's seed corpus and the rapid/seqfuzz family, which belong to
+	# make fuzz; measuring those here inflated the floor against a surface no
+	# gate reproduces, and on this repo it simply failed.
+	short="-short"
+	[ "$m" = "." ] && short=""
+	if ! ( cd "$repo_root/$m" && go test -count=1 $short -coverpkg="$pkgs" -coverprofile="$prof" \
+		-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./... ) >"$log" 2>&1; then
+		printf '%-10s %s\n' "$m" "TEST FAILED (log: $log)"
 		fail=1; continue
 	fi
 	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no profile"; continue; }
@@ -98,10 +132,24 @@ done
 if $bless; then
 	tmp="$(mktemp)"
 	{
-		echo "# Full-suite (unit+integration) whole-module statement-coverage floors."
-		echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
-		echo "# a downward reset (denominator change, not a regression) is a hand edit."
-		for m in $modules; do
+		# Carry the file's existing comment header through instead of restating a
+		# fixed one. A downward reset is a hand edit whose comment records WHY the
+		# basis changed, and rewriting the header on every bless deleted that
+		# reason the next time anyone raised a floor.
+		if grep -q '^#' "$floors_file" 2>/dev/null; then
+			awk '/^#/{print; next} {exit}' "$floors_file"
+		else
+			echo "# Full-suite (unit+integration) whole-module statement-coverage floors."
+			echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
+			echo "# a downward reset (denominator change, not a regression) is a hand edit."
+		fi
+		# Bless the union of what was measured and what the file already holds, so
+		# `--bless --modules agent` raises agent and LEAVES every other module's
+		# floor intact. Restricting this loop to $modules silently deleted the
+		# unmeasured floors, which made improving one module at a time — the normal
+		# way coverage work happens — quietly drop the ratchet everywhere else.
+		{ printf '%s\n' $modules; awk '!/^#/ && NF {print $1}' "$floors_file" 2>/dev/null; } | sort -u | while read -r m; do
+			[ -n "$m" ] || continue
 			cur="$(measured_for "$m")"; old="$(floor_for "$m")"; keep="$cur"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="${cur:-0}" 'BEGIN{print (a>b)?a:b}')"
 			[ -n "$keep" ] && echo "$m $keep"

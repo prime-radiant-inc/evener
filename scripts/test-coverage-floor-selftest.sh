@@ -25,6 +25,10 @@ trap 'rm -rf "$work"' EXIT
 repo="$work/repo"
 mkdir -p "$repo/scripts" "$repo/agent"
 cp "$real_script" "$repo/scripts/test-coverage-floor.sh"
+# The script sources its gate-surface definition from its own directory, so the
+# throwaway repo needs the real one beside it.
+cp "$(dirname "$0")/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
+cp "$(dirname "$0")/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
 script="$repo/scripts/test-coverage-floor.sh"
 floors="$repo/scripts/testcov-global-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
@@ -37,6 +41,13 @@ fake_bin="$work/bin"
 mkdir -p "$fake_bin"
 cat >"$fake_bin/go" <<'FAKEGO'
 #!/bin/sh
+[ -n "${FAKE_GO_LOG:-}" ] && echo "$(basename "$PWD") $*" >>"$FAKE_GO_LOG"
+# `go list ./...` is how the script scopes -coverpkg to the module under test.
+if [ "$1" = list ]; then
+	echo "fake/$(basename "$PWD")/alpha"
+	echo "fake/$(basename "$PWD")/beta"
+	exit 0
+fi
 prof=""
 for a in "$@"; do
 	case "$a" in -coverprofile=*) prof="${a#-coverprofile=}" ;; esac
@@ -56,7 +67,13 @@ exit 0
 FAKEGO
 chmod +x "$fake_bin/go"
 
-run() { PATH="$fake_bin:$PATH" bash "$script" --modules ". agent" "$@"; }
+go_log="$work/go-invocations.txt"
+# A private TMPDIR makes the script's own scratch observable: the wave runner
+# fails a suite that leaves anything behind, and the profiles directory used to
+# leak once per invocation.
+tmphome="$work/tmp"
+mkdir -p "$tmphome"
+run() { PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" TMPDIR="$tmphome" bash "$script" --modules ". agent" "$@"; }
 
 out="$work/out.txt"
 : >"$floors"
@@ -80,14 +97,55 @@ else
 	bad "the agent row is missing or wrong"; sed 's/^/    | /' "$out"
 fi
 
+# The measured surface must stay the gate's surface. A ratchet that drifts from
+# what `ROOT_FULL=1 make test` proves cannot be defended when its number moves,
+# so the gate's own -run/-skip selection is asserted here rather than assumed.
+. "$(dirname "$0")/gate-surface-lib.sh"
+assert_has "$go_log" "-run ^(Test|Example)" "the coverage run uses the gate's Test/Example filter"
+assert_has "$go_log" "-skip $GATE_FUZZ_TEST_SKIP" "the coverage run skips the fuzz-owned names"
+# -coverpkg must name the module's OWN packages. `./...` is a filesystem pattern
+# that under go.work also matches every nested module, which turned the root row
+# into a whole-repo number diluted by code its tests never run.
+assert_has "$go_log" "-coverpkg=fake/repo/alpha,fake/repo/beta" "-coverpkg is scoped to the module's own packages"
+assert_not_has "$go_log" "-coverpkg=./..." "-coverpkg is never the tree-wide pattern"
+if grep -q '^agent .*-short' "$go_log"; then
+	ok "non-root modules are measured in -short mode"
+else
+	bad "agent was measured without -short"; sed 's/^/    | /' "$go_log"
+fi
+if grep -q '^repo .*-short' "$go_log"; then
+	bad "the root module must NOT be measured in -short mode (ROOT_FULL semantics)"
+	sed 's/^/    | /' "$go_log"
+else
+	ok "the root module is measured without -short"
+fi
+
 # --bless must carry the MEASURED percentages through; the associative-array bug
 # silently wrote back stale floors here even when the rows above looked right.
+assert_eq "$(ls -A "$tmphome")" "" "a clean run leaves no scratch directory behind"
+
 run --bless >"$out" 2>&1
 assert_has "$floors" ". 25.0" "bless records the measured \".\" floor"
 assert_has "$floors" "agent 75.0" "bless records the measured agent floor"
 
 run --check >"$out" 2>&1
 assert_eq "$?" "0" "check passes at the blessed floors"
+
+# A hand-written basis note explains why a floor was reset downward. Blessing
+# raises other floors later, and rewriting the header would delete that reason.
+printf '# why this basis changed: measured surface moved\n. 25.0\nagent 75.0\n' >"$floors"
+run --bless >"$out" 2>&1
+assert_has "$floors" "why this basis changed" "bless preserves a hand-written header note"
+assert_has "$floors" "agent 75.0" "bless still records floors alongside the preserved note"
+
+# Improving one module at a time is the normal way coverage work happens, so a
+# partial bless must not delete the floors it did not measure.
+printf '. 10.0\nagent 10.0\nllm 91.4\nauth 95.7\n' >"$floors"
+PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" TMPDIR="$tmphome" bash "$script" --modules "agent" --bless >"$out" 2>&1
+assert_has "$floors" "agent 75.0" "a partial bless raises the module it measured"
+assert_has "$floors" "llm 91.4" "a partial bless keeps an unmeasured module's floor"
+assert_has "$floors" "auth 95.7" "a partial bless keeps every other unmeasured floor"
+assert_has "$floors" ". 10.0" "a partial bless keeps the root floor it did not measure"
 
 printf '. 90.0\nagent 75.0\n' >"$floors"
 run --check >"$out" 2>&1

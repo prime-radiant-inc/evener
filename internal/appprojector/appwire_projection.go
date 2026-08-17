@@ -202,21 +202,22 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// published active (status and capabilities ride one frame, and the
 		// composer renders Stop and Steer only when it believes the thread is
 		// busy). An empty TurnID means the daemon could not name this turn;
-		// the other two obligations still stand, so startTurn mints as usual.
+		// all three obligations still stand, so startTurn mints as usual and
+		// the status goes out either way.
+		//
+		// Active is published for an unnameable turn too. Control mutations
+		// stopped naming the turn they act on -- appwire v3 dropped
+		// expectedTurnId from steer, queue, interrupt, drain and promote
+		// (appwire/types.go) -- and the daemon's capability answer never
+		// consulted the id at all: appCapabilities (server/appwire_runtime.go)
+		// computes active from `processing || appReservedTurnID != ""`. So
+		// thread/read already hands a client hydrating mid-turn an active
+		// status and controls that work, whichever way the naming went.
+		// Withholding this frame would hide a Stop that works and leave the
+		// push and pull paths disagreeing about one turn (kata b19h).
 		p.clearSkillCandidate()
 		data := eventData[events.TurnStartedData](event.Data)
 		_, out := p.openTurn(data.TurnID, event.Timestamp)
-		// Publish active ONLY for a turn the daemon could name. Status and
-		// capabilities ride this one frame, so announcing it hands the composer
-		// steer:true/interrupt:true and renders Stop and Steer -- and every
-		// control it then offers is compared against the durable ActiveTurnID
-		// the daemon does NOT hold, so each is rejected with nothing shown
-		// (kata 2f41). A button that lies is worse than the absent button that
-		// is today's behaviour for an unnameable turn. Closing and opening the
-		// turn above still stand: turn separation costs a client nothing.
-		if data.TurnID == "" {
-			return out
-		}
 		return append(out, p.threadStatus(appwire.ThreadStatusActive))
 	case events.EventUserInput:
 		data := eventData[events.UserInputData](event.Data)

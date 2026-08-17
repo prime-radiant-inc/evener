@@ -662,7 +662,7 @@ else
 	bad "runner should replay a module discovered from go.work ($last_output)"
 fi
 log="$(cat "$go_log")"
-has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'derived added module is preflighted'
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}}\t{{.ImportPath}} ./...' 'derived added module is preflighted'
 has "$log" $'\ttest -tags serffuzz -run ^FuzzAdded$ -count=1 -coverprofile=' 'derived added module target is replayed'
 
 reset_logs
@@ -676,7 +676,7 @@ else
 	bad "--modules should accept a module derived from go.work ($last_output)"
 fi
 log="$(cat "$go_log")"
-has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' '--modules lists the derived module'
+has "$log" "$repo/added"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}}\t{{.ImportPath}} ./...' '--modules lists the derived module'
 lacks "$log" "$repo/agent"$'\t'"$repo/go.work"$'\t' '--modules skips unselected workspace modules'
 
 reset_logs
@@ -705,7 +705,7 @@ else
 fi
 has "$last_output" 'replay native:alias:.:FuzzAlias' 'replay keeps the alias label from go.work'
 log="$(cat "$go_log")"
-has "$log" "$repo/alias"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}} ./...' 'alias workspace path is preflighted'
+has "$log" "$repo/alias"$'\t'"$repo/go.work"$'\tgoenv=off\tgoflags=\tseed=<unset>\tchecks=<unset>\tsteps=<unset>\tfailfile=<unset>\tnofailfile=<unset>\tlog=<unset>\tv=<unset>\tdebug=<unset>\tdebugvis=<unset>\tshrinktime=<unset>\tlist -tags serffuzz -f {{.Dir}}\t{{.ImportPath}} ./...' 'alias workspace path is preflighted'
 has "$log" $'\ttest -tags serffuzz -run ^FuzzAlias$ -count=1 -coverprofile=' 'alias plan target replays after physical package preflight'
 has "$(cat "$cov_manifest")" $'alias\t.\t' 'global manifest preserves the alias module label'
 

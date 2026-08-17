@@ -97,6 +97,9 @@ PY
 }
 
 rollup_file="$(mktemp -t serf-webcov.XXXXXX)"
+# Removed on every exit path, not just the happy one: the dev-tooling wave fails
+# a suite that leaves anything behind, and this script runs inside one.
+trap 'rm -f "$rollup_file"' EXIT
 area_rollup "$summary" >"$rollup_file" || { echo "failed to parse $summary" >&2; exit 1; }
 [ -s "$rollup_file" ] || { echo "coverage summary named no files under src/ — check coverage.include" >&2; exit 1; }
 

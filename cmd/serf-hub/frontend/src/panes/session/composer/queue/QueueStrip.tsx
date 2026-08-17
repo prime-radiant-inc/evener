@@ -13,10 +13,11 @@ import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { discardRecoveryMutation, threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
+  discardRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
@@ -208,10 +209,18 @@ export function QueueStrip({
 
   async function handleEdit(index: number, entryId: string, fullText: string): Promise<void> {
     setRowBusy(entryId, true);
-    // FIRST - loser-safe: the user's text is safely in the composer
-    // regardless of whether the cancel below succeeds (contract row).
-    onRestoreToComposer(fullText);
     try {
+      // FIRST - loser-safe: the user's text is safely in the composer
+      // regardless of whether the cancel below succeeds (contract row).
+      // A failure HERE is the other order entirely - nothing moved - so it
+      // must not borrow the cancel's message below, and must leave the queued
+      // entry alone rather than removing a message with nowhere to go.
+      try {
+        onRestoreToComposer(fullText);
+      } catch (err) {
+        toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
+        return;
+      }
       await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
     } catch (err) {
       toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
@@ -256,6 +265,20 @@ export function QueueStrip({
       await retryBlockedPendingTurn(record.clientMutationId, sessionRef);
     } catch (error) {
       toasts.push("error", `Retry failed: ${errorText(error)}`);
+    } finally {
+      setRowBusy(record.clientMutationId, false);
+    }
+  }
+
+  // discardRecoveryPendingTurn, not the bare store mutation: it refreshes the
+  // projection unconditionally, so a record another surface already discarded
+  // still leaves the strip instead of sitting there being counted as queued.
+  async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
+    setRowBusy(record.clientMutationId, true);
+    try {
+      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef);
+    } catch (error) {
+      toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -404,9 +427,7 @@ export function QueueStrip({
                     icon={<span aria-hidden="true">✕</span>}
                     size="sm"
                     disabled={rowBusy}
-                    onClick={() => {
-                      void discardRecoveryMutation(record.clientMutationId, sessionRef);
-                    }}
+                    onClick={() => void handleDismiss(record)}
                   />
                 ) : (
                   <ActionButton

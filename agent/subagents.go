@@ -615,7 +615,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
-	subCfg.spawn.parentSteerDelivered = s.trySteerWithProvenanceAndNotify
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if subCfg.ShareTasksWithChildren {
 		ownerSessionID := parentCfg.spawn.sharedTaskStoreOwnerSessionID
@@ -1683,9 +1682,6 @@ func stableDelegateFinish(sess *Session, result string, runErr error) delegateFi
 		inputs.structuredResult, inputs.structuredResultPresent = sess.communicateStructuredResult()
 	}
 	finish := stableDelegateFinishFromRun(inputs)
-	if sess != nil {
-		finish.observerCallbackDelivered = sess.currentEntryKind() == EntryWatchDelivery && sess.watchCallbackDeliveredForCurrentTurn()
-	}
 	return finish
 }
 
@@ -1731,7 +1727,6 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	}
 	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
 	finish := stableDelegateFinishFromRun(inputs)
-	finish.observerCallbackDelivered = a.sess.currentEntryKind() == EntryWatchDelivery && a.sess.watchCallbackDeliveredForCurrentTurn()
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
 	}

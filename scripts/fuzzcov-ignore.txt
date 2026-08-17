@@ -1,12 +1,27 @@
-# fuzzcov gap-map ignore-list. One package import path per line, each REQUIRING a
-# reason comment: "<import-path>  # <reason>". serf-fuzzcov errors on a reasonless
-# entry, so this file is reviewed like code. Use only for genuinely out-of-scope
-# parse surfaces (test helpers, generated code, the serf-agnostic toolkit, and the
-# fuzz tooling itself). Real runtime decode surfaces are left in the gap map as
-# the honest record of fuzz work still to do.
+# fuzzcov ignore-list: packages deliberately outside fuzz scope. One package
+# import path per line, each REQUIRING a reason comment: "<import-path>  #
+# <reason>". serf-fuzzcov errors on a reasonless entry, so this file is reviewed
+# like code. Use only for genuinely out-of-scope surfaces (test helpers,
+# generated code, code generators, the serf-agnostic toolkit, and the fuzz
+# tooling itself). Real runtime decode surfaces are left in the gap map as the
+# honest record of fuzz work still to do.
+#
+# TWO consumers read this list, and that is the point: scripts/fuzz-gap-check.sh
+# (every decode/parse package needs a target) and scripts/fuzz-coverage-global.sh
+# (every production package needs a local fuzz surface before any replay runs).
+# They disagreed before they shared it — a package could be reasoned out of scope
+# for the gap map while the coverage preflight still demanded a fuzz target for
+# it, which left that gate unable to run at all.
 primeradiant.com/serf/fuzz/promoter  # serf-agnostic toolkit core (failure->regression promoter); decodes its own jobs.jsonl shape, exercised by the fuzz module's own unit tests, not a serf wire surface
 primeradiant.com/serf/cmd/serf-fuzz-harvest  # the corpus harvester that PRODUCES fuzz seeds; tooling, not a shipped runtime decode surface
 primeradiant.com/serf/tools/tool-fluency/cmd/serf-fluency  # dev/eval tool, not shipped runtime
 primeradiant.com/serf/cmd/serf-fuzzcov  # the fuzz coverage reporter itself; parses go coverage profiles (its own tooling), not a serf runtime/wire decode surface
 primeradiant.com/serf/fuzz/typegen  # fuzz test-helper: ValueFromBytes reflect-marshals then json.Unmarshals into a caller's type to GENERATE fuzz inputs, not a serf runtime decode surface
+primeradiant.com/serf/fuzz/aliascheck  # fuzz test-helper: reflects over a value and its copy to find shared mutable storage, and populates values to give a missed copy something to alias; a toolkit for writing oracles, not a serf runtime decode surface
 primeradiant.com/serf/test/e2e/fakellm  # e2e test helper: a fake LLM HTTP server decoding the request bodies its own harness sends it, standing in for a provider so the stack tests stay offline; not a serf runtime/wire decode surface
+primeradiant.com/serf/test/e2e/fakellm/cmd  # the fakellm helper's binary entry point; same test-helper carve-out as the package it launches
+primeradiant.com/serf/test/e2e/fake429  # e2e test helper: stands in for a rate-limited provider so the model-retry path can be driven without waiting on a real provider to throttle
+primeradiant.com/serf/cmd/serf-hub/internal/hubtest  # fixture helpers shared by cmd/serf-hub tests; test support, not shipped runtime
+primeradiant.com/serf/internal/appwirets  # code GENERATOR run via go generate to emit the AppWire TypeScript types; its output is verified up to date by TestGeneratedFileCurrent, and the generator itself is not a shipped runtime surface
+primeradiant.com/serf/cmd/serf-test-dev-tooling  # the dev-tooling selftest wave runner; tooling that tests tooling, not shipped runtime
+primeradiant.com/serf/llm/providers  # no production file exists in this package — it holds only cross-provider tests, so there is no local surface to fuzz

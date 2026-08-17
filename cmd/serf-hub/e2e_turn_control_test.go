@@ -503,6 +503,11 @@ type hubStack struct {
 	workDir      string
 	readableFile string
 	model        string
+	// home and binDir let a test start a daemon of its OWN alongside the hub,
+	// on the same isolated HOME, so the hub discovers it through the
+	// rendezvous directory rather than having spawned it.
+	home   string
+	binDir string
 }
 
 func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
@@ -661,6 +666,8 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		workDir:      workDir,
 		readableFile: readable,
 		model:        model,
+		home:         home,
+		binDir:       binDir,
 	}
 }
 

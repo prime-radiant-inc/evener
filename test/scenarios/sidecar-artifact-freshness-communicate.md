@@ -48,8 +48,7 @@ reference card `job-watch-observer-snide-thread.md`.
 - The watch uses `events: [communicate]` on source `parent`;
   `assistant.message` is not a public watch event.
 - The observer emits `ARTIFACT_ALERT` as its terminal
-  `communicate(end_turn=true)` — the parent sees it as an `Observer
-  callback:` block — without trying to edit or create the missing
+  `communicate(end_turn=true)` — the parent sees it as an `<delegate-notification>` block — without trying to edit or create the missing
   artifact. The artifact path it reports comes from the frame's
   `event: message:` text.
 - Nonmatching frames, if any, are answered with a bare

@@ -64,7 +64,6 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			{"pending-broadcast", TestW3Init_PendingSessionStart_AfterFuncBroadcast},
 			{"resume-hooks-deferred", TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput},
 			{"resume-hooks-notification", TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks},
-			{"resume-hooks-watch", TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks},
 			{"resume-hooks-once", TestRestoreSessionStartHooksDrainOnlyOnce},
 			{"strategy-all", TestS2Cov_SelectStrategy_AllNamedStrategies},
 			{"strategy-unknown", TestS2Cov_SelectStrategy_UnknownStrategyFails},

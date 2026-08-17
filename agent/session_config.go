@@ -502,12 +502,6 @@ type spawnConfig struct {
 	// labels it from ground truth.
 	parentSteer func(string, *provenance.Causal, string)
 
-	// parentSteerDelivered reports whether a runtime alias message was accepted
-	// by the caller. It is used where durable watch-send state depends on
-	// delivery, and carries the message's causal watch provenance and its
-	// events.SteeringKind*.
-	parentSteerDelivered func(string, *provenance.Causal, string) bool
-
 	// parentSystemNotification routes a child-owned restart notice up the live
 	// session tree to the callback receiver.
 	parentSystemNotification func(receiverSessionID, message string) bool

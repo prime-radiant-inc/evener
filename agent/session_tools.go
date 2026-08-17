@@ -149,9 +149,6 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		if err := s.executeDelegateMutationPlans(plans); err != nil {
 			return nil, err
 		}
-		if s.currentEntryKind() == EntryWatchDelivery {
-			s.markWatchCallbackDeliveredForCurrentTurn()
-		}
 		result := sendMessageResult{Target: target, Action: "delivered"}
 		result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, result.Status, result.Action)
 		return marshalDelegateSendResult(result, maxChars)

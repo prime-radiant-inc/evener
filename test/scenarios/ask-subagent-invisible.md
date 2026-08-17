@@ -26,11 +26,14 @@ delegation-only tools for a coordinator.
 ## Steps
 
 1. Spawn a **root** session and have it delegate a task whose whole job is to try to call
-   `ask_user` and report what happened. `max_wait_ms` is set so the result comes back inline
-   rather than requiring a notification-poll loop:
+   `ask_user` and report what happened. Creation is asynchronous and rejects `max_wait_ms`
+   outright (`agent/session_tools.go#stableDelegateCreateTool`), so the root ends its turn
+   and reports once the delegate's terminal notification wakes it — no poll loop, and no
+   `job_id` to capture, because creation returns none
+   (`agent/session_tools.go#stableDelegateCreateResult`):
    ```bash
    tmpdir=$(mktemp -d -t serf-e2e-ask-subagent-XXXXX)
-   prompt="Call the delegate tool exactly once with max_wait_ms 45000 and this task: \"Immediately try calling a tool named ask_user, with header Confirm, question Should we proceed, and two options Yes and No. If that tool is unavailable, unknown, or absent from your tool list, call communicate with the exact text: ASK_USER_UNAVAILABLE. If it somehow succeeds, call communicate with the exact text: ASK_USER_SUCCEEDED.\" Then tell me the delegate_id, the job_id, and the final message from the delegate, and end your turn."
+   prompt="Call the delegate tool exactly once, with NO max_wait_ms, and this task: \"Immediately try calling a tool named ask_user, with header Confirm, question Should we proceed, and two options Yes and No. If that tool is unavailable, unknown, or absent from your tool list, call communicate with the exact text: ASK_USER_UNAVAILABLE. If it somehow succeeds, call communicate with the exact text: ASK_USER_SUCCEEDED.\" Report the delegate_id and end your turn. When the delegate's terminal notification arrives, tell me the delegate_id and the final message from the delegate, and end your turn."
    body=$(jq -n --arg wd "$tmpdir" --arg prompt "$prompt" '{
      prompt: $prompt,
      model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
@@ -75,9 +78,14 @@ delegation-only tools for a coordinator.
 5. **`grant_tools` rejection — deterministic-only, not live-reachable today.** Do **not**
    attempt to drive this through a live `delegate` call: the shipped `delegate` tool schema
    (`agent/internal/tool/definitions.go` `DefDelegate`) sets `"additionalProperties": false`
-   and its property list is exactly `task, agent_type, model, reasoning_effort, max_wait_ms,
+   and its property list is exactly `task, agent_type, model, reasoning_effort,
    delegation_allowance, watch_parent, isolation, sandbox, sandbox_net, result_schema`
-   (`definitions.go:126-158`) — there is no `grant_tools` property, and `delegateTool`'s Go
+   (`agent/internal/tool/definitions.go#DefDelegate`) — note there is no `max_wait_ms`
+   either. That `additionalProperties: false` is advisory, not enforced: `DefDelegate`
+   ships `Strict: &strictFalse`, so an unknown key is not rejected by schema validation —
+   what actually fires for `max_wait_ms` is serf's own `invalid_request` check in
+   `agent/session_tools.go#stableDelegateCreateTool`. There is no
+   `grant_tools` property, and `delegateTool`'s Go
    handler (`agent/session_tools_jobs.go`) never reads one from `args`. The one live call
    that could pass the `grantTools []string` parameter,
    `prepareSubagentRunWithModelSelection` at `agent/job_delegate.go:362-365`, hard-codes

@@ -628,9 +628,9 @@ Practical observer guidance for agents:
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
 - When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
 - Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as an "Observer callback" block containing the observer message and canonical output envelope.
+- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_...">` block carrying the result packet — which arms delegate attention and wakes the parent.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
-- A watch-origin observer delegate that has already sent its terminal `communicate(end_turn=true)` records terminal state without adding another owner notification for that generation. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
+- A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
 Rules:
 
@@ -1403,7 +1403,7 @@ Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only 
 2. Inside that child, configure `job_watch(operation="create", source="parent", ...)`.
 3. Serf delivers matching bounded event/output frames to the child that created the watch.
 4. The sidecar responds with `communicate(end_turn=true, ...)` when it has useful commentary or advice.
-5. The caller receives an "Observer callback" block with the observer message and canonical output envelope, then continues from it. Follow-up `job_list`, `job_status` or `job:` transcript reads are audit/diagnostic evidence after the callback, not the callback mechanism itself.
+5. The caller receives that generation's `<delegate-notification>` frame carrying the observer's result packet, is woken by it, and continues from it. Follow-up `job_list`, `job_status` or `job:` transcript reads are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
 This makes observer behavior a composition of two primitives:
 

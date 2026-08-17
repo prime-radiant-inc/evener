@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -389,16 +390,25 @@ func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
 //
 // So a stood-down wake whose EntryNotification the serve loop already consumed
 // has nothing left to raise it. It must ask for another one on its way out.
+//
+// The ask is PACED rather than immediate (kata ajg5): notify() pushes into a
+// one-slot channel the serve loop is about to read, so an immediate kick spins
+// for as long as the name stays held -- which a mutation store failing writes
+// makes forever. The guarantee is unchanged; only the timing is.
 func TestStandDownReArmsTheWake(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
+	clk := agenttest.NewFakeClock()
+	s.clock = clk
 	serveSession(t, s)
 
 	var mu sync.Mutex
 	notifies := 0
+	woken := make(chan struct{}, 4)
 	s.SetNotifyFunc(func() {
 		mu.Lock()
 		notifies++
 		mu.Unlock()
+		woken <- struct{}{}
 	})
 
 	s.attentionMu.Lock()
@@ -428,14 +438,22 @@ func TestStandDownReArmsTheWake(t *testing.T) {
 		t.Fatalf("seed a claimed user turn: %v", err)
 	}
 
+	timersBefore := clk.BlockedCount()
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 
+	if got := clk.BlockedCount(); got != timersBefore+1 {
+		t.Fatalf("standing down armed %d retry timers, want the baseline %d plus one; the consumed EntryNotification is gone, the attention flag suppresses a new one, and the tail gate does not count attention -- without this the delegate waits forever",
+			got, timersBefore)
+	}
+	clk.Advance(jobNotificationRetryInitialDelay)
+	<-woken
+
 	mu.Lock()
 	defer mu.Unlock()
 	if notifies == 0 {
-		t.Fatal("standing down asked for no further wake; the consumed EntryNotification is gone, the attention flag suppresses a new one, and the tail gate does not count attention -- this delegate waits forever")
+		t.Fatal("standing down asked for no further wake")
 	}
 }
 
@@ -561,8 +579,12 @@ func TestUnservedSessionNamesNoTurn(t *testing.T) {
 	if s.servedByDaemon() {
 		t.Fatal("a session with no authoritative consumer reports itself served")
 	}
-	if got := s.mintRunningTurnID(); got != "" {
+	got, refusal := s.mintRunningTurnID()
+	if got != "" {
 		t.Fatalf("mintRunningTurnID = %q for an unserved session, want empty", got)
+	}
+	if refusal != turnNameUnserved {
+		t.Fatalf("refusal = %v for an unserved session, want turnNameUnserved", refusal)
 	}
 }
 

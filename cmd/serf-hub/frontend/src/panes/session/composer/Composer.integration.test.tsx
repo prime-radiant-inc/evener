@@ -21,18 +21,7 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 import { usePendingTurnEntries } from "./queue";
-import { resetPendingTurnsStoreForTests, settlePendingTurnsProjectionForTests } from "./queue/pendingTurnsStore";
-
-async function settlePendingProjection(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) {
-    let awaited = 0;
-    await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
-    });
-    if (awaited === 0) return;
-  }
-  throw new Error("pending-turns projection never settled");
-}
+import { flushPendingTurnsProjectionForTests, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -548,7 +537,7 @@ test("a plain send exposes its durable pending entry while the network remains u
   await user.type(textarea() as HTMLTextAreaElement, "hello agent");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
   await storage.committed;
-  await settlePendingProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect(result.current).toHaveLength(1);
   expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });

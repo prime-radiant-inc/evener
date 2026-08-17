@@ -89,7 +89,7 @@ observer's terminal `communicate(end_turn:true)` callback — see
 - The observer packages the handoff from the frame's event fields plus
   that read, and reports it through one terminal
   `communicate(end_turn=true)`, which reaches the parent as an
-  `Observer callback:` block.
+  `<delegate-notification>` block.
 - **Nothing else about that job opens up.** The observer's own
   `job_status` call on the same job_id fails — visible in its transcript
   — and the failure now names the sanctioned read:
