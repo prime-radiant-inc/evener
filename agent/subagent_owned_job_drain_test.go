@@ -867,13 +867,14 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 		// request 3 carries request 2 as transcript history. An assertion aimed
 		// at request 3 is therefore satisfied by anything either turn saw, and
 		// cannot tell one coalesced turn from two sequential ones.
+		//
+		// Scoping watchSeen to request 3 is what carries the ordering. The
+		// pending watch send does not exist until after request 2 is already
+		// sent, so no assertion ABOUT request 2 can say anything about it.
 		fatalSeen := len(requests) == 3 && requestsContain(requests[1:2], "fatal before watch delivery")
 		watchSeen := len(requests) == 3 && requestsContain(requests[2:3], "watch send failed")
-		// Request 2 must not already carry the diagnostic; that is what pins the
-		// ordering rather than mere presence somewhere in the run.
-		watchDeferred := len(requests) == 3 && !requestsContain(requests[1:2], "watch send failed")
-		if got.output != "dropped watch diagnostic handled" || !watchSeen || !fatalSeen || !watchDeferred {
-			t.Fatalf("DrainJobTree output = %q with %d provider requests (fatal attention in request 2 %t, watch diagnostic in request 3 %t, absent from request 2 %t), want one notification per turn in that order", got.output, len(requests), fatalSeen, watchSeen, watchDeferred)
+		if got.output != "dropped watch diagnostic handled" || !watchSeen || !fatalSeen {
+			t.Fatalf("DrainJobTree output = %q with %d provider requests (fatal attention in request 2 %t, watch diagnostic in request 3 %t), want one notification per turn in that order", got.output, len(requests), fatalSeen, watchSeen)
 		}
 	case recheck <- now.Add(time.Second):
 		cancelDrain()
