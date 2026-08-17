@@ -434,7 +434,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearNoticesByCategory("launch")
 		ref, err := appwire.ParseRef(msg.resp.Ref)
 		if err != nil {
-			m.err = fmt.Errorf("Start returned invalid ref: %s", msg.resp.Ref)
+			m.err = fmt.Errorf("start returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
 		return m, fetchHubSession(m.frames, m.client, ref)
