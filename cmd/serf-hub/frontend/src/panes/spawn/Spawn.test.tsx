@@ -1575,3 +1575,43 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   await waitFor(() => expect(started).toBeDefined());
   expect((started?.reasoningEffort as string | undefined) ?? "").toBe(displayed);
 });
+
+// The Effort ladder needs the merged model catalog, and the effect that loads it
+// is keyed on loadCatalog -- a useCallback over [loadModels, harness, cwd],
+// where loadModels is itself over [client, harness, cwd]. cwd updates straight
+// from the field's onChange, so every character typed into the working-directory
+// path mints a new callback identity and refires the effect: one model/list RPC
+// plus one /api/models fetch per keystroke, to learn a ladder that only matters
+// when the Effort select is used.
+test("typing a working directory does not reload the model catalog per keystroke", async () => {
+  const user = userEvent.setup();
+  let catalogFetches = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.startsWith("/api/git/head")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
+      }
+      if (url.startsWith("/api/models")) {
+        catalogFetches++;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ models: [], recent: [], diagnostics: [] }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    }),
+  );
+  renderSpawn(readyClient());
+  await settled();
+
+  const baseline = catalogFetches;
+  await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
+  await settled();
+
+  // 17 characters typed. One reload for the settled path is the contract; a
+  // reload per character is the defect.
+  const perKeystroke = catalogFetches - baseline;
+  expect(perKeystroke).toBeLessThanOrEqual(1);
+});

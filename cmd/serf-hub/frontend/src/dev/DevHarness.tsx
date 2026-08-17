@@ -1,7 +1,12 @@
-// DevHarness is Wave 1's live end-to-end proof: it exercises the whole
-// protocol core (AppwireClient, reducer, connection/threads stores) against
-// a real hub with no UI investment beyond monospace text. Wave 2 replaces
-// this with the real workspace shell.
+// DevHarness is the live end-to-end proof of the protocol core: it exercises
+// AppwireClient, the reducer and the connection/threads stores against a real
+// hub with no UI investment beyond monospace text. That bareness is the point,
+// not an unfinished state -- it leaves component CSS nowhere to hide.
+//
+// It is permanent. It arrived as Wave 1 scaffolding "Wave 2 replaces with the
+// real workspace shell"; the waves landed, the replacement did not, and the
+// workspace shell now ships alongside it rather than instead of it. See
+// DevHarness.module.css and kata j3t1.
 import { useEffect, useState } from "react";
 import { AppwireClient } from "../protocol/client";
 import { rpcURLFromLocation } from "../protocol/transport";

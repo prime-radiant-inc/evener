@@ -179,6 +179,11 @@ test("mobile: the drill-in chevron shows only below the breakpoint", () => {
   // not fail on the chevron never showing -- the one thing it is named for.
   // Assert the rule EXISTS first (markdown.module.css's test already does).
   expect(mobile).not.toBe("");
+  // The base rule is display:none, so "the mobile block does not re-add
+  // display:none" is not the contract -- delete `display: inline-flex` and the
+  // chevron stays hidden at every width while that assertion still passes.
+  // Showing it is what the test is named for, so assert the showing.
+  expect(mobile).toContain("display: inline-flex");
   expect(mobile).not.toContain("display: none");
 });
 
