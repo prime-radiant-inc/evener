@@ -25,6 +25,9 @@ trap 'rm -rf "$work"' EXIT
 repo="$work/repo"
 mkdir -p "$repo/scripts" "$repo/agent"
 cp "$real_script" "$repo/scripts/test-coverage-floor.sh"
+# The script sources its gate-surface definition from its own directory, so the
+# throwaway repo needs the real one beside it.
+cp "$(dirname "$0")/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
 script="$repo/scripts/test-coverage-floor.sh"
 floors="$repo/scripts/testcov-global-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
@@ -37,6 +40,7 @@ fake_bin="$work/bin"
 mkdir -p "$fake_bin"
 cat >"$fake_bin/go" <<'FAKEGO'
 #!/bin/sh
+[ -n "${FAKE_GO_LOG:-}" ] && echo "$(basename "$PWD") $*" >>"$FAKE_GO_LOG"
 prof=""
 for a in "$@"; do
 	case "$a" in -coverprofile=*) prof="${a#-coverprofile=}" ;; esac
@@ -56,7 +60,8 @@ exit 0
 FAKEGO
 chmod +x "$fake_bin/go"
 
-run() { PATH="$fake_bin:$PATH" bash "$script" --modules ". agent" "$@"; }
+go_log="$work/go-invocations.txt"
+run() { PATH="$fake_bin:$PATH" FAKE_GO_LOG="$go_log" bash "$script" --modules ". agent" "$@"; }
 
 out="$work/out.txt"
 : >"$floors"
@@ -78,6 +83,24 @@ if grep -qE '^agent +3 +4 +75\.0%' "$out"; then
 	ok "module \"agent\" is measured and printed (75.0%)"
 else
 	bad "the agent row is missing or wrong"; sed 's/^/    | /' "$out"
+fi
+
+# The measured surface must stay the gate's surface. A ratchet that drifts from
+# what `ROOT_FULL=1 make test` proves cannot be defended when its number moves,
+# so the gate's own -run/-skip selection is asserted here rather than assumed.
+. "$(dirname "$0")/gate-surface-lib.sh"
+assert_has "$go_log" "-run ^(Test|Example)" "the coverage run uses the gate's Test/Example filter"
+assert_has "$go_log" "-skip $GATE_FUZZ_TEST_SKIP" "the coverage run skips the fuzz-owned names"
+if grep -q '^agent .*-short' "$go_log"; then
+	ok "non-root modules are measured in -short mode"
+else
+	bad "agent was measured without -short"; sed 's/^/    | /' "$go_log"
+fi
+if grep -q '^repo .*-short' "$go_log"; then
+	bad "the root module must NOT be measured in -short mode (ROOT_FULL semantics)"
+	sed 's/^/    | /' "$go_log"
+else
+	ok "the root module is measured without -short"
 fi
 
 # --bless must carry the MEASURED percentages through; the associative-array bug

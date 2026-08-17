@@ -5,10 +5,19 @@
 # `go test` suite drives, so a PR that deletes tests or adds untested code fails
 # the gate instead of silently eroding the numbers the coverage campaign won.
 #
-# It measures each module with `go test -count=1 -coverpkg=./... ./...` (the
-# -count=1 is REQUIRED — cached coverage profiles report stale numbers) and dedups
-# the -coverpkg duplicate blocks by position (a block is covered if ANY test hit
-# it) before computing the percentage, the same way fuzz-coverage-global.sh does.
+# It measures the SAME surface `ROOT_FULL=1 make test` proves — the contract
+# make merge-approval-gate runs — by reusing the gate's own test selection from
+# gate-surface-lib.sh: ordinary Test/Example functions, fuzz-owned names skipped,
+# and -short on every module except the root. Matching the gate is the whole
+# point: a floor blessed against a surface no gate reproduces cannot be defended
+# when it moves, and bare `go test ./...` here also ran every native Fuzz seed
+# corpus and the rapid/seqfuzz family, which are make fuzz's job.
+#
+# The -count=1 is REQUIRED — cached coverage profiles report stale numbers. It
+# dedups the -coverpkg duplicate blocks by position (a block is covered if ANY
+# test hit it) before computing the percentage, the same way
+# fuzz-coverage-global.sh does. A failing module keeps its full `go test` output
+# in a log whose path is printed, rather than discarding it.
 #
 # Usage:
 #   scripts/test-coverage-floor.sh                     # measure + print (all modules)
@@ -43,6 +52,10 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# The gate's test-selection surface, shared with run-module-tests.sh so this
+# ratchet cannot drift into measuring something no gate proves.
+. "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
+
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 
 # Measured percentages accumulate in a "<module> <pct>" file rather than an
@@ -76,8 +89,18 @@ printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
 	prof="$profiles_dir/${m//\//_}.cov"
-	if ! ( cd "$repo_root/$m" && go test -count=1 -coverpkg=./... -coverprofile="$prof" ./... ) >/dev/null 2>&1; then
-		printf '%-10s %s\n' "$m" "TEST FAILED (see: cd $m && go test -coverpkg=./... ./...)"
+	log="$profiles_dir/${m//\//_}.log"
+	# -short everywhere except the root module, mirroring run-module-tests.sh's
+	# module_test_flags under ROOT_FULL=1 — the surface make merge-approval-gate
+	# proves. Bare `go test ./...` would additionally run every native Fuzz
+	# target's seed corpus and the rapid/seqfuzz family, which belong to
+	# make fuzz; measuring those here inflated the floor against a surface no
+	# gate reproduces, and on this repo it simply failed.
+	short="-short"
+	[ "$m" = "." ] && short=""
+	if ! ( cd "$repo_root/$m" && go test -count=1 $short -coverpkg=./... -coverprofile="$prof" \
+		-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./... ) >"$log" 2>&1; then
+		printf '%-10s %s\n' "$m" "TEST FAILED (log: $log)"
 		fail=1; continue
 	fi
 	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no profile"; continue; }
