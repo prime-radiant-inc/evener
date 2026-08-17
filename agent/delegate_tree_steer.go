@@ -18,6 +18,11 @@ var errDelegateTranscriptUnavailable = errors.New("delegate transcript is unavai
 type delegateSteeringAdmission struct {
 	entryID    string
 	provenance *provenance.Causal
+	// carriesAcrossGeneration marks an admission accepted under a covering stop.
+	// Ordinary admissions belong to the generation that took them and are
+	// dropped when it is released; this one's generation is already ending, and
+	// the successor is the only turn that can ever consume it.
+	carriesAcrossGeneration bool
 }
 
 type delegateSteeringClaim struct {
@@ -164,10 +169,23 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	if err != nil {
 		// A covering stop owns the earlier admission. Transcript fsync remains
 		// its durable acceptance point even after the exact binding is released.
+		//
+		// The admission is still recorded. The transcript replays the message,
+		// but only an admission carries the steer's causal provenance into the
+		// successor's model claim -- without one the successor runs the steer
+		// with no idea which watch drove it, and the loss is invisible because
+		// the text arrived.
 		if stopFenced && claim.delegateID == claim.lease.delegateID {
 			live = c.live[claim.delegateID]
-			if live != nil && entry.timestamp.After(live.activityAt) {
-				live.activityAt = entry.timestamp
+			if live != nil {
+				live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{
+					entryID:                 entry.entryID,
+					provenance:              provenance.Clone(claim.provenance),
+					carriesAcrossGeneration: true,
+				})
+				if entry.timestamp.After(live.activityAt) {
+					live.activityAt = entry.timestamp
+				}
 			}
 			c.evidenceVersion++
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
@@ -446,4 +464,17 @@ func (s *Session) delegateModelHistorySnapshot() []schema.Turn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]schema.Turn(nil), s.history...)
+}
+
+// liveGenerationOwesSteering reports whether any admission belongs to a
+// generation that can still consume it. An admission carried across a covering
+// stop is excluded: it is held for a successor, not owed by the run that took
+// it, so it must not read as work in flight.
+func liveGenerationOwesSteering(live *delegateLiveState) bool {
+	for _, admission := range live.pendingSteers {
+		if !admission.carriesAcrossGeneration {
+			return true
+		}
+	}
+	return false
 }

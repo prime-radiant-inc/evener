@@ -315,3 +315,56 @@ func reclamationRootIDs(claim *delegateRuntimeReclamationClaim) []string {
 	}
 	return ids
 }
+
+// TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree pins the
+// difference between the two kinds of pending steering admission.
+//
+// An ordinary admission means a live generation still owes work, and a subtree
+// holding one is not quiescent. An admission carried across a covering stop
+// means something quite different: its generation is over, and it is a parcel
+// held for a successor that in the normal case never runs -- stopping a delegate
+// is usually terminal, and once resumability is closed a successor is
+// impossible. Treating that parcel as pending work pins the runtime, and
+// because claimableRuntimeSubtreeLocked bails for the whole subtree on one
+// member, it pins every sibling too. Each stopped-and-forgotten delegate would
+// then burn a maxRetainedTerminal slot for the life of the process.
+func TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 1
+	settled := seedDelegateReclaimRuntime(t, c, "dlg_settled", "", time.Unix(10, 0).UTC(), false, false)
+
+	// Exactly what CompleteSteerPersistence records on the stop-fenced path.
+	c.mu.Lock()
+	c.live["dlg_settled"].pendingSteers = []delegateSteeringAdmission{{
+		entryID:                 "ent_carried",
+		carriesAcrossGeneration: true,
+	}}
+	c.mu.Unlock()
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation with a carried steer held: %v", err)
+	}
+	if claim == nil || !reflect.DeepEqual(reclamationDelegateIDs(claim), []string{"dlg_settled"}) {
+		t.Fatalf("claimed runtimes = %#v, want dlg_settled reclaimable despite the carried admission", claim)
+	}
+	if got := claim.entries[0].runtime; got != settled {
+		t.Fatalf("claimed runtime = %p, want the settled runtime %p", got, settled)
+	}
+}
+
+// An ORDINARY pending admission still pins its subtree: that one is a live
+// generation's unfinished work, and reclaiming its runtime would drop it.
+func TestDelegateRuntimeReclaim_OrdinaryPendingSteerStillPinsTheSubtree(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 1
+	seedDelegateReclaimRuntime(t, c, "dlg_busy", "", time.Unix(10, 0).UTC(), false, false)
+
+	c.mu.Lock()
+	c.live["dlg_busy"].pendingSteers = []delegateSteeringAdmission{{entryID: "ent_live"}}
+	c.mu.Unlock()
+
+	if _, err := c.ClaimRuntimeReclamation(1); err == nil {
+		t.Fatal("a subtree owing live steering work was reclaimed")
+	}
+}

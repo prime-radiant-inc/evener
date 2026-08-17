@@ -210,7 +210,15 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			return nil, false
 		}
 		if live := c.live[id]; live != nil {
-			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || len(live.pendingSteers) != 0 || len(live.waiters) != 0 || live.quietClaim != nil {
+			// Only steering a LIVE generation still owes counts as work in
+			// flight. An admission carried across a covering stop is a parcel
+			// for a successor, and stopping a delegate is normally terminal --
+			// once resumability is closed ReserveStart refuses, so no successor
+			// can ever consume it. Counting it here would pin this runtime, and
+			// the bail below is subtree-wide, so it would pin every sibling too:
+			// one stopped-and-forgotten delegate burning a maxRetainedTerminal
+			// slot for the life of the process.
+			if live.binding != nil || live.recoveryRequired || live.finalizationRecoveryRequired || live.recoveryRunnerPending || liveGenerationOwesSteering(live) || len(live.waiters) != 0 || live.quietClaim != nil {
 				return nil, false
 			}
 			if live.runtime != nil {
