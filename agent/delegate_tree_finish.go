@@ -395,11 +395,6 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		}
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
 		finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)
-		if finish.observerCallbackDelivered && aggregate.Trigger == delegatestore.TriggerAttention && aggregate.PreparedTerminal.Kind == delegatestore.PacketReported {
-			deliveryID = ""
-			finished.RunFinished.DeliveryID = ""
-			finished.RunFinished.ObserverCallbackDelivered = true
-		}
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:

@@ -32,16 +32,23 @@ const (
 	// client can name its turns. Pinned by
 	// TestPreparedSubagentGetsNoAuthoritativeConsumer.
 	unservedSoUnaddressable turnOpening = "unserved"
-	// noProductionProducer: nothing outside tests ever dispatches this kind.
-	// Wiring one up means choosing one of the labels above first.
-	noProductionProducer turnOpening = "no-producer"
 )
+
+// There used to be a fourth label, noProductionProducer, and exactly one kind
+// wore it: EntryWatchDelivery. Its producer -- subagent.run's runFromWatch
+// branch -- was deleted with the dormant delegate job schema (2a94f56d1), and
+// the kind outlived it by six unreachable branches that every later reader had
+// to reason about. Kata z5fm deleted it, and the label with it: a kind nothing
+// dispatches is not a seam waiting to be used, it is residue, and the audit
+// should not have a spelling for it. A new kind arrives WITH its producer and
+// picks one of the two labels above.
+
+// entryKindTurnOpening maps every EntryKind to how its turns acquire identity.
 
 var entryKindTurnOpening = map[EntryKind]turnOpening{
 	EntryUserInput:         opensOnItsContentEvent,
 	EntryContinuation:      opensOnItsContentEvent,
 	EntryNotification:      opensOnTurnStarted,
-	EntryWatchDelivery:     noProductionProducer,
 	EntryDelegateAttention: unservedSoUnaddressable,
 }
 

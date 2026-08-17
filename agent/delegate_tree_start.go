@@ -58,15 +58,14 @@ type delegateStartCommit struct {
 }
 
 type delegateFinish struct {
-	outcome                   delegatestore.OutcomeStatus
-	disposition               delegatestore.RunDisposition
-	reason                    string
-	packet                    *delegatestore.TerminalPacket
-	endedAt                   time.Time
-	exhaustionBudget          delegatestore.ExhaustionBudget
-	exhaustionLimit           int
-	exhaustionResumable       *bool
-	observerCallbackDelivered bool
+	outcome             delegatestore.OutcomeStatus
+	disposition         delegatestore.RunDisposition
+	reason              string
+	packet              *delegatestore.TerminalPacket
+	endedAt             time.Time
+	exhaustionBudget    delegatestore.ExhaustionBudget
+	exhaustionLimit     int
+	exhaustionResumable *bool
 }
 
 type delegateCommittedStartFailureDisposition uint8

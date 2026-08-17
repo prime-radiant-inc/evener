@@ -397,11 +397,6 @@ const (
 	// notifications and surfaces them to the model as a steering reminder. An empty
 	// queue makes it a no-op (no model request).
 	EntryNotification
-	// EntryWatchDelivery is a watch-originated delegate turn. It may decide a
-	// delivered watch frame needs no action; non-empty bare text is retained in
-	// the child transcript as an internal disposition and does not require
-	// communicate.
-	EntryWatchDelivery
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
@@ -450,8 +445,8 @@ type noCallsRoute int
 
 const (
 	// finishIdle ends the turn idle without a retry: a bare-text (non-empty)
-	// response to a watch-delivery or notification turn is an acknowledgement, not a
-	// glitch, and no user awaits a reply.
+	// response to a notification turn is an acknowledgement, not a glitch, and no
+	// user awaits a reply.
 	finishIdle noCallsRoute = iota
 	// runNoToolCalls routes through the empty/bare-text retry budget.
 	runNoToolCalls
@@ -459,10 +454,10 @@ const (
 
 // routeNoToolCalls decides the no-tool-calls route for a round from the input kind
 // and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty watch-delivery or notification turn finishes idle; everything else
-// (including any empty round) routes through the retry budget.
+// a non-empty notification turn finishes idle; everything else (including any
+// empty round) routes through the retry budget.
 func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if (kind == EntryWatchDelivery || kind == EntryNotification) && !noContent {
+	if kind == EntryNotification && !noContent {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -949,9 +944,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
-	s.setActiveEntryKind(kind)
-	defer s.setActiveEntryKind(EntryUserInput)
-
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -1004,7 +996,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
 	s.askPending = nil
-	s.watchCallbackDelivered = false
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -1162,10 +1153,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if prepareErr != nil {
 			return "", progressed, prepareErr
 		}
-		if kind == EntryWatchDelivery {
-			req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
-		}
-
 		// --- Phase: LLMCall ---
 		tPhaseStart := s.sclock().Now()
 

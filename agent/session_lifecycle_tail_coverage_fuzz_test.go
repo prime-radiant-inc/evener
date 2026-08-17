@@ -51,7 +51,7 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			s.steeringQueue = append(s.steeringQueue, steeringMessage{Text: "queued steering"})
 			s.mu.Unlock()
 		case 4:
-			kind = EntryWatchDelivery
+			kind = EntryDelegateAttention
 		case 5:
 			kind = EntryNotification
 			s.mu.Lock()
