@@ -8,6 +8,7 @@ import (
 	"html"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -1417,8 +1418,8 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if err != nil {
 		return fmt.Errorf("read back child input transcript: %w", err)
 	}
-	for index := len(data.Entries) - 1; index >= 0; index-- {
-		turn := data.Entries[index].Turn
+	for _, entry := range slices.Backward(data.Entries) {
+		turn := entry.Turn
 		if turn.Kind == schema.TurnUserInput {
 			if turn.Message.Text() != input {
 				return errors.New("read back child input transcript: latest user input differs")

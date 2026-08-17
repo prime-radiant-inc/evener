@@ -1015,8 +1015,8 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 		return len(history), len(history) != 0
 	}
 	seen := 0
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Kind == schema.TurnAttentionResolution {
+	for i, turn := range slices.Backward(history) {
+		if turn.Kind == schema.TurnAttentionResolution {
 			continue
 		}
 		seen++
