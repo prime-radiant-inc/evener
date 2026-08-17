@@ -59,6 +59,18 @@ measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; 
 # argument list as a redirection to a file named "0".
 pct_of() { awk -v c="$1" -v t="$2" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}'; }
 
+# check_measurable MODULE WHY — a floored module that cannot be measured is an
+# unenforced ratchet, not a skippable row; see test-coverage-floor.sh for the
+# failure mode this closes. A module nobody floored keeps its advisory skip.
+check_measurable() {
+	$check || return 0
+	local floor
+	floor="$(floor_for "$1")"
+	[ -n "$floor" ] || return 0
+	echo "    UNMEASURED: $1 has a floor (${floor}%) but $2; the floor is not being enforced" >&2
+	fail=1
+}
+
 # An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
 # for -t and uses the Darwin per-user temp directory instead, which put every
 # run's scratch outside the dev-tooling wave's per-suite isolation — and so
@@ -79,7 +91,7 @@ measured_file="$work_dir/measured.txt"
 
 printf '%-10s %10s %10s %8s %8s %8s %8s\n' "module" "covered" "total" "union%" "test%" "fuzz%" "floor"
 for m in $modules; do
-	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
+	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; check_measurable "$m" "no module exists at $m"; continue; }
 	name="$m"
 	[ "$name" = "." ] && name="root"
 	base="$work_dir/$(printf '%s' "$name" | tr / _)"
@@ -108,13 +120,13 @@ for m in $modules; do
 		fail=1; continue
 	fi
 
-	[ -f "$base.test.cov" ] || { printf '%-10s %s\n' "$m" "no test profile"; continue; }
+	[ -f "$base.test.cov" ] || { printf '%-10s %s\n' "$m" "no test profile"; check_measurable "$m" "the test track wrote no coverage profile"; continue; }
 	cat "$base.test.cov" "$base.fuzz.cov" 2>/dev/null >"$base.union.cov"
 
 	read -r tc tt < <(stmt_counts "$base.test.cov")
 	read -r fc ft < <(stmt_counts "$base.fuzz.cov")
 	read -r uc ut < <(stmt_counts "$base.union.cov")
-	[ "${ut:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; continue; }
+	[ "${ut:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; check_measurable "$m" "its profiles counted no statements"; continue; }
 
 	# A union denominator above both tracks means some block was counted twice
 	# because the two builds split it differently. A handful is expected and

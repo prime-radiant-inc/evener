@@ -70,6 +70,20 @@ floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 # is unavailable. Reusing the floor_for lookup shape keeps both reads identical.
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
+# check_measurable MODULE WHY — a floored module that cannot be measured is an
+# unenforced ratchet, not a skippable row. Under --check that fails loudly;
+# quietly continuing meant a module that stopped being measured (renamed,
+# profile lost, stmt_counts broken) kept passing on a floor nothing enforced.
+# A module nobody floored keeps its advisory skip.
+check_measurable() {
+	$check || return 0
+	local floor
+	floor="$(floor_for "$1")"
+	[ -n "$floor" ] || return 0
+	echo "    UNMEASURED: $1 has a floor (${floor}%) but $2; the floor is not being enforced" >&2
+	fail=1
+}
+
 
 # An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
 # for -t and uses the Darwin per-user temp directory instead, which put every
@@ -97,7 +111,7 @@ measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
-	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
+	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; check_measurable "$m" "no module exists at $m"; continue; }
 	name="$m"
 	[ "$name" = "." ] && name="root"   # or the profile and log land as dotfiles
 	prof="$profiles_dir/$(printf '%s' "$name" | tr / _).cov"
@@ -127,9 +141,9 @@ for m in $modules; do
 		printf '%-10s %s\n' "$m" "TEST FAILED (log: $log)"
 		fail=1; continue
 	fi
-	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no profile"; continue; }
+	[ -f "$prof" ] || { printf '%-10s %s\n' "$m" "no profile"; check_measurable "$m" "the run wrote no coverage profile"; continue; }
 	read -r c t < <(stmt_counts "$prof")
-	[ "${t:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; continue; }
+	[ "${t:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; check_measurable "$m" "its profile counted no statements"; continue; }
 	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
 	echo "$m $pct" >>"$measured_file"
 	floor="$(floor_for "$m")"
