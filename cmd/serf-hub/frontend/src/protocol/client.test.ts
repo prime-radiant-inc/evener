@@ -110,6 +110,10 @@ describe("AppwireClient", () => {
       `AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received serf-appwire-v1`,
     );
     expect(client.state).toBe("closed");
+    // ConnectionBanner keys its "reload this page" copy off terminalReason;
+    // a protocol close that fails to set it would show a Retry that can
+    // never succeed instead.
+    expect(client.terminalReason).toBe("protocol");
   });
 
   // The shape above is the one a server never sends: a daemon that disagrees
@@ -136,6 +140,9 @@ describe("AppwireClient", () => {
 
     await expect(connecting).rejects.toThrow(/incompatible/);
     expect(client.state).toBe("closed");
+    // Same contract as the mismatched-version test above: the initial
+    // connect must classify the close, not just the reconnect path.
+    expect(client.terminalReason).toBe("protocol");
   });
 
   test("connect is idempotent across concurrent callers", async () => {
