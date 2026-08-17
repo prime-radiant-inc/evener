@@ -6,16 +6,10 @@
 // AGENTS.md draws: serf plumbing (appwire RPC, daemon queues, session loops)
 // gets a scripted provider; only model behaviour itself stays live.
 //
-// A test holds a turn open simply by not answering:
-//
-//	srv, err := fakellm.New()
-//	defer srv.Close()
-//	call, err := srv.Next(ctx)   // the session's first model request
-//	                             // -- the turn is now genuinely in flight
-//	                             // until the test responds
-//	call.RespondToolCall("read_file", map[string]any{"file_path": "AGENTS.md"})
-//	next, err := srv.Next(ctx)   // the round after the tool ran; its
-//	                             // messages carry anything steered in
+// A test holds a turn open simply by not answering. Example (in
+// example_test.go) is that sequence end to end; it is a compiled example
+// rather than a snippet in this comment so it cannot drift away from the
+// signatures it calls.
 //
 // Requests carrying no tools — the background session namer's structured
 // GenerateObject call — are answered automatically and never surface on
