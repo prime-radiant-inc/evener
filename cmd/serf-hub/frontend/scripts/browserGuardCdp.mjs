@@ -134,12 +134,21 @@ export async function evaluate(send, expression) {
  * exactly that position. Nothing but this check stops the eleventh from being
  * added the same way, so "no fonts" now says so instead of saying nothing.
  *
- * Same-origin frames count as part of the page. A case may build its fixtures
- * inside srcdoc iframes - layoutguard's activity-tree-responsive does - where
- * both the faces and the measured boxes live, leaving the top document's own
- * font set empty. The page's load event, which every caller has already
- * awaited, does not fire until subframes have loaded, so their documents are
- * complete here and need no readiness dance of their own.
+ * Same-origin frames count as part of the page, and are checked ONE DOCUMENT AT
+ * A TIME. A case may build its fixtures inside srcdoc iframes - layoutguard's
+ * activity-tree-responsive builds three - and each of those documents links the
+ * stylesheet for itself. Pooling every face into one list and asking whether the
+ * TOTAL is empty would let one fixture frame lose its stylesheet, and silently
+ * revert to a host fallback, while its siblings kept theirs and carried the
+ * check: exactly the silence e4sh exists to end, one frame further down.
+ *
+ * The page's load event, which every caller has already awaited, does not fire
+ * until subframes have loaded, so their documents are complete here and need no
+ * readiness dance of their own. Awaiting each frame's own fonts.ready is not
+ * bookkeeping: before it, activity-tree-responsive measured its fixtures
+ * mid-swap in a fallback (measured, on this machine: a deep row label 663px
+ * wide and an 835px panel, against 671px and 856px once the frames' faces are
+ * actually settled).
  *
  * Deliberately NOT a hardcoded family list, and deliberately not "a face must
  * have LOADED". A face loads only when some text actually uses it, so a case
@@ -150,32 +159,41 @@ export async function evaluate(send, expression) {
  * permanently measuring the fallback, and it reports as status "error".
  */
 export async function waitForFonts(send) {
-  const faces = await evaluate(
+  const documents = await evaluate(
     send,
     `(async () => {
-       const documents = [document];
-       for (const frame of document.querySelectorAll("iframe")) {
+       const found = [{ label: "the top document", doc: document }];
+       const frames = document.querySelectorAll("iframe");
+       for (let index = 0; index < frames.length; index++) {
          try {
-           if (frame.contentDocument) documents.push(frame.contentDocument);
+           const doc = frames[index].contentDocument;
+           if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
          } catch {
            // Cross-origin: not reachable, and not something a guard builds.
          }
        }
-       await Promise.all(documents.map((doc) => doc.fonts.ready));
-       const all = [];
-       for (const doc of documents) doc.fonts.forEach((face) => all.push({ family: face.family, status: face.status }));
-       return all;
+       await Promise.all(found.map(({ doc }) => doc.fonts.ready));
+       return found.map(({ label, doc }) => {
+         const faces = [];
+         doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
+         return { label, faces };
+       });
      })()`,
   );
-  if (faces.length === 0) {
+  const fontless = documents.filter((entry) => entry.faces.length === 0).map((entry) => entry.label);
+  if (fontless.length > 0) {
     throw new Error(
-      `this page declares no web fonts, so every text measurement below would be taken in a host fallback ` +
-        `font rather than the one the product ships - and this check would have asserted nothing. ` +
-        `A layoutguard case needs "styles/global.css" in its case.json cssFiles; a harness entrypoint ` +
-        `needs to import ../styles/global.css.`,
+      `${fontless.join(" and ")} declares no web fonts, so any text measured there would be taken in a host ` +
+        `fallback font rather than the one the product ships - and this check would have asserted nothing ` +
+        `about it. Every document on the page must declare the faces for ITSELF: a layoutguard case's top ` +
+        `document needs "styles/global.css" in its case.json cssFiles, a fixture the case builds in an iframe ` +
+        `needs the case's generated stylesheet linked inside that frame's OWN document, and a harness ` +
+        `entrypoint needs to import ../styles/global.css.`,
     );
   }
-  const failed = faces.filter((face) => face.status === "error").map((face) => face.family);
+  const failed = documents.flatMap((entry) =>
+    entry.faces.filter((face) => face.status === "error").map((face) => `${face.family} in ${entry.label}`),
+  );
   if (failed.length > 0) {
     throw new Error(
       `environment problem, not a test case failure: a web font this page requested failed to load (${failed.join(", ")}). ` +
