@@ -16,8 +16,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/tmux-send.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t tmux-send-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work tmux-send-selftest
+trap 'selftest_rm_scratch' EXIT
 
 # Each case gets its own fake-tmux bin dir + state dir, so scenarios never leak
 # call counts or session lists into each other. Also resets the FAKE_TMUX_*
@@ -28,7 +28,7 @@ trap 'rm -rf "$work"' EXIT
 new_case() {
 	FAKE_TMUX_SESSIONS=""
 	FAKE_TMUX_FAIL_ON_CALL=""
-	case_dir="$(mktemp -d "$work/case.XXXXXX")"
+	case_dir="$(mktemp -d "$work/case.XXXXXX")" || { echo "tmux-send-selftest: mktemp under \$work failed" >&2; exit 1; }
 	bin="$case_dir/bin"
 	state="$case_dir/state"
 	mkdir -p "$bin" "$state"

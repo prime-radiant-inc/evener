@@ -217,7 +217,9 @@ run_fixture empty-result '#!/usr/bin/env bash
 set -uo pipefail
 . "$1/selftest-lib.sh"
 selftest_scratch dir empty-result-fixture
-rm -rf "$dir"
+# The guard must exit above this line. The marker below is the whole test;
+# an actual delete here would add nothing and is exactly the shape that
+# turned this kata into an incident.
 echo "REACHED THE DELETE"
 exit 0' "$empty_mktemp_bin"
 if [ "$fixture_status" -ne 0 ]; then
@@ -236,7 +238,9 @@ run_fixture squatted-dir '#!/usr/bin/env bash
 set -uo pipefail
 . "$1/selftest-lib.sh"
 selftest_scratch dir squatted-fixture
-rm -rf "$dir"
+# The guard must exit above this line. The marker below is the whole test;
+# an actual delete here would add nothing and is exactly the shape that
+# turned this kata into an incident.
 echo "REACHED THE DELETE"
 exit 0' "$squatting_mktemp_bin"
 if [ "$fixture_status" -ne 0 ]; then
@@ -256,7 +260,7 @@ set -uo pipefail
 export TMPDIR=\"$fixture_tmpdir\"
 . \"\$1/selftest-lib.sh\"
 selftest_scratch dir outside-tmpdir-fixture
-rm -rf \"\$dir\"
+# The guard must exit above this line; the marker below is the whole test.
 echo \"REACHED THE DELETE\"
 exit 0" "$straying_mktemp_bin"
 if [ "$fixture_status" -ne 0 ]; then
@@ -278,7 +282,11 @@ fi
 run_fixture bad-order '#!/usr/bin/env bash
 set -uo pipefail
 selftest_scratch dir bad-order-fixture
-rm -rf "$dir"
+# The lib is not sourced yet, so selftest_scratch is command-not-found and
+# does not exit the script. The `set -u` abort on the unset $dir below is the
+# safe-direction failure this fixture asserts; an actual delete here would add
+# nothing and is exactly the shape that turned this kata into an incident.
+: "$dir"
 echo "REACHED THE DELETE"
 . "$1/selftest-lib.sh"
 exit 0'

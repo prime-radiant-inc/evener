@@ -13,8 +13,8 @@ set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/fuzz-drive.sh"
 . "$(dirname "$0")/selftest-lib.sh"
-selftest_root="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-selftest.XXXXXX")"
-cleanup() { rm -rf "$selftest_root"; }
+selftest_scratch selftest_root fuzz-drive-selftest
+cleanup() { selftest_rm_scratch; }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT

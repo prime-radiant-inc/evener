@@ -273,7 +273,13 @@ esac
 # the dev-tooling wave's per-suite isolation — and so outside the leftover check
 # that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
-work="$(mktemp -d "${tmpbase%/}/serf-fuzzcov-global.XXXXXX")"
+# Checked, because the EXIT trap below deletes $work recursively and an
+# unchecked mktemp leaves it empty.
+if ! work="$(mktemp -d "${tmpbase%/}/serf-fuzzcov-global.XXXXXX")" ||
+	[ -z "$work" ] || [ ! -d "$work" ]; then
+	echo "fuzz-coverage-global: could not create a scratch directory under ${tmpbase%/}" >&2
+	exit 1
+fi
 trap 'rm -rf "$work"' EXIT
 plan="$work/targets.tsv"
 groups="$work/groups.tsv"

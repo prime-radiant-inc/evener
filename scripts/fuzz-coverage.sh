@@ -22,7 +22,13 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # the dev-tooling wave's per-suite isolation — and so outside the leftover check
 # the trap below is written to satisfy.
 tmpbase=${TMPDIR:-/tmp}
-profiles_dir="$(mktemp -d "${tmpbase%/}/serf-fuzzcov.XXXXXX")"
+# Checked, because the EXIT trap below deletes $profiles_dir recursively and an
+# unchecked mktemp leaves it empty.
+if ! profiles_dir="$(mktemp -d "${tmpbase%/}/serf-fuzzcov.XXXXXX")" ||
+	[ -z "$profiles_dir" ] || [ ! -d "$profiles_dir" ]; then
+	echo "fuzz-coverage: could not create a scratch directory under ${tmpbase%/}" >&2
+	exit 1
+fi
 manifest="$profiles_dir/manifest.tsv"
 trap 'rm -rf "$profiles_dir"' EXIT
 

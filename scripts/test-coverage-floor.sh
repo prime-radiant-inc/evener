@@ -92,7 +92,10 @@ fail=0
 # suite for.
 cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
 trap cleanup_profiles EXIT
-mkdir "$profiles_dir" || exit 1
+# If the mkdir fails, the directory is not ours: a squatter, or a kept
+# failed-run leftover after pid reuse. Disarm the trap before exiting so the
+# fail=0 cleanup cannot rm -rf a directory this process did not create.
+mkdir "$profiles_dir" || { trap - EXIT; echo "test-coverage-floor: scratch $profiles_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"

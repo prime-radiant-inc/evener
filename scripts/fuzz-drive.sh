@@ -132,7 +132,12 @@ for pm in $providers; do
 		if [ "$runs_cap" -gt 0 ] && [ "$total" -ge "$runs_cap" ]; then break 2; fi
 		total=$((total + 1))
 		task="$(cat "$task_file")"
-		work="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-work.XXXXXX")"
+		# Checked: $work is deleted recursively at both loop exits below.
+		if ! work="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-work.XXXXXX")" ||
+			[ -z "$work" ] || [ ! -d "$work" ]; then
+			echo "fuzz-drive: could not create a task scratch directory under ${TMPDIR:-/tmp}" >&2
+			exit 1
+		fi
 		# A tiny scaffold gives read/edit/search tasks something to touch.
 		printf 'placeholder project for fuzz-drive task\n' >"$work/README.md"
 

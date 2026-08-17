@@ -73,7 +73,10 @@ fail=0
 # because the failure line printed their path.
 cleanup_work() { [ "$fail" -eq 0 ] && rm -rf "$work_dir"; }
 trap cleanup_work EXIT
-mkdir "$work_dir" || exit 1
+# If the mkdir fails, the directory is not ours: a squatter, or a kept
+# failed-run leftover after pid reuse. Disarm the trap before exiting so the
+# fail=0 cleanup cannot rm -rf a directory this process did not create.
+mkdir "$work_dir" || { trap - EXIT; echo "coverage-union: scratch $work_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$work_dir/measured.txt"
 : >"$measured_file"
 
