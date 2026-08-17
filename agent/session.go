@@ -576,9 +576,18 @@ type Session struct {
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
-	rootAttentionWakeIDs      map[string]struct{}
-	rootAttentionWake         bool
-	rootAttentionRetry        notificationRetry
+	rootAttentionWakeIDs map[string]struct{}
+	rootAttentionWake    bool
+	rootAttentionRetry   notificationRetry
+
+	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
+	// runs while the session goroutine is mid-stand-down, so it must not queue
+	// behind s.mu -- and notify() takes s.mu, which this must never be held
+	// across.
+	turnNameRetryMu sync.Mutex
+	// turnNameRetry paces the re-wake for a notification that stood down
+	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
+	turnNameRetry             notificationRetry
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry

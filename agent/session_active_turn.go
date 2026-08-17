@@ -34,24 +34,45 @@ func (s *Session) servedByDaemon() bool {
 	return s.authoritativeConsumer
 }
 
+// turnNameRefusal says WHY mintRunningTurnID declined to name a turn. An empty
+// id alone conflates three situations that want three different answers from
+// the caller: a name another mutation is running will be handed back, a store
+// that would not take the write says nothing at all about the name, and a
+// session nobody serves never wanted one. Collapsing the middle case into the
+// others is what let a failing disk read as a stale name (kata ajg5).
+type turnNameRefusal int
+
+const (
+	// turnNameMinted is the non-refusal: an id was taken.
+	turnNameMinted turnNameRefusal = iota
+	// turnNameUnserved: no daemon drains this session, so no client can address
+	// its turns and none needs a durable name. Not a failure.
+	turnNameUnserved
+	// turnNameHeld: an interrupt fence is ending a turn, or another mutation
+	// owns the slot. Whether THIS name comes back is a separate question
+	// (runningTurnNameHasOwner); that it is held is what this reports.
+	turnNameHeld
+	// turnNameStoreFailed: the durable store could not be opened or written.
+	// The name may be perfectly free; nobody can tell from here.
+	turnNameStoreFailed
+)
+
 // mintRunningTurnID names the turn that is about to run and records it as the
-// durable authority, or returns "" when this turn must run unnamed. The caller
-// carries the result to the turn's opening event; "" there means the daemon
-// could not name this turn, and the projection must then publish no active
-// status for it — a control the composer offers against an id the daemon does
-// not hold is rejected with nothing shown.
-func (s *Session) mintRunningTurnID() string {
+// durable authority, or returns "" when this turn must run unnamed, with the
+// reason. The caller carries the id to the turn's opening event; "" there means
+// the daemon could not name this turn.
+func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 	// A session nobody serves has no client to name a turn to. In-process
 	// subagents share the parent's StateDir (subagents.go), so this gate is
 	// the difference between a durable write per delegate wake and none.
 	if !s.servedByDaemon() {
-		return ""
+		return "", turnNameUnserved
 	}
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("open client mutation store: %v", err),
 		})
-		return ""
+		return "", turnNameStoreFailed
 	}
 	var turnID string
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
@@ -74,9 +95,67 @@ func (s *Session) mintRunningTurnID() string {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("name running turn failed: %v", err),
 		})
-		return ""
+		return "", turnNameStoreFailed
 	}
-	return turnID
+	if turnID == "" {
+		return "", turnNameHeld
+	}
+	return turnID, turnNameMinted
+}
+
+// scheduleRunningTurnNameRetry arms ONE paced wake for a notification that
+// stood down because it could not name its turn.
+//
+// It replaces the immediate notify() that stand-down used to fire. That kick
+// was a hot loop for as long as its condition held: the serve loop reads the
+// wake, finds the name still unavailable, stands down and kicks again. The
+// condition was assumed to be brief -- a client turn/start that would finish
+// and hand the name back -- but a mutation store failing writes holds it
+// indefinitely, because the pending turn can then neither be claimed nor
+// released. The guard that was supposed to catch a name nobody would return
+// (runningTurnNameHasOwner) reads such a turn as owned, so it passes.
+//
+// The wake stays guaranteed rather than best-effort; only its timing changes.
+// Stand-downs coalesce into the one armed timer, and each firing that does not
+// clear the condition doubles the delay to the same ceiling job notifications
+// use, so a persistently unhappy disk costs a wake every few seconds instead of
+// a full core.
+func (s *Session) scheduleRunningTurnNameRetry() {
+	s.turnNameRetryMu.Lock()
+	if s.turnNameRetry.active {
+		s.turnNameRetryMu.Unlock()
+		return
+	}
+	delay := s.turnNameRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.turnNameRetry.active = true
+	s.turnNameRetry.generation++
+	generation := s.turnNameRetry.generation
+	s.turnNameRetryMu.Unlock()
+	s.sclock().AfterFunc(delay, func() {
+		s.turnNameRetryMu.Lock()
+		if s.turnNameRetry.generation != generation {
+			s.turnNameRetryMu.Unlock()
+			return
+		}
+		s.turnNameRetry.active = false
+		s.turnNameRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		s.turnNameRetryMu.Unlock()
+		s.notify()
+	})
+}
+
+// resetRunningTurnNameRetry drops the backoff and cancels any armed retry once
+// a wake has been named. Bumping the generation is what stops an already-armed
+// timer firing a wake nothing is waiting for.
+func (s *Session) resetRunningTurnNameRetry() {
+	s.turnNameRetryMu.Lock()
+	s.turnNameRetry.generation++
+	s.turnNameRetry.active = false
+	s.turnNameRetry.delay = jobNotificationRetryInitialDelay
+	s.turnNameRetryMu.Unlock()
 }
 
 // runningTurnNameHasOwner reports whether a pending client mutation owns the

@@ -1030,7 +1030,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// rootAttentionWake and cancels any scheduled retry, and only a wake
 		// that is ACCEPTED re-arms them. A stand-down decided after it would
 		// strand the very attention it was woken for.
-		runningTurnID = s.mintRunningTurnID()
+		var refusal turnNameRefusal
+		runningTurnID, refusal = s.mintRunningTurnID()
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
@@ -1045,27 +1046,47 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// -- armRootDelegateAttention notifies only when the flag is clear,
 			// and the retry scheduler returns early while it is set.
 			//
-			// The kick is guaranteed rather than best-effort: a full input slot
-			// parks the send until the slot frees, and repeated kicks coalesce
-			// into that one parked send. So this lands after the user's turn,
-			// which is exactly when the name is free again.
+			// The wake is guaranteed rather than best-effort, but it is PACED
+			// rather than immediate (kata ajg5). An immediate notify() pushes
+			// into a one-slot channel the serve loop is about to read, so it is
+			// a hot loop for as long as its condition holds: dequeue, stand
+			// down, notify, dequeue. That was accepted because the condition
+			// was assumed brief -- a client turn/start about to hand the name
+			// back. A mutation store failing writes makes it permanent, since
+			// the turn holding the name can then neither be claimed nor
+			// released, and the owner check below reads it as owned throughout.
+			// scheduleRunningTurnNameRetry keeps the guarantee and backs off.
 			//
-			// Only ask when the name has an owner that will hand it back.
-			// notify() pushes into a one-slot channel the serve loop is about
-			// to read, so asking against a name nobody owns -- one left behind
-			// by a crash between reserving and releasing, or by a failed
-			// release write -- is a hot loop: dequeue, stand down, notify,
-			// forever. Such a name is a fault to be healed, not waited on, so
-			// say so once and let the wake wait for a real one.
-			if s.runningTurnNameHasOwner() {
-				s.notify()
-			} else {
+			// Which of the three refusals arrived decides between waiting and
+			// giving up:
+			//
+			// A store that would not take the write says NOTHING about the
+			// name -- it may be free. Reading that as a stale name is what left
+			// delegate attention stranded: the stand-down warned and did not
+			// re-arm, while rootAttentionWake stayed set and suppressed every
+			// other source of a wake. So retry, and let mintRunningTurnID's own
+			// warning be the diagnostic.
+			//
+			// A name a pending execution owns is coming back, whether promptly
+			// or once the disk recovers. Retry.
+			//
+			// A name NO pending execution owns is not coming back at all: it
+			// was left by a crash between reserving and releasing, or by a
+			// failed release write, and only forgetRunningTurnNoOneOwns at load
+			// clears it. Waiting on that is the hot loop with a timer in front
+			// of it, so say so once and let the wake wait for a real one.
+			switch {
+			case refusal == turnNameStoreFailed, s.runningTurnNameHasOwner():
+				s.scheduleRunningTurnNameRetry()
+			default:
 				s.emit(events.EventWarning, events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
 				})
 			}
 			return "", false, nil
 		}
+		// Named: drop any backoff this session accumulated standing down.
+		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
 		defer func() {
 			if !rootAttentionAccepted || len(rootAttentionIDs) == 0 {
@@ -1088,7 +1109,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// wake state, so that a wake it cannot name stands down while standing
 	// down is still free.
 	if kind == EntryContinuation {
-		runningTurnID = s.mintRunningTurnID()
+		runningTurnID, _ = s.mintRunningTurnID()
 	}
 
 	if kind == EntryContinuation {
