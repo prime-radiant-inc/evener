@@ -141,19 +141,41 @@ Steer needs somewhere to land. During the gap there is no turn to steer, but
 there is an obvious correct semantic: inject it before the next turn — which is
 exactly what the steering queue already does.
 
-**Open call for Jesse.** The alternative is to leave steer rejected in the gap
-and rely on Task 5 to make the rejection legible. Recommendation: queue it. A
-steer typed while the agent is working means "take this into account", and the
-user cannot see turn boundaries.
+**Decided by Jesse, 2026-08-16: the steer always lands.** Accept it into the
+steering queue and inject it into the next turn. If the session settles idle
+instead of running another turn, the steer provokes a turn of its own rather
+than waiting to be re-sent. Steer therefore works at every moment, the same
+guarantee Task 2 gives Stop.
 
-- [ ] **Step 1:** Failing test: `turn/steer` during the Task 1 gap is accepted
-      and reaches the next turn's model request.
-- [ ] **Step 2:** Implement via the existing steering queue; do not add a second
-      path.
-- [ ] **Step 3:** Assert the steer is not *lost* if no next turn ever runs —
-      either it is delivered or it is visibly still pending. A silently dropped
-      steer is worse than a rejected one.
-- [ ] **Step 4:** Mutation-check, commit.
+The rejected alternatives, recorded so they are not re-proposed: surfacing an
+undelivered steer for the user to re-send (correct but makes the user do the
+work), and leaving it rejected-but-legible (a button that sometimes does
+nothing, which is what the `c2ty` ruling rejects).
+
+**The machinery already exists — do not build a second delivery path.** A wake
+proceeds on pending steering alone with no job notifications at all: that is the
+shape `acceptNotificationInput` handles and
+`TestNotificationTurnAnnouncesOneNamedBoundary`
+(`agent/session_turn_boundary_test.go`) covers. So "steer with no active turn"
+is: enqueue steering, then arm the same wake a completing job arms
+(`s.notify()`). The stand-down and re-arm rules landed in `f40904960` then apply
+unchanged, including the hot-loop guard.
+
+- [ ] **Step 1:** Failing test — `turn/steer` during the Task 1 gap is accepted,
+      and its text appears in the next turn's model request.
+- [ ] **Step 2:** Implement via the existing steering queue.
+- [ ] **Step 3:** Second failing test — a `turn/steer` accepted when the session
+      then goes idle **starts its own turn** and is delivered. This is the half
+      that makes the guarantee unconditional, and it is the half most likely to
+      be skipped.
+- [ ] **Step 4:** Third failing test — the steer is never delivered twice. The
+      next-turn path and the idle-wake path must not both fire for one steer;
+      the steering queue drain is the single consumer.
+- [ ] **Step 5:** Confirm this cannot livelock: a steer that arms a wake, whose
+      wake stands down, must not re-arm forever. `runningTurnNameHasOwner`
+      (`agent/session_active_turn.go`) is the existing guard; assert it covers
+      this producer too.
+- [ ] **Step 6:** Mutation-check each, run `./agent/ ./server/`, commit.
 
 ## Task 4: `EventError` stops re-opening a real turn under a bucket id
 
@@ -343,10 +365,10 @@ here and any not yet found.
 **Yes for Send.** It already works, and Task 6 closes the fast-second-message
 case.
 
-**Yes for Steer, conditional on the Task 3 decision.** If a steer with no active
-turn is queued rather than rejected, Steer works at every moment. If that call
-goes the other way, Steer stays rejected in the gap and Task 5 only makes the
-rejection legible.
+**Yes for Steer.** Jesse's 2026-08-16 call makes the steer always land: into the
+next turn if there is one, and otherwise into a turn of its own. So Steer, like
+Stop, stops depending on whether a turn happens to be addressable at the instant
+the button is pressed.
 
 **What this does not promise.** It does not promise there are no windows left.
 This is a durable store, three goroutines and a browser; new windows will be
