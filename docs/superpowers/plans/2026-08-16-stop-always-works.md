@@ -29,7 +29,36 @@ two minters).
 
 ## STATUS at 2026-08-17 (read this first)
 
-Branch is 64 commits ahead of `6af43a95a`. Nothing merged, nothing pushed.
+Branch is 69 commits ahead of `6af43a95a`. Nothing merged, nothing pushed.
+
+### The plan was superseded by a simpler rule
+
+Jesse, 2026-08-16: **control mutations do not name turns.** Steer, queue, stop,
+drain and promote no longer take an `expectedTurnId` at any layer. By the time a
+user's intent reaches the daemon the session may be on a later turn, and that is
+fine -- the intent should apply as soon as possible rather than bounce.
+
+The reasoning, because it decides future questions too: `expectedTurnId` was
+never the load-bearing precondition. The mutations that need precision already
+name a real object (`expectedEntryId`, `expectedQueueRevision`), and
+`cancelQueued` -- which needs it most -- never took a turn id at all, nor did
+`turn/start`. What the turn id asserted was "the session is still in the state I
+saw", which is not what any of these buttons means. It could only ever turn a
+success into a refusal, and refusals in exactly the windows that matter are the
+bug this whole branch was chasing.
+
+`b2a2f1c8c` removes it: five wire types, the validator's required list, eleven
+wire-layer checks, five durable preconditions, `Preconditions.ExpectedTurnID`,
+`EffectiveTurnID`, the `interruptRunningTurn` opt-in built earlier the same
+night, and the client-side guards in the TUI and web composer. Net -393 lines.
+Tasks 2 and 3 below are subsumed by it.
+
+**Live-verified** against a real daemon and browser (2026-08-17): `turn/start`,
+`turn/steer` and `turn/interrupt` each carry only `ref`, `clientMutationId` and
+(where it applies) `input`. Stop ended a running turn, the transcript showed
+"System steered: Interrupted", and the steer reached the model. The live pass
+also caught a leftover no compiler could see -- the browser still sending
+`interruptRunningTurn` after the Go field was deleted (`306a309ef`).
 
 | Task | State |
 | --- | --- |
