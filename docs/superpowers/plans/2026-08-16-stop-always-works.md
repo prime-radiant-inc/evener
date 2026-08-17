@@ -62,7 +62,7 @@ also caught a leftover no compiler could see -- the browser still sending
 
 | Task | State |
 | --- | --- |
-| 1 measure the invariant | **Done, and the gate fired** (RESULT block below). A later review then showed the harness asserts less than it claims -- it interrupts only AFTER the boundary -- so "the gap is unreachable" is NOT established. |
+| 1 measure the invariant | **Re-measured, and the gate did NOT hold** (kata `gwxa`; see the CORRECTION under the RESULT block). The original harness sampled only before the boundary and interrupted only after it. The rewritten one parks inside the window: the wire shows a working session and the daemon refuses the Stop. |
 | 2 Stop escape hatch | **Uncommitted work in the worktree** from a subagent. Review before committing. |
 | 3 steer always lands | **Done** -- `ddc68ae68`, `d131a80fc`, `e9ce2994b`. |
 | 4 EventError turn-scoped state | **Done** -- `7ff6d0128`. |
@@ -184,11 +184,47 @@ aggressive sampler could not reach it in five runs. A Stop aimed at `turn_m1`
 after turn 1 completed and before turn 2 opened would still be rejected; nothing
 here demonstrates a user can land in that microsecond.
 
+### CORRECTION (kata gwxa): the RESULT above rests on a measurement that never
+### entered the window. The gap IS observable, and a client's Stop dies in it.
+
+The harness never reached the boundary. Its sampler stopped as soon as turn 2's
+model request arrived, which is before the projection catches up, so every
+sample it took was pre-boundary: a run of the old test logs
+`observed 22 x active/turn_m1` and nothing else. The `turn_m1` → `turn_m2`
+transition this block cites as evidence was never in the sample set, and the
+`turn/interrupt` it describes as aimed "at whatever id the wire publishes"
+carries no id at all — `c435bc579` removed `expectedTurnId` from every control
+mutation.
+
+The rewritten test parks the drain loop inside the window with a queued plugin
+slash command (`agent/session_lifecycle.go` expands it after `popQueueHead` has
+claimed turn 2 and before anything announces it) and uses queue depth as the
+discriminator, since depth comes from the session's live durable snapshot while
+the turn id comes from the projector. Measured, deterministically, every run:
+
+- The window is reached: 2532 of 2538 samples are `active` + turn 1's id +
+  `queueDepth=0`, i.e. turn 2 claimed and unannounced.
+- `activeWithNoID = 0` still holds, so the composer does keep showing Stop.
+- **A `turn/interrupt` issued there is REFUSED:
+  `appwire turn/interrupt: session is not processing`.**
+
+The cause is not the stale id. `InterruptClientMutation` samples
+`s.WireState()`, which reads the SESSION — turn 1 settled it idle,
+`popQueueHead` already emptied the queue so `sessionWorkPending()` is false, and
+`processOneInput` does not set `SessionProcessing` until after the slash-command
+expansion. The wire's `active` comes from the daemon's own processing flag,
+which spans the whole drain. Wire says working, session says idle, Stop is
+refused — the precondition's own comment claims it is "the fact the wire
+publishes as the thread's status", and it is not.
+
+A one-line change makes it land (`!sessionProcessing && snapshot.ActiveTurnID
+== ""`, verified by mutation), which the rewritten test detects and reports.
+
 ### Consequences for the rest of this plan
 
 | Task | Status after the measurement |
 | --- | --- |
-| 2 (interrupt escape hatch) | **Premise withdrawn.** Its justification was this gap. It remains the only way to make the guarantee structural rather than empirical, but it is now a design choice, not a bug fix. **Jesse's call.** |
+| 2 (interrupt escape hatch) | ~~**Premise withdrawn.**~~ **Withdrawal retracted (kata gwxa).** The gap is observable and Stop dies in it — measured, not inferred. The withdrawal below was written from a harness that never entered the window. Its justification was this gap. **Jesse's call**, now on live evidence. |
 | 3 (steer always lands) | **Stands.** Decided on its own merits: a steer typed between turns should land, and today it is rejected. |
 | 4 (`EventError` bucket ids) | **Stands.** Independent, verified by both reviews. |
 | 5 (kata `2f41`) | **Stands, and is now the most valuable task here** — if the remaining windows are this hard to reach, the thing that matters is that any control which does fail says so. |
