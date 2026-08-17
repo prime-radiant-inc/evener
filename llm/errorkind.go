@@ -146,10 +146,12 @@ func (*unknownHTTPError) declaredKind() ErrorKind           { return KindUnknown
 //
 // Use DeclaredKind where the error's provenance is not guaranteed. Walking an
 // arbitrary error graph calls Unwrap/Is/As on values the caller supplied, which
-// may panic, loop, or carry side effects — a hazard the API-log capture path is
-// required to avoid (see docs/superpowers/plans/2026-07-17-project-2-yagni-landing.md:
-// "Do not walk arbitrary error graphs"). DeclaredKind invokes no caller code at
-// all, because kindBearer cannot be implemented outside this package.
+// may panic, loop, or carry side effects. The API-log capture path avoids that
+// hazard by design — the constraint originates in the 2026-07-17 project-2
+// landing plan ("Do not walk arbitrary error graphs") and is pinned by
+// TestAPIAttemptCompleteDoesNotInspectUntrustedErrorBehavior. DeclaredKind
+// invokes no caller code at all, because kindBearer's only method is unexported
+// and so cannot be implemented outside this package.
 //
 // A wrapped error therefore reports KindUnknown here even when Kind would find
 // a category inside it. Callers that hold an error they constructed themselves,
