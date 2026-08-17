@@ -175,7 +175,11 @@ func newSessions() *sessions { return &sessions{byID: map[string]*sessionState{}
 const keysKept = 3
 
 // begin returns the state of the session making this request, advanced to
-// this round, and files it under the id this round's answer will carry.
+// this round, and files it under the id this round's answer will carry. The
+// round number and job flag are returned as values read under the lock:
+// answer runs on its own goroutine and a Stop puts two of a session's rounds
+// in flight at once, so reading state fields after the lock is released would
+// race with the next round's begin.
 //
 // Two boundaries are read out of the request rather than assumed:
 //
@@ -191,12 +195,12 @@ const keysKept = 3
 //     round that was recorded. The turn it belonged to is over, so this
 //     request opens a new one. (Measured against a live hub: a turn stopped
 //     during round 2 comes back replaying round 1's id.)
-func (s *sessions) begin(call *fakellm.Call) *sessionState {
+func (s *sessions) begin(call *fakellm.Call) (state *sessionState, round int, launchedJob bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	previous := call.PreviousToolCallID()
-	state := s.byID[previous] // a session's first round has no previous id
+	state = s.byID[previous] // a session's first round has no previous id
 	switch {
 	case state == nil:
 		state = &sessionState{}
@@ -212,25 +216,50 @@ func (s *sessions) begin(call *fakellm.Call) *sessionState {
 		delete(s.byID, state.keys[0])
 		state.keys = state.keys[1:]
 	}
-	return state
+	return state, state.turnRound, state.launchedJob
 }
 
-// endedTurn records that the answer just sent ends the session's turn, so its
+// endedTurn records that the answer to `call` ends the session's turn, so its
 // next round is round 1 of a new turn.
-func (s *sessions) endedTurn(state *sessionState) {
+//
+// It applies nothing unless `call` is still the round the session will replay.
+// A cancelled round's goroutine can reach here after the session's next turn
+// has already begun (its answer was discarded, so the session did not wait for
+// it); zeroing the count then would hand that turn extra rounds. By the time
+// that happens the new turn's begin has moved lastAnswered on, which is how
+// the stale write is recognised.
+func (s *sessions) endedTurn(state *sessionState, call *fakellm.Call) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if state.lastAnswered != call.ToolCallID() {
+		return
+	}
 	state.turnRound = 0
 }
 
-// answer holds one round for --hold and then replies to it.
+// launchedJob records that the answer to `call` carries the session's one
+// background job. Guarded like endedTurn: a round the session has already
+// abandoned must not mark a job it will never see as launched.
+func (s *sessions) launchedJob(state *sessionState, call *fakellm.Call) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state.lastAnswered != call.ToolCallID() {
+		return
+	}
+	state.launchedJob = true
+}
+
+// answer holds one round for --hold and then replies to it. A round whose
+// request is cancelled while it is held — what a Stop does — is dropped
+// without touching the session's state: the session never records it, so the
+// turn that follows must find its count exactly where the last RECORDED round
+// left it.
 func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.Duration, rounds int, jobRelease, notesDir string) {
-	state := live.begin(call)
-	round := state.turnRound
+	state, round, launchedJob := live.begin(call)
 	log.Printf("--- round %d: holding %s ---\n%s", round, hold, strings.Join(call.Texts(), "\n"))
 
 	endTurn := func(message string) {
-		live.endedTurn(state)
+		live.endedTurn(state, call)
 		call.RespondToolCall("communicate", map[string]any{
 			"message":  message,
 			"end_turn": true,
@@ -248,22 +277,24 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	// session again, forever.
 	if jobRelease != "" {
 		switch {
-		case !state.launchedJob && round == 1:
+		case !launchedJob && round == 1:
 			log.Printf("round 1: launching a background job that waits for %s", jobRelease)
-			state.launchedJob = true
+			live.launchedJob(state, call)
 			call.RespondToolCall("shell", map[string]any{
 				"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
 				"mode":    "background",
 			})
 			return
-		case state.launchedJob && round == 2:
+		case launchedJob && round == 2:
 			log.Printf("round 2: ending the turn so the session goes idle holding the job")
 			endTurn("background job launched; idle until it finishes")
 			return
-		case state.launchedJob && round == 1:
+		case launchedJob && round == 1:
 			select {
 			case <-time.After(hold):
 			case <-ctx.Done():
+				return
+			case <-call.Cancelled():
 				return
 			}
 			log.Printf("round 1 of a later turn: ending it so the session goes back to idle")
@@ -275,6 +306,8 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	select {
 	case <-time.After(hold):
 	case <-ctx.Done():
+		return
+	case <-call.Cancelled():
 		return
 	}
 
@@ -291,7 +324,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 		// Answering with text ends this session's turn. Leaving the round
 		// unanswered would hang it instead, with the reason only in this log.
 		log.Printf("round %d: stage note: %v", round, err)
-		live.endedTurn(state)
+		live.endedTurn(state, call)
 		call.RespondText(fmt.Sprintf("fake provider could not stage a note for round %d: %v", round, err))
 		return
 	}

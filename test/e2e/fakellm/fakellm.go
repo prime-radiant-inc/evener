@@ -56,9 +56,16 @@ type Call struct {
 	Body map[string]any
 
 	toolCallID string
+	cancelled  <-chan struct{}
 	once       sync.Once
 	reply      chan reply
 }
+
+// Cancelled is closed when the requester has given up on this round -- a Stop
+// cancels the in-flight model request. An answer sent after that is
+// discarded, so a driver holding the round should stop holding, and must not
+// commit per-session side effects for a round the session will never record.
+func (c *Call) Cancelled() <-chan struct{} { return c.cancelled }
 
 type reply struct {
 	text     string
@@ -272,7 +279,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := &Call{Body: body, toolCallID: mintToolCallID(), reply: make(chan reply, 1)}
+	call := &Call{Body: body, toolCallID: mintToolCallID(), cancelled: r.Context().Done(), reply: make(chan reply, 1)}
 	select {
 	case s.calls <- call:
 	case <-r.Context().Done():
