@@ -2,8 +2,16 @@
 
 > **Do NOT execute this plan task-by-task.** Tasks 1, 3, 4, 5 and 9 are done,
 > Task 2 was subsumed, Task 6 was reverted, and Task 7 moved to its own document.
-> What is genuinely open is two bullets of Task 8 and the pre-landing checks
-> below. Read the STATUS block next, then take only the boxes still unchecked.
+> What is genuinely open is **two bullets of Task 8 and the Definition of done** —
+> nothing else, and in particular nothing under Task 2 or Task 6.
+>
+> **`- [ ]` does not mean "available to work on" in this file.** Steps under a
+> heading marked SUBSUMED or REJECTED are written as `- [~]`: they will never be
+> done, because doing them would undo shipped work. Six `- [~]` steps under Task 2
+> would rebuild the `interruptRunningTurn` opt-in that `c435bc579` deleted and
+> `09ca9beae` had to chase out of the browser; three under Task 6 would re-land
+> the routing `ed6db108a` reverted. Take work only from `- [ ]` boxes, and only
+> after reading the heading above them.
 
 **Supersedes** `2026-08-16-busy-means-named.md` and `2026-08-16-one-running-turn.md`.
 Both were written for a problem that the two landed plans had already fixed. See
@@ -79,7 +87,7 @@ also caught a leftover no compiler could see -- the browser still sending
 | Task | State |
 | --- | --- |
 | 1 measure the invariant | **Done, and the gate fired** (RESULT block below). A later review then showed the harness asserts less than it claims -- it interrupts only AFTER the boundary -- so "the gap is unreachable" is NOT established. |
-| 2 Stop escape hatch | **SUBSUMED and not to be executed** -- `c435bc579` deleted the precondition the task existed to work around, and the `interruptRunningTurn` opt-in the task prescribes. `turn/interrupt` now carries only `ref` and `clientMutationId`. |
+| 2 Stop escape hatch | **SUBSUMED and not to be executed** -- `c435bc579` deleted the precondition the task existed to work around, and the `interruptRunningTurn` opt-in the task prescribes. `TurnInterruptParams` now carries only `ref`, `threadId` and `clientMutationId` (`appwire/types.go:1052-1056`) -- no turn id of any kind. |
 | 3 steer always lands | **Done** -- `3393e7905`, `5fdb23fd6`, `daa3eab1b`. Not to be re-executed. |
 | 4 EventError turn-scoped state | **Done** -- `0e467e098`. |
 | 5 kata 2f41 | **Done** -- `7d4f51141`, `19c4deba4`. Kata `2f41` is closed. |
@@ -140,9 +148,17 @@ until it produces a genuinely failing test.**
 - **One minter of live turn ids.** `reserveClientMutationTurnID`. Kata `eptj` is
   what two minters in one namespace did: a collision made `turn/completed`
   overwrite a persisted turn's content — real data loss.
-- **Do not re-derive line numbers from memory.** Every citation in this document
-  was verified at `24111733f`; re-check before editing, and fix the spec if it
-  has drifted.
+- **Do not re-derive line numbers from memory.** Re-check every citation against
+  the working tree before editing, and fix the spec if it has drifted.
+
+  This constraint used to name `24111733f` as the baseline the citations were
+  verified at. That commit was rewritten on the way to `main` and its tree is
+  reachable from nothing, so the baseline cannot be checked out and the
+  instruction could not be obeyed. `d1f06ceab` carries the identical patch, but
+  its **tree is not the same**, so it is not a substitute baseline — naming it
+  here would assert a verification that never happened against that tree. There
+  is no baseline any more. The working tree is the only authority, which is why
+  the instruction above is now unconditional.
 - **Gates:** `make lint` runs **nine** targets (`Makefile:566`), not seven.
 
 ---
@@ -151,7 +167,9 @@ until it produces a genuinely failing test.**
 
 Nothing else in this plan may start until Step 4 produces a red test.
 
-**Files:** create `server/control_invariant_test.go`
+**Files:** ~~create `server/control_invariant_test.go`~~ — it shipped as
+`cmd/serf-hub/e2e_control_invariant_test.go`. Different module: the harness needs
+a live hub and daemon, which `server/` cannot start.
 
 - [x] **Step 1: Write the harness.** A helper that returns
       `(statusType, activeTurnID)` from `thread/read`, and one that asserts the
@@ -179,19 +197,32 @@ Nothing else in this plan may start until Step 4 produces a red test.
 
 `TestE2E_ControlInvariantAcrossATurnBoundary`
 (`cmd/serf-hub/e2e_control_invariant_test.go`) samples `thread/read` as hard as
-it can across a queued-message turn boundary, then aims a real `turn/interrupt`
-at whatever id the wire publishes while turn 2 is demonstrably running. Five
-consecutive runs:
+it can across a queued-message turn boundary, then issues a real `turn/interrupt`
+while turn 2 is demonstrably running. Five consecutive runs.
 
-- `activeWithNoID = 0`. The wire never reports a turn running without an id, so
-  the composer never hides Stop and Steer on a working session.
-- The published id tracks the boundary correctly (`turn_m1` → `turn_m2`), and
-  `turn/interrupt` against the published id returns `Applied`.
+**What the test actually asserts** — two things, and it is worth being exact,
+because an earlier version of this block credited it with more:
 
-**What was measured.** An interrupt aimed *after* the boundary, at the id the
-wire published for turn 2 while turn 2 was demonstrably running, was `Applied`
-in five consecutive runs. The wire never published `active` with an empty id, so
-the composer never hid Stop and Steer on a working session.
+- **`activeWithNoID == 0`, asserted** (`:153-155`). The wire never reports a turn
+  running without an id, so the composer never hides Stop and Steer on a working
+  session.
+- **The interrupt is `Applied`, asserted** (`:180-183`), issued after the boundary
+  while `thread/read` reports turn 2 active.
+
+**What it does not assert, despite the wording that used to be here.**
+
+- **The interrupt names no turn.** The earlier text said "`turn/interrupt`
+  against the published id returns `Applied`". No id is sent: the request at
+  `:173-176` carries only `Ref` and `ClientMutationID`, because `c435bc579`
+  deleted `ExpectedTurnID` from the type. The local `published` (`:166`) survives
+  only inside the log line at `:167` and the failure strings at `:178` and `:181`.
+  So the test shows an interrupt lands at the boundary; it cannot show anything
+  about targeting, because nothing is targeted.
+- **"The published id tracks the boundary correctly" was never checked.**
+  `activeWithStale` counts samples that still carry the first turn's id, and it is
+  incremented at `:142` and logged at `:148` — and never compared to anything. A
+  run where the wire published the stale id in every sample passes. (Its sibling
+  `activeWithNoID` *is* asserted; only the stale counter is loose.)
 
 **What was NOT measured — and the earlier wording claimed it was.** The harness
 never interrupts *inside* the gap. Every interrupt it issues lands after the
@@ -201,12 +232,24 @@ gap is real in the code and NOT observable by a client"; that universal claim is
 not supported by the measurement it summarises, and is withdrawn.
 
 Both reviews were right that `completeClientMutationTurnWithState` clears the
-durable name while `processing` is still true. What neither of us checked is
-that `s.appActiveTurnID` is only updated by events
-(`server/appwire_runtime.go:212`), so during that window the wire keeps
-publishing the *previous* id rather than an empty one — and by the time it
-publishes a new id, that id is valid. That explains why the sampler saw what it
-saw. It does not establish that no client can land in the gap.
+durable name while `processing` is still true.
+
+**A previous version of this block explained the green result by claiming
+`s.appActiveTurnID` "is only updated by events
+(`server/appwire_runtime.go:212`)". That is false, and it is retracted rather
+than repaired.** The field has seven writers:
+`server/appwire_runtime.go:118`, `:212`, `:1402`, `:1412`, and
+`server/server.go:701`, `:713`, `:720`. Two of them are `setProcessingLocked`
+itself — `:720` mints a `turn_<n>` on the processing-true edge, `:713` clears the
+field on the false edge — which is precisely the window the paragraph was
+reasoning about. `2026-08-16-one-active-turn-identity.md` says the same thing
+from the other side: that mint is deliberate, and kata `c2ty` is the ruling that
+keeps it.
+
+**So the sampler's result has no explanation recorded here.** It was green five
+times; nobody has established the mechanism, and the mechanism that was written
+down was wrong. Do not carry it forward. It never established that no client can
+land in the gap either way.
 
 The question stopped mattering for a different reason: `c435bc579` deleted
 `expectedTurnId` entirely, so a Stop no longer names a turn and no longer has a
@@ -259,19 +302,19 @@ target cannot be made idempotent across a retry.
 **Files:** `appwire/types.go`, `appwire/protocol.go`,
 `agent/session_client_mutation.go`, `server/appwire_runtime.go`
 
-- [ ] **Step 1:** Write the failing test: a session-scoped interrupt issued
+- [~] **Step 1:** Write the failing test: a session-scoped interrupt issued
       during the Task 1 gap stops the session. Run it; expect a schema error.
-- [ ] **Step 2:** Add the field to the wire type and the protocol table.
-- [ ] **Step 3:** Run again; expect `Conflict("turn is not active")` — the
+- [~] **Step 2:** Add the field to the wire type and the protocol table.
+- [~] **Step 3:** Run again; expect `Conflict("turn is not active")` — the
       precondition, now reached with a well-formed request.
-- [ ] **Step 4:** Implement: when the session-scoped form is set, the
+- [~] **Step 4:** Implement: when the session-scoped form is set, the
       precondition becomes "the session is processing" rather than an id match.
       The fence still records the id it actually cancelled, so
       `finalizeClientMutationInterrupt` (`:566`) is unchanged.
-- [ ] **Step 5:** Prove idempotence explicitly — issue the same
+- [~] **Step 5:** Prove idempotence explicitly — issue the same
       `clientMutationId` twice and assert one effect, since this is the property
       the rejected alternative could not hold.
-- [ ] **Step 6:** Mutation-check, run `./agent/ ./server/`, commit.
+- [~] **Step 6:** Mutation-check, run `./agent/ ./server/`, commit.
 
 ## Task 3: A steer with no active turn is queued, not rejected — DONE
 
@@ -308,7 +351,7 @@ shape `acceptNotificationInput` handles and
 `TestNotificationTurnAnnouncesOneNamedBoundary`
 (`agent/session_turn_boundary_test.go`) covers. So "steer with no active turn"
 is: enqueue steering, then arm the same wake a completing job arms
-(`s.notify()`). The stand-down and re-arm rules landed in `f40904960` then apply
+(`s.notify()`). The stand-down and re-arm rules landed in `f9e5abcd3` then apply
 unchanged, including the hot-loop guard.
 
 - [x] **Step 1:** Failing test — `turn/steer` during the Task 1 gap is accepted,
@@ -423,14 +466,14 @@ is decided when the message is composed, from `statusType` alone
 message composed before the UI learns the session went busy is built as
 `turn/start` and rejected `Conflict("turn is already active")`.
 
-- [ ] **Step 1:** Failing test: two submits in quick succession, the second
+- [~] **Step 1:** Failing test: two submits in quick succession, the second
       composed before any status frame arrives, both reach the session.
-- [ ] **Step 2:** Route from the client's own optimistic state as well as the
+- [~] **Step 2:** Route from the client's own optimistic state as well as the
       published status — the pending-turn machinery already tracks "I just
       started a turn". Do **not** fold `activeTurnId` into
       `deriveSendQueueAvailability`; its header explains why that reintroduces a
       different race.
-- [ ] **Step 3:** Assert the composer still queues correctly on a cold hydrate,
+- [~] **Step 3:** Assert the composer still queues correctly on a cold hydrate,
       where there is no optimistic state. Commit.
 
 ## Task 7: Subagent threads — moved out
@@ -492,7 +535,9 @@ Each bullet is its own red-green-commit.
 
 - [x] `2026-08-16-one-active-turn-identity.md` still instructed the
       `SteeringInjectedData.StableTurnID` emit that `b5ce354a5` reverted and that
-      the projector's `EventSteeringInjected` case says "must never be adopted".
+      the projector's `EventSteeringInjected` case
+      (`internal/appprojector/appwire_projection.go:691`, reasoning at `:694-701`)
+      says "must never be adopted".
       Its header told an agent to execute it task-by-task, so it was a live trap.
       Now banners as LANDED IN PART, with the reverted instructions marked inline
       at Steps 6 and 7 rather than deleted. Kata `dn16`.

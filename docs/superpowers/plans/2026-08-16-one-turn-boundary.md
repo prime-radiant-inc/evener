@@ -8,11 +8,13 @@
 > separated but *not* advertised as active), `3d4b5d444` (the `EntryKind` audit),
 > `f4582d3f7` (`TestE2E_TurnControlReachesANotificationTurn`).
 >
-> **The shipped design differs from the task list in three places**, corrected
+> **The shipped design differs from the task list in four places**, corrected
 > inline below rather than left to be re-derived: the mint site, the shape of
-> `acceptNotificationInput`, and the facet given to `EventTurnStarted`. Everything
-> below a *Correction* marker describes the code; everything a marker strikes
-> describes a draft that did not survive.
+> `acceptNotificationInput`, the facet given to `EventTurnStarted`, and the guard
+> on the boundary emit (`servedByDaemon()`, not a non-empty id — which also makes
+> one of Task 2's required mutations a hunt for code that does not exist).
+> Everything below a *Correction* marker describes the code; everything a marker
+> strikes describes a draft that did not survive.
 >
 > Two prescribed tests landed under other names:
 > `TestNotificationBoundaryPrecedesItsReminder` shipped as the pair
@@ -21,9 +23,14 @@
 >
 > The residue is kata `b19h` (open): the unnameable-turn status suppression
 > covers only the push path, so `thread/read` still offers Steer and Interrupt
-> against a `turn_<n>` — and since `b2a2f1c8c`/`c435bc579` deleted the
-> `expectedTurnId` precondition, the reasoning quoted in the projector comment no
-> longer holds either. Do not treat that comment as current.
+> against a `turn_<n>` — and since `c435bc579` deleted the `expectedTurnId`
+> precondition, the reasoning quoted in the projector comment no longer holds
+> either. Do not treat that comment as current.
+>
+> **What a checked box means here:** the tree contains the thing the step
+> produces — a named test, a type, a commit. Gate runs and live browser passes
+> produce no artifact, so they are left unchecked and labelled *not recorded*
+> rather than assumed. Same rule as `2026-08-16-stop-always-works.md`.
 >
 > Kept because its Diagnosis, its identity model and its rejected-options record
 > are still accurate and still the best description of why the code is shaped
@@ -219,7 +226,7 @@ leave the projection holding an open turn nothing closes.
 
 <details><summary>The two earlier drafts, kept for the record</summary>
 
-**Draft 2 (`ac0560303`/`da1a488fa`), true when written and now superseded:** *The
+**Draft 2 (`da1a488fa`), true when written and now superseded:** *The
 id is minted inside `acceptNotificationInput`, after its last refusal, and handed
 back so `processOneInput`'s existing defer releases it.* Minting before the
 accept would pay a durable reservation for every coalesced wake that turns out to
@@ -447,7 +454,12 @@ boundary.
       - drop the `defer`'s coverage (assign `runningTurnID` after the chain):
         test 3 fails.
       - announce moved above the `:1547` early return: test 4 fails.
-      - drop the `stableTurnID != ""` guard: test 5 fails.
+      - ~~drop the `stableTurnID != ""` guard: test 5 fails.~~ **Correction (the
+        fourth divergence): no such guard exists.** The emit is gated on
+        `s.servedByDaemon()` (`agent/session_lifecycle.go:1652`), so the mutation
+        that kills test 5 is dropping *that* gate. The id check moved down into
+        the projector, where it withholds the active status rather than the
+        event.
       A mutation that does not fail its test means the test is not pinning the
       line. Fix the test before continuing.
 - [x] **Step 5:** `go test primeradiant.com/serf/agent/...`; update the stale
@@ -599,8 +611,13 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 
 ### Task 6: Gates, live verification, kata
 
-- [x] **Step 1: gates** (the full list in Global Constraints).
-- [x] **Step 2: live browser pass.** `./scripts/e2e-webui-turn-controls.sh`,
+- [ ] **Step 1: gates** (the full list in Global Constraints). **Not recorded.** A
+      gate run leaves no artifact in the tree, so this cannot be checked off from
+      evidence; treat it as unrun rather than assume it passed.
+- [ ] **Step 2: live browser pass.** **Not recorded**, same reason — and this is
+      the step that matters most, because defect 2 means a fix that names the turn
+      but leaves the thread idle passes every Go test and still fails here.
+      `./scripts/e2e-webui-turn-controls.sh`,
       spawn a session, provoke a notification turn, and confirm in the UI that
       **Stop and Steer actually render** — defect 2 means a fix that names the
       turn but leaves the thread idle would pass every Go test and still fail

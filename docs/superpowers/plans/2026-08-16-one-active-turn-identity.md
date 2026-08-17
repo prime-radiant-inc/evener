@@ -23,8 +23,18 @@
 > carrier of its own precisely because this field was already spoken for. That
 > work shipped and `7vmd` is closed.
 >
-> Kept for its diagnosis of the two id namespaces and its v1 review record, both
-> still accurate. The task list is not safe to follow.
+> Kept for its diagnosis of the two id namespaces and its v1 review record. The
+> task list is not safe to follow.
+>
+> **The Diagnosis is history, not a description of the code.** Its account of why
+> the two namespaces diverged still explains the shape of what shipped, but its
+> line numbers have drifted and, more importantly, the mechanism it describes is
+> gone: `c435bc579` deleted `expectedTurnId` from every mutation, so the
+> "precondition compares against the durable authority" story it tells has no
+> counterpart in the code. The five citations it gives for that comparison
+> (`session_client_mutation_queue.go:123,325,392,497` and
+> `session_client_mutation.go:411`) now land on unrelated lines. Read it for the
+> reasoning, never for a pointer.
 >
 > **On the commit ids in this document.** They were written on
 > `wip/webui-steer-send-stop`, whose commits were rewritten on the way to `main`.
@@ -109,7 +119,7 @@ when the turn-opening event named it. Which events name it:
 | --- | --- | --- |
 | `EntryUserInput` (client `turn/start`, queued drain) | `EventUserInput`, `agent/session_lifecycle.go:1423-1429` | **yes**, populated from `queuedIdentity.StableTurnID` |
 | `EntryContinuation` (goal) | `EventGoalContinuation`, `:1482` | **no such field** on `GoalContinuationData` (`agent/events/payloads.go:668`) |
-| `EntryNotification` (job / watch / delegate wakes) | `EventSteeringInjected`, `:1553` | field exists (`agent/events/payloads.go:356`) but is **not populated**, and the projector's case ignores it (`appwire_projection.go:727-734`) — and **must keep ignoring it**; this row is the trap, see the banner |
+| `EntryNotification` (job / watch / delegate wakes) | `EventSteeringInjected` (emitted today at `agent/session_lifecycle.go:1656`) | field exists (`agent/events/payloads.go:356`) but is **not populated**, and the projector's case ignores it — and **must keep ignoring it**; this row is the trap, see the banner. The live case is `internal/appprojector/appwire_projection.go:691`, decode at `:693`, and the "must never be adopted" reasoning at `:694-701`. |
 
 The projector adopts a named id at `appwire_projection.go:225-227` —
 `if data.StableTurnID != "" { p.reservedTurnID = data.StableTurnID }`,
@@ -176,7 +186,7 @@ means *the turn that is running*, not *the turn a client mutation reserved*.
 | `agent/session_active_turn.go` (create) | Mint / release the running turn's durable id under the guards this plan's review earned. One responsibility, so the client-mutation files stay about client mutations. |
 | `agent/session_active_turn_test.go` (create) | Unit coverage: mint, refuse-under-fence, refuse-when-owned, release, no-store-no-mint. |
 | `agent/session_client_mutation_persist.go` (modify) | Reconcile `ActiveTurnID` at load. |
-| `agent/session_lifecycle.go` (modify) | Mint after the accept block; pass the id into the two opening events. |
+| `agent/session_lifecycle.go` (modify) | ~~Mint after the accept block; pass the id into the two opening events.~~ **Both halves wrong** — see Step 6's REVERTED marker. The mint is *before* the accept chain (at the top of `processOneInput`'s `EntryNotification` block), and only one opening event carries the id: `EventGoalContinuation`. |
 | `server/server.go` (modify) | `SetProcessing` stops minting turn ids. (**Not done** — Task 2 was dropped; `setProcessingLocked` still mints.) |
 | `cmd/serf/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. (Task 2 left this file untouched.) |
 | `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression on a goal-continuation turn. |

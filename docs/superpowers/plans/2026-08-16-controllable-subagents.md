@@ -82,7 +82,7 @@ cases exist.
 
 | Blocker | Where |
 | --- | --- |
-| Every mutation handler rejects non-root threads with `SessionUnavailable("thread is not served by this daemon")` | `server/appwire_runtime.go:1087-1104` (`requireRootMutationTarget`), called first by all ten mutation handlers, including `handleAppTurnInterrupt` at `:822` |
+| Every mutation handler rejects non-root threads with `SessionUnavailable("thread is not served by this daemon")` | `server/appwire_runtime.go:1087-1104` (`requireRootMutationTarget`), called first by **14** handlers: `:736`, `:773`, `:799`, `:822` (`handleAppTurnInterrupt`), `:840`, `:866`, `:891`, `:917`, `:946`, `:974`, `:987`, `:1012`, `:1049`, `:1067`. Re-derive with `grep -c` before scoping work off this — an earlier revision of this row said "ten", from a `grep | head` that silently truncated. |
 | Nothing routes an accepted mutation to a child session | the mutation path is wired to the root session only |
 | Descendant threads carry **no** capabilities at all | only the root fills them, at `server/appwire_runtime.go:1235`; the descendant list (`:548-552`) and `appThreadForID` (`:640-654`) stamp `ActiveTurnID` and nothing else |
 | Child sessions never mint a name — **and removing the `servedByDaemon()` gate is not enough** | `servedByDaemon()` gates the mint (`agent/session_active_turn.go:47-49`) and the boundary emit (`agent/session_lifecycle.go:1652`), but `mintRunningTurnID` is only *reached* for two entry kinds, and a delegate's primary run is neither. See Task 3. |
@@ -106,14 +106,27 @@ cases exist.
   So descendant capabilities are **absent** on notifications
   (`ThreadStatusChangedParams.Capabilities` is `*ThreadCapabilities` with
   `omitempty`, `appwire/types.go:1666`) and **present-but-all-false** on
-  `thread/read` (`Thread.Capabilities` is a value struct with no `omitempty`,
-  `appwire/types.go:276`). Nothing is copied from the root.
+  `thread/read` (`SerfThread.Capabilities` is a value struct with no `omitempty`,
+  `appwire/types.go:276`; `SerfThread` begins at `:266` and is reached through
+  `Thread.Serf`, `Thread` itself being at `:216`). Nothing is copied from the
+  root.
 
-  The requirement is therefore positive, not defensive: Task 2 must specify the
-  exact per-thread capability matrix and fill it on `thread/read`, on thread
-  lists, and on status notifications, enabling **only** the controls genuinely
-  routed to that thread. "Its own capability set" is not a sufficient acceptance
-  criterion — copying the root's would satisfy it.
+  **Why this is hard, which is the part worth carrying forward.** There is no
+  per-thread source of truth to compute a capability set *from*. `appCapabilities`
+  (`server/appwire_runtime.go:1352-1376`) derives every field from server-wide
+  state: the callback registrations `s.steerFunc` / `s.steerWithImagesFunc`,
+  `s.cancelFunc`, `s.compactFunc`, `s.shutdownFunc`, `s.modelFunc`, `s.nameFunc`,
+  `s.queueFunc`, `s.goalFunc`, plus `s.appReservedTurnID` and the `processing`
+  flag. Each is one value on the `Server`, wired to the root session. Ask it about
+  a descendant and it can only answer about the root — which is why the honest
+  thing it does today is not answer at all.
+
+  So Task 2 is not "pass a thread id to `appCapabilities`". It is: give a
+  descendant thread a state the capability set can be computed from, then fill
+  that set on `thread/read`, on thread lists, and on status notifications,
+  enabling **only** the controls genuinely routed to that thread. "Its own
+  capability set" is not a sufficient acceptance criterion — copying the root's
+  would satisfy it, and so would the all-false set that already ships.
 - **Measure the cost.** A durable write per delegate wake, on a path that fires
   per delegate event. If it is worse than expected, say so rather than absorb it.
 - **An acceptance criterion that a broken implementation passes is not one.**
@@ -178,8 +191,15 @@ cases exist.
 
       - the daemon's interrupt callback cancels the **root** runner
         (`cmd/serf/serve.go:832` → `cancelAndWaitMutationRunner`,
-        `cmd/serf/serve.go:662-673`, whose cancel is installed only by the root
-        serve loop at `:1015`, `:1027`, `:1034`);
+        `cmd/serf/serve.go:662-673`). It reads `mutationRunnerCancel`
+        (declared `:646`), whose **only** writer is `setMutationRunner`
+        (`:648-651`), called from four places in the root serve loop: `:1008`,
+        `:1016`, `:1028`, `:1035`. Note `:1008` is the drain-loop re-arm inside
+        `nextTurnCtx` — it re-points the seam at `cancelDrain` mid-drain, and it
+        is the path most likely to break when `requireRootMutationTarget` comes
+        down. `srv.SetCancelFunc` (`:1007`, `:1015`, `:1027`, `:1034`) sits beside
+        these calls but is a **different** seam and does not feed this one; do not
+        substitute one for the other;
       - ordinary child runs cancel via `sub.cancel` (`agent/subagents.go:969`,
         `:1342`; used by `cancelAgent` at `:1360-1378`);
       - notification-drive child turns use a local `driveCancel`
@@ -193,10 +213,13 @@ cases exist.
       while the root and its sibling delegates keep running — assert all three,
       not just the first.
 
-      **Watch the session-scoped interrupt.** `InterruptClientMutation` targets
-      `snapshot.ActiveTurnID` (`agent/session_client_mutation.go:465`) with the
-      precondition "the session is processing". That is the shape most likely to
-      cancel the root by accident once `requireRootMutationTarget` comes down.
+      **Watch the session-scoped interrupt.** `InterruptClientMutation` reads
+      `snapshot.ActiveTurnID` as its target (`agent/session_client_mutation.go:464`)
+      with the precondition "the session is processing". That is the shape most
+      likely to cancel the root by accident once `requireRootMutationTarget` comes
+      down. Note `TurnInterruptParams` already carries `threadId`
+      (`appwire/types.go:1052-1056`) — that field, not a turn id, is what has to
+      select the child.
 
 - [ ] **Task 5: Turn separation and status.** Drop the `servedByDaemon()` gate on
       the boundary emit (`agent/session_lifecycle.go:1652`) and invert
