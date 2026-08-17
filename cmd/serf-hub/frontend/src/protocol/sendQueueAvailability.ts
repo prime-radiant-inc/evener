@@ -54,9 +54,15 @@ import type { ThreadCapabilities } from "./types.gen";
 export interface SendQueueAvailabilityInput {
   statusType: string;
   capabilities: ThreadCapabilities;
-  // Whether this client has a turn/start of its own still in flight or
-  // accepted-but-not-yet-reflected. What the CLIENT did, not a guess about
+  // Whether THIS client has a turn/start of its own still in flight or
+  // accepted-but-not-yet-reflected. What this client did, not a guess about
   // what the daemon has got to yet - see tier 6 in the function below.
+  //
+  // Contract the caller owns, because nothing here can check it: this must come
+  // from the caller's own durable outbox/optimistic records. The daemon's
+  // session-wide pendingMutations projection is NOT an acceptable source - it
+  // describes every client on the session and only ever refreshes at hydrate,
+  // so it is precisely the stale-late-arriving state tier 6 argues it is not.
   hasPendingSend?: boolean;
 }
 
@@ -89,7 +95,9 @@ export function deriveSendQueueAvailability({
   //
   // This is NOT the activeTurnId fold the header rejects. activeTurnId is the
   // daemon's state arriving late; a pending send is this client's own record
-  // of what it just did, and cannot be stale relative to itself.
+  // of what it just did, and cannot be stale relative to itself. That holds
+  // only for the input this flag is documented to take - see its contract on
+  // SendQueueAvailabilityInput, which no code here can enforce.
   //
   // It is a tier of its own, ABOVE the capability veto rather than inside the
   // active branch, and that placement is the whole point. The capabilities in

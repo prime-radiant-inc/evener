@@ -209,10 +209,18 @@ export function QueueStrip({
 
   async function handleEdit(index: number, entryId: string, fullText: string): Promise<void> {
     setRowBusy(entryId, true);
-    // FIRST - loser-safe: the user's text is safely in the composer
-    // regardless of whether the cancel below succeeds (contract row).
-    onRestoreToComposer(fullText);
     try {
+      // FIRST - loser-safe: the user's text is safely in the composer
+      // regardless of whether the cancel below succeeds (contract row).
+      // A failure HERE is the other order entirely - nothing moved - so it
+      // must not borrow the cancel's message below, and must leave the queued
+      // entry alone rather than removing a message with nowhere to go.
+      try {
+        onRestoreToComposer(fullText);
+      } catch (err) {
+        toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
+        return;
+      }
       await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
     } catch (err) {
       toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);

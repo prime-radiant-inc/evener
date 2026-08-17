@@ -530,17 +530,49 @@ export function Composer({ ref }: ComposerProps) {
   // hydrated), so every handler below reads these already-narrowed values
   // instead of `model.<field>` directly.
   const activeTurnId = model.activeTurnId;
-  // A turn/start this composer already submitted, before any status frame for
+  const ended = ENDED_STATUSES.has(model.status.type);
+  // Read here rather than inside the handlers below, which close over `model`
+  // outside the narrowing this component does at its top (see that block's own
+  // comment on why every handler reads a pre-narrowed local).
+  const canSendWhenEnded = model.capabilities.send;
+  // A turn/start THIS COMPOSER already submitted, before any status frame for
   // it has come back. Without it a fast second message is composed while the
   // thread still reads idle, routed to turn/start, and refused by the daemon
   // with Conflict("turn is already active") - see tier 6 in
   // deriveSendQueueAvailability.
-  const hasPendingSend = pendingSendEntries.length > 0;
-  const availability = deriveSendQueueAvailability({
+  //
+  // Authoritative entries are excluded deliberately, and tier 6 does not work
+  // without that. usePendingTurnEntries also surfaces model.pendingMutations,
+  // which is the DAEMON's session-wide mutation projection: it covers every
+  // client on the session, reducer.ts writes it only at hydrate, and no
+  // notification ever refreshes it. Feeding it to a routing decision would
+  // reroute this composer on another tab's or the TUI's in-flight send, from a
+  // snapshot that may be arbitrarily old - exactly the "daemon's state arriving
+  // late" that tier 6's own justification rests on not being.
+  const hasPendingSend = pendingSendEntries.some((entry) => entry.source !== "authoritative");
+  const tableAvailability = deriveSendQueueAvailability({
     statusType: model.status.type,
     capabilities: model.capabilities,
     hasPendingSend,
   });
+  // A finished session can still be sent to when the source says so: the hub
+  // advertises Send for an exited serf thread and auto-resumes it on the first
+  // message (turn/start alone carries that resume loop - app_rpc.go). The
+  // CAPABILITY is the authority for THAT question, not the availability table,
+  // which reports both-false for ended/closed because no turn is in flight to
+  // send to or queue behind.
+  //
+  // It only substitutes when the table has nothing to offer. Overriding
+  // unconditionally also clobbered "notLoaded", which is an ENDED_STATUSES
+  // member the table does NOT report both-false for: tier 6 resolves a cold
+  // thread's second message to queue-mode, and a blanket override turned it
+  // back into the turn/start that bounces. That is the widest instance of the
+  // race tier 6 exists for, not a corner - resuming a cold thread means
+  // spawning a daemon, so the window before any status frame is seconds.
+  const availability =
+    ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
+      ? { canSend: true, canQueue: false }
+      : tableAvailability;
   const busy = isTurnActive(model.status.type, activeTurnId);
   const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";
@@ -570,21 +602,12 @@ export function Composer({ ref }: ComposerProps) {
   const submitTooltip = availability.canQueue
     ? `Queue until the agent stops · ${chordLabel(submitChord)}`
     : `Send now · ${chordLabel(submitChord)}`;
-  const ended = ENDED_STATUSES.has(model.status.type);
-  // A finished session can still be sent to when the source says so: the hub
-  // advertises Send for an exited serf thread and auto-resumes it on the first
-  // message. The CAPABILITY is the authority here, not
-  // deriveSendQueueAvailability - that table answers "can this turn be sent to
-  // or queued behind right now", and it deliberately reports both-false for
-  // ended/closed, which is the wrong question for a follow-up that resumes the
-  // session first. Gating on it renders no card for exactly the sessions the
-  // hub says are resumable. When the wire really advertises no send, no card is
-  // rendered at all: an unusable field is worse than no field.
   const canCompose = availability.canSend || availability.canQueue;
-  // Read here rather than inside the handlers below, which close over `model`
-  // outside the narrowing this component does at its top (see that block's own
-  // comment on why every handler reads a pre-narrowed local).
-  const canSendWhenEnded = model.capabilities.send;
+  // Whether the follow-up card renders at all is the capability's call, for the
+  // same reason the substitution above is: gating it on the table renders no
+  // card for exactly the sessions the hub says are resumable. When the wire
+  // really advertises no send, no card is rendered at all - an unusable field
+  // is worse than no field.
   const showFollowUpCard = ended && canSendWhenEnded;
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
@@ -863,16 +886,11 @@ export function Composer({ ref }: ComposerProps) {
         return;
       }
     }
-    // A finished session routes as a plain send: the availability table reports
-    // both-false for ended/closed because no turn is in flight to send to or
-    // queue behind, but the hub advertises Send for a resumable thread and
-    // resumes it on the first message. Without this, a follow-up to an ended
-    // session falls through to "none" and toasts "Send is not available" at a
-    // session the hub would have happily woken.
-    const route = decideSubmitRoute({
-      hasContent,
-      availability: ended && canSendWhenEnded ? { canSend: true, canQueue: false } : availability,
-    });
+    // `availability` already carries the resumable-session substitution (see
+    // where it is computed). Re-deriving it here is what let the tooltip and
+    // the router disagree: the tooltip read the table while this read an
+    // override, so the button could promise to queue and then fire a send.
+    const route = decideSubmitRoute({ hasContent, availability });
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");
       return;

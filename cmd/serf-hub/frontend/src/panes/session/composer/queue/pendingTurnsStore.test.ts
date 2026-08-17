@@ -11,26 +11,15 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { useColdStartSkeleton } from "../../coldStart";
 import {
   discardRecoveryPendingTurn,
+  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
-  settlePendingTurnsProjectionForTests,
   submitWithPendingTracking,
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   usePendingTurnEntries,
 } from "./pendingTurnsStore";
-
-async function settlePendingProjection(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) {
-    let awaited = 0;
-    await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
-    });
-    if (awaited === 0) return;
-  }
-  throw new Error("pending-turns projection never settled");
-}
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -108,7 +97,7 @@ test("an action becomes pending only after its durable enqueue commits", async (
 
   expect(pending.result.current).toEqual([]);
   await act(() => threadsStore.getState().send("ref_a", "hello"));
-  await settlePendingProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
 });
@@ -214,7 +203,7 @@ test("an applied pending receipt settles transport without dropping optimistic s
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
   const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
   await act(() => threadsStore.getState().send("ref_a", "hello"));
-  await settlePendingProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
 
   const mutationId = pending.result.current[0]?.id;
@@ -261,7 +250,7 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "steer"));
 
   await act(() => threadsStore.getState().steer("ref_a", "patient steer"));
-  await settlePendingProjection();
+  await flushPendingTurnsProjectionForTests();
 
   const mutationId = pending.result.current[0]?.id;
   expect(mutationId).toBeDefined();

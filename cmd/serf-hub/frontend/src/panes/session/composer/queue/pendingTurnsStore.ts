@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { act, useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type {
@@ -85,6 +85,28 @@ export async function settlePendingTurnsProjectionForTests(): Promise<number> {
     hop.port2.postMessage(undefined);
   });
   return outstanding.length;
+}
+
+// The repeat loop every test wants, hoisted here because four test files had
+// carried a byte-identical copy of it: run rounds until one of them finds
+// nothing outstanding. The bound is a tripwire for a livelock - it throws
+// rather than letting a test pass on a half-settled projection.
+//
+// What it can settle is exactly what registers with trackProjectionWork. Work
+// that never registers is invisible to this, and a round that found nothing is
+// therefore not a proof that nothing is left - the copies this replaces each
+// claimed it was. Kata 3p22 holds the measured flake that gap produces and its
+// fix. A test whose own action registers its work synchronously before calling
+// here - a click that goes through mutateThenRefresh, say - is not exposed.
+export async function flushPendingTurnsProjectionForTests(): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    let awaited = 0;
+    await act(async () => {
+      awaited = await settlePendingTurnsProjectionForTests();
+    });
+    if (awaited === 0) return;
+  }
+  throw new Error("pending-turns projection never settled");
 }
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {

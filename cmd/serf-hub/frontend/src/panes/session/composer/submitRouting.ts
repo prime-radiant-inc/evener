@@ -39,11 +39,12 @@ export function decideSteerRoute(opts: { hasText: boolean; hasAttachments: boole
 
 // isTurnActive is the interrupt/steer/model-switch "busy" predicate
 // (thread-state.js's legacy SerfThreadState.isBusy), deliberately NOT the
-// same gate as deriveSendQueueAvailability (send/queue key off statusType
-// alone - see that module's own comment on why activeTurnId must stay out
-// of it). Interrupt and steer both need the stronger check: a turn is only
-// truly "in flight" once both the status flip AND the turn/started
-// notification (which populates activeTurnId) have landed.
+// same gate as deriveSendQueueAvailability. That table keys on statusType
+// plus the caller's own pending-send flag (its tier 6), and never on
+// activeTurnId - see its own comment on why folding activeTurnId in would
+// reintroduce a race. Interrupt and steer need exactly the check it refuses:
+// a turn is only truly "in flight" once both the status flip AND the
+// turn/started notification (which populates activeTurnId) have landed.
 export function isTurnActive(statusType: string, activeTurnId: string | undefined): boolean {
   return statusType === "active" && !!activeTurnId;
 }

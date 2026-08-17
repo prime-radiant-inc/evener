@@ -13,9 +13,9 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
+  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
-  settlePendingTurnsProjectionForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
@@ -331,21 +331,6 @@ describe("durable recovery rows", () => {
   });
 });
 
-// Awaits the durable projection work itself rather than polling the DOM for
-// its effects: the row-clearing refresh is chained onto the discard write, so
-// a round that awaited nothing is the proof that nothing is left. The bound
-// is a tripwire for a livelock rather than a timeout.
-async function settleRecoveryProjection(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) {
-    let awaited = 0;
-    await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
-    });
-    if (awaited === 0) return;
-  }
-  throw new Error("pending-turns projection never settled");
-}
-
 // Dismiss is the ONLY way a rejected Stop's recovery record leaves the strip,
 // so it owes what every other row action here already gives: the row locked
 // while the durable write runs, a failure reported rather than swallowed, and
@@ -387,7 +372,7 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       releaseDiscard();
     });
-    await settleRecoveryProjection();
+    await flushPendingTurnsProjectionForTests();
 
     expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
     expect(getToasts()).toHaveLength(0);
@@ -400,7 +385,7 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
     });
-    await settleRecoveryProjection();
+    await flushPendingTurnsProjectionForTests();
 
     expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
       ["error", expect.stringContaining("storage is full")],
@@ -423,7 +408,7 @@ describe("dismiss a rejected Stop", () => {
     await act(async () => {
       fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
     });
-    await settleRecoveryProjection();
+    await flushPendingTurnsProjectionForTests();
 
     expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
     expect(screen.queryByText(/queued messages/i)).toBeNull();
@@ -586,6 +571,36 @@ describe("edit", () => {
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("the full untruncated message");
     await waitFor(() => expect(calls).toEqual(["restore", "cancelQueued"]));
+  });
+
+  // The restore runs after the row is locked, so a failure there owes the row
+  // the same unlock every other path gives it. It also must not borrow the
+  // cancel's message: nothing was moved, so "Moved to the composer, but..."
+  // would describe an outcome the user did not get.
+  test("a restore that fails unlocks the row, says so, and cancels nothing", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
+      },
+    });
+    const onRestoreToComposer = vi.fn(() => {
+      throw new Error("composer is gone");
+    });
+    renderStrip(defaultProps({ onRestoreToComposer }));
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    });
+
+    expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
+      ["error", expect.stringContaining("composer is gone")],
+    ]);
+    expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
+    expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(false);
   });
 
   test("edit is disabled for an image-only queued entry (blank text)", async () => {
