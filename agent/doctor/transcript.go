@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -160,10 +161,25 @@ type TranscriptResult struct {
 type TranscriptOpts struct {
 	Format string // "outline" | "markdown" (default markdown)
 	Range  string // "last:N" | "start:N" | "A-B"
+	// TextMax is the byte cap on each turn's rendered text and on each
+	// tool-result preview. Zero or less selects DefaultTextMax; TextMaxFull
+	// renders in full.
+	TextMax int
 }
 
 const argPreviewMax = 80
-const textPreviewMax = 200
+
+// DefaultTextMax is the byte cap on a rendered turn's text and on each
+// tool-result preview when a render does not ask for another. It keeps the
+// default output summary-sized: a transcript cannot be dumped by accident.
+const DefaultTextMax = 200
+
+// TextMaxFull, as TranscriptOpts.TextMax, renders turn text and tool-result
+// previews whole. Repetition *inside* one response is only ever visible this
+// way: a salvaged partial response (agent/salvage.go) carries its repeated tool
+// calls as turn text, not as tool-call parts, so no structural tool-call metric
+// counts them and any cap hides the run.
+const TextMaxFull = math.MaxInt
 
 // Transcript renders a session's logical turns (a turn map / conversation view),
 // applying the range window and reporting elision honestly.
@@ -187,13 +203,17 @@ func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResu
 		TurnsRendered: hi - lo,
 		Elided:        total - (hi - lo),
 	}
+	textMax := opts.TextMax
+	if textMax <= 0 {
+		textMax = DefaultTextMax
+	}
 	for i := lo; i < hi; i++ {
-		res.Turns = append(res.Turns, summarizeTurn(i+1, doc.Entries[i], resultTool))
+		res.Turns = append(res.Turns, summarizeTurn(i+1, doc.Entries[i], resultTool, textMax))
 	}
 	return res, nil
 }
 
-func summarizeTurn(index int, e transcript.Entry, resultTool string) TurnSummary {
+func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int) TurnSummary {
 	ts := TurnSummary{Index: index, Kind: string(e.Turn.Kind), Role: string(e.Turn.Message.Role)}
 	var text strings.Builder
 	for _, part := range e.Turn.Message.Content {
@@ -215,12 +235,12 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string) TurnSummary
 			}
 			ts.ToolResults = append(ts.ToolResults, ToolResultSummary{
 				Name:           part.ToolResult.Name,
-				ContentPreview: truncate(toolResultContentText(part.ToolResult.Content), textPreviewMax),
+				ContentPreview: truncate(toolResultContentText(part.ToolResult.Content), textMax),
 				IsError:        part.ToolResult.IsError,
 			})
 		}
 	}
-	ts.Text = truncate(strings.TrimSpace(text.String()), textPreviewMax)
+	ts.Text = truncate(strings.TrimSpace(text.String()), textMax)
 	return ts
 }
 

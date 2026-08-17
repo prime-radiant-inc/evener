@@ -31,7 +31,7 @@ state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path
 | Tool | What it does | Key flags |
 |---|---|---|
 | `locate <sel>` | Resolve a selector to its on-disk transcript / canonical API log / meta / jobs / client-mutation paths and bucket. A bare `<id>` found in more than one bucket is reported as ambiguous, naming every bucket it appears in. | — |
-| `transcript <sel>` | Render a session's logical turns; answer "how many real `X` calls?" structurally (calls vs. textual mentions). | `--count <tool>`, `--format outline\|markdown`, `--range last:N\|start:N\|A-B` |
+| `transcript <sel>` | Render a session's logical turns; answer "how many real `X` calls?" structurally (calls vs. textual mentions). Turn text and tool-result previews render capped at 200 bytes; `--full-text` lifts the cap, which is the only way to see a repetition loop *inside* one response (a salvaged partial response carries its repeated calls as turn text, so no tool-call metric counts them). | `--count <tool>`, `--format outline\|markdown`, `--range last:N\|start:N\|A-B`, `--text-max N`, `--full-text` |
 | `apilog <sel>` | Canonical provider-attempt diagnostics: identity, grouping, finality, settlement state, tokens/latency, empty responses, errors, cache spikes, and whole-session token spend. Reads `sessions/<sid>.api.jsonl` through the shared API-log codec. `--validate` instead runs a whole-history structural-integrity scan: strictly decode every record from offset zero through clean EOF and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size — not run at logger open). `--health` instead prints a one-line API-health verdict: attempts, recorded-empty count, retry-storm groups (3+ attempts), unsettled groups, and error counts by class (quota/permanent/retryable). | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--health` |
 | `jobs <sel>` | Every job the session ran, folded from `jobs.jsonl`: status, reason, exit code, output bytes, start/end times, and the delegate/transcript/parent links to pivot on. | `--job <id>` |
 | `mutations <sel>` | Did the user's input reach the daemon? Renders `mutations/<sid>.json`: the journal of every client mutation the daemon accepted **and** every one it rejected (method / operation state / execution state / stable turn / rejection), the durable input queue, pending executions, accepted turns, and queue revision. Absence from the journal means the request never arrived. | — |
@@ -44,6 +44,7 @@ state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path
 ```sh
 serf-doctor locate local:01KV8MVQ7BZHX0EN8D7ZH5QDE4
 serf-doctor transcript <id> --count delegate_send       # real invocations, not mentions
+serf-doctor transcript <id> --range last:1 --full-text  # the whole turn text — is this one response repeating itself?
 serf-doctor apilog <id> --summary                       # token spend + empties + errors at a glance
 serf-doctor apilog <id> --cache-spikes --threshold 40000
 serf-doctor apilog <id> --validate                      # whole-history integrity scan; nonzero exit if any record is bad

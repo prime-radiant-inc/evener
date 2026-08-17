@@ -54,7 +54,8 @@ Run them via the shell tool. First positional arg is a session selector:
 |---|---|---|
 | `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
 | `serf-doctor sessions` | enumerate sessions for a batch study — id, bucket, timestamps, model(s), turn count, transcript bytes, subagent/parent linkage, outcome hint | `--since DUR`, `--bucket B \| --all`, `--json` |
-| `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
+| `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N`, `--text-max N`, `--full-text` |
+| `serf-doctor transcript <sel> --full-text` | **is one response repeating itself?** Turn text renders capped at 200 bytes by default; a salvaged partial response carries its repeated tool calls as *text*, so no tool-call metric counts them and the cap hides the whole loop. Narrow with `--range` first — one turn can run to tens of kilobytes. | `--range last:N`, `--text-max N` for a middle ground |
 | `serf-doctor transcript <sel> --health` | one session's mechanical metrics in one shot — tool calls/errors by class, longest identical-call run (+ whether it's all errors), truncation warnings, steering counts, jobs by terminal reason, stale notifications, user corrections (proxy) | `--json` |
 | `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--recompute` |
 | `serf-doctor apilog <sel> --health` | one-line API-health verdict — attempts, recorded-empty count, retry-storm groups (≥3 attempts), unsettled groups, errors by class (quota/permanent/retryable) | `--json` |
@@ -103,6 +104,7 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 | Read a watch with zero deliveries as broken delivery machinery | Read the `target job:` line on the same row — a target already terminal, or one that produced zero output bytes, could never match the condition |
 | `jq` the client-mutation store to see whether a message arrived | `serf-doctor mutations <sel>` — absence from the journal is the "it never arrived" verdict |
 | Treat a `delegate_send` text mention as a call | `serf-doctor transcript --count delegate_send` |
+| Read a turn that ends in `…` as the whole response, or conclude "no loop" from `longest_identical_run: length=0` | Both are blind to repetition *inside* one response: a salvaged partial response's repeated calls are text, not tool calls. Re-read the turn with `serf-doctor transcript --range <that turn> --full-text` before ruling a loop out |
 | Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `serf-doctor watches --self-loops` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |

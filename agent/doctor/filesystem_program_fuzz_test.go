@@ -103,7 +103,7 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	}
 
 	resultTool := "submit_answer"
-	longText := "assistant mentions read_file and delegate_send " + token + " " + strings.Repeat("x", textPreviewMax+24)
+	longText := "assistant mentions read_file and delegate_send " + token + " " + strings.Repeat("x", DefaultTextMax+24)
 	longArgs := `{"token":"` + token + `","payload":"` + strings.Repeat("a", argPreviewMax+24) + `"}`
 	rootTurns := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("read_file please " + token)}}),

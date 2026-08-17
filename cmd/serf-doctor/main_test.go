@@ -10,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
 )
 
@@ -1118,5 +1121,109 @@ func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "serf-doctor mutations:") || !strings.Contains(errb.String(), path) {
 		t.Errorf("error does not name the subcommand and the file: %s", errb.String())
+	}
+}
+
+// fixtureWithSalvagedLoop writes a session whose one assistant turn carries far
+// more text than the default cap. This is the shape a salvaged partial response
+// leaves behind (agent/salvage.go): the model's repeated tool calls survive as
+// turn *text*, so --count and --health see nothing and only the rendered text
+// can show the loop. Written through the durable record types so the fixture
+// cannot drift from the on-disk format.
+func fixtureWithSalvagedLoop(t *testing.T) (base, sid, turnText string) {
+	t.Helper()
+	base = t.TempDir()
+	sid = "02wLIRxqmq3AUo6vl2OW37"
+	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")
+	if err := os.MkdirAll(sess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	turnText = strings.Repeat(`manage_worktree({"op":"list"}) `, 60) + "END_OF_SALVAGED_TEXT"
+	w, err := transcript.NewWriter(filepath.Join(sess, sid+".transcript.jsonl"), transcript.Header{SessionID: sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: []llm.ContentPart{{Kind: llm.ContentText, Text: turnText}},
+	})
+	if err := w.Append(turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return base, sid, turnText
+}
+
+// The kata's stop condition is about the binary, not the library: an operator
+// investigating a repetition loop must be able to get the untruncated turn text
+// out of serf-doctor, and the default output must stay as it is today.
+func TestRun_TranscriptFullTextAndDefaultCap(t *testing.T) {
+	base, sid, turnText := fixtureWithSalvagedLoop(t)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "END_OF_SALVAGED_TEXT") {
+		t.Errorf("the default render must stay capped, not print the whole turn:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "…") {
+		t.Errorf("the default render should mark its elision:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--full-text"}, &out, &errb); code != 0 {
+		t.Fatalf("--full-text exit %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), turnText) {
+		t.Errorf("--full-text did not print the whole turn text (%d bytes of it):\n%s", len(turnText), out.String())
+	}
+
+	// --json carries the same text, so the cap hides the loop there too.
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--full-text", "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("--full-text --json exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		Turns []struct {
+			Text string `json:"text"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if len(res.Turns) != 1 || res.Turns[0].Text != turnText {
+		t.Errorf("--full-text --json turn text is not the whole turn: %+v", res)
+	}
+}
+
+// --text-max is the middle ground: an agent operator reading through a shell
+// tool wants the shape of the loop without pulling tens of kilobytes into its
+// context, and --full-text must win when both are given.
+func TestRun_TranscriptTextMaxCapAndPrecedence(t *testing.T) {
+	base, sid, turnText := fixtureWithSalvagedLoop(t)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--text-max", "600"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), turnText[:600]) {
+		t.Errorf("--text-max 600 did not widen the cap to 600 bytes:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "END_OF_SALVAGED_TEXT") {
+		t.Errorf("--text-max 600 should still cap a %d-byte turn:\n%s", len(turnText), out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--text-max", "600", "--full-text"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), turnText) {
+		t.Errorf("--full-text must take precedence over --text-max:\n%s", out.String())
 	}
 }
