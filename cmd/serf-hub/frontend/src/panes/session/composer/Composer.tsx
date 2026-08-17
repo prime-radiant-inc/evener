@@ -536,15 +536,16 @@ export function Composer({ ref }: ComposerProps) {
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments;
 
-  // Stop and Steer both act on an IN-FLIGHT turn - there is no turn to
-  // interrupt and nothing to steer into otherwise, so they are rendered only
+  // Stop and Steer both act on an IN-FLIGHT turn, so they are rendered only
   // while one is running (`busy`) AND the harness advertises the matching
   // capability. `busy` also subsumes the ended/closed statuses isTurnActive
-  // can never report as active. Both routes a Steer click can take need the
-  // live turn: classic turn/steer carries expectedTurnId, and
-  // turn/drainAsSteer is refused with "no active turn to steer" when nothing
-  // is processing (server/appwire_runtime.go's handleAppTurnDrainAsSteer), so
-  // a non-empty queue does not make Steer meaningful on an idle session.
+  // can never report as active.
+  //
+  // This is a presentation choice, not a precondition: neither request names a
+  // turn any more, so both would be accepted on an idle session -- a steer
+  // would simply land in the next turn. They stay hidden because an idle
+  // session gives the user nothing to stop or steer, and Send already covers
+  // "say something now".
   const showStop = busy && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
   // Send keeps ONE label in every state. While a turn runs it queues rather
