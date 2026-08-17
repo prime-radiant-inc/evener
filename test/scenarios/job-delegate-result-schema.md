@@ -144,10 +144,12 @@ structured fields are how the parent judges outcome.
   include"), but it does not describe this case and nothing in the Go
   source emits it here: a `delegate_send` aimed at a delegate that is
   still running live-steers it instead.
-  That result is addressed by `delegate_id`, not `job_id` — the stable
-  send result carries `target`, `delegate_id`, `type`, `status` and
-  `action:"steered"` and exposes no job identity at all
-  (`agent/delegate_runtime.go#delegateRuntime.send`). Expect
+  That result is addressed by `delegate_id`, not `job_id` — the wire
+  result carries `delegate_id`, `type`, `status` and `action:"steered"`
+  and exposes no job identity at all
+  (`agent/session_tools_jobs.go#marshalDelegateSendResult`, which is
+  also where `sendMessageResult.Target` is dropped: the delegate you
+  addressed is the `to` you sent, not a field that comes back). Expect
   `action:"steered"` against the same `delegate_id` you sent to, and no
   successor generation.
   The behaviour is pinned by

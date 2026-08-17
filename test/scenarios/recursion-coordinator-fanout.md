@@ -30,7 +30,7 @@ told ONLY when the COORDINATOR itself finishes ("Nested jobs"
 owner-scoped bullet; "Rollout (live vs. dark)" "**Live — nested-job
 terminal notifications are owner-scoped.**");
 (e) visibility is preserved via `job_list(include_descendants=true)`,
-which surfaces the live tree with per-row `owner_session_id` + `depth`
+which surfaces the live tree with per-row `depth`
 ("Nested jobs" "walks the live descendant tree at read time");
 (f) `job_stop` on the coordinator's delegate CASCADES into
 the subtree — the workers actually stop as `cancelled`/
@@ -198,15 +198,16 @@ default).**"); this card only runs with the raised config below.
   "`parent_job_id` never encodes delegate lineage."). Falsification: a
   worker whose lineage is recorded under `parent_job_id`.
 
-  > **Unverified, do not score yet.** An earlier revision of this card
-  > asserted here that a worker's `owner_session_id` is the
-  > coordinator's session id and NOT `$SID`. Automated review of the
-  > delegate-resource migration disputed it, arguing nested stable
-  > delegates are recorded against the controller root, which would make
-  > every worker report `$SID` and turn that falsification clause into a
-  > guaranteed failure. Neither reading has been checked against
-  > `agent/jobs_nested.go`. The assertion is withdrawn rather than
-  > guessed at; see kata `4jn0`.
+  Ownership is NOT per-hop. Every stable delegate descriptor is created
+  with the controller root's session as its owner --
+  `descriptor.OwnerSessionID = c.rootSessionID`
+  (`agent/delegate_tree_start.go#delegateTreeController.ReserveCreate`),
+  unconditionally and regardless of depth. So every worker reports
+  `owner_session_id` = `$SID`, the same as COORD. Lineage is carried by
+  `parent_delegate_id`, which is the field that distinguishes a worker
+  from the coordinator; `depth` is what the live walk contributes.
+  Falsification: a worker whose `owner_session_id` is the coordinator's
+  session rather than `$SID`.
 - **Drive-down — the coordinator receives worker completions in its
   OWN turns (coordinator transcript).** After the coordinator ended its
   turn, the workers finish while it is idle; the coordinator's
@@ -284,8 +285,9 @@ default).**"); this card only runs with the raised config below.
   `delegates.jsonl` journal.") — carries `delegate_created` and
   `delegate_run_finished` events, keyed by `delegate_id`, for
   COORD/COORD2 and for each worker, with each worker's descriptor
-  carrying `owner_session_id` = the coordinator's session and
-  `parent_delegate_id` = the coordinator's `delegate_id`
+  carrying `owner_session_id` = `$SID` (the controller root owns every
+  descriptor at any depth) and `parent_delegate_id` = the coordinator's
+  `delegate_id`, which is the field that carries lineage
   (`agent/internal/delegatestore/event.go#EventDelegateRunFinished`;
   `agent/internal/delegatestore/record.go#Descriptor.ParentDelegateID`).
   The presence of these durable records is the visibility substrate;
