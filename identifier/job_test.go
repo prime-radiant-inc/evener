@@ -2,6 +2,7 @@ package identifier
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -40,6 +41,79 @@ func TestJobIDRejectsMalformedShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// exhaustedReader stands in for an entropy source that has stopped answering.
+type exhaustedReader struct{}
+
+func (exhaustedReader) Read([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
+
+func TestNewJobIDFailsRatherThanMintFromExhaustedEntropy(t *testing.T) {
+	// The suffix is what keeps two jobs from the same session distinct. If a
+	// failing entropy source were ignored, the loop would emit whatever the
+	// zero-filled buffer encodes to — a well-formed ID that is not unique, and
+	// that collides silently with every other ID minted the same way.
+	id, err := newJobID("02wMz5TxvEMoJEDTDGOTil", exhaustedReader{})
+	if err == nil {
+		t.Fatalf("newJobID with a failing reader = %q, want an error", id)
+	}
+	if id != "" {
+		t.Fatalf("newJobID returned %q alongside error %v, want empty", id, err)
+	}
+}
+
+func TestJobOwnerSessionIDRejectsAnInvalidJobID(t *testing.T) {
+	// The owner is sliced out of the ID by fixed offsets, so validation is the
+	// only thing standing between a malformed ID and a silently wrong owner.
+	for _, jobID := range []string{
+		"",
+		"not-a-job-id",
+		"job_02wMz5TxvEMoJEDTDGOTil-000000000001", // '-' where the separator must be '_'
+		"xxx_02wMz5TxvEMoJEDTDGOTil_000000000001", // wrong domain prefix
+	} {
+		owner, err := JobOwnerSessionID(jobID)
+		if err == nil {
+			t.Errorf("JobOwnerSessionID(%q) = %q, want an error", jobID, owner)
+		}
+		if owner != "" {
+			t.Errorf("JobOwnerSessionID(%q) returned owner %q alongside error %v, want empty", jobID, owner, err)
+		}
+	}
+}
+
+func TestAbbreviateJobIDReturnsTheIDWhenNoPrefixSurvives(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	jobID := "job_" + owner + "_000000000001"
+	// The suffix alone is jobIDSuffixSize bytes plus an ellipsis, so any budget
+	// that cannot seat at least one prefix byte has nothing to abbreviate toward.
+	// Truncating anyway would emit a string that is neither the ID nor a usable
+	// abbreviation of it.
+	for _, maxLength := range []int{0, 1, jobIDSuffixSize, jobIDSuffixSize + 1} {
+		if got := AbbreviateJobID(jobID, maxLength); got != jobID {
+			t.Errorf("AbbreviateJobID(%q, %d) = %q, want the ID unchanged", jobID, maxLength, got)
+		}
+	}
+}
+
+func TestMustNewJobIDPanicsRatherThanReturnARejectedID(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	id := MustNewJobID(owner)
+	if err := ValidateJobID(id); err != nil {
+		t.Fatalf("MustNewJobID(%q) = %q, which ValidateJobID rejects: %v", owner, id, err)
+	}
+	if got, err := JobOwnerSessionID(id); err != nil || got != owner {
+		t.Fatalf("owner of %q = %q (err=%v), want %q", id, got, err, owner)
+	}
+
+	// Panicking is the only behaviour that distinguishes this from NewJobID, so
+	// it is the half worth proving: a caller who cannot supply a valid owner must
+	// fail loudly here rather than receive an ID every validator would reject.
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustNewJobID returned normally for an owner NewJobID rejects")
+		}
+	}()
+	MustNewJobID("not-a-session-id")
 }
 
 func TestAbbreviateJobIDPreservesCompleteRandomSuffix(t *testing.T) {

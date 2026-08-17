@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestParseLoad1RejectsNonFiniteProbeOutput(t *testing.T) {
+	// A load average is a finite number. strconv.ParseFloat happily accepts
+	// "NaN" and "Inf", and the ok bool exists precisely to say "this probe
+	// output was not a load average" — reporting ok for a non-finite value
+	// defeats it. Nor can it be caught downstream: every comparison against NaN
+	// is false, so loadWarning's `load1 <= 2*cores` guard falls through and
+	// injects a nonsense pressure line into the model's context.
+	for _, probe := range []string{"NaN", "nan", "+Inf", "-Inf", "inf"} {
+		if v, ok := parseLoad1(probe); ok {
+			t.Errorf("parseLoad1(%q) = (%v, true), want ok=false", probe, v)
+			if w := loadWarning(v, 8); w != "" {
+				t.Errorf("  and it renders as %q", w)
+			}
+		}
+	}
+
+	// Ordinary probe output must keep working, in both supported shapes.
+	for probe, want := range map[string]float64{
+		"{ 2.16 3.57 4.34 }": 2.16,
+		"2.16 3.57 4.34":     2.16,
+		"0.00 0.00 0.00":     0,
+	} {
+		if v, ok := parseLoad1(probe); !ok || v != want {
+			t.Errorf("parseLoad1(%q) = (%v, %v), want (%v, true)", probe, v, ok, want)
+		}
+	}
+}
+
 func fullSnap() Snapshot {
 	return Snapshot{
 		Cwd:           "/Users/jesse/work",

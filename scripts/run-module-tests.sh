@@ -110,10 +110,10 @@ if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 
-# Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
-# targets are already excluded by -run; these names cover rapid/sequence fuzz
-# tests and structured-generator reachability proofs that remain under make fuzz.
-fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
+# The gate's test-selection surface lives in one shared file so the coverage
+# ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
+. "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
+fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 flags="$*"
 module_test_flags() {
@@ -293,7 +293,7 @@ run_module() {
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
 		# functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -315,11 +315,11 @@ run_module() {
 			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
 		done < <(go list ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
+	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each

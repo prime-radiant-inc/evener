@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -227,7 +227,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -401,6 +401,44 @@ fuzz-coverage-global-selftest:
 # (fuzz-reachable). CHECK=1 fails on a drop; BLESS=1 raises floors. Heavy + local.
 test-coverage-floor:
 	@scripts/test-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(COV_ARGS)
+
+# test-coverage-floor-selftest exercises the rollup and ratchet against a
+# throwaway repo and a fake `go` — no compilation, no real suite.
+test-coverage-floor-selftest:
+	@scripts/test-coverage-floor-selftest.sh
+
+# coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
+# count rather than percentage, so coverage work targets the largest real gaps.
+# Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
+coverage-gaps:
+	@scripts/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
+
+coverage-gaps-selftest:
+	@scripts/coverage-gaps-selftest.sh
+
+# coverage-union reports how much of each module ANY deterministic test reaches:
+# the union of the test track (test-coverage-floor) and the fuzz track
+# (fuzz-coverage-global). Both understate on their own — the -run '^(Test|Example)'
+# filter excludes fuzz targets, and this repo keeps whole families of behavioural
+# checks in `check*` functions only a serffuzz "program" target calls. CHECK=1
+# gates, BLESS=1 raises. Heaviest of the three: two full runs per module.
+coverage-union:
+	@scripts/coverage-union.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(UNION_ARGS)
+
+coverage-union-selftest:
+	@scripts/coverage-union-selftest.sh
+
+# web-coverage-floor is the frontend counterpart: per-area vitest LINE coverage
+# ratcheted against scripts/webcov-floors.txt. CHECK=1 fails on a drop; BLESS=1
+# raises floors; REUSE=1 parses the existing report instead of re-running the
+# suite. Heavy + local, same as its Go siblings.
+web-coverage-floor: web-preflight
+	@scripts/web-coverage-floor.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(if $(REUSE),--reuse) $(WEBCOV_ARGS)
+
+# web-coverage-floor-selftest exercises the rollup and ratchet against a
+# throwaway frontend and a synthetic coverage summary — no vitest run.
+web-coverage-floor-selftest:
+	@scripts/web-coverage-floor-selftest.sh
 
 # mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
 # whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.

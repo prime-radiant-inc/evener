@@ -107,6 +107,11 @@ func TestStorePermissionsAndClose(t *testing.T) {
 
 func TestStoreFileModeUnderRestrictiveUmask(t *testing.T) {
 	if os.Getenv("ARTIFACTSTORE_UMASK_HELPER") == "1" {
+		// A coverage-instrumented binary writes its profile during exit, after
+		// this function returns, and those writes inherit the helper's 0777
+		// umask. Deferred so the t.Fatal paths relax it too; otherwise a real
+		// assertion failure is reported as a coverage-report error instead.
+		defer relaxUmask()
 		s, err := New(os.Getenv("ARTIFACTSTORE_UMASK_BASE"))
 		if err != nil {
 			t.Fatal(err)

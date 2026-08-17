@@ -1,0 +1,35 @@
+# Union (test track + fuzz track) whole-module statement-coverage floors.
+# Managed by scripts/coverage-union.sh --bless. Raised upward only;
+# a downward reset (basis change, not a regression) is a hand edit.
+#
+# This is how much of each module ANY deterministic test reaches, and it is the
+# number worth driving toward 100%. Neither older ratchet answers it:
+# scripts/testcov-global-floors.txt measures what ROOT_FULL=1 make test proves,
+# whose -run '^(Test|Example)' filter excludes every fuzz target, and
+# scripts/fuzzcov-global-floors.txt measures only what the fuzz corpus replays.
+#
+# The gap between the two tracks is structural rather than incidental. This repo
+# keeps whole families of behavioural checks in `check*` functions that only a
+# serffuzz-tagged "program" fuzz target calls, so packages using that pattern
+# read far lower on the test track than they are — cmd/serf-hub/internal/appsource
+# is 66.4% there and 83.1% under its own program target. Read the rows below
+# rather than either track alone, and before writing a test to raise a low
+# number, check that it does not already exist under the other build tag.
+#
+# The rows are a ratchet, not a target to force. 100% is not reachable
+# everywhere: identifier alone carries two defensive branches no input can
+# enter — ValidateProjectID's base62 suffix loop, unreachable because the
+# preceding character loop already restricts the value to alphanumerics and
+# hyphen while the suffix sits after the last hyphen, and projectID's empty-name
+# fallback, unreachable because readableProjectPath already returns "project"
+# itself — and others sit behind dependencies with no injection seam
+# (uuid.NewV7 failing). Those are left in place as defence rather than contorted
+# around for a percentage.
+. 95.7
+agent 92.5
+auth 100.0
+envvars 100.0
+fuzz 100.0
+identifier 95.6
+invariant 100.0
+llm 97.3

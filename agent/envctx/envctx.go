@@ -7,6 +7,7 @@ package envctx
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -102,7 +103,14 @@ func parseLoad1(s string) (float64, bool) {
 		return 0, false
 	}
 	v, err := strconv.ParseFloat(fields[0], 64)
-	return v, err == nil
+	// ParseFloat accepts "NaN" and "Inf", which are not load averages. Reporting
+	// ok for them cannot be recovered downstream: every comparison against NaN
+	// is false, so loadWarning's `load1 <= 2*cores` guard falls through and
+	// renders "load pressure: NaN (N cores)" into the model's context.
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
 }
 
 func loadWarning(load1 float64, cores int) string {

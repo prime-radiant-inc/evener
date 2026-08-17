@@ -305,4 +305,115 @@ func TestValidateProjectID(t *testing.T) {
 	}
 }
 
+func TestProjectIDReturnsResolvedIDAndPropagatesResolutionFailure(t *testing.T) {
+	dir := t.TempDir()
+	resolved, err := ResolveProject(dir)
+	if err != nil {
+		t.Fatalf("ResolveProject(%q): %v", dir, err)
+	}
+	got, err := ProjectID(dir)
+	if err != nil {
+		t.Fatalf("ProjectID(%q): %v", dir, err)
+	}
+	// ProjectID exists to hand back only the ID half of ResolveProject, so the
+	// contract worth pinning is that it agrees with the resolver rather than
+	// deriving an identifier of its own.
+	if got != resolved.ID {
+		t.Fatalf("ProjectID = %q, ResolveProject.ID = %q", got, resolved.ID)
+	}
+	if err := ValidateProjectID(got); err != nil {
+		t.Fatalf("ProjectID returned %q, which ValidateProjectID rejects: %v", got, err)
+	}
+
+	// A resolution failure must surface, not be flattened into an empty ID that
+	// a caller could mistake for a real project.
+	missing := filepath.Join(dir, "no-such-directory")
+	id, err := ProjectID(missing)
+	if err == nil {
+		t.Fatalf("ProjectID(%q) = %q, want an error for a path that does not exist", missing, id)
+	}
+	if id != "" {
+		t.Fatalf("ProjectID returned %q alongside error %v, want empty", id, err)
+	}
+}
+
+func TestResolveProjectRejectsAPathThatIsAFileNotADirectory(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file resolves and stats perfectly well, so without the directory
+	// check it would sail through and yield a project ID for something that can
+	// never hold one.
+	project, err := ResolveProject(file)
+	if err == nil {
+		t.Fatalf("ResolveProject(%q) = %+v, want an error for a regular file", file, project)
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("ResolveProject(%q) error = %v, want it to say the path is not a directory", file, err)
+	}
+}
+
+// secondEvalFailsResolver succeeds the first EvalSymlinks and fails the second.
+// ResolveProjectWith calls it twice — once on the requested path, once more on
+// the Git main checkout it selected — and only the second call can fail after a
+// Git root has been chosen.
+type secondEvalFailsResolver struct{ calls int }
+
+func (r *secondEvalFailsResolver) Abs(path string) (string, error) { return path, nil }
+func (r *secondEvalFailsResolver) EvalSymlinks(path string) (string, error) {
+	r.calls++
+	if r.calls >= 2 {
+		return "", errors.New("identity symlink resolution failed")
+	}
+	return path, nil
+}
+func (r *secondEvalFailsResolver) MainCheckout(path string) (string, bool, error) {
+	return "/main-checkout", true, nil
+}
+
+func TestResolveProjectReportsAFailureResolvingTheGitCheckoutIdentity(t *testing.T) {
+	// The second resolution is the one that decides project IDENTITY: it
+	// canonicalizes the Git root just chosen. Swallowing its failure would hand
+	// back an ID derived from an unresolved path, which is a different project.
+	resolver := &secondEvalFailsResolver{}
+	project, err := ResolveProjectWith("/repo", resolver)
+	if err == nil {
+		t.Fatalf("ResolveProjectWith = %+v, want an error when identity resolution fails", project)
+	}
+	if !strings.Contains(err.Error(), "identity symlinks") {
+		t.Fatalf("error = %v, want it to name the identity resolution step", err)
+	}
+	if project != (Project{}) {
+		t.Fatalf("failed resolution returned %+v, want the zero Project", project)
+	}
+}
+
+func TestValidateProjectIDRejectsANonBase62Suffix(t *testing.T) {
+	// The suffix is the hash half of the identity. A character outside base62
+	// cannot have been produced by projectID, so accepting it would admit an ID
+	// no encoder emits.
+	for _, value := range []string{
+		"project-012345678_", "project-012345678-", "project-01234567 8", "project-01234567+8",
+	} {
+		if err := ValidateProjectID(value); err == nil {
+			t.Errorf("ValidateProjectID(%q) accepted a non-base62 suffix", value)
+		}
+	}
+}
+
+func TestProjectIDFallsBackWhenThePathHasNoReadableName(t *testing.T) {
+	// A path whose final segment is all separators or dashes leaves nothing
+	// readable to prefix with, and an ID that began with "-" would not validate.
+	for _, path := range []string{"/", "/---", "/-"} {
+		id := projectID(path)
+		if err := ValidateProjectID(id); err != nil {
+			t.Errorf("projectID(%q) = %q, which ValidateProjectID rejects: %v", path, id, err)
+		}
+		if !strings.HasPrefix(id, "project-") {
+			t.Errorf("projectID(%q) = %q, want the \"project\" fallback name", path, id)
+		}
+	}
+}
+
 var _ Resolver = (*pipelineResolver)(nil)

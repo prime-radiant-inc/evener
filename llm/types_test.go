@@ -273,6 +273,49 @@ func TestToolResultData_DurationMS_OmittedWhenZero(t *testing.T) {
 	}
 }
 
+func TestOrderedEffortLevelsSortsByRankNotByMapOrder(t *testing.T) {
+	// Go randomizes map iteration, so the only way the result can be stable is
+	// if it is genuinely sorted by ReasoningEffortRank. That stability is the
+	// point: ReasoningEffortLevels, the task_list enum, the spawn-form chip and
+	// ClampReasoningEffort all read this one definition so they cannot drift.
+	levels := map[string]string{
+		"max": "max", "low": "low", "xhigh": "xhigh",
+		"minimal": "minimal", "high": "high", "medium": "medium",
+	}
+	want := "minimal,low,medium,high,xhigh,max"
+	for range 20 {
+		if got := strings.Join(OrderedEffortLevels(levels), ","); got != want {
+			t.Fatalf("OrderedEffortLevels = %q, want %q", got, want)
+		}
+	}
+
+	if got := OrderedEffortLevels(nil); len(got) != 0 {
+		t.Fatalf("OrderedEffortLevels(nil) = %v, want empty", got)
+	}
+
+	// An unranked level ranks 0, so it sorts ahead of every known level rather
+	// than being dropped — the caller still sees it and can decide.
+	got := strings.Join(OrderedEffortLevels(map[string]string{"high": "high", "bogus": "bogus"}), ",")
+	if got != "bogus,high" {
+		t.Fatalf("OrderedEffortLevels with an unranked level = %q, want %q", got, "bogus,high")
+	}
+}
+
+func TestIsOpenAICompatReasoningFieldMatchesTheWireFieldNames(t *testing.T) {
+	// Anthropic-style providers use this to tell a wire field name apart from a
+	// cryptographic signature, and replaying the wrong one is an API rejection.
+	for _, sig := range OpenAICompatReasoningFields() {
+		if !IsOpenAICompatReasoningField(sig) {
+			t.Errorf("IsOpenAICompatReasoningField(%q) = false, want true for a published field name", sig)
+		}
+	}
+	for _, sig := range []string{"", "Reasoning", "reasoning_", "signature", "erp_1a2b3c"} {
+		if IsOpenAICompatReasoningField(sig) {
+			t.Errorf("IsOpenAICompatReasoningField(%q) = true, want false", sig)
+		}
+	}
+}
+
 func TestRequest_Validate_WithWebSearch(t *testing.T) {
 	req := Request{
 		Model:     "test-model",

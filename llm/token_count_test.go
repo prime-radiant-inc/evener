@@ -9,6 +9,35 @@ import (
 	"testing"
 )
 
+func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
+	got := EstimateMessagesInputTokens([]Message{User("hello there, this is some text")})
+	if got.Tokens <= 0 {
+		t.Fatalf("Tokens = %d, want a positive estimate", got.Tokens)
+	}
+	// History-only accounting has no provider behind it, so mislabelling the
+	// estimate as exact would let a caller trust a number no tokenizer produced.
+	if got.Exact {
+		t.Error("Exact = true, want false for a local estimate")
+	}
+	if got.Source != TokenCountSourceLocalEstimate {
+		t.Errorf("Source = %q, want %q", got.Source, TokenCountSourceLocalEstimate)
+	}
+
+	// More history must never estimate fewer tokens, or callers trimming to fit
+	// a window would trim in the wrong direction.
+	more := EstimateMessagesInputTokens([]Message{
+		User("hello there, this is some text"),
+		Assistant("and here is a considerably longer reply that adds more content"),
+	})
+	if more.Tokens <= got.Tokens {
+		t.Errorf("estimate for more history = %d, want more than %d", more.Tokens, got.Tokens)
+	}
+
+	if empty := EstimateMessagesInputTokens(nil); empty.Exact || empty.Source != TokenCountSourceLocalEstimate {
+		t.Errorf("empty history = %+v, want an inexact local estimate", empty)
+	}
+}
+
 type countAdapter struct {
 	name string
 	got  Request

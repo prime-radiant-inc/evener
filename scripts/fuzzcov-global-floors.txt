@@ -30,6 +30,44 @@
 # were already covered by the per-core fuzzers so only the orchestration GLUE is
 # net-new, and (2) the module denominator is diluted by subpackages. go-fuzz
 # mutates whole sequences from the seed corpus for deeper bug-finding reach.
-. 17.4
-agent 54.2
-llm 77.9
+#
+# 2026-08-17 FIRST FULL MEASUREMENT SINCE THE GATE STOPPED RUNNING. The preflight
+# had been aborting before any replay — it demanded a local fuzz surface for
+# nine packages that had none (test helpers, the appwirets generator, and
+# llm/providers, which holds no production file at all), so no number below this
+# line could be refreshed and only three modules ever had floors.
+#
+# These rows are hand-written from that measurement rather than blessed, because
+# -bless is gated behind the raw >95% threshold that . / agent / llm / identifier
+# do not yet clear. That gate is untouched and still fails CHECK=1; recording the
+# measured values here only ADDS regression protection. Leaving the July numbers
+# in place would have meant the ratchet protected nothing: the root module's real
+# fuzz-reachable coverage is 84.1%, so a collapse to 20% would have passed a 17.4
+# floor without comment.
+#
+# identifier at 21.8% is the honest outlier and the obvious next piece of work,
+# not a measurement artifact: the module registers only two fuzz targets
+# (project, uuid) against 363 statements.
+#
+# 2026-08-17 ROUNDING CORRECTION, same day. Three of the rows written above were
+# transcribed from the report's one-decimal display, which rounds to NEAREST, so
+# they were recorded ABOVE the measurement they claimed to record and no replay
+# could ever meet them:
+#   .          84.0841% recorded as 84.1
+#   llm        82.3820% recorded as 82.4
+#   identifier 61.9835% recorded as 62.0
+# CHECK=1 called all three a regression on the first run after they were written.
+# This is the exact failure the ratio form exists to prevent, so every row is now
+# an exact covered/total from that same measurement. No coverage was lost and
+# nothing was conceded: the numerators are unchanged and no floor moved away from
+# what the replay actually reaches. Merging 66 commits of main immediately after
+# is not the cause -- main added no production statements to any module measured
+# here, and removed two from internal/appprojector.
+. 27440/32634
+agent 28751/39483
+llm 7159/8690
+auth 631/631
+envvars 48/50
+fuzz 653/653
+identifier 225/363
+invariant 2/2

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -80,18 +81,18 @@ func validPDFFixture(t *testing.T) []byte {
 // parser follows, and they are what a hand-written fixture gets wrong.
 func resolvePDFCrossReferences(data []byte) (map[int]int, error) {
 	if !bytes.HasPrefix(data, []byte("%PDF-")) {
-		return nil, fmt.Errorf("no %%PDF- header")
+		return nil, errors.New("no %PDF- header")
 	}
 	if !bytes.HasSuffix(bytes.TrimRight(data, "\r\n"), []byte("%%EOF")) {
-		return nil, fmt.Errorf("no %%%%EOF trailer")
+		return nil, errors.New("no %%EOF trailer")
 	}
 	marker := bytes.LastIndex(data, []byte("startxref"))
 	if marker < 0 {
-		return nil, fmt.Errorf("no startxref")
+		return nil, errors.New("no startxref")
 	}
 	fields := strings.Fields(string(data[marker+len("startxref"):]))
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("startxref has no operand")
+		return nil, errors.New("startxref has no operand")
 	}
 	xrefOffset, err := strconv.Atoi(fields[0])
 	if err != nil {
@@ -104,14 +105,13 @@ func resolvePDFCrossReferences(data []byte) (map[int]int, error) {
 	if !bytes.HasPrefix(table, []byte("xref\n")) {
 		return nil, fmt.Errorf("startxref %d does not point at a cross-reference table: %q", xrefOffset, head(table))
 	}
-	rest := table[len("xref\n"):]
-	newline := bytes.IndexByte(rest, '\n')
-	if newline < 0 {
-		return nil, fmt.Errorf("cross-reference subsection header is unterminated")
+	subsection, entries, ok := bytes.Cut(table[len("xref\n"):], []byte("\n"))
+	if !ok {
+		return nil, errors.New("cross-reference subsection header is unterminated")
 	}
-	header := strings.Fields(string(rest[:newline]))
+	header := strings.Fields(string(subsection))
 	if len(header) != 2 {
-		return nil, fmt.Errorf("cross-reference subsection header = %q, want \"first count\"", rest[:newline])
+		return nil, fmt.Errorf("cross-reference subsection header = %q, want \"first count\"", subsection)
 	}
 	first, err := strconv.Atoi(header[0])
 	if err != nil {
@@ -121,7 +121,6 @@ func resolvePDFCrossReferences(data []byte) (map[int]int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("subsection count %q: %w", header[1], err)
 	}
-	entries := rest[newline+1:]
 	if len(entries) < count*20 {
 		return nil, fmt.Errorf("cross-reference table holds %d bytes, need %d for %d entries", len(entries), count*20, count)
 	}
@@ -154,7 +153,7 @@ func resolvePDFCrossReferences(data []byte) (map[int]int, error) {
 	}
 	trailer := bytes.LastIndex(data, []byte("trailer"))
 	if trailer < 0 {
-		return nil, fmt.Errorf("no trailer")
+		return nil, errors.New("no trailer")
 	}
 	size, err := pdfTrailerSize(data[trailer:])
 	if err != nil {
@@ -185,11 +184,11 @@ func pdfTrailerRoot(trailer []byte) (int, error) {
 // trailer dictionary. /Size is followed by its count; /Root by the object
 // number of an indirect reference ("1 0 R").
 func pdfTrailerInt(trailer []byte, key string, field int) (int, error) {
-	at := bytes.Index(trailer, []byte(key))
-	if at < 0 {
+	_, operands, ok := bytes.Cut(trailer, []byte(key))
+	if !ok {
 		return 0, fmt.Errorf("trailer has no %s", key)
 	}
-	fields := strings.Fields(string(trailer[at+len(key):]))
+	fields := strings.Fields(string(operands))
 	if len(fields) < field {
 		return 0, fmt.Errorf("trailer %s has no operand", key)
 	}
@@ -227,7 +226,7 @@ func TestValidPDFFixtureCrossReferencesResolve(t *testing.T) {
 		t.Fatal("fixture layout changed: no cross-reference subsection to corrupt")
 	}
 	entry := xref + len("xref\n0 4\n") + 20 // object 1's entry, right after the free-list head
-	copy(broken[entry:entry+10], []byte("0000000042"))
+	copy(broken[entry:entry+10], "0000000042")
 	if _, err := resolvePDFCrossReferences(broken); err == nil {
 		t.Fatal("resolvePDFCrossReferences accepted a PDF whose object 1 offset points at nothing; it is checking for markers, not resolving references")
 	}

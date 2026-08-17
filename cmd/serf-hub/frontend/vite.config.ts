@@ -82,5 +82,38 @@ export default defineConfig({
     // ceiling is the wrong lever to leave at its default; it stays a tripwire
     // for a genuine hang, just one sized for the transform it has to cover.
     hookTimeout: 60_000,
+    coverage: {
+      provider: "v8",
+      // Vitest reports only the files a test actually loaded, so a subsystem
+      // with no test at all scores as ABSENT rather than as zero - the same
+      // false green the Go side guards with its gap map. Naming the whole
+      // source tree here puts every file in the denominator, so an untested
+      // pane shows up as the 0% it is. (Vitest 4 removed `coverage.all`; an
+      // explicit `include` is now the only lever for this.)
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.{ts,tsx}",
+        "src/**/*.d.ts",
+        // Fixture and harness modules exist to feed tests, and scoring them
+        // measures the test rig rather than the app. src/protocol/testing holds
+        // the fake client, fake socket and stream harnesses the suites drive.
+        "src/protocol/fixtures/**",
+        "src/protocol/testing/**",
+        // A benchmark is not run by `vitest run`, so counting it only ever
+        // reports 0% for code no test was ever meant to execute.
+        "src/**/*.bench.ts",
+        // The dev harness, gallery, and their standalone entry points back
+        // the layout/overflow/spawn guard pages, not shipped runtime - the
+        // same carve-out scripts/fuzzcov-ignore.txt grants dev-only tooling.
+        "src/dev/**",
+      ],
+      reportsDirectory: "coverage",
+      // json-summary is what scripts/web-coverage-floor.sh ratchets against;
+      // text-summary keeps the terminal readable; html is for reading a miss.
+      reporter: ["text-summary", "json-summary", "html"],
+      // Report even on failure so a red suite still yields a coverage number
+      // to compare, instead of losing the whole measurement to one bad test.
+      reportOnFailure: true,
+    },
   },
 });

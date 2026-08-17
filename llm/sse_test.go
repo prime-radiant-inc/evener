@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+func TestSSEReadTimeoutErrorMatchesSentinelWithoutLosingItsDuration(t *testing.T) {
+	err := error(&sseReadTimeoutError{timeout: 90 * time.Second})
+
+	// Callers classify this with errors.Is against the sentinel, so Is is what
+	// makes the concrete type reachable at all; without it the wrapper reads as
+	// an unrelated error and the SSE stall is misclassified as a transport fault.
+	if !errors.Is(err, ErrSSEReadTimeout) {
+		t.Fatalf("errors.Is(%v, ErrSSEReadTimeout) = false, want true", err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatal("the SSE read timeout must not match an unrelated sentinel")
+	}
+	// The duration is the diagnostic half: a bare sentinel cannot say how long
+	// the stream was silent.
+	if got := err.Error(); !strings.Contains(got, "1m30s") {
+		t.Fatalf("Error() = %q, want it to name the 1m30s timeout", got)
+	}
+}
+
 func TestParseSSE_BasicEvent(t *testing.T) {
 	input := "data: hello\n\n"
 	var events []SSEEvent

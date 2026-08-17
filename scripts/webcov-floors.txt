@@ -1,0 +1,11 @@
+# Frontend (vitest) per-area LINE coverage floors.
+# Managed by scripts/web-coverage-floor.sh --bless. Raised upward only;
+# a downward reset (denominator change, not a regression) is a hand edit.
+(root) 78.9
+notifications 96.8
+panes 96.0
+protocol 98.2
+shell 93.3
+stores 97.6
+widgets 96.6
+total 96.0

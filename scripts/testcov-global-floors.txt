@@ -1,10 +1,42 @@
 # Full-suite (unit+integration) whole-module statement-coverage floors.
 # Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;
 # a downward reset (denominator change, not a regression) is a hand edit.
-# NOTE: a partial --bless (--modules X) rewrites this file to just X; always
-# restore the other module lines afterward (this footgun mirrors the fuzz floor).
-. 49.5
-agent 94.2
-llm 91.4
-auth 95.7
+# A partial --bless (--modules X) now PRESERVES every other module's floor, and
+# --bless carries this comment header through, so a reset's reason survives.
+#
+# 2026-08-17 MEASUREMENT-BASIS RESET. Three separate corrections landed together,
+# so these numbers are not comparable to the ones above them in git history:
+#
+#  1. SURFACE. The script ran a bare `go test -coverpkg=./... ./...` — no -short,
+#     no -run filter, none of the fuzz-owned exclusions. `go test` with no -run
+#     also executes every native Fuzz target's committed seed corpus, and with no
+#     -skip it runs the rapid/seqfuzz family; docs/testing.md assigns both to
+#     make fuzz, explicitly NOT to the default gate's coverage number. It now
+#     measures what `ROOT_FULL=1 make test` proves, reusing that gate's own
+#     selection from scripts/gate-surface-lib.sh. Dropping the fuzz seed corpora
+#     LOWERS llm (91.4 -> 89.9) and auth (95.7 -> 94.8) against the old readings.
+#
+#  2. SCOPE. -coverpkg takes FILESYSTEM patterns, so under go.work `./...`
+#     matched every package in the tree below the module — for the root module
+#     that is agent/, llm/, auth/ and every other nested module too. The root row
+#     was a whole-repo figure diluted by code the root module's own tests never
+#     run: 50.9% of 82603 statements. Scoped to the packages the module actually
+#     owns it is 79.6% of 33141.
+#
+#  3. The floors above were blessed on a host where the script could not run at
+#     all: it used bash 4's `declare -A`, and macOS ships bash 3.2, where module
+#     "." additionally made the array subscript an arithmetic expression.
+#
+# agent's denominator (39481) is larger than the 19661 recorded in
+# fuzzcov-global-floors.txt in July; that is module growth, not double counting.
+# Verified on llm, whose total is 8690 measured either per-package or with
+# -coverpkg, so the dedup-by-position accounting is sound.
+#
+# invariant is deliberately absent: Hold compiles to an empty function in a
+# production build, so the module has zero statements and no floor is definable.
+. 80.0
+agent 87.9
+auth 94.9
 envvars 100.0
+identifier 95.0
+llm 90.0
