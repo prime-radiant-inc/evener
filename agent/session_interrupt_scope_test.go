@@ -127,17 +127,18 @@ func TestInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 // pre-turn window, which every turn passes through and in which Stop was
 // refused.
 //
-// A turn/start is accepted and claimed -- the durable snapshot names the turn,
-// and the daemon publishes status=active off that reservation, so the composer
-// draws a working session and offers Stop. The session itself has not entered
-// SessionProcessing yet: it is still doing pre-turn work (slash-command
-// expansion, which runs an inline shell span, is the widest instance). So
-// WireState() reports a settled session, and a Stop pressed against a session
-// the user can see working was rejected with "session is not processing".
+// A turn/start is accepted and claimed -- the durable snapshot names the turn --
+// and the daemon reports the thread active, so the composer draws a working
+// session and offers Stop. The session itself has not entered SessionProcessing
+// yet: it is still doing pre-turn work (slash-command expansion, which runs an
+// inline shell span, is the widest instance). So WireState() reports a settled
+// session, and a Stop pressed against a session the user can see working was
+// rejected with "session is not processing".
 //
 // The precondition's own comment claimed it sampled "the fact the wire
-// publishes as the thread's status". It did not: the wire's active comes from
-// the daemon's reservation, this sampled the session's own state, and the two
+// publishes as the thread's status". It did not: the daemon reports active off
+// its own `processing` flag, which it holds across the whole of an input rather
+// than only the model round, while this sampled the SESSION's state. The two
 // disagree for the whole of pre-turn work.
 //
 // The rule this encodes: Stop is available whenever the session is not

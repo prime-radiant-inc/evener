@@ -244,15 +244,15 @@ test("a live idle session's controls follow the turn its own send starts", async
 // turn/interrupt carries no turn id (appwire v3 dropped expectedTurnId from
 // every control mutation) and the daemon decides on the session's own
 // quiescence. But the composer gated Stop on `busy`, which is isTurnActive:
-// `statusType === "active" && !!activeTurnId`. The status and the id arrive on
-// separate frames, and the daemon publishes active from a turn RESERVATION
-// well before turn/started names it -- so between the two the user is looking
-// at a working session with no way to stop it.
+// `statusType === "active" && !!activeTurnId` -- gating the BUTTON on an id the
+// REQUEST does not carry, which can only ever withhold a Stop the daemon would
+// have accepted.
 //
-// The window is not a sliver. The reservation is taken at turn/start and the
-// name lands after pre-turn work, which is where a slash command runs its
-// inline shell span; and the same gap opens at every boundary between two
-// turns of one drain (kata vewa's live measurement holds it open for seconds).
+// Active-with-no-id is a state the wire really reaches: a session holding queued
+// work reports active with no turn running. (An earlier version of this comment
+// blamed a turn reservation taken at turn/start. That reservation has no
+// production callers; it is not how this state is reached, and the gate is wrong
+// for the reason above regardless.)
 //
 // Steer stays behind `busy`: it needs a turn to redirect, and Send already
 // covers "say something now" for a session between turns.

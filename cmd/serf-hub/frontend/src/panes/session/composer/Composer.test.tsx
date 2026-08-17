@@ -1408,10 +1408,9 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
 // behind isTurnActive. Stop does not: threadsStore.interrupt sends turn/interrupt
 // with the ref alone ("Stop is session-scoped, always"), and the daemon decides
 // on the session's own quiescence. Gating the BUTTON on an id the REQUEST does
-// not carry took Stop away from a session the user can see working -- and this
-// window is not a sliver, since the daemon publishes active from the turn
-// reservation it takes at turn/start and the name only lands with turn/started
-// behind pre-turn work (kata vewa/5gdv).
+// not carry took Stop away from a session the user can see working, and
+// active-with-no-id is a state the wire really reaches: a session holding queued
+// work reports active with no turn running (kata vewa/5gdv).
 test("stop renders during the window after status flips active but before activeTurnId arrives, and steer does not", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {

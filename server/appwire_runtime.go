@@ -1448,16 +1448,28 @@ func (s *Server) releaseAppTurnID(turnID string) {
 //
 // They used to be separate expressions over overlapping state -- this one read
 // `processing` and `state`, appCapabilities read `processing` and the turn
-// reservation -- and each had a window the other did not see. A reserved turn
-// with the session still idle published status=idle beside steer=true; a
-// session state of "active" with the daemon's flag already cleared published
-// status=active beside interrupt=false and steer=false, which is a busy
-// composer with nothing on it (katas vewa, 5gdv, and 06t8 before them).
+// reservation -- and each had a window the other did not see. The reachable
+// half of that: a session state of "active" with the daemon's processing flag
+// already cleared published status=active beside interrupt=false and
+// steer=false, which is a busy composer with nothing on it (katas vewa, 5gdv,
+// and 06t8 before them).
 //
-// turnReserved is the third input that used to be missing here. A turn claimed
-// by turn/start and not yet processing is work in progress: it is why the
-// composer shows a working session through pre-turn work, and it must count as
-// working for the actions offered there too.
+// turnReserved folds appCapabilities' third input in so the two expressions
+// become one. It is NOT what opens the window this fix is about, and an earlier
+// version of this comment said it was. Measured in the pre-turn window on a
+// live stack: 12 of 12 samples reported state="active" processing=true
+// turnReserved=false. The window comes from the daemon holding `processing`
+// across the whole of an input -- pre-turn work included, where a slash
+// command's inline shell span can run for seconds -- while the SESSION has not
+// entered SessionProcessing yet and so reports itself settled.
+//
+// turnReserved is in fact unreachable in the shipped daemon today:
+// reserveAppTurnIDForStart is the only writer of appReservedTurnID and has no
+// non-test callers, because turn/start is wired to
+// agent.AcceptClientMutationStart, which reserves nothing here. It is kept
+// because this function must stay correct for the reservation if it is ever
+// wired up, and dropping the input would let the two expressions diverge again
+// -- but no reader should go looking for it in a live trace.
 func appStatus(state string, processing, turnReserved bool) string {
 	// Closed wins over everything. A thread whose session has gone is not
 	// working, whatever flag was left set behind it -- and with a reservation

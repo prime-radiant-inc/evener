@@ -494,9 +494,9 @@ test("/queue and /drain-as-steer each block with their own no-active-turn messag
 // daemon knows. turn/interrupt names no turn (appwire v3) and its precondition
 // is the session's own quiescence, so a palette that answers "is a turn in
 // flight" itself can only ever refuse a Stop the daemon would have accepted.
-// The window is real: the daemon publishes an active status from the turn
-// reservation it takes at turn/start, and activeTurnId only lands with the
-// turn/started notification behind pre-turn work (kata vewa/5gdv).
+// The state is real: a session holding queued work reports active with no turn
+// running, so activeTurnId is absent while the user is looking at a session
+// that is plainly not settled (kata vewa/5gdv).
 test("/interrupt sends turn/interrupt for a working session whose turn has no name yet", async () => {
   const fake = connectFake();
   fake.on("turn/interrupt", (params) => ({

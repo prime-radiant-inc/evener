@@ -329,14 +329,25 @@ left implicit.
 
 The daemon had the same disagreement one layer up. `appStatus` read `state` and
 `processing` and never the turn reservation; `appCapabilities` read `processing`
-and the reservation and never `state`. Each had a window the other could not
-see, and a client could be handed one frame describing two threads —
-`status=active` beside `steer=false interrupt=false` (kata `06t8`'s report), or
-`status=idle` beside `steer=true interrupt=true`. `appStatus` now takes the
-reservation as an explicit third input, `appCapabilities` derives `active` and
-`closed` from its *result*, and closed wins over both so a lingering reservation
-cannot mask a shutdown. The daemon's REST `/status` was a fourth computation
-with three more variants; it reads the same answer now.
+and the reservation and never `state`. The reachable half of that: `status=active`
+beside `steer=false interrupt=false` — kata `06t8`'s report, still live.
+`appStatus` now takes the reservation as an explicit third input,
+`appCapabilities` derives `active` and `closed` from its *result*, and closed
+wins over both. The daemon's REST `/status` was a fourth computation with three
+more variants; it reads the same answer now.
+
+**Correction (2026-08-17, adversarial review).** An earlier version of this
+section, and comments in six files, said the daemon publishes `active` from a
+turn reservation taken at `turn/start`. That is wrong.
+`reserveAppTurnIDForStart` has no non-test callers — `turn/start` is wired to
+`agent.AcceptClientMutationStart`, which reserves nothing — so `turnReserved` is
+never true in the shipped daemon. Measured in the pre-turn window on a live
+stack: 12 of 12 samples showed `state="active" processing=true
+turnReserved=false`. The window is the daemon holding `processing` across the
+whole of an input, pre-turn work included, while the session has not entered
+`SessionProcessing`. The fixes and their measurements stand; only the stated
+mechanism was fiction, and it is the kind that sends the next reader looking for
+a code path that does not exist.
 
 `Interrupt` no longer reads the ambient `cancelFunc`, which the session loop
 arms and clears once per turn on a different clock — that let the set say "a

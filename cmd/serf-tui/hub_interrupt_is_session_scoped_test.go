@@ -14,11 +14,10 @@ import (
 // on m.detail.ActiveTurnID and refused before sending anything whenever that
 // field was empty.
 //
-// That field is empty in exactly the windows where Stop matters most: the wire
-// publishes an active status from the daemon's turn reservation, and the id
-// only arrives with the turn/started notification behind it. A session working
-// through its pre-turn work, or across a boundary between two turns of one
-// drain, is a session the user can see running and could not interrupt.
+// That field is empty in states the wire really reaches -- a session holding
+// queued work reports active with no turn running -- and gating the command on
+// an id the REQUEST does not carry can only refuse a Stop the daemon would have
+// taken. A session the user can see running was one they could not interrupt.
 //
 // The capability stays the gate. Whether a turn has announced its name does
 // not.

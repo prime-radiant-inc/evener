@@ -438,21 +438,28 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 //   - claimedTurnID: a turn accepted by turn/start and claimed by the drain
 //     loop, which has not completed. Between the claim and SessionProcessing
 //     lies every turn's PRE-TURN WORK -- slash-command expansion runs an inline
-//     shell span there, seconds wide -- and throughout it the daemon publishes
-//     status=active off its own reservation while WireState still says settled.
-//     Stop was refused for the whole of that window, to users looking straight
-//     at a Stop button (kata vewa).
+//     shell span there, seconds wide -- and throughout it the DAEMON reports the
+//     thread active while the SESSION still reports itself settled. Stop was
+//     refused for the whole of that window, to users looking straight at a Stop
+//     button (kata vewa).
 //
-// The two are sampled separately, and must be: WireState reaches for locks the
-// mutation-store serializer may never wait on, so it cannot be read from inside
-// the serialized callback that reads the snapshot. This function is where that
-// constraint is written down rather than left as an anonymous condition.
+// The daemon reports active there off its own `processing` flag, which it holds
+// across the whole of an input rather than only the model round. An earlier
+// version of this comment blamed a turn reservation; that was wrong, and
+// measurably so -- 12 of 12 samples inside the window on a live stack showed
+// processing=true with no reservation set. The disagreement is between two
+// different objects' idea of "running", not between a reservation and a flag.
 //
-// The daemon's own answer (server/appwire_runtime.go's appStatus, which reads
-// `processing || turnReserved`) is this same predicate projected onto what the
-// daemon can see. They are deliberately the same shape: the status the wire
-// publishes, the capabilities published beside it, and the precondition that
-// decides whether Stop lands must not be able to disagree.
+// The two facts are sampled separately, and must be: WireState reaches for locks
+// the mutation-store serializer may never wait on, so it cannot be read from
+// inside the serialized callback that reads the snapshot. This function is where
+// that constraint is written down rather than left as an anonymous condition.
+//
+// The daemon's own answer (server/appwire_runtime.go's appStatus) is this same
+// predicate projected onto what the daemon can see. They are deliberately the
+// same shape: the status the wire publishes, the capabilities published beside
+// it, and the precondition that decides whether Stop lands must not be able to
+// disagree.
 func sessionIsQuiesced(running bool, claimedTurnID string) bool {
 	return !running && strings.TrimSpace(claimedTurnID) == ""
 }

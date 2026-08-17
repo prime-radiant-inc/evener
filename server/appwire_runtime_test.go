@@ -83,12 +83,18 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 		reserved   string
 	}{
 		{"session state active, daemon flag cleared", "active", false, ""},
-		{"turn reserved, session state still idle", "idle", false, "turn_m2"},
+		// The two reserved cases are NOT reachable in the shipped daemon:
+		// reserveAppTurnIDForStart is the only writer of appReservedTurnID and
+		// has no non-test callers. They are kept deliberately, and labelled so
+		// nobody reads them as evidence of a live path -- appStatus must stay
+		// correct for the reservation if it is ever wired up, and these are the
+		// only cases that would catch it diverging from appCapabilities again.
+		{"turn reserved, session state still idle (test-only state)", "idle", false, "turn_m2"},
 		{"processing", "active", true, ""},
 		{"idle", "idle", false, ""},
 		{"awaiting", "awaiting", false, ""},
 		{"closed", "closed", false, ""},
-		{"closed with a reservation left behind", "closed", false, "turn_m2"},
+		{"closed with a reservation left behind (test-only state)", "closed", false, "turn_m2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

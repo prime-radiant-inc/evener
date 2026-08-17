@@ -587,11 +587,15 @@ export function Composer({ ref }: ComposerProps) {
   // daemon answers on the session's own quiescence, so the only question the
   // composer has to answer is "is this session working" -- which is the status
   // alone. It deliberately does NOT use `busy`: isTurnActive additionally
-  // requires activeTurnId, and status and id arrive on separate frames. The
-  // daemon publishes active from the turn RESERVATION it takes at turn/start
-  // and the name only lands with turn/started behind pre-turn work, so gating
-  // Stop on the id took the button away for the whole of every window where
-  // the session is visibly working and unnamed (kata vewa/5gdv).
+  // requires activeTurnId, and gating the BUTTON on an id the REQUEST does not
+  // carry can only ever withhold a Stop the daemon would have accepted.
+  //
+  // Active-with-no-id is a state the wire really reaches -- a session holding
+  // queued work reports active with no turn running, for one. (An earlier
+  // version of this comment attributed it to a turn reservation the daemon
+  // takes at turn/start; that reservation has no production callers and is not
+  // the cause. The gate is wrong for the reason above, which does not depend on
+  // how the state is reached.)
   //
   // Steer keeps `busy`. It redirects a turn in flight, and with none running
   // Send already covers "say something now" -- a presentation choice rather
