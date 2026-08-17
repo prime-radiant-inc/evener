@@ -13,10 +13,12 @@
 #   scripts/coverage-gaps.sh PROFILE --by file --zero # only wholly-uncovered units
 #
 # PROFILE is a `go test -coverprofile` file. Generate one with, e.g.
-#   go test -count=1 -short -coverpkg=./... -coverprofile=/tmp/p.cov \
-#     -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
-# (the same selection scripts/test-coverage-floor.sh measures; see
-# scripts/gate-surface-lib.sh).
+#   prof="$(mktemp -t serf-cov.XXXXXX)"
+#   go test -count=1 -short -coverpkg="$(go list ./... | paste -sd, -)" \
+#     -coverprofile="$prof" -run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./...
+#   scripts/coverage-gaps.sh "$prof"
+# (the same selection and module scoping scripts/test-coverage-floor.sh
+# measures; see scripts/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as
 # covered if ANY test hit it — the same accounting test-coverage-floor.sh and

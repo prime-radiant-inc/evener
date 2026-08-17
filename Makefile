@@ -409,7 +409,7 @@ test-coverage-floor-selftest:
 
 # coverage-gaps ranks where a coverage profile's UNCOVERED statements are, by
 # count rather than percentage, so coverage work targets the largest real gaps.
-# Takes a profile: `make coverage-gaps PROFILE=/tmp/p.cov GAP_ARGS="--by file"`.
+# Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
 coverage-gaps:
 	@scripts/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
 
