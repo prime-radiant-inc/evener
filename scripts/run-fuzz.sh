@@ -109,6 +109,8 @@ TARGETS=(
 	# Phase 7 Wave 1 — a decode/parse target for every remaining package.
 	# Lane A1 (agent module)
 	"native:agent:./transcript:FuzzTranscriptWriterRoundTrip::transcript.go"
+	"native:agent:./transcript:FuzzToolFailureRule::failures.go"
+	"native:agent:./transcript:FuzzFailureCounterAttribution::failures.go"
 	"native:llm:./apilog:FuzzCanonicalRecordCodec::codec.go#DecodeRecord"
 	"native:llm:./apilog:FuzzAPILogStreamRecovery::codec.go"
 	"native:llm:.:FuzzCanonicalAPILoggerAppendPrograms::apilog.go#AppendAttempt;apilog.go#AppendSettlement"
