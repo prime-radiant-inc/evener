@@ -25,7 +25,7 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 floors_file="$repo_root/scripts/testcov-global-floors.txt"
-modules=". agent llm auth envvars"
+modules=". agent llm auth envvars invariant identifier"
 tolerance="0.5"
 check=false
 bless=false
@@ -35,12 +35,20 @@ while [ $# -gt 0 ]; do
 		--tolerance) tolerance="$2"; shift 2 ;;
 		--check) check=true; shift ;;
 		--bless) bless=true; shift ;;
-		-h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		# Print the header by scanning for its end, not by a hardcoded line range:
+		# a range goes stale silently the first time the header grows or shrinks,
+		# and this one had already drifted into printing the script body.
+		-h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
 		*) echo "unknown flag: $1" >&2; exit 2 ;;
 	esac
 done
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
+
+# Measured percentages accumulate in a "<module> <pct>" file rather than an
+# associative array: macOS ships bash 3.2 and `env bash` is that, so `declare -A`
+# is unavailable. Reusing the floor_for lookup shape keeps both reads identical.
+measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
 # stmt_counts dedups -coverpkg duplicate blocks by position and prints "covered total".
 stmt_counts() {
@@ -61,8 +69,9 @@ PY
 }
 
 profiles_dir="$(mktemp -d -t serf-testcov.XXXXXX)"
+measured_file="$profiles_dir/measured.txt"
+: >"$measured_file"
 fail=0
-declare -A measured
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }
@@ -75,7 +84,7 @@ for m in $modules; do
 	read -r c t < <(stmt_counts "$prof")
 	[ "${t:-0}" -gt 0 ] || { printf '%-10s %s\n' "$m" "no statements"; continue; }
 	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
-	measured["$m"]="$pct"
+	echo "$m $pct" >>"$measured_file"
 	floor="$(floor_for "$m")"
 	printf '%-10s %12d %12d %7s%% %7s\n' "$m" "$c" "$t" "$pct" "${floor:-—}"
 	if $check && [ -n "$floor" ]; then
@@ -93,7 +102,7 @@ if $bless; then
 		echo "# Managed by scripts/test-coverage-floor.sh --bless. Raised upward only;"
 		echo "# a downward reset (denominator change, not a regression) is a hand edit."
 		for m in $modules; do
-			cur="${measured[$m]:-}"; old="$(floor_for "$m")"; keep="$cur"
+			cur="$(measured_for "$m")"; old="$(floor_for "$m")"; keep="$cur"
 			[ -n "$old" ] && keep="$(awk -v a="$old" -v b="${cur:-0}" 'BEGIN{print (a>b)?a:b}')"
 			[ -n "$keep" ] && echo "$m $keep"
 		done
