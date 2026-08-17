@@ -365,6 +365,11 @@ Ready. $mode_line
   Watch what actually reached the model each round:
     tail -f $run/fakellm.log
 
+  Sessions run at once and their rounds interleave. Each round line names its
+  session -- "session <tool-call-id> round N" -- so to follow just one, take
+  the name off its first round line and grep for it:
+    grep call_fakellm_1 $run/fakellm.log
+
   Watch the hub's own view of the RPCs:
     tail -f $run/hub.log
 

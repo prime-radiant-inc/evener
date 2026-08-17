@@ -23,6 +23,16 @@
 // exactly what reached the model — a steer that arrived shows up as a user
 // message in the following round.
 //
+// Because sessions overlap, every round line names its session, so a log with
+// several of them running is still readable one session at a time: grep it for
+// the name. The name is the tool-call id of the session's first round — a
+// token that session replays on every later request and that appears nowhere
+// else, so it also cross-references to the session's own api.jsonl. Nothing in
+// a chat-completions request supplies a session identity to use instead: there
+// is no user field, affinity headers are off for this instance type, and the
+// script hands the operator ONE spawn call to paste repeatedly, so prompt,
+// model and working directory are routinely identical.
+//
 // Usage:
 //
 //	fakellm [--hold 15s] [--rounds 20] <listen-addr>
@@ -135,6 +145,19 @@ func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds 
 // --background-job-until gives each session one background job, on its first
 // turn, rather than one per turn or one per process.
 type sessionState struct {
+	// name is what the log calls this session: the tool-call id of the first
+	// round this driver saw from it, which is also the first key it was filed
+	// under. The session replays that id on its very next request, and every
+	// id the fake mints is unique, so the name is a token that appears in this
+	// session's transcript and no other's — an operator can grep it in
+	// fakellm.log and cross-check it against the session's api.jsonl.
+	//
+	// Fixed when the state is built and never written again. It is still read
+	// back out of begin under the lock rather than off the state afterwards:
+	// every other field here is rewritten by the next round's begin, and one
+	// field that happens to be safe unlocked is not a distinction worth
+	// leaving in a struct two goroutines share.
+	name string
 	// lastAnswered is the tool-call id of the most recent round this driver
 	// answered. A session replays the id of its last RECORDED round, so a
 	// request arriving under an older id says the answer after it never
@@ -176,10 +199,17 @@ const keysKept = 3
 
 // begin returns the state of the session making this request, advanced to
 // this round, and files it under the id this round's answer will carry. The
-// round number and job flag are returned as values read under the lock:
+// name, round number and job flag are returned as values read under the lock:
 // answer runs on its own goroutine and a Stop puts two of a session's rounds
 // in flight at once, so reading state fields after the lock is released would
 // race with the next round's begin.
+//
+// A session this driver has not served takes its name from the id minted for
+// this round. Nothing in a first request can supply one — no user field, and
+// prompt, model and working directory are identical across the sessions the
+// script's one spawn call produces — so the first round is the earliest point
+// a session can be named at all. From its second request on, the name is a
+// value the session itself sends back.
 //
 // Two boundaries are read out of the request rather than assumed:
 //
@@ -195,7 +225,7 @@ const keysKept = 3
 //     round that was recorded. The turn it belonged to is over, so this
 //     request opens a new one. (Measured against a live hub: a turn stopped
 //     during round 2 comes back replaying round 1's id.)
-func (s *sessions) begin(call *fakellm.Call) (state *sessionState, round int, launchedJob bool) {
+func (s *sessions) begin(call *fakellm.Call) (state *sessionState, name string, round int, launchedJob bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,7 +233,7 @@ func (s *sessions) begin(call *fakellm.Call) (state *sessionState, round int, la
 	state = s.byID[previous] // a session's first round has no previous id
 	switch {
 	case state == nil:
-		state = &sessionState{}
+		state = &sessionState{name: call.ToolCallID()}
 	case previous != state.lastAnswered:
 		state.turnRound = 0 // the round after `previous` was abandoned
 	}
@@ -216,7 +246,7 @@ func (s *sessions) begin(call *fakellm.Call) (state *sessionState, round int, la
 		delete(s.byID, state.keys[0])
 		state.keys = state.keys[1:]
 	}
-	return state, state.turnRound, state.launchedJob
+	return state, state.name, state.turnRound, state.launchedJob
 }
 
 // endedTurn records that the answer to `call` ends the session's turn, so its
@@ -255,8 +285,8 @@ func (s *sessions) launchedJob(state *sessionState, call *fakellm.Call) {
 // turn that follows must find its count exactly where the last RECORDED round
 // left it.
 func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.Duration, rounds int, jobRelease, notesDir string) {
-	state, round, launchedJob := live.begin(call)
-	log.Printf("--- round %d: holding %s ---\n%s", round, hold, strings.Join(call.Texts(), "\n"))
+	state, name, round, launchedJob := live.begin(call)
+	log.Printf("--- session %s round %d: holding %s ---\n%s", name, round, hold, strings.Join(call.Texts(), "\n"))
 
 	endTurn := func(message string) {
 		live.endedTurn(state, call)
@@ -278,7 +308,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	if jobRelease != "" {
 		switch {
 		case !launchedJob && round == 1:
-			log.Printf("round 1: launching a background job that waits for %s", jobRelease)
+			log.Printf("session %s round 1: launching a background job that waits for %s", name, jobRelease)
 			live.launchedJob(state, call)
 			call.RespondToolCall("shell", map[string]any{
 				"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
@@ -286,7 +316,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 			})
 			return
 		case launchedJob && round == 2:
-			log.Printf("round 2: ending the turn so the session goes idle holding the job")
+			log.Printf("session %s round 2: ending the turn so the session goes idle holding the job", name)
 			endTurn("background job launched; idle until it finishes")
 			return
 		case launchedJob && round == 1:
@@ -297,7 +327,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 			case <-call.Cancelled():
 				return
 			}
-			log.Printf("round 1 of a later turn: ending it so the session goes back to idle")
+			log.Printf("session %s round 1 of a later turn: ending it so the session goes back to idle", name)
 			endTurn("job-completion notification seen; going back to idle")
 			return
 		}
@@ -312,7 +342,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	}
 
 	if round%rounds == 0 {
-		log.Printf("round %d: ending the turn", round)
+		log.Printf("session %s round %d: ending the turn", name, round)
 		endTurn(fmt.Sprintf("fake provider ended the turn after %d rounds", round))
 		return
 	}
@@ -323,7 +353,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	if err != nil {
 		// Answering with text ends this session's turn. Leaving the round
 		// unanswered would hang it instead, with the reason only in this log.
-		log.Printf("round %d: stage note: %v", round, err)
+		log.Printf("session %s round %d: stage note: %v", name, round, err)
 		live.endedTurn(state, call)
 		call.RespondText(fmt.Sprintf("fake provider could not stage a note for round %d: %v", round, err))
 		return
