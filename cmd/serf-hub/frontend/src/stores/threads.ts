@@ -1936,7 +1936,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // turns of one drain, a cold client -- and stale in the race where a turn
     // rolls over between the click and the request. Neither refusal is what
     // the button means. "Stop" means stop what you are doing.
-    await enqueueMutation(ref, "turn/interrupt", { ref, interruptRunningTurn: true }, { method: "turn/interrupt" });
+    await enqueueMutation(ref, "turn/interrupt", { ref }, { method: "turn/interrupt" });
   },
 
   async drainAsSteer(ref, text, attachments) {

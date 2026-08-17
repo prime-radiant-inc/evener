@@ -3340,16 +3340,14 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      interruptRunningTurn: true,
     });
   });
 
-  // The gap Task 1 measured: the session is working, so Stop is on screen,
-  // but no turn id has reached this client — a turn the session started for
-  // itself, a boundary between two turns of one drain, or a cold client. The
-  // targeted form cannot be sent there (every layer requires a non-empty
-  // expectedTurnId), so a Stop that named the empty string bounced as
-  // InvalidParams and the user could see work they could not stop.
+  // Same request from the opposite client state: the session is working, so
+  // Stop is on screen, but no turn id has reached this client -- a turn the
+  // session started for itself, a boundary between two turns of one drain, or a
+  // cold client. This is the window a turn-scoped Stop could not address at all,
+  // and the request it produces is identical to the one above.
   test("interrupt with no turn id asks the daemon to stop whatever is running", async () => {
     const fake = connectMutationClient();
     fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref, { status: { type: "active" } }));
@@ -3364,7 +3362,6 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      interruptRunningTurn: true,
     });
   });
 
