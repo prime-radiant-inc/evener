@@ -115,6 +115,7 @@ TARGETS=(
 	"native:agent:./transcript:FuzzFailureCounterAttribution::failures.go"
 	"native:llm:./apilog:FuzzCanonicalRecordCodec::codec.go#DecodeRecord"
 	"native:llm:./apilog:FuzzAPILogStreamRecovery::codec.go"
+	"native:llm:./apilog:FuzzAPILogHeaderCodec::header.go"
 	"native:llm:.:FuzzCanonicalAPILoggerAppendPrograms::apilog.go#AppendAttempt;apilog.go#AppendSettlement"
 	"native:agent:./task:FuzzTaskStoreLoad::task_store.go#Load"
 	"native:agent:./task:FuzzTaskStoreFaultProgram::"
