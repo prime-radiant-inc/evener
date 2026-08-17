@@ -752,7 +752,13 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		Provider:   profile.ID(),
 		Messages:   messages,
 		Tools:      toolDefs,
-		ToolChoice: &llm.ToolChoice{Mode: "required"},
+		// Ask for a tool call; never force one. A forcing tool_choice leaves a
+		// model that cannot honor it with no legal way to stop, and serf targets
+		// arbitrary gateways and models where that capability is unknowable in
+		// advance. The result-tool contract is enforced in software instead —
+		// decideNoToolCalls steers bare text back, and a delegate that ends
+		// without communicating gets communicateNudge.
+		ToolChoice: &llm.ToolChoice{Mode: "auto"},
 		WebSearch:  s.providerWebSearchEnabled(profile),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,

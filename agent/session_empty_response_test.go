@@ -279,8 +279,11 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 			},
 			// Round 1: after steering, model uses communicate.
 			func(req llm.Request) llm.Response {
-				if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
-					t.Errorf("expected bare-text retry to require a tool call, got %#v", req.ToolChoice)
+				// The retry steers the model back to the result tool with words,
+				// not with a forcing tool_choice — the recovery must work on a
+				// model that cannot be forced at all.
+				if req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+					t.Errorf("expected bare-text retry to keep tool_choice auto, got %#v", req.ToolChoice)
 				}
 				// Verify a steering message was injected.
 				lastMsg := req.Messages[len(req.Messages)-1]
@@ -320,8 +323,8 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests: got %d want 2", got)
 	}
-	if req := f.Requests()[0]; req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
-		t.Fatalf("initial request should be required, got %#v", req.ToolChoice)
+	if req := f.Requests()[0]; req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+		t.Fatalf("initial request should be auto, got %#v", req.ToolChoice)
 	}
 }
 

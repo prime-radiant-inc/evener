@@ -2003,15 +2003,31 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	}
 }
 
-func TestProcessInput_ToolChoiceIsRequired(t *testing.T) {
+// TestProcessInput_ToolChoiceIsNeverForced pins the decision that serf asks for
+// a tool call rather than forcing one. Forcing is unsafe against the arbitrary
+// gateways and models serf targets: a model that cannot honor a forcing
+// tool_choice has no legal way to stop, and glm-5.2-vision demonstrably runs
+// away under it (measured 3/3 non-terminating responses, 83-373 tool calls, no
+// finish_reason, against 3/3 clean single-call responses under "auto").
+//
+// The result-tool contract this used to enforce on the wire is enforced in
+// software instead, by decideNoToolCalls' bare-text steering and the delegate
+// communicate nudge — see TestBareText_RedirectsToCommunicate.
+//
+// Reverting session_model_call.go's ToolChoice to "required", or to any named
+// tool, fails this test.
+func TestProcessInput_ToolChoiceIsNeverForced(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
-					t.Fatalf("expected tool_choice required, got %+v", req.ToolChoice)
+				if req.ToolChoice == nil {
+					t.Fatalf("expected an explicit tool_choice, got nil")
+				}
+				if req.ToolChoice.Mode != "auto" {
+					t.Fatalf("tool_choice.Mode = %q, want %q (forcing is unsafe: see doc comment)", req.ToolChoice.Mode, "auto")
 				}
 				resp := finalResponse("done")
 				resp.Finish = llm.FinishReason{Reason: "stop"}

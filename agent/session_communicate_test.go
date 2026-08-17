@@ -67,7 +67,11 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
 
-func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
+// TestCommunicate_ToolChoiceNotForced_OnEveryRequest checks the whole request
+// sequence, not just the first: no round may force a tool call, including the
+// rounds that follow a communicate. See TestProcessInput_ToolChoiceIsNeverForced
+// for why forcing is unsafe.
+func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -101,10 +105,10 @@ func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 	}
 	for i, req := range reqs {
 		if req.ToolChoice == nil {
-			t.Fatalf("request %d: ToolChoice is nil, expected required", i)
+			t.Fatalf("request %d: ToolChoice is nil, expected an explicit mode", i)
 		}
-		if req.ToolChoice.Mode != "required" {
-			t.Fatalf("request %d: ToolChoice.Mode = %q, want %q", i, req.ToolChoice.Mode, "required")
+		if req.ToolChoice.Mode != "auto" {
+			t.Fatalf("request %d: ToolChoice.Mode = %q, want %q", i, req.ToolChoice.Mode, "auto")
 		}
 	}
 }
