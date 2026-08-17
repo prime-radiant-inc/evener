@@ -726,13 +726,19 @@ func (s *Session) SetNotifyFunc(f func()) {
 	s.pendingJobNotifsMu.Lock()
 	pending := len(s.pendingJobNotifs) > 0
 	s.pendingJobNotifsMu.Unlock()
-	// Steering and queued input both count as pending work here for the same
-	// reason the rest does. Either one accepted durably and then lost to a crash
-	// is rebuilt by restoreDurableClientMutationQueues, and nothing else asks the
-	// session to run: the client may never retry, and the round loop only drains
-	// steering inside a turn that is not going to start on its own. Registering
-	// the callback is the moment a wake can provably be delivered.
-	if pending || s.hasPendingSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	// The USER's steering and queued input both count as pending work here for
+	// the same reason the rest does. Either one accepted durably and then lost
+	// to a crash is rebuilt by restoreDurableClientMutationQueues, and nothing
+	// else asks the session to run: the client may never retry, and the round
+	// loop only drains steering inside a turn that is not going to start on its
+	// own. Registering the callback is the moment a wake can provably be
+	// delivered.
+	//
+	// Daemon-authored steering is deliberately NOT counted. It is injected
+	// during startup, before the user has said anything, and it is context for
+	// their first turn rather than work of its own -- so waking for it would
+	// start a turn nobody asked for, ahead of the opening prompt.
+	if pending || s.hasPendingUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }

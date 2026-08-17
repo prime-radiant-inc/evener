@@ -4,7 +4,6 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -24,7 +23,19 @@ import (
 func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
-	s.SteerKind("restored steer", events.SteeringKindNotification)
+	// The user's own steer, through the path a client takes. The kind matters:
+	// only user steering is work the session owes someone, so only it wakes on
+	// attach. Daemon-authored steering is context for the next turn and must
+	// not start one -- see TestNoTurnRunsBeforeTheUsersFirstPrompt.
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "cm-restored-steer",
+		Input:            []appwire.InputItem{{Type: "text", Text: "restored steer"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
 
 	var mu sync.Mutex
 	notifies := 0

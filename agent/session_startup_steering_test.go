@@ -91,3 +91,51 @@ func TestUserSteeringStillProvokesATurn(t *testing.T) {
 		t.Fatal("the user's steer is still pending after the turn that should have carried it")
 	}
 }
+
+// TestNoTurnRunsBeforeTheUsersFirstPrompt is the rule, and it is stronger than
+// "the opening turn/start is accepted".
+//
+// A session that has never received user input must not run a turn at all. The
+// daemon injects its own context during startup -- the current-task reminder,
+// hook context, a transcript pointer -- and that context exists to accompany
+// the user's first turn, not to provoke one before they have said anything. The
+// round loop drains steering into whatever turn runs next, so nothing has to be
+// woken for it.
+//
+// The symptom when something does wake: the turn it starts can hold the
+// session's turn identity when the hub issues turn/start for the opening prompt
+// (app_threadlifecycle.go calls StartTurn right after the spawn), so
+// thread/start returns "turn is already active", the web UI stays on the spawn
+// screen, and the session runs with only the daemon's own turn in it.
+func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	// The daemon's own startup context, injected before any client is served.
+	s.SteerKind("<SYSTEM-REMINDER>startup context</SYSTEM-REMINDER>", events.SteeringKindCurrentTask)
+
+	// Installing the notify callback is what the daemon does next. Nothing may
+	// ask the session to run: there is no user input yet, so there is no turn to
+	// have.
+	woke := 0
+	s.SetNotifyFunc(func() { woke++ })
+	if woke != 0 {
+		t.Fatalf("the daemon was asked to run %d turns before the user said anything", woke)
+	}
+	if s.hasPendingUserSteering() || s.QueueDepth() > 0 {
+		t.Fatal("the pending-user-input path would run a turn for the daemon's own startup context")
+	}
+
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q after startup context was delivered, want empty", got)
+	}
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-opening-turn",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the user's opening prompt"}},
+	}); err != nil {
+		t.Fatalf("the opening turn/start was refused after startup context: %v", err)
+	}
+}
