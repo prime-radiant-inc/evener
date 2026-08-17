@@ -92,12 +92,16 @@ export async function settlePendingTurnsProjectionForTests(): Promise<number> {
 // nothing outstanding. The bound is a tripwire for a livelock - it throws
 // rather than letting a test pass on a half-settled projection.
 //
-// What it can settle is exactly what registers with trackProjectionWork. Work
-// that never registers is invisible to this, and a round that found nothing is
-// therefore not a proof that nothing is left - the copies this replaces each
-// claimed it was. Kata 3p22 holds the measured flake that gap produces and its
-// fix. A test whose own action registers its work synchronously before calling
-// here - a click that goes through mutateThenRefresh, say - is not exposed.
+// What it can settle is exactly what registers with trackProjectionWork, so a
+// round that found nothing is proof that nothing is left only while every
+// durable path registers before it can be observed. They all do now; the last
+// one that did not was submitWithPendingTracking, which registered nothing
+// until its own work had already finished, and a flush starting in that window
+// declared the projection settled with a send still in flight (kata 3p22).
+//
+// Adding a durable path that is not tracked reopens that hole, and it reopens
+// it as a load-sensitive false green rather than a failure. pendingTurnsStore's
+// "a flush cannot settle while a submit is still in flight" pins the property.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
@@ -154,18 +158,29 @@ export interface SubmitWithPendingTrackingOptions {
 
 // The action resolves at the local IndexedDB commit boundary. Durable state,
 // not a component timer or text echo, is the only optimistic lifecycle.
-export async function submitWithPendingTracking(
+//
+// Registered with trackProjectionWork for its whole duration, not just for the
+// refresh it ends with. Every other durable path here is tracked from the call
+// that starts it; this one used to register nothing until `perform` had already
+// resolved, which left a window where a settle round found the set empty and
+// reported the projection settled while a send was still in flight (kata 3p22).
+// Tracking from the click is what makes one zero round genuine proof.
+export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
   perform: () => Promise<void>,
 ): Promise<void> {
-  try {
-    await perform();
-  } catch (error) {
-    opts.onFailure(error);
-    throw error;
-  } finally {
-    await refreshPendingTurnsProjection(opts.ref);
-  }
+  return trackProjectionWork(
+    (async () => {
+      try {
+        await perform();
+      } catch (error) {
+        opts.onFailure(error);
+        throw error;
+      } finally {
+        await refreshPendingTurnsProjection(opts.ref);
+      }
+    })(),
+  );
 }
 
 const NO_ENTRIES: PendingTurnEntry[] = [];
