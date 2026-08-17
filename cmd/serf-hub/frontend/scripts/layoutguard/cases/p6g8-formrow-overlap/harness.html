@@ -12,10 +12,30 @@
     font-family: var(--font-sans);
   }
   /* Mirrors PaneScaffold's .pane (border+radius) and .body (space-4=16px
-     padding), at the pane content width the real "Start an agent" form gets
-     at 1440px with the sidebar expanded and no transcript tab open. */
+     padding), at the width of a "Start an agent" pane DOCKED NARROW beside
+     another panel on a desktop display. spawn.module.css designs for exactly
+     that state - its .form is an inline-size container with a @container
+     (max-width: 559px) rule for the Start button - so this is an ordinary
+     configuration, not a contrived one.
+
+     The width is what puts the config row under pressure, and pressure is the
+     only condition under which min-width:0 does anything. It was 1116px, the
+     pane content width at 1440px with the sidebar expanded, and at that size
+     this fixture could not fail: .form's own max-width:720px capped the row
+     long before 1116px, so the column never got tight and deleting
+     min-width:0 still left the trigger fitting with 3.6px to spare. Anything
+     above ~750px is the same fixture (kata e4sh, second review).
+
+     640px gives a content box of 606px: below .form's 720px cap so the column
+     is genuinely tight, and above the 559px container breakpoint so this case
+     is not accidentally measuring the Start button's word collapse. Measured
+     at 640px, with the plain repo-root cwd below: unmutated fits with 44.0px
+     to spare, deleting min-width:0 overflows by 110.4px. Do not widen it.
+     Do not narrow it past ~600px either - there the row wraps, and the
+     branch-vs-effort overlap assertion stops meaning anything
+     (sameVerticalBand goes false, overlapX 0). */
   .page {
-    width: 1116px;
+    width: 640px;
     box-sizing: border-box;
     border: 1px solid var(--edge);
     border-radius: var(--radius-pane);
@@ -46,24 +66,27 @@
         <label for="spawn-cwd" class="label">Working directory</label>
         <div class="control">
           <button id="spawn-cwd" class="trigger" type="button">
-            <!-- The LENGTH of this path is load-bearing, not decoration: it is
-                 what makes the row's content wider than its column, which is
-                 the only condition under which min-width:0 does anything. The
-                 shorter repo root that used to sit here stopped reproducing the
-                 overflow once the case picked up global.css (kata e4sh) - the
-                 mutation passed with 3.6px to spare. Measured slope is 6-8px per
-                 character against a threshold near 42 characters, so this has
-                 ~33 characters of headroom rather than sitting on the edge.
-                 Do not shorten it.
+            <!-- The plain repo root: this project's most ordinary cwd, and the
+                 value this fixture started with. The pressure that makes the
+                 case falsifiable comes from .page's width above, NOT from this
+                 string - see that comment.
 
-                 It deliberately points at a directory that is checked in and
-                 permanent - this case's own home - rather than at anything
-                 machine- or branch-specific. An earlier draft used the worktree
-                 the fix was written in, which reads as an ordinary cwd but stops
-                 existing the moment that worktree is removed, leaving the
-                 fixture's load-bearing 34 characters made of a dead branch
-                 name. -->
-            <span class="triggerValue" id="cwd-value">/Users/jesse/prime-radiant/toil-suite/serf/cmd/serf-hub/frontend/scripts/layoutguard</span>
+                 An earlier revision of this fix inverted that: it kept .page
+                 wide and stretched the path to a 74-character worktree path to
+                 keep the mutation red. That worked, but it made the flagship
+                 layoutguard case depend on a hand-tuned string, and quietly
+                 stopped detecting a deleted min-width:0 for the commonest real
+                 value there is - the repo root. Narrowing the column fixed the
+                 precondition where it belonged.
+
+                 What remains, stated rather than hidden: a fixture asserting
+                 "content wider than column" cannot be wholly independent of
+                 content length. Measured at 640px, the mutation is caught down
+                 to roughly 28 characters (42 chars overflows by 110.4px; 26
+                 chars fits with 14.4px to spare). The ordinary value clears
+                 that floor by a wide margin, which is the property that was
+                 missing before. -->
+            <span class="triggerValue" id="cwd-value">/Users/jesse/prime-radiant/toil-suite/serf</span>
             <span class="chevron" aria-hidden="true">&#9662;</span>
           </button>
         </div>
