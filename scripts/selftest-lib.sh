@@ -162,7 +162,17 @@ selftest_scratch() {
 selftest_rm_scratch() {
 	local _st_path="${1:-}" _st_me _st_known
 	[ -n "$_st_path" ] || return 0
-	rm -rf "$_st_path"; return 0 # MUTATION
+	# A path that walks upward can prefix-match an allowlisted root and still
+	# resolve outside it, so refuse it before the match rather than trusting
+	# the string comparison below.
+	case "$_st_path" in
+	*/../* | */.. | ../* | ..)
+		_st_me="$(basename "$0" .sh)"
+		printf '%s: refusing to delete "%s": the path walks upward, so a prefix match would not prove where it lands\n' \
+			"$_st_me" "$_st_path" >&2
+		return 1
+		;;
+	esac
 	for _st_known in ${selftest_scratch_dirs[@]+"${selftest_scratch_dirs[@]}"}; do
 		if [ "$_st_path" = "$_st_known" ]; then
 			rm -rf "$_st_path"
