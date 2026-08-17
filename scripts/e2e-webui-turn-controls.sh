@@ -37,6 +37,7 @@
 # script exits — that is the point, so a browser or a follow-up REST call has
 # something to attach to. Nothing here needs, reads, or sets a real provider
 # credential.
+# END-USAGE (--help prints everything above this line)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,7 +70,11 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	-h | --help)
-		sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		# Print the header comment up to its sentinel, never a line count: a
+		# range ending at a fixed number silently drops whatever the header
+		# grows past it, which is how --stop — the only documented teardown —
+		# went unprinted.
+		sed -n '2,/^# END-USAGE/p' "${BASH_SOURCE[0]}" | grep -v '^# END-USAGE' | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -83,6 +88,16 @@ done
 # directory. PIDs are read from files this script wrote at start time, so
 # --stop works from a fresh invocation with no shared shell state.
 if [ -n "$stop_dir" ]; then
+	# The marker is checked FIRST, before a single file is read or a single
+	# signal is sent. --stop takes a path from the caller, and the marker is
+	# the one thing that distinguishes "a run of ours" from a typo pointing at
+	# something that matters — so a mistyped path that happens to hold a
+	# hub.pid, a fakellm.pid or a hub.log must lose nothing at all, not just
+	# escape the deletion at the end.
+	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
+		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not touching it" >&2
+		exit 2
+	fi
 	# Daemons are grandchildren the hub deliberately outlives, so killing the
 	# hub alone leaves one serf process per spawned session behind. The hub
 	# announces each one's pid in its log; reap those too.
@@ -103,13 +118,6 @@ if [ -n "$stop_dir" ]; then
 			echo "e2e-webui-turn-controls: stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
 		fi
 	done
-	# Only ever delete a directory this script made. --stop takes a path from
-	# the caller, and the marker file is the one thing that distinguishes "a
-	# run of ours" from a typo pointing at something that matters.
-	if [ ! -f "$stop_dir/.e2e-webui-turn-controls" ]; then
-		echo "e2e-webui-turn-controls: $stop_dir is not one of this script's run directories (no .e2e-webui-turn-controls marker); not deleting it" >&2
-		exit 2
-	fi
 	rm -rf "$stop_dir"
 	echo "e2e-webui-turn-controls: removed $stop_dir" >&2
 	exit 0
@@ -161,13 +169,40 @@ mkdir -p "$HOME/.serf"
 # Everything that can redirect serf away from the throwaway $HOME, not just
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
-# the header above promises isolation.
+# the header above promises isolation. SERF_PROVIDERS_CONFIG belongs in this
+# list above all: it outranks $HOME/.serf/providers.toml (cmd/serf-hub/main.go,
+# cmd/serf-hub/internal/launchconfig/env.go), so leaving it set would load the
+# operator's real providers instead of fakellm — a network call and a paid
+# request out of a fixture whose whole point is that neither happens.
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
 unset SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED
+unset SERF_PROVIDERS_CONFIG
 
 workspace="$run/workspace"
 mkdir -p "$workspace"
 echo "notes for the fake tool round" >"$workspace/NOTES.md"
+
+# Reap a half-built stack. Every failure between the first background process
+# and the "Ready" banner below is a bare exit, and the operator who just read
+# "build serf-hub failed" is the least likely person to notice a fakellm still
+# running. Armed before anything is started and disarmed at Ready, which is
+# the state this script's contract says processes are deliberately left alive
+# in.
+started_ready=0
+reap_partial_start() {
+	[ "$started_ready" -eq 1 ] && return 0
+	for pidfile in "$run/fakellm.pid" "$run/hub.pid"; do
+		[ -f "$pidfile" ] || continue
+		pid="$(cat "$pidfile")"
+		if kill -0 "$pid" 2>/dev/null; then
+			kill "$pid"
+			echo "e2e-webui-turn-controls: startup failed; stopped $(basename "$pidfile" .pid) (pid $pid)" >&2
+		fi
+	done
+	started_ready=1 # never reap twice: INT runs this, then so does EXIT
+}
+trap reap_partial_start EXIT
+trap 'reap_partial_start; exit 130' INT TERM
 
 echo "==> starting fakellm (hold=${hold}s rounds=${rounds})" >&2
 # Flags BEFORE the positional address: Go's flag package stops parsing at the
@@ -240,6 +275,10 @@ curl -s -o /dev/null "$hub_addr/" || {
 	exit 1
 }
 token="$(cat "$HOME/.serf/auth-token")"
+
+# Ready: the stack is up, so the processes stay up too. Disarm the reaper.
+started_ready=1
+trap - EXIT INT TERM
 
 if [ "$background_job" -eq 1 ]; then
 	mode_line="The first spawned session launches a background job and goes idle.
