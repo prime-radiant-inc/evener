@@ -561,13 +561,6 @@ func (s *Session) popQueueHead() queuedInput {
 		// AcceptClientMutationStart and claimClientMutationStart both refuse
 		// while a fence is pending; this is the third claim site and it was the
 		// one that did not.
-		// A Stop is accepted before it is finalized, and in that window the
-		// runner is being cancelled. Claiming the queue head there hands the
-		// message to a turn that is already dying, which is how a Stop used to
-		// eat the message queued behind it (katas e519 + nss1).
-		// AcceptClientMutationStart and claimClientMutationStart both refuse
-		// while a fence is pending; this is the third claim site and it was the
-		// one that did not.
 		if snapshot.InterruptFence != nil {
 			return nil
 		}

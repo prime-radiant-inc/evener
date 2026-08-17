@@ -531,6 +531,12 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, err
 	}
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
+	// The fence is cleared now, so popQueueHead will claim again -- but nothing
+	// has asked the session to run. A Stop cancelled the runner; anything still
+	// queued behind it would sit there while the session reports itself as
+	// working, which is the strand the fence guard would otherwise create.
+	s.wakeForPendingQueuedInput()
+	s.wakeForPendingSteering()
 	return interruptResponseFromRecord(
 		s.clientMutations.snapshot().Journal[params.ClientMutationID],
 		appwire.MutationDispositionApplied,

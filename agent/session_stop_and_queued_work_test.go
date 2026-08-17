@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -79,6 +80,52 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 		Input:            []appwire.InputItem{{Type: "text", Text: "next turn"}},
 	}); err != nil {
 		t.Fatalf("turn/start after the unrun turn: %v", err)
+	}
+
+	// Durably back is not enough: QueueDepth, QueuePreview and WireState all
+	// read the process-local queue, and wakeForPendingQueuedInput gates on that
+	// same depth. A message restored only in the snapshot is invisible in the
+	// queue strip and cannot wake the session that owes it a turn.
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the return = %d, want 1; the runtime queue is stale", got)
+	}
+	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "please still run me" {
+		t.Fatalf("QueuePreview after the return = %#v, want the returned message", preview)
+	}
+}
+
+// TestStopWakesTheSessionForWorkItLeftQueued closes the strand the fence guard
+// would otherwise create. popQueueHead declines while an interrupt is pending,
+// and finalize then clears the fence without scheduling anything -- so a Stop
+// with a message queued behind it would leave the session reporting itself as
+// working with a queue nobody drains.
+func TestStopWakesTheSessionForWorkItLeftQueued(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	queueOneMutation(t, sess, "queued-through-stop", "run me after the stop")
+
+	var mu sync.Mutex
+	notifies := 0
+	sess.SetNotifyFunc(func() {
+		mu.Lock()
+		notifies++
+		mu.Unlock()
+	})
+	mu.Lock()
+	before := notifies
+	mu.Unlock()
+
+	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-queued-work",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if notifies == before {
+		t.Fatal("the stop left work queued and woke nothing; the session reports itself active with a queue nobody drains")
 	}
 }
 

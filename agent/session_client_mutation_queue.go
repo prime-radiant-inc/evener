@@ -1136,7 +1136,8 @@ func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string)
 }
 
 func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) error {
-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+	returned := false
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
 			return nil
@@ -1153,6 +1154,8 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 			}
 			record.ExecutionState = "accepted"
 			snapshot.Journal[clientMutationID] = record
+			snapshot.QueueRevision++
+			returned = true
 			return nil
 		}
 		if pending.ExecutionState != "incorporated" {
@@ -1179,6 +1182,18 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if returned {
+		// The durable queue grew a message back. QueueDepth, QueuePreview,
+		// WireState and the queued-input wake all read the process-local copy,
+		// so without this the message is durably present and invisible -- and
+		// the wake that would run it gates on that same stale depth.
+		s.reflectDurableInputQueue()
+		s.wakeForPendingQueuedInput()
+	}
+	return nil
 }
 
 // returnClaimedQueuedMutation puts a claimed queue entry back the way
@@ -1219,6 +1234,11 @@ func returnClaimedQueuedMutation(
 	if snapshot.ActiveTurnID == pending.TurnID {
 		snapshot.ActiveTurnID = ""
 	}
+	// Callers own the queue revision and the runtime reflection: restore bumps
+	// the revision once for the whole rebuild, and the completion path bumps it
+	// per return. Both must reflect afterwards -- QueueDepth, QueuePreview,
+	// WireState and the queued-input wake all read the process-local copy, so a
+	// message restored only here would be durably present and invisible.
 	record.ProjectionState = acceptedClientMutationProjection(record.Method)
 	return nil
 }
