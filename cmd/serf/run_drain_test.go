@@ -169,7 +169,6 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 // choreography. It returns the scripted provider so a variant can inspect the
 // requests the session actually built.
 func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvider {
-	t.Helper()
 	tmp := t.TempDir()
 	childArtifact := filepath.Join(tmp, "child-artifact.txt")
 
@@ -266,7 +265,6 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 // the scripted provider so a variant can inspect the requests the session
 // actually built.
 func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak func(*runConfig)) *scriptedProvider {
-	t.Helper()
 	output := "shell-ok"
 	exit := 0
 	if wantStatus == "failed" {
@@ -321,6 +319,16 @@ func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak f
 }
 
 func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
+	chainedShellDrainScenario(t, nil)
+}
+
+// chainedShellDrainScenario drives two chained managed shells and asserts the
+// running count of delivered job notifications at every round. tweak, when
+// non-nil, adjusts the run config before the run so a variant can change how the
+// request is assembled without restating the choreography. It returns the
+// scripted provider so a variant can inspect the requests the session actually
+// built.
+func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvider {
 	// Shell A is gated so it cannot reach terminal completion until the drain
 	// starts; otherwise its notification can beat the tool-result model round
 	// and be folded into that request. Shell B needs no gate: it is launched
@@ -375,14 +383,17 @@ func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
 	installRunScriptedProvider(t, adapter)
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), runConfig{
+	cfg := runConfig{
 		prompt:  "run chained managed shells and handle both completions",
 		model:   "openai/gpt-test",
 		workDir: t.TempDir(),
 		stdout:  &stdout,
 		stderr:  &stderr,
-	})
-	if err != nil {
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	if err := run(context.Background(), cfg); err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
 	if got := stdout.String(); got != "all shell work complete\n" {
@@ -391,4 +402,5 @@ func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
 	if got := len(adapter.Requests()); got != 5 {
 		t.Fatalf("model requests = %d, want exactly five", got)
 	}
+	return adapter
 }

@@ -91,7 +91,6 @@ func headString(s string, n int) string {
 		return strconv.Quote(s)
 	}
 	return strconv.Quote(s[:n]) + "... (" + strconv.Itoa(len(s)) + " bytes)"
-
 }
 
 // TestRunDrainsDelegatedJobTreeWhenSystemPromptNamesTheFrame is the zzpw
@@ -117,6 +116,21 @@ func TestRunDrainsManagedShellWhenSystemPromptNamesTheJobFrame(t *testing.T) {
 		t.Run(layout.name, func(t *testing.T) {
 			adapter := managedShellDrainScenario(t, "printf shell-ok", "completed",
 				namePromptLiteral(t, jobFramePromptLiteral, layout.asUser))
+			assertPromptLiteralReachedOpeningMessage(t, adapter, jobFramePromptLiteral)
+		})
+	}
+}
+
+// TestRunDrainCountsOnlyDeliveredJobFramesWhenSystemPromptNamesOne guards the
+// five running-count assertions in the chained-shell drain. Their failure mode
+// is the worse one: a prompt literal shifts every count by one, so the drain
+// still runs and the test still measures it, just wrongly. Nothing else covers
+// them — no prompt section names <job-notification>, so reverting those five
+// matchers to requestFullText leaves the whole drain suite green.
+func TestRunDrainCountsOnlyDeliveredJobFramesWhenSystemPromptNamesOne(t *testing.T) {
+	for _, layout := range promptLayouts {
+		t.Run(layout.name, func(t *testing.T) {
+			adapter := chainedShellDrainScenario(t, namePromptLiteral(t, jobFramePromptLiteral, layout.asUser))
 			assertPromptLiteralReachedOpeningMessage(t, adapter, jobFramePromptLiteral)
 		})
 	}
@@ -164,7 +178,7 @@ func TestSystemPromptOccupiesOnlyTheOpeningMessage(t *testing.T) {
 					t.Fatalf("request %d had no messages", i)
 				}
 				if !strings.Contains(req.Messages[0].Text(), sentinel) {
-					t.Fatalf("request %d: system prompt is not in message 0 (role %q); requestDeliveredText would now skip a real message instead of the prompt. message 0 opens %s",
+					t.Fatalf("request %d: system prompt is not in message 0 (role %q); requestDeliveredText skips message 0 to exclude the prompt, so it now excludes the wrong message and lets prompt text back into a delivery match. message 0 opens %s",
 						i, req.Messages[0].Role, headString(req.Messages[0].Text(), 200))
 				}
 				for j, m := range req.Messages[1:] {
