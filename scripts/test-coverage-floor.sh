@@ -59,6 +59,9 @@ done
 # The gate's test-selection surface, shared with run-module-tests.sh so this
 # ratchet cannot drift into measuring something no gate proves.
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
+# How a coverage number is counted, shared with every other script that
+# reports one; see covstmt-lib.sh for why a second copy is a hazard.
+. "$(dirname "${BASH_SOURCE[0]}")/covstmt-lib.sh"
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 
@@ -67,23 +70,6 @@ floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 # is unavailable. Reusing the floor_for lookup shape keeps both reads identical.
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
-# stmt_counts dedups -coverpkg duplicate blocks by position and prints "covered total".
-stmt_counts() {
-	python3 - "$1" <<'PY'
-import re, sys
-seen = {}
-for l in open(sys.argv[1]):
-	m = re.match(r'^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$', l)
-	if not m:
-		continue
-	f, sl, sc, el, ec, ns, cnt = m.groups()
-	key = (f, sl, sc, el, ec)
-	seen[key] = (int(ns), seen.get(key, (0, False))[1] or int(cnt) > 0)
-tot = sum(n for n, _ in seen.values())
-cov = sum(n for n, c in seen.values() if c)
-print(cov, tot)
-PY
-}
 
 profiles_dir="$(mktemp -d -t serf-testcov.XXXXXX)"
 measured_file="$profiles_dir/measured.txt"

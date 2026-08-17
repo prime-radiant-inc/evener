@@ -28,6 +28,7 @@ cp "$real_script" "$repo/scripts/test-coverage-floor.sh"
 # The script sources its gate-surface definition from its own directory, so the
 # throwaway repo needs the real one beside it.
 cp "$(dirname "$0")/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
+cp "$(dirname "$0")/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
 script="$repo/scripts/test-coverage-floor.sh"
 floors="$repo/scripts/testcov-global-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
