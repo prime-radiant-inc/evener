@@ -14,20 +14,21 @@ import (
 	"primeradiant.com/serf/test/e2e/fakellm"
 )
 
-// The rule under test (Jesse, 2026-08-16, b2a2f1c8c): control mutations do not
-// name turns. Steer, queue, stop, drain and promote no longer carry an
-// expectedTurnId at any layer, because what that field asserted -- "the session
-// is still in the state I saw" -- is not what any of those buttons means, and
-// asserting it could only ever turn a success into a refusal. The preconditions
-// that survived are the ones that name a real object: clientMutationId
-// everywhere, expectedQueueRevision on drain, expectedEntryId on promote and
-// cancel. Stop's precondition is now the session's wire state.
+// The rule under test (Jesse, 2026-08-16): control mutations do not name turns.
+// Steer, queue, stop, drain and promote carry no expectedTurnId at any layer,
+// because what that field asserted -- "the session is still in the state I saw"
+// -- is not what any of those buttons means, and asserting it could only ever
+// turn a success into a refusal. The preconditions that survive are the ones
+// that name a real object: clientMutationId everywhere, expectedQueueRevision
+// on drain, expectedEntryId on promote and cancel. Stop's precondition is the
+// session's wire state.
 //
 // Everything here runs against a real serf-hub process, the real serf daemon it
 // spawns, and the real AppWire socket, because that is the only place the rule
-// exists as one piece: the branch that produced it shipped a refusal that was
-// invisible to both compilers and to a green unit suite, and was caught only by
-// looking at a frame on the wire.
+// exists as one piece. The rule spans a Go type, a hand-written validator list,
+// three wire layers and a TypeScript client, and neither compiler can see
+// across that seam: a client omitting a field a daemon still requires type-checks
+// on both sides and fails only on the wire.
 //
 // The provider is fakellm -- a scripted HTTP provider, not a stub of anything
 // serf owns -- so a turn stays in flight for exactly as long as a test declines
