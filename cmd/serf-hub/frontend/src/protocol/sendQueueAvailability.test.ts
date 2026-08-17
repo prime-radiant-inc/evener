@@ -19,6 +19,33 @@ function caps(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
   };
 }
 
+// The capability set a real daemon publishes for an IDLE thread, read off
+// server/appwire_runtime.go's appCapabilities with every optional callback
+// wired: `active := processing || appReservedTurnID != ""` is false there, so
+// Steer and Queue are both false; Clear and ForkFromTurn are hardcoded false;
+// Interrupt is gated on the callback alone, not on active.
+//
+// caps() above is nobody's snapshot. It reports queue:true for a thread that
+// is not running anything, which no daemon ever sends. It is the right
+// fixture for the tiers that must IGNORE capabilities, and the wrong one for
+// any rule that reads them: a rule proved only against caps() is proved
+// against a state that cannot occur (kata 8c65).
+function daemonIdleCapabilities(): ThreadCapabilities {
+  return {
+    send: true,
+    steer: false,
+    interrupt: true,
+    compact: true,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: true,
+    changeModel: true,
+    queue: false,
+    goal: true,
+    rename: true,
+  };
+}
+
 // One test per row of the legacy precedence table (parity-m5-composer.md,
 // §A "Send-vs-Queue capability precedence", lines 64-71, citing
 // cmd/serf-hub/assets/renderer.js:479-513 — cited verbatim in
@@ -99,5 +126,70 @@ describe("deriveSendQueueAvailability", () => {
       canSend: false,
       canQueue: true,
     });
+  });
+
+  // Tier 6, and the mirror image of the race above: send two messages quickly
+  // and the second is composed BEFORE any status frame for the first has
+  // arrived. statusType still reads idle, so tier 5 routed it to turn/start
+  // and the daemon refused it with Conflict("turn is already active").
+  //
+  // The client knows something the status does not - it submitted a turn
+  // itself. That is its OWN record of what it did, not a late guess about the
+  // daemon's state, so this is not the activeTurnId fold the header rejects.
+  //
+  // It has to be its own tier, ABOVE the tier-3 capability veto, because the
+  // capabilities in hand during this window are the IDLE ones and idle
+  // advertises queue:false. Folding it into the active branch instead makes
+  // the veto fire and DISABLES the composer in exactly the window the rule
+  // exists to serve - strictly worse than the bounce, which at least left a
+  // recovery row. An idle queue:false means "nothing to queue behind", not
+  // "this harness has no queue"; the two are indistinguishable from here, so
+  // this tier does not consult it. A harness with no queue at all answers
+  // turn/queue with Unavailable, which the user sees.
+  //
+  // The queue lands with no turn id: appwire v3 dropped expectedTurnId from
+  // turn/queue outright (appwire/types.go's ProtocolVersion note), so neither
+  // handleAppTurnQueue nor the agent's own clientMutationQueue has a turn
+  // precondition left to fail - pinned live by
+  // cmd/serf-hub/e2e_control_without_turn_ids_test.go's
+  // TestE2E_ASendThatRacedAStopStillRuns.
+  test("tier 6: a turn this client already submitted queues the next message, against the REAL idle capability set", () => {
+    expect(
+      deriveSendQueueAvailability({
+        statusType: "idle",
+        capabilities: daemonIdleCapabilities(),
+        hasPendingSend: true,
+      }),
+    ).toEqual({ canSend: false, canQueue: true });
+  });
+
+  test("tier 6 leaves tier 5 alone: the same idle capabilities with no pending send are still plain-send", () => {
+    expect(
+      deriveSendQueueAvailability({
+        statusType: "idle",
+        capabilities: daemonIdleCapabilities(),
+        hasPendingSend: false,
+      }),
+    ).toEqual({ canSend: true, canQueue: false });
+  });
+
+  test("tier 1 still wins: a pending send does not make an ended or closed session composable", () => {
+    for (const statusType of ["ended", "closed"]) {
+      expect(
+        deriveSendQueueAvailability({ statusType, capabilities: daemonIdleCapabilities(), hasPendingSend: true }),
+      ).toEqual({ canSend: false, canQueue: false });
+    }
+  });
+
+  // The veto tier 6 must not inherit still applies where it is meaningful: a
+  // thread the daemon reports as ACTIVE with queue:false really has no queue.
+  test("tier 3 survives tier 6: an active thread with queue:false is still both-false, pending send or not", () => {
+    expect(
+      deriveSendQueueAvailability({
+        statusType: "active",
+        capabilities: caps({ queue: false }),
+        hasPendingSend: true,
+      }),
+    ).toEqual({ canSend: false, canQueue: false });
   });
 });

@@ -24,9 +24,9 @@ import { Composer } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey } from "./draft";
 import {
+  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
-  settlePendingTurnsProjectionForTests,
 } from "./queue/pendingTurnsStore";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 
@@ -63,6 +63,46 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   shutdown: true,
   changeModel: true,
   queue: true,
+  goal: true,
+  rename: true,
+};
+
+// What a real daemon publishes for an IDLE thread, read off
+// server/appwire_runtime.go's appCapabilities: `active` is false there, and
+// both Steer and Queue are gated on it, so an idle thread advertises
+// queue:false. Clear and ForkFromTurn are hardcoded false. This is the set the
+// client is actually holding in the window kata 8c65 describes, and it is not
+// FULL_CAPABILITIES.
+const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: false,
+  interrupt: true,
+  compact: true,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: true,
+  changeModel: true,
+  queue: false,
+  goal: true,
+  rename: true,
+};
+
+// What the HUB stamps for a thread with no daemon behind it
+// (cmd/serf-hub/app_threadread.go's pastThreadCapabilities): send stays true
+// because turn/start alone carries the auto-resume retry loop that wakes the
+// session (app_rpc.go's resumeTurnStartThread), while steer, interrupt and
+// queue are false because they gate on an active turn a cold thread has none
+// of. This is what the client holds for a "notLoaded" status.
+const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: false,
+  interrupt: false,
+  compact: true,
+  clear: false,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  queue: false,
   goal: true,
   rename: true,
 };
@@ -177,22 +217,6 @@ class CountingRecoveryStorage extends MutationOutboxIndexedDB {
     this.recoveryInputWrites += 1;
     return super.updateRecoveryInput(...args);
   }
-}
-
-// Awaits the durable projection work itself rather than polling the DOM for
-// its effects. The composer starts that work from React effects, so a round
-// has to flush React and then re-check: a round that awaited nothing is the
-// proof that nothing is left. The bound is a tripwire for a livelock - it
-// throws rather than letting a test pass on a half-settled projection.
-async function settleRecoveryProjection(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) {
-    let awaited = 0;
-    await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
-    });
-    if (awaited === 0) return;
-  }
-  throw new Error("pending-turns projection never settled");
 }
 
 async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
@@ -911,6 +935,217 @@ test("active session with queue capability: Send routes to turn/queue", async ()
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
 });
 
+// kata 8c65. Two messages sent quickly: the first turn/start is ACCEPTED (the
+// daemon answers every turn/start with projectionState "pending" -
+// agent/session_client_mutation_queue.go's acceptedClientMutationProjection)
+// but no thread/status/changed has arrived yet, so the thread still reads idle
+// and still carries the IDLE capability set. The second message used to be
+// built as another turn/start and refused with
+// Conflict("turn is already active").
+//
+// This has to be mounted rather than unit-tested on the routing table: the
+// table takes the capability set as an argument, so it cannot notice that the
+// set it was handed is one no daemon ever sends. The first attempt at this fix
+// was proved only against an all-true fixture, routed to BOTH_UNAVAILABLE
+// against the real idle set, and disabled Send outright.
+test("a second message composed before the first turn's status frame arrives queues instead of bouncing", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
+  });
+  // The response's own `turn` never reaches the model - MutationDispatcher
+  // reads the receipt and nothing else - and no thread/status/changed is
+  // pushed, so the thread stays idle with its idle capabilities throughout.
+  // That IS the window.
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+  }));
+
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  await user.type(textarea(), "second message");
+  // Still composable: an idle queue:false means "no turn to queue behind", and
+  // must never be read as "this session takes no input".
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
+
+  await waitFor(() => {
+    const queued = fake.calls.find((c) => c.method === "turn/queue");
+    expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "second message" }] });
+  });
+  // turn/queue carries no expectedTurnId to be wrong about: appwire v3 dropped
+  // the field from the method outright (appwire/types.go's ProtocolVersion
+  // note), which is what lets the queue land before any turn id exists.
+  expect(fake.calls.find((c) => c.method === "turn/queue")?.params).not.toHaveProperty("expectedTurnId");
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
+});
+
+function routedCalls(fake: FakeClient): string[] {
+  return fake.calls.filter((c) => c.method === "turn/start" || c.method === "turn/queue").map((c) => c.method);
+}
+
+// The same race, in its WIDEST form. A cold "notLoaded" thread is one the hub
+// auto-resumes on the first turn/start, and resuming means spawning a daemon -
+// so the gap before any status frame arrives is seconds, not one frame.
+//
+// The daemon exists by the time the queue goes out: MutationDispatcher
+// serializes per targetRef, so the second mutation is not dispatched until the
+// first turn/start has returned a receipt, and that receipt is what the
+// auto-resume produced. turn/queue has no resume loop of its own
+// (app_rpc.go gives one to turn/start alone), and it does not need one here.
+async function mountColdResumedThread(): Promise<FakeClient> {
+  const fake = await mountComposer("ref_a", {
+    status: { type: "notLoaded" },
+    serf: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+  });
+  // The real daemon reserves a turn id on the first turn/start, so every later
+  // turn/start is refused (agent's reserveAppTurnIDForStart -> Conflict).
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    if (starts > 1) {
+      throw new WireError("turn is already active", -32013, {
+        clientMutationId: params.clientMutationId,
+        serfErrorInfo: "conflict",
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    }
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied" as const,
+        threadId: "thread_a",
+        projectionState: "pending" as const,
+      },
+      turn: { id: "turn_1", status: "inProgress" as const, itemsView: "" },
+    };
+  });
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "pending" as const,
+    },
+  }));
+  return fake;
+}
+
+test("a cold auto-resumed session queues the second message rather than bouncing it too", async () => {
+  const user = userEvent.setup();
+  const fake = await mountColdResumedThread();
+
+  await user.click(textarea());
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  await user.type(textarea(), "second message");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
+  expect(routedCalls(fake)).toEqual(["turn/start", "turn/queue"]);
+});
+
+// The submit tooltip and the submit router have to read the SAME availability.
+// They did not: the tooltip read the raw table while handleFormSubmit replaced
+// it with plain-send for every ended status, "notLoaded" included. The button
+// promised to queue and then fired a turn/start that bounced - the original bug
+// plus a lie about what the button was about to do.
+test("the submit tooltip names the route the submit actually takes on a cold session", async () => {
+  const user = userEvent.setup();
+  const fake = await mountColdResumedThread();
+
+  await user.click(textarea());
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  await user.type(textarea(), "second message");
+  // The tooltip opens on a 300ms hover delay (widgets/tooltip's own test pins
+  // it), so this waits for the bubble rather than reading straight after.
+  fireEvent.mouseEnter(submitButton());
+  const promisedQueue = /queue until the agent stops/i.test((await screen.findByRole("tooltip")).textContent ?? "");
+
+  await user.click(submitButton());
+  await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
+
+  expect({ promisedQueue, queued: routedCalls(fake)[1] === "turn/queue" }).toEqual({
+    promisedQueue: true,
+    queued: true,
+  });
+});
+
+// Tier 6's justification is that a pending send is THIS client's own record of
+// what it just did and so cannot be stale. usePendingTurnEntries does not only
+// return that: pendingReconcile merges model.pendingMutations, the daemon's
+// session-wide projection, which reducer.ts writes only at hydrate and no
+// notification ever refreshes. That is the daemon's state arriving late - the
+// exact thing tier 6's comment says it is not - so it must not reach the
+// routing decision. Another tab's in-flight turn/start leaves this composer
+// alone.
+test("a turn/start pending for another client does not reroute this composer", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: {
+      ref: "ref_a",
+      capabilities: DAEMON_IDLE_CAPABILITIES,
+      queue: { revision: 0 },
+      pendingMutations: [
+        {
+          clientMutationId: "cm_from_another_tab",
+          method: "turn/start",
+          input: [{ type: "text", text: "someone else's message" }],
+          executionState: "accepted",
+          projectionState: "pending",
+        },
+      ],
+    },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "pending" as const,
+    },
+    turn: { id: "turn_1", status: "inProgress" as const, itemsView: "" },
+  }));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "pending" as const,
+    },
+  }));
+
+  await user.type(textarea(), "my own first message");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(routedCalls(fake)).toHaveLength(1));
+  expect(routedCalls(fake)).toEqual(["turn/start"]);
+});
+
 test("submitting an empty composer fires no request", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
@@ -1220,11 +1455,18 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
-// The drain route has the same doomed-without-a-turn shape as steer — the hub
-// rejects an empty expectedTurnId before forwarding — but the handler only
-// guarded the steer branch, so a Steer-click that routed to drain (non-empty
-// queue, or staged attachments) minted a durable poison intent instead of a
-// toast. That is the exact first stuck message of the kata-wr3s incident.
+// The drain route has the same doomed-without-a-turn shape as steer, but the
+// handler only guarded the steer branch, so a Steer-click that routed to drain
+// (non-empty queue, or staged attachments) minted a durable poison intent
+// instead of a toast. That is the exact first stuck message of the kata-wr3s
+// incident.
+//
+// The guard is still right; only its reason moved. The hub's empty-
+// expectedTurnId rejection is gone with the field (appwire v3 dropped it from
+// drain too, and handleAppTurnDrainAsSteer now validates nothing but ref,
+// input and clientMutationId). What refuses a turnless drain now is the agent:
+// "drain: no active turn to steer" at agent/session_queue.go:396, pinned by
+// agent/session_lifecycle_test.go's DrainAsSteerWithInput-while-idle case.
 test("Shift+Enter routing to drain with no active turn id toasts rather than minting a doomed drain", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -1350,7 +1592,7 @@ test("editing a rejected queue row merges it through the normal Composer", async
   if (!row) throw new Error("missing rejected queue row");
   await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("current work\n\nrejected draft");
   expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
   expect(screen.queryByText("rejected draft")).toBeNull();
@@ -1379,10 +1621,10 @@ test("sending recovered text uses current Composer routing and consumes the reco
     },
   }));
 
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("retry me");
   await user.click(submitButton());
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   // The wire call itself stays a waitFor: dispatch is deliberately
@@ -1400,7 +1642,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const recovered = await seedRejectedRecovery(storage, "ref_a", "one winner");
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("one winner");
   const otherTab = new MutationOutboxIndexedDB();
   await otherTab.resendRecovery(recovered.clientMutationId, {
@@ -1432,11 +1674,11 @@ test("a recovered draft nobody is touching stops writing itself back to IndexedD
   setMutationStorageForTests(storage);
   await seedRejectedRecovery(storage, "ref_a", "sitting still");
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("sitting still");
 
   const afterActivation = storage.recoveryInputWrites;
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect(storage.recoveryInputWrites).toBe(afterActivation);
 });
@@ -1453,7 +1695,7 @@ test("a slow recovery read still activates before the mount's projection work is
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(textarea().value).toBe("");
 
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect(textarea().value).toBe("slow to arrive");
 });
@@ -1464,10 +1706,10 @@ test("a slow recovery write is durable before the edit's projection work is awai
   const recovered = await seedRejectedRecovery(storage, "ref_a", "before");
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   await user.type(textarea(), "!");
 
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
 
   expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "before!" },
@@ -1480,21 +1722,21 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("edit me [image 1]");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
 
   await user.clear(textarea());
   await user.type(textarea(), "edited");
   await user.click(screen.getByRole("button", { name: "Remove proof.png" }));
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "edited" },
   ]);
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("edited");
   // Any remove control at all, not one named for this file: a tile carries
   // its filename in labels rather than as a text node, so a text query would
@@ -1509,15 +1751,15 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   const recovered = await seedRejectedRecovery(storage, "ref_a", "discard me");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("discard me");
   await user.clear(textarea());
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await settleRecoveryProjection();
+  await flushPendingTurnsProjectionForTests();
   expect(textarea().value).toBe("");
   expect(screen.queryByText("discard me")).toBeNull();
 });

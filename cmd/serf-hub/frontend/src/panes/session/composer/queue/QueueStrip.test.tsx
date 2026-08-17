@@ -13,6 +13,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
+  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
@@ -330,6 +331,90 @@ describe("durable recovery rows", () => {
   });
 });
 
+// Dismiss is the ONLY way a rejected Stop's recovery record leaves the strip,
+// so it owes what every other row action here already gives: the row locked
+// while the durable write runs, a failure reported rather than swallowed, and
+// no stale row left behind when the record turns out to be gone already
+// (kata fs0e).
+describe("dismiss a rejected Stop", () => {
+  async function renderRejectedStop(): Promise<{ record: MutationRecoveryRecord; row: HTMLElement }> {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const record = await seedRecovery("rejected", "", { method: "turn/interrupt", reason: "turn is not active" });
+    renderStrip(defaultProps());
+    const text = await screen.findByText(/Stop didn't reach the session/);
+    const row = text.closest("li");
+    if (!row) throw new Error("missing rejected interrupt row");
+    return { record, row };
+  }
+
+  test("locks the row while the discard is in flight, then clears it", async () => {
+    const { row } = await renderRejectedStop();
+    const discardRecovery = MutationOutboxIndexedDB.prototype.discardRecovery;
+    let releaseDiscard!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseDiscard = resolve;
+    });
+    vi.spyOn(MutationOutboxIndexedDB.prototype, "discardRecovery").mockImplementation(async function (
+      this: MutationOutboxIndexedDB,
+      clientMutationId: string,
+    ) {
+      await held;
+      return discardRecovery.call(this, clientMutationId);
+    });
+
+    fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+
+    await vi.waitFor(() => {
+      expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(true);
+    });
+
+    await act(async () => {
+      releaseDiscard();
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  test("a discard that fails is reported rather than swallowed", async () => {
+    const { row } = await renderRejectedStop();
+    vi.spyOn(MutationOutboxIndexedDB.prototype, "discardRecovery").mockRejectedValue(new Error("storage is full"));
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
+      ["error", expect.stringContaining("storage is full")],
+    ]);
+    // The record survived the failure, so the row has to stay clickable.
+    expect(screen.getByText(/Stop didn't reach the session/)).toBeTruthy();
+    expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(false);
+  });
+
+  test("a record already discarded elsewhere still leaves the strip", async () => {
+    const { record, row } = await renderRejectedStop();
+    // Discarded by another surface (a second tab, or this session's own
+    // Composer) after this projection last read: the durable record is gone,
+    // the row on screen is not, and the discard below reports "nothing to do".
+    const storage = new MutationOutboxIndexedDB();
+    expect(await storage.discardRecovery(record.clientMutationId)).toBe(true);
+    storage.close();
+    expect(within(row).getByRole("button", { name: "Dismiss" })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
+    expect(screen.queryByText(/queued messages/i)).toBeNull();
+  });
+});
+
 describe("row rendering", () => {
   async function hydrateWithTwoRows(fake: FakeClient) {
     await hydrate(fake, "ref_a", {
@@ -486,6 +571,36 @@ describe("edit", () => {
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("the full untruncated message");
     await waitFor(() => expect(calls).toEqual(["restore", "cancelQueued"]));
+  });
+
+  // The restore runs after the row is locked, so a failure there owes the row
+  // the same unlock every other path gives it. It also must not borrow the
+  // cancel's message: nothing was moved, so "Moved to the composer, but..."
+  // would describe an outcome the user did not get.
+  test("a restore that fails unlocks the row, says so, and cancels nothing", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
+      },
+    });
+    const onRestoreToComposer = vi.fn(() => {
+      throw new Error("composer is gone");
+    });
+    renderStrip(defaultProps({ onRestoreToComposer }));
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    });
+
+    expect(getToasts().map((toast) => [toast.kind, toast.text])).toEqual([
+      ["error", expect.stringContaining("composer is gone")],
+    ]);
+    expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
+    expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(false);
   });
 
   test("edit is disabled for an image-only queued entry (blank text)", async () => {
