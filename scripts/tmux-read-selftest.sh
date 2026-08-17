@@ -14,8 +14,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/tmux-read.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t tmux-read-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work tmux-read-selftest
+trap 'selftest_rm_scratch' EXIT
 
 # Each case gets its own fake-tmux bin dir + state dir, so scenarios never leak
 # call counts or session lists into each other.
@@ -25,7 +25,7 @@ new_case() {
 	# so a scenario that forgets to set it can't silently inherit a previous
 	# scenario's value.
 	FAKE_TMUX_SESSIONS=""
-	case_dir="$(mktemp -d "$work/case.XXXXXX")"
+	case_dir="$(mktemp -d "$work/case.XXXXXX")" || { echo "tmux-read-selftest: mktemp under \$work failed" >&2; exit 1; }
 	bin="$case_dir/bin"
 	state="$case_dir/state"
 	mkdir -p "$bin" "$state"

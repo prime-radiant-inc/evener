@@ -4,9 +4,11 @@ set -eu
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 . "$repo/scripts/live-eval-isolation.sh"
 
-fixture=$(mktemp -d -t serf-live-isolation-selftest.XXXXXX)
+. "$repo/scripts/selftest-lib.sh"
+
+selftest_scratch fixture serf-live-isolation-selftest
 cleanup() {
-	rm -rf -- "$fixture"
+	selftest_rm_scratch
 }
 trap cleanup EXIT
 
