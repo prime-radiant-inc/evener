@@ -8816,18 +8816,31 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 // past index's distinct working dirs, most-recently-used first, defaulting to
 // the 15-option cap when the request carries no limit.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
+	// RecentProjectDirs drops dirs that no longer exist on disk (issue #50),
+	// so every seeded WorkingDir must be a real directory.
+	root := t.TempDir()
+	mkdir := func(name string) string {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+		return dir
+	}
+	alpha := mkdir("alpha")
+	beta := mkdir("beta")
+
 	past := hubcore.NewPastIndex("")
 	now := time.Now().UTC()
 	metas := []schema.SessionMeta{
-		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}},
-		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/beta"}},
-		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}}, // older dup — dropped
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: beta}},
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}}, // older dup — dropped
 	}
 	for n := range 20 {
 		metas = append(metas, schema.SessionMeta{
 			ID:        fmt.Sprintf("02wMz5Txv1C3Hut0M8GC%02d", n),
 			UpdatedAt: now.Add(-time.Duration(n+4) * time.Minute),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: fmt.Sprintf("/proj-%02d", n)},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: mkdir(fmt.Sprintf("proj-%02d", n))},
 		})
 	}
 	past.SeedForTest(metas)
@@ -8847,16 +8860,16 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	if len(resp.Data) != 15 {
 		t.Fatalf("recent dirs=%d, want the default 15-option cap", len(resp.Data))
 	}
-	if resp.Data[0] != "/alpha" || resp.Data[1] != "/beta" {
-		t.Fatalf("recent dirs[0:2]=%v, want [/alpha /beta] (most recently used first)", resp.Data[:2])
+	if resp.Data[0] != alpha || resp.Data[1] != beta {
+		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
 	}
 
 	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
 	if err != nil {
 		t.Fatalf("ProjectsRecent limit=2: %v", err)
 	}
-	if len(limited.Data) != 2 || limited.Data[0] != "/alpha" || limited.Data[1] != "/beta" {
-		t.Fatalf("recent dirs limit=2 = %v, want [/alpha /beta]", limited.Data)
+	if len(limited.Data) != 2 || limited.Data[0] != alpha || limited.Data[1] != beta {
+		t.Fatalf("recent dirs limit=2 = %v, want [%s %s]", limited.Data, alpha, beta)
 	}
 }
 
