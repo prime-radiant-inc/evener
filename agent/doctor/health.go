@@ -329,6 +329,9 @@ func RenderHealth(r HealthResult) string {
 	}
 	fmt.Fprintf(&b, "longest_identical_run: tool=%s length=%d all_errors=%t\n",
 		dash(r.LongestIdenticalRun.Tool), r.LongestIdenticalRun.Length, r.LongestIdenticalRun.AllErrors)
+	if r.LongestIdenticalRun.Length == 0 {
+		b.WriteString("  (counts structural tool calls only; repetition salvaged into turn text is invisible here — see transcript --full-text)\n")
+	}
 	fmt.Fprintf(&b, "truncation_warnings: %d\n", r.TruncationWarnings)
 	fmt.Fprintf(&b, "steering: %s\n", renderCounts(r.Steering))
 	fmt.Fprintf(&b, "jobs: by_terminal_reason=%s zero_output_terminal=%d\n",

@@ -338,6 +338,22 @@ func TestRenderHealth_CompactTable(t *testing.T) {
 	}
 }
 
+// A zero-length longest_identical_run is not evidence of no repetition: the
+// metric counts only structural tool calls, and a salvaged partial response
+// carries its repeated calls as turn text, invisible here. The render must say
+// so and point at transcript --full-text; a nonzero run needs no caveat.
+func TestRenderHealth_ZeroIdenticalRunCarriesBlindnessCaveat(t *testing.T) {
+	out := RenderHealth(HealthResult{SessionID: "s"})
+	if !strings.Contains(out, "transcript --full-text") {
+		t.Errorf("zero-length run must carry the structural-blindness caveat pointing at transcript --full-text:\n%s", out)
+	}
+
+	withRun := RenderHealth(HealthResult{SessionID: "s", LongestIdenticalRun: IdenticalRun{Tool: "shell", Length: 4}})
+	if strings.Contains(withRun, "transcript --full-text") {
+		t.Errorf("nonzero run must not carry the caveat:\n%s", withRun)
+	}
+}
+
 // TestTranscriptHealth_NoResultToolCall covers the healthy-empty shape: a
 // session with no result-tool call at all has no "final end_turn=true" anchor,
 // so stale_notifications/user_corrections must both read zero, not guess.
