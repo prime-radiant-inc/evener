@@ -94,14 +94,18 @@ export async function settlePendingTurnsProjectionForTests(): Promise<number> {
 //
 // What it can settle is exactly what registers with trackProjectionWork, so a
 // round that found nothing is proof that nothing is left only while every
-// durable path registers before it can be observed. They all do now; the last
-// one that did not was submitWithPendingTracking, which registered nothing
-// until its own work had already finished, and a flush starting in that window
-// declared the projection settled with a send still in flight (kata 3p22).
+// durable path registers before it can be observed. Every path in THIS file
+// does: the last one that did not was submitWithPendingTracking, which
+// registered nothing until its own work had already finished, and a flush
+// starting in that window declared the projection settled with a send still in
+// flight (kata 3p22).
 //
-// Adding a durable path that is not tracked reopens that hole, and it reopens
-// it as a load-sensitive false green rather than a failure. pendingTurnsStore's
-// "a flush cannot settle while a submit is still in flight" pins the property.
+// That is a claim about this file, not about every caller. A path that starts
+// durable work and only registers it a microtask later is invisible to a round
+// that snapshots first - Composer's queueRecoveryPersistence chains that way
+// (kata 5meh). Adding one reopens the hole as a load-sensitive false green
+// rather than a failure. pendingTurnsStore's "a flush cannot settle while a
+// submit is still in flight" pins the property for the paths here.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
