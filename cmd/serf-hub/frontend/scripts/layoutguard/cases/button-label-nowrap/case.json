@@ -1,0 +1,16 @@
+{
+  "name": "button-label-nowrap",
+  "description": "Button: a label squeezed by a flex-row sibling must stay on one line inside the fixed-height box (the credentials header's '+ Add provider instance' wrapped onto three lines and spilled out)",
+  "cssFiles": ["styles/tokens.css", "widgets/button/button.module.css"],
+  "viewport": {
+    "width": 1182,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/button/button.module.css: .button { white-space: nowrap } (deleted)",
+    "verified": "2026-08-17",
+    "expect": "fail"
+  }
+}

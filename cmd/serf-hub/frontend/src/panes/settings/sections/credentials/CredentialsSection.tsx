@@ -22,7 +22,6 @@ import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
-  help: requireClass(styles.help, "CredentialsSection.module.css", "help"),
   error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
   groups: requireClass(styles.groups, "CredentialsSection.module.css", "groups"),
   group: requireClass(styles.group, "CredentialsSection.module.css", "group"),
@@ -173,11 +172,6 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   return (
     <div className={CLASS.root}>
       <div className={CLASS.headerRow}>
-        <p className={CLASS.help}>
-          Provider instances and their credentials. Keys are stored in <code>~/.serf/credentials.toml</code> (chmod
-          600). Env vars in the hub process take precedence only when no file entry exists. The UI never displays stored
-          values.
-        </p>
         <Button onClick={() => setOpenEditor({ kind: "add" })}>+ Add provider instance</Button>
       </div>
 
