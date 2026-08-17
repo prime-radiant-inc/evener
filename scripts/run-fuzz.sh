@@ -48,6 +48,8 @@ TARGETS=(
 	"native:.:./appwire:FuzzWireTypes::"
 	"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
 	"native:agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
+	"native:agent:./schema:FuzzSessionDisplayName::snapshot.go#SessionDisplayName"
+	"native:agent:./schema:FuzzHookAnnouncement::turn.go#Announcement"
 	"native:agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
 	"native:agent:./internal/jobstore:FuzzJobstoreLifecycleProgram::"
 	"native:agent:./internal/jobstore:FuzzJobstorePackageUnion::"
