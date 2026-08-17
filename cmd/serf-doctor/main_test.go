@@ -1227,3 +1227,26 @@ func TestRun_TranscriptTextMaxCapAndPrecedence(t *testing.T) {
 		t.Errorf("--full-text must take precedence over --text-max:\n%s", out.String())
 	}
 }
+
+// TestRun_TranscriptRejectsNonPositiveTextMax pins the one spelling that could
+// still mislead. The kata that produced --full-text suggested "--text-max N
+// (0 = unbounded)", and the usual CLI convention reads any non-positive cap the
+// same way. Silently applying the 200-byte default to it would answer "lift the
+// cap" by applying one, which is the failure this flag exists to fix.
+func TestRun_TranscriptRejectsNonPositiveTextMax(t *testing.T) {
+	base, sid, turnText := fixtureWithSalvagedLoop(t)
+
+	for _, arg := range []string{"0", "-1"} {
+		var out, errb bytes.Buffer
+		code := run([]string{"transcript", sid, "--state-dir", base, "--text-max", arg}, &out, &errb)
+		if code == 0 {
+			t.Errorf("--text-max %s: exit 0, want non-zero", arg)
+		}
+		if !strings.Contains(errb.String(), "--full-text") {
+			t.Errorf("--text-max %s: error must name --full-text, got %q", arg, errb.String())
+		}
+		if strings.Contains(out.String(), turnText[:200]) {
+			t.Errorf("--text-max %s rendered a capped transcript instead of refusing:\n%s", arg, out.String())
+		}
+	}
+}
