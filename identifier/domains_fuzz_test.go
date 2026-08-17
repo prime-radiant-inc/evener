@@ -123,6 +123,27 @@ func FuzzJobIDBoundary(f *testing.F) {
 	f.Add(strings.Repeat("job_", 40), -1)
 
 	f.Fuzz(func(t *testing.T, jobID string, maxLength int) {
+		// Minting is the other half of the seam: a job ID is only useful if the
+		// owner it embeds survives a round trip back out.
+		owner := MustNewSessionID()
+		minted, err := NewJobID(owner)
+		if err != nil {
+			t.Fatalf("NewJobID(%q): %v", owner, err)
+		}
+		if err := ValidateJobID(minted); err != nil {
+			t.Fatalf("minted job ID %q rejected by ValidateJobID: %v", minted, err)
+		}
+		if got, err := JobOwnerSessionID(minted); err != nil || got != owner {
+			t.Fatalf("owner of minted %q = %q (err=%v), want %q", minted, got, err, owner)
+		}
+		if MustNewJobID(owner) == minted {
+			t.Fatal("two job IDs for the same owner collided; the random suffix is not random")
+		}
+		// An owner that is not a session ID must be refused, not embedded.
+		if _, err := NewJobID(jobID); err == nil && ValidateSessionID(jobID) != nil {
+			t.Fatalf("NewJobID accepted %q, which is not a valid session ID", jobID)
+		}
+
 		if err := ValidateJobID(jobID); err == nil {
 			owner, err := JobOwnerSessionID(jobID)
 			if err != nil {

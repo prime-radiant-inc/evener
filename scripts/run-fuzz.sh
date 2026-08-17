@@ -243,6 +243,7 @@ TARGETS=(
 	"native:identifier:.:FuzzIdentifierDomainIDs::domains.go"
 	"native:identifier:.:FuzzJobIDBoundary::job.go"
 	"native:identifier:.:FuzzGitPointerParsing::git.go"
+	"native:identifier:.:FuzzProjectResolution::project.go"
 	"native:fuzz:./schemagen:FuzzSchemaGeneration::schemagen.go;source.go;schema.go"
 	"native:fuzz:./typegen:FuzzRegistrySemanticRoundTrip::registry.go;typegen.go"
 	"native:agent:.:FuzzSubagentPolicyProgram::subagents.go"
