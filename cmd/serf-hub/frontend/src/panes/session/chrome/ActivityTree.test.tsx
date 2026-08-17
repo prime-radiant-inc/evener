@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -643,6 +643,25 @@ describe("ActivityTree", () => {
     expect(row.textContent).not.toContain("12s");
     expect(row.textContent).not.toContain("↑");
     expect(row.textContent).not.toContain("↓");
+  });
+
+  // quietForMs is frozen at snapshot time, and a quiet delegate emits no
+  // frames to refetch the snapshot: the dense row must re-derive the age from
+  // the quiet anchor and its own ticking clock, or "quiet 12s" sticks forever
+  // while the real silence grows.
+  test("a quiet delegate's age keeps ticking between snapshots", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const row = screen.getByRole("treeitem", { name: "Inspect the repo" });
+    expect(row.textContent).toContain("12s");
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(row.textContent).toContain("42s");
+    expect(row.textContent).not.toContain("12s");
   });
 
   test("continuation strip renders after the session's rows and calls onContinue", async () => {

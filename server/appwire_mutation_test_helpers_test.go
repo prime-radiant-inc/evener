@@ -65,7 +65,7 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 			s.mu.RLock()
 			processing := s.processing
 			reservedTurnID := s.appReservedTurnID
-			closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+			closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
 			s.mu.RUnlock()
 			if closed {
 				return appwire.TurnQueueResponse{}, appwire.Conflict("session is closed")
@@ -97,7 +97,7 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 			hasInput := strings.TrimSpace(text) != "" || len(images) > 0
 			s.mu.RLock()
 			processing := s.processing
-			closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+			closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
 			s.mu.RUnlock()
 			if closed {
 				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("session is closed")

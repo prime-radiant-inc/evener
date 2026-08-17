@@ -189,8 +189,8 @@ class PausedRecoveryReadStorage extends MutationOutboxIndexedDB {
 // the way a loaded machine makes the real work land: mount-to-activation
 // latency on this path measured 124-1246ms across 12 runs (kata 3c7t) while a
 // React flush is single-digit ms. Nothing waits on the delay - the tests await
-// the operation's own completion through settleRecoveryProjection - so the
-// number only has to be long enough that an unawaited path cannot have
+// the operation's own completion through flushPendingTurnsProjectionForTests -
+// so the number only has to be long enough that an unawaited path cannot have
 // finished yet.
 const SLOW_RECOVERY_WORK_MS = 150;
 
@@ -1401,10 +1401,18 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
 });
 
-// Steer and Stop only act on an in-flight turn, so neither is rendered
-// during the window after status flips "active" but before activeTurnId
-// arrives - the same isTurnActive gate their handlers need.
-test("neither steer nor stop renders during the window after status flips active but before activeTurnId arrives", async () => {
+// The window after status flips "active" and before activeTurnId arrives is
+// where the two controls part company.
+//
+// Steer redirects a turn in flight and its handler needs the id, so it stays
+// behind isTurnActive. Stop does not: threadsStore.interrupt sends turn/interrupt
+// with the ref alone ("Stop is session-scoped, always"), and the daemon decides
+// on the session's own quiescence. Gating the BUTTON on an id the REQUEST does
+// not carry took Stop away from a session the user can see working -- and this
+// window is not a sliver, since the daemon publishes active from the turn
+// reservation it takes at turn/start and the name only lands with turn/started
+// behind pre-turn work (kata vewa/5gdv).
+test("stop renders during the window after status flips active but before activeTurnId arrives, and steer does not", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1421,9 +1429,22 @@ test("neither steer nor stop renders during the window after status flips active
 
   await user.type(textarea(), "hi");
   expect(screen.queryByTestId("composer-steer")).toBeNull();
-  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+
+  // And it is a working button, not a decoration: the request it sends names
+  // the ref and nothing else, which is why it needs no id to exist.
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.click(screen.getByTestId("composer-stop"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
 
 // Shift+Enter reaches the steer handler directly off the keydown event, so

@@ -288,10 +288,23 @@ export class AppwireClient {
       // terminal failure — there is no prior "ready" to reconnect back to,
       // and connect() must reject rather than retry silently.
       this.teardownFailedSocket();
+      this.noteProtocolFailure(err);
       this.failAllPending(err instanceof Error ? err : new Error(String(err)));
       this.setState("closed");
       throw err;
     }
+  }
+
+  // noteProtocolFailure records the terminal reason when a handshake failure
+  // is one no retry can fix (see terminalReasonValue). Shared by the initial
+  // connect (performHandshake) and every reconnect attempt, so both paths
+  // leave the same evidence for ConnectionBanner's "reload this page" copy.
+  private noteProtocolFailure(error: unknown): boolean {
+    if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
+      this.terminalReasonValue = "protocol";
+      return true;
+    }
+    return false;
   }
 
   // dialAndHandshake dials a fresh socket and runs it through
@@ -401,8 +414,7 @@ export class AppwireClient {
       // that instead of scheduling another attempt on a closed client.
       if (this.isClosed()) return;
       this.teardownFailedSocket();
-      if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
-        this.terminalReasonValue = "protocol";
+      if (this.noteProtocolFailure(error)) {
         this.setState("closed");
         return;
       }

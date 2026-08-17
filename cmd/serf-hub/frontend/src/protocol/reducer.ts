@@ -339,6 +339,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
     capabilities: thread.serf.capabilities,
+    capabilitySource: "read",
     goal: thread.serf.goal ?? null,
     contextUsed: thread.serf.contextUsed ?? 0,
     contextWindow: thread.serf.contextWindow ?? 0,
@@ -841,6 +842,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // state-gates nothing (the Codex bridge) sends none, and clearing on
         // absence would strip the session of every action it advertised.
         capabilities: n.params.capabilities ?? model.capabilities,
+        capabilitySource: n.params.capabilities ? "statusFrame" : model.capabilitySource,
         lastFrameAt: now,
       };
     }

@@ -759,7 +759,7 @@ func TestAppStatusPreservesAttentionStates(t *testing.T) {
 		appwire.ThreadStatusSystemError: appwire.ThreadStatusSystemError,
 	}
 	for state, want := range tests {
-		if got := appStatus(state, false); got != want {
+		if got := appStatus(state, false, false); got != want {
 			t.Fatalf("appStatus(%q)=%q, want %q", state, got, want)
 		}
 	}

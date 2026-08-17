@@ -59,19 +59,26 @@ measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; 
 # argument list as a redirection to a file named "0".
 pct_of() { awk -v c="$1" -v t="$2" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}'; }
 
-# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
-# uses the Darwin per-user temp directory instead, which put every run's scratch
-# outside the dev-tooling wave's per-suite isolation — and so outside the leftover
-# check that is supposed to catch exactly this.
+# An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
+# for -t and uses the Darwin per-user temp directory instead, which put every
+# run's scratch outside the dev-tooling wave's per-suite isolation — and so
+# outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
-work_dir="$(mktemp -d "${tmpbase%/}/serf-covunion.XXXXXX")"
-measured_file="$work_dir/measured.txt"
-: >"$measured_file"
+# The name is chosen and the trap armed BEFORE the directory exists; see
+# test-coverage-floor.sh for the signal window this closes. $$ is unique among
+# live processes, so concurrent runs cannot collide.
+work_dir="${tmpbase%/}/serf-covunion.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and logs,
 # because the failure line printed their path.
 cleanup_work() { [ "$fail" -eq 0 ] && rm -rf "$work_dir"; }
 trap cleanup_work EXIT
+# If the mkdir fails, the directory is not ours: a squatter, or a kept
+# failed-run leftover after pid reuse. Disarm the trap before exiting so the
+# fail=0 cleanup cannot rm -rf a directory this process did not create.
+mkdir "$work_dir" || { trap - EXIT; echo "coverage-union: scratch $work_dir already exists or cannot be created" >&2; exit 1; }
+measured_file="$work_dir/measured.txt"
+: >"$measured_file"
 
 printf '%-10s %10s %10s %8s %8s %8s %8s\n' "module" "covered" "total" "union%" "test%" "fuzz%" "floor"
 for m in $modules; do

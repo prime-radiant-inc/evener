@@ -10,7 +10,7 @@ import (
 // to the appwire thread status, defaulting unknown states to idle.
 func TestAppStatus(t *testing.T) {
 	// A processing session is always Active regardless of the recorded state.
-	if got := appStatus(appwire.ThreadStatusIdle, true); got != appwire.ThreadStatusActive {
+	if got := appStatus(appwire.ThreadStatusIdle, true, false); got != appwire.ThreadStatusActive {
 		t.Fatalf("processing session status=%q, want active", got)
 	}
 
@@ -27,7 +27,7 @@ func TestAppStatus(t *testing.T) {
 		"":                              appwire.ThreadStatusIdle, // default
 	}
 	for state, want := range cases {
-		if got := appStatus(state, false); got != want {
+		if got := appStatus(state, false, false); got != want {
 			t.Errorf("appStatus(%q,false)=%q, want %q", state, got, want)
 		}
 	}

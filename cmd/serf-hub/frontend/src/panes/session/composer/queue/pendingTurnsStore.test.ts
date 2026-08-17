@@ -117,6 +117,41 @@ test("a local commit failure reports the exact error and never creates optimisti
   expect(pending.result.current).toEqual([]);
 });
 
+// The settle helper can only await what registered with trackProjectionWork.
+// A submit whose work registers no earlier than its own completion is therefore
+// invisible to a flush that starts first: round one finds nothing outstanding,
+// declares the projection settled, and the test asserts against a pre-commit
+// snapshot. That is kata 3p22's flake, and it is a property, not a rate - so
+// this test pins the property and never counts failures.
+test("a flush cannot settle while a submit is still in flight", async () => {
+  let releaseSubmit: () => void = () => undefined;
+  const submitting = new Promise<void>((resolve) => {
+    releaseSubmit = resolve;
+  });
+
+  const submitted = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "in flight", onFailure: () => undefined },
+    () => submitting,
+  );
+
+  let flushResolved = false;
+  const flushing = flushPendingTurnsProjectionForTests().then(() => {
+    flushResolved = true;
+  });
+
+  // Give the flush every chance to finish early: more macrotask hops than its
+  // own settle round takes. If the submit is tracked, it cannot return here.
+  for (let hop = 0; hop < 5; hop += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  expect(flushResolved).toBe(false);
+
+  releaseSubmit();
+  await submitted;
+  await flushing;
+  expect(flushResolved).toBe(true);
+});
+
 test("recovery action wrappers refresh the durable projection", async () => {
   let mutationId = 0;
   const storage = new MutationOutboxIndexedDB({

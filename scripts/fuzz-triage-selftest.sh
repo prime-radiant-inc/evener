@@ -16,8 +16,8 @@ set -uo pipefail
 triage="$(cd "$(dirname "$0")" && pwd)/fuzz-triage.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t fuzz-triage-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work fuzz-triage-selftest
+trap 'selftest_rm_scratch' EXIT
 
 # assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
 # Distinct from the lib's file-based assert_has: every call site here already

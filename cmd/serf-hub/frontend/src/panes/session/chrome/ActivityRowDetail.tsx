@@ -84,11 +84,15 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
   const subject = subjectOf(row);
   const bytes = `${subject.outputBytes}b`;
   if (row.live) {
+    // The anchor wins over quietForMs: quietForMs is frozen at snapshot time
+    // and a quiet subject emits no frames to refresh it, while the anchor plus
+    // the ticking `now` keeps counting real silence. The frozen value is only
+    // a last resort for a snapshot with no anchor at all.
     const segments: string[] = [
-      subject.quietForMs !== undefined && subject.quietForMs !== null
-        ? `${subject.status} ${formatQuietAge(subject.quietForMs)}`
-        : subject.quietAnchor
-          ? `${subject.status} ${formatQuietAge(now - quietAnchorMillis(subject.quietAnchor))}`
+      subject.quietAnchor
+        ? `${subject.status} ${formatQuietAge(now - quietAnchorMillis(subject.quietAnchor))}`
+        : subject.quietForMs !== undefined && subject.quietForMs !== null
+          ? `${subject.status} ${formatQuietAge(subject.quietForMs)}`
           : subject.status,
       bytes,
     ];

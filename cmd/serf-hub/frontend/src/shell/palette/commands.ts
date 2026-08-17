@@ -346,9 +346,14 @@ export function buildCommands(): Command[] {
       keywords: ["cancel", "stop"],
       scope: "session",
       capability: "interrupt",
+      // No hasActiveTurn gate, for the same reason /model has no busy gate
+      // below: only the daemon knows. turn/interrupt names no turn (appwire v3)
+      // and its precondition is the session's own quiescence, so answering "is
+      // a turn in flight" here can only refuse a Stop the daemon would have
+      // taken -- and activeTurnId is exactly what is missing while a reserved
+      // turn works through its pre-turn work (kata vewa/5gdv).
       run: (ctx) => {
-        const model = focusedModel(ctx.sessionRef);
-        if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("interrupt failed: no active turn");
+        if (!ctx.sessionRef) return blocked("interrupt failed: no session");
         return threadsStore.getState().interrupt(ctx.sessionRef);
       },
     },

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 
 	"github.com/spf13/afero"
@@ -423,6 +424,39 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	return result, true, err
 }
 
+// sessionIsQuiesced is the agent's one answer to "has this session stopped
+// doing anything", and it is the precondition every session-scoped control
+// mutation gets to consult. Control mutations name no turn (appwire v3 dropped
+// expectedTurnId from all of them), so an id the client happens to hold is
+// never the question; whether there is work to act on is.
+//
+// It takes TWO facts because there is a window where each is false on its own
+// and the session is nonetheless working:
+//
+//   - running: the session has entered SessionProcessing, or has work queued
+//     that will resume it without the user (Session.WireState).
+//   - claimedTurnID: a turn accepted by turn/start and claimed by the drain
+//     loop, which has not completed. Between the claim and SessionProcessing
+//     lies every turn's PRE-TURN WORK -- slash-command expansion runs an inline
+//     shell span there, seconds wide -- and throughout it the daemon publishes
+//     status=active off its own reservation while WireState still says settled.
+//     Stop was refused for the whole of that window, to users looking straight
+//     at a Stop button (kata vewa).
+//
+// The two are sampled separately, and must be: WireState reaches for locks the
+// mutation-store serializer may never wait on, so it cannot be read from inside
+// the serialized callback that reads the snapshot. This function is where that
+// constraint is written down rather than left as an anonymous condition.
+//
+// The daemon's own answer (server/appwire_runtime.go's appStatus, which reads
+// `processing || turnReserved`) is this same predicate projected onto what the
+// daemon can see. They are deliberately the same shape: the status the wire
+// publishes, the capabilities published beside it, and the precondition that
+// decides whether Stop lands must not be able to disagree.
+func sessionIsQuiesced(running bool, claimedTurnID string) bool {
+	return !running && strings.TrimSpace(claimedTurnID) == ""
+}
+
 // InterruptClientMutation persists an interrupt fence under the lifecycle
 // serializer, then releases it before cancellation and runner waiting. The
 // runner may finalize the fence from completeClientMutationTurnWithState; if it
@@ -439,20 +473,19 @@ func (s *Session) InterruptClientMutation(
 	if err != nil {
 		return appwire.TurnInterruptResponse{}, err
 	}
-	// Stop cancels whatever is running, so its precondition is the fact the wire
-	// publishes as the thread's status rather than an id the client may not
-	// hold. Sampled here, outside the store serializer, because WireState
-	// reaches for the session lock, the input queue and the notification set,
-	// and the serializer must never wait on any of those. The turn can settle
-	// between this sample and the fence below; a Stop pressed as its turn ended
-	// then cancels nothing, which is the outcome it asked for.
-	sessionProcessing := s.WireState() == string(SessionProcessing)
+	// Half of sessionIsQuiesced, sampled HERE rather than inside the callback
+	// below: WireState reaches for the session lock, the input queue and the
+	// notification set, and the store serializer must never wait on any of
+	// those. The turn can settle between this sample and the fence; a Stop
+	// pressed as its turn ended then cancels nothing, which is the outcome it
+	// asked for.
+	sessionRunning := s.WireState() == string(SessionProcessing)
 	lookup, err := s.clientMutations.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is already pending"))
 			return nil
 		}
-		if !sessionProcessing {
+		if sessionIsQuiesced(sessionRunning, snapshot.ActiveTurnID) {
 			rejectClientMutation(record, appwire.Conflict("session is not processing"))
 			return nil
 		}

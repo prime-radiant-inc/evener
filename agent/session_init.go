@@ -1696,6 +1696,13 @@ func (s *Session) logPluginLoadDiag(p plugin.Instance) {
 // is the anomaly: on a true resume the kind is "resume", which startup-only
 // matchers (startup|clear|compact) must not match, so delivered should be 0.
 // The entry is tagged outcome=failure in that case so it greps out of the noise.
+//
+// The history it weighs is conversation, counted by conversationSignals,
+// never the raw length of s.history. A dispatch seeds a HOOK_COMPLETED turn per
+// hook it runs (the runner's HookEnd callback records them before
+// RunSessionStartFor returns), so a detector reading raw history would count its
+// own dispatch as prior history and flag every fresh session that runs a
+// SessionStart hook — the dilution kata 6p54 was filed for.
 func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, delivered int) {
 	if s == nil || s.stateDir == "" {
 		return
@@ -1704,19 +1711,19 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 	if k == "" {
 		k = string(plugin.SessionStartKindStartup)
 	}
-	historyTurns := len(s.history)
+	historyTurns, modelResponses := s.conversationSignals()
 	outcome := "success"
 	var failures []string
-	if delivered > 0 && (historyTurns > 0 || s.modelResponses > 0) {
+	if delivered > 0 && (historyTurns > 0 || modelResponses > 0) {
 		outcome = "failure"
 		failures = append(failures, fmt.Sprintf(
 			"SessionStart hooks re-injected: kind=%s delivered=%d on a session with prior history (historyTurns=%d modelResponses=%d) — a resume/restart should pass kind=resume and deliver 0",
-			k, delivered, historyTurns, s.modelResponses))
+			k, delivered, historyTurns, modelResponses))
 	}
 	entry := sessionlog.SessionLogEntry{
 		Kind:     "advisory",
 		Action:   "session_start_hooks",
-		Summary:  fmt.Sprintf("SessionStart hooks dispatched: kind=%s delivered=%d historyTurns=%d modelResponses=%d", k, delivered, historyTurns, s.modelResponses),
+		Summary:  fmt.Sprintf("SessionStart hooks dispatched: kind=%s delivered=%d historyTurns=%d modelResponses=%d", k, delivered, historyTurns, modelResponses),
 		Outcome:  outcome,
 		Failures: failures,
 	}
@@ -1726,6 +1733,29 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 		return
 	}
 	_ = log.Append(entry)
+}
+
+// conversationSignals reports the two numbers the re-injection detector weighs,
+// read together under one lock so they describe the same instant.
+//
+// The turn count is conversation only, excluding the HOOK_COMPLETED records
+// that report a hook ran. It answers "does this session already carry a
+// conversation?" — the question the detector asks — with a number no hook
+// dispatch can inflate. modelResponses is guarded by the same mutex (see the
+// field's documentation on Session), and the detector reaches it on the drain
+// path, where steering turns append from other goroutines.
+func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.history {
+		if t.Kind != schema.TurnHookCompleted {
+			historyTurns++
+		}
+	}
+	return historyTurns, s.modelResponses
 }
 
 func (s *Session) runDeferredRestoreSideEffects() error {

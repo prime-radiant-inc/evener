@@ -71,14 +71,19 @@ floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
 
 
-# An explicit template, not `mktemp -t`: macOS's mktemp ignores TMPDIR for -t and
-# uses the Darwin per-user temp directory instead, which put every run's scratch
-# outside the dev-tooling wave's per-suite isolation — and so outside the leftover
-# check that is supposed to catch exactly this.
+# An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
+# for -t and uses the Darwin per-user temp directory instead, which put every
+# run's scratch outside the dev-tooling wave's per-suite isolation — and so
+# outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
-profiles_dir="$(mktemp -d "${tmpbase%/}/serf-testcov.XXXXXX")"
-measured_file="$profiles_dir/measured.txt"
-: >"$measured_file"
+# The name is chosen and the trap armed BEFORE the directory exists. With
+# `mktemp -d` first and the trap a few lines later, a signal could land after
+# the directory was created but before any cleanup knew about it — mid-mktemp
+# the shell does not even hold the name yet — and the scratch was abandoned.
+# The kill selftests signal a run the instant its scratch appears, which is
+# exactly that window. $$ is unique among live processes, so concurrent runs
+# cannot collide; a stale same-pid leftover makes the mkdir fail loudly.
+profiles_dir="${tmpbase%/}/serf-testcov.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and the
 # per-module go test logs, because the failure line just printed their path and
@@ -87,6 +92,12 @@ fail=0
 # suite for.
 cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
 trap cleanup_profiles EXIT
+# If the mkdir fails, the directory is not ours: a squatter, or a kept
+# failed-run leftover after pid reuse. Disarm the trap before exiting so the
+# fail=0 cleanup cannot rm -rf a directory this process did not create.
+mkdir "$profiles_dir" || { trap - EXIT; echo "test-coverage-floor: scratch $profiles_dir already exists or cannot be created" >&2; exit 1; }
+measured_file="$profiles_dir/measured.txt"
+: >"$measured_file"
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"
 for m in $modules; do
 	[ -f "$repo_root/$m/go.mod" ] || { printf '%-10s %s\n' "$m" "(no module)"; continue; }

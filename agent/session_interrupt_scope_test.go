@@ -123,6 +123,66 @@ func TestInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 	}
 }
 
+// TestInterruptStopsAClaimedTurnBeforeTheSessionIsProcessing is kata vewa: the
+// pre-turn window, which every turn passes through and in which Stop was
+// refused.
+//
+// A turn/start is accepted and claimed -- the durable snapshot names the turn,
+// and the daemon publishes status=active off that reservation, so the composer
+// draws a working session and offers Stop. The session itself has not entered
+// SessionProcessing yet: it is still doing pre-turn work (slash-command
+// expansion, which runs an inline shell span, is the widest instance). So
+// WireState() reports a settled session, and a Stop pressed against a session
+// the user can see working was rejected with "session is not processing".
+//
+// The precondition's own comment claimed it sampled "the fact the wire
+// publishes as the thread's status". It did not: the wire's active comes from
+// the daemon's reservation, this sampled the session's own state, and the two
+// disagree for the whole of pre-turn work.
+//
+// The rule this encodes: Stop is available whenever the session is not
+// quiesced. A claimed turn is work in progress even before the model round
+// starts, and cancelling it is exactly what the user asked for.
+func TestInterruptStopsAClaimedTurnBeforeTheSessionIsProcessing(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-claimed-not-yet-processing",
+		Input:            []appwire.InputItem{{Type: "text", Text: "/park"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+
+	// The window's two defining facts. Guarded so a change in either one turns
+	// this into a visible premise failure rather than a silent pass.
+	if got := sess.WireState(); got == string(SessionProcessing) {
+		t.Fatalf("session WireState = %q: pre-turn work is over, so this test is no longer in the window it names", got)
+	}
+	claimedTurn := sess.clientMutations.snapshot().ActiveTurnID
+	if claimedTurn == "" {
+		t.Fatal("no durable turn was claimed, so the daemon would not be publishing an active status here and there is nothing for Stop to cancel")
+	}
+
+	cancels := 0
+	response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "interrupt-claimed-not-yet-processing",
+	}, func() { cancels++ })
+	if err != nil {
+		t.Fatalf("Stop during pre-turn work on claimed turn %s: %v", claimedTurn, err)
+	}
+	if cancels != 1 {
+		t.Fatalf("Stop during pre-turn work cancelled %d times, want 1", cancels)
+	}
+	if response.Receipt.TurnID != claimedTurn {
+		t.Fatalf("Stop receipt turn = %q, want the claimed turn %q", response.Receipt.TurnID, claimedTurn)
+	}
+}
+
 // TestInterruptIsRefusedOnASettledSession keeps the escape hatch
 // from being a blanket bypass: with nothing running there is nothing to stop,
 // and an accepted interrupt would clear a turn identity out from under whatever

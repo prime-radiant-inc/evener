@@ -669,21 +669,37 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 // actual recency of use: the index's most-recently-updated-first session
 // order (session_order.go's sessionMetaLess — a session's UpdatedAt is its
 // last activity moment), not directory mtime. Entries with a blank WorkingDir
-// are skipped. Deduped on the dir's first (most recent) occurrence.
+// are skipped, as are entries whose WorkingDir no longer exists on disk
+// (issue #50) — a deleted project directory would otherwise linger in the
+// dropdown until it failed later at spawn/submit validation. Deduped on the
+// dir's first (most recent) occurrence.
 func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
+	// Collect every distinct candidate dir under the lock, then stat after
+	// releasing it: os.Stat on a hung network mount can block indefinitely,
+	// and holding even the read lock through that would wedge every index
+	// writer. Collection cannot stop at limit dirs because the cap applies
+	// after the existence filter — a deleted dir must not consume a slot.
 	i.mu.RLock()
-	defer i.mu.RUnlock()
-	seen := make(map[string]bool, limit)
-	var out []string
+	seen := make(map[string]bool, len(i.all))
+	candidates := make([]string, 0, len(i.all))
 	for _, e := range i.all {
 		dir := strings.TrimSpace(e.Meta.EnvInfo.WorkingDir)
 		if dir == "" || seen[dir] {
 			continue
 		}
 		seen[dir] = true
+		candidates = append(candidates, dir)
+	}
+	i.mu.RUnlock()
+
+	var out []string
+	for _, dir := range candidates {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		}
 		out = append(out, dir)
 		if len(out) >= limit {
 			break

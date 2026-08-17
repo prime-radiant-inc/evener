@@ -3,9 +3,10 @@
 Date: 2026-08-14
 
 > **HISTORICAL — do not act on this checkpoint.** The work it hands off is
-> complete and merged (kata `my73`, merge `6af43a95a`). Every ref below is
+> complete and landed on `main` (kata `my73`, as the linear commit series
+> `3507688cf` through `554221673`; there is no merge commit). Every ref below is
 > stale: the `delegate-resource-task6-clean` branch and worktree no longer
-> exist, and `2da986339` is **not** an ancestor of `main` — citing it as a
+> exist, and `2da986339` does not exist in this repository — citing it as a
 > "required merge base" is what caused a fourteen-kata misattribution, seven of
 > which were already fixed on the line nobody checked (kata `krgs`). Read
 > `docs/subagent-management/11-delegate-resource-model.md` for the shipped

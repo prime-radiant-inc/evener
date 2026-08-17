@@ -704,18 +704,24 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					})
 				}
 				if !closed {
-					if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
-						if drainCtx, ok := queuedInputDrainContext(processCtx, err); ok {
+					// Decide, then claim. popQueueHead is a durable commit, and
+					// whether this interrupt may drain depends only on the turn's
+					// context and error -- never on the queue -- so there is
+					// nothing to learn by taking the head out first. Doing it in
+					// the other order costs a second commit to put the entry back,
+					// and the state between the two is a queue no client ever saw:
+					// a turn/promoteQueuedAsSteer landing there commits against the
+					// wrong entry (kata 9f5x).
+					if cfg, drainable := interruptDrainConfig(processCtx, err); drainable {
+						if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 							next = queued.Text
 							nextImages = queued.Images
-							processCtx = drainCtx
-							processCtx = withQueuedClientMutation(processCtx, queued)
+							processCtx = withQueuedClientMutation(cfg.nextTurnContext(), queued)
 							s.mu.Lock()
 							s.sessionEndEmitted = false
 							s.mu.Unlock()
 							continue
 						}
-						s.pushQueueHead(queued)
 					}
 				}
 			}

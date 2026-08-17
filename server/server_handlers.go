@@ -35,7 +35,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
 	fn := s.queueFunc
 	s.mu.RUnlock()
 	if closed {
@@ -75,7 +75,7 @@ func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
 	fn := s.drainSteerFunc
 	inputFn := s.drainSteerInputFunc
 	queueDepth := s.appEnvelope.Queue.Depth
@@ -335,17 +335,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	processing := s.processing
-	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
+	// One answer, the same one thread/read is given. This endpoint used to
+	// build its own: Send and Queue off the raw processing flag with no turn
+	// reservation, Interrupt off the per-turn cancelFunc, Steer off neither.
+	// Two surfaces describing one session cannot be allowed to disagree about
+	// whether it is working (katas vewa, 5gdv).
+	threadStatus := appStatus(status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "")
+	active := threadStatus == appwire.ThreadStatusActive
+	closed := threadStatus == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	capabilities := ActionCapabilities{
-		Send:        !processing && !closed,
+		Send:        !active && !closed,
 		Steer:       steerAvailable,
-		Interrupt:   s.cancelFunc != nil,
+		Interrupt:   s.interruptWired && active && !closed,
 		Compact:     s.compactFunc != nil && !closed,
-		Clear:       s.clearFunc != nil && !processing && !closed,
+		Clear:       s.clearFunc != nil && !active && !closed,
 		Shutdown:    s.shutdownFunc != nil,
 		ChangeModel: s.modelFunc != nil && !closed,
-		Queue:       s.queueFunc != nil && processing && !closed,
+		Queue:       s.queueFunc != nil && active && !closed,
 	}
 	s.mu.RUnlock()
 	sort.Strings(descendantSessionIDs)
@@ -403,7 +410,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	closed := appStatus(s.status.State, processing, strings.TrimSpace(s.appReservedTurnID) != "") == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 
 	if closed {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -630,9 +631,9 @@ func latestDelegateControllerRunFinished(t *testing.T, c *delegateTreeController
 	if err != nil {
 		t.Fatalf("load delegate events: %v", err)
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].DelegateID == delegateID && events[i].RunFinished != nil {
-			return *events[i].RunFinished
+	for _, event := range slices.Backward(events) {
+		if event.DelegateID == delegateID && event.RunFinished != nil {
+			return *event.RunFinished
 		}
 	}
 	t.Fatalf("no run-finished event for %s", delegateID)

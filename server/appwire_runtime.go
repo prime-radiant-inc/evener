@@ -1179,6 +1179,7 @@ func (s *Server) appThread() appwire.Thread {
 	sourceID := s.appSourceID
 	threadID := s.appThreadID
 	processing := s.processing
+	turnReserved := strings.TrimSpace(s.appReservedTurnID) != ""
 	envelope := s.appEnvelope
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
@@ -1220,7 +1221,7 @@ func (s *Server) appThread() appwire.Thread {
 		Name:          threadName,
 		Preview:       threadPreview,
 		ModelProvider: status.Model,
-		Status:        appwire.ThreadStatus{Type: appStatus(status.State, processing)},
+		Status:        appwire.ThreadStatus{Type: appStatus(status.State, processing, turnReserved)},
 		CWD:           status.WorkingDir,
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
@@ -1352,13 +1353,37 @@ func cloneServerInt64(value *int64) *int64 {
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
-	active := processing || strings.TrimSpace(s.appReservedTurnID) != ""
+	// Derived from the status this thread PUBLISHES, not assembled again from
+	// the fields behind it. That is the whole point: a client reading a status
+	// and the capabilities beside it is reading one decision, so no window can
+	// open where the two describe different threads.
+	status := appStatus(state, processing, strings.TrimSpace(s.appReservedTurnID) != "")
+	active := status == appwire.ThreadStatusActive
+	closed := status == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	return appwire.ThreadCapabilities{
-		Send:         !active && !closed,
-		Steer:        steerAvailable && active && !closed,
-		Interrupt:    s.cancelFunc != nil,
+		Send:  !active && !closed,
+		Steer: steerAvailable && active && !closed,
+		// Interrupt answers "is there work to stop", which is the same `active`
+		// Steer is derived from -- deliberately NOT the ambient cancelFunc.
+		//
+		// That field is armed and cleared once per turn by the session loop, on
+		// a different goroutine and a different clock from the reservation the
+		// status reads, and cmd/serf/serve.go's drain path published processing
+		// before arming it. Reading it here let this set say steer=true
+		// interrupt=false: a turn is running and cannot be stopped. The set is
+		// PUSHED on thread/status/changed and a client keeps it until the status
+		// changes again, so a frame stamped inside that window takes Stop away
+		// for the whole turn that follows (kata 5gdv).
+		//
+		// interruptWired keeps the honesty the cancelFunc read also carried: a
+		// harness that never arms a cancel does not advertise Stop. It is
+		// sticky where cancelFunc is per-turn, which is the whole difference.
+		// Whether a cancel is armed at the instant the request arrives stays the
+		// business of the paths that act on it -- handleInterrupt still answers
+		// Unavailable with none wired, and InterruptClientMutation has its own
+		// quiescence precondition (kata vewa).
+		Interrupt:    s.interruptWired && active && !closed,
 		Compact:      s.compactFunc != nil && !closed,
 		Clear:        false,
 		ForkFromTurn: false,
@@ -1390,11 +1415,12 @@ func (s *Server) reserveAppTurnIDForStart() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	reserved := strings.TrimSpace(s.appReservedTurnID) != ""
+	closed := appStatus(s.status.State, processing, reserved) == appwire.ThreadStatusClosed
 	if closed {
 		return "", appwire.Conflict("session is closed")
 	}
-	if processing || strings.TrimSpace(s.appReservedTurnID) != "" {
+	if processing || reserved {
 		return "", appwire.Conflict("session is processing")
 	}
 	s.ensureAppProjectorLocked("")
@@ -1416,8 +1442,30 @@ func (s *Server) releaseAppTurnID(turnID string) {
 	}
 }
 
-func appStatus(state string, processing bool) string {
-	if processing {
+// appStatus is the daemon's ONE answer to "what is this thread doing". The
+// status the wire publishes and the capability set published beside it are both
+// derived from it, so the two cannot disagree about whether a turn is running.
+//
+// They used to be separate expressions over overlapping state -- this one read
+// `processing` and `state`, appCapabilities read `processing` and the turn
+// reservation -- and each had a window the other did not see. A reserved turn
+// with the session still idle published status=idle beside steer=true; a
+// session state of "active" with the daemon's flag already cleared published
+// status=active beside interrupt=false and steer=false, which is a busy
+// composer with nothing on it (katas vewa, 5gdv, and 06t8 before them).
+//
+// turnReserved is the third input that used to be missing here. A turn claimed
+// by turn/start and not yet processing is work in progress: it is why the
+// composer shows a working session through pre-turn work, and it must count as
+// working for the actions offered there too.
+func appStatus(state string, processing, turnReserved bool) string {
+	// Closed wins over everything. A thread whose session has gone is not
+	// working, whatever flag was left set behind it -- and with a reservation
+	// now able to report active, a lingering one must not mask a close.
+	if strings.TrimSpace(state) == appwire.ThreadStatusClosed {
+		return appwire.ThreadStatusClosed
+	}
+	if processing || turnReserved {
 		return appwire.ThreadStatusActive
 	}
 	switch strings.TrimSpace(state) {

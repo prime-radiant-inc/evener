@@ -9,8 +9,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/web-coverage-floor.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/serf-webcov-selftest.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work serf-webcov-selftest
+trap 'selftest_rm_scratch' EXIT
 
 frontend="$work/frontend"
 mkdir -p "$frontend/coverage"

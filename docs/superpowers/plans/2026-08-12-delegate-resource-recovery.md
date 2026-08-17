@@ -1,7 +1,10 @@
 # Delegate Resource Recovery Implementation Plan
 
-> **COMPLETE — do not execute this plan.** All fourteen tasks shipped and merged
-> to `main` (kata `my73`, merge `6af43a95a`). The executor instruction below is
+> **COMPLETE — do not execute this plan.** All fourteen tasks shipped and landed
+> on `main` (kata `my73`) as a linear commit series — there is no merge commit —
+> running from `3507688cf` ("feat: add the stable delegate store") through
+> `554221673` ("fix: accept fsynced steering before stop", closing the final
+> Task 14 fixed-range review). The executor instruction below is
 > retained for provenance only; running it would re-implement a subsystem that
 > already exists.
 >

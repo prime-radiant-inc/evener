@@ -215,8 +215,12 @@ func qlifExerciseNotificationRetry(t *testing.T, s *Session, clk *agenttest.Fake
 func qlifExerciseQueueHelpers(t *testing.T, s *Session) {
 	t.Helper()
 	ctx := WithQueuedInputDrainOnInterrupt(context.Background(), nil)
-	if got, ok := queuedInputDrainContext(ctx, context.Canceled); !ok || got == nil {
-		t.Fatal("default queued-input drain context was rejected")
+	cfg, ok := interruptDrainConfig(ctx, context.Canceled)
+	if !ok {
+		t.Fatal("default queued-input drain config was rejected")
+	}
+	if got := cfg.nextTurnContext(); got == nil {
+		t.Fatal("default queued-input drain context was nil")
 	}
 
 	if s.hasPendingSteering() {
@@ -298,15 +302,29 @@ func qlifCheckDrainContext(t *testing.T, data []byte) {
 	case 6:
 		cancelTurn()
 	case 7:
+		// The factory declines to build a next-turn context. Draining is still
+		// allowed: by the time a context is wanted the queue head is already
+		// durably claimed, so refusing here would mean putting it back, and the
+		// pop/restore pair is the two-commit window kata 9f5x closed. A
+		// declining factory drains under the root context instead, exactly as a
+		// handler that installs no factory at all already did.
 		cancelTurn()
-		want = false
 	}
-	got, ok := queuedInputDrainContext(marked, err)
+	cfg, ok := interruptDrainConfig(marked, err)
 	if ok != want {
-		t.Fatalf("mode %d: queuedInputDrainContext ok=%v, want %v (err=%v)", mode, ok, want, err)
+		t.Fatalf("mode %d: interruptDrainConfig ok=%v, want %v (err=%v)", mode, ok, want, err)
 	}
-	if ok && (got == nil || got.Err() != nil) {
+	if !ok {
+		cancelTurn()
+		cancelRoot()
+		return
+	}
+	got := cfg.nextTurnContext()
+	if got == nil || got.Err() != nil {
 		t.Fatalf("mode %d: drain context = %#v, err=%v", mode, got, got.Err())
+	}
+	if mode == 7 && got != root {
+		t.Fatalf("mode 7: a declining factory must drain under the root context, got %#v", got)
 	}
 	if nextCanceled != nil {
 		nextCanceled()

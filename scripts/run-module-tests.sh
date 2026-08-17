@@ -223,7 +223,14 @@ trap 'interrupted 143 SIGTERM' TERM
 
 tmp_base="${TMPDIR:-/tmp}"
 tmp_base="${tmp_base%/}"
-logdir="$(mktemp -d "$tmp_base/serf-module-tests.XXXXXX")"
+# Checked: cleanup deletes $logdir recursively. It guards on non-empty, so an
+# unchecked mktemp would not delete the wrong thing — it would instead run the
+# whole wave writing logs to paths under an empty prefix, and report nothing.
+if ! logdir="$(mktemp -d "$tmp_base/serf-module-tests.XXXXXX")" ||
+	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
+	echo "run-module-tests: could not create a log directory under $tmp_base" >&2
+	exit 1
+fi
 fail=0
 failed_modules=()
 

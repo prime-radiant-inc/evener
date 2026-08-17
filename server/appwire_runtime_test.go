@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/schema"
@@ -49,6 +50,108 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 				t.Fatalf("Steer = %v, want %v", got.Steer, tc.wantSteer)
 			}
 		})
+	}
+}
+
+// TestAppStatusAndCapabilitiesAreOneDecision is the invariant that makes this
+// whole family of bugs unrepresentable rather than merely unlikely.
+//
+// The status a thread publishes and the capability set published beside it used
+// to be separate expressions over overlapping state: appStatus read `state` and
+// `processing` and never the turn reservation, appCapabilities read `processing`
+// and the reservation and never `state`. Each therefore had a window the other
+// could not see, and in both of them a client was handed one frame describing
+// two different threads:
+//
+//   - state active with the daemon's flag already cleared: status=active beside
+//     steer=false interrupt=false send=true -- a busy composer with nothing on
+//     it, which is exactly kata 06t8's report;
+//   - a turn reserved with the session still idle: status=idle beside
+//     steer=true interrupt=true -- controls offered for a thread the wire calls
+//     settled.
+//
+// appCapabilities now derives `active` and `closed` from appStatus's result, so
+// there is one decision and the two cannot drift. This test is the guard on
+// that, not on either value: it asserts only that they answer the same
+// question the same way.
+func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		state      string
+		processing bool
+		reserved   string
+	}{
+		{"session state active, daemon flag cleared", "active", false, ""},
+		{"turn reserved, session state still idle", "idle", false, "turn_m2"},
+		{"processing", "active", true, ""},
+		{"idle", "idle", false, ""},
+		{"awaiting", "awaiting", false, ""},
+		{"closed", "closed", false, ""},
+		{"closed with a reservation left behind", "closed", false, "turn_m2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(ServerConfig{})
+			s.SetSteerFunc(func(string) {})
+			s.SetCancelFunc(func() {})
+			s.appReservedTurnID = tc.reserved
+
+			status := appStatus(tc.state, tc.processing, strings.TrimSpace(tc.reserved) != "")
+			caps := s.appCapabilities(tc.state, tc.processing)
+			working := status == appwire.ThreadStatusActive
+
+			if caps.Interrupt != working {
+				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
+			}
+			if caps.Steer != working {
+				t.Fatalf("status=%q (working=%v) but steer=%v: one frame, two threads", status, working, caps.Steer)
+			}
+			// Send is the complement, and closed removes it outright.
+			wantSend := !working && status != appwire.ThreadStatusClosed
+			if caps.Send != wantSend {
+				t.Fatalf("status=%q (working=%v) but send=%v, want %v", status, working, caps.Send, wantSend)
+			}
+		})
+	}
+}
+
+// TestAppCapabilities_StopIsOfferedWheneverSteerIs is the invariant behind kata
+// 5gdv: the set this daemon publishes must never say "a turn is running, and it
+// cannot be stopped".
+//
+// Steer and Interrupt were derived from different facts on different clocks.
+// Steer comes from `active` -- the reservation plus the processing flag, which
+// is also what the wire publishes as the thread's status. Interrupt came from
+// the ambient cancelFunc, which the session loop arms and clears once per turn,
+// and cmd/serf/serve.go's drain path (nextTurnCtx) published processing BEFORE
+// arming it, where the other two arming sites do it the other way round. In
+// between, this set said steer=true interrupt=false -- and a composer applying
+// it draws Steer and Send with no Stop, which is the shape Jesse reported.
+//
+// Deriving both from `active` makes the disagreement unrepresentable rather
+// than merely unlikely, which matters because the set is PUSHED: a client keeps
+// it until the next status change, so a frame stamped inside that window takes
+// Stop away for the whole turn that follows.
+//
+// The state below is the drain path's, in its own order.
+func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetSteerFunc(func(string) {})
+	s.SetCancelFunc(func() {})
+
+	// End of a turn: the loop clears processing and the cancel together.
+	s.SetProcessing(false)
+	s.SetCancelFunc(nil)
+
+	// Start of the next one, as nextTurnCtx ordered it: processing first, cancel
+	// after. Everything between these two calls is the window.
+	s.SetProcessing(true)
+
+	got := s.appCapabilities(string(appwire.ThreadStatusActive), true)
+	if got.Steer && !got.Interrupt {
+		t.Fatal("the daemon published steer=true interrupt=false: it told a client a turn is running and cannot be stopped, and the client keeps that set until the status changes again")
 	}
 }
 

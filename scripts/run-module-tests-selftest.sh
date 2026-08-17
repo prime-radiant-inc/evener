@@ -22,8 +22,8 @@ if [ -n "${SERF_RUN_MODULE_TESTS_SHELL:-}" ]; then
 fi
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t serf-module-tests-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work serf-module-tests-selftest
+trap 'selftest_rm_scratch' EXIT
 
 assert_has_word() {
 	case " $1 " in
@@ -92,7 +92,7 @@ FAKE_TMPDIR_MKTEMP
 }
 
 new_case() {
-	case_dir="$(mktemp -d "$work/case.XXXXXX")"
+	case_dir="$(mktemp -d "$work/case.XXXXXX")" || { echo "run-module-tests-selftest: mktemp under \$work failed" >&2; exit 1; }
 	repo="$case_dir/repo"
 	state="$case_dir/state"
 	bin="$case_dir/bin"
