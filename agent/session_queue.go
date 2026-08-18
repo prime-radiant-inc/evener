@@ -503,6 +503,21 @@ func (s *Session) QueueDepth() int {
 	return len(s.inputQueue)
 }
 
+// pendingQueueDepth is QueueDepth for the purpose of "is this session
+// working": it reports zero for a queue parked by a Stop, because parked
+// messages are not work in progress -- nothing will run them until the user
+// asks.
+//
+// QueueDepth itself still counts them. The messages ARE there and the queue
+// strip must keep showing them; what changes is only whether their presence
+// makes the session claim to be busy (kata wms7).
+func (s *Session) pendingQueueDepth() int {
+	if s.clientMutations != nil && s.clientMutations.queueHeld() {
+		return 0
+	}
+	return s.QueueDepth()
+}
+
 // QueuePreview returns a copy of the queued messages in FIFO order with
 // each entry collapsed to its first line and trimmed of trailing CR. The
 // output is the user-facing preview shape consumed by both UIs via the

@@ -41,9 +41,11 @@ func (s *Session) State() SessionState {
 
 // WireState is the externally-reported session state. It equals State()
 // except for one override: an idle session with undelivered job notifications
-// or queued input reads as "active" because parent-owned work can resume it
-// without user input. Live child activity belongs to the child's wire state,
-// not the settled parent's.
+// or claimable queued input reads as "active" because work the session owns
+// can resume it without user input. A queue parked by a Stop is not claimable
+// and reads idle -- nothing will move it until the user acts (kata wms7).
+// Live child activity belongs to the child's wire state, not the settled
+// parent's.
 //
 // Precedence: the override upgrades idle ONLY. awaiting always projects as
 // awaiting, even with autonomy in flight — a session that asked its user
@@ -63,7 +65,7 @@ func (s *Session) WireState() string {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.QueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
 }
 
 func (s *Session) hasPendingStableDelegateAttention() bool {

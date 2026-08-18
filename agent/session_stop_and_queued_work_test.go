@@ -579,6 +579,33 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 	}
 }
 
+func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	queueOneMutation(t, sess, "queued-behind", "and then this")
+	// A queue with no Stop IS pending work: something will drain it.
+	if got := sess.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState with a live queue = %q, want %q", got, SessionProcessing)
+	}
+
+	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-queued",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Parked, so nothing will drain it, so claiming to be working is a lie --
+	// and it is the lie that leaves a Stop button on screen doing nothing.
+	if got := sess.WireState(); got == string(SessionProcessing) {
+		t.Fatalf("WireState over a parked queue = %q: the composer keeps showing a busy session with a Stop that cannot help", got)
+	}
+	// The strip must still show the message.
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("QueueDepth = %d, want 1: the queue strip has nothing to show", got)
+	}
+}
+
 func TestQueueHeldIsReadableWithoutCloningTheSnapshot(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
