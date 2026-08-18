@@ -1193,23 +1193,25 @@ func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
 // TestResolveSerfStateDirNotInRepoFallsBackToWorkDir covers the
 // not-in-a-repo case: ResolveMainRepoRootLocal returns "" and the state dir
 // must key off workDir unchanged, matching pre-existing (pre-fix) behavior
-// for non-git directories.
+// for non-git directories. The path must land under the state home it was
+// given, named by the project id workDir resolves to, and two distinct
+// non-repo dirs must not share one.
 func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	workDir := t.TempDir()
 	other := t.TempDir()
+	stateHome := t.TempDir()
 
-	got, err := resolveSerfStateDir(workDir, "")
+	project, got, err := resolveSerfStateDirWithProject(workDir, "", stateHome)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := resolveSerfStateDir(workDir, "")
-	if err != nil {
-		t.Fatal(err)
+	if project.ID == "" {
+		t.Fatalf("resolveSerfStateDir(%q) resolved no project id for a non-repo dir", workDir)
 	}
-	if got != want {
-		t.Fatalf("resolveSerfStateDir(%q) not deterministic", workDir)
+	if want := filepath.Join(stateHome, "serf", "projects", project.ID); got != want {
+		t.Errorf("state dir = %q, want %q", got, want)
 	}
-	otherDir, err := resolveSerfStateDir(other, "")
+	otherDir, err := resolveSerfStateDirWithStateHome(other, "", stateHome)
 	if err != nil {
 		t.Fatal(err)
 	}
