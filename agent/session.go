@@ -831,7 +831,7 @@ type sessionName struct {
 	updated        time.Time // when value last changed
 	set            bool      // a name has been assigned
 	promptPending  bool      // a naming LLM call is in flight
-	quotaExhausted bool      // the cheap model's allowance is spent; stop naming
+	quotaExhausted bool      // current model's allowance is spent; stop naming until SetModel
 }
 
 // forkInfo records a session's fork lineage — where it diverged from a parent
@@ -1009,6 +1009,10 @@ func (s *Session) SetModel(model string) error {
 	}
 	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
+	// The namer's spent-allowance latch was learned against the profile being
+	// replaced, so it does not survive the swap (see
+	// forgetSessionNamerQuotaExhaustionLocked).
+	s.forgetSessionNamerQuotaExhaustionLocked()
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
 	}

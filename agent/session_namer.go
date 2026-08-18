@@ -96,8 +96,8 @@ func sessionNamerEnabled(profile *provider.Profile) bool {
 }
 
 // sessionNamerUsable reports whether a naming call is worth making at all: the
-// profile must configure a cheap model, and this session must not already have
-// learned that the model's allowance is spent.
+// profile must configure a cheap model, and the session must not already have
+// learned that the current model choice's allowance is spent.
 //
 // Every launch path asks this one question, which is why the question has one
 // name. sessionNamerEnabled answers only the configuration half and cannot see
@@ -258,6 +258,24 @@ func (s *Session) suppressSessionNamerIfQuotaExhausted(err error) bool {
 	}
 	s.naming.quotaExhausted = true
 	return true
+}
+
+// forgetSessionNamerQuotaExhaustionLocked lets the namer try again after the
+// session's model changes. Caller must hold s.mu.
+//
+// The suppression latch records a fact about an allowance, not about the
+// session: the exhausted allowance belongs to the account behind whichever
+// provider the namer was calling. Switching providers is the very remedy the
+// quota error pushes a user toward, so a latch that outlived the switch would
+// leave naming dead on a provider with a perfectly good allowance.
+//
+// Any switch clears it, not just a cross-provider one. A same-provider switch
+// usually shares the spent allowance, so clearing costs one round trip to
+// relearn the fact -- cheaper than the alternative error of staying silent for
+// a session that could have named itself, and it keeps the rule one sentence
+// long instead of a per-provider special case.
+func (s *Session) forgetSessionNamerQuotaExhaustionLocked() {
+	s.naming.quotaExhausted = false
 }
 
 func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
