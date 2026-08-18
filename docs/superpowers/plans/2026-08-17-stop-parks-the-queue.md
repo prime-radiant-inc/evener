@@ -625,7 +625,7 @@ git commit -m "test(turn-control): the boundary Stop parks its message end to en
 
 Then comment on `wms7` with: which rails are closed, the mutation-test results from Step 3, that steering remains open as `1k3m`, and these two DELIBERATE deferrals so they are ruled on rather than forgotten:
 
-1. `armAwaitingAtSettle`/`settleTerminalState` (`agent/session_state.go` ~:298-344) still read raw `QueueDepth`, so a turn that settles cleanly over a parked queue rests **idle** rather than **awaiting**. Narrow trigger (only a steering-restarted or notification turn can settle over a parked queue), and idle is the state the ruling names — this may be intended, but it is Jesse's call, not the executor's.
+1. `armAwaitingAtSettle`/`settleTerminalState` (`agent/session_state.go` ~:298-344) still read raw `QueueDepth`, so a turn that settles cleanly over a parked queue rests **idle** rather than **awaiting**. RULED by Jesse (2026-08-17, during plan review): idle, as planned. Recorded so the tier question does not resurface as a bug report.
 2. MaxTurns: parked entries keep their `BudgetReservations` slots, and at the cap both `turn/start` and `turn/queue` reject on budget ABOVE the clears (correctly, per the ordering rule). A user at the cap who Stops can still release via promote, drain, or cancelling entries — but cannot type a fresh message. Corner case with escape hatches; recorded, not solved.
 
 ---
