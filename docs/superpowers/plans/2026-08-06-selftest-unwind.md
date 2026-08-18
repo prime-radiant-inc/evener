@@ -139,7 +139,7 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 
 - [ ] **Step 2:** `git rm scripts/make-selftest-selftest.sh`.
 - [ ] **Step 3:** Update `docs/testing.md` mentions of the wave mechanics/make-selftest to point at `cmd/evener-selftest`.
-- [ ] **Step 4: Verify:** `make selftest` → all suites PASS (any suite that FAILs the new leak check gets fixed here: add the missing `trap 'rm -rf ...' EXIT` to that suite — each such fix is part of this task). Then Ctrl-C behavior: `make selftest & sleep 2; kill -INT $!` is NOT the verification (wall clock); instead run `go run ./cmd/evener-selftest tmux-read` and interrupt via the Go tests already covering it — the make-level check is just that an interrupted run leaves no `serf-selftest` temp dirs behind (`ls ${TMPDIR:-/tmp} | grep serf-selftest` empty).
+- [ ] **Step 4: Verify:** `make selftest` → all suites PASS (any suite that FAILs the new leak check gets fixed here: add the missing `trap 'rm -rf ...' EXIT` to that suite — each such fix is part of this task). Then Ctrl-C behavior: `make selftest & sleep 2; kill -INT $!` is NOT the verification (wall clock); instead run `go run ./cmd/evener-selftest tmux-read` and interrupt via the Go tests already covering it — the make-level check is just that an interrupted run leaves no `evener-selftest` temp dirs behind (`ls ${TMPDIR:-/tmp} | grep evener-selftest` empty).
 - [ ] **Step 5: Commit** `feat(make): drive the selftest wave with cmd/evener-selftest`.
 
 ### Task 4: remove disk-reclaim (no replacement — leaks get fixed, not tolerated)

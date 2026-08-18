@@ -1,22 +1,22 @@
 # OpenAI Spend Diagnostics
 
-Serf records OpenAI provider attempts in the canonical private per-session API log:
+Evener records OpenAI provider attempts in the canonical private per-session API log:
 `<state-dir>/sessions/<session-id>.api.jsonl`. Semantic transcripts do not contain
-provider attempt records or bodies. Use `serf-doctor apilog` so selectors and project
-buckets resolve through Serf's own state model.
+provider attempt records or bodies. Use `evener-doctor apilog` so selectors and project
+buckets resolve through Evener's own state model.
 
 ## Quick Audit
 
 Run a per-session summary:
 
 ```sh
-serf-doctor apilog <selector> --summary
+evener-doctor apilog <selector> --summary
 ```
 
 Look for large uncached prompt spikes:
 
 ```sh
-serf-doctor apilog <selector> --cache-spikes --threshold 50000
+evener-doctor apilog <selector> --cache-spikes --threshold 50000
 ```
 
 `<selector>` may be a session ID or transcript ref. Add `--state-dir <path>` when
@@ -24,7 +24,7 @@ inspecting an override/scratch state root.
 
 ## Metric Interpretation
 
-`input_tokens` in JSON output (`in_tok` in the human table) is Serf's normalized
+`input_tokens` in JSON output (`in_tok` in the human table) is Evener's normalized
 uncached input count. The OpenAI adapter has already subtracted the provider's
 cached-token subset. `uncached_input_tokens` in JSON (`uncached` in the human
 table) is the same normalized value and is what `--cache-spikes` compares with
@@ -38,7 +38,7 @@ means the session is reusing stable prompt prefix content.
 
 The summary prints calls, empty responses, errors, normalized input tokens,
 output tokens, cache-read tokens, `total`, and average latency. Here `total` is
-Serf's normalized input-plus-output total; it does not add cache-read tokens.
+Evener's normalized input-plus-output total; it does not add cache-read tokens.
 The command does not calculate cache-write totals or a cache-hit percentage.
 
 The detailed human table prints one row per provider attempt. It includes the
@@ -56,11 +56,11 @@ bulk, or missing cache-key continuity.
 
 ## OpenAI Prompt Cache Defaults
 
-Serf applies conservative OpenAI prompt-cache defaults at the session request
+Evener applies conservative OpenAI prompt-cache defaults at the session request
 boundary:
 
 - OpenAI requests for allowlisted model families receive a stable per-session
-  `prompt_cache_key` of `serf-session-<session-id>` when the request does not
+  `prompt_cache_key` of `evener-session-<session-id>` when the request does not
   already set one.
 - OpenAI requests for those same allowlisted model families receive
   `prompt_cache_retention=24h` when the request does not already set retention.

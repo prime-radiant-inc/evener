@@ -70,7 +70,7 @@ Add deterministic tests proving:
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1
 ```
 
 Expected: FAIL because `RequestFingerprint` is still empty.
@@ -141,7 +141,7 @@ Tests should prove:
 Expected first run before Task 2 implementation:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1
 ```
 
 Expected: FAIL because `RequestFingerprint` is empty.
@@ -160,8 +160,8 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-3b.md` w
 - [x] **Step 2: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
 git diff --check
 ```
 

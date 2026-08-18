@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the P1 `internal/plugins` manager drivable from a `serf plugin` CLI, have serf sessions actually LOAD the installed+enabled plugins (enable-gating), and seed a couple of standard marketplaces on first run.
+**Goal:** Make the P1 `internal/plugins` manager drivable from a `evener plugin` CLI, have evener sessions actually LOAD the installed+enabled plugins (enable-gating), and seed a couple of standard marketplaces on first run.
 
-**Architecture:** Three pieces on branch `cc-plugin-marketplaces` (P1's `internal/plugins` is already present + gated green). (1) `internal/plugins/enabled.go` — `EnabledPluginDirs(explicit)` merges explicit `--plugin-dir` values with installed+enabled registry entries, pre-validates each via the existing dry-run `Load`, dedups by plugin name (explicit wins), and skips broken ones, so the fail-hard `agent/plugin.LoadAll` never chokes. (2) `internal/plugins/seed.go` — first-run seeding of `known_marketplaces.json`. (3) A stdlib-`flag` `serf plugin` command tree (`cmd/evener/plugincmd.go`, package `main`, modeled on the existing `runOpenAI` nested switch) plus the two-line gating injection at the only two session-construction sites (`cmd/evener/run.go:183`, `cmd/evener/serve.go:212`). The hub needs NO change: it spawns `serf serve`, which self-computes enabled dirs.
+**Architecture:** Three pieces on branch `cc-plugin-marketplaces` (P1's `internal/plugins` is already present + gated green). (1) `internal/plugins/enabled.go` — `EnabledPluginDirs(explicit)` merges explicit `--plugin-dir` values with installed+enabled registry entries, pre-validates each via the existing dry-run `Load`, dedups by plugin name (explicit wins), and skips broken ones, so the fail-hard `agent/plugin.LoadAll` never chokes. (2) `internal/plugins/seed.go` — first-run seeding of `known_marketplaces.json`. (3) A stdlib-`flag` `evener plugin` command tree (`cmd/evener/plugincmd.go`, package `main`, modeled on the existing `runOpenAI` nested switch) plus the two-line gating injection at the only two session-construction sites (`cmd/evener/run.go:183`, `cmd/evener/serve.go:212`). The hub needs NO change: it spawns `evener serve`, which self-computes enabled dirs.
 
 **Tech Stack:** Go 1.25, root module `primeradiant.com/evener`. Stdlib `flag` (NOT cobra — cmd/evener is hand-rolled). Reuses P1 `internal/plugins` (`Manager`, `NewManager`, `DefaultRoot`, `List`, `AddMarketplace`/`ListMarketplaces`/`RemoveMarketplace`/`RefreshMarketplace`/`Browse`, `Install`/`Upgrade`/`Remove`/`SetEnabled`/`SetAutoUpgrade`/`UpdateAll`, `Source`/`SourceKind`, unexported `loadMarketplaces`/`saveMarketplaces`, `validatePluginDir`). Tests use `t.TempDir()` + real local `git` fixtures (the P1 helpers `makeGitRepo`/`makeInstallableMarketplace`/`writePlugin` live in `internal/plugins` test files — the CLI tests build their own small fixtures or drive a `Manager` rooted at a temp dir); `t.Skip` when `git` is absent.
 
@@ -12,9 +12,9 @@
 
 - Discriminator is `url`, never `git` (P1 invariant — unchanged).
 - v1 is **user-scope only**: `EnabledPluginDirs` and seeding operate on the single `DefaultRoot()` store. No project scope, no `--scope`.
-- Gating injects at the **serf process** layer (`run.go` for bare `serf`, `serve.go` for hub-spawned `serf serve`). Do NOT modify `cmd/evener-hub/spawn.go` — that would double-inject.
+- Gating injects at the **evener process** layer (`run.go` for bare `evener`, `serve.go` for hub-spawned `evener serve`). Do NOT modify `cmd/evener-hub/spawn.go` — that would double-inject.
 - `EnabledPluginDirs(explicit []string) []string` must return a set the fail-hard `agent/plugin.LoadAll` accepts: every dir validates (dry-run `Load`), no two dirs share a plugin `Manifest.Name` (explicit `--plugin-dir` wins over a registry entry on collision). Broken/duplicate entries are dropped with a warning to `m.Stderr`.
-- Seeding is **first-run only**, gated by `known_marketplaces.json` not existing; **user scope only**; opt-out via `--no-default-marketplaces` (bare `serf`) / a hub config flag. Seeded marketplaces are pointers (github refs), cloned lazily on first browse — do NOT clone at seed time.
+- Seeding is **first-run only**, gated by `known_marketplaces.json` not existing; **user scope only**; opt-out via `--no-default-marketplaces` (bare `evener`) / a hub config flag. Seeded marketplaces are pointers (github refs), cloned lazily on first browse — do NOT clone at seed time.
 - Default seeded marketplaces: `claude-plugins-official` → `github: anthropics/claude-plugins-official`; `superpowers-marketplace` → `github: obra/superpowers-marketplace`.
 - CLI: stdlib `flag`; a new `case "plugin"` in `dispatchCLICommand` (`cmd/evener/main.go:269`); a nested switch modeled on `runOpenAI` (`cmd/evener/openai_login.go:46`); every leaf supports `--json`; `install`/`marketplace add` support `--yes` (non-interactive confirm). Add a `plugin` row to `printRunCommands` (`cmd/evener/main.go:218`).
 - TDD; commit per task; pristine test output; `go test ./internal/plugins/... ./cmd/evener/...` from repo root.
@@ -319,7 +319,7 @@ git commit -m "plugins: first-run default-marketplace seeding (lazy-fetch pointe
 
 ---
 
-## Task 3: `serf plugin marketplace ...` CLI subtree
+## Task 3: `evener plugin marketplace ...` CLI subtree
 
 **Files:**
 - Create: `cmd/evener/plugincmd.go`
@@ -405,7 +405,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: serf plugin marketplace add|remove|list|refresh")
+		return fmt.Errorf("usage: evener plugin marketplace add|remove|list|refresh")
 	}
 	m := plugins.NewManager("")
 	switch args[0] {
@@ -429,7 +429,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return fmt.Errorf("usage: serf plugin marketplace add <url|owner/repo|path> [--yes]")
+			return fmt.Errorf("usage: evener plugin marketplace add <url|owner/repo|path> [--yes]")
 		}
 		src, err := parseMarketplaceSourceArg(fs.Arg(0))
 		if err != nil {
@@ -473,7 +473,7 @@ func parseMarketplaceSourceArg(arg string) (plugins.Source, error) {
 ```
 
 Provide `printPluginUsage`, `renderMarketplaces(w, mk, asJSON)` (human table + `json.NewEncoder`), and the `remove`/`refresh` cases (mirror `add`/`list`). Then wire dispatch in `cmd/evener/main.go`:
-- In `dispatchCLICommand` (main.go:264-281) add `case "plugin": return true, "serf plugin", runPlugin(args[1:], stdin, stdout, stderr)`.
+- In `dispatchCLICommand` (main.go:264-281) add `case "plugin": return true, "evener plugin", runPlugin(args[1:], stdin, stdout, stderr)`.
 - In `printRunCommands` (main.go:218-225) add a `plugin   manage plugin marketplaces and plugins` row.
 
 - [ ] **Step 4: Run + verify**
@@ -484,12 +484,12 @@ Run: `go test ./cmd/evener/ -run 'TestPluginMarketplace|TestPluginUnknown' -v` �
 
 ```bash
 git add cmd/evener/plugincmd.go cmd/evener/plugincmd_test.go cmd/evener/main.go
-git commit -m "serf: plugin marketplace add|remove|list|refresh CLI subtree"
+git commit -m "evener: plugin marketplace add|remove|list|refresh CLI subtree"
 ```
 
 ---
 
-## Task 4: `serf plugin install|remove|enable|disable|list|upgrade|gc` CLI
+## Task 4: `evener plugin install|remove|enable|disable|list|upgrade|gc` CLI
 
 **Files:**
 - Modify: `cmd/evener/plugincmd.go`
@@ -524,7 +524,7 @@ func TestPluginList_JSON(t *testing.T) {
 
 ```bash
 git add cmd/evener/plugincmd.go cmd/evener/plugincmd_test.go
-git commit -m "serf: plugin install/remove/enable/disable/list/upgrade/gc CLI"
+git commit -m "evener: plugin install/remove/enable/disable/list/upgrade/gc CLI"
 ```
 
 ---
@@ -540,7 +540,7 @@ git commit -m "serf: plugin install/remove/enable/disable/list/upgrade/gc CLI"
 - Consumes: `plugins.NewManager("").EnabledPluginDirs(explicit)`.
 - The two session-construction sites set `PluginDirs` to the merged/gated list instead of the raw `--plugin-dir` slice.
 
-- [ ] **Step 1: Write the failing test** — an integration test at the `internal/plugins` level already covers `EnabledPluginDirs` (Task 1). For the wiring, add a `cmd/evener` test that constructs the run/serve `SessionConfig` path is impractical to unit-test end-to-end; instead assert the seam directly: a small test that, given a temp `XDG_CONFIG_HOME` with an installed+enabled plugin, `plugins.NewManager("").EnabledPluginDirs(nil)` returns it — and a doc/comment check that `run.go`/`serve.go` call it. (The real end-to-end proof is the P-level e2e scenario in a later phase.) Keep this task's automated test at the `EnabledPluginDirs` seam; verify the wiring by `go build` + a manual `serf plugin list` smoke.
+- [ ] **Step 1: Write the failing test** — an integration test at the `internal/plugins` level already covers `EnabledPluginDirs` (Task 1). For the wiring, add a `cmd/evener` test that constructs the run/serve `SessionConfig` path is impractical to unit-test end-to-end; instead assert the seam directly: a small test that, given a temp `XDG_CONFIG_HOME` with an installed+enabled plugin, `plugins.NewManager("").EnabledPluginDirs(nil)` returns it — and a doc/comment check that `run.go`/`serve.go` call it. (The real end-to-end proof is the P-level e2e scenario in a later phase.) Keep this task's automated test at the `EnabledPluginDirs` seam; verify the wiring by `go build` + a manual `evener plugin list` smoke.
 
 - [ ] **Step 2: Wire the injection.** In `cmd/evener/run.go` at the `PluginDirs: cfg.pluginDirs` line (~:183):
 ```go
@@ -562,13 +562,13 @@ Add the `primeradiant.com/evener/internal/plugins` import to both files.
 ```
 Register the flag in `newRunFlagSet` (main.go, near the `--plugin-dir` registration at main.go:190) as `fs.BoolVar(&flags.noDefaultMarketplaces, "no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")`, add the field to the flags struct + `runConfig` (run.go:58 area), and thread it (main.go:144 area).
 
-- [ ] **Step 4: Verify.** `go build ./...` ok; `go test ./internal/plugins/... ./cmd/evener/... -count=1` PASS; `go vet ./cmd/evener/... ./internal/plugins/...` clean; `golangci-lint run ./cmd/evener/... ./internal/plugins/... --max-issues-per-linter 0 --max-same-issues 0` clean (fix any errcheck per P1 convention). Manual smoke: build `serf`, run `serf plugin marketplace list` and `serf plugin list` against a temp `XDG_CONFIG_HOME`.
+- [ ] **Step 4: Verify.** `go build ./...` ok; `go test ./internal/plugins/... ./cmd/evener/... -count=1` PASS; `go vet ./cmd/evener/... ./internal/plugins/...` clean; `golangci-lint run ./cmd/evener/... ./internal/plugins/... --max-issues-per-linter 0 --max-same-issues 0` clean (fix any errcheck per P1 convention). Manual smoke: build `evener`, run `evener plugin marketplace list` and `evener plugin list` against a temp `XDG_CONFIG_HOME`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add cmd/evener/run.go cmd/evener/serve.go cmd/evener/main.go
-git commit -m "serf: gate sessions to enabled plugins; seed default marketplaces on first run"
+git commit -m "evener: gate sessions to enabled plugins; seed default marketplaces on first run"
 ```
 
 ---
@@ -581,7 +581,7 @@ git commit -m "serf: gate sessions to enabled plugins; seed default marketplaces
 - [ ] `go test ./internal/plugins/... ./cmd/evener/... -race -count=1` → ok.
 - [ ] `go vet ./internal/plugins/... ./cmd/evener/...` clean.
 - [ ] `golangci-lint run ./internal/plugins/... ./cmd/evener/... --max-issues-per-linter 0 --max-same-issues 0` → 0 issues (fix errcheck: best-effort `_ =`, real handling where a write/durability error).
-- [ ] Manual smoke against a temp `XDG_CONFIG_HOME`: `serf plugin marketplace add anthropics/claude-plugins-official --yes` (real network+git — or skip if offline), `serf plugin marketplace list`, `serf plugin list`.
+- [ ] Manual smoke against a temp `XDG_CONFIG_HOME`: `evener plugin marketplace add anthropics/claude-plugins-official --yes` (real network+git — or skip if offline), `evener plugin marketplace list`, `evener plugin list`.
 - [ ] Commit any fixups.
 
 ---
@@ -590,10 +590,10 @@ git commit -m "serf: gate sessions to enabled plugins; seed default marketplaces
 
 Checked against spec §5.3 (user-scope), §6 (source parsing), §7 (verbs), §8 (gating seam), §11 (seeding):
 - CLI verbs (§7 / §9.5): marketplace add/remove/list/refresh (T3) + install/remove/enable/disable/list/upgrade[--all]/gc (T4), `--json` + `--yes`. ✓ (`doctor` is P7.)
-- Gating (§8): `EnabledPluginDirs` (T1) injected at the two serf-process session sites (T5); hub untouched (spawns `serf serve`, which self-gates). ✓
+- Gating (§8): `EnabledPluginDirs` (T1) injected at the two evener-process session sites (T5); hub untouched (spawns `evener serve`, which self-gates). ✓
 - Bundling (§11): user-scope, first-run-only, pointer seeds, `--no-default-marketplaces` opt-out. ✓
 - No cobra; stdlib `flag` + `dispatchCLICommand` case, per the real codebase. ✓
 
 **Type consistency:** `EnabledPluginDirs(explicit []string) []string`, `SeedDefaultMarketplaces() (bool, error)`, `DefaultMarketplaceSeeds() map[string]Source`, `runPlugin`/`runPluginMarketplace`/`runPluginLifecycle`, `parseMarketplaceSourceArg`/`splitPluginRef` — used consistently across tasks.
 
-**Deferred (correctly not P2):** `serf plugin doctor` (P7); auto-upgrade daemon (P4); slash commands (P3); web/TUI (P5/P6).
+**Deferred (correctly not P2):** `evener plugin doctor` (P7); auto-upgrade daemon (P4); slash commands (P3); web/TUI (P5/P6).

@@ -45,7 +45,7 @@ bug-masking) jstest fixtures this surfaced.
 2. Open `/new`, model picker, find the `gpt-5.5` row; read
    `.chip-picker-model-name`, `.chip-picker-model-id`,
    `.chip-picker-badge` (all), `.chip-picker-model-meta`.
-3. Open `/settings/launch-serf`, model picker, same reads on the `openai`
+3. Open `/settings/launch-evener`, model picker, same reads on the `openai`
    column's `gpt-5.5` row.
 4. TUI `n` → model field → `Enter`; capture-pane, read the `Gpt 5.5` row's
    compact tail.
@@ -92,7 +92,7 @@ bug-masking) jstest fixtures this surfaced.
   matches the already-established pattern in the same file
   (`fetchEnrichedModelsForHarness`/`openEffortPicker`, whose own comment
   already said "the appwire model list returns provider/model only") and in
-  `settings-pickers.js`. Rebuilt `/tmp/serf-hub` and restarted the hub to
+  `settings-pickers.js`. Rebuilt `/tmp/evener-hub` and restarted the hub to
   pick up the embedded-asset change (assets are `//go:embed`-baked into the
   binary, not served from disk — editing the `.js` source alone does
   nothing until rebuild).

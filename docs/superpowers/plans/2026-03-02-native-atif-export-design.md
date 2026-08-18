@@ -2,11 +2,11 @@
 
 ## Problem
 
-Harbor viewer reads serf's job data (rewards, timing, files) but the Trajectory tab is
-empty because serf doesn't emit ATIF. Every other harbor agent (Claude Code, Codex) converts
+Harbor viewer reads evener's job data (rewards, timing, files) but the Trajectory tab is
+empty because evener doesn't emit ATIF. Every other harbor agent (Claude Code, Codex) converts
 its native format to ATIF in the Python adapter's `populate_context_post_run()`. We want
-serf to export ATIF natively from the Go binary, making the trajectory available regardless
-of how serf is invoked.
+evener to export ATIF natively from the Go binary, making the trajectory available regardless
+of how evener is invoked.
 
 ## Decision Summary
 
@@ -43,12 +43,12 @@ Pure function. Takes transcript data, returns ATIF struct. Testable independentl
 
 `--export-atif <path>` on the CLI. Maps to `SessionConfig.ExportATIFPath string`.
 When empty (default), no trajectory is written. The adapter sets this to
-`/logs/agent/trajectory.json` (harbor's bind-mounted logs dir), so serf writes directly
+`/logs/agent/trajectory.json` (harbor's bind-mounted logs dir), so evener writes directly
 to where harbor viewer expects the file.
 
 ## Turn Mapping
 
-| Serf Turn Kind | ATIF source | Notes |
+| Evener Turn Kind | ATIF source | Notes |
 |----------------|-------------|-------|
 | USER_INPUT     | "user"      | Concatenate text content parts |
 | ASSISTANT      | "agent"     | text→message, tool_call→tool_calls, thinking→reasoning_content |
@@ -77,7 +77,7 @@ Each `tool_result` content part becomes an ObservationResult:
 
 ### Usage → Metrics
 
-| Serf Usage field | ATIF Metrics field |
+| Evener Usage field | ATIF Metrics field |
 |------------------|--------------------|
 | input_tokens     | prompt_tokens |
 | output_tokens    | completion_tokens |
@@ -184,7 +184,7 @@ export_atif_path = f"{_CONTAINER_STATE_DIR}/trajectory.json"
 f"--export-atif {export_atif_path} "
 ```
 
-Then in `run()`, after downloading serf-state, copy the trajectory to logs_dir root:
+Then in `run()`, after downloading evener-state, copy the trajectory to logs_dir root:
 
 ```python
 traj = local_state_dir / "trajectory.json"

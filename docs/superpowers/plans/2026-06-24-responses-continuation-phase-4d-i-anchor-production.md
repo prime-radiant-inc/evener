@@ -133,7 +133,7 @@ The test must:
 - [x] **Step 3: Run test to verify it fails**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor -count=1 -v
 ```
 
 Expected: fail because `SessionConfig` cannot inject an enabled continuation registry and `prepareModelRequest` does not stamp continuation metadata.
@@ -156,7 +156,7 @@ The test must use the same enabled registry and planner but set `CanFallbackToCh
 - [x] **Step 5: Run fallback guard test to verify it fails**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DI -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DI -count=1 -v
 ```
 
 Expected: anchor-production still fails before implementation.
@@ -223,7 +223,7 @@ req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns)
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 ```
 
 Expected: pass.
@@ -258,7 +258,7 @@ Phase 4D-i proves real-session full-history anchor production through a Response
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 ```
 
 Result: pass.
@@ -282,7 +282,7 @@ Result: pass.
 - [x] **Step 2: Run verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 git diff --check
 ```
 

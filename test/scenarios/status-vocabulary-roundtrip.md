@@ -18,10 +18,10 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
 
 ## Pre-state
 
-- Hub running with a fresh, isolated `$HOME` (its own `~/.serf`, kernel-
+- Hub running with a fresh, isolated `$HOME` (its own `~/.evener`, kernel-
   assigned port — see the Setup checklist in `docs/agentic-testing.md`), real
   credentials, no prior sessions.
-- A TUI (`serf-tui`) pointed at the same hub, in a tmux session named from
+- A TUI (`evener-tui`) pointed at the same hub, in a tmux session named from
   your own `$run` dir. Use a tall window (`-y 300`+) — the session header
   line scrolls out of a short pane's capture (see Sharp edges).
 - `superpowers-chrome:browsing` (or equivalent CDP browser) available for the

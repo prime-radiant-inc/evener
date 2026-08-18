@@ -215,7 +215,7 @@ Jesse: *"full page reload needs to keep state on which tabs are focused and the 
 state of the sidebar, etc."*
 
 **This machinery already exists** — `DockHost.tsx:20` has `LAYOUT_STORAGE_KEY =
-"serf.workspace.layout.v1"`, `persistLayout` is called on layout change, and `restoreLayout` runs
+"evener.workspace.layout.v1"`, `persistLayout` is called on layout change, and `restoreLayout` runs
 on boot. `sidebarHidden`/`sidebarWidth` are already persisted prefs. So this is very likely a BUG,
 not a missing feature.
 
@@ -267,7 +267,7 @@ stacks, and that one shows tabs (it can hold several).
       change doesn't touch it, and say so.
 - [ ] **No migration for existing persisted layouts** (Jesse: "do not care about current local
       storage"). Bump `LAYOUT_STORAGE_KEY` (`DockHost.tsx:20`, currently
-      `"serf.workspace.layout.v1"`) to `.v2` so a pre-rule layout is simply never read — cheaper and
+      `"evener.workspace.layout.v1"`) to `.v2` so a pre-rule layout is simply never read — cheaper and
       more honest than a migration path for one user's stale value, and it leaves no code claiming to
       handle a shape it was never tested against. Going forward, what C1 persists must satisfy the
       one-pane rule; a restore that would violate it is a bug in C1, not a case to migrate.

@@ -28,12 +28,12 @@
 
 **Execution status (2026-08-14):** Task 6 is complete at immutable commit `5df4ad5f487f3674f4016f40eeb82d3cf49b7aa4`; Task 7 is complete at immutable commit `521a4892d977927154f34636343d84e8dda15508`. The recovery branch remains an intentionally nondeployable flag-day checkpoint. Tasks 8–14, final integration verification, merge, and deployment remain incomplete.
 
-**Tech Stack:** Go, append-only JSONL with fsync, Serf Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
+**Tech Stack:** Go, append-only JSONL with fsync, Evener Session/transcript/provider seams, deterministic channel barriers, Rapid/native fuzz replay, AppWire Go/TypeScript generation, React/Vitest/Biome, Kata, and repository Make gates.
 
 ## Global Constraints
 
 - Jesse is the human partner. The authoritative target is `docs/subagent-management/11-delegate-resource-model.md`; this dated file is an execution plan, not a second product specification.
-- Execute Tasks 6–14 only in `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean` on `wip/delegate-resource-task6-clean`, starting from completed Task 5 commit `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`. Before each task, verify the branch, expected prior task commit, and clean tracked porcelain. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push while executing this plan.
+- Execute Tasks 6–14 only in `/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/delegate-resource-task6-clean` on `wip/delegate-resource-task6-clean`, starting from completed Task 5 commit `2da9863390e3e064fc015afe79a54fe8a8ce1d8f`. Before each task, verify the branch, expected prior task commit, and clean tracked porcelain. Never merge, rebase, cherry-pick, reset, clean, stash, switch branches, or push while executing this plan.
 - Do not copy lifecycle code from `delegate-identity-integration`. Pure DTO/rendering ideas and still-valid behavioral tests must be re-derived against `main`.
 - There is one stable public delegate identity (`dlg_...`), one root-owned controller, one durable delegate fold, one current private `uint64` generation per delegate, and one lifecycle mutex per root tree.
 - A delegate generation is never a JobRecord, job ID, output file, independent reducer, query target, notification rail, or public row.
@@ -1609,7 +1609,7 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 **Interfaces:**
 
 - Consume lossless stable snapshots, canonical packets, descendant event callbacks, ParentDelegateID shells, typed watches, and per-delegate monotonic projection revision.
-- Produce DELEGATE_UPDATED internally and serf/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
+- Produce DELEGATE_UPDATED internally and evener/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
 - Replace address-derived tree-clock sharing with one explicitly inherited *jobActivityClock for projection ordering only. It carries no lifecycle, generation, capacity, authorization, phase, or stop state.
 - Remove activation cards and legacy Detailed.Jobs discovery without removing send/stop/status/watch/observer/navigation capability.
 
@@ -1862,7 +1862,7 @@ git commit -m "refactor: delete dormant delegate job schema" -m "Delete the now-
 - Modify: docs/architecture.md, docs/job-control.md, docs/subagent-runtime-contracts.md, docs/tools/transcripts.md, docs/hooks.md.
 - Modify: agent/prompts/sections/delegation.md, agent/prompts/sections/background-jobs.md, agent/prompts/templates/subagent.md.tmpl.
 - Modify: internal/bundled/agents/subagent.md, internal/bundled/plugins/coordinator-workflow/agents/coordinator.md.
-- Modify: internal/bundled/skills/doctoring-serf/references/data-model.md, internal/bundled/skills/doctoring-serf/references/failure-modes.md, internal/bundled/skills/doctoring-serf/references/finding-contract.md, internal/bundled/skills/doctoring-serf/references/repair-guardrails.md, internal/bundled/skills/doctoring-serf/references/writing-runbooks.md.
+- Modify: internal/bundled/skills/doctoring-evener/references/data-model.md, internal/bundled/skills/doctoring-evener/references/failure-modes.md, internal/bundled/skills/doctoring-evener/references/finding-contract.md, internal/bundled/skills/doctoring-evener/references/repair-guardrails.md, internal/bundled/skills/doctoring-evener/references/writing-runbooks.md.
 - Modify: agent/bundled_prompt_tool_mentions_test.go, internal/bundled/bundled_test.go.
 
 **Interfaces:**
@@ -1920,7 +1920,7 @@ Review every documentation diff for retained behavior. Stage only:
 git add -- docs/subagent-management/11-delegate-resource-model.md docs/architecture.md docs/job-control.md docs/subagent-runtime-contracts.md docs/tools/transcripts.md docs/hooks.md
 git add -- agent/prompts/sections/delegation.md agent/prompts/sections/background-jobs.md agent/prompts/templates/subagent.md.tmpl
 git add -- internal/bundled/agents/subagent.md internal/bundled/plugins/coordinator-workflow/agents/coordinator.md
-git add -- internal/bundled/skills/doctoring-serf/references/data-model.md internal/bundled/skills/doctoring-serf/references/failure-modes.md internal/bundled/skills/doctoring-serf/references/finding-contract.md internal/bundled/skills/doctoring-serf/references/repair-guardrails.md internal/bundled/skills/doctoring-serf/references/writing-runbooks.md
+git add -- internal/bundled/skills/doctoring-evener/references/data-model.md internal/bundled/skills/doctoring-evener/references/failure-modes.md internal/bundled/skills/doctoring-evener/references/finding-contract.md internal/bundled/skills/doctoring-evener/references/repair-guardrails.md internal/bundled/skills/doctoring-evener/references/writing-runbooks.md
 git add -- agent/bundled_prompt_tool_mentions_test.go internal/bundled/bundled_test.go
 git commit -m "docs: teach stable delegate resources" -m "Update shipped architecture, job-control, transcript, hook, doctor, subagent, and coordinator guidance to use dlg_ control identities while preserving watches, observers, supervision, reclamation, shells, worktrees, recovery, and historical read behavior."
 ~~~

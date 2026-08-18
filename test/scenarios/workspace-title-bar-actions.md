@@ -20,11 +20,11 @@ silently, leaving the daemon running — every action below uses
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--serf` resolvable (sibling or
+  `docs/agentic-testing.md`) with `--evener` resolvable (sibling or
   PATH).
-- OpenAI OAuth signed in (`./serf openai status` shows
+- OpenAI OAuth signed in (`./evener openai status` shows
   `source=oauth`).
-- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
+- `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - `jq` not required — examples use `python3 -m json.tool` and
   inline `python3 -c`. Substitute freely.
 
@@ -33,8 +33,8 @@ silently, leaving the daemon running — every action below uses
 Set up shared state:
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-titlebar-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-titlebar-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
@@ -44,7 +44,7 @@ HUB=http://127.0.0.1:$PORT
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"reply with the word 'ready' and nothing else\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"reply with the word 'ready' and nothing else\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
    # wait for idle
@@ -139,7 +139,7 @@ head and runs it as a fresh user turn.
    done
    echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
    # Confirm the queued text appears in the transcript as a USER turn AFTER
-   # the interrupted turn's cancellation marker. Use serf-doctor rather than
+   # the interrupted turn's cancellation marker. Use evener-doctor rather than
    # hand-parsing JSONL (see docs/agentic-testing.md, "Inspecting transcript
    # and meta on disk"):
    go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
@@ -172,7 +172,7 @@ head and runs it as a fresh user turn.
    # record turn count and transcript size
    TC_BEFORE=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
                 | python3 -c "import json,sys; print(json.load(sys.stdin)['turn_count'])")
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
    LINES_BEFORE=$(wc -l < "$TFILE")
    echo "before compact: turn_count=$TC_BEFORE lines=$LINES_BEFORE"
    # compact
@@ -198,9 +198,9 @@ head and runs it as a fresh user turn.
 5. **[browser-free] Shutdown**. Capture pre-state (daemon pid via rendezvous,
    meta file path), POST shutdown, watch the daemon exit:
    ```bash
-   RFILE=$(grep -l "\"session_id\":\"$SID\"" $HOME/.serf/run/*.json)
+   RFILE=$(grep -l "\"session_id\":\"$SID\"" $HOME/.evener/run/*.json)
    PID=$(basename "$RFILE" .json)
-   META=$(find $HOME/.local/state/serf/projects -name "$SID.meta.json")
+   META=$(find $HOME/.local/state/evener/projects -name "$SID.meta.json")
    echo "pid=$PID rfile=$RFILE meta=$META"
    ts_start=$(date +%s)
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
@@ -254,8 +254,8 @@ head and runs it as a fresh user turn.
   word 'ready' and nothing else"`). Confirms the checkpoint
   preserved earlier-turn content.
 - **Step 5 (shutdown)**: hub returns `204`; daemon process exits
-  within ~3s; rendezvous file at `$HOME/.serf/run/<pid>.json` is gone;
-  meta file at `$HOME/.local/state/serf/projects/.../<sid>.meta.json`
+  within ~3s; rendezvous file at `$HOME/.evener/run/<pid>.json` is gone;
+  meta file at `$HOME/.local/state/evener/projects/.../<sid>.meta.json`
   persists; subsequent GET on `/api/sessions/local:<sid>` reports
   `state=ended` and `live=false`. Falsification: process still alive
   after 5s, rendezvous file still present, meta file deleted, or
@@ -265,9 +265,9 @@ head and runs it as a fresh user turn.
 
 ```bash
 rm -rf "$tmpdir"
-# meta + transcript files under $HOME/.local/state/serf/projects linger
+# meta + transcript files under $HOME/.local/state/evener/projects linger
 # (harmless). Optional:
-find $HOME/.local/state/serf/projects -name "$SID*" -delete
+find $HOME/.local/state/evener/projects -name "$SID*" -delete
 # If a daemon was left running (e.g. you skipped the shutdown step),
 # kill it:
 # kill $PID
@@ -331,7 +331,7 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
   `/api/sessions/<sid>` (returns 404) and NOT `/s/<sid>` (returns
   the SPA shell). The `local:` prefix is required because the route parses a
   `hubapi.Ref` (`web_api_tree.go:1360-1374`).
-- Multiple `$HOME/.serf/run/*.json` files can exist for different
+- Multiple `$HOME/.evener/run/*.json` files can exist for different
   daemons. Use `grep -l "\"session_id\":\"$SID\""` to find the
   right one; do not pick the most recent.
 - Shutdown is graceful (daemon ack'd 204 before exiting). The

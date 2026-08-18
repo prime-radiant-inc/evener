@@ -17,7 +17,7 @@
 - Keep `.workspace-input` as the only active response surface and keep the transcript anchor noninteractive.
 - Hidden composer controls must remain hidden and inert during ask mode.
 - Default tests must be deterministic and must not use provider credentials, network access, quota, current model behavior, or ambient developer state.
-- Do not add `package.json`, `package-lock.json`, or a checked-in JSDOM dependency; use the repository's existing `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules` convention.
+- Do not add `package.json`, `package-lock.json`, or a checked-in JSDOM dependency; use the repository's existing `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules` convention.
 
 ---
 
@@ -50,7 +50,7 @@
   pass(!!responseDock.querySelector('[data-ask-option][data-option-kind="free"]'),
     "Something else is a native option choice");
   pass(!!responseDock.querySelector('[data-ask-option][data-option-kind="decide"]'),
-    "let serf decide is a native option choice");
+    "let evener decide is a native option choice");
   pass(!!responseDock.querySelector("[data-ask-skip-btn]"),
     "the spec-required skip resolution remains available");
   pass(!!responseDock.querySelector("[data-ask-note-field]") &&
@@ -71,8 +71,8 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
   ```
 
   Expected: FAIL because free/decide are buttons, the note field is disclosed by `+`, the footer is inside the dock, and the send button is not disabled during the request.
@@ -100,7 +100,7 @@
   }
   ```
 
-  The implementation must render regular options first, then `Something else…` (`kind="free"`) and `let serf decide` (`kind="decide"`) in the same `[data-ask-options]` container. Set its role to `group` for multi-select and `radiogroup` otherwise, with `aria-labelledby` referencing both the question header and text. Activating free or decide reveals and focuses its associated text field. A click or keyboard activation on an already selected free/decide choice must clear it instead of immediately reselecting it. Preserve the existing fallback and skip buttons, including toggle-off behavior; set `aria-pressed` consistently on both.
+  The implementation must render regular options first, then `Something else…` (`kind="free"`) and `let evener decide` (`kind="decide"`) in the same `[data-ask-options]` container. Set its role to `group` for multi-select and `radiogroup` otherwise, with `aria-labelledby` referencing both the question header and text. Activating free or decide reveals and focuses its associated text field. A click or keyboard activation on an already selected free/decide choice must clear it instead of immediately reselecting it. Preserve the existing fallback and skip buttons, including toggle-off behavior; set `aria-pressed` consistently on both.
 
   Replace the note disclosure button with one always-visible input whose `aria-labelledby` includes the question header, question text, and a visually hidden `note` label. Notes continue to mutate only `item.note` and must survive dock rebuilds.
 
@@ -115,9 +115,9 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
   ```
 
   Expected: all three scripts print `PASS` and exit 0.
@@ -162,7 +162,7 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
   ```
 
   Expected: FAIL because ask mode is not yet a constrained form flex column and the footer is still styled as a sticky child of the scroller.
@@ -184,9 +184,9 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-renderer-viewport-dock.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-renderer-viewport-dock.js
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
   ```
 
   Expected: all scripts print `PASS` and exit 0.
@@ -211,7 +211,7 @@
 
   ```sh
   cd cmd/evener-hub/jstest
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 900 ./run-all.sh
+  NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 900 ./run-all.sh
   ```
 
   Expected: every script passes with no failures.

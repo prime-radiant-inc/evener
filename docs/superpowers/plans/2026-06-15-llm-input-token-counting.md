@@ -31,7 +31,7 @@ Add tests for:
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'InputTokens|TokenCount' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'InputTokens|TokenCount' -count=1
 ```
 
 Expected: compile/test failures because the API does not exist yet.
@@ -53,7 +53,7 @@ Modify `llm/client.go` with `CountInputTokens`.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'InputTokens|TokenCount' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'InputTokens|TokenCount' -count=1
 ```
 
 Expected: pass.
@@ -82,7 +82,7 @@ Add tests that an Anthropic adapter:
 - [ ] **Step 2: Run red tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/anthropic -run 'CountInputTokens' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/anthropic -run 'CountInputTokens' -count=1
 ```
 
 Expected: fail because `CountInputTokens` is missing.
@@ -94,7 +94,7 @@ Add `CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount
 - [ ] **Step 4: Run green tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/anthropic -run 'CountInputTokens' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/anthropic -run 'CountInputTokens' -count=1
 ```
 
 Expected: pass.
@@ -123,7 +123,7 @@ Add tests that a Google adapter:
 - [ ] **Step 2: Run red tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/google -run 'CountInputTokens' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/google -run 'CountInputTokens' -count=1
 ```
 
 Expected: fail because `CountInputTokens` is missing.
@@ -135,7 +135,7 @@ Add `CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount
 - [ ] **Step 4: Run green tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/google -run 'CountInputTokens' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/google -run 'CountInputTokens' -count=1
 ```
 
 Expected: pass.
@@ -163,7 +163,7 @@ Update existing image-context tests to assert the estimator comes from `llm` beh
 - [ ] **Step 2: Run red tests if compile fails**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/contextmgr ./agent -run 'EstimateTokens|ContextWindowAwareness' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/contextmgr ./agent -run 'EstimateTokens|ContextWindowAwareness' -count=1
 ```
 
 Expected: fail until imports and call sites are updated.
@@ -175,7 +175,7 @@ Use `llm.EstimateMessagesInputTokens` for history/message-only estimates and `ll
 - [ ] **Step 4: Run green tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/contextmgr ./agent -run 'EstimateTokens|ContextWindowAwareness' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/contextmgr ./agent -run 'EstimateTokens|ContextWindowAwareness' -count=1
 ```
 
 Expected: pass.
@@ -196,8 +196,8 @@ git commit -m "Use llm token estimator in agent context pressure"
 - [ ] **Step 1: Run focused verification**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/anthropic ./llm/providers/google ./agent/internal/contextmgr -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'ContextWindowAwareness' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/anthropic ./llm/providers/google ./agent/internal/contextmgr -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'ContextWindowAwareness' -count=1
 ```
 
 Expected: pass.

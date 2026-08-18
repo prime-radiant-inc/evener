@@ -33,7 +33,7 @@ biggest change from the card's old text:
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/agentic-testing.md`. Never a real hub.
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
@@ -71,7 +71,7 @@ a browser, and only assert what the rail renders.
    })
    ```
 6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
-   the archive handler broadcasts `serf/tree/changed` unconditionally
+   the archive handler broadcasts `evener/tree/changed` unconditionally
    (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
    the store refetches on a 250ms debounce
    (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
@@ -135,7 +135,7 @@ a browser, and only assert what the rail renders.
   edges).
 - **Step 10 (exact)**: `$B`'s key absent from all three of `projects[]`,
   `archived_projects[]`, `test_runs[]`; and
-  `find "$HOME/.local/state/serf/projects" -name "$SID_B*"` returns nothing.
+  `find "$HOME/.local/state/evener/projects" -name "$SID_B*"` returns nothing.
   In the browser, the `Test runs` heading is gone (its bucket is empty and
   `RailSection` returns null at `Rail.tsx:101`). Falsify: files surviving a
   `200`, or a heading rendering for an empty bucket.

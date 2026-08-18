@@ -90,7 +90,7 @@ func TestBuildAPILogRequest_RecordsContinuationTokenEstimates(t *testing.T) {
 - [x] **Step 2: Run RED test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
 ```
 
 Expected: compile failure because the fields do not exist.
@@ -118,7 +118,7 @@ In `BuildAPILogRequest`, copy those fields from `req`.
 - [x] **Step 4: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
 ```
 
 Expected: pass.
@@ -215,7 +215,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 - [x] **Step 2: Run RED test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
 ```
 
 Expected: compile failure for the test-only hook and missing request fields, or runtime failure because estimates are zero.
@@ -265,7 +265,7 @@ After delta shaping or full-history fallback planning, set `InputTokensEstimate 
 - [x] **Step 4: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
 ```
 
 Expected: pass.
@@ -352,7 +352,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 - [x] **Step 2: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
 ```
 
 Observed: passed after Task 2 because the short-circuit was implemented with the estimate helper.
@@ -373,7 +373,7 @@ Ensure `PreviousResponseID`, `ConversationID`, `Continuation`, and `FullHistoryF
 - [x] **Step 4: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
 ```
 
 Expected: pass.
@@ -453,7 +453,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 - [x] **Step 2: Run RED test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
 ```
 
 Expected: fail because `recordResponseUsage` records provider input usage `10`.
@@ -479,7 +479,7 @@ Update the call site in `processOneInput` to pass the final request returned fro
 - [x] **Step 4: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
 ```
 
 Expected: pass.
@@ -526,7 +526,7 @@ FullHistoryFallback: 1
 - [x] **Step 2: Run RED test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
 ```
 
 Expected: compile failure because the summary fields do not exist.
@@ -554,7 +554,7 @@ In `APILog`, increment counts using only `call.Request.EndpointFamily` and `call
 - [x] **Step 4: Run focused test**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
 ```
 
 Expected: pass.
@@ -578,9 +578,9 @@ git commit -m "feat(agent): summarize responses continuation history modes"
 - [x] **Step 1: Run full focused Phase 10 verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10|TestSession_OpenAIResponsesContinuationPhase9|TestFallbackChain_Continuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily|TestAPILog' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10|TestSession_OpenAIResponsesContinuationPhase9|TestFallbackChain_Continuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily|TestAPILog' -count=1 -v
 git diff --check
 ```
 

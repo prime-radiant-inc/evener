@@ -1,22 +1,22 @@
-# Serf → Evener Rename: Execution Plan
+# Evener → Evener Rename: Execution Plan
 
 ## Decisions (confirmed)
 - Module: `primeradiant.com/evener` → `primeradiant.com/evener` (7 sub-modules: agent, auth, envvars, fuzz, identifier, invariant, llm)
 - Binaries: all 14 mirrored to `evener-*`
-- User data: all paths → evener (`~/.serf`, `~/.config/serf`, `~/.local/state/serf`, `<gitroot>/.serf`, `<prefix>/share/serf/bin`, `$XDG_CACHE_HOME/serf`)
+- User data: all paths → evener (`~/.evener`, `~/.config/evener`, `~/.local/state/evener`, `<gitroot>/.evener`, `<prefix>/share/evener/bin`, `$XDG_CACHE_HOME/evener`)
 - Env vars: all `SERF_*` → `EVENER_*`
 - AppWire protocol: version bump + wire JSON keys renamed (hard flag day, no wire compat)
 - Generated files: regenerated via `make generate`
 - Prose: all docs, comments, strings rewritten
 - Migration tool: `cmd/evener-migrate`
 - Commits: ~20-30 small thematic commits
-- DO NOT rename: `ProtocolVersion`, continuation secret domain strings, `serffuzz` tag, `serf-apptranscript-prefix`, `SERF_STATE_HOME` (doesn't exist)
+- DO NOT rename: `ProtocolVersion`, continuation secret domain strings, `serffuzz` tag, `evener-apptranscript-prefix`, `SERF_STATE_HOME` (doesn't exist)
 
 ## Catalog Summary
 | Domain | Files | Occurrences |
 |---|---|---|
 | Go module path | 1653 go files | 4793 |
-| Go symbols (Serf/serf) | ~785 files | 219 cap + 2492 lower |
+| Go symbols (Evener/evener) | ~785 files | 219 cap + 2492 lower |
 | SERF_ env vars (Go) | ~100 files | 551 |
 | SERF_ env vars (non-Go) | ~60 files | 684 |
 | User data paths (Go) | ~20 key files | ~50 |
@@ -36,8 +36,8 @@
 - Verify: `go build ./...`
 
 **Commit 2: cmd/ directory renames**
-- `git mv cmd/serf cmd/evener`, `git mv cmd/evener-hub cmd/evener-hub`, ... (all 14)
-- sed remaining `cmd/serf` → `cmd/evener` in import paths
+- `git mv cmd/evener cmd/evener`, `git mv cmd/evener-hub cmd/evener-hub`, ... (all 14)
+- sed remaining `cmd/evener` → `cmd/evener` in import paths
 - Verify: `go build ./...`
 
 **Commit 3: Binary names in Makefile**
@@ -45,7 +45,7 @@
 - Verify: `make build`
 
 **Commit 4: Self-update & install paths**
-- installBinaries list, `share/serf/bin` → `share/evener/bin`, error messages, binresolve comments
+- installBinaries list, `share/evener/bin` → `share/evener/bin`, error messages, binresolve comments
 - Verify: `go build ./...`
 
 ### Phase 2: Go Code (sequential, depends on Phase 1)
@@ -63,22 +63,22 @@
 - Verify: `go build ./...`
 
 **Commit 8: Go type/func/var/const identifiers**
-- 21 Serf* types, ~25 funcs, 3 vars, 2 consts → Evener*
+- 21 Evener* types, ~25 funcs, 3 vars, 2 consts → Evener*
 - Verify: `go build ./... && go test ./...`
 
 **Commit 9: User data paths in Go**
 - cmdutil/userdirs.go, cmdutil/statedir.go, appwire/frame_recorder.go, internal/credentials/store.go, agent/transcript_lookup.go, agent/mcpconfig/config.go, agent/runtime_dir.go, agent/sandbox_infra.go, cmd/evener-hub/config.go, etc.
-- `~/.serf` → `~/.evener`, `.serf` → `.evener`, `serf/projects` → `evener/projects`, `share/serf` → `share/evener`, `cache/serf` → `cache/evener`
+- `~/.evener` → `~/.evener`, `.evener` → `.evener`, `evener/projects` → `evener/projects`, `share/evener` → `share/evener`, `cache/evener` → `cache/evener`
 - Verify: `go test ./...`
 
 **Commit 10: String literals (harness, originator, etc.)**
-- `spawnHarness = "serf"` → `"evener"`, `defaultOriginator = "serf"` → `"evener"`, other string constants
+- `spawnHarness = "evener"` → `"evener"`, `defaultOriginator = "evener"` → `"evener"`, other string constants
 - Verify: `go test ./...`
 
 **Commit 11: AppWire protocol version bump + wire JSON keys**
 - Bump protocol version
-- Rename wire-stable JSON tags: `serf` → `evener`, `serfErrorInfo` → `evenerErrorInfo`
-- Rename wire method strings: `serf/jobs/list` → `evener/jobs/list`, etc.
+- Rename wire-stable JSON tags: `evener` → `evener`, `serfErrorInfo` → `evenerErrorInfo`
+- Rename wire method strings: `evener/jobs/list` → `evener/jobs/list`, etc.
 - Verify: `go test ./...`
 
 **Commit 12: Generated files**
@@ -88,7 +88,7 @@
 ### Phase 3: Scripts & Config (can parallelize after Phase 1)
 
 **Commit 13: Shell scripts**
-- 55 .sh files: SERF_* → EVENER_*, serf → evener
+- 55 .sh files: SERF_* → EVENER_*, evener → evener
 - Verify: `make test-short`
 
 **Commit 14: Config files (yaml/toml/json/sbpl/tmpl)**
@@ -102,11 +102,11 @@
 ### Phase 4: Frontend (can parallelize after Phase 11/12)
 
 **Commit 16: Frontend package.json + manifest**
-- `serf-hub-frontend` → `evener-hub-frontend`, manifest names, package-lock.json
+- `evener-hub-frontend` → `evener-hub-frontend`, manifest names, package-lock.json
 - Verify: `make test-web`
 
 **Commit 17: Frontend TS/TSX/HTML/CSS**
-- 277 files: serf → evener in UI strings, wire method refs, fixtures
+- 277 files: evener → evener in UI strings, wire method refs, fixtures
 - Verify: `make test-web` + `make test-web-browser`
 
 ### Phase 5: Docs & Prose (can parallelize anytime)
@@ -121,7 +121,7 @@
 - Verify: `make lint-docs`
 
 **Commit 21: Go comments**
-- 785 files, 1756 occurrences: Serf → Evener, serf → evener in comments
+- 785 files, 1756 occurrences: Evener → Evener, evener → evener in comments
 - Verify: `go build ./...`
 
 **Commit 22: AGENTS.md + ABOUT.md**
@@ -130,7 +130,7 @@
 ### Phase 6: Migration Tool
 
 **Commit 23: cmd/evener-migrate implementation**
-- New binary: moves ~/.serf→~/.evener, ~/.config/serf→~/.config/evener, ~/.local/state/serf→~/.local/state/evener, per-project .serf→.evener
+- New binary: moves ~/.evener→~/.evener, ~/.config/evener→~/.config/evener, ~/.local/state/evener→~/.local/state/evener, per-project .evener→.evener
 - Idempotent, safe (refuse overwrite), prints report
 - Verify: `go build ./cmd/evener-migrate/`
 
@@ -141,7 +141,7 @@
 ### Phase 7: Final Verification
 
 **Commit 25: Final cleanup & verification**
-- Full grep for remaining `serf`/`Serf`/`SERF_` references
+- Full grep for remaining `evener`/`Evener`/`SERF_` references
 - Run: `make test`, `make lint`, `make fuzz-seeds`
 - Any stragglers fixed
 - Verify: all gates green

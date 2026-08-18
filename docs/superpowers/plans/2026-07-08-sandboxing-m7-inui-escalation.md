@@ -1,4 +1,4 @@
-# Serf Sandboxing — M7: In-UI Sandbox-Exemption Escalation
+# Evener Sandboxing — M7: In-UI Sandbox-Exemption Escalation
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -41,7 +41,7 @@ here later").
 > `read_file`/`write_file`/`edit_file` (`apply_patch` + browse tools stay final);
 > Sensitive (masked-credential) denials never escalate; the card shows the **full**
 > path for informed consent. Wire keys are **camelCase** (the appwire tree speaks
-> the codex/appwire protocol, enforced by `serf-namingcheck` — the plan's
+> the codex/appwire protocol, enforced by `evener-namingcheck` — the plan's
 > "snake_case" predates that gate).
 
 **Architecture:** Three planes, one round-trip.
@@ -59,8 +59,8 @@ here later").
    history — only the final tool result (approved re-run output *or* typed denial)
    enters the model's context.
 2. **Wire plane (`appwire/`)** adds one server→client notification
-   (`serf/sandbox/escalation/requested`) carrying the card payload, and one
-   client→server request (`serf/sandbox/escalation/resolve`) carrying the
+   (`evener/sandbox/escalation/requested`) carrying the card payload, and one
+   client→server request (`evener/sandbox/escalation/resolve`) carrying the
    decision. Both are `ScopeBoth` (daemon serves; hub relays). Params/response
    types + method/notification name constants + catalog rows; docs regenerate via
    `make generate`; `protocol_test.go` cross-checks the catalog against both
@@ -73,7 +73,7 @@ here later").
    client maps the notification to a card and posts the decision.
 
 **The closest existing pattern — and where it diverges.** `ask_user`
-(`agent/session_tools_ask.go`) is the nearest thing serf has to a
+(`agent/session_tools_ask.go`) is the nearest thing evener has to a
 human-in-the-loop prompt, and M7 adapts its *surfacing* (a card projected from a
 session event, gated by the same `NonInteractive || isSubagentSession()` check,
 rendered by `renderer.js`). But its **control flow is the opposite** and must not
@@ -86,17 +86,17 @@ be reused:
 | Model visibility | **visible** — the `ask_user` call + its questions are a transcript turn the model reads | **invisible** — never a `schema.Turn`; only the final tool result enters history |
 | Answer channel | user's next `turn/start` input | a **new** `escalation/resolve` request that targets a blocked waiter |
 
-So serf has **no** request/response harness-prompt today: `ask_user` is
+So evener has **no** request/response harness-prompt today: `ask_user` is
 fire-and-forget and model-initiated (wrong trust direction), and PreToolUse hooks
 can only *deny* — `hooks.go:614-635` recognizes `permissionDecision: "ask"`/
-`"defer"` but explicitly **does not honor** them ("serf has no interactive
+`"defer"` but explicitly **does not honor** them ("evener has no interactive
 permission prompt; the tool will proceed"). M7 builds that missing primitive.
 
 **Tech Stack:** Go 1.25, stdlib. No new external dep. The blocking wait is a
 `select` over a per-escalation `chan escalationDecision` and `ctx.Done()`. Wire
 types are plain structs with snake_case JSON tags. Web is vanilla JS in
 `cmd/evener-hub/assets/` (no build step). Table-driven `testing`; a real
-`serf serve` daemon + `appwire.Client` for the round-trip e2e; a live bwrap
+`evener serve` daemon + `appwire.Client` for the round-trip e2e; a live bwrap
 sandbox for the file/shell approve/deny e2e (Linux; the branch is Linux-only —
 M6/Seatbelt parity for escalation is a documented follow-up, not an M7 task).
 
@@ -154,7 +154,7 @@ land):
   session policy*; it can only re-run one action. Subagents/delegates never
   escalate (they have no attached human) — their sandbox denials stay final,
   which also preserves M4's re-rooted-policy guarantees.
-- **snake_case** for every JSON/wire key (`make lint` / `serf-namingcheck` gate).
+- **snake_case** for every JSON/wire key (`make lint` / `evener-namingcheck` gate).
   Regenerate `docs/appwire-protocol.md` with `make generate` after touching the
   catalog; `protocol_test.go` must stay green (catalog ↔ router cross-check).
 - Never `git add -A` without a prior `git status`. Stage exact paths.
@@ -203,8 +203,8 @@ bool)` so the session layer never type-switches on internals.
 - `agent/events/events.go` (modify) — add `EventSandboxEscalationRequested` +
   its payload struct (`SandboxEscalationRequestedData`).
 - `appwire/types.go` (modify) — `MethodSerfSandboxEscalationResolve`
-  (`"serf/sandbox/escalation/resolve"`) and `NotifySerfSandboxEscalationRequested`
-  (`"serf/sandbox/escalation/requested"`) constants; `SandboxEscalationRequested`
+  (`"evener/sandbox/escalation/resolve"`) and `NotifySerfSandboxEscalationRequested`
+  (`"evener/sandbox/escalation/requested"`) constants; `SandboxEscalationRequested`
   (notification payload) and `SandboxEscalationResolveParams` request type.
 - `appwire/protocol.go` (modify) — one `Methods` row (ScopeBoth) + one
   `Notifications` row.
@@ -349,7 +349,7 @@ package + jstest tests.
 - [ ] **Failing test:** a hub-relay test asserts the resolve request routes daemon-
   ward through `LocalDaemonSource` and that Codex returns method-not-supported; a
   `cmd/evener-hub/jstest` case asserts `eventsFromNotification` maps
-  `serf/sandbox/escalation/requested` to a card event, and that the file-tool
+  `evener/sandbox/escalation/requested` to a card event, and that the file-tool
   shape vs the shell shape render distinctly (the shell card shows the
   output-so-far + the "already partially ran; approving re-runs start-to-finish"
   caveat; the file card does not).
@@ -367,7 +367,7 @@ package + jstest tests.
 
 ## Task 6 — E2E: file-tool escalation (approve expands one invocation)
 
-**Files:** `cmd/evener-hub/…_test.go` (new e2e), real `serf serve` daemon + real
+**Files:** `cmd/evener-hub/…_test.go` (new e2e), real `evener serve` daemon + real
 bwrap, no mocks.
 
 - [ ] **Failing test** `TestE2E_FileToolEscalation_Approve/Deny` (Linux, bwrap):
@@ -431,7 +431,7 @@ bwrap, no mocks.
 ## Design decision to confirm before Task 1 — "interactive but no human watching"
 
 An interactive root session can have **no browser attached** at the instant of a
-denial (the `serf serve` daemon is up, the tab is closed). Blocking a turn on a
+denial (the `evener serve` daemon is up, the tab is closed). Blocking a turn on a
 card no one can answer would hang the session. **Recommendation (encoded in Task 1's
 gate):** escalate **only when `SubscriberCount(threadID) > 0`**; otherwise treat
 the denial as final (same as non-interactive). A subscriber that drops *mid-wait*
@@ -447,7 +447,7 @@ it and get his call before building, since it changes the hang/￼safety trade-o
 - `cd <worktree> && make test-short && make vet && make lint` clean;
   `make generate` produced no uncommitted diff (the protocol doc is regenerated
   and committed).
-- The full round-trip works against a **live bwrap-sandboxed `serf serve`**:
+- The full round-trip works against a **live bwrap-sandboxed `evener serve`**:
   file-tool approve expands exactly one invocation, deny returns the typed error,
   shell approve re-runs start-to-finish with an honest partial-run caveat.
 - All four model-isolation walls have a passing assertion; the non-interactive

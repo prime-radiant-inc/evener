@@ -15,7 +15,7 @@ Phase 6 completes OpenAI Chat Completions fallback cloning for test-driven delta
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages' -count=1 -v
 ```
 
 Initial result: failed. Both immediate and empty-stream Chat fallback request bodies contained `PHASE6_DELTA_ONLY_MARKER` and omitted `PHASE6_FULL_HISTORY_MARKER`.
@@ -23,7 +23,7 @@ Initial result: failed. Both immediate and empty-stream Chat fallback request bo
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback' -count=1 -v
 ```
 
 Result: pass.

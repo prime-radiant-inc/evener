@@ -11,7 +11,7 @@ except where the old implementation conflicts with these decisions.
 ## Decisions
 
 1. **Watch-send busy delivery:** when a `job_watch` send fires but the target
-   sidecar cannot accept delivery immediately, Serf coalesces frames per watch
+   sidecar cannot accept delivery immediately, Evener coalesces frames per watch
    key and delivers the latest frame when the target is next idle/resumable.
    A frame is dropped only on hard/non-resumable failure, and that drop must
    produce a caller-visible diagnostic notification.
@@ -91,7 +91,7 @@ Current touchpoints include:
 Required behavior:
 
 - `caller` remains the runtime-originating session alias.
-- `watched` is valid only in `job_watch.send.to`, where Serf has an internal
+- `watched` is valid only in `job_watch.send.to`, where Evener has an internal
   watch context for the current delivery. Direct `job_send_message` and
   `job_watch.target` calls with `watched` fail synchronously. Session events
   without a concrete messageable watched identity do not support `watched`;
@@ -299,7 +299,7 @@ Required behavior:
   but v1 must not append `delivered` before the side effect.
 - Pending frames are bounded both per key and per active watch generation. The
   default per-watch-generation cap is 32 pending keys. When a new distinct key
-  would exceed the cap, Serf evicts the oldest pending key for that watch
+  would exceed the cap, Evener evicts the oldest pending key for that watch
   generation and emits one caller-visible diagnostic naming the evicted trigger.
 - Busy classification is explicit: a watch-originated send (`FromWatch`) to a
   running delegate sidecar is treated as busy and must be queued/coalesced
@@ -407,7 +407,7 @@ This is the foundation for runtime-lost delegate resume. Current
 
 Required behavior:
 
-- Before launching a delegate, Serf writes a durable delegate restore descriptor
+- Before launching a delegate, Evener writes a durable delegate restore descriptor
   into the job's `job_started` state. Task 2 may already have introduced this
   descriptor for `result_schema`; this task completes the descriptor for
   restore-based resume.
@@ -555,7 +555,7 @@ Required behavior:
   parent/caller linkage, profile/model/reasoning settings, working directory,
   local env policy, and inherited result schema.
 - During `job_send_message`, after preflight succeeds and before appending the
-  new resumed job, Serf reconstructs and tracks the child as an idle retained
+  new resumed job, Evener reconstructs and tracks the child as an idle retained
   delegate session so the normal resume path can launch the next turn.
 
 Acceptance tests:
@@ -631,7 +631,7 @@ Acceptance checks:
 Run, at minimum:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 go test ./agent/internal/jobstore -run 'Test.*Delegate|Test.*Structured|Test.*Restore' -count=1
 go test ./agent -run 'Test.*Watch|Test.*Delegate|Test.*JobSend|Test.*Structured|Test.*Restore' -count=1
 go test ./agent ./agent/internal/jobstore ./agent/internal/tool ./appwire ./internal/appprojector ./cmd/evener-hub ./cmd/evener-tui/internal/msgrender ./cmd/evener-tui/internal/toolsummary -count=1

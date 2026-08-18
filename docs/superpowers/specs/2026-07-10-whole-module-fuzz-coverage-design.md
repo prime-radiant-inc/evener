@@ -114,7 +114,7 @@ monotonicity, exactly-once notification delivery, and absence of orphaned jobs.
 Worktree/file-tool behavior follows through a scripted Git/process boundary and
 an in-memory filesystem. Sandbox/execenv, MCP/plugin, context-manager, and
 transcript paths then use the same policy: inject only the external effect, keep
-the Serf behavior real, and pair broad front doors with differential or invariant
+the Evener behavior real, and pair broad front doors with differential or invariant
 oracles. Extract a pure decision core only when it removes a genuine dependency
 tangle; do not move code merely to inflate coverage.
 

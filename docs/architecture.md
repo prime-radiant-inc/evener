@@ -1,6 +1,6 @@
-# Serf code architecture & module layout
+# Evener code architecture & module layout
 
-How the Serf codebase is organized: which modules exist, what each is for, what
+How the Evener codebase is organized: which modules exist, what each is for, what
 may depend on what, and how to build it. This is the **canonical, living** layout
 reference — kept current as the structure evolves. (The dated migration spec under
 `docs/superpowers/specs/2026-06-01-go-monorepo-module-architecture.md` records the
@@ -8,7 +8,7 @@ plan and the decisions behind this structure; this doc describes the result.)
 
 ## Shape
 
-Serf is a **multi-module Go monorepo** containing two published libraries, a small
+Evener is a **multi-module Go monorepo** containing two published libraries, a small
 shared auth module, and one application made of three binaries that talk over two
 wire contracts.
 
@@ -17,7 +17,7 @@ wire contracts.
 | `auth` | `auth/` | OpenAI OAuth: token storage + interactive login flow | (stdlib only) |
 | `llm` | `llm/` | LLM client library — providers, requests, responses, streaming | `auth` |
 | `agent` | `agent/` | Agent engine + the public persistence schema (`SessionMeta`, `Turn`, …) | `llm`, `auth` |
-| **app** (root) | `.` | the **serf application** — the three binaries + the wire contracts | `agent`, `llm`, `auth` |
+| **app** (root) | `.` | the **evener application** — the three binaries + the wire contracts | `agent`, `llm`, `auth` |
 
 `llm` and `agent` are **published libraries** (consumed inside and outside Prime
 Radiant); their `go.mod` files are kept clean and publishable. `auth` is its own
@@ -32,9 +32,9 @@ importing each other's Go code.
 
 | Binary | `cmd/` | Role | Talks to | via |
 | --- | --- | --- | --- | --- |
-| `serf` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
-| `serf-hub` | `cmd/evener-hub` | **supervisor** — spawns `serf` subprocesses, serves clients | serf (spawn), agent (schema) | **AppWire** + schema |
-| `serf-tui` | `cmd/evener-tui` | **client** — terminal dashboard | serf-hub | **hubapi** (HTTP) |
+| `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
+| `evener-hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
+| `evener-tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener-hub | **hubapi** (HTTP) |
 
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the engine↔hub↔tui wire protocol) and `hubapi/` (the hub's HTTP API).
@@ -76,7 +76,7 @@ library suites.
 ## Boundaries Go enforces
 
 - `agent` / `llm` (modules) **cannot** import the app — the engine libraries can never
-  depend on serf-app glue.
+  depend on evener-app glue.
 - `cmd/<bin>/internal/…` is importable only by that binary.
 - `appwire` / `hubapi` are ordinary packages → all three binaries share them as the
   one legitimately-shared contract tier.
@@ -215,7 +215,7 @@ counts consecutive byte-identical result bodies regardless of error status, and 
 ever nudges, from the second onward; a tool observing mutable state may yet return
 something new, and refusing `communicate` would take away the session's only exit
 door. Repetition catches what error flags miss: a plugin that reports its failures with
-`is_error: false` and the failure as plain body text still trips it, so serf needs no
+`is_error: false` and the failure as plain body text still trips it, so evener needs no
 knowledge of any tool's error conventions.
 
 The ledger is per session and per signature — it lives on the session's own
@@ -223,7 +223,7 @@ The ledger is per session and per signature — it lives on the session's own
 signature's counters. A success or a failure of a different error class resets the
 failure counter; a different result body resets the repetition counter. A parked call
 is recorded as an ordinary error tool result whose output begins
-`serf did not execute this call:` — no new turn kind, no new event type — and the park
+`evener did not execute this call:` — no new turn kind, no new event type — and the park
 itself is not recorded, so the refusal's own body cannot release the next identical
 call.
 
@@ -376,10 +376,10 @@ projection come from the root delegate journal/controller.
   established; all four `go.mod` files are clean and publishable (replace-free).
 - ✅ App `internal/` holds only app-shared code (no library/app mixing) — the structural
   goal of the migration is met.
-- ✅ The library public API is fully documented and **gated in CI**: `serf-docscheck`
+- ✅ The library public API is fully documented and **gated in CI**: `evener-docscheck`
   fails the build if any exported package-level declaration in `llm`, `agent`,
   `agent/events`, or `auth/openai` lacks a doc comment — running alongside
-  `serf-namingcheck` (tag casing) and `serf-internalcheck` (no internal-type leaks).
+  `evener-namingcheck` (tag casing) and `evener-internalcheck` (no internal-type leaks).
   `llm`/`agent`/`auth/openai` carry runnable `Example`s.
 - ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
   only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.

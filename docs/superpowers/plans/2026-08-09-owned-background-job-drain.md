@@ -6,7 +6,7 @@
 
 **Architecture:** Generalize the existing `Session.DrainJobTree` delegate-only accounting with one owned-drain-job predicate covering delegate and shell records. Keep the current durable notification ledger, queue, wake, and `EntryNotification` turn path; do not add a second completion mechanism. The root CLI already invokes the drain after a successful turn. A subagent will invoke the same drain after all of its ordinary completion continuations and before it records a terminal result, so it remains live and non-reclaimable while owned work runs.
 
-**Tech Stack:** Go 1.25, Serf session/job plumbing, append-only `jobstore`, scripted LLM providers, fake clocks, and controllable `execenv.StreamingExecutor` test doubles.
+**Tech Stack:** Go 1.25, Evener session/job plumbing, append-only `jobstore`, scripted LLM providers, fake clocks, and controllable `execenv.StreamingExecutor` test doubles.
 
 **Normative design:** `docs/superpowers/specs/2026-08-09-one-shot-background-job-drain-design.md`
 
@@ -45,7 +45,7 @@
 
 **Focused evaluation:**
 
-- Read: `/Users/jesse/git/prime-radiant/harbor-runner/docs/superpowers/research/2026-08-09-codex-vs-serf-luna-trajectories.md` — evidence defining the five affected failures.
+- Read: `/Users/jesse/git/prime-radiant/harbor-runner/docs/superpowers/research/2026-08-09-codex-vs-evener-luna-trajectories.md` — evidence defining the five affected failures.
 - Create: ignored run artifacts under `/Users/jesse/git/prime-radiant/harbor-runner/runs/` — five-task Luna max confirmation, never submitted.
 
 ---
@@ -595,7 +595,7 @@ Expected: branch `wip/drain-background-jobs` is clean, with the design/plan comm
 
 - Read: `/Users/jesse/git/prime-radiant/harbor-runner/src/harbor_runner/cli.py`
 - Read: `/Users/jesse/git/prime-radiant/harbor-runner/src/harbor_runner/manifest.py`
-- Read: `/Users/jesse/git/prime-radiant/harbor-runner/docs/superpowers/research/2026-08-09-codex-vs-serf-luna-trajectories.md`
+- Read: `/Users/jesse/git/prime-radiant/harbor-runner/docs/superpowers/research/2026-08-09-codex-vs-evener-luna-trajectories.md`
 - Create: `/Users/jesse/git/prime-radiant/harbor-runner/runs/tb21-luna-max-owned-drain-<UTC timestamp>/`
 
 **Cohort:**
@@ -608,15 +608,15 @@ terminal-bench/rstan-to-pystan
 terminal-bench/sqlite-with-gcov
 ```
 
-These are the five prior Serf misses whose trajectories directly showed terminal completion while finite session-owned work was still active. Do not add prior Serf passes, the already-run detached-service cohort, or unrelated failures.
+These are the five prior Evener misses whose trajectories directly showed terminal completion while finite session-owned work was still active. Do not add prior Evener passes, the already-run detached-service cohort, or unrelated failures.
 
 - [ ] **Step 1: Build and identify the exact Linux binary**
 
-From a clean Serf commit after Task 6:
+From a clean Evener commit after Task 6:
 
 ```bash
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /Users/jesse/git/prime-radiant/harbor-runner/dist/serf-linux-amd64 ./cmd/evener
-shasum -a 256 /Users/jesse/git/prime-radiant/harbor-runner/dist/serf-linux-amd64
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /Users/jesse/git/prime-radiant/harbor-runner/dist/evener-linux-amd64 ./cmd/evener
+shasum -a 256 /Users/jesse/git/prime-radiant/harbor-runner/dist/evener-linux-amd64
 git rev-parse HEAD
 git status --short
 ```
@@ -625,7 +625,7 @@ Record the commit and checksum before copying the binary to `magic-kingdom`. Ver
 
 - [ ] **Step 2: Run the immutable remote preflight**
 
-On `magic-kingdom`, verify Harbor 0.20.0, Docker health, the pinned Terminal-Bench 2.1 dataset digest, the readable Serf OAuth record, the CA bundle, free disk, and the five exact task names. Do not print or copy OAuth contents into logs or artifacts. Run the harbor-runner unit suite locally before launch:
+On `magic-kingdom`, verify Harbor 0.20.0, Docker health, the pinned Terminal-Bench 2.1 dataset digest, the readable Evener OAuth record, the CA bundle, free disk, and the five exact task names. Do not print or copy OAuth contents into logs or artifacts. Run the harbor-runner unit suite locally before launch:
 
 ```bash
 cd /Users/jesse/git/prime-radiant/harbor-runner
@@ -657,12 +657,12 @@ Wait until all five tasks have a terminal `result.json`. Do not launch a success
 
 - [ ] **Step 5: Validate and report the focused evidence**
 
-For each task, inspect reward, verifier output, trajectory, retained Serf stdout/stderr, duration, token counts, and job-notification turns. Report:
+For each task, inspect reward, verifier output, trajectory, retained Evener stdout/stderr, duration, token counts, and job-notification turns. Report:
 
 - how many of the five converted to full passes;
 - whether each run waited for every finite managed job and processed its terminal notification;
 - whether any miss is still attributable to drain lifecycle versus model/task correctness;
-- any new Serf exception or shutdown warning;
-- the Serf commit, binary checksum, runner commit, run ID, and explicit non-submission statement.
+- any new Evener exception or shutdown warning;
+- the Evener commit, binary checksum, runner commit, run ID, and explicit non-submission statement.
 
-If a task still fails, root-cause its earliest decisive divergence before proposing another generalized change. Do not infer success from a clean Serf exit when the verifier failed.
+If a task still fails, root-cause its earliest decisive divergence before proposing another generalized change. Do not infer success from a clean Evener exit when the verifier failed.

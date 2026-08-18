@@ -14,7 +14,7 @@ Date: 2026-08-14
 
 ## Checkpoint
 
-- Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-task6-clean`
+- Worktree: `/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/delegate-resource-task6-clean`
 - Branch: `wip/delegate-resource-task6-clean`
 - Task 7 code closure: `521a4892d977927154f34636343d84e8dda15508`
 - Documentation/handoff baseline: `d6db1ad730e793f36d4594000df5ba5e8ef97e27`
@@ -92,7 +92,7 @@ review, test-design, or consumer inventory work may run in parallel when it
 does not edit shared files or preempt the owning task. Task 13 waits for the
 implemented user-facing contract, and Task 14 waits for every prior task. Do
 not inspect, copy, clean, reset, or repurpose the abandoned
-`/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/delegate-resource-recovery-design`
+`/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/delegate-resource-recovery-design`
 worktree. Do not start Task 8 by copying or inspecting the separate abandoned
 `delegate-identity-integration` worktree either; both are evidence only, never
 implementation bases.

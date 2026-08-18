@@ -6,7 +6,7 @@
 
 **Architecture:** Add a non-transitive parent-watch grant to `delegate`, replace model-facing `job_watch.target/send` with watcher-owned `source`, and route watch frames to the session that created the watch. Reuse the existing watch mailbox, provenance, and delegate resume machinery internally, but hide delivery routing from the model-facing API.
 
-**Tech Stack:** Go, Serf agent sessions, jobstore watch events, provenance package, existing Go unit/integration tests, `tools/tool-fluency` live harness.
+**Tech Stack:** Go, Evener agent sessions, jobstore watch events, provenance package, existing Go unit/integration tests, `tools/tool-fluency` live harness.
 
 ---
 
@@ -1594,7 +1594,7 @@ go run ./tools/tool-fluency/cmd/evener-fluency run \
   --clear-openai-api-key \
   --probe job_watch.parent_sidecar_default_source \
   --post-turn-wait 45s \
-  --out /tmp/serf-fluency-parent-watch-gpt-default
+  --out /tmp/evener-fluency-parent-watch-gpt-default
 
 go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
@@ -1603,7 +1603,7 @@ go run ./tools/tool-fluency/cmd/evener-fluency run \
   --clear-openai-api-key \
   --probe job_watch.parent_sidecar_filtered_tool \
   --post-turn-wait 45s \
-  --out /tmp/serf-fluency-parent-watch-gpt-filtered
+  --out /tmp/evener-fluency-parent-watch-gpt-filtered
 ```
 
 Expected: both probes pass with no `delegate_send` calls and no polling after the watched event.
@@ -1618,14 +1618,14 @@ go run ./tools/tool-fluency/cmd/evener-fluency run \
   --model moonshot/kimi-for-coding \
   --probe job_watch.parent_sidecar_default_source \
   --post-turn-wait 45s \
-  --out /tmp/serf-fluency-parent-watch-kimi-default
+  --out /tmp/evener-fluency-parent-watch-kimi-default
 
 go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model moonshot/kimi-for-coding \
   --probe job_watch.parent_sidecar_filtered_tool \
   --post-turn-wait 45s \
-  --out /tmp/serf-fluency-parent-watch-kimi-filtered
+  --out /tmp/evener-fluency-parent-watch-kimi-filtered
 ```
 
 Expected: both probes pass with no public `send`, no `delegate_send(to="caller")`, and observer result through `communicate`.

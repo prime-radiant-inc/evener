@@ -1,11 +1,11 @@
-# Serf Hub Web UI Data-Path Corrections
+# Evener Hub Web UI Data-Path Corrections
 
 **Date:** 2026-07-15<br>
 **Status:** Approved for implementation planning
 
 ## Scope
 
-Correct three production defects in the Serf Hub Web UI:
+Correct three production defects in the Evener Hub Web UI:
 
 1. reloading a local session does work proportional to its full history before returning the latest 40 turns;
 2. a running in-process subagent renders as `ended` in its workspace; and
@@ -21,7 +21,7 @@ The browser requests `thread/read` with `turnLimit: 40`. The local daemon evalua
 
 On a 10.48 MB active transcript, direct daemon reads measured 121 ms cold and 17–25 ms warm for 40 turns. Through the Hub, the same request measured 129 ms cold and 35–42 ms warm. The response was bounded, but the upstream work was not. Larger saved transcripts in the local corpus exceed 160 MB.
 
-The server-rendered workspace also calls `ReadThread(IncludeTurns: true)` only to obtain capabilities and the active turn ID. Those fields already live on `Thread.Serf`; this duplicates transcript work before browser hydration.
+The server-rendered workspace also calls `ReadThread(IncludeTurns: true)` only to obtain capabilities and the active turn ID. Those fields already live on `Thread.Evener`; this duplicates transcript work before browser hydration.
 
 ### Subagent lifecycle
 
@@ -96,11 +96,11 @@ Legacy full reads (`TurnLimit <= 0`) retain current semantics. Both the local da
 
 ### 2. Transcript-free server-rendered workspace metadata
 
-Change `liveWorkspaceSnapshot` to request `IncludeTurns: false`. Capabilities and `Serf.ActiveTurnID` are present without turns. The initial HTML keeps the same controls and active-turn state but no longer blocks on transcript projection.
+Change `liveWorkspaceSnapshot` to request `IncludeTurns: false`. Capabilities and `Evener.ActiveTurnID` are present without turns. The initial HTML keeps the same controls and active-turn state but no longer blocks on transcript projection.
 
 Browser hydration remains responsible for loading the latest 40 turns. Notifications continue to buffer between subscription establishment and hydration, preserving the no-gap initial-load behavior.
 
-Task-description hydration must not block transcript replay. Renderer initialization may request task descriptions concurrently, but it flushes the transcript snapshot and buffered AppWire events as soon as the thread read resolves. Task labels update later when `serf/tasks/list` returns. A slow or failed task request cannot delay transcript paint or live events.
+Task-description hydration must not block transcript replay. Renderer initialization may request task descriptions concurrently, but it flushes the transcript snapshot and buffered AppWire events as soon as the thread read resolves. Task labels update later when `evener/tasks/list` returns. A slow or failed task request cannot delay transcript paint or live events.
 
 ### 3. Lifecycle state separate from routability
 
@@ -230,7 +230,7 @@ Add server tests that assert:
 - capabilities and active turn ID remain present; and
 - latest-window and older-page responses match the reference full projection.
 
-Add a renderer test where `serf/tasks/list` remains unresolved while `thread/read` resolves. The transcript snapshot and a buffered live event must render before tasks resolve.
+Add a renderer test where `evener/tasks/list` remains unresolved while `thread/read` resolves. The transcript snapshot and a buffered live event must render before tasks resolve.
 
 ### Subagent lifecycle
 

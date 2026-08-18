@@ -356,7 +356,7 @@ Cover:
 - PATCH case-only rename succeeds, conflicting rename returns `409`, missing section returns `404`;
 - DELETE section returns `member_count` and removes assignments;
 - DELETE session-pin no-op returns `changed=false` and does not broadcast;
-- changed mutation broadcasts one `serf/tree/changed`; failure and no-op broadcast zero;
+- changed mutation broadcasts one `evener/tree/changed`; failure and no-op broadcast zero;
 - nil `PinSections` returns `500` without panic;
 - non-allowed methods return `405`.
 

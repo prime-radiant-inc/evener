@@ -18,14 +18,14 @@ submitting through the overlay does.
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
-- This card adds `serf-tui` to that recipe's binaries — into the same run directory, never
+- This card adds `evener-tui` to that recipe's binaries — into the same run directory, never
   a fixed `/tmp` name a second concurrent build would overwrite mid-run (kata `k2rx`):
   ```bash
-  go build -o "$run/serf-tui" ./cmd/evener-tui
+  go build -o "$run/evener-tui" ./cmd/evener-tui
   ```
 - `tmux` available.
 
@@ -35,12 +35,12 @@ submitting through the overlay does.
    attaches — this is a cold-attach test (spec §6: "cold attach and live attach use the same
    rule"), so there is no timing race to catch the transition live:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-ask-tui-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-ask-tui-XXXXX)
    body=$(jq -n --arg wd "$tmpdir" '{
      prompt: "Before doing any other work, call the ask_user tool once. Ask exactly one question: header \"Naming\", question \"What should we call the new service?\", with exactly two options: concise (detail \"short internal codename\") and descriptive (detail \"longer, self-explanatory name\"). Do not mark either as recommended. Do not do anything else first.",
      model: "openai/gpt-5.5",
      working_dir: $wd,
-     harness: "serf",
+     harness: "evener",
      branch: "",
      access_mode: "full",
      agent: "default",
@@ -60,61 +60,61 @@ submitting through the overlay does.
    `type filter  up/down navigate  enter select  esc close` — `enter` opens the filtered
    row, per `tui-workspace-navigation.md`):
    ```bash
-   tmux kill-session -t serf-ask-tui 2>/dev/null
-   tmux new-session -d -s serf-ask-tui -x 200 -y 50 \
-     "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/ask-tui-stderr.log"
+   tmux kill-session -t evener-ask-tui 2>/dev/null
+   tmux new-session -d -s evener-ask-tui -x 200 -y 50 \
+     "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/ask-tui-stderr.log"
    sleep 2
    suffix=${SID: -8}
-   tmux send-keys -t serf-ask-tui "/"
+   tmux send-keys -t evener-ask-tui "/"
    sleep 0.3
-   tmux send-keys -t serf-ask-tui -l "$suffix"
+   tmux send-keys -t evener-ask-tui -l "$suffix"
    sleep 0.3
-   tmux send-keys -t serf-ask-tui Enter
+   tmux send-keys -t evener-ask-tui Enter
    sleep 1
    ```
 3. **Auto-open check (cold attach).** Capture the pane immediately:
    ```bash
-   tmux capture-pane -t serf-ask-tui -p | grep -E "question waiting|ctrl\+q to answer|question 1/1"
+   tmux capture-pane -t evener-ask-tui -p | grep -E "question waiting|ctrl\+q to answer|question 1/1"
    ```
 4. **Open only by keypress.** Press `ctrl+q` and capture:
    ```bash
-   tmux send-keys -t serf-ask-tui C-q
+   tmux send-keys -t evener-ask-tui C-q
    sleep 0.5
-   tmux capture-pane -t serf-ask-tui -p | grep -E "\[Naming\] question 1/1|choose|answer|note|next question|defer"
+   tmux capture-pane -t evener-ask-tui -p | grep -E "\[Naming\] question 1/1|choose|answer|note|next question|defer"
    ```
 5. **Esc defers, does not discard.** Press `Esc`, capture:
    ```bash
-   tmux send-keys -t serf-ask-tui Escape
+   tmux send-keys -t evener-ask-tui Escape
    sleep 0.5
-   tmux capture-pane -t serf-ask-tui -p | grep -E "question waiting|ctrl\+q to answer"
+   tmux capture-pane -t evener-ask-tui -p | grep -E "question waiting|ctrl\+q to answer"
    ```
 6. **Navigate away and back without a fresh `ctrl+q`.** Return to the dashboard, then
    re-open the same session via the same filter:
    ```bash
-   tmux send-keys -t serf-ask-tui C-o
+   tmux send-keys -t evener-ask-tui C-o
    sleep 0.5
-   tmux send-keys -t serf-ask-tui "/"
+   tmux send-keys -t evener-ask-tui "/"
    sleep 0.3
-   tmux send-keys -t serf-ask-tui -l "$suffix"
+   tmux send-keys -t evener-ask-tui -l "$suffix"
    sleep 0.3
-   tmux send-keys -t serf-ask-tui Enter
+   tmux send-keys -t evener-ask-tui Enter
    sleep 1
-   tmux capture-pane -t serf-ask-tui -p | grep -E "question waiting|question 1/1"
+   tmux capture-pane -t evener-ask-tui -p | grep -E "question waiting|question 1/1"
    ```
 7. **`ctrl+q` resumes the same (deferred) overlay, not a fresh one:**
    ```bash
-   tmux send-keys -t serf-ask-tui C-q
+   tmux send-keys -t evener-ask-tui C-q
    sleep 0.5
-   tmux capture-pane -t serf-ask-tui -p | grep -E "\[Naming\] question 1/1"
-   tmux send-keys -t serf-ask-tui Escape
+   tmux capture-pane -t evener-ask-tui -p | grep -E "\[Naming\] question 1/1"
+   tmux send-keys -t evener-ask-tui Escape
    sleep 0.3
    ```
 8. **Typing prose in the composer also answers** — never go through the overlay's
    review/submit; type a plain reply directly and send it:
    ```bash
-   tmux send-keys -t serf-ask-tui -l "let's go with descriptive — clearer for new hires"
+   tmux send-keys -t evener-ask-tui -l "let's go with descriptive — clearer for new hires"
    sleep 0.3
-   tmux send-keys -t serf-ask-tui Enter
+   tmux send-keys -t evener-ask-tui Enter
    ```
 9. Confirm resolution, both live and on disk:
    ```bash
@@ -124,7 +124,7 @@ submitting through the overlay does.
      sleep 1
    done
    echo "state=$state"
-   tmux capture-pane -t serf-ask-tui -p | grep -E "question waiting" && echo "STILL WAITING (unexpected)" || echo "chip cleared"
+   tmux capture-pane -t evener-ask-tui -p | grep -E "question waiting" && echo "STILL WAITING (unexpected)" || echo "chip cleared"
    go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:4
    ```
 
@@ -151,16 +151,16 @@ submitting through the overlay does.
 ## Cleanup
 
 ```bash
-tmux kill-session -t serf-ask-tui 2>/dev/null
+tmux kill-session -t evener-ask-tui 2>/dev/null
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 rm -rf "$tmpdir"
 ```
 
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
-kills `$HUBPID` and removes `$run` (including this card's `serf-tui` and stderr log).
+kills `$HUBPID` and removes `$run` (including this card's `evener-tui` and stderr log).
 If you had to start the hub yourself because `SERF_E2E_RUN` was unset, you own it:
-`kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f serf-hub`, which takes out every
+`kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f evener-hub`, which takes out every
 other concurrent agent's hub too (`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -186,7 +186,7 @@ other concurrent agent's hub too (`docs/agentic-testing.md`, "Cleanup recipe").
   depending on terminal/locale encoding (e.g. `—` re-emerging as a `?`/mojibake substitution
   or a differently-normalized Unicode form). Step 8's typed reply contains one; a byte-exact
   string match on a captured pane line containing `—` is fragile for that reason alone. The
-  outline check in step 9 reads the transcript via `serf-doctor` (plain UTF-8 JSON), not
+  outline check in step 9 reads the transcript via `evener-doctor` (plain UTF-8 JSON), not
   `capture-pane`, so it is not affected — but if a future check ever needs to confirm the
   em-dash chip/composer text via `capture-pane`, match on a substring that excludes the
   em-dash (e.g. `"let's go with descriptive"` / `"clearer for new hires"`) or normalize

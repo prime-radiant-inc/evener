@@ -3,7 +3,7 @@
 **What this covers**: the font-size preset system —
 `body[data-font-size="s|m|l|xl"]` selecting a `--font-scale` multiplier for
 the `--font-size-*` ramp, set via Settings → Theme and persisted to
-`localStorage` key `serf.prefs.fontSize` (documented in
+`localStorage` key `evener.prefs.fontSize` (documented in
 `docs/web-ui/parity/parity-m7-settings.md` "3. Theme").
 
 ## Pre-state

@@ -158,7 +158,7 @@ except where a line says so itself.
 
 ### test-appwire-attachments-websearch-hydration.js
 - non-image input attachments (documents, audio) hydrate from a reloaded thread as labeled file chips, never as broken `<img>` elements (test-appwire-attachments-websearch-hydration.js)
-  - **Closed as unreachable, not built (katas `jm81`, `5pqz`):** there is nothing to hydrate. Serf cannot write the data this line is about: the only builders of a persisted user/steering message are `buildUserInputMessage` and `steeringMessageToLLM` (`agent/input_message.go:37`, `agent/session_queue.go:891`), which emit text and `ContentImage` parts only; the sole non-test `ContentDocument` construction (`agent/session_tools.go:156`) goes into a side-channel vision `llm.Request` and is never persisted; and the live event payload `events.UserInputData` has no field for an audio or document attachment at all. Staging one is impossible in the other direction too (a non-image file is refused at the picker, and a recovered draft only lifts image items). The replay projector was the last thing keeping the case alive — it appended `input_audio`/`input_document` items into the same `images` array the client resolves to a single `src` and hands to `ImageGallery`, which drops whatever the browser will not load, so such a part surfaced as nothing anyway. That append is deleted, with `TestProjectTurnKeepsNonImagePartsOutOfImages` and `TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages` pinning that replay emits pictures and only pictures. A labeled-file rendering can be built the day a producer exists.
+  - **Closed as unreachable, not built (katas `jm81`, `5pqz`):** there is nothing to hydrate. Evener cannot write the data this line is about: the only builders of a persisted user/steering message are `buildUserInputMessage` and `steeringMessageToLLM` (`agent/input_message.go:37`, `agent/session_queue.go:891`), which emit text and `ContentImage` parts only; the sole non-test `ContentDocument` construction (`agent/session_tools.go:156`) goes into a side-channel vision `llm.Request` and is never persisted; and the live event payload `events.UserInputData` has no field for an audio or document attachment at all. Staging one is impossible in the other direction too (a non-image file is refused at the picker, and a recovered draft only lifts image items). The replay projector was the last thing keeping the case alive — it appended `input_audio`/`input_document` items into the same `images` array the client resolves to a single `src` and hands to `ImageGallery`, which drops whatever the browser will not load, so such a part surfaced as nothing anyway. That append is deleted, with `TestProjectTurnKeepsNonImagePartsOutOfImages` and `TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages` pinning that replay emits pictures and only pictures. A labeled-file rendering can be built the day a producer exists.
 - provider-native `web_search` content hydrates through the existing web_search tool card, showing the query and its result (test-appwire-attachments-websearch-hydration.js)
 
 ### test-input-area.js (attachment-integration subset of the input-area harness)
@@ -177,10 +177,10 @@ except where a line says so itself.
 ## Drafts
 
 ### test-drafts.js
-- typing in the composer persists the draft to localStorage under a per-session key (`serf-hub.draft.<sessionId>`) on every input event (test-drafts.js)
+- typing in the composer persists the draft to localStorage under a per-session key (`evener-hub.draft.<sessionId>`) on every input event (test-drafts.js)
 - a fresh page load seeded with the same localStorage restores the draft text into the composer (test-drafts.js)
 - each session's draft is isolated: switching sessions shows an empty composer rather than another session's draft, typing in one session never touches another's stored draft, and swapping back restores the original session's draft (test-drafts.js)
-- a composer with no session id (e.g. the home/new-session view) falls back to a stable shared draft key (`serf-hub.draft.new`) that also persists and restores (test-drafts.js)
+- a composer with no session id (e.g. the home/new-session view) falls back to a stable shared draft key (`evener-hub.draft.new`) that also persists and restores (test-drafts.js)
 - a successful send clears only that session's stored draft (other sessions' drafts are untouched), and the composer stays empty after a subsequent reload (test-drafts.js)
 - a successful steer also clears the draft and empties the textarea (test-drafts.js)
 - clearing the textarea to empty removes the stored draft; whitespace-only content is likewise never persisted as a draft (test-drafts.js)
@@ -193,7 +193,7 @@ except where a line says so itself.
 - a completed-but-unanswered ask_user call leaves a compact transcript anchor (`[data-ask-anchor]`) in place of any interactive card — no retired `.ask-card` renders in the transcript (test-ask-card.js)
 - the one interactive response form renders as `[data-ask-response-dock]` owned by `form[data-input-form]`, with a shared footer that is a form-owned sibling of the dock rather than something that scrolls with the question list (test-ask-card.js)
 - while an ask is pending, the composer's normal surface and textarea are both hidden AND inert (not just visually hidden), so they can't be typed into or tabbed to (test-ask-card.js)
-- the dock renders normal answer options together with the "Something else" (free-text) and "let serf decide" alternatives as one radiogroup; the option marked `recommended` always renders FIRST regardless of input order and is visually tagged, non-recommended options are untagged (test-ask-card.js)
+- the dock renders normal answer options together with the "Something else" (free-text) and "let evener decide" alternatives as one radiogroup; the option marked `recommended` always renders FIRST regardless of input order and is visually tagged, non-recommended options are untagged (test-ask-card.js)
 - each alternative (free-text / decide-leaning) option's radio label wraps exactly its own radio control; its editor (free-text input or leaning field) is a DOM sibling in the same row, explicitly labelled via aria-labelledby pointing at that alternative's own option text (test-ask-card.js)
 - a fallback button showing the model's literal `if_unanswered` text renders only when `if_unanswered` is present; skip is always offered; the optional note field is visible immediately with no disclosure toggle (test-ask-card.js)
 - answer progress is announced through an aria-live="polite" region, and the question's `why` explanation renders verbatim in the dock (test-ask-card.js)
@@ -235,13 +235,13 @@ except where a line says so itself.
 - an older in-flight send settling does not spuriously re-enable a newer, still-in-flight send button for a different, later ask (test-ask-submit.js)
 
 ### test-notifications-ask-awaiting-broadcast.js
-- a genuine ask_user-produced SessionAwaiting normalizes to attention level "needs_you" exactly like any other awaiting/warning producer, reaching the browser as an ordinary `serf/attention/changed` broadcast (test-notifications-ask-awaiting-broadcast.js)
+- a genuine ask_user-produced SessionAwaiting normalizes to attention level "needs_you" exactly like any other awaiting/warning producer, reaching the browser as an ordinary `evener/attention/changed` broadcast (test-notifications-ask-awaiting-broadcast.js)
 - the default "asks" notification loudScope keys off the wire's `askPending` flag (from hubcore's DeriveAttention) rather than any ask-specific branch inside notifications.js itself (test-notifications-ask-awaiting-broadcast.js)
 
 ## Escalations
 
 ### test-sandbox-escalation.js
-- a `serf/sandbox/escalation/requested` notification maps to exactly one `SANDBOX_ESCALATION_REQUESTED` client event carrying `escalationId`, the full `deniedPath`, and the card `kind` (test-sandbox-escalation.js)
+- a `evener/sandbox/escalation/requested` notification maps to exactly one `SANDBOX_ESCALATION_REQUESTED` client event carrying `escalationId`, the full `deniedPath`, and the card `kind` (test-sandbox-escalation.js)
 - an escalation renders as a HARNESS-framed approval card (never styled as a model message), showing the full denied path and the denied tool name; a file-tool card never shows the shell "partially ran" caveat (test-sandbox-escalation.js)
 - clicking Allow posts exactly one resolve call with `{escalationId, approve:true}`; the card only settles to "Allowed once" and drops its controls after the resolve request actually succeeds, never optimistically (test-sandbox-escalation.js)
 - clicking Deny posts a resolve with `approve:false` — denial is never silently dropped (test-sandbox-escalation.js)

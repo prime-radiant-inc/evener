@@ -26,7 +26,7 @@ the trimmed value is empty (`Rail.tsx:639`).
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for the browser half.
 - A **live** session against a real, credentialed model (step 4's compaction is
@@ -57,7 +57,7 @@ optimistic overlay.
    `GET /api/sessions/local:<SID>` until it settles, and record
    `context_used` (`hubapi/types.go:144`) before and after.
 5. Re-read the row's title in the browser. Do not force anything — a successful
-   rename broadcasts `serf/tree/changed` exactly once, either through
+   rename broadcasts `evener/tree/changed` exactly once, either through
    `PastIndex.UpdateMeta`'s composed hook or the compensating
    `notifyTreeChanged` when that hook didn't fire
    (`web_api_rename.go:112-122` and `:136-153`), and the rail refetches on a
@@ -112,7 +112,7 @@ optimistic overlay.
   that from `rowRenameable` (`web_api_tree.go:972,1308-1312`), which is just
   "does this id parse as a local ref" (`isLocalRouteID`, `web.go#isLocalRouteID`). So
   Codex-bridged rows and synthetic `cluster:` fold rows never offer it — this
-  card is about local top-level serf sessions.
+  card is about local top-level evener sessions.
 - **The ref is URL-escaped on the way out and unescaped on the way in.**
   `renameSession` posts to `/api/sessions/${encodeURIComponent(ref)}/rename`
   (`shell/rail/actions.ts:43-49`) and the dispatcher `url.PathUnescape`s the

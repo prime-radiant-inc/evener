@@ -7,9 +7,9 @@ description: Use when a surface parses untrusted or model-generated input — a 
 
 Use this skill when you want to systematically hammer a surface that decodes
 input you do not control, and have every real failure become a named regression
-test rather than a transient console reproduction. Serf is the proving ground;
+test rather than a transient console reproduction. Evener is the proving ground;
 the portable core (`fuzz/promoter`, `fuzz/schemagen`) carries unchanged to any
-project, so the methodology below is project-agnostic and the serf targets are
+project, so the methodology below is project-agnostic and the evener targets are
 worked examples.
 
 Read `docs/research/api-fuzzing-toolkit.md` (§3 oracle soft spots, §5 the
@@ -25,7 +25,7 @@ A surface is fuzz-ready when it has:
   harness then covers the whole surface by varying which operation it drives.
 - **A machine-readable schema** — per-operation JSON Schema, reflected param
   types, OpenAPI, protobuf. Schema-driven generation reaches deep validator
-  paths raw bytes never hit (serf hands us tool `Definition.Parameters` and the
+  paths raw bytes never hit (evener hands us tool `Definition.Parameters` and the
   `appwire.Methods` catalog for free).
 - **A decode / parse seam** — a byte-level frame/stream parser (`llm.ParseSSE`,
   `appwire.Message.UnmarshalJSON`). These are the cheapest, highest-value
@@ -46,7 +46,7 @@ surface buys little.
   (`bash -c`), network fetch, file read/write under attacker-controlled paths,
   subprocess/agent spawn — a temp dir does NOT sandbox these. Fuzz the **decode
   + validate boundary** instead, or restrict execution to a vetted allowlist of
-  genuinely sandboxable operations. Serf's `FuzzToolArgsValidate` drives
+  genuinely sandboxable operations. Evener's `FuzzToolArgsValidate` drives
   decode+`Schema.Validate` and never calls a tool handler; `FuzzWebHandler`
   allowlists GET-only, non-mutating, non-networked routes and excludes spawn,
   shell, and provider-probe endpoints.
@@ -76,7 +76,7 @@ surface buys little.
 4. **Add oracles beyond "no panic"** (next section). This is where valid-but-wrong
    bugs surface.
 5. **For stateful surfaces, model the state machine** and drive it with
-   property-based testing (`rapid`). Keep the model declarative — serf's
+   property-based testing (`rapid`). Keep the model declarative — evener's
    `liveOpTable` is a transition table, the reusable artifact; the `rapid`
    machine just draws op sequences.
 6. **Wire the promoter with flake-guard before promote** so non-`testing.F`
@@ -89,7 +89,7 @@ surface buys little.
 
 The portable tags are `promoter.OracleTag`: `Panic`, `Invariant`, `ErrorShape`,
 `Wedge`, `HTTP5xx`, `PathEscape`. How to spot which fits, each tied to a real
-serf target:
+evener target:
 
 - **Floor — never panic** (`Panic`). The seam crashes on some input. Always
   present; never sufficient alone. Live panic-hunt wherever validation is *not*
@@ -149,7 +149,7 @@ acceptance from ~0% to ~90%+.
 
 Two packages in the `primeradiant.com/evener/fuzz` module are the travelling
 tooling. **Nothing in them imports the project under test** — `fuzz/go.mod`
-declares no serf dependency, so the module will not build if that boundary is
+declares no evener dependency, so the module will not build if that boundary is
 violated. That structural guarantee *is* the portability test.
 
 **`schemagen.FromJSONSchema(schema map[string]any) *rapid.Generator[any]`** walks

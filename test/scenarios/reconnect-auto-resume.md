@@ -19,10 +19,10 @@ placeholder is not a stable hook at all — see step 6.
 
 ## Pre-state
 
-- An isolated hub built from the branch under test, running with `-serf` set
+- An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons — the scratch `$HOME` and kernel-assigned
   port from the Setup checklist in `docs/agentic-testing.md`, never Jesse's
-  real hub. Every `~/.serf/run` path below is that isolated home's
+  real hub. Every `~/.evener/run` path below is that isolated home's
   rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go#DefaultDir`):
   step 2 globs it for a pid and step 3 kills that pid, so under a real
   `$HOME` this card kills a real daemon.
@@ -39,15 +39,15 @@ placeholder is not a stable hook at all — see step 6.
    `GET $HUB/api/sessions/local:$SID`.
 
 2. **[browser-free] Find the daemon PID.** Each daemon writes
-   `~/.serf/run/<pid>.json` on startup (`rendezvous.DefaultDir`,
+   `~/.evener/run/<pid>.json` on startup (`rendezvous.DefaultDir`,
    `rendezvous/rendezvous.go#DefaultDir`; file naming at `:52-77`), so the
    filename *is* the pid:
    ```bash
-   RFILE=$(grep -l "\"session_id\":\"$SID\"" "$HOME"/.serf/run/*.json)
+   RFILE=$(grep -l "\"session_id\":\"$SID\"" "$HOME"/.evener/run/*.json)
    PID=$(basename "$RFILE" .json)
    echo "pid=$PID rfile=$RFILE"
    ```
-   Cross-check with `ps aux | grep "serf serve.*$SID"` if the glob is
+   Cross-check with `ps aux | grep "evener serve.*$SID"` if the glob is
    ambiguous.
 
 3. **[browser-free]** `kill "$PID"`. Confirm `$RFILE` is gone and the process
@@ -102,7 +102,7 @@ placeholder is not a stable hook at all — see step 6.
 - On the host:
   - A NEW daemon process exists with `serve ... --resume $SID` in its args
     (`cmd/evener-hub/spawn.go:276`).
-  - A NEW rendezvous file at `$HOME/.serf/run/<new-pid>.json`, with a
+  - A NEW rendezvous file at `$HOME/.evener/run/<new-pid>.json`, with a
     different pid than step 2's.
 - In the browser (step 6 only): the new user turn and the assistant reply
   appear as `[data-testid="turn-block"]` entries without a reload, and no

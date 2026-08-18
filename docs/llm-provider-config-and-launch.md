@@ -1,6 +1,6 @@
 # LLM Provider Configuration, Credentials & Launch Architecture
 
-How serf stores provider credentials, signs you in to OpenAI, and how the
+How evener stores provider credentials, signs you in to OpenAI, and how the
 **hub** turns a launch request into a running model session. This documents the
 **current** implementation (as of 2026-05, after Phase 1c all-config-driven /
 hub materialization) so you can navigate it quickly.
@@ -36,8 +36,8 @@ instances — a `providers.toml`:
 | Process environment | n/a | env vars | the OS | fallback / base URLs / tuning |
 
 The **hub process never runs a model**. To validate or list models it spawns
-`serf launch-check` as a short-lived subprocess; to run a session it spawns the
-`serf serve` daemon. API keys reach those subprocesses **through the environment**
+`evener launch-check` as a short-lived subprocess; to run a session it spawns the
+`evener serve` daemon. API keys reach those subprocesses **through the environment**
 (one key per launch). The one config file that *does* cross the boundary is
 `providers.toml`: when the hub has loaded one it passes the path as
 `SERF_PROVIDERS_CONFIG` (`launchconfig.ToEnv:65`) and the child re-reads it; OAuth
@@ -118,7 +118,7 @@ The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.tom
 (`cmd/evener-hub/main.go`) and hands it to the spawner and the auth controller.
 
 > Note: the UI copy and several code comments say keys live in
-> `~/.serf/credentials.toml` (e.g. the package doc at the top of `store.go`).
+> `~/.evener/credentials.toml` (e.g. the package doc at the top of `store.go`).
 > That is the *documented default home*; the hub actually uses whatever
 > `hubStateRoot` is configured to. The hub auth controller's fallback
 > constructors derive the path as
@@ -170,10 +170,10 @@ cannot disagree about one instance:
   name's, then the credential tag's — against the child's environment, and
   returns early for a behavior tag that `envvars.RequiresNoCredential` accepts.
 - `hubAuthController.instanceStatusFor` derives both tags and feeds
-  `instanceStatus`, which serves `serf/auth/status` and
+  `instanceStatus`, which serves `evener/auth/status` and
   `hubInstancesController.List`.
 - `instanceHasEffectiveCredential` (`cmd/evener-hub/app_credentials.go`) decides
-  whether `serf/auth/test` has anything to probe.
+  whether `evener/auth/test` has anything to probe.
 
 `instanceIsOpenAI` (behind `requiresOpenAI`), `credentialRequired`,
 `envvars.AuthModes` and the OAuth branches keep the **behavior** tag: OAuth is
@@ -263,7 +263,7 @@ to query a provider's `/models` endpoint for context-window sizing
 
 These are injected by the spawner (see below) — not provider credentials:
 `SERF_HUB_SPAWNED`, `SERF_RUN_DIR`, `SERF_STATE_DIR`, `SERF_HUB_TOKEN`
-(`launchconfig/env.go:54-63`). `serf serve` reads `SERF_HUB_SPAWNED` /
+(`launchconfig/env.go:54-63`). `evener serve` reads `SERF_HUB_SPAWNED` /
 `SERF_RUN_DIR` to label its rendezvous entry (`cmd/evener/serve.go:376-385`), and
 `llm.NewFromEnv` reads `SERF_STATE_DIR` / `XDG_STATE_HOME` to locate the OpenAI
 OAuth record (`llm/env_registry.go:51-52`).
@@ -292,7 +292,7 @@ authenticated:
   instance name validates — the behavior *tag*, not the record, decides
   openai-ness.
 - The default state dir (when not overridden) is XDG-based:
-  `$XDG_STATE_HOME/serf` or `~/.local/state/serf`. The hub overrides this from its
+  `$XDG_STATE_HOME/evener` or `~/.local/state/evener`. The hub overrides this from its
   own environment.
 
 ### Precedence (standalone `Service`, `service.go`)
@@ -341,11 +341,11 @@ The web Credentials screen drives this (see Web/TUI surfaces below):
    URL back into `LoginComplete` (`app_auth.go:189`), which does the PKCE code
    exchange.
 
-The CLI equivalent is `serf openai login` (`cmd/evener/openai_login.go:51`),
+The CLI equivalent is `evener openai login` (`cmd/evener/openai_login.go:51`),
 which auto-selects browser vs. device flow based on whether a graphical session
 is detected (`SSH_CONNECTION`/`SSH_TTY`/`DISPLAY`/`WAYLAND_DISPLAY`, overridable
 with `SERF_LOGIN_HEADLESS`); subcommands `login` / `logout` / `status`. The CLI
-device flow also watches for a *concurrent* `serf openai login` writing fresh
+device flow also watches for a *concurrent* `evener openai login` writing fresh
 state and exits gracefully if it sees one (`service.go:308-348`).
 
 **Two homes, by design:** OpenAI API keys live in `credentials.toml`; OAuth
@@ -358,11 +358,11 @@ layer cannot be cleared (`app_auth.go:257-282`).
 ## Hub launch / spawn process model
 
 This is the part most worth internalizing: **the hub orchestrates, separate
-`serf` processes do the work.**
+`evener` processes do the work.**
 
 ```
                         ┌──────────────────────────────────────────────┐
-                        │  serf-hub process                            │
+                        │  evener-hub process                            │
                         │  (cmd/evener-hub)                              │
                         │                                              │
    credentials.toml ───▶│  credentials.Store (main.go:103)            │
@@ -375,7 +375,7 @@ This is the part most worth internalizing: **the hub orchestrates, separate
                   + one API key         │              │  + one API key
                                         ▼              ▼
               ┌─────────────────────────────┐   ┌─────────────────────────────┐
-              │ serf launch-check           │   │ serf serve  (the daemon)    │
+              │ evener launch-check           │   │ evener serve  (the daemon)    │
               │ (subprocess, short-lived)   │   │ (subprocess, long-lived)    │
               │ cmd/evener/launch_check.go    │   │ cmd/evener/serve.go           │
               │                             │   │                             │
@@ -411,23 +411,23 @@ from the parent env (`os.Environ()`), it sets, in increasing priority:
    (sorted, last-write-wins) so they win over everything (`env.go:78-85`).
 
 OpenAI OAuth tokens are **not** in this list — the comment at `env.go:44-49`
-notes the on-disk OAuth state is "handled by serf itself": the subprocess re-reads
+notes the on-disk OAuth state is "handled by evener itself": the subprocess re-reads
 the per-instance `auth/<instance>.json` via its client builder using the injected
 `SERF_STATE_DIR`.
 
-### Spawning `serf launch-check` (model discovery / validation)
+### Spawning `evener launch-check` (model discovery / validation)
 
 `HubSpawner` builds env with `ToEnv`, then runs the checker as a subprocess:
 
 - `listSerfLaunchModelContract` (`spawn.go:601`) runs
-  `serf launch-check --protocol <v> --json --models` with `cmd.Env = env`
+  `evener launch-check --protocol <v> --json --models` with `cmd.Env = env`
   (`spawn.go:607-608`) and decodes the JSON contract.
 - `validateSerfLaunchContract` (`spawn.go:558`) runs the same binary with
   `--model <provider/model>` to validate a specific model (`spawn.go:562-570`).
 - Both have a timeout (`serfLaunchCheckTimeout`) and redact secrets out of error
   output via `redactEnvSecrets` (`spawn.go:655`).
 
-Inside the checker, `serf launch-check` (`cmd/evener/launch_check.go`) is
+Inside the checker, `evener launch-check` (`cmd/evener/launch_check.go`) is
 config-aware:
 
 - **Profile validation is credential-free.** `validateLaunchCheckProfile`
@@ -444,7 +444,7 @@ config-aware:
 - `validateLaunchCheckModel` (`:198`) then confirms the requested model is
   actually offered.
 
-### Spawning `serf serve` (the session daemon)
+### Spawning `evener serve` (the session daemon)
 
 `HubSpawner.Spawn` (`spawn.go:110`) and `.Resume` (`spawn.go:154`):
 
@@ -457,17 +457,17 @@ config-aware:
    matching env var or it fails the launch,
 3. run `validateSerfLaunchContract` (the launch-check subprocess) against the
    model,
-4. `SpawnDaemon` / `ResumeDaemon` exec `serf serve` with `cmd.Env = req.Env`
+4. `SpawnDaemon` / `ResumeDaemon` exec `evener serve` with `cmd.Env = req.Env`
    (`spawn.go:276-277`), binding an ephemeral port (`--addr 127.0.0.1:0`,
    `spawn.go:247`), and wait for the daemon's rendezvous file to appear.
 
-`serf serve` (`cmd/evener/serve.go`) builds its client with `cmdutil.LoadClient`
+`evener serve` (`cmd/evener/serve.go`) builds its client with `cmdutil.LoadClient`
 (via the `serveLoadClient` test hook, `serve.go:39`), resolves the model with
 `cmdutil.ResolveModelRef` (`serve.go:155`) + `buildInitialProfile`
 (`serve.go:171,440`) — which always uses `ResolveProfileFromConfig` (config is
 always present after `LoadClient`) and re-applies the output-schema/decisions
 overrides — and on startup writes a rendezvous entry carrying `modelRef.Provider`
-(`serve.go:404`). The standalone `serf run` (`cmd/evener/run.go:127,138`) and the
+(`serve.go:404`). The standalone `evener run` (`cmd/evener/run.go:127,138`) and the
 hub's own live-models endpoint behind `/api/models` (`cmd/evener-hub/web.go:2027`)
 likewise build via `cmdutil.LoadClient`, so all three see custom instances.
 
@@ -497,7 +497,7 @@ only the registered instances.
   the past index entry and **passes the stored `ProfileID` through as the
   provider** (PRI-1880); it errors on an empty `ProfileID` rather than silently
   dropping it. The old hardcoded whitelist (which omitted `openai-compatible` and
-  would silently drop unknown names) was **removed** — downstream `serf` always
+  would silently drop unknown names) was **removed** — downstream `evener` always
   resolves via `ResolveProfileFromConfig` (so a legacy `ProfileID == "gemini"`
   still resolves to the `google` adapter). The resolved provider + model then drive
   the spawn.
@@ -532,7 +532,7 @@ only the registered instances.
 Both screens are duplicative by intent (both render the `authList` response);
 Providers is the at-a-glance view, Credentials is the editor. Both still enumerate
 the fixed provider **type** set (not config instances); **Phase 2** replaces them
-with one instance-aware CRUD screen — in the web hub **and** `serf-tui`.
+with one instance-aware CRUD screen — in the web hub **and** `evener-tui`.
 
 ### Model strings and display
 

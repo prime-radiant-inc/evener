@@ -443,7 +443,7 @@ import (
 	"strings"
 	"testing"
 
-	"serf/agent/events"
+	"evener/agent/events"
 )
 
 // Every kind in the enum must be produced by at least one non-test call site.
@@ -502,7 +502,7 @@ func TestMaybeInjectTaskReminderReturnsItsKind(t *testing.T) {
 }
 ```
 
-Adjust the import path prefix (`serf/agent/events`) to whatever this module actually uses — read the imports of a neighbouring file in `agent/`. Adjust `s.totalRounds` assignment to whatever the surrounding tests use to reach trigger 3; if they drive it through a helper, use the helper.
+Adjust the import path prefix (`evener/agent/events`) to whatever this module actually uses — read the imports of a neighbouring file in `agent/`. Adjust `s.totalRounds` assignment to whatever the surrounding tests use to reach trigger 3; if they drive it through a helper, use the helper.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -605,7 +605,7 @@ Append to `src/protocol/reducer.test.ts`, matching the file's existing helper st
 ```ts
 test("a live steer carries its wire kind onto the item", () => {
   const model = withActiveTurn("turn_1");
-  const next = reduce(model, notification("serf/steering/injected", {
+  const next = reduce(model, notification("evener/steering/injected", {
     threadId: model.threadId,
     text: "You have completed all tasks",
     kind: "tasks-done",
@@ -617,7 +617,7 @@ test("a live steer carries its wire kind onto the item", () => {
 
 test("a live steer with no wire kind leaves steeringKind undefined", () => {
   const model = withActiveTurn("turn_1");
-  const next = reduce(model, notification("serf/steering/injected", {
+  const next = reduce(model, notification("evener/steering/injected", {
     threadId: model.threadId,
     text: "something unclassified",
   }));
@@ -656,7 +656,7 @@ Expected: FAIL — `steeringKind` is undefined in all three.
   steeringKind?: string;
 ```
 
-`src/protocol/reducer.ts`, in the live `serf/steering/injected` item literal, beside `source`:
+`src/protocol/reducer.ts`, in the live `evener/steering/injected` item literal, beside `source`:
 
 ```ts
             steeringKind: params.kind,
@@ -1170,7 +1170,7 @@ says "System steered: <kind>".
 Run:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
+cd /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kh-steering-voice
 grep -n "U+2039-203A, U+2044" cmd/evener-hub/frontend/src/styles/global.css
 grep -rn "reading without writing" --include="*.go" . | grep -v _test | wc -l   # must be 0
 grep -c "SteeringKind" agent/events/payloads.go                                  # must be > 0
@@ -1323,7 +1323,7 @@ tsc, using the catalog helper and drift test the generator already has."
 - [ ] Run every gate from the repo root:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
+cd /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kh-steering-voice
 make test && make lint
 cd cmd/evener-hub/frontend && npm run typecheck && npm run lint && npm test
 ```

@@ -6,11 +6,11 @@
 
 **Architecture:** The Session remains the durable authority and passes its runnable `StableTurnID` through the existing pre-claim callback. The daemon server atomically marks processing and reserves that exact identity in the AppWire projector; generic non-mutation processing retains numeric projector reservations.
 
-**Tech Stack:** Go, Serf Session lifecycle, AppWire WebSocket protocol, deterministic channel handshakes, scripted `llm.ProviderAdapter`, Kata `c2ty`.
+**Tech Stack:** Go, Evener Session lifecycle, AppWire WebSocket protocol, deterministic channel handshakes, scripted `llm.ProviderAdapter`, Kata `c2ty`.
 
 ## Global Constraints
 
-- Work only in `/Users/jesse/prime-radiant/toil-suite/serf/.worktrees/c2ty-session-control-id` on `wip/c2ty-session-control-id`.
+- Work only in `/Users/jesse/prime-radiant/toil-suite/evener/.worktrees/c2ty-session-control-id` on `wip/c2ty-session-control-id`.
 - Do not restart session `0343wE3LB14m5xoC2CBMiD` or mutate any of its persisted artifacts.
 - Preserve the intentional separation between durable `turn_mN` identities and numeric projector `turn_N` identities.
 - Tests must exercise real Session persistence, AppWire routing, and lifecycle behavior with the fake boundary only at the scripted LLM provider.
@@ -87,7 +87,7 @@ thread, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 if err != nil {
 	t.Fatalf("ThreadRead: %v", err)
 }
-activeTurnID := thread.Thread.Serf.ActiveTurnID
+activeTurnID := thread.Thread.Evener.ActiveTurnID
 
 observedServer.RecordAppEvent(events.SessionEvent{
 	Kind:      events.EventWarning,

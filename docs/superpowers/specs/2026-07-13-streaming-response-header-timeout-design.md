@@ -5,20 +5,20 @@
 
 ## Problem
 
-Serf does not bound the time a streaming provider request may spend waiting for
+Evener does not bound the time a streaming provider request may spend waiting for
 HTTP response headers.
 
 The streaming timeout path currently has three parts:
 
 1. `AdapterTimeout.Connect` bounds connection establishment.
 2. `AdapterTimeout.Request` is deliberately omitted from the request context so
-   that Serf does not add an overall deadline to a healthy long-running stream.
+   that Evener does not add an overall deadline to a healthy long-running stream.
    Any caller-supplied context or `http.Client.Timeout` remains authoritative.
 3. `AdapterTimeout.StreamRead` begins only after `client.Do` returns a response
    and bounds the time between SSE lines.
 
 This leaves `client.Do` unbounded between connection establishment and receipt
-of response headers. A provider can accept the connection and then leave Serf
+of response headers. A provider can accept the connection and then leave Evener
 waiting indefinitely without producing a stream. Because job notifications are
 delivered at model-turn boundaries, a parent session blocked in that state also
 cannot observe a completed child job.
@@ -27,20 +27,20 @@ The observed session `01KXF0CAQQYX73BMT40NJKPXZN` exhibited exactly this
 failure mode. The child review job completed and its notification became
 pending, but the parent's OpenAI Responses request did not receive response
 headers for roughly 29 minutes and 32 seconds. Once the provider created the
-response, it completed in about five seconds and Serf delivered the queued job
+response, it completed in about five seconds and Evener delivered the queued job
 notification immediately afterward. This is evidence of an unbounded
 pre-header wait, not a lost notification.
 
 ## Goals
 
 - Bound streaming requests while they wait for response headers.
-- Avoid adding a Serf-owned total stream deadline after headers arrive while
+- Avoid adding a Evener-owned total stream deadline after headers arrive while
   preserving caller-supplied context and HTTP client policy.
 - Preserve the existing per-SSE-line idle timeout.
 - Apply the behavior through shared HTTP client construction so all HTTP
   streaming providers receive the same contract.
 - Preserve the useful defaults and settings of Go's standard HTTP transport.
-- Keep timeout failures compatible with Serf's existing retry classification.
+- Keep timeout failures compatible with Evener's existing retry classification.
 - Verify the behavior with deterministic local tests that do not contact a
   provider.
 
@@ -113,7 +113,7 @@ bare `http.Transport`, because doing so discards standard proxy, TLS,
 HTTP/2, connection-pool, and idle-connection behavior.
 
 An injected, non-standard `http.RoundTripper` is an explicit transport seam and
-must remain installed. Serf cannot safely clone or configure opaque transports;
+must remain installed. Evener cannot safely clone or configure opaque transports;
 such a transport owns its connection and response-header timeout behavior. This
 also preserves scripted transports used by deterministic provider tests.
 
@@ -134,7 +134,7 @@ body is fully written and applies only until response headers are received.
 After `client.Do` returns:
 
 - the response-header timer is no longer relevant;
-- Serf adds no total-duration bound while the response body is read;
+- Evener adds no total-duration bound while the response body is read;
 - the SSE reader continues applying `StreamRead` independently to each line;
 - normal caller cancellation and caller HTTP client policy still terminate the
   request and stream.
@@ -145,8 +145,8 @@ this behavior.
 ## Errors and Retries
 
 A response-header timeout occurs before a provider stream is available and
-before Serf can emit any partial model output. Go's standard transport reports
-this timeout as a deadline-exceeded transport error. Existing Serf error
+before Evener can emit any partial model output. Go's standard transport reports
+this timeout as a deadline-exceeded transport error. Existing Evener error
 wrapping must classify it as a retryable request-timeout error.
 
 The existing stream retry policy remains unchanged. In particular, the new
@@ -187,7 +187,7 @@ The implementation must cover these contracts:
    signals that its handler is running, and withholds headers. The streaming
    call returns a typed retryable request-timeout error. The test coordinates
    the handler with channels and does not use an arbitrary sleep.
-2. **Serf adds no overall request deadline to a healthy stream.** Headers are
+2. **Evener adds no overall request deadline to a healthy stream.** Headers are
    returned, then the response body is held open under test control. The stream
    remains usable after establishment and is governed by `StreamRead`, not by a
    lingering `Request` context deadline. Caller context and HTTP client policy
@@ -223,7 +223,7 @@ subagent or live provider scenario.
 
 `http.Client.Timeout` includes reading the response body. It would impose an
 overall lifetime on a streaming request and terminate healthy long responses.
-Serf therefore does not set or clear it; an existing caller value is preserved
+Evener therefore does not set or clear it; an existing caller value is preserved
 as authoritative policy.
 
 ### Apply `AdapterTimeout.Request` as a streaming context deadline
@@ -247,7 +247,7 @@ cancellation semantics far beyond this transport bug.
 ### Adopt OpenAI WebSockets
 
 Codex commonly uses WebSockets for OpenAI Responses and applies separate
-connection and message-idle limits. Serf has multiple HTTP streaming providers,
+connection and message-idle limits. Evener has multiple HTTP streaming providers,
 and the demonstrated defect is in shared HTTP lifecycle handling. A WebSocket
 implementation would be a broad provider-specific feature, not the smallest
 root-cause fix.

@@ -6,7 +6,7 @@
 
 **Architecture:** A successful terminal `job_status` result is a notification acknowledgement only after its tool-result turn is durably appended. The session that owns the job may then consume its own pending terminal notification and remove the matching in-memory wake; a parent inspecting a child-owned job must leave the child's notification untouched.
 
-**Tech Stack:** Go, Serf session/jobstore lifecycle, transcript JSONL persistence, deterministic real-session tests.
+**Tech Stack:** Go, Evener session/jobstore lifecycle, transcript JSONL persistence, deterministic real-session tests.
 
 ## Global Constraints
 
@@ -14,7 +14,7 @@
 - Preserve the documented rule in `docs/job-control.md`: only the owner's own read consumes; a parent reading a child-owned job never settles the child's notification.
 - A terminal notification may be consumed only after the matching `job_status` tool result is durably appended to the caller's transcript.
 - Ordinary tool-result rounds retain their existing non-durable append behavior; durability changes only for a batch containing a successful terminal `job_status` result.
-- Default tests remain deterministic and offline. Use real Serf sessions, job managers, transcript writer, and shell jobs; fake only the filesystem failure boundary.
+- Default tests remain deterministic and offline. Use real Evener sessions, job managers, transcript writer, and shell jobs; fake only the filesystem failure boundary.
 - Do not add wording, rendered-command, or large-string tests.
 
 ---

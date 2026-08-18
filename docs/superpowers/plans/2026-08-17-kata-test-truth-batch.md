@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Branch: `worktree-kata-test-truth`, worktree `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kata-test-truth`. All work happens there.
+- Branch: `worktree-kata-test-truth`, worktree `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/kata-test-truth`. All work happens there.
 - FORBIDDEN: `git stash`, `git reset`, tree-wide `git checkout`, `git clean`, `git add -A`, `git add .`. Stage by explicit path only. For before/after comparisons use `cp` round-trips to scratch.
 - FORBIDDEN: `npm ci` (node_modules is one real install symlinked into the worktree; `npm ci` empties it for every worktree). FORBIDDEN: `git add` of any directory containing that symlink.
 - FORBIDDEN: any integration action — push, merge, rebase, branch deletion, cherry-pick. Naming a branch or base is context, not permission. The controller integrates.

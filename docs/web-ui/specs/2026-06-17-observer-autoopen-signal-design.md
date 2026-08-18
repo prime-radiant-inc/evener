@@ -2,7 +2,7 @@
 
 Date: 2026-06-17
 Status: Draft for Jesse's review. **No implementation** — this is a design/feasibility doc.
-Scope: the agent runtime (`agent/`), the appwire wire types (`appwire/`), the Serf web hub
+Scope: the agent runtime (`agent/`), the appwire wire types (`appwire/`), the Evener web hub
 (`cmd/evener-hub/`), and the multi-pane workspace (`assets/panes.js`, `assets/renderer.js`).
 Companion to `docs/web-ui/specs/2026-06-17-multi-pane-workspace-design.md` (the multi-pane MVP this
 extends).
@@ -187,7 +187,7 @@ From the panes layer (verified against `assets/panes.js` and `assets/renderer.js
   pane and returns it**, never a duplicate (`panes.js:38-39`). Returns `null` if href is falsy, no
   sidebar region, or the cap is hit.
 - **Pane cap:** `MAX_SIDE_PANES = 3` (`panes.js:5`), enforced in `open` (`panes.js:40`).
-- **Persistence:** open panes are saved to `localStorage["serf-hub.panes"]` as `[{href,title}]`
+- **Persistence:** open panes are saved to `localStorage["evener-hub.panes"]` as `[{href,title}]`
   (`panes.js` `persist()`, ~`:110-119`); `restore()` re-creates them on load (~`:121-129`, wired in
   `onLoad`). **Closed panes are not tracked** — `close()` removes the pane and re-persists the
   remaining open set (`panes.js:67-72`), so there is no record that the user dismissed a specific
@@ -249,7 +249,7 @@ field.
 - Reuses the **exact** existing local-meta → `WorkspaceData` → `#conversation` data-attribute seam
   (`fillSubagentLineage` precedent, `web_workspace.go:381-396`). No new hub disk-read of the
   jobstore, no new RPC.
-- The signal is durable (survives daemon restart / serf resume, like `Goal`/`PinnedNote` on
+- The signal is durable (survives daemon restart / evener resume, like `Goal`/`PinnedNote` on
   `SessionMeta`, `agent/schema/snapshot.go:55-60`).
 - Smallest blast radius on the hub: additive field + one fill + one template attribute.
 

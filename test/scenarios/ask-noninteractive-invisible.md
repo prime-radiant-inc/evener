@@ -6,7 +6,7 @@ tool is unregistered (and therefore unadvertised to the provider) rather than pr
 blocked. Exercises both named surfaces: a hub-spawned `non_interactive:true` session (the
 same `SessionConfig.NonInteractive` flag `serve --non-interactive` sets — confirmed by
 `cmd/evener-hub/web_spawn.go:89` threading the spawn request's `non_interactive` straight into
-the daemon's launch overrides) and the one-shot `serf <prompt>` CLI, which hardcodes
+the daemon's launch overrides) and the one-shot `evener <prompt>` CLI, which hardcodes
 `NonInteractive: true` unconditionally (`cmd/evener/main.go`/`run.go` — no flag needed or
 available to turn it off).
 
@@ -15,7 +15,7 @@ available to turn it off).
 - Hub + credentials as `ask-web-answer.md` — reuse that card's hub if it is still
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not
   a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"); the plain
-  `serf` binary the one-shot half needs is under it too, and that half never touches
+  `evener` binary the one-shot half needs is under it too, and that half never touches
   the hub:
   ```bash
   run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
@@ -23,7 +23,7 @@ available to turn it off).
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
@@ -34,10 +34,10 @@ available to turn it off).
 1. **Hub-spawned non-interactive session.** Spawn with `"non_interactive": true` and a
    prompt that explicitly tries to invoke `ask_user` by name:
    ```bash
-   tmpdir1=$(mktemp -d -t serf-e2e-ask-ni-hub-XXXXX)
+   tmpdir1=$(mktemp -d -t evener-e2e-ask-ni-hub-XXXXX)
    body=$(jq -n --arg wd "$tmpdir1" '{
      prompt: "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead.",
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default",
+     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default",
      non_interactive: true, launch_overrides: {}
    }')
    SID1=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
@@ -58,10 +58,10 @@ available to turn it off).
    direction while the mktemp-generated basename is unaffected by symlink resolution either
    way:
    ```bash
-   tmpdir2=$(mktemp -d -t serf-e2e-ask-ni-oneshot-XXXXX)
-   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir2" \
+   tmpdir2=$(mktemp -d -t evener-e2e-ask-ni-oneshot-XXXXX)
+   "$run/evener" --model openai/gpt-5.5 --dir "$tmpdir2" \
      "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead."
-   TFILE2=$(grep -l "\"working_dir\":\"[^\"]*$(basename "$tmpdir2")\"" ~/.local/state/serf/projects/*/sessions/*.transcript.jsonl)
+   TFILE2=$(grep -l "\"working_dir\":\"[^\"]*$(basename "$tmpdir2")\"" ~/.local/state/evener/projects/*/sessions/*.transcript.jsonl)
    SID2=$(basename "$TFILE2" .transcript.jsonl)
    echo "SID2=$SID2 (via $TFILE2)"
    ```
@@ -74,15 +74,15 @@ available to turn it off).
    ```bash
    go run ./cmd/evener-doctor transcript "$SID1" --count ask_user
    go run ./cmd/evener-doctor transcript "$SID2" --count ask_user
-   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir1" \
+   "$run/evener" --model openai/gpt-5.5 --dir "$tmpdir1" \
      "Audit session $SID1. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
-   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir2" \
+   "$run/evener" --model openai/gpt-5.5 --dir "$tmpdir2" \
      "Audit session $SID2. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
    ```
 
 ## Expected
 
-- Step 3: `serf-doctor ... --count ask_user` prints `ask_user: 0 calls` for **both**
+- Step 3: `evener-doctor ... --count ask_user` prints `ask_user: 0 calls` for **both**
   sessions. An assistant-text mention is reported separately and is not an invocation.
 - Each explicit request-body expansion has no tool definition whose structured name is
   `ask_user`, and does contain the non-interactive prompt section
@@ -102,7 +102,7 @@ rm -rf "$tmpdir1" "$tmpdir2"
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
 `SERF_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
-`pkill -f serf-hub`, which takes out every other concurrent agent's hub too
+`pkill -f evener-hub`, which takes out every other concurrent agent's hub too
 (`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
@@ -111,7 +111,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   providers will not let the model structurally invoke a tool absent from the request's
   tool list at all, so the far more likely outcome is prose ("I don't have an ask_user
   tool..."). If the model *does* somehow manage to emit a structural `ask_user` tool call
-  (`serf-doctor`'s `calls` field nonzero), the daemon's exec-time guard
+  (`evener-doctor`'s `calls` field nonzero), the daemon's exec-time guard
   (`agent/session_tools_ask.go`) should still have produced an error result containing
   `unknown tool: ask_user` for it — check the outline
   (`go run ./cmd/evener-doctor transcript "$SIDn" --format outline --range last:4`) if `calls`

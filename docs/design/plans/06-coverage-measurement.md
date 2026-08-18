@@ -144,7 +144,7 @@ Per decision 4 there is **no nightly**; enforcement is the local tool now and th
 
 **Per-target absolute focus % stays advisory** (decision 1/4): the report shows it climbing to 100, but no fixed threshold blocks. The *ratchet* (it may not go down) and the *gap floor* are the blocking conditions.
 
-**Where blocking lives (decision 4).** When promoted to blocking, the gap floor (and, once floors are trustworthy, the ratchet) is added as a step to the **existing `.github/workflows/ci.yml`** PR gate — modeled on the existing `serf-*check` steps (`ci.yml:28-35`), e.g. a `make fuzz-coverage CHECK=1` step after the lint steps. There is **no** nightly/`schedule:` workflow to put it in (verified: none exists in `.github/workflows/`). Roll-out: ship advisory (local only); once the floors and gap map are stable, add the `CHECK=1` step to `ci.yml`.
+**Where blocking lives (decision 4).** When promoted to blocking, the gap floor (and, once floors are trustworthy, the ratchet) is added as a step to the **existing `.github/workflows/ci.yml`** PR gate — modeled on the existing `evener-*check` steps (`ci.yml:28-35`), e.g. a `make fuzz-coverage CHECK=1` step after the lint steps. There is **no** nightly/`schedule:` workflow to put it in (verified: none exists in `.github/workflows/`). Roll-out: ship advisory (local only); once the floors and gap map are stable, add the `CHECK=1` step to `ci.yml`.
 
 ## 5. The decoder-vs-package precision problem — resolved by the focus set
 
@@ -166,7 +166,7 @@ All four prior open questions are settled by Jesse's decisions (top of file). Re
 2. `cmd/evener-fuzzcov/main.go`: profile parser + `mode: set` merge (union) + per-package rollup + report printer (focus %, floor, pkg %). (~80 LoC)
 3. `cmd/evener-fuzzcov`: focus-set machinery — parse `focus` specs, resolve `file.go#Func` to line ranges via `go/parser`, compute per-target focus %. (~40–60 LoC)
 4. `cmd/evener-fuzzcov`: ratchet (`scripts/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
-5. `scripts/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `serf-fuzzcov`. (~60–90 LoC)
+5. `scripts/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener-fuzzcov`. (~60–90 LoC)
 6. `Makefile`: `fuzz-coverage` target + `.PHONY` (`Makefile:1`).
 7. `fuzz/README.md`: document `make fuzz-coverage`, the focus-set/ratchet model, and `--bless`, next to `make fuzz` / `fuzz-nightly`.
 8. Commit the initial `scripts/fuzzcov-floors.txt` (measured current focus %s as the starting ratchet) and `scripts/fuzzcov-ignore.txt`.

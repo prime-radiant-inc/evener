@@ -1,4 +1,4 @@
-# Serf Sandboxing — M5: `--sandbox` Goes Live on Linux (the review gate)
+# Evener Sandboxing — M5: `--sandbox` Goes Live on Linux (the review gate)
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -50,7 +50,7 @@ lines *will* have drifted):
 - `cmd/evener/main.go:168-198` `newRunFlagSet` (the `--sandbox`/`--sandbox-net`
   registrations land among these); `:200-204` `fs.Usage`; `:206` `printRunUsage`;
   `:235` `printLongFlagDefaults` — **auto-lists every registered flag via
-  `fs.VisitAll`, so the flags already render in `serf --help`; M5 finalizes their
+  `fs.VisitAll`, so the flags already render in `evener --help`; M5 finalizes their
   usage strings, it does not add them to a curated list**; `:248`
   `printRunEnvVars` (add any `SERF_SANDBOX*` env var here if one exists).
 - `cmd/evener/serve.go:64-103` serve flag registrations; `:105-110` `fs.Usage` →
@@ -130,7 +130,7 @@ to main after his sign-off.
 (Land this **after** Tasks 2–4 are green and Jesse has signed off — exposure is
 the last thing to move.)
 
-- [ ] **Failing test:** (a) `serf --help` and `serf serve --help` render
+- [ ] **Failing test:** (a) `evener --help` and `evener serve --help` render
   `--sandbox <mode>` and `--sandbox-net <on|off>` with the final, documented
   usage text (assert the strings, incl. the mode list and the default). (b) A
   regression proving the **live-flip is a no-op for `off`**: an existing execenv
@@ -166,10 +166,10 @@ the owning layer (that's an allowed bugfix), do **not** paper over it in the tes
     shell — expect confinement denial.
   - **TOCTOU symlink-swap race** during read / write / rename / **apply_patch**
     with a concurrent model-spawned job flipping a path component.
-  - **`read_file("/proc/<serf-pid>/environ")`** (must not leak serf's provider
+  - **`read_file("/proc/<evener-pid>/environ")`** (must not leak evener's provider
     API key) + **`/proc/1/root`** + **`/proc/<pid>/root`** aliasing — denied on
     **both** layers (file tool + spawned proc).
-  - inherited-**fd / agent-socket** egress — spawned command sees no serf fds
+  - inherited-**fd / agent-socket** egress — spawned command sees no evener fds
     beyond stdio, no ssh/gpg-agent socket.
   - **`ld-linux.so <denied-binary>`** indirect exec — still confined.
   - **`.git/hooks` write + `core.hooksPath` redirect** persist attempt;
@@ -190,7 +190,7 @@ the owning layer (that's an allowed bugfix), do **not** paper over it in the tes
     (M4 inheritance, validated live end-to-end here).
   - **Edge cases pinned** (from the spec): nested worktrees, submodules, a
     resumed session re-applying policy, deleted-then-recreated roots, delegate
-    resume after a serf restart, and overlay-unavailable degradation.
+    resume after a evener restart, and overlay-unavailable degradation.
 - [ ] Drive each vector to green on bwrap; re-run the Landlock-servable subset on
   the Landlock path. Fix any real defect at its source layer.
 - [ ] Adversarial verify (does every spec Validation vector have a case? does
@@ -216,7 +216,7 @@ the owning layer (that's an allowed bugfix), do **not** paper over it in the tes
 ## Task 4 — Live denial-UX feel-testing (verify + e2e-scenario-testing)
 
 - [ ] Use the **`verify`** and **`e2e-scenario-testing`** skills to run a **real
-  sandboxed serf session** (real model, real bwrap) and drive it into denials:
+  sandboxed evener session** (real model, real bwrap) and drive it into denials:
   a write outside the worktree, a denylisted read, a `net=off` fetch, a
   `git config --local` (the legible-denial case the spec calls out).
 - [ ] Confirm the model receives a **legible, typed denial** it can reason about
@@ -253,7 +253,7 @@ the owning layer (that's an allowed bugfix), do **not** paper over it in the tes
   end-to-end** on the real host (bwrap 0.9.0, kernel 6.8) and on the Landlock
   path; every spec Validation vector + pinned edge case is present and would fail
   if its defense were removed.
-- `serf --help` / `serf serve --help` show `--sandbox` and `--sandbox-net` with
+- `evener --help` / `evener serve --help` show `--sandbox` and `--sandbox-net` with
   final documented text; the live-flip engages enforcement for a non-`off` mode
   and is a **proven byte-identical no-op for `off`**.
 - The startup enforcement line is correct (backend + exact set + overlay state)

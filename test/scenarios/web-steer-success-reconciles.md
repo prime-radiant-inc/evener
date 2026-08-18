@@ -24,7 +24,7 @@ way that matters:
   "duplicate divider" failure mode is structurally impossible.
 - Reconciliation is no longer a text match. The chip clears when its
   `clientMutationId` comes back — on `thread/queueChanged`,
-  `serf/steering/injected`, or an `item/*` / `turn/*` frame carrying it
+  `evener/steering/injected`, or an `item/*` / `turn/*` frame carrying it
   (`stores/threads.ts:797-810`), collected by `reflectedMutationIds`
   (`composer/queue/pendingReconcile.ts:45-54`). So the old
   text-normalize-mismatch failure mode is gone too; an id that never comes
@@ -38,9 +38,9 @@ whole method.
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--serf` resolvable.
+  `docs/agentic-testing.md`) with `--evener` resolvable.
 - Anthropic OAuth or API key configured.
-- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
+- `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA built (`make build-web`) **before** the hub binary.
 - A browser. This card is entirely about what the browser renders and when;
   there is no REST-level substitute for it.
@@ -48,8 +48,8 @@ whole method.
 ## Steps
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-steer-ok-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-steer-ok-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
@@ -104,7 +104,7 @@ HUB=http://127.0.0.1:$PORT
   `clientMutationId` came back — and `steers` is `before.steers + 1`: the
   authoritative entry is in the transcript. `toast` is empty. Falsify:
   - a chip is still present after 3s → the ack never echoed the id;
-    reconciliation is broken (check `serf/steering/injected` in the hub log
+    reconciliation is broken (check `evener/steering/injected` in the hub log
     before blaming the store);
   - `steers` did not increase → the placeholder cleared without an
     authoritative entry replacing it, which is worse than a stuck chip: the

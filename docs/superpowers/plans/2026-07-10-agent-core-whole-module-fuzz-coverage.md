@@ -35,7 +35,7 @@
 | cmd/evener-fuzzcov/global.go | Package-profile union, file exclusions, raw threshold accounting |
 | cmd/evener-fuzzcov/global_test.go | Global accounting and exclusion validation tests |
 | scripts/run-fuzz.sh | Authoritative native and rapid target manifest |
-| scripts/fuzz-registry-check.sh | Thin wrapper around serf-fuzzregistry |
+| scripts/fuzz-registry-check.sh | Thin wrapper around evener-fuzzregistry |
 | scripts/fuzz-coverage-global.sh | Replay validated local targets and emit package profiles |
 | scripts/fuzz-coverage-global-selftest.sh | Stubbed deterministic runner tests |
 | scripts/fuzzcov-global-exclusions.txt | Initially empty file-only exclusion manifest |
@@ -86,7 +86,7 @@ Run the focused test before adding the seam. Expected: build failure because the
 
 - [ ] **Step 3: Implement the real filesystem seam**
 
-Keep ForkSession as the production API and call forkSessionFS with afero.NewOsFs. Thread the filesystem through transcript opening/writing and session-meta load/save. Do not mock or duplicate Serf persistence logic.
+Keep ForkSession as the production API and call forkSessionFS with afero.NewOsFs. Thread the filesystem through transcript opening/writing and session-meta load/save. Do not mock or duplicate Evener persistence logic.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -149,7 +149,7 @@ Expected before implementation: the package does not build.
 
 Use go/parser and go/ast to discover func FuzzX(*testing.F). Add
 golang.org/x/mod as a direct dependency and use modfile.ParseWork to enumerate
-modules. Add the serf:fuzz rapid marker immediately above each of the ten
+modules. Add the evener:fuzz rapid marker immediately above each of the ten
 registered Rapid functions in the listed files. Treat only those marked Test
 declarations as Rapid and require exactly one rapid manifest row. Existing test
 rows remain support checks and do not count toward global coverage.
@@ -268,7 +268,7 @@ For each module in go.work, group validated rows by module/package. Invoke each 
 go test -tags serffuzz -run "^Name$" -coverprofile="$profile" "$pkg"
 ~~~
 
-Run native targets once in seed-replay mode. Run Rapid targets once per fixed seed. Concatenate only profiles from one package and pass module/package/profile rows to serf-fuzzcov global accounting.
+Run native targets once in seed-replay mode. Run Rapid targets once per fixed seed. Concatenate only profiles from one package and pass module/package/profile rows to evener-fuzzcov global accounting.
 
 - [ ] **Step 3: Make missing local surfaces fatal**
 

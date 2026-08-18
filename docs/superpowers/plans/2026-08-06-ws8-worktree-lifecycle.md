@@ -4,7 +4,7 @@
 
 **Goal:** manage_worktree stops failing at its own job — resumed sessions
 own their lanes, force means the sanctioned cascade, unmanaged worktrees
-get an explicit adoption path — and serf never instructs a tool the
+get an explicit adoption path — and evener never instructs a tool the
 session doesn't have.
 
 **Architecture:** Implements the WS8 section of

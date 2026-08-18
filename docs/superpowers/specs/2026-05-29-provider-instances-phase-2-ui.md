@@ -8,7 +8,7 @@ Jesse 2026-05-29** (the mockups below).
 
 ## 1. Goal
 
-One screen — in **both the web hub and `serf-tui`** — that manages provider
+One screen — in **both the web hub and `evener-tui`** — that manages provider
 **instances**, replacing the duplicate read-only *Providers* + read-write
 *Credentials* screens. Instances grouped by type; create / edit / remove /
 set-default; per-instance credential management (API key + OAuth device-code).
@@ -113,7 +113,7 @@ gate auth modes (OAuth only for the `openai` tag) and to write `auth/<name>.json
 - **TUI:** `credentials_panel` model test — grouped render, the new keybindings emit the
   right messages.
 - **Pickers:** a custom instance appears in the picker labeled by instance name.
-- Full suite green; **no `~/.serf` pollution** in tests (isolate `ProvidersConfigPath`).
+- Full suite green; **no `~/.evener` pollution** in tests (isolate `ProvidersConfigPath`).
 
 ## 8. Out of scope
 

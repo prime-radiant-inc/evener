@@ -4,11 +4,11 @@
 
 **Status:** Implemented
 
-**Goal:** Bound each HTTP streaming attempt while it waits for response headers without adding a Serf-owned overall deadline to a healthy response stream.
+**Goal:** Bound each HTTP streaming attempt while it waits for response headers without adding a Evener-owned overall deadline to a healthy response stream.
 
 **Architecture:** Replace the connect-only client helper with shared adapter-timeout client construction that clones a standard `http.Transport`, wraps context-aware dial hooks with `Connect`, and applies `Request` to `ResponseHeaderTimeout`. Keep context-free `Dial` and `DialTLS`, opaque `RoundTripper` implementations, and caller `http.Client.Timeout` policy authoritative; do not add a streaming request-context deadline; continue applying `StreamRead` only while consuming SSE lines.
 
-**Tech Stack:** Go 1.26, `net/http`, `httptest`, Serf's `llm` timeout/error abstractions, and deterministic Go tests.
+**Tech Stack:** Go 1.26, `net/http`, `httptest`, Evener's `llm` timeout/error abstractions, and deterministic Go tests.
 
 **Design Spec:** `docs/superpowers/specs/2026-07-13-streaming-response-header-timeout-design.md`
 
@@ -17,7 +17,7 @@
 - Follow `docs/testing.md`: default tests must be deterministic and must not use provider credentials, external network access, quota, current model behavior, arbitrary sleeps, or polling races.
 - `AdapterTimeout.Request` continues to bound the entire request/response cycle for non-streaming calls.
 - For streaming calls, `AdapterTimeout.Request` bounds only the wait for response headers after the request body is written.
-- Serf must not add an overall streaming request-context or `http.Client.Timeout`
+- Evener must not add an overall streaming request-context or `http.Client.Timeout`
   deadline. Caller-supplied contexts and explicit client timeouts remain
   unchanged and authoritative after response headers arrive.
 - `AdapterTimeout.StreamRead` continues to bound the wait between SSE lines after headers arrive.
@@ -681,7 +681,7 @@ git status --short
 Expected: `make test` exits successfully, `git diff --check` prints nothing,
 and `git status --short` lists only the intended implementation files plus the
 pre-existing user-owned untracked files. Do not add the `.private-journal`
-entries or `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md`.
+entries or `docs/superpowers/plans/2026-05-07-evener-daemon-prereqs.md`.
 
 - [ ] **Step 10: Commit the implementation**
 

@@ -8,11 +8,11 @@
 Session `0343Ek5InpsrSp2nI4L7xh` (kimi-k3 via the lunarouter profile) burned
 11 retry attempts over 20 minutes on a turn, then did it again after the user
 typed "continue". Two distinct failure shapes: mid-stream stalls killed by
-serf's 30s `StreamRead` timeout (~32s attempts, trickle output), and an
+evener's 30s `StreamRead` timeout (~32s attempts, trickle output), and an
 upstream ~300s stream cap that cut attempts after minutes of real output
 (~295s attempts, ~10k tokens streamed). The forensics exposed four gaps:
 
-1. The retry chip (`serf/thread/modelRetry`) exists but clears on the first
+1. The retry chip (`evener/thread/modelRetry`) exists but clears on the first
    delta and shows no cumulative state, so 20 minutes of failing retries read
    as "stuck thinking".
 2. Transient failures get 10 identical retries (`llm.DefaultRetryPolicy`)
@@ -47,7 +47,7 @@ from its own draft instead of starting over blind.
 - **Persist as history** (this spec): the partial rides in the transcript at
   the cost it would have had if the turn succeeded, survives rounds and
   restarts for free, and sits in context as a draft. Note an earlier claim
-  here was wrong: serf forces `tool_choice: required` and rejects bare-text
+  here was wrong: evener forces `tool_choice: required` and rejects bare-text
   responses (`agent/session_tool_round.go` `decideNoToolCalls`), so
   user-facing continuation must be re-emitted through the result tool —
   persisting as history does **not** avoid re-emission. Its advantages over
@@ -201,7 +201,7 @@ positional, like everything else in this component:
 Early-stop rules (consume-phase failures only, per the classification
 above — consume-phase stalls count toward the streak):
 
-- **Streak:** after `FailFastAfter` (serf passes 4) consecutive
+- **Streak:** after `FailFastAfter` (evener passes 4) consecutive
   consume-phase failures, stop with `llm.ProviderUnhealthyError`.
 - **Cap detection:** after 2 consecutive consume-phase failures that each
   ended after substantial streaming (content-event window ≥ 60s — twice
@@ -238,7 +238,7 @@ and a provider alternating stall/429 must still trip the streak on its
 
 **`ProviderUnhealthyError` settles the round immediately — from any
 group.** An unhealthy verdict indicts the provider's endpoint and
-transport, and serf's fallback chain cannot currently route around it:
+transport, and evener's fallback chain cannot currently route around it:
 same-provider fallback entries share the transport, and cross-provider
 entries are rejected at session init. Three mechanics make "immediately"
 real:

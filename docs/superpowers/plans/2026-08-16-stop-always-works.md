@@ -358,7 +358,7 @@ honesty the old read carried. `serve.go`'s drain path also armed the cancel
 *after* publishing processing, unlike its two sibling sites; it now matches them.
 
 Three clients gated this session-scoped mutation on a turn id the request does
-not carry: the web composer's `showStop` (via `isTurnActive`), `serf-tui`'s
+not carry: the web composer's `showStop` (via `isTurnActive`), `evener-tui`'s
 `/interrupt`, and the command palette's `hasActiveTurn`. All three withheld Stop
 for the whole unnamed-but-working window. Steer keeps the turn gate in all
 three — it redirects a turn in flight and its handler needs the id.

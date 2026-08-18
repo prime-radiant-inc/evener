@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the output contract of the nine hook events serf already fires match Claude: the `PreToolUse` preferred decision schema, and a split so `additionalContext` reaches the model (as a system-reminder) while the `systemMessage` field is shown to the user.
+**Goal:** Make the output contract of the nine hook events evener already fires match Claude: the `PreToolUse` preferred decision schema, and a split so `additionalContext` reaches the model (as a system-reminder) while the `systemMessage` field is shown to the user.
 
 **Architecture:** All changes live in `agent/internal/hooks` (parser + runner), `agent/internal/diagnostic` (a new `SourceHook` label), and the eight session delivery sites in `agent/`. The runner owns routing-by-event and returns two buckets (`ModelContext`, `UserMessages`); the session delivers them through two helpers. The struct-field rename is done expand-contract (add new buckets, migrate sites, remove old) so every commit compiles and tests stay green.
 
@@ -10,7 +10,7 @@
 
 **Design spec:** `docs/superpowers/specs/2026-06-08-phase-b-hook-output-contract-design.md` (read it before starting).
 
-**Working directory:** the worktree root `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/phase-b-hooks`. Run `go test` from inside the `agent/` module directory (it is its own Go module).
+**Working directory:** the worktree root `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/phase-b-hooks`. Run `go test` from inside the `agent/` module directory (it is its own Go module).
 
 ---
 
@@ -212,7 +212,7 @@ func TestRunPreToolUse_AskProceeds(t *testing.T) {
 	})
 	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
 	if r.Denied {
-		t.Fatal("ask must not deny (serf has no permission prompt)")
+		t.Fatal("ask must not deny (evener has no permission prompt)")
 	}
 }
 ```
@@ -225,7 +225,7 @@ Then update `RunPreToolUse` so the per-output loop computes the deny decision fr
 		case "deny":
 			denied = true
 		case "ask", "defer":
-			// Recognized but not honored: serf has no interactive permission prompt.
+			// Recognized but not honored: evener has no interactive permission prompt.
 			// The tool proceeds; the user-visible diagnostic is added in Task 3
 			// (it needs the UserMessages bucket, which does not exist yet).
 		}
@@ -511,7 +511,7 @@ In `RunPreToolUse`, also populate the buckets. For a denying output, the reason 
 ```go
 		if o.PermissionDecision == "ask" || o.PermissionDecision == "defer" {
 			result.UserMessages = append(result.UserMessages,
-				"hook returned permissionDecision \""+o.PermissionDecision+"\" which serf does not support (no interactive permission prompt); the tool will proceed")
+				"hook returned permissionDecision \""+o.PermissionDecision+"\" which evener does not support (no interactive permission prompt); the tool will proceed")
 		}
 		if denied {
 			// reason consumed as DenyMessage above; do not route this output's stderr

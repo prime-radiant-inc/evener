@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace every project-identity implementation with one resolving API and replace every Serf-owned ULID payload with a fixed-width, 22-character base62 UUIDv7 payload.
+**Goal:** Replace every project-identity implementation with one resolving API and replace every Evener-owned ULID payload with a fixed-width, 22-character base62 UUIDv7 payload.
 
 **Architecture:** Add the leaf module `primeradiant.com/evener/identifier`. It owns project canonicalization, local Git main-checkout resolution, bounded project rendering, UUIDv7/base62 encoding, domain constructors, and validators. Root, `agent`, and `llm` depend on it; `agent/execenv` supplies an environment-backed `identifier.Resolver` without creating a reverse dependency.
 
@@ -19,7 +19,7 @@
 - Existing prefixes remain `job_`, `dlg_`, `dg_`, `watch_`, `wg_`, `wd_`, `ag_`, and `call_`; sessions, installations, and terminal generations remain unprefixed.
 - External provider and thread IDs remain opaque.
 - This is a clean break: do not migrate, rename, discover through fallback, or delete old hash/ULID state. Replace only an invalid singleton installation ID.
-- Keep changes focused; do not preserve duplicate project renderers or direct Serf-owned ULID generation.
+- Keep changes focused; do not preserve duplicate project renderers or direct Evener-owned ULID generation.
 
 ## File Structure
 
@@ -233,7 +233,7 @@ if got := project.ID; len(got) > 80 || !regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-
 }
 ```
 
-Compute the expected suffix in the test from the approved definition: full SHA-256 digest interpreted big-endian, modulo `62^10`, base62-encoded and left-padded. Include paths whose sanitized tails collide and a path long enough to prove left-side truncation preserves `prime-radiant-serf`.
+Compute the expected suffix in the test from the approved definition: full SHA-256 digest interpreted big-endian, modulo `62^10`, base62-encoded and left-padded. Include paths whose sanitized tails collide and a path long enough to prove left-side truncation preserves `prime-radiant-evener`.
 
 - [ ] **Step 2: Run the focused project tests and verify they fail**
 
@@ -586,14 +586,14 @@ git commit -m "refactor(hub): use canonical project keys"
 
 **Interfaces:**
 - Consumes: `ValidateProjectID` and `ValidateSessionID`
-- Preserves external ref parsing by validating only refs identified as local Serf refs
+- Preserves external ref parsing by validating only refs identified as local Evener refs
 - Removes assumptions that project bucket names are exactly 16 hex characters
 
 - [ ] **Step 1: Add old-state fixtures and untouched-file assertions**
 
 Seed:
 
-- `serf/projects/0123456789abcdef/sessions/<26-char-ulid>.transcript.jsonl`;
+- `evener/projects/0123456789abcdef/sessions/<26-char-ulid>.transcript.jsonl`;
 - a valid new project bucket containing a legacy session filename;
 - a legacy project bucket containing a syntactically new session ID;
 - valid new project/session state;
@@ -612,7 +612,7 @@ Expected: FAIL because old token validation accepts legacy names.
 
 - [ ] **Step 3: Apply strict validation only at local boundaries**
 
-When enumerating `serf/projects/*`, skip directories that fail `ValidateProjectID`. When enumerating local session files or accepting `local:`/`proj:` refs, require `ValidateSessionID`. Keep path-traversal checks. Do not apply these validators to external provider refs, thread IDs, or appwire source-qualified opaque IDs.
+When enumerating `evener/projects/*`, skip directories that fail `ValidateProjectID`. When enumerating local session files or accepting `local:`/`proj:` refs, require `ValidateSessionID`. Keep path-traversal checks. Do not apply these validators to external provider refs, thread IDs, or appwire source-qualified opaque IDs.
 
 - [ ] **Step 4: Update terminology from hash to project ID**
 
@@ -670,7 +670,7 @@ Use the audit test's temp fixture or test seam, not a production-file edit. Run 
 
 Document:
 
-- readable project IDs under `serf/projects/<project-id>`;
+- readable project IDs under `evener/projects/<project-id>`;
 - main/linked-worktree aggregation and distinct-clone behavior;
 - 22-character session IDs and retained domain prefixes;
 - the clean break and manual removal of inert old state;

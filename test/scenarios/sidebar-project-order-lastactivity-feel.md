@@ -51,7 +51,7 @@ chain is:
    `meta.json` and folds it in via `UpdateMeta`
    (`internal/hubcore/past.go:371-397,327-350`) — no full rescan.
 4. `past.SetOnChange(func(){ bump(); notifyTreeChanged(web.appRPC) })`
-   (`main.go:372`) busts the `/api/tree` memo *and* pushes `serf/tree/changed`,
+   (`main.go:372`) busts the `/api/tree` memo *and* pushes `evener/tree/changed`,
    so an open rail refetches on its own 250ms debounce
    (`frontend/src/stores/tree.ts:443-450,455-467`).
 
@@ -67,7 +67,7 @@ broken — that is the failure this card now catches.
 - A model that can run real turns. A local `ollama` model is the cheapest
   credential-free option and is what the recorded run used
   (`ollama/gemma4:e4b`).
-- Leave the hub's auto-materialized `$HOME/.serf/providers.toml` in place. The
+- Leave the hub's auto-materialized `$HOME/.evener/providers.toml` in place. The
   old text told you to move it aside because the config-aware branch of
   `validateProviderCredentials` demanded a credential for ollama; **that is
   fixed** — the branch now returns early for any instance type whose auth mode

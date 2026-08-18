@@ -6,7 +6,7 @@ Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 
 ## 1. Goal
 
-Provide a builtin skill that teaches the agent how to install, update, and remove Claude Code plugins by manipulating the directories that SP-A discovers. The skill replaces the deferred Go-side marketplace/install tooling (SP3, SP4) with an LLM-driven workflow that uses serf's existing Bash, Read, Write, and WebFetch tools.
+Provide a builtin skill that teaches the agent how to install, update, and remove Claude Code plugins by manipulating the directories that SP-A discovers. The skill replaces the deferred Go-side marketplace/install tooling (SP3, SP4) with an LLM-driven workflow that uses evener's existing Bash, Read, Write, and WebFetch tools.
 
 This sub-project is markdown only. No Go code beyond a one-line registration in `agent/builtin_skills.go`.
 
@@ -21,7 +21,7 @@ The file is loaded as a builtin skill (no plugin namespace), so the agent can in
 ```yaml
 ---
 name: manage-plugins
-description: Use when the user asks to install, update, remove, list, or inspect Claude Code plugins for serf. Handles marketplaces (cloning marketplace.json catalogs), plugin sources (github/url/git-subdir/directory/npm), and stages plugin directories into ~/.config/serf/plugins/ (user) or <project>/.serf/plugins/ (project).
+description: Use when the user asks to install, update, remove, list, or inspect Claude Code plugins for evener. Handles marketplaces (cloning marketplace.json catalogs), plugin sources (github/url/git-subdir/directory/npm), and stages plugin directories into ~/.config/evener/plugins/ (user) or <project>/.evener/plugins/ (project).
 ---
 ```
 
@@ -34,14 +34,14 @@ The body is structured for the LLM, not for human reading. Each section is a pro
 ```
 ## What this skill does
 
-Stage plugin directories under serf's known plugin paths so SP-A's filesystem
+Stage plugin directories under evener's known plugin paths so SP-A's filesystem
 discovery picks them up at next session start. There is no registry; presence
 in the right directory IS the install state.
 
 ## Plugin storage layout
 
-User-scope (default):  ~/.config/serf/plugins/<plugin-name>/
-Project-scope:         <project-root>/.serf/plugins/<plugin-name>/
+User-scope (default):  ~/.config/evener/plugins/<plugin-name>/
+Project-scope:         <project-root>/.evener/plugins/<plugin-name>/
 
 Each <plugin-name>/ must contain .claude-plugin/plugin.json. Match the plugin's
 declared `name` in plugin.json to the directory basename for clarity, though
@@ -63,12 +63,12 @@ The user asks any of:
 ## Step-by-step: install a plugin from a marketplace
 
 1. Resolve the marketplace source. Ask the user for one of:
-   - A marketplace name they've already cloned (find it under ~/.config/serf/plugins/marketplaces/)
+   - A marketplace name they've already cloned (find it under ~/.config/evener/plugins/marketplaces/)
    - A git URL
    - A `owner/repo` GitHub shorthand
    - A path to a local marketplace.json
 2. Fetch marketplace.json:
-   - For a git URL or GitHub shorthand: run `git clone --depth=1 <url> /tmp/serf-marketplace-XXXX` then read .claude-plugin/marketplace.json
+   - For a git URL or GitHub shorthand: run `git clone --depth=1 <url> /tmp/evener-marketplace-XXXX` then read .claude-plugin/marketplace.json
    - For a direct URL to marketplace.json: WebFetch it
    - For a local path: Read it
 3. Parse marketplace.json. Find the plugin entry whose `name` matches what the user asked for. Show the user the entry's `description`, `source`, and confirm.
@@ -79,28 +79,28 @@ The user asks any of:
    - "git-subdir": git clone --depth=1, then `cp -R <subdir> <target>`, then rm clone
    - "npm": `npm pack <package>` then unpack; or `npm install <package>` and find the install path. Less common; ask if the user wants to proceed.
 5. Pick the target directory:
-   - Default: ~/.config/serf/plugins/<plugin-name>/
-   - If the user said "for this project" or you detect the user is in a project: <project>/.serf/plugins/<plugin-name>/
+   - Default: ~/.config/evener/plugins/<plugin-name>/
+   - If the user said "for this project" or you detect the user is in a project: <project>/.evener/plugins/<plugin-name>/
 6. Verify <target>/.claude-plugin/plugin.json exists. If not, abort with a clear error.
-7. Tell the user: "Installed <name> at <target>. Restart your serf session for the plugin to load."
+7. Tell the user: "Installed <name> at <target>. Restart your evener session for the plugin to load."
 
 ## Step-by-step: update a plugin
 
-1. Find the plugin's directory under ~/.config/serf/plugins/ or .serf/plugins/.
+1. Find the plugin's directory under ~/.config/evener/plugins/ or .evener/plugins/.
 2. If it is a git checkout, run `git pull --ff-only` in that directory. Report the result.
 3. If it is not a git checkout, ask the user where to re-fetch from (probably the original marketplace), then do the install flow into the same target.
-4. Verify the manifest still parses. Tell the user to restart serf.
+4. Verify the manifest still parses. Tell the user to restart evener.
 
 ## Step-by-step: remove a plugin
 
 1. Confirm the user wants to remove plugin <X>.
 2. Find its directory under known plugin paths.
 3. `rm -rf <dir>` (or move to a backup with `mv` if the user prefers).
-4. Tell the user to restart serf.
+4. Tell the user to restart evener.
 
 ## Step-by-step: list installed plugins
 
-1. Read ~/.config/serf/plugins/*/ and <project>/.serf/plugins/*/.
+1. Read ~/.config/evener/plugins/*/ and <project>/.evener/plugins/*/.
 2. For each, read its .claude-plugin/plugin.json. Print name, version, description.
 3. Note which scope each is in (user / project).
 4. Surface any directories that lack a manifest as "broken (no manifest)".
@@ -180,12 +180,12 @@ The skill is not end-to-end tested by running it (that would require an LLM roun
 ## 8. Open Questions
 
 1. **Should the skill prompt the user for `userConfig` values during install, or defer to first-load (per SP7)?**
-   Recommendation: defer to first-load. The skill stages the plugin directory; SP7 handles the prompt when the plugin loads. Keeping responsibilities split means the skill stays surface-agnostic — it doesn't need to know about keychain access or prompt UX. The skill's "tell the user to restart serf" step is also where SP7 takes over.
+   Recommendation: defer to first-load. The skill stages the plugin directory; SP7 handles the prompt when the plugin loads. Keeping responsibilities split means the skill stays surface-agnostic — it doesn't need to know about keychain access or prompt UX. The skill's "tell the user to restart evener" step is also where SP7 takes over.
 
-2. **Should the skill maintain a cache of recently-cloned marketplaces under `~/.config/serf/plugins/marketplaces/`?**
-   Recommendation: yes, opportunistically. The skill can clone marketplaces into `~/.config/serf/plugins/marketplaces/<name>/` and consult them on subsequent installs. No registry file required — directory presence is the cache. This is convenience, not a feature; document but don't require it.
+2. **Should the skill maintain a cache of recently-cloned marketplaces under `~/.config/evener/plugins/marketplaces/`?**
+   Recommendation: yes, opportunistically. The skill can clone marketplaces into `~/.config/evener/plugins/marketplaces/<name>/` and consult them on subsequent installs. No registry file required — directory presence is the cache. This is convenience, not a feature; document but don't require it.
 
-3. **Does the skill need to handle `userConfig` defaults at install time (e.g., pre-create `~/.config/serf/plugins/<plugin>/.options.json` with defaults)?**
+3. **Does the skill need to handle `userConfig` defaults at install time (e.g., pre-create `~/.config/evener/plugins/<plugin>/.options.json` with defaults)?**
    Recommendation: no. SP7 owns the values file. The skill stages the manifest only.
 
 4. **What about MCP server credentials baked into `mcpServers` env values that reference `${user_config.KEY}`?**

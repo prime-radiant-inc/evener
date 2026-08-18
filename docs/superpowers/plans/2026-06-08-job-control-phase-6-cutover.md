@@ -18,7 +18,7 @@ This is **Phase 6 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-j
 **The implementer MUST verify the prerequisite before Task 1.** Run from the repo root:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 for sym in 'func DefDelegate' 'func DefJobReadOutput' 'func DefJobSendMessage' 'func DefJobWatch' 'capabilityJobControl' 'func (s \*Session) createDelegate' 'formatJobNotificationBlock' 'func registerJobTools'; do
   printf '%-40s ' "$sym"; rg -l "$sym" agent/ >/dev/null 2>&1 && echo PRESENT || echo "ABSENT — STOP, Phases 2-5 not merged"
 done
@@ -27,7 +27,7 @@ done
 If any line says ABSENT, **STOP** — this phase cannot proceed and must not invent the replacements.
 
 **Conventions for every task below:**
-- Work from the repo root `/Users/jesse/prime-radiant/toil-suite/serf` (this phase touches several modules in the go.work workspace, not just `agent`). Build the `agent` module with `cd agent && go build ./...`; build everything with `make build` from the root.
+- Work from the repo root `/Users/jesse/prime-radiant/toil-suite/evener` (this phase touches several modules in the go.work workspace, not just `agent`). Build the `agent` module with `cd agent && go build ./...`; build everything with `make build` from the root.
 - **Line numbers in the spec §13 inventory and in this plan are advisory and have drifted.** Before each edit, `grep`/`rg` for the **symbol** named in the task and edit what you find — never trust a bare line number. Each task names the load-bearing symbol for this reason.
 - This phase is deletions/repoints, so each task's "test" step is typically a **build + grep verification** (`cd agent && go build ./...` or `make build` must pass, and the relevant gate token must stop matching in production code) rather than a new unit test. Where a repointed *behavior* is testable (a renamed tool-name truncation limit, a renamed event), update the existing test to the new name and run it.
 - Commit per task in the repo's `type(scope): subject` style, e.g. `refactor(agent): ...` / `chore(cutover): ...`.
@@ -49,7 +49,7 @@ Read this before starting; it resolves the most error-prone ambiguity in the cut
 Quick caller census (run to re-confirm before deleting any entry point — line numbers will differ):
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 rg -n '\.waitAgent\(|\.closeAgent\(|\.listAgents\(' agent/   # only session_tools_subagent.go + *_test.go should remain
 rg -n '\.sendInput\(|\.cancelAgent\(|\.spawnAgent\(' agent/  # job_delegate.go (Phase 3) + tests KEEP these alive
 ```
@@ -77,7 +77,7 @@ cmd/evener-tui/internal/msgrender/tool_renderers.go  R  spawn_agent/resume_agent
 cmd/evener-tui/internal/msgrender/tool_bodies.go     R  spawn_agent body comment/shape → delegate
 cmd/evener-tui/internal/toolsummary/tool_summary.go  R  spawn_agent/resume_agent/wait/close_agent summary cases → job tools
 cmd/evener-hub/assets/renderer.js               R  SUBAGENT_START/END + spawn_agent/resume_agent/close_agent renderers → job lifecycle/tools
-cmd/evener-hub/assets/appwire.js                R  serf/subagent/* → SUBAGENT_* mapping → job lifecycle mapping
+cmd/evener-hub/assets/appwire.js                R  evener/subagent/* → SUBAGENT_* mapping → job lifecycle mapping
 agent/events/events.go                        R  EventSubagentStart/End kinds → job-lifecycle kinds
 agent/events/payloads.go                      R  SubagentStartData/EndData → job-lifecycle payloads
 agent/events/eventdata.go                     R  the eventKind() bindings + the compile-time _ EventData asserts
@@ -127,7 +127,7 @@ Per §5.1/§16: tools whose **mere presence** is root-only = `{delegate, job_wat
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/subagents.go agent/builtin_agents_test.go
 git commit -m "refactor(agent): retarget root-only tool-presence set to {delegate, job_watch}"
 ```
@@ -151,7 +151,7 @@ Phase 2 already added `capabilityJobControl` and added it to the three capabilit
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/provider/profile.go agent/provider/profile_test.go
 git commit -m "refactor(provider): drop capabilityAgentControl; job tools under capabilityJobControl"
 ```
@@ -181,7 +181,7 @@ This removes the bulk of the tool surface in one build-green step: with the prof
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add -A agent/
 git commit -m "refactor(agent): delete legacy subagent tool defs, registration, and subagent_output"
 ```
@@ -195,11 +195,11 @@ git commit -m "refactor(agent): delete legacy subagent tool defs, registration, 
 These three switch statements key per-tool **behavior** on the old names; each is a gate-token hit (`spawn_agent`) and a functional bug if left (the new `delegate` tool would get the default truncation/render instead of the agent-specific one).
 
 **Symbols:**
-- `agent/internal/toolname/toolname.go` — `claudeToSerf` map, the `"Task": "spawn_agent"` entry (Claude `Task` ↔ serf canonical). Verified at the map literal.
+- `agent/internal/toolname/toolname.go` — `claudeToSerf` map, the `"Task": "spawn_agent"` entry (Claude `Task` ↔ evener canonical). Verified at the map literal.
 - `agent/internal/tool/registry.go` — `defaultToolLimit(toolName string)`, the `case "spawn_agent":` output-truncation limit.
 - `agent/internal/contextmgr/context_manager.go` — the compaction-render switch, `case "spawn_agent":` which calls `extractJSONField(contentStr, "agent_id")` and renders `[spawn_agent: ...]`.
 
-- [ ] **Step 1: toolname map.** `rg -n '"Task"' agent/internal/toolname/toolname.go`. Change `"Task": "spawn_agent",` to `"Task": "delegate",`. (Claude Code's `Task` tool maps to serf's `delegate` now — that is the closest semantic equivalent: spawn independent agentic work.)
+- [ ] **Step 1: toolname map.** `rg -n '"Task"' agent/internal/toolname/toolname.go`. Change `"Task": "spawn_agent",` to `"Task": "delegate",`. (Claude Code's `Task` tool maps to evener's `delegate` now — that is the closest semantic equivalent: spawn independent agentic work.)
 
 - [ ] **Step 2: toolname test.** `rg -n 'spawn_agent|"Task"|delegate' agent/internal/toolname/*_test.go`. Update any assertion that maps `Task ↔ spawn_agent` to `Task ↔ delegate`. Run: `cd agent && go test ./internal/toolname/ -v`. Expected: PASS.
 
@@ -216,7 +216,7 @@ These three switch statements key per-tool **behavior** on the old names; each i
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/toolname/ agent/internal/tool/registry.go agent/internal/contextmgr/
 git commit -m "refactor(agent): repoint per-tool-name tables (toolname/registry/contextmgr) to delegate"
 ```
@@ -251,7 +251,7 @@ The events are the *source* of the wire/snapshot/UI projection chain. Repointing
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/events/ agent/subagents.go agent/jobs.go
 git commit -m "refactor(events): rename EventSubagentStart/End to job-lifecycle kinds + payloads"
 ```
@@ -263,10 +263,10 @@ git commit -m "refactor(events): rename EventSubagentStart/End to job-lifecycle 
 ## Task 6: repoint the appwire wire protocol + appprojector translation
 
 **Symbols:**
-- `appwire/types.go` — `NotifySerfSubagentStarted = "serf/subagent/started"`, `NotifySerfSubagentEnded = "serf/subagent/completed"`, `type SerfSubagentInfo struct{...}`, and the `Subagents []SerfSubagentInfo` field on the snapshot/status struct.
+- `appwire/types.go` — `NotifySerfSubagentStarted = "evener/subagent/started"`, `NotifySerfSubagentEnded = "evener/subagent/completed"`, `type SerfSubagentInfo struct{...}`, and the `Subagents []SerfSubagentInfo` field on the snapshot/status struct.
 - `internal/appprojector/appwire_projection.go` — the `switch` arms `case events.EventSubagentStart:` / `case events.EventSubagentEnd:` that build `p.notification(appwire.NotifySerfSubagentStarted, ...)` / `...Ended`.
 
-**Decision:** rename to job wire notifications: `NotifySerfJobStarted = "serf/job/started"`, `NotifySerfJobFinished = "serf/job/finished"`, `type SerfJobInfo struct{ JobID, JobType, Status string; ... }`, field `Jobs []SerfJobInfo`. Keep the JSON `method` strings and field names consistent with what the JS client (Task 8) will switch on.
+**Decision:** rename to job wire notifications: `NotifySerfJobStarted = "evener/job/started"`, `NotifySerfJobFinished = "evener/job/finished"`, `type SerfJobInfo struct{ JobID, JobType, Status string; ... }`, field `Jobs []SerfJobInfo`. Keep the JSON `method` strings and field names consistent with what the JS client (Task 8) will switch on.
 
 - [ ] **Step 1: appwire/types.go.** Rename the two `Notify*` consts, `SerfSubagentInfo`→`SerfJobInfo` (reshape its fields to `job_id`/`job_type`/`status`/… matching the snapshot projection), and the `Subagents`→`Jobs` field (keep or update the JSON tag — pick `jobs` and update Task 7/8 to match). `rg -n -A6 'type SerfSubagentInfo' appwire/types.go` first to see the fields.
 
@@ -279,9 +279,9 @@ git commit -m "refactor(events): rename EventSubagentStart/End to job-lifecycle 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add appwire/ internal/appprojector/
-git commit -m "refactor(appwire): rename serf/subagent wire notifications to serf/job lifecycle"
+git commit -m "refactor(appwire): rename evener/subagent wire notifications to evener/job lifecycle"
 ```
 
 ---
@@ -305,35 +305,35 @@ git commit -m "refactor(appwire): rename serf/subagent wire notifications to ser
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add server/
 git commit -m "refactor(server): rename SubagentStatusInfo carriers to job status info"
 ```
 
 ---
 
-## Task 8: repoint the serf-hub web JS assets (renderer.js + appwire.js)
+## Task 8: repoint the evener-hub web JS assets (renderer.js + appwire.js)
 
 These are `go:embed`-ed and served live, so they are gate-token hits the static gate would otherwise leave red, and a real runtime break (the web client would stop rendering job lifecycle).
 
 **Symbols:**
-- `cmd/evener-hub/assets/appwire.js` — the `if (method === "serf/subagent/started") return [["SUBAGENT_START", ...]]` / `"serf/subagent/completed"` → `"SUBAGENT_END"` mapping.
+- `cmd/evener-hub/assets/appwire.js` — the `if (method === "evener/subagent/started") return [["SUBAGENT_START", ...]]` / `"evener/subagent/completed"` → `"SUBAGENT_END"` mapping.
 - `cmd/evener-hub/assets/renderer.js` — `case "SUBAGENT_START":` / `case "SUBAGENT_END":` (the lifecycle banner/reference-card handlers), and the per-tool renderers `"spawn_agent"` (`spawnAgentRenderer`), `"resume_agent"`/`"wait"`/`"close_agent"` (`subagentControlRenderer`), plus the helper map keys (`activeSubagents`, `subagent-reference`, `data.subagentId`).
 
-- [ ] **Step 1: appwire.js mapping.** `rg -n 'serf/subagent|SUBAGENT_START|SUBAGENT_END' cmd/evener-hub/assets/appwire.js`. Repoint the method strings to Task 6's new wire names (`"serf/job/started"` → `"JOB_STARTED"`, `"serf/job/finished"` → `"JOB_FINISHED"`) and read `params.job || params` instead of `params.subagent || params`. Match the exact `method` strings and param shape chosen in Task 6.
+- [ ] **Step 1: appwire.js mapping.** `rg -n 'evener/subagent|SUBAGENT_START|SUBAGENT_END' cmd/evener-hub/assets/appwire.js`. Repoint the method strings to Task 6's new wire names (`"evener/job/started"` → `"JOB_STARTED"`, `"evener/job/finished"` → `"JOB_FINISHED"`) and read `params.job || params` instead of `params.subagent || params`. Match the exact `method` strings and param shape chosen in Task 6.
 
 - [ ] **Step 2: renderer.js lifecycle cases.** `rg -n 'SUBAGENT_START|SUBAGENT_END' cmd/evener-hub/assets/renderer.js`. Rename the `case` labels to `"JOB_STARTED"`/`"JOB_FINISHED"` and update the handler bodies to read `job_id`/`job_type`/`status` (was `agent_id`/`status`). Update the reference-card el-tracking map (`activeSubagents` → `activeJobs`, keyed by `job_id`) and the dataset/class names if you want them consistent (`subagent-reference` can stay as a CSS class name if a stylesheet depends on it — grep `cmd/evener-hub/assets/*.css` for `subagent-reference` before renaming the class; the CSS class is not a gate token, so renaming it is optional and only for consistency).
 
 - [ ] **Step 3: renderer.js tool renderers.** `rg -n 'spawn_agent|resume_agent|close_agent|"wait"' cmd/evener-hub/assets/renderer.js`. Repoint the tool-renderer map keys: `"spawn_agent"` → `"delegate"` (the spawn→reference-card renderer now keys on `delegate`, reading `job_id`/`transcript_ref` for the clickable card), and the control renderers (`"resume_agent"`/`"wait"`/`"close_agent"`) → the job tools (`job_send_message` for follow-up, `job_stop` for stop; `job_read_output`/`job_list` if they warrant a renderer). Map each old verb to the closest job verb; do not leave a `spawn_agent` key.
 
-- [ ] **Step 4: Verify the served bundle.** There is no JS unit test; verify by build + token grep + a live smoke. `make build` (re-embeds the assets). Then `rg -n 'SUBAGENT_START|SUBAGENT_END|serf/subagent|spawn_agent|resume_agent|close_agent' cmd/evener-hub/assets/` — expected: **nothing** (CSS class `subagent-reference` is acceptable if you chose to keep it; if so, the grep above won't match it since it doesn't contain those tokens). The live smoke is folded into Task 13's e2e check.
+- [ ] **Step 4: Verify the served bundle.** There is no JS unit test; verify by build + token grep + a live smoke. `make build` (re-embeds the assets). Then `rg -n 'SUBAGENT_START|SUBAGENT_END|evener/subagent|spawn_agent|resume_agent|close_agent' cmd/evener-hub/assets/` — expected: **nothing** (CSS class `subagent-reference` is acceptable if you chose to keep it; if so, the grep above won't match it since it doesn't contain those tokens). The live smoke is folded into Task 13's e2e check.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/appwire.js
-git commit -m "refactor(serf-hub): repoint web client to serf/job lifecycle + job tools"
+git commit -m "refactor(evener-hub): repoint web client to evener/job lifecycle + job tools"
 ```
 
 ---
@@ -358,7 +358,7 @@ git commit -m "refactor(serf-hub): repoint web client to serf/job lifecycle + jo
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/status.go agent/schema/snapshot.go server/
 git commit -m "refactor(agent): project session status as jobs, not subagents (keep IsSubagent internal)"
 ```
@@ -398,7 +398,7 @@ Keep the internal name `subagentLifecycleTools` only if you prefer minimal churn
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_outline.go agent/transcript_render.go agent/transcript_render_job_test.go
 git commit -m "refactor(agent): key transcript/outline lifecycle rendering on job tools (delegate/job_send_message)"
 ```
@@ -426,7 +426,7 @@ Phase 2 already added the durable job-notification path (`formatJobNotificationB
 - [ ] **Step 5: Commit** (tests for this path are handled in Task 12, which rewrites `notification_test.go`).
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_lifecycle.go agent/session.go agent/subagents.go
 git commit -m "refactor(agent): remove <subagent-notification>; job-notification is the only path"
 ```
@@ -455,7 +455,7 @@ The legacy tests are part of the surface §13 says must be "deleted or rewritten
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/
 git commit -m "test(cutover): delete legacy subagent tool tests; rewrite runtime/notification tests for job tools"
 ```
@@ -487,7 +487,7 @@ Docs and the final gate. The gate is **authoritative** (§13): run it, repoint e
 - [ ] **Step 5: RUN THE ACCEPTANCE GATE (§13).** From the repo root:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo' \
   | rg -v 'docs/superpowers/(specs|plans)/|docs/job-control\.md|CHANGELOG|/original-attractor-specs/|/design/2026-'
 ```
@@ -497,30 +497,30 @@ This **must return nothing** outside the historical/spec files filtered above. F
 - [ ] **Step 6: Full build + test + lint across all modules.** From the repo root:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 make build && make test && make lint
 ```
 
-Expected: all modules build; all tests PASS (pristine output); `make lint` clean (golangci ×4 modules + `serf-namingcheck` + `serf-internalcheck` + `serf-docscheck`). A clean grep is necessary but NOT sufficient — the build/test catch renamed-symbol consumers a token list misses (§13). Fix any fallout and re-run until green.
+Expected: all modules build; all tests PASS (pristine output); `make lint` clean (golangci ×4 modules + `evener-namingcheck` + `evener-internalcheck` + `evener-docscheck`). A clean grep is necessary but NOT sufficient — the build/test catch renamed-symbol consumers a token list misses (§13). Fix any fallout and re-run until green.
 
 - [ ] **Step 7: Live e2e smoke** (per `reference_serf_live_run`; build a standalone binary, do NOT touch a running serve). Confirm the cutover didn't break the live surface — both the agent tools and the web client:
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/evener
-go build -o /tmp/serf-hub ./cmd/evener-hub
+cd /Users/jesse/prime-radiant/toil-suite/evener
+go build -o /tmp/evener ./cmd/evener
+go build -o /tmp/evener-hub ./cmd/evener-hub
 . "$PWD/.env"
 # In a scratch dir: run a delegate (background), confirm the terminal <job-notification> wakes the
-# parent and job_read_output/job_list/job_stop work; open serf-hub and confirm a delegate renders a
+# parent and job_read_output/job_list/job_stop work; open evener-hub and confirm a delegate renders a
 # job reference card (the repointed renderer.js JOB_STARTED/JOB_FINISHED path), not a broken/blank tile.
 ```
 
-Use the `e2e-scenario-testing` skill for a falsifiable scenario card: a delegate fan-out with a notification wake, and a serf-hub view rendering the job lifecycle. Expected: delegate returns a `job_id`; the `<job-notification>` (not `<subagent-notification>`) wakes the parent; the web client renders the job card.
+Use the `e2e-scenario-testing` skill for a falsifiable scenario card: a delegate fan-out with a notification wake, and a evener-hub view rendering the job lifecycle. Expected: delegate returns a `job_id`; the `<job-notification>` (not `<subagent-notification>`) wakes the parent; the web client renders the job card.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add -A   # after `git status` review
 git commit -m "docs(cutover): supersede subagent-management/00; reconcile live docs/prompts to job tools"
 ```
@@ -529,10 +529,10 @@ git commit -m "docs(cutover): supersede subagent-management/00; reconcile live d
 
 ## Phase 6 self-review
 
-- **§13 inventory coverage:** every bullet maps to a task — the 7 `Def*` + registration + `subagent_output` + `subagent_manager` (Task 3); `capabilityAgentControl`→`capabilityJobControl` (Task 2); `rootOnlyAgentManagementTools`→`{delegate, job_watch}` (Task 1); the three per-tool-name tables `toolname`/`registry`/`contextmgr` (Task 4); serf-tui renderers (folded into the UI work — see the gap note below); serf-hub JS assets (Task 8); the events→appprojector→appwire→server→snapshot chain (Tasks 5–9); the `subagentLifecycleTools`/transcript-render cluster (Task 10); `<subagent-notification>`→`<job-notification>` (Task 11); docs (Task 13).
-- **Gap flagged for the implementer — serf-tui renderers (do in the Task 8 UI batch):** the spec §13 names `cmd/evener-tui/internal/msgrender/tool_renderers.go`, `tool_bodies.go`, and `cmd/evener-tui/internal/toolsummary/tool_summary.go` (verified: `spawn_agent`/`resume_agent`/`close_agent`/`wait` renderer + summary cases). These are **not** §13 gate tokens individually but DO contain `spawn_agent`/`resume_agent`/`close_agent` (which ARE gate tokens), so Task 13's gate will flag them. **The implementer must repoint serf-tui as part of Task 8 (the UI batch)** — same as the JS: `spawn_agent`→`delegate` reference card, control verbs→`job_send_message`/`job_stop`, reading `job_id`/`transcript_ref`. Build with `cd cmd/evener-tui && go build ./...` and confirm `rg -n 'spawn_agent|resume_agent|close_agent' cmd/evener-tui/` is empty. I kept this as a self-review callout (not a separate task) because it is mechanically identical to Task 8 and shares its build-green window.
+- **§13 inventory coverage:** every bullet maps to a task — the 7 `Def*` + registration + `subagent_output` + `subagent_manager` (Task 3); `capabilityAgentControl`→`capabilityJobControl` (Task 2); `rootOnlyAgentManagementTools`→`{delegate, job_watch}` (Task 1); the three per-tool-name tables `toolname`/`registry`/`contextmgr` (Task 4); evener-tui renderers (folded into the UI work — see the gap note below); evener-hub JS assets (Task 8); the events→appprojector→appwire→server→snapshot chain (Tasks 5–9); the `subagentLifecycleTools`/transcript-render cluster (Task 10); `<subagent-notification>`→`<job-notification>` (Task 11); docs (Task 13).
+- **Gap flagged for the implementer — evener-tui renderers (do in the Task 8 UI batch):** the spec §13 names `cmd/evener-tui/internal/msgrender/tool_renderers.go`, `tool_bodies.go`, and `cmd/evener-tui/internal/toolsummary/tool_summary.go` (verified: `spawn_agent`/`resume_agent`/`close_agent`/`wait` renderer + summary cases). These are **not** §13 gate tokens individually but DO contain `spawn_agent`/`resume_agent`/`close_agent` (which ARE gate tokens), so Task 13's gate will flag them. **The implementer must repoint evener-tui as part of Task 8 (the UI batch)** — same as the JS: `spawn_agent`→`delegate` reference card, control verbs→`job_send_message`/`job_stop`, reading `job_id`/`transcript_ref`. Build with `cd cmd/evener-tui && go build ./...` and confirm `rg -n 'spawn_agent|resume_agent|close_agent' cmd/evener-tui/` is empty. I kept this as a self-review callout (not a separate task) because it is mechanically identical to Task 8 and shares its build-green window.
 - **Two surfaces the §13 inventory missed (now handled in Task 13 Step 4b, verified present):** `test/scenarios/*.md` e2e scenario cards exercising the removed tools (delete/rewrite against the job tools, like the unit tests), and `tools/dashboard/static/js/*.js` trajectory viewer rendering `spawn_agent` (repoint to `delegate`). Both carry gate tokens, so the Step 5 gate would have stayed red without explicit handling. The inventory's "grepped the whole tree" claim did not cover `test/` and `tools/`; the gate (which greps everything) is the backstop, and Step 4b turns those hits into work.
 - **Prerequisite honored:** the plan STOPs at the top if Phases 2–5 aren't merged (the replacement tools/runtime must exist), and every "repoint to X" names a symbol Phase 2/3 created (verified to exist in those plans: `registerJobTools`, `createDelegate`, `formatJobNotificationBlock`, `capabilityJobControl`, `DefDelegate`/`DefJobSendMessage`/`DefJobReadOutput`/`DefJobList`/`DefJobStop`).
 - **§16 honored:** the kept internal runtime names (`spawnAgent`/`sendInput`/`cancelAgent`/`getSub`/`subagent`/`SubagentStatus`/`subagentResult`/`subagentManager`-if-retained/`IsSubagent`) are explicitly preserved and are NOT in the gate token list; only the model-/UI-facing surfaces (events, wire, snapshots, prompts, docs, the notification tag, the per-tool-name tables) are reconciled now.
 - **Build stays green:** ordering is deliberate — retarget the set (1) and capability (2) before deleting the defs (3); rename events (5) before the wire/server/snapshot consumers (6–9); keep `go build ./...` passing every commit, with `go test` deferred to the test-file cleanup (12) and the full `make test`/`make lint` to the final gate (13). The compiler is the completeness net for renamed-symbol consumers; the §13 `rg` gate is the net for string-token residue in docs/prompts/JS that the compiler can't see.
-- **No invented details:** every file:line in the spec §13 inventory was grep-verified against the current tree before writing the task; where the spec's line numbers had drifted (registry `:548`, context_manager `:583`) or a reference was imprecise (`SubagentStatus`/`SubagentInfo` live in `agent/status.go` + `agent/subagents.go`, not `agent/schema/snapshot.go` which has only `IsSubagent`), the task names the **symbol** and instructs grep-to-locate. Discrepancies found and resolved are noted inline (snapshot `IsSubagent`, the kept-vs-deleted runtime split, the `s.subagents` live-reader decision in Task 3, the transcript/outline cluster being larger than the bullet implied, the serf-tui gap above).
+- **No invented details:** every file:line in the spec §13 inventory was grep-verified against the current tree before writing the task; where the spec's line numbers had drifted (registry `:548`, context_manager `:583`) or a reference was imprecise (`SubagentStatus`/`SubagentInfo` live in `agent/status.go` + `agent/subagents.go`, not `agent/schema/snapshot.go` which has only `IsSubagent`), the task names the **symbol** and instructs grep-to-locate. Discrepancies found and resolved are noted inline (snapshot `IsSubagent`, the kept-vs-deleted runtime split, the `s.subagents` live-reader decision in Task 3, the transcript/outline cluster being larger than the bullet implied, the evener-tui gap above).

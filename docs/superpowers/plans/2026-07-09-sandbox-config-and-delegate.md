@@ -13,8 +13,8 @@ every behavior gets a failing test first, then the code, red→green.
   unconfined). So there is **no change to the automatic path**. The only new
   capability is an explicit per-delegate `sandbox` param (Workstream B).
 - **System default is Web/TUI-only.** It lives in launch config (global
-  `~/.serf/launch.toml`), which the hub renders into the spawned `serf serve`.
-  The bare `serf`/`serf serve` CLI keeps its own `--sandbox` flag (default off);
+  `~/.evener/launch.toml`), which the hub renders into the spawned `evener serve`.
+  The bare `evener`/`evener serve` CLI keeps its own `--sandbox` flag (default off);
   it does NOT read launch config. No new env var.
 - **No-escalation floor (security invariant).** A delegate may never request a
   *looser* box than its parent (see the lattice below). Enforced regardless of
@@ -188,7 +188,7 @@ create-path branch + the floor.
 ## Gates (both workstreams, before declaring done)
 
 - `go build ./...`, `go vet ./...`, `go test ./...` (incl. `-race` on the delegate
-  + escalation-adjacent packages), `serf-namingcheck`, golangci-lint on changed
+  + escalation-adjacent packages), `evener-namingcheck`, golangci-lint on changed
   files. Test output must be PRISTINE.
 - Commit incrementally (each red→green step). Update this plan's status as you go.
 - Do NOT push, do NOT merge to `wip/sandboxing` or `main`.

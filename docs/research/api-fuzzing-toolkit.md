@@ -3,13 +3,13 @@
 **Status:** research / proposal. **Date:** 2026-06-28. **Author:** Bot (for Jesse).
 
 This report assesses whether and how to build a toolkit that systematically fuzzes
-serf's full API surface (unit + integration granularity) and automatically promotes any
+evener's full API surface (unit + integration granularity) and automatically promotes any
 discovered failure into a permanent regression test. It is grounded in a real read of
-serf's code; load-bearing files and types are cited inline.
+evener's code; load-bearing files and types are cited inline.
 
-Scope note (added per Jesse): the end goal is **not** a serf-only tool. The intended
+Scope note (added per Jesse): the end goal is **not** a evener-only tool. The intended
 endpoint is a reusable **superpowers skill** — a portable methodology doc plus thin
-tooling that any project can adopt — with serf as the first proving ground. The verdict
+tooling that any project can adopt — with evener as the first proving ground. The verdict
 and architecture below are framed for that, separating a portable core from per-project
 glue.
 
@@ -45,23 +45,23 @@ enough across ecosystems that a bespoke, opinionated **superpowers skill** is th
 artifact — it should *wrap* these disciplines, not reinvent them.
 
 **Q3 — Build a toolkit, author a skill, or both? Both, phased, with the skill as the
-endpoint.** Concretely: (1) harvest the near-free Go-native wins on serf first
+endpoint.** Concretely: (1) harvest the near-free Go-native wins on evener first
 (~150–300 LoC gets four real fuzz targets whose crashers auto-promote); (2) build the
-genuinely new pieces serf needs — a **schema-driven generator** off serf's existing
+genuinely new pieces evener needs — a **schema-driven generator** off evener's existing
 machine-readable schemas and a **stateful appwire sequence fuzzer**; (3) build the
 **auto-promotion harness** (the part Go gives free only for single-input targets);
 (4) extract the portable methodology + thin scripts into a **superpowers skill** with a
-small per-project adapter interface. Total serf-side build to a working, self-promoting
+small per-project adapter interface. Total evener-side build to a working, self-promoting
 loop across all four surfaces: **~2,000–3,400 LoC**; the skill-extraction phase adds
 **~600–1,000 LoC/prose**. Phase breakdown and seams in §7–§8.
 
-The single most important grounded finding: **serf already exposes machine-readable
+The single most important grounded finding: **evener already exposes machine-readable
 schemas for two of its four surfaces**, which makes schema-driven fuzzing unusually cheap
 here — see §3.
 
 ---
 
-## 2. Serf's four API surfaces (what I actually read)
+## 2. Evener's four API surfaces (what I actually read)
 
 | Surface | Entry seam (the choke point a fuzzer drives) | Untrusted input | Schema available? |
 |---|---|---|---|
@@ -80,7 +80,7 @@ Test infrastructure I'd integrate with (surveyed):
 
 ---
 
-## 3. The grounded headline: serf is unusually fuzz-ready on two surfaces
+## 3. The grounded headline: evener is unusually fuzz-ready on two surfaces
 
 Two facts change the cost calculus:
 
@@ -90,7 +90,7 @@ Two facts change the cost calculus:
    There are **no per-tool input structs** — one harness covers all 25 built-in tools by
    varying `Name`. And `definitions.go` is a literal corpus of JSON Schemas we can read at
    runtime to *generate* both valid-but-adversarial and schema-violating inputs. This is
-   exactly what RESTler/schemathesis want from an OpenAPI spec — serf hands it to us for
+   exactly what RESTler/schemathesis want from an OpenAPI spec — evener hands it to us for
    free.
 
 2. **The appwire protocol has a single typed dispatch seam plus a declarative catalog.**
@@ -163,7 +163,7 @@ Honest limits per technique:
 What we get **free** from Go: for any `testing.F` target (#1–#4, #7, #8-unit), a failing
 input is written to `testdata/fuzz/FuzzName/<hash>` and **re-runs as a deterministic unit
 test on every `go test`** with no extra code. Diagnose → fix → the same file is the
-regression. For maybe 60% of serf's fuzzable surface, "auto-promotion" is *already solved*
+regression. For maybe 60% of evener's fuzzable surface, "auto-promotion" is *already solved*
 by the toolchain. The toolkit should **lean on this** and not reinvent it.
 
 What needs building is the promoter for the **stateful / non-`testing.F`** failures
@@ -201,7 +201,7 @@ seam), and **`Emit`** (test template + path + naming + run command). Everything 
 
 ## 6. Schema-driven generation & the OpenAPI question
 
-Because serf already has machine-readable schemas (§3), two routes:
+Because evener already has machine-readable schemas (§3), two routes:
 
 - **Native route (recommended):** write a `schema→rapid.Generator` once (~150–250 LoC)
   that walks a JSON Schema (`type`, `properties`, `required`, `enum`, `additionalProperties`)
@@ -210,9 +210,9 @@ Because serf already has machine-readable schemas (§3), two routes:
   in-process, in Go, drives the real seams (`ExecuteCall`/`Dispatch`), and integrates with
   the §5 promoter. No external service, no spec-drift.
 - **External route (optional, HTTP only):** generate an OpenAPI doc from the appwire
-  catalog + hub routes and point **schemathesis** or **RESTler** at a running `serf-hub`.
+  catalog + hub routes and point **schemathesis** or **RESTler** at a running `evener-hub`.
   RESTler's producer-consumer dependency inference (create a thread → use its id) maps
-  naturally onto serf's `threadId`/`turnId` flow and would find resource-ordering bugs the
+  naturally onto evener's `threadId`/`turnId` flow and would find resource-ordering bugs the
   in-process fuzzer might miss. Cost: an OpenAPI generator (~200 LoC) + harness to boot a
   hub + ingest crashes back through the §5 promoter. Worth it **later**, not first — it
   duplicates coverage the native route already gets and adds a heavy dependency.
@@ -261,12 +261,12 @@ The eventual skill is **methodology-first** with thin tooling. Split:
 - The **oracle taxonomy**: panic / invariant / error-shape / wedge / 5xx / escape.
 
 **Per-project adapter (the glue — four hooks, mirrors §5's seam):**
-- **Schema source**: where structure comes from (serf: tool `Definition.Parameters` +
+- **Schema source**: where structure comes from (evener: tool `Definition.Parameters` +
   reflected `appwire.Methods`; another project: OpenAPI, TS types, protobuf).
 - **Seam / driver**: how to invoke one operation (`ExecuteCall`/`Dispatch`/`Handler`).
 - **Oracle set**: what counts as a failure for this surface.
 - **Emitter**: test template + naming + file location + the run/build command + corpus
-  location (serf: a `*_test.go` next to the surface; `make test` per-module; `testdata/fuzz/`).
+  location (evener: a `*_test.go` next to the surface; `make test` per-module; `testdata/fuzz/`).
 
 **Per-language fuzzer behind the common methodology** (inherently per-ecosystem):
 - Go: `testing.F` (coverage-guided, free auto-promotion) + `rapid` (stateful/structured).
@@ -297,7 +297,7 @@ and the test-emission syntax — all behind the four-hook adapter.
 
 Estimates assume a frontier LLM doing the work; LoC, not wall-clock (per Jesse).
 
-- **Phase 0 — Free Go-native wins (serf).** Targets #1, #2, #3, #4. Add a `make fuzz`
+- **Phase 0 — Free Go-native wins (evener).** Targets #1, #2, #3, #4. Add a `make fuzz`
   target and seed corpora; CI runs the seed corpus under `-short`. Delivers real crasher
   auto-promotion immediately. **~250–450 LoC.** *Highest value/LoC ratio — do this first.*
 - **Phase 1 — Schema→generator + adversarial tool fuzz (#5).** The `schema→rapid.Generator`
@@ -316,7 +316,7 @@ Estimates assume a frontier LLM doing the work; LoC, not wall-clock (per Jesse).
   adapter; write the methodology doc; add a JS emitter + a fast-check renderer example
   (#9). **~600–1,000 LoC/prose** (skill doc ~300–500 lines + adapter/templates ~300–500).
 
-Serf-side to a self-promoting loop across Go surfaces (Phases 0–3): **~1,550–2,750 LoC.**
+Evener-side to a self-promoting loop across Go surfaces (Phases 0–3): **~1,550–2,750 LoC.**
 With HTTP/provider (Phase 4): **~1,950–3,450 LoC.** Skill extraction (Phase 5): **+600–1,000.**
 
 Recommended order: **Phase 0 → 3 → 1 → 2 → 4 → 5.** (Do the promoter early, right after the
@@ -327,7 +327,7 @@ output.)
 
 ## 10. Risks & open questions
 
-- **Flake-guard is load-bearing and serf has timing-sensitive seams.** The two-wave test
+- **Flake-guard is load-bearing and evener has timing-sensitive seams.** The two-wave test
   runner exists *because* TUI/tmux tests are timing-sensitive; the SSE timeout path and
   job/watch machinery are concurrency-heavy. The promoter **must** quarantine
   non-deterministic failures or it will pollute the gate. This is the top risk; budget the

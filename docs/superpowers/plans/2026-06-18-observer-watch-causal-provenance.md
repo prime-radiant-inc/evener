@@ -6,7 +6,7 @@
 
 **Architecture:** Add a tiny shared `agent/provenance` package, attach provenance to the `events.SessionEvent` envelope, and carry that provenance explicitly through session active-turn state, steering queues, job records, watch-send state, delegate resumes, and job notifications. Replace the existing global `FromWatch` watch guard with same-watch `(watch_id, watch_generation)` suppression before any delivery accounting.
 
-**Tech Stack:** Go, Serf session event stream, Serf jobstore JSONL, existing Go unit tests, existing markdown scenario tests, live Kimi e2e scenario verification.
+**Tech Stack:** Go, Evener session event stream, Evener jobstore JSONL, existing Go unit tests, existing markdown scenario tests, live Kimi e2e scenario verification.
 
 ---
 

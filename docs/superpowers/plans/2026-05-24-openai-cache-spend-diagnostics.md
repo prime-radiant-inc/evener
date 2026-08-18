@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Serf's OpenAI token spend diagnosable across all runtime paths and improve default prompt-cache behavior for long agent sessions.
+**Goal:** Make Evener's OpenAI token spend diagnosable across all runtime paths and improve default prompt-cache behavior for long agent sessions.
 
-**Architecture:** Centralize API logging setup so `serf run`, `serf serve`, and embedded TUI use the same middleware. Add conservative OpenAI cache defaults at the session request boundary, where session identity and profile are known. Extend analysis tooling to read both `api.jsonl` and transcript `api_call` records, then add focused context-churn diagnostics for large uncached spikes.
+**Architecture:** Centralize API logging setup so `evener run`, `evener serve`, and embedded TUI use the same middleware. Add conservative OpenAI cache defaults at the session request boundary, where session identity and profile are known. Extend analysis tooling to read both `api.jsonl` and transcript `api_call` records, then add focused context-churn diagnostics for large uncached spikes.
 
-**Tech Stack:** Go, Serf `llm.Client` middleware, Serf transcript JSONL, Python analysis tooling.
+**Tech Stack:** Go, Evener `llm.Client` middleware, Evener transcript JSONL, Python analysis tooling.
 
 ---
 
@@ -143,7 +143,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// AttachAPILogger installs the standard Serf API logger on client.
+// AttachAPILogger installs the standard Evener API logger on client.
 // The returned function must be called by the caller during shutdown.
 func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
 	apiLogPath := filepath.Join(stateDir, "api.jsonl")
@@ -376,7 +376,7 @@ In `agent/session.go`, after the `llm.Request{...}` literal is created and befor
 ```go
 		if req.Provider == "openai" {
 			if req.PromptCacheKey == "" {
-				req.PromptCacheKey = "serf-session-" + s.id
+				req.PromptCacheKey = "evener-session-" + s.id
 			}
 			if req.PromptCacheRetention == "" && openAIModelSupports24hPromptCache(req.Model) {
 				req.PromptCacheRetention = "24h"
@@ -664,16 +664,16 @@ Create `docs/openai-spend-diagnostics.md`:
 ```markdown
 # OpenAI Spend Diagnostics
 
-Serf records OpenAI usage in two places:
+Evener records OpenAI usage in two places:
 
-- `<state-dir>/api.jsonl`: process-level API log, now written by `serf run`, `serf serve`, and embedded TUI.
+- `<state-dir>/api.jsonl`: process-level API log, now written by `evener run`, `evener serve`, and embedded TUI.
 - `<state-dir>/sessions/*.transcript.jsonl`: session transcript with interleaved `api_call` records.
 
 Use:
 
 ```bash
-tools/api-log-analyze.py ~/.local/state/serf --summary
-tools/api-log-analyze.py ~/.local/state/serf --cache-spikes --spike-threshold 50000
+tools/api-log-analyze.py ~/.local/state/evener --summary
+tools/api-log-analyze.py ~/.local/state/evener --cache-spikes --spike-threshold 50000
 ```
 
 Interpretation:
@@ -686,8 +686,8 @@ Interpretation:
 
 OpenAI prompt-cache defaults:
 
-- Serf sets a stable per-session `prompt_cache_key`.
-- Serf sets `prompt_cache_retention=24h` for OpenAI models on the conservative allowlist.
+- Evener sets a stable per-session `prompt_cache_key`.
+- Evener sets `prompt_cache_retention=24h` for OpenAI models on the conservative allowlist.
 - Explicit request/provider options override these defaults.
 ```
 
@@ -723,8 +723,8 @@ pytest tools/test_api_log_analyze.py -q
 - [ ] Run the analyzer against current local data:
 
 ```bash
-tools/api-log-analyze.py ~/.local/state/serf --summary
-tools/api-log-analyze.py ~/.local/state/serf --cache-spikes --spike-threshold 50000
+tools/api-log-analyze.py ~/.local/state/evener --summary
+tools/api-log-analyze.py ~/.local/state/evener --cache-spikes --spike-threshold 50000
 ```
 
 - [ ] Confirm `git status --short` only shows intended files before final commit or PR.

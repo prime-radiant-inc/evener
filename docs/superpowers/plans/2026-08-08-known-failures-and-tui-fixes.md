@@ -1,7 +1,7 @@
 # Known-failures-and-TUI fix plan
 
 Branch: `wip/known-failures-and-tui` (created off `main` at `bd37b4622`).
-Repo: `/Users/jesse/git/prime-radiant-inc/serf`.
+Repo: `/Users/jesse/git/prime-radiant-inc/evener`.
 
 Six independently known-failing tests/gaps on `main`, each with its own root
 cause. Every task must reproduce the failure first (paste the exact command
@@ -28,7 +28,7 @@ prove green repeatedly with a narrow `-run` scope.
   do not run the full suite or other packages' tests. The controller runs
   full-suite verification after merging every task.
 - **Do not touch:** `docs/superpowers/specs/**`, `.kata.toml`,
-  `serf-transcript-v2-upgrade`. These are pre-existing, unrelated, already
+  `evener-transcript-v2-upgrade`. These are pre-existing, unrelated, already
   either modified or untracked in the working tree — leave them exactly as
   found.
 - **Git hygiene:** never `git add -A`. Stage only the files the task

@@ -1,4 +1,4 @@
-# Image attachments for serf composer (TUI + web)
+# Image attachments for evener composer (TUI + web)
 
 **Status**: draft — pending kata filing + SDD implementation.
 
@@ -10,7 +10,7 @@ the web composer. Three primary entry surfaces:
 3. **File picker / typed path** (both: a button on web; pasted-path
    detection in TUI).
 
-The data model + wire format already exist in serf
+The data model + wire format already exist in evener
 (`llm.ImageData`, `appwire.InputItem`, `agent` tool-result image
 plumbing). This spec covers the composer-side surfaces that today
 have no image-attachment UX.
@@ -115,7 +115,7 @@ file is useful because:
   doesn't block the UI.
 
 We adopt this. Temp files go under `os.TempDir()` with prefix
-`serf-clipboard-` and suffix `.png`. They're cleaned up:
+`evener-clipboard-` and suffix `.png`. They're cleaned up:
 - on successful submit (after the API call accepts the bytes)
 - on session shutdown
 - on TUI quit
@@ -299,7 +299,7 @@ CSS:
   error.
 - **Multi-image batch operations** beyond "attach N, send" — no
   reordering UI, no individual edit.
-- **Android-style "share to serf"** — irrelevant for the desktop
+- **Android-style "share to evener"** — irrelevant for the desktop
   TUI/web product.
 
 ## Test plan

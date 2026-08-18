@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Never touch port 9180, `~/.serf/`, or `~/.local/state/serf/`.
+- Never touch port 9180, `~/.evener/`, or `~/.local/state/evener/`.
 - Preserve Jesse's uncommitted AskDock CSS/layoutguard files and `notes.txt`; never stage or edit them.
 - Do not use `git stash`, `npm ci`, `git checkout <file>`, or directory-wide `git add`.
 - Never widen a timeout or use a fixed sleep in place of an awaitable event.
@@ -28,7 +28,7 @@
 - `docs/testing.md`: owns the durable post-merge gate command contract.
 - `docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md`: records the approved design and measured outcome.
 - `.superpowers/kata-fleet-ledger.md`: records controller evidence and the new handoff state.
-- `/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/gates.sh`: session-local controller helper updated only after equivalence and timing pass.
+- `/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-evener--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/gates.sh`: session-local controller helper updated only after equivalence and timing pass.
 
 ---
 
@@ -421,7 +421,7 @@ git commit -m "test: schedule selftests after the root wave" \
 - Modify after successful measurement: `docs/testing.md`
 - Modify after successful measurement: `docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md`
 - Modify after successful measurement: `.superpowers/kata-fleet-ledger.md`
-- Modify after successful measurement: `/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/gates.sh`
+- Modify after successful measurement: `/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-evener--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/gates.sh`
 
 **Interfaces:**
 - Consumes: `ROOT_FULL=1 make test`, legacy four-gate stack, idle-box process check.

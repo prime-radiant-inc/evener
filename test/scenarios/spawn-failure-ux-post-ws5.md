@@ -20,13 +20,13 @@ longer on it".
 ## Pre-state
 
 - Fresh binaries (`make build-hub && make build`).
-- Isolated fake `$HOME` per attempt (real `~/.serf` untouched), and a
+- Isolated fake `$HOME` per attempt (real `~/.evener` untouched), and a
   kernel-assigned port — the hub binds `127.0.0.1:0` and logs the port
   it actually got, so nothing here collides with a concurrent run:
-  `env -i HOME="$FAKE_HOME" PATH="$PATH" ./serf-hub -addr 127.0.0.1:0
-  -serf <serf-binary-path> 2>"$FAKE_HOME/hub.log"`. Read `$PORT` back
+  `env -i HOME="$FAKE_HOME" PATH="$PATH" ./evener-hub -addr 127.0.0.1:0
+  -evener <evener-binary-path> 2>"$FAKE_HOME/hub.log"`. Read `$PORT` back
   out of that log per the Setup checklist.
-- `TOKEN=$(cat "$FAKE_HOME/.serf/auth-token")` (auto-generated on first
+- `TOKEN=$(cat "$FAKE_HOME/.evener/auth-token")` (auto-generated on first
   launch, no pre-existing file needed).
 
 ## Steps + Observed (all via real `curl -w "HTTP_STATUS:%{http_code}"` against `/api/spawn`)
@@ -35,7 +35,7 @@ longer on it".
    "totallyfakeprovider/nonexistent-model-xyz"`:
    ```
    HTTP 503
-   {"error":"model provider is not reported by the Serf launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"model provider is not reported by the Evener launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Rejected in `validateSerfLaunchModel` (`cmd/evener-hub/app_models.go#validateSerfLaunchModel`,
    message at `:122`) before any subprocess is spawned. Legible, named,
@@ -46,7 +46,7 @@ longer on it".
    harness, this specific model is not):
    ```
    HTTP 503
-   {"error":"model is not configured for Serf launch: ollama/does-not-exist-blah-9999","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"model is not configured for Evener launch: ollama/does-not-exist-blah-9999","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Same gate, message at `cmd/evener-hub/app_models.go:124`. Legible.
 
@@ -64,15 +64,15 @@ longer on it".
    (`"cwd: ..."`), not dumped as a stack trace.
 
 4. **(c) Harness binary the hub can't execute** — a second hub instance
-   launched with `-serf /nonexistent/path/to/serf-binary-xyz`, spawn
+   launched with `-evener /nonexistent/path/to/evener-binary-xyz`, spawn
    attempted against it:
    ```
    HTTP 503
-   {"error":"serf launch-check failed: fork/exec /nonexistent/path/to/serf-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"evener launch-check failed: fork/exec /nonexistent/path/to/evener-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
    (`cmd/evener-hub/spawn.go:741-774`, message at `:762`), which execs
-   `<serf-binary> launch-check --protocol <v> --json` before ever
+   `<evener-binary> launch-check --protocol <v> --json` before ever
    attempting the real daemon spawn. The Go `exec` error (`fork/exec
    ...: no such file or directory`) surfaces verbatim inside the
    structured wire error — legible and precise about the actual cause.
@@ -105,7 +105,7 @@ response). Neither was observed.
 ## Cleanup
 
 - Both test hub processes killed by the PIDs you captured (never a
-  `pkill -f serf-hub` pattern, which would take out any concurrent
+  `pkill -f evener-hub` pattern, which would take out any concurrent
   agent's test hub too); both fake `$HOME` tmpdirs removed (`rm -r`).
 - No sessions/daemons were actually spawned in this card — every
   attempt was rejected before `SpawnDaemon` ran, so there was nothing
@@ -142,7 +142,7 @@ response). Neither was observed.
   are tracing *which* validation caught a given failure, don't assume
   the model check is authoritative when the binary itself is broken.
 - Test (c) requires a **second** hub instance (its own kernel-assigned
-  port, its own fake `$HOME`) since `-serf` is fixed at hub startup,
+  port, its own fake `$HOME`) since `-evener` is fixed at hub startup,
   not overridable per spawn request.
 - Two failure classes never reach any of the three gates above, so
   don't confuse them with a regression here: an oversized or

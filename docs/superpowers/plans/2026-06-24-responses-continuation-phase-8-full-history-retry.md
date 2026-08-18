@@ -285,7 +285,7 @@ func phase8DeltaRequest() llm.Request {
 - [x] **Step 4: Run RED tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry' -count=1 -v
 ```
 
 Expected: fail because continuation rejection goes directly to configured model fallback and never issues a same-model `full_history_fallback` retry.
@@ -358,7 +358,7 @@ The existing configured model fallback block stays after this new block and sees
 - [x] **Step 3: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
 ```
 
 - [x] **Step 4: Commit implementation**
@@ -390,7 +390,7 @@ Record:
 - [x] **Step 2: Run verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
 git diff --check
 ```
 

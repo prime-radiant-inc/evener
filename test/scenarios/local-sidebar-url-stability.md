@@ -2,7 +2,7 @@
 
 **What this covers**: `docs/superpowers/specs/2026-07-13-codex-sidebar-session-navigation-design.md`,
 row `local-sidebar-url-stability`, retargeted onto the ref form that commit
-`8cea30ca6` ("One ref form") settled on. A local Serf session opened from the
+`8cea30ca6` ("One ref form") settled on. A local Evener session opened from the
 rail must land on `/s/local:<session-id>` — the same qualified form a Codex
 row uses, with a different host id — and clicking the same row again must not
 open a second copy of the session beside the first.
@@ -22,11 +22,11 @@ is no `.sb-row` class and no `data-ref` attribute.
 
 ## Pre-state
 
-- Freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- Freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   (Setup checklist in `docs/agentic-testing.md`). The frontend must be built
   (`make build-web`) before the hub, or the SPA is a placeholder.
 - Browser authenticated to the test hub (`/auth?token=$TOKEN&next=/`).
-- At least one local Serf session visible in the rail. Spawning one via
+- At least one local Evener session visible in the rail. Spawning one via
   `POST /api/spawn` is enough; it does not need to be live.
 
 ## Steps
@@ -62,7 +62,7 @@ is no `.sb-row` class and no `data-ref` attribute.
   for the same session opens beside the first — the precise regression
   `8cea30ca6` closed, which is what "URL stability" is protecting.
 - **Step 4**: the bare-id URL renders "Page not found" with the hint "This
-  link doesn't match anything in serf." (`shell/NotFound.tsx:16-17`) and no
+  link doesn't match anything in evener." (`shell/NotFound.tsx:16-17`) and no
   session pane. Falsify: the bare id resolves to a session pane — back-compat
   has crept back in, and step 3's double-pane bug is reachable again.
   Note this is a **client-side** 404: `/s/` serves the SPA shell for any id

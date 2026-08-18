@@ -15,7 +15,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 - Fresh scenario state dir (own `$SERF_STATE_DIR` / `$HOME`), so the poll-loop
   detector and any nudge counters start clean and nothing pollutes a real
   instance.
-- A `serf serve` instance and a hub (or TUI) client built from the code under
+- A `evener serve` instance and a hub (or TUI) client built from the code under
   test — confirm the running binary embeds the edited `background-jobs.md`
   (grep the assembled system prompt for "Do not call `job_status` in a loop").
 - Parent model `gpt-5.5` (the model that reproduced the loop). Re-run on at least
@@ -34,9 +34,9 @@ orientation `job_status` call (ideally zero) and then goes idle.
 
 3. Capture the parent's tool calls from the moment `delegate` returns a
    `delegate_id` up to the point it stops producing tool calls (goes idle). Use
-   the on-disk transcript as ground truth — `serf-doctor transcript <id> --count
+   the on-disk transcript as ground truth — `evener-doctor transcript <id> --count
    job_status` and `--format outline` — not just the rendered UI.
-4. Wait for the delegate to finish, for Serf to inject the
+4. Wait for the delegate to finish, for Evener to inject the
    `<delegate-notification>`, and for the parent's follow-up turn.
 
 ## Expected
@@ -68,7 +68,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 ## Cleanup
 
 Stop the daemon, hub/TUI client, and any tmux session this card created. Remove
-the scratch state dir. Leave any pre-existing serf instance running and
+the scratch state dir. Leave any pre-existing evener instance running and
 untouched.
 
 ## Sharp edges

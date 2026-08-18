@@ -1,6 +1,6 @@
 # Naming conventions for serialized identifiers
 
-This document is the canonical reference for how serf names identifiers
+This document is the canonical reference for how evener names identifiers
 that cross a serialization boundary (JSON payloads, TOML config files,
 CLI flags). A linter (see [Enforcement](#enforcement)) enforces it.
 
@@ -24,7 +24,7 @@ SHOUTING_SNAKE per shell convention).
 The center of gravity is upstream LLM providers. Four of the five we
 talk to use snake_case on the wire: OpenAI (`finish_reason`),
 Anthropic (`has_more`, `last_id`), Ollama, and OpenRouter. Only Google
-Gemini uses camelCase (`displayName`). Serf transcripts and audit
+Gemini uses camelCase (`displayName`). Evener transcripts and audit
 logs sit right next to those provider responses; matching snake_case
 keeps the eye honest when reading raw JSON. The codebase already
 leans this way: 203 snake-case JSON tags vs 169 camelCase, the latter
@@ -45,12 +45,12 @@ outnumber codex. This rev backs off.
 | Codex AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (codex requirement) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
 | Hub REST/SSE JSON | `cmd/evener-hub/`, `internal/hubapi/`, `server/` | snake_case |
-| Rendezvous files (`~/.serf/run/*.json`) | `rendezvous/` | snake_case |
+| Rendezvous files (`~/.evener/run/*.json`) | `rendezvous/` | snake_case |
 | Session save files | `agent/session.go`, `agent/transcript.go` | snake_case |
-| Hub config (`~/.serf/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
-| Launch config (`~/.serf/launch.toml`, `.serf/launch.toml`) | `internal/launchconfig/` | snake_case |
-| Project meta (`~/.serf/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
-| `serf` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/evener-tui/`, `cmd/llmcall/`, `cmd/evenereval/` | kebab-case |
+| Hub config (`~/.evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
+| Launch config (`~/.evener/launch.toml`, `.evener/launch.toml`) | `internal/launchconfig/` | snake_case |
+| Project meta (`~/.evener/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
+| `evener` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/evener-tui/`, `cmd/llmcall/`, `cmd/evenereval/` | kebab-case |
 
 Go struct tags follow the rule directly: `json:"snake_case"` and
 `toml:"snake_case"`. Field names in Go source stay idiomatic Go
@@ -73,7 +73,7 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Max concurrent delegate turns | `--max-concurrent-delegates` | `max_concurrent_delegate_turns` |
 | Max retained terminal delegate records | `--max-retained-terminal` | `max_retained_terminal` |
 | AppWire replay buffer size | `--app-replay-size` | `app_replay_size` |
-| Suppress `.serf/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
+| Suppress `.evener/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
 
 Note the CLI singular form (`--plugin-dir`, repeatable) pairs with a
 TOML/JSON plural array (`plugin_dirs = [...]`). That is intentional:
@@ -143,7 +143,7 @@ the snake-default rule and applies the path carve-outs above
 (appwire-adjacent code — `internal/appwire/`, `internal/appsource/`,
 `internal/appserver/`, `server/appwire_*.go` — requires camelCase;
 `llm/providers/*/` is skipped entirely). A single field can opt out
-with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML)
+with a `// evener:naming-ignore` (Go) or `# evener:naming-ignore` (TOML)
 marker on the immediately preceding line; pair every opt-out with a
 comment explaining why.
 
@@ -187,7 +187,7 @@ appwire/providers carve-outs intentionally stay camelCase:
 
 - `mcpServers` in `agent/mcp_config.go` and `agent/plugin.go` —
   mirrors the Claude `.mcp.json` format. Marked
-  `// serf:naming-ignore` with a pointer back to the upstream format.
+  `// evener:naming-ignore` with a pointer back to the upstream format.
 
 Hub REST/SSE shapes and TUI-internal types that previously leaked
 camelCase have all migrated: REST request bodies use `turn_id`, the

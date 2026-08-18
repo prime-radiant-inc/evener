@@ -4,13 +4,13 @@
 
 **Goal:** Surface the launch-config and credentials RPCs in the TUI: `:settings` command opens a per-layer browser/editor, `:credentials` command opens a provider list with set/clear/OAuth actions, `Ctrl-L` in the composer opens a per-launch override modal applied to the next spawn. SSE notifications refresh open panels.
 
-**Architecture:** New `tea.Model`-shaped panels following the existing `pickerPanel` pattern in `cmd/evener-tui/picker_panel.go`. Each panel is constructed from RPC data, edited via key handlers, and persists back via `serf/launch/setLayer` / `serf/auth/apiKey/set`. The composer gains a small text-prompt sub-model for `Ctrl-L`.
+**Architecture:** New `tea.Model`-shaped panels following the existing `pickerPanel` pattern in `cmd/evener-tui/picker_panel.go`. Each panel is constructed from RPC data, edited via key handlers, and persists back via `evener/launch/setLayer` / `evener/auth/apiKey/set`. The composer gains a small text-prompt sub-model for `Ctrl-L`.
 
 **Tech Stack:** Bubble Tea (existing TUI framework), Lipgloss styles (existing). RPC via the existing `appwire.Client` already wired into the TUI.
 
 **Prerequisite:** Backend plan landed. Web UI plan is **not** a prerequisite — TUI ships independently against the same RPCs.
 
-**Spec:** `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
+**Spec:** `docs/superpowers/specs/2026-05-16-hub-evener-launch-config-design.md`
 
 ---
 
@@ -32,7 +32,7 @@
 - `cmd/evener-tui/hub_command_registry.go` — register `:credentials` and `:settings`
 - `cmd/evener-tui/composer_panel.go` — handle `Ctrl-L`, surface override state in submit
 - `cmd/evener-tui/hub_appshell_test.go` and `tmux_e2e_test.go` — extend existing TUI tests
-- `cmd/evener-tui/sse_client.go` — subscribe to `serf/auth/updated`, `serf/launch/updated` and forward as tea.Msg
+- `cmd/evener-tui/sse_client.go` — subscribe to `evener/auth/updated`, `evener/launch/updated` and forward as tea.Msg
 
 ---
 
@@ -1465,7 +1465,7 @@ Run one TUI + one web client. Set an API key via web; observe the TUI's `:creden
 
 ```bash
 git add cmd/evener-tui/sse_client.go cmd/evener-tui/app_shell.go
-git commit -m "tui: refresh panels on serf/auth/updated and serf/launch/updated"
+git commit -m "tui: refresh panels on evener/auth/updated and evener/launch/updated"
 ```
 
 ---
@@ -1485,8 +1485,8 @@ Use a running hub + TUI. Tick through:
 - [ ] `:` palette opens; `credentials` and `settings` commands are visible
 - [ ] `:credentials` shows providers; setting an API key persists
 - [ ] `:settings` shows three tabs; arrows navigate; Enter on `model` opens text input; Ctrl-S saves (actually it's auto-saved on text-input submit per the design); reloading the tab shows the new value
-- [ ] In a working dir with `.serf/launch.toml`, the In-Repo tab shows preview + "T to trust"; trusting the file flips state to `trusted` and the merged config includes the in-repo contributions
-- [ ] In the composer panel, `Ctrl-L` opens the override modal; editing `max_rounds` and Ctrl-S records the override; spawning a thread passes the override (verify by inspecting `ps -eo args | grep serf-serve` or via Hub logs)
+- [ ] In a working dir with `.evener/launch.toml`, the In-Repo tab shows preview + "T to trust"; trusting the file flips state to `trusted` and the merged config includes the in-repo contributions
+- [ ] In the composer panel, `Ctrl-L` opens the override modal; editing `max_rounds` and Ctrl-S records the override; spawning a thread passes the override (verify by inspecting `ps -eo args | grep evener-serve` or via Hub logs)
 - [ ] When credentials change via web UI, the TUI panel updates within ~1 second (SSE)
 
 - [ ] **Step 3: Commit any final fixes**

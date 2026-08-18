@@ -12,7 +12,7 @@ outside this task's scope.
 
 - **T1 — surfaces chokepoint** (`51f67ebc9`..`5e8a9ebf7`; report `a0fdfdaa3`): the controller-owned
   seams every stream fills — `SpawnParams`/`SpawnResult` (the `SpawnResult` **carries the QUALIFIED
-  `thread.serf.ref`**, a wire-truth ruling baked into the plan at `835c17e2b`: the legacy `local:`
+  `thread.evener.ref`**, a wire-truth ruling baked into the plan at `835c17e2b`: the legacy `local:`
   strip is dead-on-arrival because `ParseRef` rejects a bare id), `preflight.ts`, the AppShell spawn
   route + `openPalette` global wiring + `initNotifications()` boot call + the `RailHost` slot, and
   the Composer leading-`/` → palette entry.
@@ -75,7 +75,7 @@ transition.
 classes no CSS keyed off — a visual no-op until the next full reload. The rewrite consciously fixed
 it (`prefsStore.setTheme` sets `data-theme` immediately), flagged as a divergence rather than
 faithfully reproduced. Live proof: `/theme dark` flipped the whole UI on the spot and persisted
-`serf.prefs.theme=dark`.
+`evener.prefs.theme=dark`.
 
 **The all-OFF defaults pin held.** The single most safety-critical decision of the wave — never
 resurrect the legacy title/favicon-TRUE default — is verified three ways (unit mutation tests, the
@@ -134,7 +134,7 @@ code-level verification, not covered by any prior ruling.
 
 ## Divergence ledger (consciously-diverged, each with its ruling)
 
-- **Qualified `thread.serf.ref`** (§1.14, §2.5 `/copy-id`, search→open) — wire-truth; `ParseRef`
+- **Qualified `thread.evener.ref`** (§1.14, §2.5 `/copy-id`, search→open) — wire-truth; `ParseRef`
   rejects a bare id, so the legacy `local:`-strip is dead-on-arrival. [T1 plan `835c17e2b`;
   `startThread.ts`]
 - **Recent prompts DROPPED** (§1.1 `.RecentPrompts`) — Jesse 2026-07-22 "DROP THE ROW"; no UI, no
@@ -161,8 +161,8 @@ code-level verification, not covered by any prior ruling.
   (code-wins pre-adjudication); the safety-critical pin. [T4]
 - **Web-Locks-only leader election** (§3.7) — no BroadcastChannel; the spec's "Web Locks +
   BroadcastChannel" resolved to Web-Locks-only. [plan spec-ambiguity resolution; hazard #2 KEPT]
-- **Title base `"<pane> · serf hub"`** (§3.2) — focused-pane title, vs the legacy `"<section> ·
-  serf hub"`; one honest divergence. [T4]
+- **Title base `"<pane> · evener hub"`** (§3.2) — focused-pane title, vs the legacy `"<section> ·
+  evener hub"`; one honest divergence. [T4]
 - **Right→left drawer resolution** (§4.6) — the Sheet gained a `left` side and the rail drawer opens
   from it, matching the top-left ☰ chip. [fix round item 1 `ceb88f08c`]
 - **⌘B editable-target guard** — ⌘B/Ctrl+B skips when focus is in an editable, avoiding the
@@ -171,21 +171,21 @@ code-level verification, not covered by any prior ruling.
 
 ## Live proof
 
-Real hub (built `serf-hub`, `SERF_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
-`$HOME/.serf/hub.lock`, run dir, state root — the real host hub was never touched) on
-`127.0.0.1:19286`, spawning real `serf serve` daemons via the built `serf` binary, driving the
+Real hub (built `evener-hub`, `SERF_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
+`$HOME/.evener/hub.lock`, run dir, state root — the real host hub was never touched) on
+`127.0.0.1:19286`, spawning real `evener serve` daemons via the built `evener` binary, driving the
 cheapest real model **`openai/gpt-5-nano`** (materialized from the repo `.env`), through Chrome. No
 mocks. Evidence: `.superpowers/sdd/w6-close-t6-evidence/` (8 screenshots). Never-echo-credentials
 honored.
 
 | # | Journey | Verdict | Evidence |
 |---|---|---|---|
-| 1 | **Full spawn** | **Pass** | The 6-field FormRow bar; the interim Model combobox filtered to flat **qualified** completions (`openai/gpt-5-nano`, no badges/pricing — the W8-interim shape); the dir picker showed 150 ms completions + `../` + browse-into `proj`; **Branch auto-resolved to `main`** via the REST HEAD lookup (§1.7 live); the advanced schema panel rendered (Agent/Model/Reasoning/Fast-cheap/Context-strategy…); an image attachment inserted the `[image 1]` marker + a `magenta.png ✕` chip; Spawn → a real `serf serve` daemon started and ran a real turn; the **image rendered as a thumbnail** ("Image 1 of 1", proving base64 reached the turn) and the agent ran the shell tool. `01/02` |
-| 2 | **THE headline: queue / steer / edit / promote under load** | **Pass (strong)** | Against the **hub-spawned** session (which advertises the caps the wave-5 bare `serf serve` could not): typing under an active turn flipped the primary button **Send → Queue** and surfaced the Stop (■) + enabled Steer. Two messages queued; on turn completion they **drained FIFO** ("echo alpha", "echo beta"). On a fresh longer turn: **promote** ("Send now") pulled `QB` out of the queue and it ran ahead ("echo dos"); **edit** restored the entry's text to the composer and dequeued it (restore-then-cancel); **steer** injected mid-turn — the transcript shows the `STEER_INJECT` "You" turn, the agent ran "echo tres" → "Output: tres", and a "**Steering injected**" marker. The wave-5 close could not run this at all. `03/04` |
+| 1 | **Full spawn** | **Pass** | The 6-field FormRow bar; the interim Model combobox filtered to flat **qualified** completions (`openai/gpt-5-nano`, no badges/pricing — the W8-interim shape); the dir picker showed 150 ms completions + `../` + browse-into `proj`; **Branch auto-resolved to `main`** via the REST HEAD lookup (§1.7 live); the advanced schema panel rendered (Agent/Model/Reasoning/Fast-cheap/Context-strategy…); an image attachment inserted the `[image 1]` marker + a `magenta.png ✕` chip; Spawn → a real `evener serve` daemon started and ran a real turn; the **image rendered as a thumbnail** ("Image 1 of 1", proving base64 reached the turn) and the agent ran the shell tool. `01/02` |
+| 2 | **THE headline: queue / steer / edit / promote under load** | **Pass (strong)** | Against the **hub-spawned** session (which advertises the caps the wave-5 bare `evener serve` could not): typing under an active turn flipped the primary button **Send → Queue** and surfaced the Stop (■) + enabled Steer. Two messages queued; on turn completion they **drained FIFO** ("echo alpha", "echo beta"). On a fresh longer turn: **promote** ("Send now") pulled `QB` out of the queue and it ran ahead ("echo dos"); **edit** restored the entry's text to the composer and dequeued it (restore-then-cancel); **steer** injected mid-turn — the transcript shows the `STEER_INJECT` "You" turn, the agent ran "echo tres" → "Output: tres", and a "**Steering injected**" marker. The wave-5 close could not run this at all. `03/04` |
 | 3 | **Command palette** | **Pass (strong)** | ⌘K open; `/theme` filtered the registry; args mode showed the dark/light enum with the "Switch theme ✕" pill; **`/theme dark` flipped the UI immediately** (`data-theme=dark` + persisted — the hazard-#1 fix); search returned **PAST · 1** + **IN SESSION · 1** with `<mark>` highlight + turn label; **search→open resolved to `/s/local:033u6kjm…`** (qualified ref, concern #1 end-to-end); the idle-guard **blocked sentinel** fired ("interrupt failed: no active turn", `role="alert"`); Escape closed. `05` |
 | 4 | **Display** | **Pass (strong)** | Font size **XL** → `--font-scale 1.25`, `--font-size-body calc(14px * 1.25)`, all UI text visibly larger (the CSS cascade jsdom can't verify); at a ≤900 px width, density **Comfortable** → `--density-scale 1.25`, `--line-height-body calc(1.5 * 1.25)` (vertical rhythm, not type scale); theme flips persisted. `06` |
-| 5 | **Rail** | **Pass** | All three `sidebarMode` values (auto / pane / rail-Collapsed); **⌘B cycled rail→pane→auto** (verified via `serf.prefs.sidebarMode`); the ☰ chip opened the **left-anchored** overlay drawer (fix-round item 1). `07` |
-| 6 | **Notifications** | **Pass (core); OS/sound env-limited** | Settings showed **all four opt-ins OFF** (the all-OFF pin), enabling wrote the "1"/"0" encoding; a real **ask_user** rested the session in **needs_you** (ask dock + NEEDS YOU tier) and fired the **title count "(1)"** + **favicon dot `#e0af68`** (the pinned needs_you color); leader election — across two tabs **exactly one** held the `serf-hub-os-leader` Web Lock (the second tab a non-leader, not queued, per `ifAvailable:true`); answering cleared the count, then it re-applied when the session returned to needs_you (dynamic tracking). `08` |
+| 5 | **Rail** | **Pass** | All three `sidebarMode` values (auto / pane / rail-Collapsed); **⌘B cycled rail→pane→auto** (verified via `evener.prefs.sidebarMode`); the ☰ chip opened the **left-anchored** overlay drawer (fix-round item 1). `07` |
+| 6 | **Notifications** | **Pass (core); OS/sound env-limited** | Settings showed **all four opt-ins OFF** (the all-OFF pin), enabling wrote the "1"/"0" encoding; a real **ask_user** rested the session in **needs_you** (ask dock + NEEDS YOU tier) and fired the **title count "(1)"** + **favicon dot `#e0af68`** (the pinned needs_you color); leader election — across two tabs **exactly one** held the `evener-hub-os-leader` Web Lock (the second tab a non-leader, not queued, per `ifAvailable:true`); answering cleared the count, then it re-applied when the session returned to needs_you (dynamic tracking). `08` |
 
 **Not verified live (environment-limited — findings, not failures):** the actual OS-notification
 popup (headless Chrome did not grant `Notification` permission; the fire path is permission-guarded
@@ -249,9 +249,9 @@ go test ./cmd/evener-hub/...    → ok (all packages; root suite 29.9s, rest cac
 **Commit trail (this task):** micro-items `a6debb8f0` (`webui wave6 close: micro-items`), then this
 report + the parity-sweep record + evidence artifacts.
 
-**Live-proof housekeeping.** The isolated hub (port 19286) and its spawned `serf serve` daemon (port
-52537, session `033u6kjm…`) were both stopped and confirmed gone (no `serf`/`serf-hub` process, ports
+**Live-proof housekeeping.** The isolated hub (port 19286) and its spawned `evener serve` daemon (port
+52537, session `033u6kjm…`) were both stopped and confirmed gone (no `evener`/`evener-hub` process, ports
 free, isolated run dir empty). The real host hub was never touched (the fake `$HOME` gave it its own
 `hub.lock`). The browser tab was released to `about:blank`. No credential material was echoed into
-logs, screenshots, or this report. The built `serf`/`serf-hub` binaries and the fake `$HOME` remain
+logs, screenshots, or this report. The built `evener`/`evener-hub` binaries and the fake `$HOME` remain
 under the session scratchpad (outside the repo).

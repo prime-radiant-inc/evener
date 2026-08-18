@@ -13,12 +13,12 @@ OpenAI supports "API key **or** OAuth" — which the data model already claims
 Today the Credentials page renders a "Set API key" button for OpenAI, but
 saving it fails: `hubAuthController.ApiKeySet` rejects `openai` with
 *"openai api keys must be configured via env or hub.env; use
-serf/auth/login/start for OAuth"* (`cmd/evener-hub/app_auth.go`). The button
+evener/auth/login/start for OAuth"* (`cmd/evener-hub/app_auth.go`). The button
 lies. This closes that gap.
 
 ## 2. Non-Goals
 
-- **Standalone `serf` CLI reading the hub's `credentials.toml`.** The webui
+- **Standalone `evener` CLI reading the hub's `credentials.toml`.** The webui
   stores a key in the hub's credential store; that key applies to
   hub-spawned sessions. The standalone CLI keeps its existing env / OAuth
   resolution. Reconciling the two credential homes is out of scope.
@@ -27,14 +27,14 @@ lies. This closes that gap.
   §2).
 - **Key validation.** No `sk-` format check, no live probe — keys are stored
   verbatim, matching every other provider.
-- **A `serf openai login --api-key` CLI path.** The storage change is
+- **A `evener openai login --api-key` CLI path.** The storage change is
   provider-generic, so this is cheap to add later, but YAGNI for now.
 
 ## 3. Background: how OpenAI credentials work today
 
 Three potential credential sources for OpenAI:
 
-1. **OAuth record** — written by `serf openai login` (or the webui OAuth flow)
+1. **OAuth record** — written by `evener openai login` (or the webui OAuth flow)
    to `<stateDir>/auth/openai.json` as an `AuthRecord` with `Source: "oauth"`.
    Routes to the **ChatGPT/Codex backend** (`OPENAI_CHATGPT_BASE_URL`).
 2. **`OPENAI_API_KEY` env** — routes to the **standard OpenAI API** backend

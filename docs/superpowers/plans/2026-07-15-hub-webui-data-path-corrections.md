@@ -113,7 +113,7 @@ Also assert exact `turn_system`, `turn_N`, timestamps, usage, and the failed-tur
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./internal/apptranscript \
+GOCACHE=/tmp/evener-gocache go test ./internal/apptranscript \
   -run 'TestTurnCacheBoundedPagesMatchFullProjection|TestTurnCacheBoundedReadCompletesAppendedPartialLine' \
   -count=1 -v
 ```
@@ -184,8 +184,8 @@ Build transcripts of 100, 1,000, and 10,000 entries before `b.ResetTimer()`. Rep
 - [ ] **Step 6: Run package tests and benchmarks**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./internal/apptranscript -count=1
-GOCACHE=/tmp/serf-gocache go test ./internal/apptranscript \
+GOCACHE=/tmp/evener-gocache go test ./internal/apptranscript -count=1
+GOCACHE=/tmp/evener-gocache go test ./internal/apptranscript \
   -run '^$' -bench 'BenchmarkTurnCache' -benchmem -benchtime=100x
 ```
 
@@ -237,7 +237,7 @@ Add `TestServerAppWireNotificationSnapshotAdvancesFromLastSequence`: record a co
 - [ ] **Step 2: Run focused server tests and verify red**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./server \
+GOCACHE=/tmp/evener-gocache go test ./server \
   -run 'TestServerAppWireBoundedReadsDoNotProjectFullTranscript|TestServerAppWireNotificationSnapshotAdvancesFromLastSequence' \
   -count=1 -v
 ```
@@ -268,7 +268,7 @@ In `app_threadread_test.go`, seed a persisted 200-turn local transcript and asse
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run 'TestPastThread(Read|TurnsList).*Bounded' -count=1 -v
 ```
 
@@ -281,9 +281,9 @@ In `app_threadread.go`, route `ThreadReadParams.TurnLimit` through `LatestFromFi
 - [ ] **Step 7: Run focused and package tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./server ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./server ./cmd/evener-hub \
   -run 'AppWire|Thread(Read|Turns)|PastThread' -count=1
-GOCACHE=/tmp/serf-gocache go test ./server ./internal/apptranscript ./cmd/evener-hub -count=1
+GOCACHE=/tmp/evener-gocache go test ./server ./internal/apptranscript ./cmd/evener-hub -count=1
 ```
 
 Expected: all pass; no response-shape or cursor changes.
@@ -309,12 +309,12 @@ git commit -m "perf(hub): bound local transcript snapshots"
 - Modify: `cmd/evener-hub/jstest/run-all.sh`
 
 **Interfaces:**
-- Consume: existing `Thread.Serf.Capabilities`, `Thread.Serf.ActiveTurnID`, `hydrateDescriptions`, `readThread`, and buffered renderer event machinery.
+- Consume: existing `Thread.Evener.Capabilities`, `Thread.Evener.ActiveTurnID`, `hydrateDescriptions`, `readThread`, and buffered renderer event machinery.
 - Produce no wire changes.
 
 - [ ] **Step 1: Write a failing metadata-only workspace test**
 
-Add `TestLiveWorkspaceSnapshotSkipsTurns` in `web_test.go`. Use `scriptedAppSource` to capture `ThreadReadParams`, return capabilities plus `Serf.ActiveTurnID`, and call `liveWorkspaceSnapshot`. Assert:
+Add `TestLiveWorkspaceSnapshotSkipsTurns` in `web_test.go`. Use `scriptedAppSource` to capture `ThreadReadParams`, return capabilities plus `Evener.ActiveTurnID`, and call `liveWorkspaceSnapshot`. Assert:
 
 ```go
 if got.IncludeTurns { t.Fatal("workspace metadata requested transcript turns") }
@@ -324,7 +324,7 @@ if !caps.Send || activeTurnID != "turn_active" { t.Fatalf(...) }
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run '^TestLiveWorkspaceSnapshotSkipsTurns$' -count=1 -v
 ```
 
@@ -338,7 +338,7 @@ Change only this call:
 source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
 ```
 
-Retain capability and active-turn extraction from `Thread.Serf`.
+Retain capability and active-turn extraction from `Thread.Evener`.
 
 - [ ] **Step 3: Write the failing JSDOM hydration-order test**
 
@@ -360,14 +360,14 @@ resolveTasks([{id: 1, description: "Indexed task", status: "in_progress"}]);
 - [ ] **Step 4: Run the JS test and verify red**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-renderer-hydration-order.js
 ```
 
 If JSDOM is absent, install it outside the repository once:
 
 ```bash
-npm install --prefix /tmp/serf-jstest-jsdom jsdom
+npm install --prefix /tmp/evener-jstest-jsdom jsdom
 ```
 
 Expected before the fix: snapshot/live transcript assertions fail while the tasks promise remains unresolved.
@@ -379,11 +379,11 @@ Start `hydrateDescriptions()` without using it to hold `descriptionsReady`. Set 
 - [ ] **Step 6: Run focused UI tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run '^TestLiveWorkspaceSnapshotSkipsTurns$' -count=1
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-renderer-hydration-order.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-renderer-liveness-selfheal.js
 ```
 
@@ -438,7 +438,7 @@ For the stopped case remove the child from `RunningSubagentIDs` and assert `ende
 - [ ] **Step 2: Run focused tests and verify red**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run 'Test(WorkspaceData|SessionState)Projects.*InProcessSubagent' \
   -count=1 -v
 ```
@@ -461,7 +461,7 @@ Use `state` for `State` and `StateLabel`. Leave `apiSessionCapabilities(id, fals
 - [ ] **Step 4: Run lifecycle, tree, and thread projection tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore \
   -run 'Subagent|SessionState|WorkspaceData|BuildTree' -count=1
 ```
 
@@ -529,7 +529,7 @@ Use channels for every transition; timeouts serve only as deadlock guards.
 - [ ] **Step 2: Run the recovery test and verify red**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run '^TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose$' \
   -count=1 -v
 ```
@@ -586,9 +586,9 @@ Retain and run all existing relay lifecycle tests rather than replacing them.
 - [ ] **Step 5: Run relay tests with race detection**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub \
   -run 'Relay|Relays|SubscribeFailure|ReplaceSubscription' -count=1
-GOCACHE=/tmp/serf-gocache go test -race ./cmd/evener-hub \
+GOCACHE=/tmp/evener-gocache go test -race ./cmd/evener-hub \
   -run 'Relay|Relays|SubscribeFailure|ReplaceSubscription' -count=1
 ```
 
@@ -618,9 +618,9 @@ Omit `config.go` from the add command if no production config change was needed.
 - [ ] **Step 1: Run focused regression suites**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./internal/apptranscript ./server \
+GOCACHE=/tmp/evener-gocache go test ./internal/apptranscript ./server \
   ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   timeout 180 sh cmd/evener-hub/jstest/run-all.sh
 ```
 
@@ -629,8 +629,8 @@ Read every failure and fix its root cause. Do not mute tests or reduce coverage.
 - [ ] **Step 2: Run race and static checks**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test -race ./internal/apptranscript ./server ./cmd/evener-hub -count=1
-GOCACHE=/tmp/serf-gocache go vet ./internal/apptranscript ./server ./cmd/evener-hub
+GOCACHE=/tmp/evener-gocache go test -race ./internal/apptranscript ./server ./cmd/evener-hub -count=1
+GOCACHE=/tmp/evener-gocache go vet ./internal/apptranscript ./server ./cmd/evener-hub
 make lint
 ```
 

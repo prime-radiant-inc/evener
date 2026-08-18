@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do not change `src/shell/rail/**` or any `Steering*` renderer/behavior.
-- The aggregate must have the same `total`/`done` semantics as `serf/task/updated`.
+- The aggregate must have the same `total`/`done` semantics as `evener/task/updated`.
 - Preserve absent-versus-zero exactly: unsupported or missing task data is `null`/unknown; an authoritative empty task store is `{total: 0, done: 0}`.
 - Read and follow `docs/testing.md`, including round-trip/drift guidance; default tests remain deterministic and use real task stores.
 - Regenerate `cmd/evener-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md` with `make generate`; never hand-edit generated output.
@@ -29,12 +29,12 @@
 - Modify: `server/appwire_server_test.go:1024-1115`
 
 **Interfaces:**
-- Consumes: the existing `serf/task/updated` `total`/`done` contract and `Session.Tasks()` callback.
+- Consumes: the existing `evener/task/updated` `total`/`done` contract and `Session.Tasks()` callback.
 - Produces: `appwire.TaskAggregate`, `SerfThread.Tasks *TaskAggregate`, and `Server.SetTaskAggregateFunc(func() *appwire.TaskAggregate)` used only by authoritative live thread reads.
 
 - [ ] **Step 1: Write the failing Go wire and live-snapshot tests**
 
-  Add a server appwire thread-read test that installs `SetTaskAggregateFunc` returning `{Total: 4, Done: 2}` and asserts the returned `Thread.Serf.Tasks` pointer has those values. Add adjacent cases with no callback (nil/unknown) and with a callback returning `{Total: 0, Done: 0}` (present zero). Add a JSON assertion that the aggregate keys are `tasks`, `total`, and `done`, matching the existing notification vocabulary.
+  Add a server appwire thread-read test that installs `SetTaskAggregateFunc` returning `{Total: 4, Done: 2}` and asserts the returned `Thread.Evener.Tasks` pointer has those values. Add adjacent cases with no callback (nil/unknown) and with a callback returning `{Total: 0, Done: 0}` (present zero). Add a JSON assertion that the aggregate keys are `tasks`, `total`, and `done`, matching the existing notification vocabulary.
 
 - [ ] **Step 2: Run the focused tests and verify red**
 
@@ -84,11 +84,11 @@
 
 **Interfaces:**
 - Consumes: `agent/task.TaskStore`, `loadPersistedTasks`, `pastEntryThread`, and `mergePastThreadForRead`.
-- Produces: past-thread `Serf.Tasks` from the real persisted task file, with missing-file and empty-file semantics that cannot be confused.
+- Produces: past-thread `Evener.Tasks` from the real persisted task file, with missing-file and empty-file semantics that cannot be confused.
 
 - [ ] **Step 1: Write the failing past-read behavior tests**
 
-  Seed a past-indexed session with a real `task.TaskStore` file containing two tasks and one `done` status; assert `pastThreadForRead` returns `{Total: 2, Done: 1}`. Seed a known session with no task file; assert `Serf.Tasks == nil`. Seed a known session with an authoritative empty task file; assert `Serf.Tasks != nil` and equals `{Total: 0, Done: 0}`. Exercise both a normal read and a windowed read so the aggregate does not depend on transcript inclusion or turn paging.
+  Seed a past-indexed session with a real `task.TaskStore` file containing two tasks and one `done` status; assert `pastThreadForRead` returns `{Total: 2, Done: 1}`. Seed a known session with no task file; assert `Evener.Tasks == nil`. Seed a known session with an authoritative empty task file; assert `Evener.Tasks != nil` and equals `{Total: 0, Done: 0}`. Exercise both a normal read and a windowed read so the aggregate does not depend on transcript inclusion or turn paging.
 
 - [ ] **Step 2: Run the focused hub tests and verify red**
 
@@ -98,7 +98,7 @@
   go test ./cmd/evener-hub -run 'TestPastThreadRead.*Task|TestPastEntryThread.*Task' -count=1 -v
   ```
 
-  Expected: all aggregate assertions fail because the past projector currently leaves `Serf.Tasks` nil.
+  Expected: all aggregate assertions fail because the past projector currently leaves `Evener.Tasks` nil.
 
 - [ ] **Step 3: Implement persisted aggregate projection**
 
@@ -130,12 +130,12 @@
 - Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts:2400-2500`
 
 **Interfaces:**
-- Consumes: generated `SerfThread.tasks?: TaskAggregate` and existing `serf/task/updated` reducer behavior.
+- Consumes: generated `SerfThread.tasks?: TaskAggregate` and existing `evener/task/updated` reducer behavior.
 - Produces: `ThreadModel.tasks` initialized from every authoritative snapshot, with absent wire data mapped to null and `{total: 0, done: 0}` preserved as a real value.
 
 - [ ] **Step 1: Write the failing reducer reconnect test**
 
-  Build a valid thread-read fixture with `serf.tasks: {total: 7, done: 6}`. Hydrate it, apply a `serf/task/updated` notification changing the aggregate to `{total: 7, done: 7}`, then hydrate a fresh snapshot carrying `{total: 7, done: 7}`. Assert the final model remains `{total: 7, done: 7}` and the Tasks trigger renders `Tasks 7/7` when given that model. Add assertions that a snapshot omitting `tasks` yields `null` and a snapshot carrying `{total: 0, done: 0}` yields a non-null zero aggregate.
+  Build a valid thread-read fixture with `evener.tasks: {total: 7, done: 6}`. Hydrate it, apply a `evener/task/updated` notification changing the aggregate to `{total: 7, done: 7}`, then hydrate a fresh snapshot carrying `{total: 7, done: 7}`. Assert the final model remains `{total: 7, done: 7}` and the Tasks trigger renders `Tasks 7/7` when given that model. Add assertions that a snapshot omitting `tasks` yields `null` and a snapshot carrying `{total: 0, done: 0}` yields a non-null zero aggregate.
 
 - [ ] **Step 2: Run the focused reducer test and verify red**
 
@@ -160,7 +160,7 @@
 
 - [ ] **Step 4: Implement snapshot hydration and run the reducer test**
 
-  Replace `tasks: null` in `hydrateThread` with `tasks: thread.serf.tasks ?? null`. Keep the existing reducer notification case unchanged so live updates and fresh snapshots use the same `{total, done}` model shape. Run the focused frontend tests and typecheck.
+  Replace `tasks: null` in `hydrateThread` with `tasks: thread.evener.tasks ?? null`. Keep the existing reducer notification case unchanged so live updates and fresh snapshots use the same `{total, done}` model shape. Run the focused frontend tests and typecheck.
 
 - [ ] **Step 5: Commit generated and frontend changes**
 

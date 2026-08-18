@@ -232,7 +232,7 @@ func TestSubmitNotification_DropIfFull(t *testing.T) {
 
 Run → PASS.
 
-- [ ] **Step 5: Verify the idle-wake end to end** (serve mode): a small integration test (or manual `serf` run note) that a non-blocking spawn whose fake child finishes wakes the parent with a `<subagent-notification>` on the next turn. Confirm one-shot `serf run` (`cmd/evener/run.go:210`) wires **no** notifyFunc (so it doesn't deliver — intended).
+- [ ] **Step 5: Verify the idle-wake end to end** (serve mode): a small integration test (or manual `evener` run note) that a non-blocking spawn whose fake child finishes wakes the parent with a `<subagent-notification>` on the next turn. Confirm one-shot `evener run` (`cmd/evener/run.go:210`) wires **no** notifyFunc (so it doesn't deliver — intended).
 
 - [ ] **Step 6: Commit.**
 
@@ -249,7 +249,7 @@ git commit -m "feat(server): wire SubmitNotification to wake an idle parent on c
 
 **Files:** Modify `agent/internal/tool/definitions.go`, `docs/subagent-management/00-subagent-control-plane.md`; Test `agent/builtin_agents_test.go`.
 
-- [ ] **Step 1: Flip descriptions to spawn-and-be-notified.** Now that notify is live, update `spawn_agent`/`resume_agent` descriptions from the core plan's "spawn + wait/list" wording to the spec's canonical async pattern: spawn non-blocking → return to your work → you are auto-notified (`<subagent-notification>`) → read with `wait`/`subagent_output`. Keep the named anti-patterns and the one-shot-`serf run` caveat (use `blocking`/`wait` there).
+- [ ] **Step 1: Flip descriptions to spawn-and-be-notified.** Now that notify is live, update `spawn_agent`/`resume_agent` descriptions from the core plan's "spawn + wait/list" wording to the spec's canonical async pattern: spawn non-blocking → return to your work → you are auto-notified (`<subagent-notification>`) → read with `wait`/`subagent_output`. Keep the named anti-patterns and the one-shot-`evener run` caveat (use `blocking`/`wait` there).
 
 - [ ] **Step 2: Guard test.**
 
@@ -287,7 +287,7 @@ git commit -m "docs(subagent): teach the auto-notification pattern; flatten noti
   - empty queue → no model request, no phantom `SESSION_END`;
   - consumed/closed/absent → suppressed at drain;
   - dropped kick with a turn already running still surfaces via the tail `continue` (no double-delivery, pop-once);
-  - one-shot `serf run` does not deliver.
+  - one-shot `evener run` does not deliver.
 - [ ] Goal regression suite green (`go test ./agent/ -run Goal`).
 
 ## Known cross-plan note

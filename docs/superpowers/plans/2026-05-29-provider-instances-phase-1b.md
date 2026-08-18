@@ -2,20 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Make provider *instances* real and config-driven: a machine-global `~/.serf/providers.toml` defines named instances (custom base URLs, multiple instances of one type, `openai` `apiStyle`, per-instance OAuth), loaded by `llm.NewFromProviders` and an instance-aware resolver, reaching the daemon + the hub + the `launch-check` subprocess. When the file is absent, the existing `NewFromEnv` path is unchanged (zero-config dev still works).
+**Goal:** Make provider *instances* real and config-driven: a machine-global `~/.evener/providers.toml` defines named instances (custom base URLs, multiple instances of one type, `openai` `apiStyle`, per-instance OAuth), loaded by `llm.NewFromProviders` and an instance-aware resolver, reaching the daemon + the hub + the `launch-check` subprocess. When the file is absent, the existing `NewFromEnv` path is unchanged (zero-config dev still works).
 
 **Architecture:** Builds on Phase 1a (instance NAME vs behavior TAG; session-injected `ResolveProfile`; central identity stamping; `internal/providerconfig` leaf). 1b adds: a `providers.toml` loader; per-instance adapter constructors (the env factories are opaque, so each adapter gains an instance constructor); `llm.NewFromProviders(cfg)`; a config-aware resolver; the `openai` apiStyle recipe + custom `anthropic` base-URL instances; per-instance OAuth (`auth/<instance>.json`); spawn `SERF_PROVIDERS_CONFIG`; and re-keying the deferred picker/launch behavior filters via `NameToTag` (now testable with custom instances).
 
 **Tech Stack:** Go. Design record: `docs/superpowers/specs/2026-05-29-provider-type-instance-model-design.md` (v7, §4.7–4.13). As-built 1a architecture: `docs/llm-providers.md`.
 
-**No migration (flag day):** zero deployed instances. Old `credentials.toml`/env/`openai.json` are NOT converted; `providers.toml` is created by the (future Phase 2) UI / a CLI / hand-editing. When `providers.toml` is absent, serf uses the existing `NewFromEnv` path with identity `NameToTag` (§4.10).
+**No migration (flag day):** zero deployed instances. Old `credentials.toml`/env/`openai.json` are NOT converted; `providers.toml` is created by the (future Phase 2) UI / a CLI / hand-editing. When `providers.toml` is absent, evener uses the existing `NewFromEnv` path with identity `NameToTag` (§4.10).
 
 **Completeness method:** like 1a — the **integration backstop (Task 11)** + a grep sweep (Task 12) are the real guard; the per-task lists are starting points. Every task: `go build ./... && go test ./...` green before commit.
 
 ---
 
 ## Sub-phase boundaries (natural checkpoints)
-- **1b-core (Tasks 1–6):** loader + per-instance adapters + `NewFromProviders` + config-aware resolver + the load-or-env helper + apiStyle/anthropic recipes. **Landing:** a hand-written `providers.toml` with multiple/custom instances routes end-to-end through `serf run`/`serve`.
+- **1b-core (Tasks 1–6):** loader + per-instance adapters + `NewFromProviders` + config-aware resolver + the load-or-env helper + apiStyle/anthropic recipes. **Landing:** a hand-written `providers.toml` with multiple/custom instances routes end-to-end through `evener run`/`serve`.
 - **1b-auth+spawn (Tasks 7–8):** per-instance OAuth + `SERF_PROVIDERS_CONFIG` spawn plumbing (hub-spawned daemons + launch-check use the file).
 - **1b-rekey+verify (Tasks 9–12):** re-key the deferred behavior filters; integration backstop; sweep + full suite + smoke.
 
@@ -85,7 +85,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 - [ ] **Step 1: failing test** — the helper returns `(*llm.Client, providerconfig.Config, hasConfig bool)`: when `$hubStateRoot/providers.toml` exists → `NewFromProviders` + the config + true; else → `NewFromEnv` + identity `NameToTag` + false. The path comes from `providerconfig.DefaultStateRoot()`/`SERF_PROVIDERS_CONFIG`.
 - [ ] **Step 2:** run → fail.
-- [ ] **Step 3:** implement the helper; convert `serve.go:39`, `run.go:127`, `web.go:2024`, `launch_check.go:94` **and** `:159`, `DefaultClient` to use it; pass the `Config` into `SessionConfig`/`WebConfig` so the resolver (Task 5) and filters (Task 9) see it. **Landing: a hand-written `~/.serf/providers.toml` with 2 instances routes end-to-end via `serf run`.**
+- [ ] **Step 3:** implement the helper; convert `serve.go:39`, `run.go:127`, `web.go:2024`, `launch_check.go:94` **and** `:159`, `DefaultClient` to use it; pass the `Config` into `SessionConfig`/`WebConfig` so the resolver (Task 5) and filters (Task 9) see it. **Landing: a hand-written `~/.evener/providers.toml` with 2 instances routes end-to-end via `evener run`.**
 - [ ] **Step 4:** run → pass; `go build ./... && go test ./...`.
 - [ ] **Step 5:** commit. *(End of 1b-core.)*
 
@@ -93,7 +93,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 **Files:** `internal/auth/openai/storage.go`, the openai adapter OAuth resolution, `cmd/evener-hub/app_auth.go`, `cmd/evener/openai_login.go`, `cmd/evener-hub/spawn.go validateProviderCredentials` (+ tests).
 
-- [ ] **Step 1: failing tests** — `AuthFilePath(stateHome, instanceName)` → `$stateHome/serf/auth/<instanceName>.json`; default `openai` instance keeps `auth/openai.json`; `LoadAuth/SaveAuth/DeleteAuth` round-trip per instance; `AuthRecord.Validate` accepts a non-`openai`-named openai-tag instance (drop the hardcoded `Provider=="openai"` check); a custom openai instance `work` resolves its OAuth from `auth/work.json`.
+- [ ] **Step 1: failing tests** — `AuthFilePath(stateHome, instanceName)` → `$stateHome/evener/auth/<instanceName>.json`; default `openai` instance keeps `auth/openai.json`; `LoadAuth/SaveAuth/DeleteAuth` round-trip per instance; `AuthRecord.Validate` accepts a non-`openai`-named openai-tag instance (drop the hardcoded `Provider=="openai"` check); a custom openai instance `work` resolves its OAuth from `auth/work.json`.
 - [ ] **Step 2:** run → fail.
 - [ ] **Step 3:** implement: thread `instanceName` through `AuthFilePath`/`LoadAuth`/`SaveAuth`/`DeleteAuth` + the openai adapter's OAuth resolution (it already has `StateHome` from Task 2) + the hub auth controller's `openai` branches (keyed by instance whose tag advertises oauth) + `openai_login` (`resolveOpenAIStateDir` gains an instance param) + `validateProviderCredentials`. Drop `AuthRecord.Validate`'s `Provider=="openai"` check.
 - [ ] **Step 4:** run → pass.
@@ -103,7 +103,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 **Files:** `internal/launchconfig/env.go`, `cmd/evener-hub/spawn.go`, the daemon load helper (Task 6) (+ tests).
 
-- [ ] **Step 1: failing tests** — `launchconfig.ToEnv` sets `SERF_PROVIDERS_CONFIG=<path>` when the hub has a config; a spawned `serf serve` and the `serf launch-check` subprocess both load it (the load helper consults `SERF_PROVIDERS_CONFIG` first, Task 6); `validateProviderCredentials` resolves the instance set (not the fixed maps) when a config exists.
+- [ ] **Step 1: failing tests** — `launchconfig.ToEnv` sets `SERF_PROVIDERS_CONFIG=<path>` when the hub has a config; a spawned `evener serve` and the `evener launch-check` subprocess both load it (the load helper consults `SERF_PROVIDERS_CONFIG` first, Task 6); `validateProviderCredentials` resolves the instance set (not the fixed maps) when a config exists.
 - [ ] **Step 2:** run → fail.
 - [ ] **Step 3:** implement: thread `SERF_PROVIDERS_CONFIG` into `req.Env` via `ToEnv`; both spawn paths get it; the load helper already consults it. Remove the single-provider env injection when a config is present (keep env fallback when absent).
 - [ ] **Step 4:** run → pass.
@@ -136,7 +136,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 - [ ] Grep sweep for residual provider-name literals that should now be tag/config-keyed (the 1a-deferred set should be gone; flag any new (d) site). Fix real ones (TDD).
 - [ ] `go build ./... && go test ./...` green.
-- [ ] Smoke: build serf; with a temp `providers.toml` (two openai instances + a custom base URL), `serf launch-check --model work2/gpt-5.2 --json` resolves the custom instance (credential-free).
+- [ ] Smoke: build evener; with a temp `providers.toml` (two openai instances + a custom base URL), `evener launch-check --model work2/gpt-5.2 --json` resolves the custom instance (credential-free).
 - [ ] Final commit.
 
 ---

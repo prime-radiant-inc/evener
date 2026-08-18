@@ -27,7 +27,7 @@ Philosophy: **small bounded default + legible window metadata + file-like naviga
    - `shellDefaultTailBytes = 1024` — the peek tail shown alongside the handle when output exceeds the ride-whole threshold, and for running/backgrounded snapshots.
 3. **Window metadata on every output-bearing result** (shell *and* `job_read_output`): `total_bytes` (lifetime), `dropped_bytes` (= `retainedStart`; permanently evicted), and the shown byte-range. `truncated` becomes a derived convenience, not the only signal.
 4. **`output_status` enum** — `complete` | `windowed` | `evicted` — plus, when not `complete`, a one-line navigation hint carrying the literal recovery call (e.g. `job_read_output(job_id, head_bytes=…)` / `grep=…`). Targets the *behavioral* failure: even a careless agent is told "this is a slice; here's how to get the rest."
-5. **Navigation contract.** The small window always carries the handle (`job_id`) + metadata + hint. Tool descriptions reframe output as a navigable resource over the full retained log; correct `grep`'s description ("scans the full retained output, up to 8 MiB" — not "what you saw inline"). No new resource abstraction — serf already has the file + head/tail/grep primitives; this is contract + steering, not capacity.
+5. **Navigation contract.** The small window always carries the handle (`job_id`) + metadata + hint. Tool descriptions reframe output as a navigable resource over the full retained log; correct `grep`'s description ("scans the full retained output, up to 8 MiB" — not "what you saw inline"). No new resource abstraction — evener already has the file + head/tail/grep primitives; this is contract + steering, not capacity.
 6. **Digest mode: opt-in, deferred.** A `job_read_output` digest mode (line/byte counts + head+tail + error/warn lines) is a *mode the agent requests*, not an auto-injection. Out of scope for v1; revisit only if the small-window + navigation contract proves insufficient in live use.
 
 ## Part A — output context-management (TDD each task)
@@ -38,7 +38,7 @@ Philosophy: **small bounded default + legible window metadata + file-like naviga
 - **A4.** Add the `output_status` enum + navigation hint to both results, derived from `(dropped_bytes, total_bytes, shown_bytes)`. Tests for all three states.
 - **A5.** Default `job_read_output` read window (when neither `head_bytes` nor `tail_bytes` is given) ≤ `shellDefaultTailBytes`. Verify current default first; set to 1 KiB tail if larger.
 - **A6.** Tool-description rewrites: `shell`, `job_read_output` (navigable-resource framing + per-state hints), and the `grep` corpus clarification.
-- **A7.** E2E scenario card: real `serf` session (gpt-5.5 OAuth), commands at <1 KiB, ~5 KiB, >8 KiB, and a >8 MiB generator; assert the agent reads the tail, recognizes `windowed`, pulls the head via `job_read_output`, and distinguishes `evicted`. Feel-test whether 1 KiB / 8 KiB are too aggressive (round-trip annoyance) and tune.
+- **A7.** E2E scenario card: real `evener` session (gpt-5.5 OAuth), commands at <1 KiB, ~5 KiB, >8 KiB, and a >8 MiB generator; assert the agent reads the tail, recognizes `windowed`, pulls the head via `job_read_output`, and distinguishes `evicted`. Feel-test whether 1 KiB / 8 KiB are too aggressive (round-trip annoyance) and tune.
 
 ## Part B — smaller subagent-tools-test-report fixes (same PR)
 

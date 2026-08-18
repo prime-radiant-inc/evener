@@ -4,15 +4,15 @@
 
 **Goal:** Ship spec increments 5–9 of `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md`: the layout scale + breakpoint ladder, composer fixes, the server-rendered home launchpad, the canonical color-token migration, the state-color recolor, and the contrast/retired-treatments pass.
 
-**Architecture:** No bundler, no framework, embedded assets. All client changes are CSS (`cmd/evener-hub/assets/style.css`) plus small vanilla-JS edits in the existing `window.Serf*` module pattern; the launchpad is server-rendered Go (`cmd/evener-hub/web.go` + a new `html/template` partial). `docs/web-ui/design-system.md` is the north star; addenda land in the same commit as the change they record.
+**Architecture:** No bundler, no framework, embedded assets. All client changes are CSS (`cmd/evener-hub/assets/style.css`) plus small vanilla-JS edits in the existing `window.Evener*` module pattern; the launchpad is server-rendered Go (`cmd/evener-hub/web.go` + a new `html/template` partial). `docs/web-ui/design-system.md` is the north star; addenda land in the same commit as the change they record.
 
 **Tech Stack:** Go (`html/template`), vanilla CSS/JS, node+jsdom stylesheet-text/behavioral tests (`cmd/evener-hub/jstest/`), Go tests (`cmd/evener-hub`).
 
 ## Global Constraints
 
 - Per-commit gate (must pass before every commit):
-  `make build-hub` + `cd cmd/evener-hub/jstest && ./run-all.sh` + `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`.
-  (jsdom resolves via `/tmp/serf-jstest-jsdom/node_modules`; run-all.sh finds it.)
+  `make build-hub` + `cd cmd/evener-hub/jstest && ./run-all.sh` + `GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub`.
+  (jsdom resolves via `/tmp/evener-jstest-jsdom/node_modules`; run-all.sh finds it.)
 - Breakpoint ladder (verbatim from spec): phone ≤767px (unchanged); tablet 768–1199px; desktop 1200–1799px; wide ≥1800px.
 - Width scale (verbatim): `--measure: 720px` prose column; machine rows bleed right to `--measure-machine` (1000px, ~1200px at wide); left edges never move.
 - Canonical token vocabulary: `--bg`, `--surface`, `--surface-2`, `--line`, `--hair`, `--ink`, `--ink-2`, `--ink-3`, `--ink-4`, `--accent`, `--attention`, `--error`, `--done`, `--success`. Canonicals adopt **shipped** values (no visual change) **except `--ink-3`**, which takes the doc value `#7e8593` (dark) / `#6b6b76` (light — computed 4.66:1 on `--surface #f1f1f2`, AA).
@@ -356,7 +356,7 @@ const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
 function makeWindow(stored, desktopMatches) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
   const w = dom.window;
-  if (stored !== null) w.localStorage.setItem("serf-hub.sidebar.rail", stored);
+  if (stored !== null) w.localStorage.setItem("evener-hub.sidebar.rail", stored);
   w.matchMedia = (q) => ({ matches: q === "(min-width: 1200px)" ? desktopMatches : false, addEventListener() {}, addListener() {} });
   w.fetch = () => new Promise(() => {});
   w.htmx = { process() {} };
@@ -391,7 +391,7 @@ w.SerfSidebar.cycleSidebarMode();
 assert(w.SerfSidebar.readSidebarMode() === "auto", "pane cycles to auto");
 w.SerfSidebar.cycleSidebarMode();
 assert(w.SerfSidebar.readSidebarMode() === "rail", "auto cycles to rail");
-assert(w.localStorage.getItem("serf-hub.sidebar.rail") === "rail", "cycle persists to storage");
+assert(w.localStorage.getItem("evener-hub.sidebar.rail") === "rail", "cycle persists to storage");
 
 console.log("ok sidebar tri-state");
 process.exit(0);
@@ -414,7 +414,7 @@ Replace the rail block (:1141-1179, from the `// Sidebar rail mode` comment thro
   // binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
   // rail below 1200px, pane at/above — before the tablet band existed the
   // sidebar simply stayed full, so this is a deliberate improvement).
-  var SIDEBAR_MODE_KEY = "serf-hub.sidebar.rail";
+  var SIDEBAR_MODE_KEY = "evener-hub.sidebar.rail";
   var SIDEBAR_DESKTOP_QUERY = "(min-width: 1200px)";
 
   function readSidebarMode() {
@@ -501,7 +501,7 @@ Replace the `sidebar-mode` radio handler (:26-32) with:
       if (window.SerfSidebar && window.SerfSidebar.applySidebarMode) {
         window.SerfSidebar.applySidebarMode(v);
       } else {
-        localStorage.setItem("serf-hub.sidebar.rail", v);
+        localStorage.setItem("evener-hub.sidebar.rail", v);
       }
       return;
     }
@@ -514,7 +514,7 @@ Replace the sidebar-mode reflect block (:56-60) with:
     if (sidebarModeRadios.length) {
       const stored = (window.SerfSidebar && window.SerfSidebar.readSidebarMode)
         ? window.SerfSidebar.readSidebarMode()
-        : (localStorage.getItem("serf-hub.sidebar.rail") || "auto");
+        : (localStorage.getItem("evener-hub.sidebar.rail") || "auto");
       sidebarModeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
 ```
@@ -763,7 +763,7 @@ All-archived variant: add a case where every meta is archived (last activity old
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v`
+Run: `GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v`
 Expected: FAIL to compile (`workspaceEmptyTmpl` undefined)
 
 - [ ] **Step 3: Implement the template**
@@ -773,7 +773,7 @@ Create `cmd/evener-hub/templates/partials/workspace_empty.html`:
 ```html
 {{define "workspace_empty"}}
 <div class="empty-state empty-state-workspace">
-  <div class="welcome-wordmark">serf<span class="welcome-dot">.</span></div>
+  <div class="welcome-wordmark">evener<span class="welcome-dot">.</span></div>
   {{if .Rows}}
   <p class="empty-state-body">Jump back in, or start something new.</p>
   <ul class="launchpad-list">
@@ -885,7 +885,7 @@ After the `.empty-state-sidebar …` rules (~:5580), add:
 
 - [ ] **Step 6: Run tests + gate**
 
-Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub && cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v && GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub && cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS everywhere. If an existing test asserts the old static empty markup (grep: `grep -rn 'empty-state-workspace\|welcome-wordmark' cmd/evener-hub/*_test.go`), update it to the template output (same commit).
 
 - [ ] **Step 7: Commit**
@@ -1042,7 +1042,7 @@ The other three blocks get the same names with their theme values:
 - `:root[data-theme="dark"]`: same values as `:root`.
 - `:root[data-theme="light"]`: same values as the media-light block.
 
-In every block: delete the legacy alias comment + `--panel`/`--panel-2`/`--border`/`--muted`/`--tool`/`--user` lines, delete the old `--text`/`--text-muted`/`--text-dim`/`--rule`/`--rule-soft`/`--bg-raised`/`--surface-secondary`/`--accent-secondary` definition lines, and update the `--diagnostic-*` lines to their post-rename references (`--diagnostic-ui: var(--accent);` — the sed already rewrote its value; `--diagnostic-serf`/`--diagnostic-hub` keep referencing `--state-warning`/`--state-working` until Task 8). `--btn-primary-text` stays as-is.
+In every block: delete the legacy alias comment + `--panel`/`--panel-2`/`--border`/`--muted`/`--tool`/`--user` lines, delete the old `--text`/`--text-muted`/`--text-dim`/`--rule`/`--rule-soft`/`--bg-raised`/`--surface-secondary`/`--accent-secondary` definition lines, and update the `--diagnostic-*` lines to their post-rename references (`--diagnostic-ui: var(--accent);` — the sed already rewrote its value; `--diagnostic-evener`/`--diagnostic-hub` keep referencing `--state-warning`/`--state-working` until Task 8). `--btn-primary-text` stays as-is.
 
 - [ ] **Step 5: Dead CSS**
 
@@ -1086,7 +1086,7 @@ Light theme: `--bg #fafafa`, `--surface #f1f1f2`, `--surface-2 #e6e6e8`, `--line
 - [ ] **Step 7: Run tests + gate**
 
 Run: `cd cmd/evener-hub/jstest && node test-color-system-css.js && ./run-all.sh && cd ../../.. && make build-hub`
-Expected: the new contract test passes. Other jstest files that assert old token names FAIL — update each one's expected names per the mapping table (mechanical, same commit). Known candidates: `test-style-palette.js`, `test-mobile-css.js`, `test-pane-and-sidebar-css.js`, `test-sidebar-density-css.js`, `test-sidebar-polish-css.js`, `test-errored-light-tint.js`, `test-context-pressure-css.js`, `test-transcript-typography.js`, `test-font-size-presets.js` (should be unaffected — type-scale carve-out). Then `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`.
+Expected: the new contract test passes. Other jstest files that assert old token names FAIL — update each one's expected names per the mapping table (mechanical, same commit). Known candidates: `test-style-palette.js`, `test-mobile-css.js`, `test-pane-and-sidebar-css.js`, `test-sidebar-density-css.js`, `test-sidebar-polish-css.js`, `test-errored-light-tint.js`, `test-context-pressure-css.js`, `test-transcript-typography.js`, `test-font-size-presets.js` (should be unaffected — type-scale carve-out). Then `GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub`.
 
 - [ ] **Step 8: Commit**
 
@@ -1173,7 +1173,7 @@ In all 4 theme blocks, change the state definitions:
 - light blocks: identical `var()` lines; `--state-ended: #7a7a82;`; `--diagnostic-warning: #8a5a14;`; `--diagnostic-hub: #2e7d4f;`
 - dark blocks: `--diagnostic-hub: #7dc98f;` (replacing `--diagnostic-hub: var(--state-working);`)
 - light blocks: `--diagnostic-hub: #2e7d4f;`
-- `--diagnostic-serf: var(--diagnostic-warning);` (was `var(--state-warning)`)
+- `--diagnostic-evener: var(--diagnostic-warning);` (was `var(--state-warning)`)
 
 Delete every `--state-warning:` definition line, then rename all uses:
 
@@ -1219,7 +1219,7 @@ In `thread.html` :8 change `fill='%237aa2f7'` → `fill='%237e8593'`.
 
 - [ ] **Step 5: Run tests + gate**
 
-Run: `cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub`
 Expected: the two updated/new tests pass. `test-notifications-palette.js`, `test-style-palette.js`, `test-context-pressure-css.js`, `test-subagents.js` hard-assert the old world — rewrite their expectations to the new language (green→blue for working/live, blue→amber for awaiting/needs-you, `--state-warning`→`--diagnostic-warning`, favicon neutral base), same commit.
 
 - [ ] **Step 6: Commit**
@@ -1365,7 +1365,7 @@ Map: `3px`/`4px` → `var(--radius-md)`; `50%` → `var(--radius-pill)`; `16px 1
 
 - [ ] **Step 5: Run tests + gate**
 
-Run: `cd cmd/evener-hub/jstest && node test-retired-treatments-css.js && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
+Run: `cd cmd/evener-hub/jstest && node test-retired-treatments-css.js && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub`
 Expected: PASS, all gates green. Adjust the contract test's allowed-literal logic if a documented exception survives Step 4 — record the exception in a comment next to the value in style.css.
 
 - [ ] **Step 6: Commit**
@@ -1384,7 +1384,7 @@ git commit -m "web: retire ALL-CAPS mono labels (13 sites); snap radius literals
 
 - [ ] **Step 1: Full gate**
 
-Run: `make build-hub && (cd cmd/evener-hub/jstest && ./run-all.sh) && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
+Run: `make build-hub && (cd cmd/evener-hub/jstest && ./run-all.sh) && GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub`
 Expected: all green.
 
 - [ ] **Step 2: Playwright visual matrix (dev-time, not CI)**

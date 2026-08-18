@@ -1,7 +1,7 @@
 # Subagent runtime contracts
 
 Status: Evergreen reference for the shipped subagent runtime. This documents what
-serf **does today** across the cross-cutting runtime concerns that subagents,
+evener **does today** across the cross-cutting runtime concerns that subagents,
 plugins, hooks, helpers, and lineage share. It is the current-reality counterpart
 to the point-in-time design specs `06`–`10` in
 [`subagent-management/`](subagent-management/). The shipped stable-delegate
@@ -81,7 +81,7 @@ thing that still stays fatal, since they're explicit user input for this invocat
 
 ## Plugin and agent loading
 
-What validation actually runs when serf loads a plugin (`agent/plugin/plugin.go`,
+What validation actually runs when evener loads a plugin (`agent/plugin/plugin.go`,
 `agent/plugin/agents.go`):
 
 - **Plugin name** is required and must be kebab-case (`validatePluginName` / `kebabCaseRe`).
@@ -92,13 +92,13 @@ What validation actually runs when serf loads a plugin (`agent/plugin/plugin.go`
   `"duplicate plugin name %q…"`).
 - **Agent `name`/`description`** are required non-empty strings (`getString`). **`tools`**
   accepts the scalar `all` or a list of strings; it rejects scalar `*`, list `all`, list
-  `*`, and non-string entries. Claude tool names are mapped to serf canonical names at
+  `*`, and non-string entries. Claude tool names are mapped to evener canonical names at
   load (`toolname.ClaudeToSerf`). `model`/`color` default to `inherit`/`blue`.
-- **Agent `model` is a provider-local preference.** Serf selects the first usable
+- **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.
   `sonnet`, `opus`, and `haiku` are catalog aliases that resolve to concrete models
-  before Serf checks the current provider instance's advertised model list. An exact
+  before Evener checks the current provider instance's advertised model list. An exact
   custom model ID works when that instance advertises it. An unadvertised model, or
   one whose availability cannot be verified, falls through with a diagnostic warning.
 - **Namespacing.** Plugin agents are exposed as `plugin:agent`, except a
@@ -113,7 +113,7 @@ built): agent-name kebab validation, duplicate **agent**-name rejection within a
 (a later agent silently overwrites an earlier same-name one), manifest field-type
 validation, `agents`-override path-traversal/absolute-path rejection, `model`-value
 validation, empty-body warnings, unsupported-Claude-field rejection, and any
-`Validate*` Go API / `serf plugin validate` CLI. An inline `mcpServers` parse failure is
+`Validate*` Go API / `evener plugin validate` CLI. An inline `mcpServers` parse failure is
 no longer a silent gap: it now degrades to a **plugin-level MCP warning**
 (`Instance.MCPConfigWarnings`, `agent/plugin/plugin.go` `discoverPluginMCPConfigs`) — the
 plugin's MCP layer is skipped but its skills/agents/hooks still load; a malformed
@@ -122,7 +122,7 @@ remains: **`skills`/`tasks` entries are not value-validated** (empty strings/fie
 
 ## Lifecycle hooks (Claude-compatible subset)
 
-Serf fires a tested subset of the Claude hook contract; the rest is recognized but
+Evener fires a tested subset of the Claude hook contract; the rest is recognized but
 reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
 
 - **Nine events fire:** `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
@@ -142,8 +142,8 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   exec-form (`args`); `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` expand in command/prompt/
   args; the runner sets `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, and
   `CLAUDE_EFFORT` (only when configured). It does not set `CLAUDE_CODE_REMOTE`
-  (intentionally — serf has no remote/serve mode) or `CLAUDE_PLUGIN_DATA`. `prompt`
-  is serf-native sugar that runs an LLM call with
+  (intentionally — evener has no remote/serve mode) or `CLAUDE_PLUGIN_DATA`. `prompt`
+  is evener-native sugar that runs an LLM call with
   `$TOOL_INPUT/$TOOL_RESULT/$USER_PROMPT/$MESSAGE/$TOOL_NAME` substitution.
 - **`PreToolUse` runs before registry schema validation**, can rewrite the tool input
   (`applyUpdatedToolInput`, applied before execution), and can deny (short-circuits the
@@ -199,7 +199,7 @@ is **no shared redaction helper** and validation is fail-on-first (no grouped
 `[]ValidationIssue`); both are proposed in
 `subagent-management/10-runtime-contracts.md` Contract 3. The residual risk to know: a
 `command`/`prompt` hook's own stdout is delivered as context unscrubbed — that is
-hook-author behavior, not a serf leak, but nothing redacts it.
+hook-author behavior, not a evener leak, but nothing redacts it.
 
 ## Lightweight helper isolation
 

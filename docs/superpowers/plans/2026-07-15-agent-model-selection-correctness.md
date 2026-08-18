@@ -92,7 +92,7 @@ Project 2 deletes `transcript.APICall`, `appendModelAPICallFunc`, `llm.AdapterAt
 - [ ] **Step 0: Capture the pre-project base commit**
 
 ```bash
-base_ref=refs/serf-plan-bases/agent-model-selection-correctness
+base_ref=refs/evener-plan-bases/agent-model-selection-correctness
 if git show-ref --verify --quiet "$base_ref"; then
   echo "ref already exists; inspect it before resuming: $base_ref" >&2
   exit 1
@@ -563,7 +563,7 @@ func lastAssistantTurn(t *testing.T, s *Session) schema.Turn {
 
 - [ ] **Step 1: Write failing behavioral tests for inheritance, explicit selection, and zero residue**
 
-Use fake model listers and real Serf delegate plumbing. One table covers every typed preflight rejection and proves that each leaves all durable and notification/watch state unchanged:
+Use fake model listers and real Evener delegate plumbing. One table covers every typed preflight rejection and proves that each leaves all durable and notification/watch state unchanged:
 
 ```go
 func TestCreateDelegate_InvalidExplicitModelsLeaveNoDurableResidue(t *testing.T) {
@@ -1439,7 +1439,7 @@ Expected: `gofmt` is clean, `git diff --check` prints nothing, and the suite pas
 Run:
 
 ```bash
-base_ref=refs/serf-plan-bases/agent-model-selection-correctness
+base_ref=refs/evener-plan-bases/agent-model-selection-correctness
 git diff --name-only "$base_ref"..HEAD
 git diff "$base_ref"..HEAD -- docs/superpowers/specs docs/superpowers/plans agent/internal/tool appwire cmd/evener-hub cmd/evener-tui
 rg -n 'Complete\(|Stream\(' agent/model_selection.go

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep durable facts in `agent/internal/jobstore`, keep runtime orchestration in `agent/job_delegate.go` and `agent/job_watch.go`, and keep public tool projections in `agent/session_tools_jobs.go`. Prefer typed internal state over prose error matching, and make every restore decision derive from persisted descriptors plus retained child session state.
 
-**Tech Stack:** Go, Serf agent/jobstore internals, existing `go test` package tests, `make build`, `make test`, `make lint`.
+**Tech Stack:** Go, Evener agent/jobstore internals, existing `go test` package tests, `make build`, `make test`, `make lint`.
 
 ---
 

@@ -186,7 +186,7 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_RequestShapeMatrix -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_RequestShapeMatrix -count=1 -v
 ```
 
 Expected: PASS. If it fails because the current adapter emits a different field, inspect `llm/providers/openai/responses.go` and update the expected matrix only when the observed wire shape is intentional and documented in the test name.
@@ -388,7 +388,7 @@ func discoveryJSON(t *testing.T, value any) []byte {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe -count=1 -v
 ```
 
 Expected: PASS and a `phase0b payload_size_result=...` log line with positive gross omitted bytes, positive continuation overhead, and positive net body-size delta.
@@ -474,7 +474,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 	store := requestStore
 	anchorReq := llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Reply exactly: serf continuation discovery anchor")},
+		Messages: []llm.Message{llm.User("Reply exactly: evener continuation discovery anchor")},
 		Store:    &store,
 		Metadata: map[string]string{
 			"serf_discovery_id": id,
@@ -490,7 +490,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	delta, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery delta")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery delta")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -503,7 +503,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	branch, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery branch")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery branch")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -516,7 +516,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	copresent, copresentErr := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery co-present")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery co-present")},
 		PreviousResponseID: anchor.ID,
 		ConversationID:     "conv_serf_discovery_" + id,
 		Store:              &store,
@@ -556,7 +556,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_PublicResponsesContinuationDiscovery|TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_PublicResponsesContinuationDiscovery|TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
 ```
 
 Expected: PASS with both tests skipped unless the explicit discovery env vars are set.
@@ -581,14 +581,14 @@ git commit -m "test(openai): add opt-in responses continuation discovery e2e" -m
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe -count=1 -v | tee /tmp/serf-phase0b-payload-size.log
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe -count=1 -v | tee /tmp/evener-phase0b-payload-size.log
 ```
 
 Expected: PASS and one `phase0b payload_size_result={...}` log line. Read the five integer fields from that log line before creating the proof artifact.
 
 - [ ] **Step 2: Create proof artifact with deterministic findings and live gate status**
 
-Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-0b.md` with this content. In the `Payload-size result` block, write the exact integer values from `/tmp/serf-phase0b-payload-size.log`; do not write symbolic values.
+Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-0b.md` with this content. In the `Payload-size result` block, write the exact integer values from `/tmp/evener-phase0b-payload-size.log`; do not write symbolic values.
 
 ```markdown
 # Responses Continuation Phase 0B Discovery Proof
@@ -631,9 +631,9 @@ Payload-size result:
 Checkable line: live discovery is explicit opt-in and blocks treating Phases 1A-11 as committed implementation work for a target endpoint family until the target endpoint family has accepted valid anchors, rejected invalid anchors clearly, resolved co-present `previous_response_id` plus `conversation`, and shown net request-payload reduction on the scripted probe.
 
 Commands:
-- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
-- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
-- Codex backend model override example: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
+- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Codex backend model override example: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
 - Public OpenAI: run with an explicit key; valid `previous_response_id` and branch reuse passed, invalid anchor rejected explicitly, and co-present `previous_response_id` plus `conversation` was rejected as mutually exclusive.
@@ -706,7 +706,7 @@ git commit -m "docs: record responses continuation phase 0b discovery" -m "Recor
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestResponsesContinuationDiscovery_RequestShapeMatrix|TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestResponsesContinuationDiscovery_RequestShapeMatrix|TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe' -count=1 -v
 ```
 
 Expected: PASS.
@@ -716,7 +716,7 @@ Expected: PASS.
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_PublicResponsesContinuationDiscovery|TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_PublicResponsesContinuationDiscovery|TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
 ```
 
 Expected: PASS with skip messages unless explicit discovery env vars are set.

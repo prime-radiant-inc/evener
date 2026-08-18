@@ -72,22 +72,22 @@ suite says what the close already proved and what M9 adds on top.
 
 ## 3. Isolation recipe (every suite obeys this)
 
-The host-global-flock lesson is load-bearing: `serf-hub` takes a **host-global flock at
-`$HOME/.serf/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). Two hubs under the
+The host-global-flock lesson is load-bearing: `evener-hub` takes a **host-global flock at
+`$HOME/.evener/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). Two hubs under the
 same `$HOME` cannot coexist, and a parallel suite that shares `$HOME` will collide (W5/W6 closes hit
 exactly this against each other). Therefore:
 
 - **Build once, centrally.** The controller builds the artifact **once** at M9 kickoff:
-  `npm run build` → `git restore dist/PLACEHOLDER` → `go build -o <shared>/serf-hub ./cmd/evener-hub`
-  (embeds the fresh dist) and `go build -o <shared>/serf ./cmd/evener` (for hub-spawn + the TUI in S7).
+  `npm run build` → `git restore dist/PLACEHOLDER` → `go build -o <shared>/evener-hub ./cmd/evener-hub`
+  (embeds the fresh dist) and `go build -o <shared>/evener ./cmd/evener` (for hub-spawn + the TUI in S7).
   Every suite runs **that** binary and confirms it is the fresh one (skill principle 1: the #1 e2e
   mistake is testing a stale process).
 - **Per-suite fake `$HOME`.** Each suite exports `HOME=<scratch>/s{N}-home`, giving it its own
-  `hub.lock`, `~/.serf/run` rendezvous, and state root — all `HOME`/XDG-derived (`rendezvous.go:40`,
+  `hub.lock`, `~/.evener/run` rendezvous, and state root — all `HOME`/XDG-derived (`rendezvous.go:40`,
   `config.go:89`). This is the same isolation the Go suite uses (`t.Setenv(SERF_STATE_DIR,
   t.TempDir())`), **not** a flock bypass.
 - **Also isolate `XDG_CONFIG_HOME`** for any suite that touches plugins/marketplaces (S4). The plugin
-  root is **global** — `cfg.PluginRoot` unset falls to `~/.config/serf/plugins` honoring
+  root is **global** — `cfg.PluginRoot` unset falls to `~/.config/evener/plugins` honoring
   `XDG_CONFIG_HOME`, and is **not** isolated by the hub state root (W7 close wrote to the shared store
   and had to clean up via CLI). Set `XDG_CONFIG_HOME=<scratch>/s4-config` so marketplace/plugin
   mutations stay hermetic.
@@ -106,10 +106,10 @@ exactly this against each other). Therefore:
 - **Never echo credentials.** Tokens/keys are masked in every screenshot, log, and report line (the
   standing invariant; W7 verified the "UI never displays stored values" copy). A card that would
   capture a live device code or bearer token blurs/omits it.
-- **Browser-profile hygiene.** dockview persists layout to `serf.workspace.layout.v1`; a reused
+- **Browser-profile hygiene.** dockview persists layout to `evener.workspace.layout.v1`; a reused
   profile restored stale cross-origin session tabs in W6/W7. Each suite starts from a clean profile
   (or clears that key first) so a restored ghost pane is never mistaken for a product bug.
-- **Cleanup is part of the test.** Idempotent teardown: shut down the spawned hub + every `serf serve`
+- **Cleanup is part of the test.** Idempotent teardown: shut down the spawned hub + every `evener serve`
   daemon it spawned, remove the scratch `HOME`/`XDG_CONFIG_HOME`, and (S4) re-assert the global plugin
   store baseline if `XDG_CONFIG_HOME` isolation is ever in doubt. **Never touch a pre-existing host
   hub** — leave it running and untouched.
@@ -143,7 +143,7 @@ frame / `/api/tree`) when a visual is ambiguous.
 **Surfaces:** spawn pane, session pane, composer/queue/pending, session chrome, model switch, session
 actions (fork/aside/compact/clear/rename), goal, tasks panel.
 **Dedup:** W6 close proved the queue/steer/edit/promote headline on its intermediate tree; W5 could
-**not** (bare `serf serve` advertised the caps as false — hub-spawn is required). M9 re-proves the
+**not** (bare `evener serve` advertised the caps as false — hub-spawn is required). M9 re-proves the
 spine **on the final artifact** and **with W8's rich model catalog live** at spawn (badges/cost/Recent
 now shipped, not the W6 interim Combobox).
 **Cards:** (1) hub-spawn a real session from the spawn pane, picking a model from the **rich catalog**
@@ -196,9 +196,9 @@ lazy chunk survived the deletion; providers→credentials redirect from W8 T1) a
 then **cancelled** (never completed; device code masked). (2) Marketplace add → browse → **install
 with confirm** (Source line) → disable; assert the Installed status dot + no double-fire on Refresh
 (W8 T7 polish). (3) Dir validate (invalid kept, valid added); launch-config edit → resolve → persisted
-to the **isolated** `launch.toml` (Jesse's `~/.serf/launch.toml` untouched). (4) Theme/density persist
+to the **isolated** `launch.toml` (Jesse's `~/.evener/launch.toml` untouched). (4) Theme/density persist
 + `prefers-color-scheme` follows OS; overview shows real daemon data with the **bearer token masked**.
-(5) Two tabs on Credentials: `apiKeySet` in tab A → tab B live-updates via `serf/auth/updated`
+(5) Two tabs on Credentials: `apiKeySet` in tab A → tab B live-updates via `evener/auth/updated`
 (falsify: tab B stale after a broadcast). **Describe** the instance-CRUD boundary: instance
 create/edit/remove now broadcasts (main `28e2b2141`) — confirm it propagates, or record if the absorb
 didn't carry it.
@@ -211,8 +211,8 @@ only credential staleness. M9 sweeps propagation across the session/sidebar/atte
 **Cards:** (1) Two+ tabs: **rename / archive / favorite / project-delete** in one tab propagates to the
 others via the push-fed sidebar (falsify: a second tab needs a reload — the sidebar is poll-free by
 design). (2) A **sandbox escalation** resolved in one tab clears its card in the other via
-`serf/sandbox/escalation/resolved` (the wire-honesty broadcast + reducer case). (3) **Notifications
-leader election** across two tabs: exactly one holds the `serf-hub-os-leader` Web Lock; a needs-you
+`evener/sandbox/escalation/resolved` (the wire-honesty broadcast + reducer case). (3) **Notifications
+leader election** across two tabs: exactly one holds the `evener-hub-os-leader` Web Lock; a needs-you
 transition fires title count + favicon dot on the leader only; re-prove on the final artifact. (4) An
 `ask_user` answered in one tab settles the dock in the other; the needs-you tier updates in both.
 
@@ -241,7 +241,7 @@ that catches a mis-scoped excision.
    `/api/favorite`, `/api/project/delete`, `/s/{ref}/images/{sha}`, `/manifest.webmanifest`,
    `/webassets/*`, `/auth`, and the 4 auth-exempt `/assets/icon-*` all serve (falsify: any 404/500).
 2. **TUI-consumed endpoints (T) survive** — the SPA never touches these, so drive the **real TUI**
-   (built `serf` binary, tmux) against the post-deletion hub, or curl the **13-route `hubapi.Client`
+   (built `evener` binary, tmux) against the post-deletion hub, or curl the **13-route `hubapi.Client`
    contract** (`client_test.go` pins the exact paths): `health`, bare `sessions/{ref}`, `send`,
    `tasks`, `interrupt`, `compact`, `clear`, `fork`, `model`, `spawn`, `spawn-schema`, `models`,
    `tree`. This is the highest-value card — the deletion's whole risk is an endpoint the SPA can't

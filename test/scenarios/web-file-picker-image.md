@@ -36,9 +36,9 @@ combobox, as a real gesture.
 
 ## Pre-state
 
-- `serf-hub` running on an isolated `$HOME` and a kernel-assigned port
+- `evener-hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
+  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - A frontend built with `make build-web` **before** the hub binary. A
   checkout that never ran it ships a one-line `frontend/dist/PLACEHOLDER`
   and serves no app (rebuild matrix item 3 in the runbook).
@@ -56,7 +56,7 @@ combobox, as a real gesture.
    travels in any path and any model can describe it succinctly, so the
    assistant response is easy to falsify:
    ```bash
-   FIXDIR=$(mktemp -d -t serf-e2e-img-XXXX)
+   FIXDIR=$(mktemp -d -t evener-e2e-img-XXXX)
    convert -size 64x64 xc:red "$FIXDIR/red.png"
    file "$FIXDIR/red.png"     # PNG image data, 64 x 64
    ```
@@ -89,7 +89,7 @@ combobox, as a real gesture.
    ```
    action: file_upload
    selector: input[type="file"][accept="image/*"]
-   payload: {"files": ["/tmp/serf-e2e-img-…/red.png"]}
+   payload: {"files": ["/tmp/evener-e2e-img-…/red.png"]}
    ```
    The PNG re-encode is asynchronous (canvas round-trip) — give it a
    moment, then read the staged state:
@@ -135,7 +135,7 @@ combobox, as a real gesture.
    ```
    action: file_upload
    selector: input[type="file"][accept="image/*"]
-   payload: {"files": ["/tmp/serf-e2e-img-…/red.png"]}
+   payload: {"files": ["/tmp/evener-e2e-img-…/red.png"]}
    ```
    ```
    action: eval
@@ -163,7 +163,7 @@ combobox, as a real gesture.
    done
    go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state_dir" \
      --format outline --range last:30
-   TFILE=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
+   TFILE=$(find "$HOME/.local/state/evener/projects" -name "$SID.transcript.jsonl")
    jq -c 'select(.turn.kind=="USER_INPUT")
           | {kind: .turn.kind,
              parts: [.turn.message.content[]
@@ -176,7 +176,7 @@ combobox, as a real gesture.
    (`llm/types.go:137-143`), `TurnUserInput = "USER_INPUT"`
    (`agent/schema/turn.go:16`), `ContentImage = "image"`
    (`llm/types.go:35`). This is a byte-level structural read, which is
-   what raw JSONL is for; use the `serf-doctor` outline above for
+   what raw JSONL is for; use the `evener-doctor` outline above for
    comprehension.
 
 ## Expected

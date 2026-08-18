@@ -6,7 +6,7 @@ Sessions using a configured `kimi-anthropic` instance and wire model `k3`
 start with a 262,144-token context window. Kimi documents `k3` as a
 1,048,576-token model. The provider's Anthropic-compatible `/v1/models`
 response supplies model IDs and display names but no context-window field, so
-Serf's live model enrichment cannot correct the provider-wide 262,144 default.
+Evener's live model enrichment cannot correct the provider-wide 262,144 default.
 
 The vendored LiteLLM catalog does not currently contain `k3`; running
 `scripts/refresh-model-catalog.sh --check` therefore cannot supply the missing

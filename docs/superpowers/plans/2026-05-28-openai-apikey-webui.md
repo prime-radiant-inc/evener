@@ -183,7 +183,7 @@ Expected: PASS (new tests pass; existing OAuth/env status + logout tests still p
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(serf-hub): openai status reflects credentials.toml file layer (PRI-1877)"
+git commit -m "feat(evener-hub): openai status reflects credentials.toml file layer (PRI-1877)"
 ```
 
 ---
@@ -253,7 +253,7 @@ Expected: PASS (openai now persists; the existing anthropic ApiKeySet test still
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(serf-hub): allow setting an OpenAI API key via credentials (PRI-1877)"
+git commit -m "feat(evener-hub): allow setting an OpenAI API key via credentials (PRI-1877)"
 ```
 
 ---
@@ -378,7 +378,7 @@ Expected: PASS (new tests pass; existing OAuth-only logout still reports removed
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(serf-hub): openai logout clears the effective credential layer (PRI-1877)"
+git commit -m "feat(evener-hub): openai logout clears the effective credential layer (PRI-1877)"
 ```
 
 ---
@@ -456,9 +456,9 @@ Then replace this paragraph:
 
 ```
 The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
-the `serf/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
-`~/.serf/auth/openai.json` file; OAuth flows are triggered from the same
-UIs via `serf/auth/login/start`.
+the `evener/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
+`~/.evener/auth/openai.json` file; OAuth flows are triggered from the same
+UIs via `evener/auth/login/start`.
 
 Process-env credentials (e.g., `ANTHROPIC_API_KEY` exported in the shell)
 still work as a fallback when no file entry exists for the provider —
@@ -470,7 +470,7 @@ with:
 
 ```
 The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
-the `serf/auth/apiKey/set` RPC. Process-env credentials (e.g.,
+the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
 `ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
 file entry exists for the provider — matching the `hub.env` style for users
 who prefer external secret management.
@@ -479,7 +479,7 @@ who prefer external secret management.
 
 OpenAI supports both an API key (stored in `credentials.toml` like any other
 provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
-`serf/auth/login/start`; state stored in `~/.serf/auth/openai.json`).
+`evener/auth/login/start`; state stored in `~/.evener/auth/openai.json`).
 
 The effective credential is resolved by precedence:
 
@@ -498,7 +498,7 @@ interchangeable credentials for one endpoint.
 
 ```bash
 git add cmd/evener-hub/README.md
-git commit -m "docs(serf-hub): document OpenAI API-key support and cred precedence (PRI-1877)"
+git commit -m "docs(evener-hub): document OpenAI API-key support and cred precedence (PRI-1877)"
 ```
 
 ---

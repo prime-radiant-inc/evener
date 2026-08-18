@@ -11,17 +11,17 @@ written for the plugin's native host: Claude Code plugins commonly use aliases
 such as `sonnet`, `opus`, and `haiku`, while other plugins may name an exact
 Claude or Codex model. They are not universally valid model IDs.
 
-Serf currently applies a plugin agent's non-`inherit` model directly to the
+Evener currently applies a plugin agent's non-`inherit` model directly to the
 parent profile. A Kimi session that delegates to an agent declaring
 `model: sonnet` therefore constructs a Kimi profile whose wire model is
 literally `sonnet`. The provider rejects the resulting request; in the
 observed case the incompatible model also selected thinking behavior that
-conflicted with Serf's required tool choice.
+conflicted with Evener's required tool choice.
 
 This design makes plugin agent models provider-local, advisory preferences.
-Serf resolves a known catalog alias to a concrete model, verifies that the
+Evener resolves a known catalog alias to a concrete model, verifies that the
 active provider instance advertises the concrete model, and uses it only when
-that verification succeeds. Otherwise Serf treats the plugin model as
+that verification succeeds. Otherwise Evener treats the plugin model as
 unspecified and falls through to the delegate call's explicit `model`
 argument, then to the parent model.
 
@@ -71,7 +71,7 @@ selection.
 ## Current behavior and root cause
 
 `plugin.Agent.Model` stores the frontmatter string and defaults to `inherit`.
-During `prepareSubagentRun`, Serf first resolves the delegate call's `model`
+During `prepareSubagentRun`, Evener first resolves the delegate call's `model`
 argument and then replaces it with the plugin agent model when the latter is
 non-empty and not `inherit`.
 
@@ -84,7 +84,7 @@ This is a semantic mismatch:
 
 - Claude Code's `sonnet`, `opus`, and `haiku` values are aliases resolved by
   the Claude Code runtime.
-- Serf currently treats the same values as provider wire model IDs.
+- Evener currently treats the same values as provider wire model IDs.
 - Speaking the Anthropic wire protocol does not make a provider an Anthropic
   model host. Kimi's behavior tag and advertised model set remain Kimi's.
 
@@ -94,7 +94,7 @@ would regress models that support required tool choice.
 
 ## Existing seams to reuse
 
-Serf already has the two mechanisms this feature needs:
+Evener already has the two mechanisms this feature needs:
 
 1. `llm.ModelInfo.Aliases` and `ModelCatalog.GetModelInfo` map an alias to its
    canonical `ModelInfo`. Real model IDs take precedence over aliases.
@@ -104,7 +104,7 @@ Serf already has the two mechanisms this feature needs:
 
 The embedded catalog's production data currently declares no aliases. The
 alias mechanism is implemented and tested, but this change must add only the
-aliases Serf intentionally supports. Initially:
+aliases Evener intentionally supports. Initially:
 
 - `sonnet`
 - `opus`
@@ -200,7 +200,7 @@ When the plugin alias resolves to a concrete model, the child profile uses the
 provider's advertised wire ID, not the original alias.
 
 If the plugin candidate already equals the parent profile's current concrete
-model, Serf may use the parent profile without another enumeration.
+model, Evener may use the parent profile without another enumeration.
 
 The plugin preference is unavailable when:
 
@@ -372,7 +372,7 @@ serialized payloads.
 ## Documentation changes
 
 - Update plugin agent documentation to state that `model` is a
-  provider-local preference under Serf.
+  provider-local preference under Evener.
 - Document the resolution order:
   `available plugin model -> explicit delegate model -> parent model`.
 - Document that plugin metadata never triggers a provider switch.

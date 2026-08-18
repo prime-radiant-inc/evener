@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go (workspace root module `primeradiant.com/evener`), make, table-driven Go tests with fault injection.
 
-**Spec:** The five kata bodies, quoted verbatim inside each task below. Kata refs: 96cp, g422, sc17, tbqd, fbmy in the `serf` kata project.
+**Spec:** The five kata bodies, quoted verbatim inside each task below. Kata refs: 96cp, g422, sc17, tbqd, fbmy in the `evener` kata project.
 
 ## Global Constraints
 
@@ -39,7 +39,7 @@
 >
 > maybeAutoSave (agent/session.go) writes Meta() on every autosave. So resuming a delegate writes is_subagent:false back into its meta.json, and the flag is gone for every later reader and every subsequent resume. It is a one-way erasure of durable lineage.
 >
-> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. serf-doctor sessions reads it; so would any future gate on "is this session someone's delegate".
+> Impact today: anything keying on the persisted flag misclassifies a resumed delegate as a root session. evener-doctor sessions reads it; so would any future gate on "is this session someone's delegate".
 >
 > Found independently by two reviewers auditing a separate design. Neither reproduced it at runtime -- this is a code reading of Meta(), isSubagentSession() and maybeAutoSave. VERIFY BY REPRODUCTION FIRST: resume a delegate with 'serve --resume', let an autosave land, and diff meta.json. If a guard elsewhere prevents the rewrite, close this with that evidence.
 >
@@ -109,13 +109,13 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 > [Jesse, priority comment:] Priority 3: latent capability-detection bug - a renamed or aliased Claude 5 model silently gets the wrong request shape (sampling params, thinking config). Nothing misfires today and the fix is small, so it is below the live defects.
 
 **Files:**
-- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Serf-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/serf_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
+- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Evener-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/serf_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
 - Test: `llm/providers/anthropic/claude5_test.go`, `llm/model_catalog_test.go`
 
 **Investigation facts (verified against this tree):**
 - `buildRequestBody` already holds a full catalog entry `mi` (`request.go:135-144`, via `llm.EmbeddedModelCatalog().LookupModelInfo(apiModel)`) near the point where the three claude5 decisions apply: omit temperature/top_p (`request.go:65-69`), force adaptive thinking, add `thinking.display = "summarized"` (`request.go:146-157`). But note `claude5` is computed at line 35 and the sampling-param decisions at 65-69 run BEFORE the line-135 lookup — you will need the catalog entry earlier in the function.
 - **Trap 1:** the comment's suggested flag `thinking-always-on` already exists as `ThinkingAlwaysOn` and means something DIFFERENT and narrower: `claude-sonnet-5` is explicitly `ThinkingAlwaysOn == false` (pinned by `TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5`, `llm/model_catalog_test.go:284-286`) while `isClaude5OrNewer("claude-sonnet-5") == true`. Do NOT rewire to ThinkingAlwaysOn. A new flag is needed; name it for what it means in the domain (the Claude 5+ request generation/shape), not its history.
-- **Trap 2:** the vendored upstream data (`llm/data/litellm_model_catalog.json`) carries `"supports_sampling_params": false` on the Claude 5 family — but ALSO on `claude-opus-4-7` and `claude-opus-4-8`, which `isClaude5OrNewer` deliberately returns false for today. `parseLiteLLMCatalog` never reads that key and no `SupportsSamplingParams` field exists on ModelInfo. Changing opus-4-7/4-8's request shape is OUT OF SCOPE for this kata (nothing misfires today; widening the set is a separate ruling). Recommended: a Serf-authored overlay flag on exactly the models the current helper matches, not a parse of the upstream key. Note the unconsumed upstream key in your report so it is on the record.
+- **Trap 2:** the vendored upstream data (`llm/data/litellm_model_catalog.json`) carries `"supports_sampling_params": false` on the Claude 5 family — but ALSO on `claude-opus-4-7` and `claude-opus-4-8`, which `isClaude5OrNewer` deliberately returns false for today. `parseLiteLLMCatalog` never reads that key and no `SupportsSamplingParams` field exists on ModelInfo. Changing opus-4-7/4-8's request shape is OUT OF SCOPE for this kata (nothing misfires today; widening the set is a separate ruling). Recommended: a Evener-authored overlay flag on exactly the models the current helper matches, not a parse of the upstream key. Note the unconsumed upstream key in your report so it is on the record.
 - Which entries need the flag: overrides entries exist for `claude-sonnet-5` and `claude-fable-5`; `claude-opus-5` exists only in the base catalog (you may add an overrides entry for it). Dated variants (`claude-sonnet-5-20260901` etc.) resolve through `LookupModelInfo`'s family-ID fallback (`llm/model_catalog.go:114-143`) — verify with a test rather than assuming.
 - Fallback semantics: models with no catalog entry at all (e.g. hypothetical `claude-fable-6`) currently get claude5=true via generation parsing, and `TestIsClaude5OrNewer` (`llm/providers/anthropic/claude5_test.go:15-36`) pins `claude-fable-6 → true`. Keep the generation parse as the fallback when the catalog has no entry for the model, so an unknown-but-newer model keeps the safe request shape; the catalog flag takes over whenever an entry resolves. That is what "rewired to it" can mean without regressing the pinned future-family behavior. If you find evidence this fallback is wrong, stop and report rather than deleting the pinned cases.
 - Existing request-shape tests that must stay green as-is: `TestBuildRequestBody_Claude5_AdaptiveWithDisplay`, `TestBuildRequestBody_Claude5_NoEffort_StillAdaptiveDisplay`, `TestBuildRequestBody_OlderAdaptiveModels_NoDisplayField` (opus-4-6/sonnet-4-6 byte-identical contract), `TestBuildRequestBody_Claude5_OmitsSamplingParams`, `TestBuildRequestBody_Claude5_1MSuffixStripped` (all in `llm/providers/anthropic/claude5_test.go`).

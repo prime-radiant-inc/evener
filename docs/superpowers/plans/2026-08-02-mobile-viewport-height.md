@@ -235,8 +235,8 @@ git commit -m "fix(webui): fit mobile shell to visible viewport"
 Inspect running processes and repository documentation or scripts:
 
 ```bash
-pgrep -af 'serf-hub|cmd/evener-hub'
-rg -n "restart.*hub|serf-hub.*restart|launchctl|systemctl" README.md docs Makefile scripts cmd -g '!**/node_modules/**'
+pgrep -af 'evener-hub|cmd/evener-hub'
+rg -n "restart.*hub|evener-hub.*restart|launchctl|systemctl" README.md docs Makefile scripts cmd -g '!**/node_modules/**'
 ```
 
 Use the established lifecycle mechanism. Do not kill unrelated processes or invent a new service configuration.

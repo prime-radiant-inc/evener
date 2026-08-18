@@ -21,7 +21,7 @@ Phase 5.2.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md`); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-catchup-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-catchup-XXXXX)`.
 
 ## Steps
 

@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Tighten Serf Hub’s WebUI transcript reader and transcript-related settings panel by improving typography and spacing, and by limiting preformatted/monospace presentation to genuinely machine-oriented content.
+Tighten Evener Hub’s WebUI transcript reader and transcript-related settings panel by improving typography and spacing, and by limiting preformatted/monospace presentation to genuinely machine-oriented content.
 
 The work is intentionally a presentation pass. It must not alter transcript transport, lazy loading, tool behavior, disclosure behavior, status semantics, or preference persistence.
 
@@ -128,7 +128,7 @@ No new data flow is introduced:
 2. `renderer.js` and `renderer-tools.js` build the same semantic DOM structures.
 3. CSS applies prose versus machine-text typography based on existing message classes and elements/classes emitted by the renderer.
 4. The settings partial renders the same inputs.
-5. `settings-transcript.js` continues to read/write `serf-hub.transcript.systemStatus`, synchronize ON/OFF labels, emit the existing change event, and show the existing saved toast.
+5. `settings-transcript.js` continues to read/write `evener-hub.transcript.systemStatus`, synchronize ON/OFF labels, emit the existing change event, and show the existing saved toast.
 
 ## Edge cases
 

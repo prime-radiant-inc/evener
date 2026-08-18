@@ -102,7 +102,7 @@ and delegate timers.
 
 ## Workstream D — drive to 100 and lock it
 
-**D1** — per target, use `serf-fuzzcov`'s uncovered-line output to add seeds/oracles
+**D1** — per target, use `evener-fuzzcov`'s uncovered-line output to add seeds/oracles
 until focus-set ≈100% (or document genuinely-unreachable lines with a reason).
 **D2** — flip the gap floor to BLOCKING in `ci.yml` once Workstream A lands; ratchet
 focus-set floors upward (`BLESS=1`). **D3** — the only ignore-list entries are the

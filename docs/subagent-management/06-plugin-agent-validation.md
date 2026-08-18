@@ -1,6 +1,6 @@
 # Plugin Agent Validation
 
-Status: Proposed evergreen spec. Current serf plugin loading supports Claude/Codex-style plugin manifests and markdown agent definitions, but validation is intentionally thin in several places. This spec hardens plugin and plugin-agent validation without changing the successful load path for valid existing plugins.
+Status: Proposed evergreen spec. Current evener plugin loading supports Claude/Codex-style plugin manifests and markdown agent definitions, but validation is intentionally thin in several places. This spec hardens plugin and plugin-agent validation without changing the successful load path for valid existing plugins.
 
 > **Evergreen pointer:** the validation behavior from this spec that has actually shipped is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Plugin and agent loading"). This file is the point-in-time design record; much of what follows is proposed, not built.
 
@@ -73,9 +73,9 @@ Validate every plugin agent markdown file after parsing frontmatter and before a
 - `name`: required, non-empty, and kebab-case using the same rule as plugin names. Plugin package keys remain `plugin-name:agent-name`; the session catalog must preserve existing exposure behavior, including `coordinator-workflow` exposing bundled agents by bare `agent.Name` through `exposedAgentCatalogKey`.
 - `description`: required non-empty string.
 - Duplicate agent names within one plugin: error with both source file paths. Never silently overwrite an earlier definition.
-- `model`: optional. Phase 1 should only validate basic string shape and the reserved `inherit` value, because the plugin package does not know the session's provider instances. Validate resolvability against the documented Serf model/profile reference grammar at the resolver boundary used for `delegate` model overrides. Claude aliases such as `sonnet`, `opus`, and `haiku` may be accepted only if that resolver or a compatibility layer intentionally supports them.
+- `model`: optional. Phase 1 should only validate basic string shape and the reserved `inherit` value, because the plugin package does not know the session's provider instances. Validate resolvability against the documented Evener model/profile reference grammar at the resolver boundary used for `delegate` model overrides. Claude aliases such as `sonnet`, `opus`, and `haiku` may be accepted only if that resolver or a compatibility layer intentionally supports them.
 - `color`: optional non-empty string. Treat it as a display hint. Keep it free-form unless a Claude-compatible color set is deliberately documented; if constrained later, make that a compatibility choice with tests.
-- `tools`: either scalar `all` or a list of non-empty strings. Preserve current rejection of scalar `*` and list entries `all` or `*`. Continue mapping Claude tool names to Serf canonical names during load.
+- `tools`: either scalar `all` or a list of non-empty strings. Preserve current rejection of scalar `*` and list entries `all` or `*`. Continue mapping Claude tool names to Evener canonical names during load.
 - `skills`: list of non-empty strings. Do not require global/session skills during Phase 1. Plugin-local skill references may be checked after plugin skills have been discovered if local naming rules are documented.
 - `tasks`: list of task template objects. Each object must be either:
   - a concrete task with non-empty `title` and non-empty `prompt`, plus optional valid `type` and `reasoning_effort`; or
@@ -100,7 +100,7 @@ Phase 2 runs after the session has resolved:
 - `tools: all` means every tool available to this session and permitted for this child by parent-effective policy. It never bypasses parent/session restrictions and must still exclude root-only subagent-management tools from child visibility and forged execution.
 - Explicit tool lists are intersected with the parent/session effective allowed tools before exposure to the child model.
 - The effective result tool (`communicate` by default, or the configured `ResultToolName`) remains available to children even when an explicit tool list narrows the registry, matching `RestrictKeepingResultTool`.
-- Current Serf treats plugin-agent `tools: all` as an unrestricted child registry request after child session initialization, with root-only tools stripped by depth. Implementing the parent/session effective-policy intersection is a deliberate Phase 2 migration and needs characterization tests for the current behavior plus target tests for hidden non-root tools.
+- Current Evener treats plugin-agent `tools: all` as an unrestricted child registry request after child session initialization, with root-only tools stripped by depth. Implementing the parent/session effective-policy intersection is a deliberate Phase 2 migration and needs characterization tests for the current behavior plus target tests for hidden non-root tools.
 - Built-in/static unknown tool names should fail fast at session startup for loaded agents.
 - MCP-dependent names may be deferred to spawn time only if MCP discovery can be partial or dynamic. The chosen behavior must be deterministic and documented.
 - A tool hidden from the child model must also be denied if a forged or stale model response attempts to call it.
@@ -147,8 +147,8 @@ If validation remains internal to `plugin.Load`, expose only `ValidationError` f
 A minimal CLI linter is useful only if there is already a CLI command surface for plugin tooling. If added, keep it read-only:
 
 ```text
-serf plugin validate <plugin-dir>
-serf plugin validate --json <plugin-dir>
+evener plugin validate <plugin-dir>
+evener plugin validate --json <plugin-dir>
 ```
 
 Text output:
@@ -280,7 +280,7 @@ Group multiple issues for one plugin when practical so authors can fix them in o
 
 ## Compatibility notes
 
-- The manifest path precedence is `.claude-plugin/plugin.json` before `.codex-plugin/plugin.json`: serf preserves context across resume (it replays the transcript), so it must use the Claude flavor, whose SessionStart hooks do not re-inject on resume. (Earlier serf preferred `.codex-plugin`, which re-injected the using-superpowers skill on every resume; that was reverted.)
+- The manifest path precedence is `.claude-plugin/plugin.json` before `.codex-plugin/plugin.json`: evener preserves context across resume (it replays the transcript), so it must use the Claude flavor, whose SessionStart hooks do not re-inject on resume. (Earlier evener preferred `.codex-plugin`, which re-injected the using-superpowers skill on every resume; that was reverted.)
 - `tools` continues to support Claude tool-name mapping through `toolname.ClaudeToSerf` during agent parsing.
 - Plugin package agent maps remain namespaced as `plugin-name:agent-name`; session exposure preserves the current `coordinator-workflow` bare-name compatibility exception.
 - MCP server names remain prefixed as `plugin_<pluginName>_...`.

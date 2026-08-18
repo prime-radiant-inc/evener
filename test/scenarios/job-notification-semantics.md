@@ -27,8 +27,8 @@ Restart-side exactly-once is job-restart-durability.md.
   (`docs/agentic-testing.md`). Serve mode through the hub is REQUIRED:
   idle wake rides the server-wired notify func.
 - Credentialed model. Two workdirs:
-  `tmpA=$(mktemp -d -t serf-e2e-notif-XXXXX)` and
-  `tmpB=$(mktemp -d -t serf-e2e-notifbatch-XXXXX)`; write the
+  `tmpA=$(mktemp -d -t evener-e2e-notif-XXXXX)` and
+  `tmpB=$(mktemp -d -t evener-e2e-notifbatch-XXXXX)`; write the
   AGENTS.md pacing file (per `docs/agentic-testing.md`) into `$tmpB`
   only.
 
@@ -51,7 +51,7 @@ Run 1 — session A in `$tmpA`: per-job cardinality and format.
    later and wake the session. Let it settle back to `idle`, then keep
    watching for 3 more minutes (re-delivery window).
 3. Read the transcript
-   (`find ~/.local/state/serf/projects -name "$SID_A.transcript.jsonl"`)
+   (`find ~/.local/state/evener/projects -name "$SID_A.transcript.jsonl"`)
    and the durable log (`...sessions/$SID_A/jobs.jsonl`).
 
 Run 2 — session B in `$tmpB`: mid-turn batching.

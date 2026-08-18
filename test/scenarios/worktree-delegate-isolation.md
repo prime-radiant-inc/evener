@@ -9,7 +9,7 @@ with `isolation: "worktree"`; the harness creates a managed lane named
 a dirty tree. This path had ZERO live coverage before this card.
 
 Live end-to-end, real provider (billed). Needs delegate capability (default
-`serf run` at depth ≥ 1).
+`evener run` at depth ≥ 1).
 
 ## Pre-state
 
@@ -54,7 +54,7 @@ Remove the scratch state + demo repo (unique temp paths).
 
 ## Sharp edges
 
-- Disposal runs at *parent-session close*; in a one-shot `serf run` that's when
+- Disposal runs at *parent-session close*; in a one-shot `evener run` that's when
   the run ends, so inspect on-disk state AFTER the process exits, not during.
 - The delegate id is the branch/lane name (`dlg_…`); find it in the job result
   or via `git branch --list 'dlg_*'`.

@@ -10,7 +10,7 @@ live-notification convergence.
 
 ## Pre-state
 
-- An isolated hub built from the branch under test, running with `-serf` set
+- An isolated hub built from the branch under test, running with `-evener` set
   so it can spawn fresh daemons on resume — the scratch `$HOME` and
   kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
   never Jesse's real hub. The isolation is load-bearing twice over here:
@@ -28,9 +28,9 @@ live-notification convergence.
    or a direct RPC call) — confirm the call returns success and the marker
    turn appears in the transcript.
 3. Find and **kill** the daemon backing the session (same technique as
-   `reconnect-auto-resume.md`: `ls "$HOME"/.serf/run/*.json` for the pid —
+   `reconnect-auto-resume.md`: `ls "$HOME"/.evener/run/*.json` for the pid —
    the scratch `$HOME` from Pre-state, so the glob only ever names this
-   card's own daemons — or `ps aux | grep "serf serve.*<session_id>"`).
+   card's own daemons — or `ps aux | grep "evener serve.*<session_id>"`).
    Confirm the rendezvous file is gone and the process is dead.
 4. Trigger resume: send a new turn to the session (via the hub UI or
    `turn/start`) — the hub's auto-resume path (`hubThreadResume`) should

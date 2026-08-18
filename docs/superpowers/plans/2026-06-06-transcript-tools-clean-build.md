@@ -265,7 +265,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		if sh == "" {
 			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 		}
-		return filepath.Join(sh, "serf", "projects", hash), id, scopeAllProjects, nil
+		return filepath.Join(sh, "evener", "projects", hash), id, scopeAllProjects, nil
 	}
 	if err := validIDToken(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)

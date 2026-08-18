@@ -6,7 +6,7 @@ Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 
 ## 1. Goal
 
-SP1 turns the unified Claude Code-style `config.json` schema into a single typed value that the rest of serf reads. It parses up to three tiers of config — global at `~/.config/serf/config.json`, project at `<git-root>/.serf/config.json`, and zero-or-more `--config <path>` files from the CLI — and merges them per Claude Code's documented precedence rules. SP1 owns the five top-level fields (`marketplaces`, `enabledPlugins`, `hooks`, `mcpServers`, `permissions`), validates them structurally, surfaces errors with file path + offending field, and exposes the merged result. SP1 does not interpret the values inside `hooks`, `mcpServers`, `marketplaces`, or `permissions` beyond the merge — downstream sub-projects (SP2/SP3/SP5/SP6) own that semantics.
+SP1 turns the unified Claude Code-style `config.json` schema into a single typed value that the rest of evener reads. It parses up to three tiers of config — global at `~/.config/evener/config.json`, project at `<git-root>/.evener/config.json`, and zero-or-more `--config <path>` files from the CLI — and merges them per Claude Code's documented precedence rules. SP1 owns the five top-level fields (`marketplaces`, `enabledPlugins`, `hooks`, `mcpServers`, `permissions`), validates them structurally, surfaces errors with file path + offending field, and exposes the merged result. SP1 does not interpret the values inside `hooks`, `mcpServers`, `marketplaces`, or `permissions` beyond the merge — downstream sub-projects (SP2/SP3/SP5/SP6) own that semantics.
 
 ## 2. Public API Surface
 
@@ -164,7 +164,7 @@ Layers arrive low-precedence-first: global → project → `--config A` → `--c
 
 ### Worked Example
 
-Global `~/.config/serf/config.json`:
+Global `~/.config/evener/config.json`:
 
 ```json
 {
@@ -174,7 +174,7 @@ Global `~/.config/serf/config.json`:
 }
 ```
 
-Project `.serf/config.json`:
+Project `.evener/config.json`:
 
 ```json
 {
@@ -210,21 +210,21 @@ Validation rules and the errors they produce:
 
 | Condition | Error text format |
 |---|---|
-| `os.ReadFile` failure other than `ErrNotExist` | `reading serf config <path>: <wrapped err>` |
-| `json.Unmarshal` of top-level object fails | `parsing serf config <path>: <wrapped err>` |
-| Top-level is not a JSON object | `serf config <path>: top-level must be a JSON object` |
-| `hooks` is not an object | `serf config <path>: field "hooks": must be an object of event-name to array` |
-| `hooks.<event>` value is not an array | `serf config <path>: field "hooks.<event>": must be an array` |
-| `marketplaces` / `enabledPlugins` / `mcpServers` not an object | `serf config <path>: field "<name>": must be an object` |
-| `permissions` not an object | `serf config <path>: field "permissions": must be an object` |
-| `permissions.allow` / `permissions.deny` not an array of strings | `serf config <path>: field "permissions.<allow|deny>": must be an array of strings` |
-| `permissions.defaultMode` not a string | `serf config <path>: field "permissions.defaultMode": must be a string` |
+| `os.ReadFile` failure other than `ErrNotExist` | `reading evener config <path>: <wrapped err>` |
+| `json.Unmarshal` of top-level object fails | `parsing evener config <path>: <wrapped err>` |
+| Top-level is not a JSON object | `evener config <path>: top-level must be a JSON object` |
+| `hooks` is not an object | `evener config <path>: field "hooks": must be an object of event-name to array` |
+| `hooks.<event>` value is not an array | `evener config <path>: field "hooks.<event>": must be an array` |
+| `marketplaces` / `enabledPlugins` / `mcpServers` not an object | `evener config <path>: field "<name>": must be an object` |
+| `permissions` not an object | `evener config <path>: field "permissions": must be an object` |
+| `permissions.allow` / `permissions.deny` not an array of strings | `evener config <path>: field "permissions.<allow|deny>": must be an array of strings` |
+| `permissions.defaultMode` not a string | `evener config <path>: field "permissions.defaultMode": must be a string` |
 
 Missing file produces no error and no warning — matches the existing `mcp.json` "absence is fine" convention.
 
-Unknown top-level keys and unknown keys inside `permissions` produce one warning to `stderr` per occurrence, prefixed `serf config <path>: ignoring unknown field "<name>"`. They do not abort the load.
+Unknown top-level keys and unknown keys inside `permissions` produce one warning to `stderr` per occurrence, prefixed `evener config <path>: ignoring unknown field "<name>"`. They do not abort the load.
 
-`DiscoverSerfConfig` wraps any underlying error with the tier label, e.g. `--config <path>: serf config <path>: field "hooks.PreToolUse": must be an array`. The wrap is purely for the CLI-tier breadcrumb; the inner message already has the file path.
+`DiscoverSerfConfig` wraps any underlying error with the tier label, e.g. `--config <path>: evener config <path>: field "hooks.PreToolUse": must be an array`. The wrap is purely for the CLI-tier breadcrumb; the inner message already has the file path.
 
 ## 6. Error Contracts
 
@@ -274,7 +274,7 @@ Table-driven `TestLoadSerfConfigFile`. Each row: name, file body (or "absent"), 
 | 5 | Permissions partial (allow only) | `{"permissions":{"allow":["Bash(ls:*)"]}}` | `Allow == ["Bash(ls:*)"]`, `Deny == nil`, `DefaultMode == ""` |
 | 6 | Hook event with empty array | `{"hooks":{"PreToolUse":[]}}` | `Hooks["PreToolUse"] != nil && len == 0` |
 | 7 | Top-level not an object | `[]` | error contains `top-level must be a JSON object` |
-| 8 | Malformed JSON | `{` | error contains `parsing serf config` |
+| 8 | Malformed JSON | `{` | error contains `parsing evener config` |
 | 9 | `hooks` not an object | `{"hooks":[]}` | error contains `field "hooks"` |
 | 10 | `hooks.<event>` not array | `{"hooks":{"PreToolUse":{}}}` | error contains `field "hooks.PreToolUse"` |
 | 11 | `marketplaces` not object | `{"marketplaces":[]}` | error contains `field "marketplaces"` |
@@ -287,10 +287,10 @@ Table-driven `TestLoadSerfConfigFile`. Each row: name, file body (or "absent"), 
 | 18 | `permissions.defaultMode` not string | `{"permissions":{"defaultMode":42}}` | error contains `field "permissions.defaultMode"` |
 | 19 | Unknown top-level field | `{"themes":{}}` | no error; one stderr warning containing `unknown field "themes"` |
 | 20 | Unknown `permissions` subfield | `{"permissions":{"foo":1}}` | no error; one stderr warning containing `unknown field "permissions.foo"` |
-| 21 | Permission denied on file | unreadable file via 0000 mode | error contains `reading serf config` |
+| 21 | Permission denied on file | unreadable file via 0000 mode | error contains `reading evener config` |
 | 22 | All five top-level fields error message names the path | `<tmp>/config.json` malformed | error text starts with `<tmp>/config.json` (suffix-match the full path) |
 
-Rows 19–20 capture stderr via a swapped logger or a small `bytes.Buffer` sink. If serf already standardizes on a logger, route warnings through it; otherwise `log.New(os.Stderr, ...)` and inject the writer for tests.
+Rows 19–20 capture stderr via a swapped logger or a small `bytes.Buffer` sink. If evener already standardizes on a logger, route warnings through it; otherwise `log.New(os.Stderr, ...)` and inject the writer for tests.
 
 ### 8.2 `MergeSerfConfigs`
 
@@ -317,23 +317,23 @@ Table-driven `TestMergeSerfConfigs`. Pure-function tests, no filesystem.
 
 Integration-style but still hermetic — every path lives under `t.TempDir()`. Uses a `LocalExecutionEnvironment` rooted at a synthetic git repo (`git init` via `os/exec`; `t.Skip` if `git` is absent, matching the SP3/SP4 fixture rule).
 
-To redirect global lookup, `globalSerfConfigPath` reads `XDG_CONFIG_HOME` — tests set `t.Setenv("XDG_CONFIG_HOME", tmp)` and create `<tmp>/serf/config.json`.
+To redirect global lookup, `globalSerfConfigPath` reads `XDG_CONFIG_HOME` — tests set `t.Setenv("XDG_CONFIG_HOME", tmp)` and create `<tmp>/evener/config.json`.
 
 | # | Case | Setup | Expect |
 |---|---|---|---|
 | 1 | All three tiers absent | no files written | zero SerfConfig, no error |
-| 2 | Only global present | `<xdg>/serf/config.json` populated | merged = global |
-| 3 | Only project present (inside git repo) | `<repo>/.serf/config.json` | merged = project |
+| 2 | Only global present | `<xdg>/evener/config.json` populated | merged = global |
+| 3 | Only project present (inside git repo) | `<repo>/.evener/config.json` | merged = project |
 | 4 | Only `--config` present | one CLI path passed | merged = CLI |
 | 5 | All three tiers present, hooks concat | distinct hook entries per tier | merged hooks = `[global, project, cli]` for the event |
 | 6 | Multiple `--config` in order | two CLI paths | merged hooks = `[g, p, cli0, cli1]` |
-| 7 | Project file ignored when cwd not in a git repo | `.serf/config.json` in non-repo dir | project tier skipped, no error |
+| 7 | Project file ignored when cwd not in a git repo | `.evener/config.json` in non-repo dir | project tier skipped, no error |
 | 8 | Malformed global file aborts | global is `{` | error contains global path |
 | 9 | Malformed project file aborts | project is `{` | error contains project path |
 | 10 | Malformed CLI file aborts | CLI path is `{` | error contains `--config <path>` and the file path |
 | 11 | Missing CLI file is an error | `--config /nonexistent` | non-nil error |
 | 12 | Sources order reflects merge order | all tiers populated | `Sources` is `[global, project, cli0, cli1]` |
-| 13 | Project tier discovered via git root, not cwd | cwd is `<repo>/sub/dir`, config at `<repo>/.serf/config.json` | project tier merged |
+| 13 | Project tier discovered via git root, not cwd | cwd is `<repo>/sub/dir`, config at `<repo>/.evener/config.json` | project tier merged |
 
 ### 8.4 Fixtures
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Eliminate streaming jank in the Serf web hub transcript: frame-batched live events, coalesced markdown parsing, frozen-head/raw-tail long messages, idempotent finalization, append-only tool output, browser-native windowing, throttled scroll handling.
+**Goal:** Eliminate streaming jank in the Evener web hub transcript: frame-batched live events, coalesced markdown parsing, frozen-head/raw-tail long messages, idempotent finalization, append-only tool output, browser-native windowing, throttled scroll handling.
 
 **Architecture:** No bundler, vanilla JS modules sharing `window.SerfRendererInternal`, loaded in dependency order (see `cmd/evener-hub/jstest/load-renderer.js` and `cmd/evener-hub/templates/app.html`). Live socket events batch per frame at the single `deliverNotification` site; synchronous replay paths (hydration, prepend) bypass the queue. Spec: `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md` (§1 + Increments 1–4). Increments 5–9 (layout/CSS/launchpad) are Plan B, written after this lands.
 
@@ -957,7 +957,7 @@ git commit -m "renderer: frozen-head/raw-tail streaming for long assistant messa
 
 ### Task 10: Idempotent finalization (interrupt + codex END-after-TURN_COMPLETED)
 
-Finalization runs on `ASSISTANT_TEXT_END`, `TURN_COMPLETED`, or `SESSION_END` — whichever first — and is idempotent: a late `ASSISTANT_TEXT_END` replaces the finalized block in place, never appends a duplicate. Interrupt never emits `ASSISTANT_TEXT_END` (serf source), so without this an interrupted long message stays raw forever; the codex path emits END right after TURN_COMPLETED, which without idempotence double-renders.
+Finalization runs on `ASSISTANT_TEXT_END`, `TURN_COMPLETED`, or `SESSION_END` — whichever first — and is idempotent: a late `ASSISTANT_TEXT_END` replaces the finalized block in place, never appends a duplicate. Interrupt never emits `ASSISTANT_TEXT_END` (evener source), so without this an interrupted long message stays raw forever; the codex path emits END right after TURN_COMPLETED, which without idempotence double-renders.
 
 **Files:**
 - Modify: `cmd/evener-hub/assets/renderer.js` — `finalizeAssistantMessage` (:2236-2251), `TURN_COMPLETED` case (:1104-1106, finalize BEFORE the turn-meta block), `SESSION_END` case (~1374), `beginAssistantMessage` (clear the guard)
@@ -1659,5 +1659,5 @@ git commit -m "renderer: rAF-throttled scroll handler + cached error anchors"
 ## Final verification (after Task 15)
 
 - [ ] Full gate: `make build-hub && cmd/evener-hub/jstest/run-all.sh && go test ./cmd/evener-hub`
-- [ ] Manual smoke with live assets: `SERF_HUB_ASSETS_DIR=$PWD/cmd/evener-hub ./serf-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
+- [ ] Manual smoke with live assets: `SERF_HUB_ASSETS_DIR=$PWD/cmd/evener-hub ./evener-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
 - [ ] Playwright before/after screenshots (390/768/1100/1440/2560 × dark) archived to `/tmp/webui-study/after/` for the visual review with the product owner.

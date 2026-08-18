@@ -42,18 +42,18 @@ Do not merge `wip/p2-thirdwave-apilog-core` as a commit range. It contains
 useful regressions and reviewed findings mixed with rejected architecture.
 Harvest only behavior required by this design onto the program execution
 branch. Existing accepted transcript, grouping, and fuzz work on
-`wip/systemic-serf-harness-execution` remains the integration base.
+`wip/systemic-evener-harness-execution` remains the integration base.
 
 ## Supported Ownership Model
 
-A session has one owning Serf process. Concurrent processes are not supported
+A session has one owning Evener process. Concurrent processes are not supported
 writers for one session's transcript, job state, or API log.
 
 The API-log target file carries one defensive ownership lock:
 
-- Serf acquires a nonblocking exclusive lock on the opened target file and
+- Evener acquires a nonblocking exclusive lock on the opened target file and
   retains it for the logger's lifetime.
-- Lock contention fails loudly. Serf does not wait, retry, steal, inspect a
+- Lock contention fails loudly. Evener does not wait, retry, steal, inspect a
   PID, or coordinate with the owner.
 - When resuming a known session, the top-level run or serve path eagerly opens
   and locks `<state-dir>/sessions/<session-id>.api.jsonl` before restoring the
@@ -91,7 +91,7 @@ The canonical API log is one strict newline-delimited JSON file per session.
    canonical record bound, a missing boundary within that bound, or an unsafe
    target fails closed without mutation.
 
-The API log is forensic evidence, not session replay state. `serf doctor` owns
+The API log is forensic evidence, not session replay state. `evener doctor` owns
 explicit whole-history structural validation and reports corrupt complete or
 interior records; ordinary logger startup does not. Other explicit API-log
 readers remain responsible for strict validation of every record they consume.
@@ -107,7 +107,7 @@ bounded while preserving exclusive ownership and canonical append durability.
 2. Write exactly one newline-terminated record while holding the logger's
    in-process mutex.
 3. Require the write to report the complete byte count.
-4. Sync the target before reporting append success or allowing the next Serf
+4. Sync the target before reporting append success or allowing the next Evener
    retry, fallback, terminal publication, or group settlement to advance.
 
 Every canonical append is synchronously durable. Remove interval-based dirty
@@ -126,7 +126,7 @@ A short write, write error, or sync error:
 - does not change the provider response, provider error, or retry/fallback
   decision.
 
-Serf does not truncate, roll back, publish intent, republish intent, or attempt
+Evener does not truncate, roll back, publish intent, republish intent, or attempt
 same-process recovery after an append failure. A later process handles only an
 incomplete final line through the open-time rule above. Missing group settlement
 after a failed append or crash truthfully means the forensic record is
@@ -136,7 +136,7 @@ incomplete.
 
 Project 2 does not include:
 
-- `.serf-apilog-locks` or `.serf-apilog-rollback`;
+- `.evener-apilog-locks` or `.evener-apilog-rollback`;
 - rollback marker v1 or v2;
 - target inode, device, volume, or file-ID persistence;
 - fresh-name revalidation around filesystem transitions;
@@ -211,7 +211,7 @@ under panic recovery and then detached from the original error.
 
 Project 2 records one attempt per `http.RoundTripper.RoundTrip` invocation at
 the provider adapter boundary. Redirect hops naturally produce separate
-RoundTrip invocations. Serf/provider retries, endpoint fallbacks, and model
+RoundTrip invocations. Evener/provider retries, endpoint fallbacks, and model
 fallbacks also produce separate attempts. Project 2 does not split one
 RoundTrip call into internal TCP, HTTP/1.1, or HTTP/2 connection retry cycles.
 
@@ -230,7 +230,7 @@ existing terminal condition proves completeness. Otherwise preserve the bytes
 observed so far and mark the body inexact.
 
 Do not implement per-wire `httptrace` lifecycle splitting, HTTP/1.1-versus-HTTP/2
-gzip predicates, Serf-owned gzip readers, transparent transport interfaces, or
+gzip predicates, Evener-owned gzip readers, transparent transport interfaces, or
 concurrent gzip Read/Close state machines.
 
 ## What We Keep
@@ -242,7 +242,7 @@ Keep and integrate the parts that directly implement the approved product:
 - explicit `source="api_log"` summaries and explicit attempt expansion;
 - default transcript reads that never open or stat API logs;
 - attempt IDs, group IDs, attempt indexes, and append-only settlement records;
-- one group across Serf/provider retry and fallback routes for one logical call;
+- one group across Evener/provider retry and fallback routes for one logical call;
 - exact provider-adapter request and observed response bytes with honest body
   truth fields;
 - strict canonical record decoding and bounded line/record sizes;
@@ -289,7 +289,7 @@ design. Do not merge the Thirdwave core range.
 ### 2. Add eager resume ownership
 
 Allow the top-level logger attachment to reserve a known resumed session ID.
-Both `serf --resume` and `serf serve --resume` acquire the API-log target lock
+Both `evener --resume` and `evener serve --resume` acquire the API-log target lock
 before restore side effects. Add a real lock-contention test proving the second
 resume fails without transcript, job, or metadata mutation and tells the user
 to use the live session or fork.
@@ -309,7 +309,7 @@ Land only the consumer work that depends on final core truth fields:
 Replace the accepted transport-corrections plan with a small plan matching the
 adapter boundary above. Prove that capture never drains or owns bodies, records
 the bytes the adapter observed, marks incomplete evidence honestly, and creates
-separate attempts only for explicit provider/Serf retries and fallbacks.
+separate attempts only for explicit provider/Evener retries and fallbacks.
 
 ### 5. Integrate independent slices
 

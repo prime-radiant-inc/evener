@@ -8,7 +8,7 @@ Target: 100% drop-in compatibility with Claude Code plugins (local directory mod
 Add support for Claude Code plugins specified via `--plugin-dir <path>` (repeatable).
 A plugin is a local directory containing a `.claude-plugin/plugin.json` manifest and
 optional component directories: skills, agents, hooks, MCP servers, and slash commands
-(commands are loaded but ignored in this phase since serf is non-interactive).
+(commands are loaded but ignored in this phase since evener is non-interactive).
 
 ## Architecture
 
@@ -131,7 +131,7 @@ Plugin agents are `.md` files in `agents/` with YAML frontmatter:
 name: agent-identifier       # required, kebab-case, 3-50 chars
 description: ...              # required, triggering conditions + examples
 model: inherit                # required: inherit|sonnet|opus|haiku
-color: blue                   # required (for Claude Code UI; informational in serf)
+color: blue                   # required (for Claude Code UI; informational in evener)
 tools: ["Read", "Write"]      # optional, restricts tool access
 ```
 
@@ -140,7 +140,7 @@ The markdown body is the agent's system prompt.
 ### Tool Name Mapping
 
 Agent frontmatter `tools` arrays use Claude Code tool names. At load time, these are
-mapped to serf's canonical tool names:
+mapped to evener's canonical tool names:
 
 ```go
 var claudeToSerfToolNames = map[string]string{
@@ -175,7 +175,7 @@ type PluginAgent struct {
     Description  string
     Model        string
     Color        string
-    Tools        []string // serf canonical names (mapped at load time)
+    Tools        []string // evener canonical names (mapped at load time)
     SystemPrompt string   // markdown body
     PluginName   string   // owning plugin (for namespacing)
 }
@@ -267,7 +267,7 @@ Event-specific fields:
 - Stop/SubagentStop: `reason`
 - SessionStart/SessionEnd/PreCompact/Notification: common fields only
 
-Tool names in hook input use Claude Code names (reverse-mapped from serf canonical)
+Tool names in hook input use Claude Code names (reverse-mapped from evener canonical)
 so plugin scripts see the names they expect.
 
 ### Hook Output
@@ -334,7 +334,7 @@ agentic loop continues with the block reason injected as a steering message.
 ### Matcher Semantics
 
 Matchers are regex patterns tested against the tool name (for tool events) or `"*"`
-for all events. Claude Code tool names are used for matching (not serf canonical names),
+for all events. Claude Code tool names are used for matching (not evener canonical names),
 so a plugin matcher of `"Write|Edit"` matches write_file and edit_file after
 reverse-mapping.
 
@@ -437,7 +437,7 @@ EventHookEnd         // emitted when a hook completes (with output/error)
 - **`/hooks` introspection command**: No interactive command system.
 - **Plugin marketplace/installation**: Plugins are local directories only.
 - **Hot-reload**: Plugins load at session start. Changes require new session.
-- **`CLAUDE_CODE_REMOTE` env var**: Not applicable to serf.
+- **`CLAUDE_CODE_REMOTE` env var**: Not applicable to evener.
 
 ## 11. File Organization
 

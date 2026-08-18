@@ -58,7 +58,7 @@ row should eat a row of vertical space. The content area runs floor-to-ceiling.
 
 Sidebar header zone, top to bottom:
 
-1. **Brand** (`serf`) + a home icon, on one row.
+1. **Brand** (`evener`) + a home icon, on one row.
 2. **Search** — a full-width field showing the `⌘K` chord; opens the existing
    command palette. This is the home for the `[data-search-trigger]` handler
    that currently has no rendered trigger.

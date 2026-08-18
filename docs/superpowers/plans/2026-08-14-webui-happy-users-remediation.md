@@ -7,7 +7,7 @@ criteria, and dependencies.
 
 Explicitly OUT of scope (flagged, deliberately deferred): Rail.module.css
 decomposition (code health, not user-facing), Beautiful UI follow-up
-suggestion chips (needs a daemon wire field serf doesn't have), InsightCard/
+suggestion chips (needs a daemon wire field evener doesn't have), InsightCard/
 ContextCard/DiffTable app adoption (no surface wants them yet).
 
 ## T1 — fresh hub + live wire (sequential, first)
@@ -42,7 +42,7 @@ fine and the DAEMON is missing. Distinguish the two in
 `friendlyErrorMessage` call sites that know context (spawn, model picker):
 when the hub connection is up but the call fails with the daemon-missing
 family, say what to do: "No agent daemon is running for this project —
-start one with `serf` in the repo, or pick a live project." Done when:
+start one with `evener` in the repo, or pick a live project." Done when:
 spawn failure with a live hub and no daemon shows actionable copy (unit +
 live check in T2).
 

@@ -135,7 +135,7 @@ entry kinds (`:388-408`):
 
 `acceptNotificationInput` (`:1527`) emits `EventSteeringInjected` for its
 reminder (`:1575`), and that projector case (`appwire_projection.go:733-773`)
-never calls `ensureTurn` — it only produces `serf/steering/injected`. The
+never calls `ensureTurn` — it only produces `evener/steering/injected`. The
 pending-steering path emits `EventSteeringInjected` too, via
 `injectDrainedSteering` → `consumeSteeringMessage` (`agent/session_queue.go:843,852`).
 Neither opens a turn.
@@ -622,7 +622,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
       **Stop and Steer actually render** — defect 2 means a fix that names the
       turn but leaves the thread idle would pass every Go test and still fail
       here. Drive both, then confirm the run's mutation journal
-      (`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) records
+      (`$run/home/.local/state/evener/projects/*/mutations/<SID>.json`) records
       them `terminal`, not `rejected`. Stop the stack with `--stop`.
 - [x] **Step 3: close kata `7vmd`** with typed evidence: the e2e test name and
       the journal result.

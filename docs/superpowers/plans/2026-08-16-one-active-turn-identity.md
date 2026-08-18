@@ -777,7 +777,7 @@ middle:
 2. `provider.Next` for the opening round, `awaitActiveTurn(ctx, t, client, ref, "")`
    to capture `firstTurn`, then answer with
    `communicate` / `communicateArgs("opening turn done")` and
-   `awaitThread(... func(thread) bool { return thread.Serf.ActiveTurnID == "" })`
+   `awaitThread(... func(thread) bool { return thread.Evener.ActiveTurnID == "" })`
    so the goal's idle kick is what starts the next turn.
 3. `clientRequest[appwire.GoalSetResponse](ctx, client, appwire.MethodGoalSet,
    appwire.GoalSetParams{Ref: ref, Objective: "count to ten, one number per message"})`.
@@ -790,7 +790,7 @@ middle:
    `provider.Next`, and assert the next request `Contains` the steer text —
    the model boundary, not the receipt.
 7. `turn/interrupt` with `ExpectedTurnID: goalTurn`; assert applied, then
-   `awaitThread` until `thread.Serf.ActiveTurnID != goalTurn`.
+   `awaitThread` until `thread.Evener.ActiveTurnID != goalTurn`.
 
 - [x] **Step 2: Run it against the unfixed daemon**
 
@@ -835,7 +835,7 @@ to be executed, so do not run this list as if it were live.
       `./scripts/e2e-webui-turn-controls.sh --hold 25 --rounds 60`, spawn the
       session it prints, set a goal on it, then use Steer and Stop from the
       UI. Confirm in the run directory's mutation journal
-      (`$run/home/.local/state/serf/projects/*/mutations/<SID>.json`) that both
+      (`$run/home/.local/state/evener/projects/*/mutations/<SID>.json`) that both
       mutations read `terminal`, not `rejected`. Stop the stack with `--stop`.
 - [ ] **Step 7: Commit any gate fixes.**
 

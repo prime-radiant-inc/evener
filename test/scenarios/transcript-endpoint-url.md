@@ -8,7 +8,7 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 
 ## Pre-state
 
-- Hub running with `--serf` set, on an isolated `$HOME` and a free port
+- Hub running with `--evener` set, on an isolated `$HOME` and a free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`).
 - OAuth or API-key creds set up so a model call can actually succeed.
@@ -22,15 +22,15 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
    text OK and stop.`
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
-        -d '{"prompt":"Reply with the literal text OK and stop.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"serf","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
+        -H "Authorization: Bearer $(cat "$HOME/.evener/auth-token")" \
+        -d '{"prompt":"Reply with the literal text OK and stop.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"evener","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
         $HUB/api/spawn
    ```
 2. Capture the `session_id` from the response.
 3. Wait ~10s for the turn to complete.
-4. Resolve the session with Serf's own state model and inspect its API attempts:
+4. Resolve the session with Evener's own state model and inspect its API attempts:
    ```bash
-   APIFILE=$(serf-doctor locate <session_id> --json | jq -r '.api_log_path')
+   APIFILE=$(evener-doctor locate <session_id> --json | jq -r '.api_log_path')
    jq 'select(.kind == "api_attempt") | {attempt_id, attempt_group_id, attempt_index, endpoint: .request.endpoint, outcome}' "$APIFILE"
    ```
 5. Confirm the underlying `sessions/<session_id>.api.jsonl` contains one
@@ -58,7 +58,7 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 ## Cleanup
 
 - Sessions accumulate on disk; not strictly necessary to remove.
-  If you want hermetic re-runs: `rm -rf "$HOME/.local/state/serf/projects/<project-id>/sessions/<session_id>"*`
+  If you want hermetic re-runs: `rm -rf "$HOME/.local/state/evener/projects/<project-id>/sessions/<session_id>"*`
   — that isolated `$HOME`, never Jesse's real one.
 
 ## Sharp edges

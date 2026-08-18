@@ -15,7 +15,7 @@ the gesture-back fix, both CDP-verified against a built hub), full gate green. W
 - **Dockview desktop host** (T2): `DockHost` over the real `dockview-react` library;
   `shell/workspace.ts` (`openPane`/`closePane`/`focusPane`/`layoutJSON`/`restoreLayout`) as the
   single source of truth dockview mirrors; layout persistence to `localStorage`
-  (`serf.workspace.layout.v1`, 400ms-debounced); `dockview-theme.css` restyling dockview's color
+  (`evener.workspace.layout.v1`, 400ms-debounced); `dockview-theme.css` restyling dockview's color
   custom properties onto `--surface`/`--edge`/`--ink` only; the session pane placeholder (proves
   deep-link → `openPane` → real dockview panel end to end, no real transcript yet).
 - **Tree rail** (T3): `stores/tree.ts` (`GET /api/tree`, debounced refetch on qualifying
@@ -31,7 +31,7 @@ the gesture-back fix, both CDP-verified against a built hub), full gate green. W
   rewritten for a real fresh-client retry (never `window.location.reload()` — `AppwireClient`'s
   own `connect()` is single-shot and never resets); `threads.ts` reactively rewires its
   notification/ready handlers whenever `connectionStore`'s client identity changes.
-- **`serf/tree/changed` hub broadcast** (T6, Go): `ScopeHub` notification on roster refresh
+- **`evener/tree/changed` hub broadcast** (T6, Go): `ScopeHub` notification on roster refresh
   deltas, past-index changes, and all four mutation types (archive/favorite/rename/
   project-delete) — exactly once per successful mutation, reusing `Roster`/`PastIndex`'s own
   `SetOnChange` fingerprint gating rather than a new diff. Tree-wire gaps closed alongside it:
@@ -63,7 +63,7 @@ probe-verified both directions) · `StackHost`'s dead-pane back-target skip had 
 coverage, and `useIsMobile` could stick on a stale render-time viewport snapshot (Task 4 review,
 two Important findings) · `threads.ts` stranding an already-open pane's notifications on a client
 swap — caught by the implementer's own trap test before it ever shipped (Task 5) ·
-`serf/tree/changed` double-broadcasting on rename/project-delete, then two residual zero-broadcast
+`evener/tree/changed` double-broadcasting on rename/project-delete, then two residual zero-broadcast
 gaps, then live/orphan-live rows never stamped `Tier`/`Favorite`/`Rename` (Task 6, three
 successive review rounds, each with a break/confirm/restore verification) · `StackHost`'s own
 Back button moving the user *forward* to the pane a real browser back had just left (Task 7,
@@ -147,7 +147,7 @@ go test ./cmd/evener-hub/...  → EXIT=0  (all packages ok; re-run with -count=1
                                         build cache for a genuine second execution, identical)
 ```
 
-Live proof (chrome skill, CDP-driven, against a built `serf-hub` with `SERF_HUB_WEB=new` on a
+Live proof (chrome skill, CDP-driven, against a built `evener-hub` with `SERF_HUB_WEB=new` on a
 non-default port): merge-restore (a saved 4-tab layout survives a fresh deep-linked page load,
 the new tab appended and focused) and the gesture-back fix (a real back gesture followed by the
 in-app Back button now lands on welcome, not back on the page just left) both confirmed against

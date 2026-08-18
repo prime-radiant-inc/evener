@@ -14,7 +14,7 @@ sections + credentials/OAuth + plugins/marketplaces manager", called out in that
   `templates/partials/settings/`, `templates/partials/credentials.html`, `assets/settings-*.js`,
   `assets/launchconfig.js`, `assets/plugins.js`. Paths below are relative to `cmd/evener-hub/`.
 - **Not read for this checklist** (out of the assigned scope — flag before assuming): the Go
-  handlers that populate template data and implement the `serf/*` RPCs, `assets/sidebar.js`,
+  handlers that populate template data and implement the `evener/*` RPCs, `assets/sidebar.js`,
   `assets/notifications.js` (the runtime alerting engine, as opposed to the settings controls for
   it), `assets/spawn.js`, `assets/search.js`. Where those files are referenced below it's only
   because the read files name them directly (e.g. a `window.SerfSidebar.applySidebarMode` call) —
@@ -35,18 +35,18 @@ sections + credentials/OAuth + plugins/marketplaces manager", called out in that
 | 4 | Transcript | `/settings/transcript` | `/_partials/settings/transcript` | `settings/transcript.html` | none | localStorage |
 | 5 | Display | `/settings/display` | `/_partials/settings/display` | `settings/display.html` | none | localStorage |
 | 6 | Notifications | `/settings/notifications` | `/_partials/settings/notifications` | `settings/notifications.html` | none (+ browser `Notification` API) | localStorage |
-| 7 | Providers → Credentials | `/credentials` (`/settings/providers` redirects) | `/_partials/settings/credentials` | `credentials.html` (+ `settings/providers.html` redirect) | `serf/instance/{list,create,edit,remove,setDefault}`, `serf/auth/{apiKey/set,login/start,login/complete,logout,device/start,device/poll}` | server |
+| 7 | Providers → Credentials | `/credentials` (`/settings/providers` redirects) | `/_partials/settings/credentials` | `credentials.html` (+ `settings/providers.html` redirect) | `evener/instance/{list,create,edit,remove,setDefault}`, `evener/auth/{apiKey/set,login/start,login/complete,logout,device/start,device/poll}` | server |
 | 8 | Agents | `/settings/agents` | `/_partials/settings/agents` | `settings/agents.html` | none | server (read-only) |
-| 9 | Serf launch | `/settings/launch-serf` | `/_partials/settings/launch-serf` | `settings/launch-serf.html` | `serf/launch/{schema,getLayer,setLayer,resolve}` | server (global layer) |
+| 9 | Evener launch | `/settings/launch-evener` | `/_partials/settings/launch-evener` | `settings/launch-evener.html` | `evener/launch/{schema,getLayer,setLayer,resolve}` | server (global layer) |
 | 10 | Codex launch | `/settings/launch-codex` | `/_partials/settings/launch-codex` | `settings/launch-codex.html` | none | server (read-only) |
-| 11 | In-repo config | `/settings/inrepo` | `/_partials/settings/inrepo` | `settings/inrepo.html` | `serf/launch/{resolve,trustRepo}` | server |
-| 12 | Marketplaces & Plugins | `/settings/plugins-manager` | `/_partials/settings/plugins-manager` | `settings/plugins-manager.html` | `serf/marketplace/{list,add,remove,refresh,browse}`, `serf/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade}` | server |
-| 13 | Plugins (dirs) | `/settings/plugins` | `/_partials/settings/plugins` | `settings/plugins.html` | `serf/launch/{getLayer,setLayer}`, `serf/path/validate` | server (global layer) |
-| 14 | Skills (dirs) | `/settings/skills` | `/_partials/settings/skills` | `settings/skills.html` | `serf/launch/{getLayer,setLayer}`, `serf/path/validate` | server (global layer) |
-| 15 | MCP servers | `/settings/mcp` | `/_partials/settings/mcp` | `settings/mcp.html` | `serf/launch/{getLayer,setLayer}`, `serf/path/validate` (+ server-rendered probe data, no RPC) | server (global layer) |
+| 11 | In-repo config | `/settings/inrepo` | `/_partials/settings/inrepo` | `settings/inrepo.html` | `evener/launch/{resolve,trustRepo}` | server |
+| 12 | Marketplaces & Plugins | `/settings/plugins-manager` | `/_partials/settings/plugins-manager` | `settings/plugins-manager.html` | `evener/marketplace/{list,add,remove,refresh,browse}`, `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade}` | server |
+| 13 | Plugins (dirs) | `/settings/plugins` | `/_partials/settings/plugins` | `settings/plugins.html` | `evener/launch/{getLayer,setLayer}`, `evener/path/validate` | server (global layer) |
+| 14 | Skills (dirs) | `/settings/skills` | `/_partials/settings/skills` | `settings/skills.html` | `evener/launch/{getLayer,setLayer}`, `evener/path/validate` | server (global layer) |
+| 15 | MCP servers | `/settings/mcp` | `/_partials/settings/mcp` | `settings/mcp.html` | `evener/launch/{getLayer,setLayer}`, `evener/path/validate` (+ server-rendered probe data, no RPC) | server (global layer) |
 | 16 | Hub | `/settings/hub` | `/_partials/settings/hub` | `settings/hub.html` | none | server (read-only) |
 | 17 | Storage | `/settings/storage` | `/_partials/settings/storage` | `settings/storage.html` | none | server (read-only) |
-| 18 | Per-project | `/settings/project?cwd=` | `/_partials/settings/project?cwd=` | `settings/project.html` | `serf/launch/{schema,getLayer,setLayer}` | server (project layer) |
+| 18 | Per-project | `/settings/project?cwd=` | `/_partials/settings/project?cwd=` | `settings/project.html` | `evener/launch/{schema,getLayer,setLayer}` | server (project layer) |
 
 Appendices A (`assets/settings-pickers.js`) and B (`assets/launchconfig.js`'s
 `LaunchConfigControls` engine) are cross-cutting infrastructure several sections above depend on;
@@ -106,7 +106,7 @@ File: `templates/partials/settings/general.html`. Appwire: none — fully server
 - [ ] Bearer token value is never rendered — only a fixed `••••••••••••` mask plus an optional age;
       copy explains it's long-lived, persisted at `auth-token` in the state dir, reused across
       restarts, delete-the-file-to-invalidate — `templates/partials/settings/general.html:10-13`
-- [ ] Every field's only "edit" path is external ("Edit `~/.serf/hub.toml`") — no in-UI control —
+- [ ] Every field's only "edit" path is external ("Edit `~/.evener/hub.toml`") — no in-UI control —
       `templates/partials/settings/general.html:3,39`
 - [ ] Field set overlaps (byte-identical copy for shared fields) with Hub (§16) and Storage (§17) —
       confirm the rewrite intentionally dedupes rather than accidentally drops one —
@@ -121,29 +121,29 @@ per-browser" per the page copy.
 - [ ] "Color theme" radio (system/dark/light) calls `window.serfHub.setTheme(v === "system" ? null : v)`
       — `assets/settings-appearance.js:12-17`, `templates/partials/settings/theme.html:8-13`
 - [ ] `setTheme`: for `"light"`/`"dark"` sets `<html data-theme>` and localStorage key
-      `serf-hub.theme`; for anything else (i.e. `null`/system) **removes** the attribute and the
+      `evener-hub.theme`; for anything else (i.e. `null`/system) **removes** the attribute and the
       key entirely — "system" is represented by absence, never by the literal string `"system"` —
       `assets/theme.js:1-12`
 - [ ] Theme change shows a success toast `"Theme: {value}"` — `assets/settings-appearance.js:15`
 - [ ] "Phone density" radio (compact/comfortable), default **compact**; localStorage key
-      `serf-hub.phone-density`; mirrored onto `document.body.dataset.phoneDensity` —
+      `evener-hub.phone-density`; mirrored onto `document.body.dataset.phoneDensity` —
       `assets/settings-appearance.js:19-24,78-81`, `templates/partials/settings/theme.html:17-24`
 - [ ] "Sidebar mode" radio (auto/pane/rail, rail labeled "Collapsed"): delegates to
       `window.SerfSidebar.applySidebarMode(v)` when present, else falls back to writing localStorage
-      key `serf-hub.sidebar.rail` directly — `assets/settings-appearance.js:26-33`,
+      key `evener-hub.sidebar.rail` directly — `assets/settings-appearance.js:26-33`,
       `templates/partials/settings/theme.html:27-35`
 - [ ] "Font size" radio (s/m/l/xl), default **m**. The current React frontend
-      stores it under localStorage key `serf.prefs.fontSize` and mirrors it onto
+      stores it under localStorage key `evener.prefs.fontSize` and mirrors it onto
       `document.body.dataset.fontSize` via `setFontSize` / `applyFontSize` —
       `cmd/evener-hub/frontend/src/stores/prefs.ts`. The retired legacy page used
-      `serf-hub.appearance.fontSize` — `assets/settings-appearance.js:36-40,84-87`,
+      `evener-hub.appearance.fontSize` — `assets/settings-appearance.js:36-40,84-87`,
       `templates/partials/settings/theme.html:39-46`
 - [ ] None of the 4 radio groups carry a server-rendered `checked` attribute — correctness depends
       entirely on `applyAppearanceState()` running after load/swap; if it doesn't run, no option
       appears selected even though a default is in effect — `templates/partials/settings/theme.html:8-46`
       (no `checked` present) vs `assets/settings-appearance.js:47-70`
 - [ ] `applyAppearanceState()` re-checks the correct radio for all 4 groups (theme from
-      `serf-hub.theme`/"system"; density/font-size/sidebar-mode as above) and reruns on
+      `evener-hub.theme`/"system"; density/font-size/sidebar-mode as above) and reruns on
       `DOMContentLoaded` + every `htmx:afterSwap` — `assets/settings-appearance.js:44-74`
 - [ ] Phone-density and font-size are *additionally* applied to `document.body.dataset` in two
       standalone IIFEs that run at script-parse time (not gated on `DOMContentLoaded`), so the CSS
@@ -154,21 +154,21 @@ per-browser" per the page copy.
 ## 4. Transcript
 
 Files: `templates/partials/settings/transcript.html`, `assets/settings-transcript.js`. Appwire:
-none — localStorage key `serf-hub.transcript.systemStatus` (JSON).
+none — localStorage key `evener-hub.transcript.systemStatus` (JSON).
 
 - [ ] 4 checkboxes, all default **OFF**: Round timings (`roundTimings`), Hook exits — all
       (`hookExitsAll`), Hook exits — normal only (`hookExitsNormal`), Prompt Loaded
       (`promptLoaded`) — `templates/partials/settings/transcript.html:6-44`,
       `assets/settings-transcript.js:44-47` (missing/unparseable key ⇒ `{}` ⇒ every field falsy)
   - **Addition:** the React pane adds a fifth, also default off — Token counts (`tokenCounts`,
-    `serf.prefs.transcriptTokenCounts`), gating the per-turn meta line's `↑in ↓out` segment. The old
+    `evener.prefs.transcriptTokenCounts`), gating the per-turn meta line's `↑in ↓out` segment. The old
     UI had no preference for it at all.
 - [ ] Copy clarifies "Hook exits (all)" is a superset of "Hook exits (normal only)" — both can be
       independently on — `templates/partials/settings/transcript.html:23,33`
 - [ ] Static server-rendered label spans are hardcoded `"OFF"` for all four, matching the
       JS-computed default (no flash-of-wrong-state) — `templates/partials/settings/transcript.html:10,19,29,39`
 - [ ] On change: persists `{...prev, [key]: checked}`, updates the ON/OFF label, dispatches
-      `document` `CustomEvent("serf-hub:transcript-system-status-changed", {detail:{key,value}})`,
+      `document` `CustomEvent("evener-hub:transcript-system-status-changed", {detail:{key,value}})`,
       shows a "Settings saved" success toast — `assets/settings-transcript.js:14-25`
 - [ ] `applyTranscriptState()` resyncs all 4 checkboxes + labels on `DOMContentLoaded` and every
       `htmx:afterSwap` — `assets/settings-transcript.js:31-37,52-53`
@@ -176,7 +176,7 @@ none — localStorage key `serf-hub.transcript.systemStatus` (JSON).
 ## 5. Display
 
 Files: `templates/partials/settings/display.html`, `assets/settings-display.js`. Appwire: none —
-localStorage key `serf-hub.composer` (JSON `{enterToSend, showCost}`).
+localStorage key `evener-hub.composer` (JSON `{enterToSend, showCost}`).
 
 - [ ] "Enter sends" toggle, default **OFF**: off ⇒ ⌘/Ctrl-Enter sends, Enter inserts newline; on ⇒
       Enter sends, Shift-Enter inserts newline, and "the steer keyboard shortcut is unavailable in
@@ -188,7 +188,7 @@ localStorage key `serf-hub.composer` (JSON `{enterToSend, showCost}`).
   - **Deliberate divergence:** the React pane defaults this **OFF**. The toggle now governs only the
     per-turn transcript meta line's cost segment, whose two siblings (Transcript → Round timings,
     Transcript → Token counts) are also opt-in; the footer status strip's session-total cost shows
-    unconditionally. The `serf.prefs.showCost` key name and `"1"/"0"` encoding are unchanged, so a
+    unconditionally. The `evener.prefs.showCost` key name and `"1"/"0"` encoding are unchanged, so a
     browser that has ever toggled the switch keeps its stored value.
 - [ ] Static label spans match computed defaults pre-JS ("OFF" for enterToSend, "ON" for showCost) —
       `templates/partials/settings/display.html:10,20`
@@ -208,7 +208,7 @@ localStorage key `serf-hub.composer` (JSON `{enterToSend, showCost}`).
 ## 6. Notifications
 
 Files: `templates/partials/settings/notifications.html`, `assets/settings-notifications.js`.
-Appwire: none — localStorage key `serf-hub.notifications` (JSON); OS toggle also drives the browser
+Appwire: none — localStorage key `evener-hub.notifications` (JSON); OS toggle also drives the browser
 `Notification.requestPermission()` Web API.
 
 - [ ] **Discrepancy to resolve/replicate deliberately:** page copy says "Title and favicon default
@@ -233,7 +233,7 @@ Appwire: none — localStorage key `serf-hub.notifications` (JSON); OS toggle al
       commits unconditionally — turning the setting off never revokes/rechecks the browser
       permission — `assets/settings-notifications.js:51,60`
 - [ ] Every non-OS-gated commit + the loudScope radio change both dispatch `document`
-      `CustomEvent("serf-hub:notifications-changed", {detail:{key,value}})` and toast "Settings
+      `CustomEvent("evener-hub:notifications-changed", {detail:{key,value}})` and toast "Settings
       saved" — `assets/settings-notifications.js:27-36,64-75`
 - [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions & errors, default) vs `"all"` (Everything
       needing me); governs which state-transitions get OS notification + sound — title/favicon
@@ -253,12 +253,12 @@ Files: `templates/partials/settings/providers.html` (legacy redirect),
 `templates/partials/credentials.html` (the real UI, 556 lines, entirely inline `<script>`, no
 separate `credentials*.js` file exists).
 
-**Appwire:** `launchconfig.instanceList`→`serf/instance/list`,
-`instanceCreate`→`serf/instance/create`, `instanceEdit`→`serf/instance/edit`,
-`instanceRemove`→`serf/instance/remove`, `instanceSetDefault`→`serf/instance/setDefault`,
-`authApiKeySet`→`serf/auth/apiKey/set`, `authLoginStart`→`serf/auth/login/start`,
-`authLoginComplete`→`serf/auth/login/complete`, `authLogout`→`serf/auth/logout`,
-`authDeviceStart`→`serf/auth/device/start`, `authDevicePoll`→`serf/auth/device/poll`.
+**Appwire:** `launchconfig.instanceList`→`evener/instance/list`,
+`instanceCreate`→`evener/instance/create`, `instanceEdit`→`evener/instance/edit`,
+`instanceRemove`→`evener/instance/remove`, `instanceSetDefault`→`evener/instance/setDefault`,
+`authApiKeySet`→`evener/auth/apiKey/set`, `authLoginStart`→`evener/auth/login/start`,
+`authLoginComplete`→`evener/auth/login/complete`, `authLogout`→`evener/auth/logout`,
+`authDeviceStart`→`evener/auth/device/start`, `authDevicePoll`→`evener/auth/device/poll`.
 (`launchconfig.authList`/`authStatus` exist but this page never calls them.)
 
 ### 7a. `providers.html` legacy alias
@@ -272,7 +272,7 @@ separate `credentials*.js` file exists).
 
 ### 7b. Credentials — data model & layout
 
-- [ ] Static header copy: storage at `~/.serf/credentials.toml` (chmod 600); "env vars in the hub
+- [ ] Static header copy: storage at `~/.evener/credentials.toml` (chmod 600); "env vars in the hub
       process take precedence only when no file entry exists"; "The UI never displays stored
       values" — `templates/partials/credentials.html:4-8`
 - [ ] Instances are grouped into `<li class="credentials-type-group">` by `.type`, in first-seen
@@ -425,49 +425,49 @@ File: `templates/partials/settings/agents.html`. Appwire: none — fully server-
 - [ ] No client JS; no add/remove/edit affordance in this view — editing happens externally in the
       linked editor — `templates/partials/settings/agents.html:1-19`
 
-## 9. Serf launch
+## 9. Evener launch
 
-File: `templates/partials/settings/launch-serf.html`. Engine: `assets/launchconfig.js`
+File: `templates/partials/settings/launch-evener.html`. Engine: `assets/launchconfig.js`
 `LaunchConfigControls` (see Appendix B for the shared rendering/validation contract).
 
-**Appwire:** `schema()`→`serf/launch/schema`, `getLayer("/","global")`→`serf/launch/getLayer`,
-`resolve("/")`→`serf/launch/resolve`, `setLayer("/","global",…)`→`serf/launch/setLayer`.
+**Appwire:** `schema()`→`evener/launch/schema`, `getLayer("/","global")`→`evener/launch/getLayer`,
+`resolve("/")`→`evener/launch/resolve`, `setLayer("/","global",…)`→`evener/launch/setLayer`.
 
 - [ ] Form root: `data-launch-settings-root data-launch-settings-layer="global"`, starts
-      `data-loaded="false"` — `templates/partials/settings/launch-serf.html:7`
+      `data-loaded="false"` — `templates/partials/settings/launch-evener.html:7`
 - [ ] Load sequence is **sequential**, not parallel: `await schema()` then `await getLayer("/",
-      "global")` — `templates/partials/settings/launch-serf.html:61-62`
+      "global")` — `templates/partials/settings/launch-evener.html:61-62`
 - [ ] Renders via `LaunchConfigControls.render(form, {mode:"settings", layer:"global",
       options:schema.options, current, includeEnvFallbacks:false})` — env-fallback hints explicitly
-      OFF on this page — `templates/partials/settings/launch-serf.html:64-70`
+      OFF on this page — `templates/partials/settings/launch-evener.html:64-70`
 - [ ] Loading placeholder hides and `form.dataset.loaded` becomes `"true"` only on success; on
       failure it is left at `"false"` forever (no distinct error state, unlike §18 Project) —
-      `templates/partials/settings/launch-serf.html:71-72` vs `91-94`
+      `templates/partials/settings/launch-evener.html:71-72` vs `91-94`
 - [ ] After render, a best-effort `resolve("/")` populates the diagnostics panel, wrapped in its own
       try/catch that silently swallows failure ("non-fatal") —
-      `templates/partials/settings/launch-serf.html:74-75`
+      `templates/partials/settings/launch-evener.html:74-75`
 - [ ] Submit: `preventDefault()`, then `LaunchConfigControls.validate(form)` — returns early (no
-      save attempted) if invalid — `templates/partials/settings/launch-serf.html:78-79`
+      save attempted) if invalid — `templates/partials/settings/launch-evener.html:78-79`
 - [ ] On valid submit: `setLayer("/", "global", collect(form))`; diagnostics are re-rendered from
       the object **returned by `setLayer`**, not a fresh `resolve()` call —
-      `templates/partials/settings/launch-serf.html:81-82`
+      `templates/partials/settings/launch-evener.html:81-82`
 - [ ] Success status text "Saved at {locale time}" self-clears after 5000ms unless it starts with
-      "Error:" (persists indefinitely) — `templates/partials/settings/launch-serf.html:46-58,83`
+      "Error:" (persists indefinitely) — `templates/partials/settings/launch-evener.html:46-58,83`
 - [ ] Success also shows toast "Launch defaults saved" —
-      `templates/partials/settings/launch-serf.html:84`
+      `templates/partials/settings/launch-evener.html:84`
 - [ ] On save failure: `showBackendError(form, err)` tried first (only actually surfaces inline for
       the one env-credential message shape, see Appendix B); status line always gets "Error:
       {message}"; toast "Save failed" always shown regardless —
-      `templates/partials/settings/launch-serf.html:85-89`
+      `templates/partials/settings/launch-evener.html:85-89`
 - [ ] On initial `schema()`/`getLayer()` failure: loading placeholder text becomes "Failed to load
       launch settings."; status shows "Error: {message}"; form never reaches
-      `data-loaded="true"` — `templates/partials/settings/launch-serf.html:91-94`
+      `data-loaded="true"` — `templates/partials/settings/launch-evener.html:91-94`
 - [ ] Diagnostics block (`#launch-diagnostics`, `role="status" aria-live="polite"`) starts `hidden`;
       shown only when `resolved.diagnostics` non-empty; renders a "Warnings" heading + `<ul>` of
       `"{field}: {message}"` (field segment omitted if falsy) —
-      `templates/partials/settings/launch-serf.html:10,28-44`
-- [ ] Page copy: values here apply "to every serf spawn unless overridden by a project layer or
-      per-launch" — `templates/partials/settings/launch-serf.html:3-6`
+      `templates/partials/settings/launch-evener.html:10,28-44`
+- [ ] Page copy: values here apply "to every evener spawn unless overridden by a project layer or
+      per-launch" — `templates/partials/settings/launch-evener.html:3-6`
 - [ ] Field kinds/grouping/validation/collection follow the shared engine exactly — see Appendix B
       (not re-listed per field here)
 
@@ -490,8 +490,8 @@ read-only.
 
 ## 11. In-repo config
 
-File: `templates/partials/settings/inrepo.html`. Appwire: `resolve(cwd)`→`serf/launch/resolve`,
-`trustRepo(cwd,hash)`→`serf/launch/trustRepo`.
+File: `templates/partials/settings/inrepo.html`. Appwire: `resolve(cwd)`→`evener/launch/resolve`,
+`trustRepo(cwd,hash)`→`evener/launch/trustRepo`.
 
 - [ ] cwd input pre-filled from `localStorage.getItem("lastCwd")` on load — this file only *reads*
       that key; some other part of the app is presumed to write it (not verified here) —
@@ -505,7 +505,7 @@ File: `templates/partials/settings/inrepo.html`. Appwire: `resolve(cwd)`→`serf
       `templates/partials/settings/inrepo.html:25`
 - [ ] RPC failure replaces the status block with `.settings-error` "Failed to load: {message}" —
       `templates/partials/settings/inrepo.html:29-35`
-- [ ] `repo.trust === "absent"` shows "No `.serf/launch.toml` in `{cwd}`." and stops — no preview,
+- [ ] `repo.trust === "absent"` shows "No `.evener/launch.toml` in `{cwd}`." and stops — no preview,
       no trust button — `templates/partials/settings/inrepo.html:37-40`
 - [ ] Otherwise shows the raw file `<pre>` preview (if `repo.preview` present) plus trust-state copy
       keyed by exactly 4 states: `trusted` (shows content hash), `untrusted`, `changed` (content
@@ -524,12 +524,12 @@ File: `templates/partials/settings/inrepo.html`. Appwire: `resolve(cwd)`→`serf
 File: `templates/partials/settings/plugins-manager.html` (604 lines, entirely inline `<script>`).
 Wrapper: `assets/plugins.js` (`window.pluginsAdmin`).
 
-**Appwire:** `marketplaceList`→`serf/marketplace/list`, `marketplaceAdd`→`serf/marketplace/add`,
-`marketplaceRemove`→`serf/marketplace/remove`, `marketplaceRefresh`→`serf/marketplace/refresh`,
-`marketplaceBrowse`→`serf/marketplace/browse`, `pluginList`→`serf/plugin/list`,
-`pluginInstall`→`serf/plugin/install`, `pluginUpgrade`→`serf/plugin/upgrade`,
-`pluginRemove`→`serf/plugin/remove`, `pluginEnable`→`serf/plugin/enable`,
-`pluginDisable`→`serf/plugin/disable`, `pluginSetAutoUpgrade`→`serf/plugin/setAutoUpgrade` —
+**Appwire:** `marketplaceList`→`evener/marketplace/list`, `marketplaceAdd`→`evener/marketplace/add`,
+`marketplaceRemove`→`evener/marketplace/remove`, `marketplaceRefresh`→`evener/marketplace/refresh`,
+`marketplaceBrowse`→`evener/marketplace/browse`, `pluginList`→`evener/plugin/list`,
+`pluginInstall`→`evener/plugin/install`, `pluginUpgrade`→`evener/plugin/upgrade`,
+`pluginRemove`→`evener/plugin/remove`, `pluginEnable`→`evener/plugin/enable`,
+`pluginDisable`→`evener/plugin/disable`, `pluginSetAutoUpgrade`→`evener/plugin/setAutoUpgrade` —
 all defined in `assets/plugins.js:8-23` as thin wrappers over `SerfAppwire.request`.
 
 ### 12a. Load & top-level state
@@ -673,8 +673,8 @@ all defined in `assets/plugins.js:8-23` as thin wrappers over `SerfAppwire.reque
 ## 13. Plugins (directories)
 
 File: `templates/partials/settings/plugins.html`. Appwire:
-`getLayer("/","global")`→`serf/launch/getLayer`, `setLayer("/","global",{...current,pluginDirs})`→`serf/launch/setLayer`,
-`validatePath(v,"dir")`→`serf/path/validate`.
+`getLayer("/","global")`→`evener/launch/getLayer`, `setLayer("/","global",{...current,pluginDirs})`→`evener/launch/setLayer`,
+`validatePath(v,"dir")`→`evener/path/validate`.
 
 - [ ] Current global layer is fetched once on IIFE start and kept as the `current` closure var;
       every mutation spreads `{...current, pluginDirs: dirs}` back through `setLayer` —
@@ -698,13 +698,13 @@ File: `templates/partials/settings/plugins.html`. Appwire:
       `templates/partials/settings/plugins.html:71-76,88`
 - [ ] Top-level load failure replaces the whole root with `.settings-error` "Failed to load:
       {message}" — `templates/partials/settings/plugins.html:115-119`
-- [ ] Page copy: "Directories serf scans for plugins at launch. Applied to every spawn." —
+- [ ] Page copy: "Directories evener scans for plugins at launch. Applied to every spawn." —
       `templates/partials/settings/plugins.html:3-5`
 
 ## 14. Skills (directories)
 
 File: `templates/partials/settings/skills.html`. Structurally byte-for-byte identical to §13 except
-the wire field (`skillsDirs` vs `pluginDirs`) and copy ("Skill directories" / "Directories serf
+the wire field (`skillsDirs` vs `pluginDirs`) and copy ("Skill directories" / "Directories evener
 scans for skills at launch."). Same appwire calls (`getLayer`/`setLayer`/`validatePath(...,"dir")`).
 
 - [ ] All behaviors of §13 apply verbatim, with `current.skillsDirs` as the wire field —
@@ -718,8 +718,8 @@ scans for skills at launch."). Same appwire calls (`getLayer`/`setLayer`/`valida
 
 File: `templates/partials/settings/mcp.html`. Appwire: the "Discovered servers" block is 100%
 server-rendered (no client RPC); the editable lists use
-`getLayer("/","global")`/`setLayer("/","global",…)`→`serf/launch/{getLayer,setLayer}` and
-`validatePath`→`serf/path/validate`.
+`getLayer("/","global")`/`setLayer("/","global",…)`→`evener/launch/{getLayer,setLayer}` and
+`validatePath`→`evener/path/validate`.
 
 - [ ] "Discovered servers" section is server-rendered at partial-load time from `.Mcps` (name,
       transport, `status-{{.Status}}` badge), per-row `.Error` when present, top-level `.McpsError`
@@ -782,9 +782,9 @@ File: `templates/partials/settings/storage.html`. Appwire: none — read-only.
 
 File: `templates/partials/settings/project.html`. Engine: `LaunchConfigControls` (Appendix B).
 
-**Appwire:** `schema()`→`serf/launch/schema`, `getLayer(cwd,"project")`→`serf/launch/getLayer`,
-`getLayer(cwd,"global")`→`serf/launch/getLayer` (second call, different `layer` arg),
-`setLayer(cwd,"project",…)`→`serf/launch/setLayer`.
+**Appwire:** `schema()`→`evener/launch/schema`, `getLayer(cwd,"project")`→`evener/launch/getLayer`,
+`getLayer(cwd,"global")`→`evener/launch/getLayer` (second call, different `layer` arg),
+`setLayer(cwd,"project",…)`→`evener/launch/setLayer`.
 
 - [ ] This is a **standalone top-level template** (`{{define "project_settings"}}`), not
       `{{define "settings-content"}}` — it renders its own `<header class="workspace-header">` and
@@ -808,9 +808,9 @@ File: `templates/partials/settings/project.html`. Engine: `LaunchConfigControls`
       current, includeEnvFallbacks:false, globalDefaults: globalLayer})` —
       `templates/partials/settings/project.html:53-60`
 - [ ] `root.dataset.loaded` is `"false"` initially, `"true"` on success, or the string `"error"` on
-      failure — a **3-state** contract, distinct from §9 Serf launch's 2-state
+      failure — a **3-state** contract, distinct from §9 Evener launch's 2-state
       (`"false"`→`"true"`-only) `form.dataset.loaded` —
-      `templates/partials/settings/project.html:10,62,82` vs `settings/launch-serf.html:7,72`
+      `templates/partials/settings/project.html:10,62,82` vs `settings/launch-evener.html:7,72`
 - [ ] Submit validates via `LaunchConfigControls.validate(form)` (return early if invalid), then
       `setLayer(cwd,"project",collect(form))` — unlike §9, **no diagnostics are fetched or rendered
       anywhere on this page**, neither on load nor after save (no `renderDiagnostics`, no
@@ -821,7 +821,7 @@ File: `templates/partials/settings/project.html`. Engine: `LaunchConfigControls`
 - [ ] Success toast "Project launch settings saved"; failure toast "Save failed" plus
       `LaunchConfigControls.showBackendError(form, err)` —
       `templates/partials/settings/project.html:70,73-74`
-- [ ] Section copy: "Layered on top of the global Serf and Codex launch settings. Only fields set
+- [ ] Section copy: "Layered on top of the global Evener and Codex launch settings. Only fields set
       here override the global defaults." — `templates/partials/settings/project.html:14`
 - [ ] On initial-load failure, the status paragraph is written to twice (`.textContent =` then
       immediately `replaceChildren(document.createTextNode(...))` with the same string) — a
@@ -886,23 +886,23 @@ Browse button, §§13-14), Marketplaces "Local path" field (inline + Browse butt
 
 ## Appendix B — Shared: `LaunchConfigControls` engine (`assets/launchconfig.js`)
 
-Used by §9 (Serf launch, layer=`"global"`, cwd=`"/"`) and §18 (Project settings, layer=`"project"`,
+Used by §9 (Evener launch, layer=`"global"`, cwd=`"/"`) and §18 (Project settings, layer=`"project"`,
 cwd=project cwd) only. **Not** used by MCP/Skills/Plugins/Marketplaces/Credentials, which each
 hand-roll their own simpler collection editor directly against `launchconfig.getLayer`/`setLayer`
 (or, for Marketplaces, against `pluginsAdmin`).
 
 - [ ] `launchconfig` wraps 16 RPCs 1:1 through one `request(method, params)` →
-      `SerfAppwire.request`: `schema`→`serf/launch/schema`, `resolve`→`serf/launch/resolve`,
-      `getLayer`→`serf/launch/getLayer`, `setLayer`→`serf/launch/setLayer`,
-      `trustRepo`→`serf/launch/trustRepo`, `validatePath`→`serf/path/validate` (via
+      `SerfAppwire.request`: `schema`→`evener/launch/schema`, `resolve`→`evener/launch/resolve`,
+      `getLayer`→`evener/launch/getLayer`, `setLayer`→`evener/launch/setLayer`,
+      `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` (via
       `SerfAppwire.validatePath` when present, else a raw `fetch("/api/path/validate?...")` GET
-      fallback); `authList`→`serf/auth/list`, `authStatus`→`serf/auth/status`,
-      `authApiKeySet`→`serf/auth/apiKey/set`, `authLoginStart`→`serf/auth/login/start`,
-      `authLoginComplete`→`serf/auth/login/complete`, `authLogout`→`serf/auth/logout`,
-      `authDeviceStart`→`serf/auth/device/start`, `authDevicePoll`→`serf/auth/device/poll`;
-      `instanceList`→`serf/instance/list`, `instanceCreate`→`serf/instance/create`,
-      `instanceEdit`→`serf/instance/edit`, `instanceRemove`→`serf/instance/remove`,
-      `instanceSetDefault`→`serf/instance/setDefault` — `assets/launchconfig.js:8-39`
+      fallback); `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
+      `authApiKeySet`→`evener/auth/apiKey/set`, `authLoginStart`→`evener/auth/login/start`,
+      `authLoginComplete`→`evener/auth/login/complete`, `authLogout`→`evener/auth/logout`,
+      `authDeviceStart`→`evener/auth/device/start`, `authDevicePoll`→`evener/auth/device/poll`;
+      `instanceList`→`evener/instance/list`, `instanceCreate`→`evener/instance/create`,
+      `instanceEdit`→`evener/instance/edit`, `instanceRemove`→`evener/instance/remove`,
+      `instanceSetDefault`→`evener/instance/setDefault` — `assets/launchconfig.js:8-39`
 - [ ] `authList`/`authStatus` are defined but not called by any settings partial read for this
       checklist — confirm at rewrite time whether another surface (spawn dialog?) uses them, or
       they're dead — `assets/launchconfig.js:24-25`
@@ -911,7 +911,7 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
       `options.layer` or `root.dataset.launchSettingsLayer` — `assets/launchconfig.js:774-782`
 - [ ] Options are filtered to those supporting the current layer (`optionSupportsLayer`: layer must
       be in `opt.defaultableLayers`) in settings mode, or spawn (`optionSupportsSpawn`:
-      `opt.perLaunch` true and `driverSupport.serf !== false`) in spawn mode —
+      `opt.perLaunch` true and `driverSupport.evener !== false`) in spawn mode —
       `assets/launchconfig.js:45-53,779-782`
 - [ ] In spawn mode, `agent`/`model`/`reasoningEffort` are additionally excluded (handled
       elsewhere, out of scope) — not applicable to either settings page in this checklist, both are
@@ -995,6 +995,6 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
 - [ ] `skills.html`/`plugins.html` (§§13-14) are copy-paste twins — collapse to one parameterized
       widget in the rewrite (`DirListSetting(wireField, label, copy)`), not two components.
 - [ ] Confirm with the Go-side RPC handlers (out of scope for this read) the exact response shapes
-      for `serf/instance/list`, `serf/marketplace/{list,browse}`, and `serf/plugin/list` before
+      for `evener/instance/list`, `evener/marketplace/{list,browse}`, and `evener/plugin/list` before
       generating `types.gen.ts` — this checklist only documents the fields the *current* client
       happens to read, which is a lower bound on the real response shape, not the full contract.

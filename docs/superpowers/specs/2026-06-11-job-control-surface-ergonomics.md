@@ -8,7 +8,7 @@ Companion to: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-desig
 
 The 2026-06-08 design spec's DRY rule — "a shared `## Background jobs` system-prompt section carries the mental model once; tool descriptions stay short" — was never implemented. `agent/prompts/sections/` contains `delegation.md` (good when-to-delegate guidance, zero job mental model) and nothing about jobs. The descriptions carry everything, the mental model lives nowhere, and the costliest agent behaviors (polling for completion, arming watches for one-shot questions, parking turns on long waits) have no countervailing prompt. §1 supplies the section.
 
-Design principles applied throughout (imported from the Claude Code harness's watch/wait stack, which serf's mailbox redesign independently converged with):
+Design principles applied throughout (imported from the Claude Code harness's watch/wait stack, which evener's mailbox redesign independently converged with):
 - **Cardinality-first**: the surface must make the agent ask "how many answers do I need?" — one (blocking read), recurring (watch), completion (automatic, free).
 - **Wake-don't-poll**, with one taught recovery move for lost-wake paranoia.
 - **Blocking is a bounded convenience, never parking.**
@@ -23,7 +23,7 @@ Wiring: register alongside `delegation.md` (discover the section-assembly mechan
 ## Background jobs
 
 Shell commands and delegates can run as durable background jobs identified by a
-`job_id`. Jobs outlive your turn, and Serf notifies you automatically when a
+`job_id`. Jobs outlive your turn, and Evener notifies you automatically when a
 background job finishes — completion never needs polling, blocking, or a watch.
 
 Pick the waiting primitive by how many answers you need:
@@ -77,7 +77,7 @@ Deliberately **kept** (reviewed, not useless): `block`+`block_timeout_ms` pairin
 Principles: lead with what it does and when to reach for it; the sibling-tool decision boundary goes in the description (the mental model lives in §1's prompt section); defaults stated on the parameter, not in prose; no internal jargon; no warnings about races that no longer exist. These texts assume P1-P6 and the mailbox redesign are landed.
 
 **`shell`:**
-> Run a shell command. Foreground by default: returns stdout, stderr, and exit code inline, waiting up to `block_timeout_ms`; a command still running at the timeout is promoted to a durable background job — you get its `job_id`, the process is not killed. Set `background=true` to skip the wait and get a `job_id` immediately (a dev server, anything long); `block_timeout_ms` is a foreground-only knob, and combining it with `background=true` is rejected. `max_runtime_ms` separately caps total process runtime. Serf notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.
+> Run a shell command. Foreground by default: returns stdout, stderr, and exit code inline, waiting up to `block_timeout_ms`; a command still running at the timeout is promoted to a durable background job — you get its `job_id`, the process is not killed. Set `background=true` to skip the wait and get a `job_id` immediately (a dev server, anything long); `block_timeout_ms` is a foreground-only knob, and combining it with `background=true` is rejected. `max_runtime_ms` separately caps total process runtime. Evener notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.
 
 **`delegate`:**
 > Start a NEW delegate conversation to do independent agentic work; returns a `job_id` (background by default — you are notified when it finishes). `delegate` never resumes an existing delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the enum (described in your agents section); `model` and `reasoning_effort` override the defaults; `result_schema` requests a validated structured result; `background=false` waits inline up to `block_timeout_ms` (a timeout leaves the job running). Judge the work from its output, not from `status="completed"`.
@@ -99,7 +99,7 @@ Principles: lead with what it does and when to reach for it; the sibling-tool de
 
 Haiku-validation gate (the 2026-06-08 method): **ran 2026-06-11** — three independent Haiku probes × ten scenarios against these texts scored 27 pass / 3 soft / 2 fail; both hard fails were one cause (shell's foreground-only rule unstated — fixed above), the soft fails one cause (session-target tokens unnamed — fixed above), and every §1-targeted behavior scored 3/3 (one-shot→blocking read, completion→non-action, silence→job_list, finished delegate→resume, loop→rejection, zero `trigger{}` usage). `job_list` enum concerns from the probe are moot in production: `DefJobList`'s parameter schema already carries the status/type enums. Phase 1.9 re-runs the gate cheaply at land time against the final wired texts.
 
-## 4. Imported watch/wait features (the "what should serf learn from you" set)
+## 4. Imported watch/wait features (the "what should evener learn from you" set)
 
 - **F1 — Watch delivery budget (circuit breaker).** Per watch config, count model-facing deliveries (caller notifications + rendered frames + sidecar sends). At a hard-coded cap (50), auto-clear the watch and emit one final notification: `watch cleared: <target> delivered 50 times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)`. No configuration knob (YAGNI). Mirrors the harness's auto-stop for too-chatty monitors; converts runaway watch spend into one actionable message. Lands with Phase 2 (it's a delivery-rail consumer; post-Phase-1 only).
 - **F2 — Watch enumerability.** `job_list`'s result gains a `watches` array: `{target, condition (one-line summary), send_to, deliveries, created_at}` — populated from the jobManager's live configs. Agents can answer "what am I still watching?"; the hub dashboard gets it for free. Lands with F1 (shared accounting).

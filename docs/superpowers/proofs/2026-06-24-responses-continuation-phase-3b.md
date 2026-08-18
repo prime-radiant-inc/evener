@@ -14,8 +14,8 @@ The OpenAI planner now:
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
 ```
 
 Both focused suites passed after implementation.

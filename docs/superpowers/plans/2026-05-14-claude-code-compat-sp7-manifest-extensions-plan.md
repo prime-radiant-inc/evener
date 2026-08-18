@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add Claude Code A-tier plugin manifest features to serf: `userConfig` prompt/store/substitute, `bin/` PATH injection, plugin-root `settings.json` (`agent` key), additive `skills` custom paths, and a warn-once mechanism for unsupported fields.
+**Goal:** Add Claude Code A-tier plugin manifest features to evener: `userConfig` prompt/store/substitute, `bin/` PATH injection, plugin-root `settings.json` (`agent` key), additive `skills` custom paths, and a warn-once mechanism for unsupported fields.
 
 **Architecture:** New per-plugin types (`UserConfigOption`, `ResolvedUserConfig`, `PluginWarning`) live in `agent/`. A small `agent/internal/securestore/` package handles secret persistence (FileStore now, Keychain later). `LoadedPlugin` grows four fields. `LoadPlugin` reads three new manifest fields (`userConfig`, `skills`, plugin-root `settings.json`) and stats `<root>/bin`. Helpers (`ExpandUserConfig`, `UserConfigEnvVars`, `PluginBinPATH`) are pure functions consumed by SP5/SP6/SP8. All exported symbols match the API surface in §2 of `docs/superpowers/specs/2026-05-14-claude-code-compat-sp7-manifest-extensions-design.md`.
 
@@ -243,7 +243,7 @@ import "sync"
 
 // PluginWarning is one diagnostic emitted at load time. It is *not* an error.
 // Captured on LoadedPlugin so the session can print it once at startup and
-// also surface it in `serf plugin list --json`.
+// also surface it in `evener plugin list --json`.
 type PluginWarning struct {
 	Field   string // e.g. "outputStyles", "settings.json:subagentStatusLine"
 	Message string
@@ -400,7 +400,7 @@ func TestEmitPluginWarnings_Format(t *testing.T) {
 		{Field: "outputStyles", Message: "ignoring unsupported field \"outputStyles\""},
 	})
 	got := buf.String()
-	want := "serf: plugin \"demo\": ignoring unsupported field \"outputStyles\"\n"
+	want := "evener: plugin \"demo\": ignoring unsupported field \"outputStyles\"\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -432,10 +432,10 @@ import (
 )
 
 // EmitPluginWarnings writes one line per warning to w in the canonical format
-// "serf: plugin %q: %s".
+// "evener: plugin %q: %s".
 func EmitPluginWarnings(w io.Writer, pluginID string, ws []PluginWarning) {
 	for _, warn := range ws {
-		fmt.Fprintf(w, "serf: plugin %q: %s\n", pluginID, warn.Message)
+		fmt.Fprintf(w, "evener: plugin %q: %s\n", pluginID, warn.Message)
 	}
 }
 ```
@@ -1553,15 +1553,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/prime-radiant-inc/serf/agent/internal/securestore"
+	"github.com/prime-radiant-inc/evener/agent/internal/securestore"
 )
 
 // SecureStore re-exports the interface so SP7 callers can stay in package agent.
 type SecureStore = securestore.SecureStore
 
 // NewSecureStore returns the platform-appropriate SecureStore. SP7 v1 always
-// returns a FileStore rooted at $XDG_CONFIG_HOME/serf/credentials.json (or
-// $HOME/.config/serf/credentials.json). A keychain backend lands in a
+// returns a FileStore rooted at $XDG_CONFIG_HOME/evener/credentials.json (or
+// $HOME/.config/evener/credentials.json). A keychain backend lands in a
 // follow-up; this function is the single switch point.
 func NewSecureStore() (SecureStore, error) {
 	path, err := defaultCredentialsPath()
@@ -1573,17 +1573,17 @@ func NewSecureStore() (SecureStore, error) {
 
 func defaultCredentialsPath() (string, error) {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "serf", "credentials.json"), nil
+		return filepath.Join(x, "evener", "credentials.json"), nil
 	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		return "", errors.New("HOME not set: cannot locate credentials file")
 	}
-	return filepath.Join(home, ".config", "serf", "credentials.json"), nil
+	return filepath.Join(home, ".config", "evener", "credentials.json"), nil
 }
 ```
 
-NOTE: replace `github.com/prime-radiant-inc/serf` with the real module path. Verify with `head -1 go.mod`. The import line above is illustrative; the executing engineer must check `go.mod` and adjust.
+NOTE: replace `github.com/prime-radiant-inc/evener` with the real module path. Verify with `head -1 go.mod`. The import line above is illustrative; the executing engineer must check `go.mod` and adjust.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1676,7 +1676,7 @@ package agent
 // userConfig values. Concrete implementations:
 //   - MemPluginConfigStore: in-memory (tests)
 //   - ConfigJSONStore: reads/writes the pluginConfigs section of
-//     ~/.config/serf/config.json (SP1 owns the file; SP7 owns this typed
+//     ~/.config/evener/config.json (SP1 owns the file; SP7 owns this typed
 //     accessor — Task 14).
 type PluginConfigStore interface {
 	Load(pluginID string) (map[string]any, error)
@@ -1732,7 +1732,7 @@ git commit -m "feat(plugin): PluginConfigStore interface + in-memory impl"
 
 ---
 
-### Task 14: `ConfigJSONStore` backed by `~/.config/serf/config.json`
+### Task 14: `ConfigJSONStore` backed by `~/.config/evener/config.json`
 
 **Files:**
 - Modify: `agent/plugin_config_store.go`
@@ -1845,7 +1845,7 @@ import (
 	"os"
 )
 
-// ConfigJSONStore reads/writes the "pluginConfigs" section of a serf
+// ConfigJSONStore reads/writes the "pluginConfigs" section of a evener
 // config.json file. Other fields in the file are preserved verbatim via
 // a generic map[string]any decode.
 //
@@ -2617,7 +2617,7 @@ func warnUnknownUserConfigKey(pluginID, key string) {
 	if _, loaded := userConfigUnknownSeen.LoadOrStore(mapKey, struct{}{}); loaded {
 		return
 	}
-	fmt.Fprintf(userConfigUnknownWriter, "serf: plugin %q: unknown user_config key %q\n", pluginID, key)
+	fmt.Fprintf(userConfigUnknownWriter, "evener: plugin %q: unknown user_config key %q\n", pluginID, key)
 }
 
 // resetUserConfigUnknownWarnings is a test helper.
@@ -2794,8 +2794,8 @@ Expected: FAIL — undefined.
 Append to `agent/plugin_userconfig.go`:
 
 ```go
-// UserConfigPrompter is the surface-specific UX. CLI, serf-tui, and
-// serf-hub each ship their own implementation.
+// UserConfigPrompter is the surface-specific UX. CLI, evener-tui, and
+// evener-hub each ship their own implementation.
 type UserConfigPrompter interface {
 	// Prompt is called once per option in declaration order. The raw
 	// user-entered string is returned. Empty string means "user accepted
@@ -2903,7 +2903,7 @@ Append to `agent/plugin_userconfig.go`:
 // them. Plain values go to plainStore; sensitive values go to secureStore.
 // Returns the resolved values for immediate use. On any error after partial
 // writes, secureStore writes already made are *not* automatically rolled
-// back — callers calling this from `serf plugin enable` should treat any
+// back — callers calling this from `evener plugin enable` should treat any
 // error as "delete the plugin" or "re-run enable". Plain-store writes use
 // Save's full-replace semantics so a failed call leaves the previous
 // pluginConfigs entry untouched until the final Save.
@@ -3428,7 +3428,7 @@ Add the imports if not present.
 Run: `go test ./agent/ -run TestPluginBinPATH_EndToEndExec -v`
 Expected: PASS — the binary exists, PATH points at it, sh resolves it.
 
-(This test does not exercise serf's full shell-tool registration; SP8 wires that. The PATH-string helper is what SP7 owns and this test verifies it works end-to-end with a real exec.)
+(This test does not exercise evener's full shell-tool registration; SP8 wires that. The PATH-string helper is what SP7 owns and this test verifies it works end-to-end with a real exec.)
 
 - [ ] **Step 3: Commit**
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing renderer output and timing-formatting helpers unchanged. Implement the behavior as CSS-only opacity rules in `cmd/evener-hub/assets/style.css`, verified by deterministic static CSS contract tests in `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`.
 
-**Tech Stack:** Serf hub static assets, CSS, Node-based CSS contract tests, Go package tests via `go test ./cmd/evener-hub`.
+**Tech Stack:** Evener hub static assets, CSS, Node-based CSS contract tests, Go package tests via `go test ./cmd/evener-hub`.
 
 ## Global Constraints
 

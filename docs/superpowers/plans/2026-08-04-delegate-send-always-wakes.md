@@ -6,12 +6,12 @@
 
 **Architecture:** Keep the existing `sendDelegateMessage` routing and resume/restore machinery. Remove only the idle-policy input and validation: after target ownership and resumability checks, all idle delegates enter the existing resume path. Synchronize the public tool definition, user documentation, deterministic tests, and fuzz/seed fixtures with the new contract.
 
-**Tech Stack:** Go, standard `testing` package, JSON-schema-like tool definitions, Markdown documentation, existing Serf delegate/session test harness.
+**Tech Stack:** Go, standard `testing` package, JSON-schema-like tool definitions, Markdown documentation, existing Evener delegate/session test harness.
 
 ## Global Constraints
 
 - Default tests must be deterministic and must not require provider credentials, network access, quota, current model behavior, or ambient machine state.
-- Use the existing Serf plumbing test harness and external-boundary fakes; do not mock Serf internals to manufacture a pass.
+- Use the existing Evener plumbing test harness and external-boundary fakes; do not mock Evener internals to manufacture a pass.
 - Preserve delegate ownership, restore validation, disposal protections, watch routing, and `max_wait_ms` behavior.
 - Do not retain a hidden compatibility alias for `on_idle`; the public argument is removed.
 - Keep unrelated pre-existing worktree changes untouched.

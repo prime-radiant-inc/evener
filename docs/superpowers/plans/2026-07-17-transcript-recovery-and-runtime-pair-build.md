@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make transcript read failures honest in the Hub UI, safely convert selected recent v1 transcript artifacts to v2, and make ordinary builds publish a same-checkout `serf`/`serf-hub` pair.
+**Goal:** Make transcript read failures honest in the Hub UI, safely convert selected recent v1 transcript artifacts to v2, and make ordinary builds publish a same-checkout `evener`/`evener-hub` pair.
 
 **Architecture:** The renderer classifies existing AppWire-coded errors separately from plain transport failures. A standalone, uninstalled Go command performs strict per-file conversion and backup-preserving replacement. A shell behavior boundary stages both runtime binaries before Make publishes either compiled result.
 
@@ -15,7 +15,7 @@
 - Apply mode retains a sibling `.v1.bak` and never overwrites an existing backup.
 - Reject malformed, unknown, oversized, or incomplete transcript records without mutating the original.
 - Do not modify `.api.jsonl`, `.meta.json`, or transcripts older than the selected cutoff.
-- Do not install, distribute, or release `serf-transcript-v2-upgrade`.
+- Do not install, distribute, or release `evener-transcript-v2-upgrade`.
 - Default tests are deterministic and follow `docs/testing.md`.
 - Tests assert behavior and structured results, not large rendered scripts or command strings.
 
@@ -62,7 +62,7 @@ pass(transcriptErrors(w3).length === 0, "application failure does not create a t
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
 ```
 
 Expected: exit 1 because the rejection is rendered as `Connection lost` and retried.
@@ -99,8 +99,8 @@ interpolate the server message into `innerHTML`.
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: both commands exit 0; the focused test reports application errors as unavailable while the existing amber-to-red transport behavior remains green.
@@ -218,7 +218,7 @@ removed count without emitting it. Reject all other kinds.
 - [ ] **Step 5: Implement backup-preserving replacement**
 
 Write the full converted bytes to `os.CreateTemp(filepath.Dir(path),
-".serf-transcript-v2-*")`, apply the original permission bits, call `Sync`, and
+".evener-transcript-v2-*")`, apply the original permission bits, call `Sync`, and
 close it. Before rename, stat the original and require `os.SameFile`, identical
 size, and identical modification time compared with the preparation snapshot.
 
@@ -299,7 +299,7 @@ Create an executable POSIX shell script with this behavior:
 set -eu
 
 repo_root=$(pwd)
-stage=$(mktemp -d "${TMPDIR:-/tmp}/serf-runtime-build.XXXXXX")
+stage=$(mktemp -d "${TMPDIR:-/tmp}/evener-runtime-build.XXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
 
 build_one() {
@@ -312,10 +312,10 @@ build_one() {
   fi
 }
 
-build_one serf ./cmd/evener/
-build_one serf-hub ./cmd/evener-hub/
-mv "$stage/serf" "$repo_root/serf"
-mv "$stage/serf-hub" "$repo_root/serf-hub"
+build_one evener ./cmd/evener/
+build_one evener-hub ./cmd/evener-hub/
+mv "$stage/evener" "$repo_root/evener"
+mv "$stage/evener-hub" "$repo_root/evener-hub"
 ```
 
 Use `chmod +x` as a mechanical file-mode change.
@@ -346,8 +346,8 @@ Run:
 ```bash
 go test . -run 'TestRuntimePairBuild|TestMakeRuntimeAliases' -count=1
 make build
-go version -m ./serf
-go version -m ./serf-hub
+go version -m ./evener
+go version -m ./evener-hub
 ```
 
 Expected: behavior tests pass; both binaries build; their embedded VCS revision
@@ -357,7 +357,7 @@ and modified state match.
 
 ```bash
 git add Makefile scripts/build-runtime-pair.sh runtime_pair_build_test.go
-git commit -m "build: rebuild serf runtime binaries as a pair"
+git commit -m "build: rebuild evener runtime binaries as a pair"
 ```
 
 ---
@@ -366,7 +366,7 @@ git commit -m "build: rebuild serf runtime binaries as a pair"
 
 **Files:**
 - No source files expected.
-- Runtime artifacts: selected files below `~/.local/state/serf/projects` and
+- Runtime artifacts: selected files below `~/.local/state/evener/projects` and
   their retained `.v1.bak` siblings.
 
 **Interfaces:**
@@ -381,7 +381,7 @@ Run:
 go test ./cmd/evener-transcript-v2-upgrade -count=1
 go test . -run 'TestRuntimePairBuild|TestMakeRuntimeAliases' -count=1
 go test ./cmd/evener-hub -count=1
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
 make test
 ```
 
@@ -389,11 +389,11 @@ Expected: all gates exit 0 without provider credentials or network access.
 
 - [ ] **Step 2: Stop transcript writers and dry-run the migration**
 
-Stop `com.primeradiant.serf-hub.codex` and confirm no managed `serf` writer
+Stop `com.primeradiant.evener-hub.codex` and confirm no managed `evener` writer
 processes remain. Then run:
 
 ```bash
-go run ./cmd/evener-transcript-v2-upgrade --root "$HOME/.local/state/serf/projects" --since 120h
+go run ./cmd/evener-transcript-v2-upgrade --root "$HOME/.local/state/evener/projects" --since 120h
 ```
 
 Expected: exit 0 with eligible/skipped/removal counts and no unexplained errors.

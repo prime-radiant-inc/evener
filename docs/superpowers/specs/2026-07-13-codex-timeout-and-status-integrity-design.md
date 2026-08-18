@@ -6,10 +6,10 @@
 
 ## Problem
 
-Serf must bound the wait for streaming response headers so one completely stuck
+Evener must bound the wait for streaming response headers so one completely stuck
 provider response cannot hang an attempt forever. The timeout happens after the
 POST may have been fully written, so retrying is ambiguous: the provider may be
-processing the generation even though Serf received no headers. Jesse accepts
+processing the generation even though Evener received no headers. Jesse accepts
 that duplicate-generation risk and wants the existing retry policy to recover
 autonomously from a stuck attempt.
 

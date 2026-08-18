@@ -12,7 +12,7 @@ reports a concise intervention note. Driving mechanism:
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-feedback-governor-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-feedback-governor-XXXXX)`.
 
 ## Steps
 

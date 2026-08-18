@@ -36,22 +36,22 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
   (`llm/apilog.go:EnableRawLogging`, attached via `cmdutil.AttachAPILogger`). All registered
   in `envvars/envvars.go` with `Visibility: Tooling`.
 - **The provider-traffic harvest path is already complete end-to-end.**
-  `serf-fuzz-harvest --surface sse` reads `api-raw.jsonl`, takes streaming `ResponseBody`,
+  `evener-fuzz-harvest --surface sse` reads `api-raw.jsonl`, takes streaming `ResponseBody`,
   and routes by provider into the per-provider metamorphic seed dirs
   (`cmd/evener-fuzz-harvest/raw.go:harvestSSE`, `main.go:112`). Surfaces: `sse, toolargs,
   appwire, http, jobs`.
 - **A robust sanitization chokepoint** (`cmd/evener-fuzz-harvest/sanitize.go`): shape-scrub by
   default (structure/enums kept, free-text length-bucketed, numbers zeroed, timestamps
   fixed), nine high-confidence secret regexes + entropy gate, `--keep-values` gated behind
-  `SERF_FUZZ_CAPTURE_ENV`, personal `~/.serf` forced to shape-scrub, plus a write-time
+  `SERF_FUZZ_CAPTURE_ENV`, personal `~/.evener` forced to shape-scrub, plus a write-time
   `gitleaks` gate. Corpora are **not** path-allowlisted in `.gitleaks.toml` — they must be
   genuinely scrubbed to commit.
-- **The headless driving surface:** `serf --model <provider/model> [--verbose]
+- **The headless driving surface:** `evener --model <provider/model> [--verbose]
   [--max-rounds N] [--reasoning-effort L] [--fast-cheap-model <m>] "<prompt>"` (prompt
   positional or stdin via `cmd/evener/main.go:111 cliprompt.Read`; `--verbose` emits NDJSON
   events to stderr; flags at `cmd/evener/main.go:166-195`). Kimi: `type = "kimi-anthropic"`,
   keys `KIMI_CODING_API_KEY` / `KIMI_CODING_BASE_URL`. OpenAI: `OPENAI_API_KEY`,
-  model `gpt-5.4-mini`. Configurable via `~/.serf/providers.toml` `[instances.*]`.
+  model `gpt-5.4-mini`. Configurable via `~/.evener/providers.toml` `[instances.*]`.
 
 **The one missing piece for Phase A is a *driver*** — there is no bulk prompt runner; the
 harvester only consumes *recorded* traffic. So Phase A = make recording the local default +
@@ -67,11 +67,11 @@ non-dev environment**, and **on by default for local dev**. Mechanism: a single 
 var **`SERF_FUZZ_RECORD`** that flips all three recorders on unless a per-recorder var
 (`SERF_RECORD_APPWIRE`, `SERF_RECORD_HTTP`, `SERF_LOG_RAW_HTTP`) explicitly disables it; set
 it once in the dev shell profile / dev bootstrap. Absent → all off (safe everywhere it isn't
-set). Ensure `./.serf/` is gitignored (the repo-local state fallback) so raw recordings never
+set). Ensure `./.evener/` is gitignored (the repo-local state fallback) so raw recordings never
 land in a commit; raw `*.jsonl` stays on the dev box, only *scrubbed seeds* are committed.
 
-**D2 — Driver drives the real `serf` CLI as a subprocess (recommended), not the Go Session
-API.** Subprocessing `serf --model ... "task"` exercises the real one-shot path (itself a
+**D2 — Driver drives the real `evener` CLI as a subprocess (recommended), not the Go Session
+API.** Subprocessing `evener --model ... "task"` exercises the real one-shot path (itself a
 surface), needs no test seams, and naturally produces `api-raw.jsonl` (provider SSE),
 transcripts (toolargs), and `jobs.jsonl`. The Go API (`agent.NewSession` →
 `sess.ProcessInput`) is tighter but bypasses the CLI wiring and the recorders' attach points.
@@ -104,7 +104,7 @@ A3 findings (carried forward):
   `scripts/fuzz-drive.sh` to seed the anthropic/gemini/openaicompat/chat decoders.
 - **appwire/http frames need a hub-mode driver.** The one-shot CLI doesn't use the
   WS transport, so `appwire-frames.jsonl`/`hub-http.jsonl` stayed empty — a Phase A
-  follow-on that drives a `serf serve` + hub client to record those surfaces.
+  follow-on that drives a `evener serve` + hub client to record those surfaces.
 - The full 24-task × multi-provider run (and `--pr`) is the next live invocation.
 
 
@@ -115,7 +115,7 @@ path exists; we need the local-record default and a driver.
 **A1 — Local-record master switch (D1).** Add `envvars.SERFFuzzRecord`; thread it into the
 three recorders' enable checks (`appwire/frame_recorder.go`, `cmd/evener-hub/http_recorder.go`,
 `llm/apilog.go:rawHTTPLogEnabled`) as "per-recorder var OR (master ∧ not explicitly off)".
-Document in dev onboarding. Gitignore `./.serf/`. *~40 LoC + tests asserting off-by-default
+Document in dev onboarding. Gitignore `./.evener/`. *~40 LoC + tests asserting off-by-default
 when master unset.*
 
 **A2 — The driver (`cmd/evener-fuzz-drive`, or `scripts/fuzz-drive.sh`).** Runs a corpus of
@@ -131,7 +131,7 @@ sandboxed workdirs, then invokes the harvester. Requirements:
 - **Isolation + safety**: each run in its own `t.TempDir`-style scratch repo; `--max-rounds`
   capped; per-provider rate-limit backoff; a cost ceiling (mini is cheap — surface est. token
   spend from `--verbose` events).
-- **Pipeline**: after the batch, run `serf-fuzz-harvest` (shape-scrub default) → gitleaks gate
+- **Pipeline**: after the batch, run `evener-fuzz-harvest` (shape-scrub default) → gitleaks gate
   → stage seeds (D3). Wrap under `scripts/run-capped.sh`.
 - *~250–400 LoC. This is the one genuinely new build in Phase A; do it serial/first.*
 

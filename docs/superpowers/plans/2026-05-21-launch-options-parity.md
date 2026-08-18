@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Expose the full launch-configurable Serf session surface in web and TUI per-launch Advanced controls and default settings, using one shared schema.
+**Goal:** Expose the full launch-configurable Evener session surface in web and TUI per-launch Advanced controls and default settings, using one shared schema.
 
-**Architecture:** `internal/launchconfig` becomes the source of truth for option metadata, validation classes, layer support, and launch argument serialization. Hub exposes the schema over AppWire and the web/TUI render native controls from that schema while preserving the current visual style and interaction patterns. Inline system prompt text is stored in launch config but materialized to private prompt files only when hub spawns `serf serve`, keeping prompt bodies out of argv and logs.
+**Architecture:** `internal/launchconfig` becomes the source of truth for option metadata, validation classes, layer support, and launch argument serialization. Hub exposes the schema over AppWire and the web/TUI render native controls from that schema while preserving the current visual style and interaction patterns. Inline system prompt text is stored in launch config but materialized to private prompt files only when hub spawns `evener serve`, keeping prompt bodies out of argv and logs.
 
-**Tech Stack:** Go, AppWire JSON-RPC, Go `testing`, HTMX/templates, browser JavaScript, Bubble Tea TUI, existing Serf path/model picker helpers.
+**Tech Stack:** Go, AppWire JSON-RPC, Go `testing`, HTMX/templates, browser JavaScript, Bubble Tea TUI, existing Evener path/model picker helpers.
 
 ---
 
@@ -17,16 +17,16 @@
 - Modify `internal/launchconfig/types.go`: add system prompt source fields and Debug Logging fields to `Layer`.
 - Modify `internal/launchconfig/merge.go`: merge new fields with correct precedence and diagnostics for legacy append list compatibility.
 - Modify `internal/launchconfig/wire.go`: convert new fields between internal and AppWire types.
-- Modify `internal/launchconfig/args.go` and `internal/launchconfig/args_test.go`: serialize file-backed prompt fields and debug flags to `serf serve`.
+- Modify `internal/launchconfig/args.go` and `internal/launchconfig/args_test.go`: serialize file-backed prompt fields and debug flags to `evener serve`.
 - Modify `internal/launchconfig/resolver.go`: expand/check path fields for system prompt and debug outputs.
-- Modify `internal/appwire/types.go`: add `serf/launch/schema` method constant and wire schema structs.
+- Modify `internal/appwire/types.go`: add `evener/launch/schema` method constant and wire schema structs.
 - Modify `cmd/evener-hub/app_launch.go`: add schema RPC handler and backend validation helper for schema-backed writes.
 - Modify `cmd/evener-hub/app_rpc.go`: register the schema method.
 - Modify `cmd/evener-hub/spawn.go` and `cmd/evener-hub/spawn_test.go`: materialize inline prompt text into private launch files before building argv.
 - Modify `cmd/evener-hub/assets/launchconfig.js`: add `launchconfig.schema()`.
 - Modify `cmd/evener-hub/templates/partials/spawn.html`: replace hard-coded Advanced fieldsets with schema render roots that retain current spawn page structure.
 - Modify `cmd/evener-hub/assets/spawn.js`: render schema-backed Advanced controls, collect overrides, validate add-time path values, and show non-secret env fallback values for per-launch only.
-- Modify `cmd/evener-hub/templates/partials/settings/launch-serf.html`: render global defaults from schema.
+- Modify `cmd/evener-hub/templates/partials/settings/launch-evener.html`: render global defaults from schema.
 - Modify `cmd/evener-hub/templates/partials/settings/project.html`: render project defaults from schema while keeping the project picker and repo trust behavior unchanged.
 - Modify `cmd/evener-hub/assets/settings-pickers.js`: attach model/path pickers to schema-rendered controls when needed.
 - Modify `cmd/evener-hub/web_test.go` and AppWire tests under `cmd/evener-hub/*_test.go`: cover schema RPC, spawn overrides, and rendered HTML hooks.
@@ -211,7 +211,7 @@ type LaunchOption struct {
 func LaunchOptionSchema() []LaunchOption {
 	defaultLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject}
 	allLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject, LaunchLayerLaunch}
-	serfOnly := map[string]bool{"serf": true}
+	serfOnly := map[string]bool{"evener": true}
 	return []LaunchOption{
 		{Field: "agent", WireField: "agent", Label: "Agent", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "model", WireField: "model", Label: "Model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_MODEL"}, DriverSupport: serfOnly},
@@ -220,7 +220,7 @@ func LaunchOptionSchema() []LaunchOption {
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: serfOnly},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Label: "Max subagent depth", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "no_project_prompts", WireField: "noProjectPrompts", Label: "Suppress .serf/prompts loading", Group: LaunchGroupLimits, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
+		{Field: "no_project_prompts", WireField: "noProjectPrompts", Label: "Suppress .evener/prompts loading", Group: LaunchGroupLimits, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "app_replay_size", WireField: "appReplaySize", Label: "App replay size", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: false, DriverSupport: serfOnly},
 		{Field: "system_prompt_mode", WireField: "systemPromptMode", Label: "System prompt", Group: LaunchGroupSystemPrompt, Kind: LaunchControlRadio, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: systemPromptModeChoices(), DriverSupport: serfOnly},
 		{Field: "system_prompt_file", WireField: "systemPromptFile", Label: "System prompt file", Group: LaunchGroupSystemPrompt, Kind: LaunchControlPath, PathKind: LaunchPathFile, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
@@ -254,7 +254,7 @@ func contextChoices() []LaunchOptionChoice {
 }
 
 func systemPromptModeChoices() []LaunchOptionChoice {
-	return []LaunchOptionChoice{{Value: "", Label: "Serf default"}, {Value: "file", Label: "Pick a file"}, {Value: "inline", Label: "Fill in text"}}
+	return []LaunchOptionChoice{{Value: "", Label: "Evener default"}, {Value: "file", Label: "Pick a file"}, {Value: "inline", Label: "Fill in text"}}
 }
 
 func appendModeChoices() []LaunchOptionChoice {
@@ -281,7 +281,7 @@ func LaunchOptionExclusions() map[string]string {
 In `internal/appwire/types.go`, add:
 
 ```go
-const MethodSerfLaunchSchema = "serf/launch/schema"
+const MethodSerfLaunchSchema = "evener/launch/schema"
 
 type LaunchOptionChoice struct {
 	Value    string `json:"value"`
@@ -369,7 +369,7 @@ appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSchema, func(ctx 
 In `cmd/evener-hub/assets/launchconfig.js`, add:
 
 ```js
-schema: () => request("serf/launch/schema", {}),
+schema: () => request("evener/launch/schema", {}),
 ```
 
 - [ ] **Step 6: Add schema RPC test**
@@ -902,7 +902,7 @@ In `cmd/evener-hub/templates/partials/spawn.html`, keep the surrounding `<detail
 <div class="spawn-advanced-body" data-launch-advanced-root>
   <p class="settings-help spawn-advanced-note">
     Per-launch overrides for this thread only. Defaults come from
-    <a href="/settings/launch-serf">Launch defaults</a> and any per-project layers.
+    <a href="/settings/launch-evener">Launch defaults</a> and any per-project layers.
   </p>
   <div class="settings-help" data-launch-schema-loading>Loading advanced options…</div>
   <div data-launch-env-fallbacks></div>
@@ -926,7 +926,7 @@ function launchFieldName(opt) {
 }
 
 function optionAppliesToLaunch(opt) {
-  return !!opt.perLaunch && (!opt.driverSupport || opt.driverSupport.serf);
+  return !!opt.perLaunch && (!opt.driverSupport || opt.driverSupport.evener);
 }
 
 function renderLaunchOption(opt, current) {
@@ -1274,7 +1274,7 @@ git commit -m "feat: render schema-backed spawn advanced"
 ## Task 5: Render Schema-Backed Web Launch Defaults
 
 **Files:**
-- Modify: `cmd/evener-hub/templates/partials/settings/launch-serf.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-evener.html`
 - Modify: `cmd/evener-hub/templates/partials/settings/project.html`
 - Modify: `cmd/evener-hub/assets/settings-pickers.js`
 - Modify: `cmd/evener-hub/web.go`
@@ -1286,7 +1286,7 @@ In `cmd/evener-hub/web_test.go`, add:
 
 ```go
 func TestLaunchSerfSettings_UsesSchemaRoot(t *testing.T) {
-	body := renderSettingsPartialForTest(t, "launch-serf", nil)
+	body := renderSettingsPartialForTest(t, "launch-evener", nil)
 	for _, want := range []string{`data-launch-settings-root`, `data-launch-settings-layer="global"`, `data-launch-settings-groups`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("launch settings missing %q:\n%s", want, body)
@@ -1309,7 +1309,7 @@ Expected: fails because the schema root is not present.
 
 - [ ] **Step 3: Replace global launch settings form with schema root**
 
-In `cmd/evener-hub/templates/partials/settings/launch-serf.html`, keep the title/help text and replace the form body with:
+In `cmd/evener-hub/templates/partials/settings/launch-evener.html`, keep the title/help text and replace the form body with:
 
 ```html
 <div id="launch-form" class="settings-launch-form" data-launch-settings-root data-launch-settings-layer="global" data-cwd="/">
@@ -1413,7 +1413,7 @@ async function validateLaunchSettings(root, schema, draft) {
 }
 ```
 
-For `env`, rely on `serf/launch/setLayer` credential-key rejection and show the returned error inline.
+For `env`, rely on `evener/launch/setLayer` credential-key rejection and show the returned error inline.
 
 - [ ] **Step 7: Run web settings tests**
 
@@ -1428,7 +1428,7 @@ Expected: selected tests pass.
 - [ ] **Step 8: Commit web settings slice**
 
 ```bash
-git add cmd/evener-hub/templates/partials/settings/launch-serf.html cmd/evener-hub/templates/partials/settings/project.html cmd/evener-hub/assets/launchconfig.js cmd/evener-hub/assets/settings-pickers.js cmd/evener-hub/web.go cmd/evener-hub/web_test.go
+git add cmd/evener-hub/templates/partials/settings/launch-evener.html cmd/evener-hub/templates/partials/settings/project.html cmd/evener-hub/assets/launchconfig.js cmd/evener-hub/assets/settings-pickers.js cmd/evener-hub/web.go cmd/evener-hub/web_test.go
 git commit -m "feat: render schema-backed launch settings"
 ```
 
@@ -1856,7 +1856,7 @@ Open `/new` and verify:
 - Advanced opens below the existing prompt and chips.
 - Agent is the first Advanced group.
 - Model group contains Model, Reasoning effort, and Fast cheap model in that order.
-- System Prompt uses a radio group for Serf default, Pick a file, and Fill in text.
+- System Prompt uses a radio group for Evener default, Pick a file, and Fill in text.
 - Append to system prompt uses a separate radio group for Do not append anything, Pick a file, and Fill in text.
 - Skill/plugin/MCP/model fallback lists render vertically, with Add controls on a new line below existing values.
 - Non-secret env fallback values appear on per-launch Advanced only.

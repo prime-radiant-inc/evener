@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: Revised after adversarial review; approved design pending implementation planning
-Scope: Serf web hub (`cmd/evener-hub`)
+Scope: Evener web hub (`cmd/evener-hub`)
 
 ## Problem
 
@@ -101,7 +101,7 @@ Current code assumes `window.SerfPanes` is absent inside pane iframes and theref
 
 1. The top-level app shell owns the real `SerfPanes` manager.
 2. The thread document exposes a small pane-client bridge when it is framed.
-3. Open-beside actions inside the thread document send a same-origin `postMessage` request to the top-level host, for example `{type: "serf:open-beside", href, title}`.
+3. Open-beside actions inside the thread document send a same-origin `postMessage` request to the top-level host, for example `{type: "evener:open-beside", href, title}`.
 4. The host validates message origin, source frame, and href before calling `SerfPanes.open`.
 5. The new pane opens to the right of the requesting pane when possible; otherwise it follows the existing pane manager ordering rules.
 

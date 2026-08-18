@@ -1,7 +1,7 @@
 # MCP resilience: three-server end-to-end scenario card
 
 **What this covers**: the whole MCP-resilience workstream (Tasks 1-19) as it
-actually behaves in an assembled, running `serf serve` daemon driven through
+actually behaves in an assembled, running `evener serve` daemon driven through
 the real web UI, the real TUI, and the daemon's own HTTP surface — not unit
 tests. Exercises: non-fatal parallel startup with per-server outcomes (Tasks
 2-4), the `SourceMCP` deferred-warning path flushed after `SESSION_START`
@@ -28,9 +28,9 @@ uses three servers:
 Build the three harness binaries from the worktree root:
 
 ```sh
-go build -o /tmp/serf ./cmd/evener
-go build -o /tmp/serf-hub ./cmd/evener-hub
-go build -o /tmp/serf-tui ./cmd/evener-tui
+go build -o /tmp/evener ./cmd/evener
+go build -o /tmp/evener-hub ./cmd/evener-hub
+go build -o /tmp/evener-tui ./cmd/evener-tui
 go build -o /tmp/intgmcpserver ./agent/testdata/intgmcpserver
 ```
 
@@ -39,7 +39,7 @@ doc, a strong signal C should be a scratch artifact, not a permanent test
 fixture). It was written to a temporary `agent/testdata/mcperrsvc/main.go`
 (same testdata-build trick as `intgmcpserver`, needed only so `go build` could
 resolve the `agent` module's pinned `github.com/modelcontextprotocol/go-sdk`
-dependency), built to `/tmp/serf-mcp-e2e-errsvc`, then **deleted from the
+dependency), built to `/tmp/evener-mcp-e2e-errsvc`, then **deleted from the
 worktree** — it was never `git add`ed. Its logic: one tool, `alwaysfails`,
 unconditionally returns
 `&mcpsdk.CallToolResult{IsError: true, Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "channelb-boom: upstream 400 (server C proof fixture)"}}}`.
@@ -52,49 +52,49 @@ one configured instance is collected as a warning and that instance is
 skipped, it does not abort client construction. No `.env` sourcing and no
 `oai-work` instance were needed. Every model call in this run used
 `--model openai/gpt-5.5`, routed through the `openai` instance in
-`~/.serf/providers.toml` backed by the real ChatGPT/Codex OAuth token at
-`~/.local/state/serf/auth/openai.json` — a genuine, non-mocked API path.
+`~/.evener/providers.toml` backed by the real ChatGPT/Codex OAuth token at
+`~/.local/state/evener/auth/openai.json` — a genuine, non-mocked API path.
 
 ### Isolation recipe
 
-Ran a real, isolated `serf serve` + `serf-hub` pair — never the main checkout,
-never Jesse's real `~/.serf`. Both processes ran under a fake HOME
-(`$SCRATCH/hubhome`) so the hub's `hostlock` (`~/.serf/hub.lock`, hard-coded to
+Ran a real, isolated `evener serve` + `evener-hub` pair — never the main checkout,
+never Jesse's real `~/.evener`. Both processes ran under a fake HOME
+(`$SCRATCH/hubhome`) so the hub's `hostlock` (`~/.evener/hub.lock`, hard-coded to
 `os.UserHomeDir()` with no config override) and default paths never touched
 the real environment, plus non-default ports (`serve` on `127.0.0.1:29131`,
 `hub` on `127.0.0.1:29180` — the conventional `9131`/`9180` were unavailable
-in this environment: another agent's unrelated `serf-hub-sr`/`serf-sr` was
+in this environment: another agent's unrelated `evener-hub-sr`/`evener-sr` was
 already running on `9573`; that process, and the browser tab pointed at it,
 were never touched).
 
 ```sh
 SCRATCH=<scratchpad>/mcp-e2e
-mkdir -p "$SCRATCH"/{workdir,hubhome/.config/serf,hubhome/.local/state/serf/auth}
+mkdir -p "$SCRATCH"/{workdir,hubhome/.config/evener,hubhome/.local/state/evener/auth}
 
 # Global MCP config the HUB's settings-pane probe reads (see "Sharp edges" —
 # this is a *separate* discovery path from the live session's --mcp flags).
-cat > "$SCRATCH/hubhome/.config/serf/mcp.json" <<'EOF'
+cat > "$SCRATCH/hubhome/.config/evener/mcp.json" <<'EOF'
 {"mcpServers": {
   "A": {"command": "/tmp/intgmcpserver"},
   "deadsvc": {"command": "/usr/bin/true"},
-  "C": {"command": "/tmp/serf-mcp-e2e-errsvc"}
+  "C": {"command": "/tmp/evener-mcp-e2e-errsvc"}
 }}
 EOF
 
 # Real, read-only credential reference — never copied, never mutated.
-ln -sf ~/.local/state/serf/auth/openai.json \
-  "$SCRATCH/hubhome/.local/state/serf/auth/openai.json"
+ln -sf ~/.local/state/evener/auth/openai.json \
+  "$SCRATCH/hubhome/.local/state/evener/auth/openai.json"
 
-XDG_STATE_HOME="$SCRATCH/hubhome/.local/state" /tmp/serf serve \
+XDG_STATE_HOME="$SCRATCH/hubhome/.local/state" /tmp/evener serve \
   --addr 127.0.0.1:29131 --model openai/gpt-5.5 \
   --dir "$SCRATCH/workdir" \
-  --run-dir "$SCRATCH/hubhome/.serf/run" \
+  --run-dir "$SCRATCH/hubhome/.evener/run" \
   --verbose \
   --mcp "A:/tmp/intgmcpserver" \
   --mcp "deadsvc:$(command -v true)" \
-  --mcp "C:/tmp/serf-mcp-e2e-errsvc" &
+  --mcp "C:/tmp/evener-mcp-e2e-errsvc" &
 
-HOME="$SCRATCH/hubhome" /tmp/serf-hub --addr 127.0.0.1:29180 --serf /tmp/serf &
+HOME="$SCRATCH/hubhome" /tmp/evener-hub --addr 127.0.0.1:29180 --evener /tmp/evener &
 ```
 
 `--state-dir` was deliberately **not** passed to `serve` — see "Sharp edges"
@@ -130,7 +130,7 @@ and captured the `--verbose` NDJSON event stream:
 ```
 
 Web UI (`http://127.0.0.1:29180/s/<session-id>`) rendered the turn in plain
-text, no error marker: `echo: PROOF_A_12345`. TUI (`serf-tui --hub-addr
+text, no error marker: `echo: PROOF_A_12345`. TUI (`evener-tui --hub-addr
 127.0.0.1:29180 ...`) rendered the same turn with a green `✓` and an `ok`
 right-aligned label:
 
@@ -338,22 +338,22 @@ proving the MCP-resilience behavior) — noted here only so it isn't lost.
 
 ## Cleanup
 
-`serf serve` was killed first (SIGTERM); this closed stdin to its stdio MCP
+`evener serve` was killed first (SIGTERM); this closed stdin to its stdio MCP
 children and both `intgmcpserver` and the Server C fixture exited on their
-own — confirmed via `ps` immediately after, no orphaned processes. `serf-hub`
-and `serf-tui` were killed next. The temporary `agent/testdata/mcperrsvc/`
+own — confirmed via `ps` immediately after, no orphaned processes. `evener-hub`
+and `evener-tui` were killed next. The temporary `agent/testdata/mcperrsvc/`
 directory was deleted (never staged). The unrelated, pre-existing
-`serf-hub-sr`/`serf-sr` process on port 9573 (another agent's concurrent,
+`evener-hub-sr`/`evener-sr` process on port 9573 (another agent's concurrent,
 unrelated work) and its browser tab were never touched. All scratch state
-lived under a scratchpad tmpdir; nothing was written to `~/.serf`,
-`~/.config/serf`, `~/.local/state/serf`, or any other real-environment path
+lived under a scratchpad tmpdir; nothing was written to `~/.evener`,
+`~/.config/evener`, `~/.local/state/evener`, or any other real-environment path
 (the credential symlink is the sole read, never a write, of real-environment
 state). `git status` on the worktree is clean before and after.
 
 ## Sharp edges
 
 - **`--state-dir` vs `XDG_STATE_HOME` vs `SERF_STATE_DIR` are three different
-  knobs.** `serf serve --state-dir X` only sets the *session's own*
+  knobs.** `evener serve --state-dir X` only sets the *session's own*
   persistence path (meta/transcript) and the API-log path; it does **not**
   affect where `providers.toml`/`credentials.toml` are read from
   (`cmdutil.DefaultStateRoot()` reads the `SERF_STATE_DIR` **env var**
@@ -364,7 +364,7 @@ state). `git status` on the worktree is clean before and after.
   it either). First attempt at this card passed `--state-dir` explicitly and
   the session ran fine, but the hub's sidebar showed "No sessions yet"
   forever: the hub's past-index glob (`$XDG_STATE_HOME-or-HOME/.local/state/
-  serf/projects/*`) never matched the custom `--state-dir` path, so the live
+  evener/projects/*`) never matched the custom `--state-dir` path, so the live
   roster entry had no past-index row to join against. Fix: don't pass
   `--state-dir` at all; instead set `XDG_STATE_HOME` for the `serve` process
   to the same root the hub's fake `HOME` implies, so `serve`'s **default**
@@ -373,7 +373,7 @@ state). `git status` on the worktree is clean before and after.
   `XDG_STATE_HOME` location once this is done.
 - **The browser used for this session is a shared, persistent Chrome
   instance** — an unrelated concurrent agent process was already running its
-  own `serf-hub-sr`/`serf-sr` in a tab (port 9573) before this task started.
+  own `evener-hub-sr`/`evener-sr` in a tab (port 9573) before this task started.
   Tab identity was not stable across tool calls: several `navigate`/`extract`/
   `screenshot` calls failed with "No target with given id found" or silently
   landed on the *other* task's tab/session. Recovery: always open a dedicated
@@ -406,9 +406,9 @@ state). `git status` on the worktree is clean before and after.
   live-call-outcome field, and a reviewer should not read a non-empty `Error`
   on a `connected` server as "currently broken" without also checking
   `Status`.
-- **`serf-hub`'s host lock is unconditionally keyed on real `$HOME`**
+- **`evener-hub`'s host lock is unconditionally keyed on real `$HOME`**
   (`cmd/evener-hub/main.go`'s `hostlock.AcquireLock(filepath.Join(home,
-  ".serf", "hub.lock"))`, `home` from `os.UserHomeDir()`), with no
+  ".evener", "hub.lock"))`, `home` from `os.UserHomeDir()`), with no
   `hub.toml`/flag override. Isolating a second hub instance on one host
   requires overriding the `HOME` env var for that process, not just passing
   `--config`/`--addr`.

@@ -15,35 +15,35 @@ compaction runs.
 ## Pre-state
 
 - Fresh binaries built from this branch, run in a **fully isolated** hub so the
-  test cannot collide with a real hub or a sibling worktree's hub (`~/.serf` and
-  `~/.local/state/serf` are host-level singletons). One `mktemp` run directory
+  test cannot collide with a real hub or a sibling worktree's hub (`~/.evener` and
+  `~/.local/state/evener` are host-level singletons). One `mktemp` run directory
   names the binaries, the throwaway `$HOME`, the log and the pid — never a fixed
   `/tmp` name a second concurrent run would overwrite (kata `k2rx`) — and the
   hub picks its own port (kata `68fm`), with the real provider creds symlinked in:
   ```bash
   cd <this worktree>
-  run=$(mktemp -d -t serf-e2e-compact-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/evener-hub
-  go build -o "$run/serf"     ./cmd/evener
-  REALSERF=~/.serf
+  run=$(mktemp -d -t evener-e2e-compact-XXXXXX)
+  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener"     ./cmd/evener
+  REALSERF=~/.evener
   TH="$run/home"                               # isolated HOME
-  mkdir -p "$TH/.serf/run" "$TH/.local/state/serf/projects"
+  mkdir -p "$TH/.evener/run" "$TH/.local/state/evener/projects"
   # Symlink read-only creds + config that DON'T carry absolute state paths:
   for f in credentials.toml providers.toml auth-token launch.toml; do
-    ln -s "$REALSERF/$f" "$TH/.serf/$f"; done
-  # DO NOT `cp` the real hub.toml — it hardcodes absolute paths under `~/.serf`
+    ln -s "$REALSERF/$f" "$TH/.evener/$f"; done
+  # DO NOT `cp` the real hub.toml — it hardcodes absolute paths under `~/.evener`
   # (hub_state_root, run_dir, state_glob, past_index_db) and the test hub will
   # then read/write REAL state. WRITE a fresh one pointed entirely at $TH:
-  cat > "$TH/.serf/hub.toml" <<EOF
+  cat > "$TH/.evener/hub.toml" <<EOF
   addr = "127.0.0.1:0"
-  hub_state_root = "$TH/.serf"
-  run_dir = "$TH/.serf/run"
-  state_glob = "$TH/.local/state/serf/projects/*"
-  past_index_db = "$TH/.serf/index.db"
+  hub_state_root = "$TH/.evener"
+  run_dir = "$TH/.evener/run"
+  state_glob = "$TH/.local/state/evener/projects/*"
+  past_index_db = "$TH/.evener/index.db"
   spawn_timeout = "30s"
   EOF
   HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-    "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" \
+    "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" \
     >"$run/hub.log" 2>&1 &
   HUBPID=$!
   echo "$HUBPID" >"$run/hub.pid"
@@ -60,7 +60,7 @@ compaction runs.
   HUB=http://127.0.0.1:$PORT
   # ISOLATION GATE — abort if the hub resolved real paths:
   grep -q "run_dir=$TH" "$run/hub.log" || { echo "NOT ISOLATED — abort"; exit 1; }
-  TOKEN=$(cat "$TH/.serf/auth-token")
+  TOKEN=$(cat "$TH/.evener/auth-token")
   ```
 - A **launchable** model whose **credentials the isolated `$HOME` can actually
   reach**. This is the catch (see Sharp edges): `launch.toml` lists the
@@ -80,7 +80,7 @@ compaction runs.
    PROMPT='Create a file note.txt containing the word hello. Then call the compact tool with note_to_self exactly "REMEMBER SCNOTE-7F3A: note.txt holds hello" and compaction_instructions "keep the file path, drop incidental chatter". After the tool returns, reply with literal DONE.'
    SID=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":$(python3 -c 'import json,os;print(json.dumps(os.environ["PROMPT"]))'),\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$TH\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":$(python3 -c 'import json,os;print(json.dumps(os.environ["PROMPT"]))'),\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$TH\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("session_id",""))')
    echo "session: $SID"
    ```
@@ -99,7 +99,7 @@ compaction runs.
 
 3. **Assert the note is in `meta.json` (the authoritative persisted record).**
    ```bash
-   META=$(find "$TH/.local/state/serf" "$TH/.serf" -name "$SID.meta.json" 2>/dev/null | head -1)
+   META=$(find "$TH/.local/state/evener" "$TH/.evener" -name "$SID.meta.json" 2>/dev/null | head -1)
    echo "meta: $META"; python3 -c "import json,sys;d=json.load(open('$META'));print('pinned_note=',repr(d.get('pinned_note')))"
    ```
    **Expected:** `pinned_note= 'REMEMBER SCNOTE-7F3A: note.txt holds hello'`.
@@ -112,7 +112,7 @@ compaction runs.
    turn** (the compaction actually ran and preserved the note verbatim). Read
    the transcript JSONL:
    ```bash
-   TR=$(find "$TH/.local/state/serf" "$TH/.serf" -name "$SID.jsonl" 2>/dev/null | head -1)
+   TR=$(find "$TH/.local/state/evener" "$TH/.evener" -name "$SID.jsonl" 2>/dev/null | head -1)
    grep -c "SCNOTE-7F3A" "$TR"; grep -o "\[NOTE TO SELF\]" "$TR" | head -1
    ```
    **Expected:** at least one line containing `SCNOTE-7F3A`, and a
@@ -142,31 +142,31 @@ compaction runs.
 kill "$HUBPID" 2>/dev/null    # by the pid you captured — see Sharp edges
 rm -rf "$run"                 # $TH, the binaries and the log all live under it
 ```
-Leave the real `~/.serf` hub and sibling worktrees untouched — the isolated
+Leave the real `~/.evener` hub and sibling worktrees untouched — the isolated
 `$HOME` guarantees this test never wrote to them.
 
 ## Sharp edges
 
 - **Kill the hub by pid, never by pattern.** Two independent ways a pattern
   match goes wrong here, which is why `$HUBPID` (and `$run/hub.pid` for a
-  second shell) exists: `pkill -f serf-hub` also kills every *other* concurrent
-  agent's test hub, since they are all called `serf-hub` now that each lives
+  second shell) exists: `pkill -f evener-hub` also kills every *other* concurrent
+  agent's test hub, since they are all called `evener-hub` now that each lives
   under its own run directory; and a `pkill -f` whose pattern appears in your
   own shell's argv kills the shell running the cleanup, so the command dies
   mid-way with no output and the hub survives anyway. Verify the kill took with
   `kill -0 "$HUBPID"`.
 - **Never `cp` the real `hub.toml`.** It hardcodes absolute paths
   (`hub_state_root`, `run_dir`, `state_glob`, `past_index_db`) into the real
-  `~/.serf` / `~/.local/state/serf`, so a "copied-config" test hub reads and
+  `~/.evener` / `~/.local/state/evener`, so a "copied-config" test hub reads and
   writes REAL state — defeating isolation. WRITE a fresh `$TH`-scoped one and
   gate on `run_dir=$TH` in the startup log before spawning.
 - **Credential/launch split is the most likely blocker.** Spawn fails with
-  `model is not configured for Serf launch` if the model isn't in `launch.toml`,
+  `model is not configured for Evener launch` if the model isn't in `launch.toml`,
   or `provider credentials missing` if its key isn't reachable from the isolated
   `$HOME` (keys often live in an OS keyring, not `credentials.toml`). Pick a
   model that satisfies BOTH, or export its `*_API_KEY` into the hub's env.
 - **Isolation is mandatory.** Without the throwaway `$HOME`/`XDG_STATE_HOME`,
-  the test hub shares `~/.serf/hub.lock`, the projects dir, and the default port
+  the test hub shares `~/.evener/hub.lock`, the projects dir, and the default port
   with a real hub or a sibling worktree (e.g. `kimi-effort`). Symlink creds
   read-only; keep all mutable state in `$TH`.
 - **Model must actually emit the tool call.** A weak/declined model may describe
@@ -177,7 +177,7 @@ Leave the real `~/.serf` hub and sibling worktrees untouched — the isolated
   previous file — re-read if `pinned_note` is briefly absent right after the
   tool call.
 - **Two possible state roots.** Depending on `XDG_STATE_HOME`, transcripts/meta
-  live under `$TH/.local/state/serf/projects/**` or `$TH/.serf/projects/**`; the
+  live under `$TH/.local/state/evener/projects/**` or `$TH/.evener/projects/**`; the
   `find` across both covers it.
 - **Short history still pins.** If the agent did little work, the summary layer
   may no-op (`len(history) <= PreserveRecentTurns`) — that is expected; the note

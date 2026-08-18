@@ -4,7 +4,7 @@ Date: 2026-08-01
 
 ## Summary
 
-Serf will treat the local operating-system account, represented by one Serf
+Evener will treat the local operating-system account, represented by one Evener
 state home, as the read trust boundary. Any session in that state home may read
 any locally persisted session transcript or job output when given an exact
 reference. Read access does not grant discovery or control.
@@ -31,7 +31,7 @@ persisted job state.
 
 ## Non-goals
 
-- Reading remote-backed sessions or state outside the caller's Serf state home.
+- Reading remote-backed sessions or state outside the caller's Evener state home.
 - Global job listing, search, status, stopping, steering, watching, or delegate
   discovery.
 - Waiting for a running job to emit output or finish.
@@ -70,7 +70,7 @@ job_<owner-session-id>_<random-suffix>
 The components are fixed:
 
 - `job_`: four-character domain prefix.
-- `owner-session-id`: the complete 22-character Serf session ID of the session
+- `owner-session-id`: the complete 22-character Evener session ID of the session
   whose jobstore owns the job.
 - `_`: one separator.
 - `random-suffix`: twelve base62 characters generated from a cryptographically
@@ -83,8 +83,8 @@ be unique within that owner session; no durable counter or allocator is needed.
 Generation and validation share one definition. Validation requires the exact
 length, a valid owner session ID, and a base62 suffix. There is no legacy shape.
 Job creation must never overwrite an existing record or output artifact.
-Collision safety covers ordinary Serf concurrency and names present at the
-defined creation checks; adversarial same-user pathname substitution after Serf
+Collision safety covers ordinary Evener concurrency and names present at the
+defined creation checks; adversarial same-user pathname substitution after Evener
 creates an artifact or between cleanup observation and removal is out of scope.
 
 UI summaries must abbreviate the identifier so the random suffix remains
@@ -213,7 +213,7 @@ references. There is:
 
 Pre-change persisted job state and transcript references are outside the
 supported contract and must be discarded by the operator when adopting the
-flag day. Serf does not inspect or mutate the user's existing state to help with
+flag day. Evener does not inspect or mutate the user's existing state to help with
 that transition.
 
 ## Verification

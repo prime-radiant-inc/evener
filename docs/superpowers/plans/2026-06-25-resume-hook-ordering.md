@@ -6,7 +6,7 @@
 
 **Architecture:** Add a session-local pending resume `SessionStart` kind guarded by `Session.mu`. On restore/plugin initialization, record pending resume hooks instead of running them immediately. Drain that pending state only from `acceptUserInput`, before `UserPromptSubmit` hooks and before the current user prompt's first model request; leave startup `SessionStart` behavior unchanged.
 
-**Tech Stack:** Go, Serf agent package, plugin hook runner, scripted `llm.ProviderAdapter` tests, `go test`.
+**Tech Stack:** Go, Evener agent package, plugin hook runner, scripted `llm.ProviderAdapter` tests, `go test`.
 
 ## Global Constraints
 
@@ -18,7 +18,7 @@
 - Do not change startup-session hook behavior except where shared helper code needs to distinguish resume from startup.
 - Do not change durable job notification semantics in this implementation.
 - Default tests must be deterministic and must not depend on provider credentials, network access, quota, current model behavior, or ambient developer machine state.
-- Use scripted providers at the LLM boundary and exercise real Serf code below it.
+- Use scripted providers at the LLM boundary and exercise real Evener code below it.
 
 ---
 

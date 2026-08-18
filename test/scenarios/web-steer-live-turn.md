@@ -25,19 +25,19 @@ REST surface, and what is no longer on it".
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`) with `--serf` resolvable.
+  `docs/agentic-testing.md`) with `--evener` resolvable.
 - A provider credential that can sustain a slow multi-tool turn. Any model
   that honours the pacing trick works; `anthropic/claude-haiku-4-5-20251001`
   is the cheap default the runbook recommends.
-- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
+- `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA built (`make build-web`) **before** the hub binary, or the browser
   gets `dist/PLACEHOLDER` instead of an app.
 
 ## Steps
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-steer-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-steer-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
@@ -50,7 +50,7 @@ HUB=http://127.0.0.1:$PORT
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long, careful 5-paragraph essay about software engineering practices.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long, careful 5-paragraph essay about software engineering practices.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | jq -r '.session_id')
 
@@ -138,7 +138,7 @@ HUB=http://127.0.0.1:$PORT
 - **Step 4 (Path A)**: `sync` contains one chip reading `Steering` plus the
   steer text (`pending/PendingChips.tsx:38-42,56`); `after` is empty (the
   chip reconciled off the `clientMutationId` echoed back on
-  `serf/steering/injected`, `stores/threads.ts:797-801`); the composer text is
+  `evener/steering/injected`, `stores/threads.ts:797-801`); the composer text is
   cleared; the steer appears in the transcript as a **user-message item with
   no `data-opens-exchange` attribute** — a steer the human typed reuses
   `UserMessageView` with `opensExchange={false}`
@@ -187,7 +187,7 @@ rm -rf "$tmpdir"
   server's `state=active` by one notification. Wait for the button, not for
   the clock.
 - **Shift+Enter is the same action as the button**, but only while the
-  `serf.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
+  `evener.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
 - **An empty queue is part of the premise.** Any queued message, or any
   staged attachment, reroutes the same button to `turn/drainAsSteer`
   (`submitRouting.ts:33-39`) — a different method, a `Draining` chip, and a

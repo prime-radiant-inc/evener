@@ -18,7 +18,7 @@ This mismatch caused a live `job_watch.observer_callback` failure:
 1. The model started an observer delegate.
 2. In the same assistant response, it called
    `communicate(await_reply=false, "Starting observer delegate and watch flow.")`.
-3. Serf executed both tools, accepted `communicate`, and ended the turn.
+3. Evener executed both tools, accepted `communicate`, and ended the turn.
 4. The model never created the watch or read the trigger file.
 
 The model was trying to narrate while working. Because plain assistant messages

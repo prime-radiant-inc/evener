@@ -35,7 +35,7 @@ Since Track A only ever touches `notifications.html`/`settings-notifications.js`
 ## Conventions used throughout this plan
 
 - All file paths are relative to `cmd/evener-hub/` unless given in full.
-- jstest (not in CI/Makefile; agent-run): `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node <file>.js` for one test, or `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` for the full suite (jsdom install per `jstest/README.md`). `run-all.sh` auto-discovers every `test-*.js` in the directory — a newly added test file needs no registration.
+- jstest (not in CI/Makefile; agent-run): `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node <file>.js` for one test, or `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` for the full suite (jsdom install per `jstest/README.md`). `run-all.sh` auto-discovers every `test-*.js` in the directory — a newly added test file needs no registration.
 - Existing jstests load hand-written `assets/*.js` files into a JSDOM `window` via `fs.readFileSync` + `window.eval(src)`, then fire real DOM events and assert on the resulting DOM/localStorage — no framework, no mocking of the code under test. This plan follows the same pattern (see `test-settings.js`, `test-settings-dir-picker.js` for precedent).
 - **This track touches zero Go source and zero settings-pane `.html` templates.** The only non-JS file touched is `cmd/evener-hub/templates/app.html` (the `<script>` tag list) — verified after every task by running the `cmd/evener-hub` Go test package (a broken `app.html` fails `template.Must(...ParseFS(...))` inside `NewWebServer`, which many existing Go tests construct).
 - **Guardrail (copied from the design spec, §Tracks / §1):** JSON/TOML keys stay snake_case; `namingcheck` runs at `make lint` (per-task `golangci-lint` misses it — run `make lint-naming` before the final commit as a cheap sanity check even though this track adds no Go identifiers). Test output must be pristine — no unexplained console noise from a passing jstest run.
@@ -142,7 +142,7 @@ Moves the two IIFEs (current `settings.js:169-192` nav-filter, `:194-243` phone-
     console.log("PASS — settings-nav filter and phone back-button wiring");
   })();
   ```
-  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → expect **FAIL** (`ENOENT: no such file or directory, open '../assets/settings-shell.js'`).
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-shell.js` → expect **FAIL** (`ENOENT: no such file or directory, open '../assets/settings-shell.js'`).
 - [ ] **Implement** — create `cmd/evener-hub/assets/settings-shell.js` with exactly the two IIFEs currently at `settings.js:169-192` and `:194-243` (verbatim, no logic changes):
   ```js
   // Settings-nav filter — delegated so it works after HTMX swaps the settings shell.
@@ -223,8 +223,8 @@ Moves the two IIFEs (current `settings.js:169-192` nav-filter, `:194-243` phone-
   ```
   Delete these two IIFEs (`settings.js:169-192`, `:194-243`) from `settings.js`.
   In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-shell.js{{assetv}}"></script>` immediately **before** the existing `<script src="/assets/settings.js{{assetv}}"></script>` line (currently line 77).
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → pass.
-- [ ] **Run** the existing suite to confirm `settings.js`'s remaining IIFEs (appearance/notif/transcript/model-display) are unaffected: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. Also `go test ./cmd/evener-hub/... -count=1` (root module) → green — confirms `app.html` still parses.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-shell.js` → pass.
+- [ ] **Run** the existing suite to confirm `settings.js`'s remaining IIFEs (appearance/notif/transcript/model-display) are unaffected: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. Also `go test ./cmd/evener-hub/... -count=1` (root module) → green — confirms `app.html` still parses.
 - [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-shell.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-shell.js` → `refactor(hub-web): extract settings-nav filter + phone back-button into settings-shell.js`.
 
 ## Task 2 — Extract `settings-appearance.js` (theme / phone-density / sidebar-mode)
@@ -283,40 +283,40 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
     dark.checked = true;
     change(dark);
     assert(window.document.documentElement.getAttribute("data-theme") === "dark", "setting theme=dark applies data-theme");
-    assert(window.localStorage.getItem("serf-hub.theme") === "dark", "theme choice persists to localStorage");
+    assert(window.localStorage.getItem("evener-hub.theme") === "dark", "theme choice persists to localStorage");
     assert(window.SerfToast.messages.some(m => m.message === "Theme: dark"), "theme change toasts the new value");
 
     const system = window.document.querySelector('input[name="theme"][value="system"]');
     system.checked = true;
     change(system);
     assert(window.document.documentElement.getAttribute("data-theme") === null, "theme=system removes data-theme");
-    assert(window.localStorage.getItem("serf-hub.theme") === null, "theme=system clears the stored preference");
+    assert(window.localStorage.getItem("evener-hub.theme") === null, "theme=system clears the stored preference");
 
     // --- phone density ---
     const comfortable = window.document.querySelector('input[name="phone-density"][value="comfortable"]');
     comfortable.checked = true;
     change(comfortable);
-    assert(window.localStorage.getItem("serf-hub.phone-density") === "comfortable", "phone-density choice persists");
+    assert(window.localStorage.getItem("evener-hub.phone-density") === "comfortable", "phone-density choice persists");
     assert(window.document.body.dataset.phoneDensity === "comfortable", "phone-density applies to body dataset immediately");
 
     // --- sidebar mode ---
     const rail = window.document.querySelector('input[name="sidebar-mode"][value="rail"]');
     rail.checked = true;
     change(rail);
-    assert(window.localStorage.getItem("serf-hub.sidebar.rail") === "true", "sidebar-mode=rail persists");
+    assert(window.localStorage.getItem("evener-hub.sidebar.rail") === "true", "sidebar-mode=rail persists");
     assert(window.document.body.dataset.sidebarRail === "", "sidebar-mode=rail sets the rail dataset attribute");
 
     const pane = window.document.querySelector('input[name="sidebar-mode"][value="pane"]');
     pane.checked = true;
     change(pane);
-    assert(window.localStorage.getItem("serf-hub.sidebar.rail") === "false", "sidebar-mode=pane persists");
+    assert(window.localStorage.getItem("evener-hub.sidebar.rail") === "false", "sidebar-mode=pane persists");
     assert(!("sidebarRail" in window.document.body.dataset), "sidebar-mode=pane clears the rail dataset attribute");
 
     // --- restore on (re)load ---
     const restored = makeWindow();
-    restored.localStorage.setItem("serf-hub.theme", "light");
-    restored.localStorage.setItem("serf-hub.phone-density", "comfortable");
-    restored.localStorage.setItem("serf-hub.sidebar.rail", "true");
+    restored.localStorage.setItem("evener-hub.theme", "light");
+    restored.localStorage.setItem("evener-hub.phone-density", "comfortable");
+    restored.localStorage.setItem("evener-hub.sidebar.rail", "true");
     restored.eval(THEME_SRC);
     restored.eval(SRC);
     restored.document.dispatchEvent(new restored.Event("DOMContentLoaded", { bubbles: true }));
@@ -326,8 +326,8 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
 
     // --- the two "apply stored value on load" IIFEs run before DOMContentLoaded ---
     const preset = makeWindow();
-    preset.localStorage.setItem("serf-hub.phone-density", "comfortable");
-    preset.localStorage.setItem("serf-hub.sidebar.rail", "true");
+    preset.localStorage.setItem("evener-hub.phone-density", "comfortable");
+    preset.localStorage.setItem("evener-hub.sidebar.rail", "true");
     preset.eval(THEME_SRC);
     preset.eval(SRC);
     assert(preset.document.body.dataset.phoneDensity === "comfortable", "phone-density applies on script load, before DOMContentLoaded fires");
@@ -336,7 +336,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
     console.log("PASS — settings-appearance theme/phone-density/sidebar-mode commit, restore, and on-load apply");
   })();
   ```
-  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → expect **FAIL** (ENOENT).
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-appearance.js` → expect **FAIL** (ENOENT).
 - [ ] **Implement** — create `cmd/evener-hub/assets/settings-appearance.js`:
   ```js
   // Settings page interactivity — appearance: theme, phone density, and
@@ -359,14 +359,14 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
 
       if (target.matches('input[name="phone-density"]')) {
         const v = target.value;
-        localStorage.setItem("serf-hub.phone-density", v);
+        localStorage.setItem("evener-hub.phone-density", v);
         document.body.dataset.phoneDensity = v;
         return;
       }
 
       if (target.matches('input[name="sidebar-mode"]')) {
         const rail = target.value === "rail";
-        localStorage.setItem("serf-hub.sidebar.rail", String(rail));
+        localStorage.setItem("evener-hub.sidebar.rail", String(rail));
         if (rail) document.body.dataset.sidebarRail = "";
         else delete document.body.dataset.sidebarRail;
         return;
@@ -379,17 +379,17 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
     function applyAppearanceState() {
       const themeRadios = document.querySelectorAll('input[name="theme"]');
       if (themeRadios.length) {
-        const current = localStorage.getItem("serf-hub.theme") || "system";
+        const current = localStorage.getItem("evener-hub.theme") || "system";
         themeRadios.forEach((r) => { r.checked = r.value === current; });
       }
       const phoneDensityRadios = document.querySelectorAll('input[name="phone-density"]');
       if (phoneDensityRadios.length) {
-        const stored = localStorage.getItem("serf-hub.phone-density") || "compact";
+        const stored = localStorage.getItem("evener-hub.phone-density") || "compact";
         phoneDensityRadios.forEach((r) => { r.checked = r.value === stored; });
       }
       const sidebarModeRadios = document.querySelectorAll('input[name="sidebar-mode"]');
       if (sidebarModeRadios.length) {
-        const stored = localStorage.getItem("serf-hub.sidebar.rail") === "true" ? "rail" : "pane";
+        const stored = localStorage.getItem("evener-hub.sidebar.rail") === "true" ? "rail" : "pane";
         sidebarModeRadios.forEach((r) => { r.checked = r.value === stored; });
       }
     }
@@ -400,14 +400,14 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
 
   // Phone density — apply stored value to body on every page load.
   (function () {
-    const KEY = "serf-hub.phone-density";
+    const KEY = "evener-hub.phone-density";
     const stored = localStorage.getItem(KEY) || "compact";
     document.body.dataset.phoneDensity = stored;
   })();
 
   // Sidebar mode (pane / rail) — apply stored value to body on every page load.
   (function () {
-    const KEY = "serf-hub.sidebar.rail";
+    const KEY = "evener-hub.sidebar.rail";
     const rail = localStorage.getItem(KEY) === "true";
     if (rail) document.body.dataset.sidebarRail = "";
     else delete document.body.dataset.sidebarRail;
@@ -415,13 +415,13 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
   ```
   Delete the theme/phone-density/sidebar-mode branches from the `change` listener, the theme/phone-density/sidebar-mode blocks from `applySettingsState`, and the two standalone IIFEs (`settings.js:154-159`, `:161-167`) from `settings.js`.
   In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-appearance.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → pass.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-appearance.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
 - [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-appearance.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-appearance.js` → `refactor(hub-web): extract theme/phone-density/sidebar-mode into settings-appearance.js`.
 
 ## Task 3 — Extract `settings-notifications.js` (the four `data-notif` toggles)
 
-Moves the `data-notif` branch of the `change` listener (including the async OS-permission flow) and the notif slice of `applySettingsState`, from the combined IIFE at `settings.js:4-152`. This is the file Track A will extend with `loudScope`. Untested today. Named to parallel `settings-appearance.js`/`settings-transcript.js` (mirrors the `notifications.html` section name) — distinct from the existing `assets/notifications.js`, which is unrelated runtime attention/badge/OS-alert logic that reads the same `serf-hub.notifications` localStorage key but is not part of the settings pane's DOM wiring and is untouched by this track.
+Moves the `data-notif` branch of the `change` listener (including the async OS-permission flow) and the notif slice of `applySettingsState`, from the combined IIFE at `settings.js:4-152`. This is the file Track A will extend with `loudScope`. Untested today. Named to parallel `settings-appearance.js`/`settings-transcript.js` (mirrors the `notifications.html` section name) — distinct from the existing `assets/notifications.js`, which is unrelated runtime attention/badge/OS-alert logic that reads the same `evener-hub.notifications` localStorage key but is not part of the settings pane's DOM wiring and is untouched by this track.
 
 - [ ] **Failing test** — create `cmd/evener-hub/jstest/test-settings-notifications.js`:
   ```js
@@ -464,14 +464,14 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     const window = makeWindow();
     window.eval(SRC);
     const changedEvents = [];
-    window.document.addEventListener("serf-hub:notifications-changed", (e) => changedEvents.push(e.detail));
+    window.document.addEventListener("evener-hub:notifications-changed", (e) => changedEvents.push(e.detail));
 
     const title = window.document.querySelector('[data-notif="title"]');
     title.checked = true;
     change(title);
-    assert(JSON.parse(window.localStorage.getItem("serf-hub.notifications")).title === true, "title toggle persists to localStorage");
+    assert(JSON.parse(window.localStorage.getItem("evener-hub.notifications")).title === true, "title toggle persists to localStorage");
     assert(title.parentElement.querySelector(".state").textContent === "ON", "title toggle updates the ON/OFF label");
-    assert(changedEvents.some(d => d.key === "title" && d.value === true), "title toggle dispatches serf-hub:notifications-changed");
+    assert(changedEvents.some(d => d.key === "title" && d.value === true), "title toggle dispatches evener-hub:notifications-changed");
     assert(window.SerfToast.messages.some(m => m.kind === "success"), "committed toggle shows a success toast");
 
     // --- OS toggle: browser grants permission ---
@@ -482,7 +482,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     os.checked = true;
     change(os);
     await new Promise((r) => setTimeout(r, 0));
-    assert(JSON.parse(grant.localStorage.getItem("serf-hub.notifications")).os === true, "OS toggle persists once permission is granted");
+    assert(JSON.parse(grant.localStorage.getItem("evener-hub.notifications")).os === true, "OS toggle persists once permission is granted");
     assert(os.checked === true, "OS checkbox stays checked once permission is granted");
     assert(os.parentElement.querySelector(".state").textContent === "ON", "OS toggle label reflects the granted permission");
 
@@ -495,13 +495,13 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     change(os2);
     await new Promise((r) => setTimeout(r, 0));
     assert(os2.checked === false, "OS checkbox reverts to unchecked when permission is denied");
-    assert(!JSON.parse(deny.localStorage.getItem("serf-hub.notifications") || "{}").os, "denied OS toggle does not persist as on");
+    assert(!JSON.parse(deny.localStorage.getItem("evener-hub.notifications") || "{}").os, "denied OS toggle does not persist as on");
     assert(os2.parentElement.querySelector(".state").textContent === "OFF", "denied OS toggle label reverts to OFF");
     assert(deny.SerfToast.messages.some(m => m.kind === "warning"), "denied OS permission shows a warning toast");
 
     // --- restore on (re)load ---
     const restored = makeWindow();
-    restored.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true }));
+    restored.localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true }));
     restored.eval(SRC);
     restored.document.dispatchEvent(new restored.Event("DOMContentLoaded", { bubbles: true }));
     assert(restored.document.querySelector('[data-notif="title"]').checked, "restore checks a previously-saved toggle");
@@ -510,7 +510,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     console.log("PASS — settings-notifications toggle commit, OS-permission flow, and restore");
   })();
   ```
-  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → expect **FAIL** (ENOENT).
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-notifications.js` → expect **FAIL** (ENOENT).
 - [ ] **Implement** — create `cmd/evener-hub/assets/settings-notifications.js`:
   ```js
   // Settings page interactivity — notification toggles (title bar count,
@@ -543,7 +543,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
           cur[key] = desired;
           writeNotifPrefs(cur);
           syncToggleState(target);
-          document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
+          document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
             detail: { key, value: desired },
           }));
           if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
@@ -593,11 +593,11 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     }
 
     function readNotifPrefs() {
-      try { return JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}"); }
+      try { return JSON.parse(localStorage.getItem("evener-hub.notifications") || "{}"); }
       catch (e) { return {}; }
     }
     function writeNotifPrefs(prefs) {
-      localStorage.setItem("serf-hub.notifications", JSON.stringify(prefs));
+      localStorage.setItem("evener-hub.notifications", JSON.stringify(prefs));
     }
 
     document.addEventListener("DOMContentLoaded", applyNotifState);
@@ -606,8 +606,8 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
   ```
   Delete the `data-notif` branch from the `change` listener, the notif block from `applySettingsState`, and the (now-unused-elsewhere) `readNotifPrefs`/`writeNotifPrefs` helpers from `settings.js`. Leave `syncToggleState` in `settings.js` for now — Task 4 still needs it; it becomes a duplicate small helper in each of the two files that use it (deliberate: keeps `settings-notifications.js` and `settings-transcript.js` fully self-contained, no inter-file load-order dependency for a 4-line helper).
   In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-notifications.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → pass.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-notifications.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
 - [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-notifications.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-notifications.js` → `refactor(hub-web): extract notification toggles into settings-notifications.js`.
 
 ## Task 4 — Extract `settings-transcript.js`; port the existing `test-settings.js`
@@ -622,7 +622,7 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
   ```js
   const SRC = fs.readFileSync("../assets/settings-transcript.js", "utf8");
   ```
-  (no other change to the file). Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → expect **FAIL** (ENOENT: `settings-transcript.js` doesn't exist yet).
+  (no other change to the file). Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings.js` → expect **FAIL** (ENOENT: `settings-transcript.js` doesn't exist yet).
 - [ ] **Implement** — create `cmd/evener-hub/assets/settings-transcript.js`:
   ```js
   // Settings page interactivity — transcript system-status toggles. Uses
@@ -632,7 +632,7 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
   (function () {
     "use strict";
 
-    const transcriptStatusPrefsKey = "serf-hub.transcript.systemStatus";
+    const transcriptStatusPrefsKey = "evener-hub.transcript.systemStatus";
 
     document.body.addEventListener("change", (e) => {
       const target = e.target;
@@ -644,7 +644,7 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
         cur[key] = target.checked;
         writeTranscriptStatusPrefs(cur);
         syncToggleState(target);
-        document.dispatchEvent(new CustomEvent("serf-hub:transcript-system-status-changed", {
+        document.dispatchEvent(new CustomEvent("evener-hub:transcript-system-status-changed", {
           detail: { key, value: target.checked },
         }));
         if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
@@ -682,8 +682,8 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
   ```
   Delete the entire remaining combined IIFE (originally `settings.js:4-152`, now just the transcript-status branch/restore/helpers/`syncToggleState`/registration) from `settings.js` — after this, `settings.js` contains only the model-display IIFE (Task 5 handles that).
   In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-transcript.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → pass.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
 - [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-transcript.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings.js` → `refactor(hub-web): extract transcript-status toggles into settings-transcript.js; port test-settings.js to its new home`.
 
 ## Task 5 — Extract `model-display.js`; delete `settings.js`; finalize `app.html`
@@ -737,7 +737,7 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
     console.log("PASS — model-display abbreviation wiring survives extraction from settings.js");
   })();
   ```
-  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → expect **FAIL** (ENOENT).
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-model-display.js` → expect **FAIL** (ENOENT).
 - [ ] **Implement** — create `cmd/evener-hub/assets/model-display.js`:
   ```js
   // Workspace model chip abbreviation — shorten server-rendered full model IDs
@@ -793,13 +793,13 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
   <script src="/assets/settings-transcript.js{{assetv}}"></script>
   <script src="/assets/model-display.js{{assetv}}"></script>
   ```
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → pass.
-- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green (confirms `app.html` still parses with `settings.js` gone).
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-model-display.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green (confirms `app.html` still parses with `settings.js` gone).
 - [ ] **Commit** — `git rm cmd/evener-hub/assets/settings.js && git add cmd/evener-hub/assets/model-display.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-model-display.js` → `refactor(hub-web): extract model-display.js; delete now-empty settings.js`.
 
 ## Task 6 — Full verification gate
 
-- [ ] **Run** the complete jstest suite: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → every test `OK`, output pristine (no unexplained stderr).
+- [ ] **Run** the complete jstest suite: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → every test `OK`, output pristine (no unexplained stderr).
 - [ ] **Run** `grep -rn "assets/settings.js" cmd/evener-hub/` → expect **no matches** (confirms every reference moved to a `settings-*.js` name).
 - [ ] **Run** `git diff --stat main -- cmd/evener-hub/templates/partials/settings.html cmd/evener-hub/templates/partials/settings/ cmd/evener-hub/web.go cmd/evener-hub/web_settings.go cmd/evener-hub/embed.go` (against the branch point) → expect **empty** (zero changes — the settings-pane's rendered HTML and Go wiring are untouched, so the pane renders byte-identical to before this track).
 - [ ] **Run** `go build ./... && go vet ./...` from repo root → green.

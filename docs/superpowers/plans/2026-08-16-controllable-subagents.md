@@ -108,7 +108,7 @@ cases exist.
   `omitempty`, `appwire/types.go:1666`) and **present-but-all-false** on
   `thread/read` (`SerfThread.Capabilities` is a value struct with no `omitempty`,
   `appwire/types.go:276`; `SerfThread` begins at `:266` and is reached through
-  `Thread.Serf`, `Thread` itself being at `:216`). Nothing is copied from the
+  `Thread.Evener`, `Thread` itself being at `:216`). Nothing is copied from the
   root.
 
   **Why this is hard, which is the part worth carrying forward.** There is no
@@ -226,7 +226,7 @@ cases exist.
       `TestUnservedSessionAnnouncesNoBoundary`
       (`agent/session_turn_boundary_test.go:577`), which pins today's behaviour
       deliberately. Note this also makes unserved *root* sessions (one-shot
-      `serf run`) emit the boundary; state it rather than discover it. This gets
+      `evener run`) emit the boundary; state it rather than discover it. This gets
       turn *separation* on notification-driven child turns; it does not name any
       other child turn — that is Task 3.
 

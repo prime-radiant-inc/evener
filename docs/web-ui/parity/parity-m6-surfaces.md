@@ -66,27 +66,27 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.3 Harness chip
 
-- [ ] Picker lists every `[data-harness-option]` hidden input as a row; if none are present at all, falls back to a single synthetic `serf` row (`spawn.js:1442-1446`)
+- [ ] Picker lists every `[data-harness-option]` hidden input as a row; if none are present at all, falls back to a single synthetic `evener` row (`spawn.js:1442-1446`)
 - [ ] Picking a harness both sets the chip value AND immediately re-applies the harness/model policy in the same click handler (`spawn.js:1451-1455`)
 
 ### 1.4 Model chip
 
 - [ ] Fetches `{models, diagnostics, recent}` via `listModelsWithDiagnosticsForHarness`, which always goes through REST `GET /api/models` — deliberately NOT the appwire `listModelsWithDiagnostics` RPC, because only the REST response carries `display_name` and capability badges (`spawn.js:1470, 1866-1881`, code comment at 1854-1865)
-- [ ] For a non-serf-model harness with zero models AND zero diagnostics, falls back to the single-row harness-default picker instead of showing an empty list (`spawn.js:1475-1478, 1889-1905`)
+- [ ] For a non-evener-model harness with zero models AND zero diagnostics, falls back to the single-row harness-default picker instead of showing an empty list (`spawn.js:1475-1478, 1889-1905`)
 - [ ] Models are grouped by provider (alphabetically sorted); a "Recent" group is prepended above the provider groups whenever there are recent models matching the current filter (`spawn.js:1481-1486, 1628-1653`)
 - [ ] Free-text search box filters provider + model + display_name (case-insensitive substring) on every keystroke (`spawn.js:1492-1494, 1554-1561, 1662`)
 - [ ] Search-box Enter selects the first currently-visible model row (prevents the enclosing `<form>`'s implicit submit); Escape dismisses the picker (`spawn.js:1664-1678`, code comment at 1664-1668)
 - [ ] Configured providers whose listing failed render as inline diagnostic rows (warning icon + "`<provider>` unavailable: `<message>`" + optional title-attribute hint) instead of silently vanishing (`spawn.js:1504-1520`)
 - [ ] Each model row shows: display name; model id as a second line ONLY if it differs from the display name; capability badges (tools / vision / "reasoning (`levels`)" / web search); and a metadata line (context window, max output, $/M input, $/M output) built from whichever fields are present (`spawn.js:1522-1607`)
 - [ ] The currently-selected model's row gets `.is-current`, `aria-current="true"`, and a trailing check icon (`SerfIcons.ended` or a literal `✓` HTML entity fallback) (`spawn.js:1540-1552, 1567-1571, 1608-1614`)
-- [ ] Selecting a model: for a serf-model harness, stores `"<provider>/<model>"`; for any other harness, stores the bare model id with a synthesized `provider/model`-shaped display label via `modelOptionLabel` (`spawn.js:1619-1626, 1883-1887`)
+- [ ] Selecting a model: for a evener-model harness, stores `"<provider>/<model>"`; for any other harness, stores the bare model id with a synthesized `provider/model`-shaped display label via `modelOptionLabel` (`spawn.js:1619-1626, 1883-1887`)
 - [ ] Empty-state copy differs by whether a filter is active: "No models match." vs "No models available." (`spawn.js:1654-1659`)
-- [ ] On an outright fetch rejection, falls back to the harness-default single-row picker, but ONLY for non-serf-model harnesses (`spawn.js:1690-1694`)
+- [ ] On an outright fetch rejection, falls back to the harness-default single-row picker, but ONLY for non-evener-model harnesses (`spawn.js:1690-1694`)
 
 ### 1.5 Reasoning-effort chip
 
-- [ ] For a non-serf-model harness, shows a single inert note row — "(reasoning effort applies to the serf harness only)" — and offers no levels at all (`spawn.js:1775-1790`)
-- [ ] For the serf harness, fetches enriched `/api/models` via REST specifically because only REST carries `reasoning_effort_levels` (the appwire model list doesn't) (`spawn.js:1791-1796`, code comment at 1755-1756)
+- [ ] For a non-evener-model harness, shows a single inert note row — "(reasoning effort applies to the evener harness only)" — and offers no levels at all (`spawn.js:1775-1790`)
+- [ ] For the evener harness, fetches enriched `/api/models` via REST specifically because only REST carries `reasoning_effort_levels` (the appwire model list doesn't) (`spawn.js:1791-1796`, code comment at 1755-1756)
 - [ ] A model explicitly reporting `supports_reasoning === false` is a KNOWN-empty ladder — renders "(this model does not support reasoning effort)" — distinct from a model simply missing level metadata (`spawn.js:1742-1743, 1800-1814`, code comment at 1729-1735)
 - [ ] Otherwise offers `(default)` + each level + `none` as separate, distinct options — launch-time context treats "inherit the configured default" and "explicitly clear to nothing" as two different values (`spawn.js:1815-1820`, code comment at 1815-1817)
 - [ ] Missing per-model level data (model known, but no `reasoning_effort_levels`/`reasoningEffortLevels` field) falls back to `DEFAULT_EFFORT_LEVELS = ["minimal","low","medium","high"]` (`spawn.js:1727, 1736-1753`)
@@ -94,7 +94,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.6 Working-directory chip + `dir-picker.js`
 
 - [ ] Entirely delegates to `window.SerfDirPicker.open(...)`; a no-op (button does nothing) if that global isn't loaded (`spawn.js:1907-1908`)
-- [ ] Seeds the picker's starting value from the chip's own current display text, falling back to `localStorage["serf-hub.spawn-defaults.global.last-working-dir"]` when the chip still shows the placeholder (`spawn.js:1910-1913`)
+- [ ] Seeds the picker's starting value from the chip's own current display text, falling back to `localStorage["evener-hub.spawn-defaults.global.last-working-dir"]` when the chip still shows the placeholder (`spawn.js:1910-1913`)
 - [ ] Accepting a directory both updates the chip AND persists it as the new global "last working dir" (`spawn.js:1919-1922`)
 - [ ] "Recent projects" (server-capped at 15 per the code comment, via `SerfAppwire.recentProjects()`) prepopulate the list ONLY on the picker's very first listing; any subsequent typing or "browse into a folder" action drops the recent section for the rest of that picker's lifetime (`dir-picker.js:47-55, 170-173, 230-252, 274-284`)
 - [ ] Recent-project rows show the basename as the primary label and the full path as a secondary line (basenames collide across projects, so the full path disambiguates) (`dir-picker.js:227-251`)
@@ -121,14 +121,14 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.9 Sticky defaults / prefill layering (localStorage)
 
-- [ ] Per-project sticky-defaults key is `serf-hub.spawn-defaults.<workingDir|"global">`, a JSON blob (`spawn.js:51-53`)
+- [ ] Per-project sticky-defaults key is `evener-hub.spawn-defaults.<workingDir|"global">`, a JSON blob (`spawn.js:51-53`)
 - [ ] On load, `harness`/`branch`/`access_mode` defaults are applied BEFORE `working_dir`, specifically so the HEAD-branch auto-resolution that `working_dir` triggers can already see whether an explicit branch default won (`spawn.js:1132-1138`, code comment at 1133-1134)
-- [ ] Model sticky-default is applied only when the current harness uses serf models AND a stored default value exists; otherwise `applyHarnessModelPolicy` runs instead to decide whether the chip should be blanked (`spawn.js:1145-1149`)
-- [ ] If the server didn't prefill `working_dir` (no `?dir=` etc.) and no stored default supplies one either, the GLOBAL `serf-hub.spawn-defaults.global.working_dir` key is consulted as a last resort (`spawn.js:84-88`)
-- [ ] The global model default (`serf-hub.spawn-defaults.global.model`) layers UNDER a more specific per-project model default when both exist (`spawn.js:81-83`)
+- [ ] Model sticky-default is applied only when the current harness uses evener models AND a stored default value exists; otherwise `applyHarnessModelPolicy` runs instead to decide whether the chip should be blanked (`spawn.js:1145-1149`)
+- [ ] If the server didn't prefill `working_dir` (no `?dir=` etc.) and no stored default supplies one either, the GLOBAL `evener-hub.spawn-defaults.global.working_dir` key is consulted as a last resort (`spawn.js:84-88`)
+- [ ] The global model default (`evener-hub.spawn-defaults.global.model`) layers UNDER a more specific per-project model default when both exist (`spawn.js:81-83`)
 - [ ] If the server DID prefill `working_dir` (e.g. via `?dir=`) and no stored default overrides it, HEAD-branch resolution still runs for that server-supplied value (`spawn.js:1141-1144`)
-- [ ] Saving defaults on submit drops the `model` field entirely for non-serf-model harnesses, so a stale model id is never persisted for a harness that ignores it (`spawn.js:92-96`)
-- [ ] Saving defaults writes the model GLOBALLY (cross-project) only when the harness uses serf models AND a model was actually chosen (`spawn.js:98`)
+- [ ] Saving defaults on submit drops the `model` field entirely for non-evener-model harnesses, so a stale model id is never persisted for a harness that ignores it (`spawn.js:92-96`)
+- [ ] Saving defaults writes the model GLOBALLY (cross-project) only when the harness uses evener models AND a model was actually chosen (`spawn.js:98`)
 - [ ] Saving defaults writes `working_dir` GLOBALLY on every submit that has one, independent of harness (`spawn.js:100`)
 
 ### 1.10 Stale-model detection & cleanup
@@ -136,17 +136,17 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] A stored model value with no `/` separator (legacy bare model name) is dropped SYNCHRONOUSLY, before the model list even resolves, so the user can never submit it (`spawn.js:266-270`)
 - [ ] `modelValidityAgainstList` classifies a value as `malformed` (no `/`) / `stale` (provider IS enumerated, model gone) / `unknown` (provider not enumerated at all — e.g. OAuth-only anthropic, openrouter-anthropic) / `valid` (`spawn.js:154-175`)
 - [ ] Only `malformed` and `stale` verdicts clear the chip; `unknown` is deliberately left untouched because the hub has no way to prove it's actually wrong (`spawn.js:249-253, 292-294`)
-- [ ] Before validating the CURRENT chip's value, `validatePrefilledModel` sweeps EVERY `serf-hub.spawn-defaults.*` per-project blob in localStorage (not just the active project) plus the standalone global-model key, stripping stale/malformed `.model` fields and deleting an emptied blob outright (`spawn.js:177-246, 254-256, 275-278`)
+- [ ] Before validating the CURRENT chip's value, `validatePrefilledModel` sweeps EVERY `evener-hub.spawn-defaults.*` per-project blob in localStorage (not just the active project) plus the standalone global-model key, stripping stale/malformed `.model` fields and deleting an emptied blob outright (`spawn.js:177-246, 254-256, 275-278`)
 - [ ] After the sweep, the code re-reads the chip's LIVE value and bails out if it no longer matches what was being validated, so an async response can't clobber a newer in-flight user choice (`spawn.js:285-290`)
 - [ ] A cleared stale/malformed model surfaces an inline, dismissible notice: `` Discarded last-used model `<value>` — no longer offered by this hub. `` (`spawn.js:130-152`)
 - [ ] The notice is anchored just above the prompt textarea (falling back to just above `.spawn-actions` if the textarea is absent), and is auto-cleared the instant the user picks ANY new non-empty model (`spawn.js:148-151, 355-357`)
 - [ ] A network/parse failure while fetching the model list leaves the prefill completely untouched — the server's own 503 path on submit is the fallback source of truth (`spawn.js:298-302`)
-- [ ] Switching TO a non-serf harness always blanks the model chip; switching to a serf-model harness only blanks it if the current value doesn't already look like `provider/model` (`spawn.js:395-402`)
+- [ ] Switching TO a non-evener harness always blanks the model chip; switching to a evener-model harness only blanks it if the current value doesn't already look like `provider/model` (`spawn.js:395-402`)
 
 ### 1.11 Advanced options (schema-driven)
 
 - [ ] Advanced panel renders exactly once per root, guarded by a `root.__schemaRendered` marker (`spawn.js:960-963`)
-- [ ] Options are filtered to schema entries with `perLaunch: true` whose `driverSupport.serf` isn't explicitly `false` (`spawn.js:618-626, 973`)
+- [ ] Options are filtered to schema entries with `perLaunch: true` whose `driverSupport.evener` isn't explicitly `false` (`spawn.js:618-626, 973`)
 - [ ] Prefers delegating to `window.LaunchConfigControls.render` when present; otherwise falls back to a built-in fieldset-per-group renderer (`spawn.js:966-1006`)
 - [ ] Supported control kinds and their shape: `select`, `radio` (first choice pre-checked), `boolean` (tri-state `(default)`/`true`/`false` select), `modelPicker` (hidden+display+"pick" button trio), plain/multiline `text`, `integer` (min `0`, step `1`), `pathList`, `modelList`, `envMap` (name/value pairs), `mcpServerList` (name/command/args triples) (`spawn.js:628-649, 690-956`)
 - [ ] Path-kind scalar/list inputs get live validation via `window.launchconfig.validatePath` on `change`/on "add", surfaced through native `setCustomValidity` + `reportValidity` (`spawn.js:639-643, 809-822, 1009-1026`)
@@ -235,7 +235,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] The command registry (`commands()`) is rebuilt fresh on every call — 22 commands total (`search.js:326-518`)
 - [ ] Scope gating: `global` commands always visible; `ended-ok` commands visible on any session page (live OR ended); bare `session` commands visible ONLY on a LIVE session page (`ctx.sessionState !== "ended"`) (`search.js:581-588`)
 - [ ] `buildCtx()` derives `sessionId`/`sessionState` from `#conversation`'s `data-session-id`/`data-state` attributes, and `onPage` from the URL path (`home` / `session` / `settings` / `spawn` / `other`) (`search.js:568-579`)
-- [ ] With an EMPTY filter, a "Recent" section (up to 5 remembered command ids, most-recent-first, from `localStorage["serf.search.recentCommands"]`) renders ABOVE "Commands", and those same ids are excluded from the main "Commands" list below to avoid duplication (`search.js:619-627, 641-661`)
+- [ ] With an EMPTY filter, a "Recent" section (up to 5 remembered command ids, most-recent-first, from `localStorage["evener.search.recentCommands"]`) renders ABOVE "Commands", and those same ids are excluded from the main "Commands" list below to avoid duplication (`search.js:619-627, 641-661`)
 - [ ] With a NON-empty filter, results are scored by `commandScore` — best of a substring match (worth `200 - matchIndex`) or a fuzzy subsequence match (rewards matches starting at a word boundary and consecutive-character streaks) across `id`+`title`+`keywords` — sorted descending by score with original registry order as a stable tiebreak; any command scoring negative is excluded entirely (`search.js:590-617, 645-649`)
 - [ ] `rememberCommand` pushes an id to the FRONT of the recency list, de-duplicates, and caps at 5 entries (`search.js:629-633`)
 - [ ] A successful ARGLESS command remembers itself in recents UNLESS it's flagged `stayOpen` — `stayOpen` commands (`/search`, `/help`) never record recency and never auto-close (`search.js:825-829, 862-865`)
@@ -252,7 +252,7 @@ All from `search.js:326-517` unless noted:
 - [ ] `/dashboard` (global, argless) → `Nav.go("/")` (340-341)
 - [ ] `/search` (global, argless, `stayOpen`) → clears the input, refocuses, re-fires the `input` event (342-344)
 - [ ] `/help` (global, argless, `stayOpen`) → renders the keyboard-shortcuts panel (345-347)
-- [ ] `/upgrade` (global, argless) → `upgradeSerf("")`; success toasts `"Serf upgraded to <channel>"` and, if `restartMessage` is present, also appends it as an info banner; failure toasts "Upgrade failed" (348-349, 290-318)
+- [ ] `/upgrade` (global, argless) → `upgradeSerf("")`; success toasts `"Evener upgraded to <channel>"` and, if `restartMessage` is present, also appends it as an info banner; failure toasts "Upgrade failed" (348-349, 290-318)
 - [ ] `/compact` (session, argless) → `postSession(ctx, "compact")` (352-353)
 - [ ] `/interrupt` (session, argless) → `postSession(ctx, "interrupt")`; blocked inline with "interrupt failed: no active turn" when there's no active turn id (354-355, 236-243)
 - [ ] `/clear` (session, argless) → `postSession(ctx, "clear")` (356-357)
@@ -299,14 +299,14 @@ All from `search.js:326-517` unless noted:
 
 ### 3.1 Preferences & storage (`notifications.js`)
 
-- [ ] Prefs live at `localStorage["serf-hub.notifications"]`; schema version tracked separately at `localStorage["serf-hub.notifications.v"]` (`notifications.js:29-30`)
+- [ ] Prefs live at `localStorage["evener-hub.notifications"]`; schema version tracked separately at `localStorage["evener-hub.notifications.v"]` (`notifications.js:29-30`)
 - [ ] Defaults: `{title:true, favicon:true, os:false, sound:false, loudScope:"asks"}` (`notifications.js:31`)
 - [ ] `migratePrefs` is a no-op once version `"3"` is recorded. A brand-new install writes the full default blob. An EXISTING (pre-v3) blob backfills any non-boolean `title`/`favicon`/`os`/`sound` key to `false` — preserving whatever the user already explicitly set — and backfills `loudScope` to `"asks"` unless it's already `"asks"` or `"all"` (`notifications.js:74-89`)
 - [ ] Migration runs unconditionally at module load, before the baseline fetch (`notifications.js:279-282`)
 
 ### 3.2 Title-bar count
 
-- [ ] Title is `"<section> · serf hub"` (or bare `"serf hub"` with no active section) whenever the `title` pref is off (`notifications.js:115-124`)
+- [ ] Title is `"<section> · evener hub"` (or bare `"evener hub"` with no active section) whenever the `title` pref is off (`notifications.js:115-124`)
 - [ ] When `title` is on, prefixes `"(<needsYou + error>) "` but ONLY when that sum is greater than 0 (`notifications.js:122-123`)
 - [ ] Section-name resolution: prefers the settings-page URL-derived section (via a `SECTION_LABELS` lookup on `/settings/<section>`) when a settings header element is present in the DOM; otherwise falls back to the visible workspace-header title text (`notifications.js:104-113`)
 - [ ] `SECTION_LABELS` is exposed globally as `window.SerfSectionLabels` specifically so `renderer.js` (loaded later) can reuse the exact same map instead of maintaining a parallel copy (`notifications.js:94-102`, code comment)
@@ -321,7 +321,7 @@ All from `search.js:326-517` unless noted:
 ### 3.4 OS notification
 
 - [ ] Requires ALL of: `"Notification" in window`, `Notification.permission === "granted"`, AND the document currently NOT focused (`notifications.js:171-173`)
-- [ ] Notification title is `"serf · <entry.title || entry.threadId>"`; construction failures are silently swallowed (`notifications.js:174-179`)
+- [ ] Notification title is `"evener · <entry.title || entry.threadId>"`; construction failures are silently swallowed (`notifications.js:174-179`)
 - [ ] Clicking the OS notification focuses the window (best-effort, wrapped in try/catch) and navigates to `/s/<threadId>` (`notifications.js:180-185`)
 
 ### 3.5 Sound
@@ -335,34 +335,34 @@ All from `search.js:326-517` unless noted:
 - [ ] Baseline comes from `GET /api/tree?summary=1` — deliberately summary-only, never the full tree, since this client only needs the badge counts (`notifications.js:222-227`, code comment at 220-221)
 - [ ] Baseline is (re-)fetched on init AND on every appwire reconnect (a dropped connection can miss broadcasts, so reconnect re-syncs rather than trusting the gap stayed empty) (`notifications.js:222-227, 288-289`)
 - [ ] `summary` stays `null` until that first baseline resolves; ALL edge-firing (OS + sound) is suppressed until a baseline exists — specifically so reloading the hub can never re-alert on attention that was ALREADY true before the page opened (`notifications.js:46-50, 217-221, 258, 261`)
-- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `serf/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`notifications.js:256-260`)
+- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `evener/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`notifications.js:256-260`)
 - [ ] Edge-fire additionally requires the document be unfocused (checked AGAIN here, on top of the per-channel checks in §3.4/§3.5) and this tab be the elected leader (`notifications.js:261-263`)
 - [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`notifications.js:264-267`)
 - [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`notifications.js:268-269`)
 - [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`notifications.js:270-271`)
-- [ ] `renderer.js` dispatches a `serf-hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
+- [ ] `renderer.js` dispatches a `evener-hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
 
 ### 3.7 Single-tab election
 
-- [ ] Election uses the Web Locks API: `navigator.locks.request("serf-hub-os-leader", {ifAvailable:true}, cb)`. The FIRST tab to acquire the lock holds it forever (its callback returns a Promise that never resolves), so every subsequent tab's `ifAvailable` request fails immediately and self-identifies as a follower (`notifications.js:235-244`)
+- [ ] Election uses the Web Locks API: `navigator.locks.request("evener-hub-os-leader", {ifAvailable:true}, cb)`. The FIRST tab to acquire the lock holds it forever (its callback returns a Promise that never resolves), so every subsequent tab's `ifAvailable` request fails immediately and self-identifies as a follower (`notifications.js:235-244`)
 - [ ] Environments without `navigator.locks` (or where the request itself throws/rejects) fall back to treating EVERY tab as leader — a duplicate alert is judged the lesser evil versus a silent one (`notifications.js:236, 241, 244`)
 - [ ] **No BroadcastChannel-based election exists anywhere in this codebase** — verified via a repo-wide grep for `BroadcastChannel` across `cmd/evener-hub/assets` and `cmd/evener-hub/templates` (zero hits, outside `node_modules`). Web Locks is the sole mechanism; do not expect (or feel obligated to reproduce) a BroadcastChannel counterpart
 
 ### 3.8 Settings coupling (`settings-notifications.js` ↔ `notifications.js`)
 
-- [ ] Any `input[type=checkbox][data-notif]` change updates `localStorage["serf-hub.notifications"][key]`, syncs the visible ON/OFF `.state` label, dispatches `serf-hub:notifications-changed` with `{key, value}` in `detail`, and toasts "Settings saved" (`settings-notifications.js:18-36, 60-61`)
+- [ ] Any `input[type=checkbox][data-notif]` change updates `localStorage["evener-hub.notifications"][key]`, syncs the visible ON/OFF `.state` label, dispatches `evener-hub:notifications-changed` with `{key, value}` in `detail`, and toasts "Settings saved" (`settings-notifications.js:18-36, 60-61`)
 - [ ] Turning the `os` checkbox ON while `Notification.permission === "default"` DEFERS the commit: it calls `Notification.requestPermission()` first, commits only on `"granted"`, and on any other outcome reverts the checkbox to unchecked, writes `os:false`, re-syncs the label, and toasts a "Browser denied notification permission" WARNING (no success toast on that path) (`settings-notifications.js:42-58`)
-- [ ] Any `input[type=radio][data-notif-radio]` change (currently only `loudScope`) writes the value, dispatches the same `serf-hub:notifications-changed` event, and toasts "Settings saved" (`settings-notifications.js:64-75`)
+- [ ] Any `input[type=radio][data-notif-radio]` change (currently only `loudScope`) writes the value, dispatches the same `evener-hub:notifications-changed` event, and toasts "Settings saved" (`settings-notifications.js:64-75`)
 - [ ] `applyNotifState` re-checks every notif checkbox and the `loudScope` radio group from storage whenever a settings pane loads (`DOMContentLoaded`) or is htmx-swapped in (`htmx:afterSwap`) (`settings-notifications.js:78-92, 107-108`)
-- [ ] `notifications.js`'s OWN `serf-hub:notifications-changed` listener (`onPrefsChanged`) is a SECOND, independent safety net: if `os` is on but permission is still `"default"`, it ALSO requests permission and reverts checkbox+prefs+label on denial — explicitly documented as defensive/redundant, covering only the case where something else dispatches the event without going through `settings-notifications.js`'s own gate (`notifications.js:297-328`, code comment at 297-303)
+- [ ] `notifications.js`'s OWN `evener-hub:notifications-changed` listener (`onPrefsChanged`) is a SECOND, independent safety net: if `os` is on but permission is still `"default"`, it ALSO requests permission and reverts checkbox+prefs+label on denial — explicitly documented as defensive/redundant, covering only the case where something else dispatches the event without going through `settings-notifications.js`'s own gate (`notifications.js:297-328`, code comment at 297-303)
 - [ ] `onPrefsChanged` always re-applies title/favicon immediately using the CURRENT (unchanged) summary, regardless of which specific pref just changed (`notifications.js:326-327`)
 - [ ] Title/favicon are ALSO re-applied after every `htmx:afterSettle` on `document.body` (any workspace/settings navigation), which additionally resyncs the settings header's visible section label and the settings-nav active-link highlighting — this whole handler is gated on an `initialized` flag so it can't fire before `init()` has run once (`notifications.js:332-357, 338`)
 
 ### 3.9 Cross-cutting hub notifications (second, independent IIFE at the bottom of `notifications.js`)
 
-- [ ] `serf/auth/updated` → reloads the credentials/instances panel in place if `#instances-root` is currently loaded (`data-loaded="true"`); separately re-fetches the `/settings/providers` partial via `htmx.ajax` if that's the currently active settings pane (`notifications.js:396-411`)
-- [ ] `serf/launch/updated` → re-fetches whatever `/settings/*` partial is currently open, preserving the existing query string (e.g. `?cwd=`) (`notifications.js:412-417`)
-- [ ] `serf/marketplace/updated` / `serf/plugin/updated` → re-fetches the plugins-manager partial, but ONLY if it's the currently active settings pane — explicitly to avoid a stale "Install" button state or a stale tab silently clobbering another tab's `AutoUpgrade` setting on reinstall (`notifications.js:418-434`, code comment)
+- [ ] `evener/auth/updated` → reloads the credentials/instances panel in place if `#instances-root` is currently loaded (`data-loaded="true"`); separately re-fetches the `/settings/providers` partial via `htmx.ajax` if that's the currently active settings pane (`notifications.js:396-411`)
+- [ ] `evener/launch/updated` → re-fetches whatever `/settings/*` partial is currently open, preserving the existing query string (e.g. `?cwd=`) (`notifications.js:412-417`)
+- [ ] `evener/marketplace/updated` / `evener/plugin/updated` → re-fetches the plugins-manager partial, but ONLY if it's the currently active settings pane — explicitly to avoid a stale "Install" button state or a stale tab silently clobbering another tab's `AutoUpgrade` setting on reinstall (`notifications.js:418-434`, code comment)
 - [ ] This entire second IIFE no-ops immediately if `window.SerfAppwire`/`onNotification` isn't present (`notifications.js:391-393`)
 
 ---
@@ -371,48 +371,48 @@ All from `search.js:326-517` unless noted:
 
 ### 4.1 Theme — core primitive (`theme.js`)
 
-- [ ] `window.serfHub.setTheme(theme)`: for `"light"`/`"dark"`, sets `<html data-theme="…">` AND `localStorage["serf-hub.theme"]`; for anything else (including `null`/`"system"`), REMOVES both the attribute and the storage key, letting `prefers-color-scheme` take over (`theme.js:3-11`)
+- [ ] `window.serfHub.setTheme(theme)`: for `"light"`/`"dark"`, sets `<html data-theme="…">` AND `localStorage["evener-hub.theme"]`; for anything else (including `null`/`"system"`), REMOVES both the attribute and the storage key, letting `prefers-color-scheme` take over (`theme.js:3-11`)
 
 ### 4.2 Theme — FOUC avoidance (NOT in theme.js — inline per-document)
 
-- [ ] An inline `<script>` in `<head>`, placed BEFORE any stylesheet/font `<link>`, synchronously reads `localStorage["serf-hub.theme"]` and sets `data-theme` pre-paint. The identical 6-line block is duplicated verbatim in both the main app shell and the standalone thread-embed document (`templates/app.html:17-24`, `templates/thread.html:9-15`)
+- [ ] An inline `<script>` in `<head>`, placed BEFORE any stylesheet/font `<link>`, synchronously reads `localStorage["evener-hub.theme"]` and sets `data-theme` pre-paint. The identical 6-line block is duplicated verbatim in both the main app shell and the standalone thread-embed document (`templates/app.html:17-24`, `templates/thread.html:9-15`)
 - [ ] CSS is bound EXCLUSIVELY to `:root[data-theme="light"|"dark"]`; there is no CSS rule anywhere keyed off a `.light-theme`/`.dark-theme` class (`cmd/evener-hub/assets/style.css:1-2, 178, 204, 229-237`; confirmed via a repo-wide grep returning 0 hits for `.light-theme`/`.dark-theme` selectors)
 
 ### 4.3 Theme — settings-page coupling (`settings-appearance.js`)
 
 - [ ] `input[name="theme"]` change: value `"system"` calls `setTheme(null)`; any other value calls `setTheme(v)` directly; toasts `"Theme: <v>"` (`settings-appearance.js:12-17`)
 - [ ] Radio values are exactly `system` / `dark` / `light` (`templates/partials/settings/theme.html:9-11`)
-- [ ] `applyAppearanceState` re-checks the correct theme radio from `localStorage["serf-hub.theme"] || "system"` on `DOMContentLoaded` and every `htmx:afterSwap` (`settings-appearance.js:47-52, 72-73`)
+- [ ] `applyAppearanceState` re-checks the correct theme radio from `localStorage["evener-hub.theme"] || "system"` on `DOMContentLoaded` and every `htmx:afterSwap` (`settings-appearance.js:47-52, 72-73`)
 
 ### 4.4 Theme — palette command (`search.js`) — **divergent implementation, not the same code path as §4.1/§4.3**
 
 - [ ] `/theme` command only offers two enum choices, `dark`/`light` — there is no `system`/"unset" option here, unlike the settings page's 3-way radio (`search.js:336-339`)
-- [ ] Its handler, `applyTheme(name)`, does NOT touch `data-theme` at all — it toggles `.light-theme`/`.dark-theme` CLASSES on `<body>` and separately writes `localStorage["serf-hub.theme"]` (`search.js:550-554`)
+- [ ] Its handler, `applyTheme(name)`, does NOT touch `data-theme` at all — it toggles `.light-theme`/`.dark-theme` CLASSES on `<body>` and separately writes `localStorage["evener-hub.theme"]` (`search.js:550-554`)
 - [ ] Net effect (see hazard #1 at the top of this document): because the CSS has no rule bound to those body classes, running `/theme` from the palette has **no visible effect on the currently-open page**. The `localStorage` write only takes effect retroactively on the NEXT full page load, when the FOUC script (§4.2) reads it back and sets `data-theme` correctly that time. A parity rewrite must either reproduce this same "changes nothing until reload" behavior faithfully, or make an explicit, called-out decision to fix it — don't silently normalize it to match `theme.js`'s immediate-effect behavior without flagging the change
 
 ### 4.5 Phone density (`settings-appearance.js`)
 
-- [ ] `input[name="phone-density"]` change writes `localStorage["serf-hub.phone-density"]` and sets `document.body.dataset.phoneDensity` immediately — no toast shown (unlike theme/font/sidebar changes) (`settings-appearance.js:19-24`)
+- [ ] `input[name="phone-density"]` change writes `localStorage["evener-hub.phone-density"]` and sets `document.body.dataset.phoneDensity` immediately — no toast shown (unlike theme/font/sidebar changes) (`settings-appearance.js:19-24`)
 - [ ] Values are `compact` / `comfortable` (`templates/partials/settings/theme.html:20-21`); default when unset is `"compact"` (`settings-appearance.js:55, 79`)
 - [ ] Applied to `<body>` on EVERY page load (not just when a settings pane is visible), via a standalone parse-time IIFE (`settings-appearance.js:76-81`)
 - [ ] `applyAppearanceState` also re-checks the density radio group on swap/load (`settings-appearance.js:53-57`)
 
 ### 4.6 Sidebar mode (`settings-appearance.js`) — bundled in the same file though not itself theme/density/font
 
-- [ ] `input[name="sidebar-mode"]` change (`auto`/`rail`/`pane`) prefers `window.SerfSidebar.applySidebarMode(v)` when that global is available, else falls back to writing `localStorage["serf-hub.sidebar.rail"]` directly (`settings-appearance.js:26-33`)
+- [ ] `input[name="sidebar-mode"]` change (`auto`/`rail`/`pane`) prefers `window.SerfSidebar.applySidebarMode(v)` when that global is available, else falls back to writing `localStorage["evener-hub.sidebar.rail"]` directly (`settings-appearance.js:26-33`)
 - [ ] `applyAppearanceState` prefers `window.SerfSidebar.readSidebarMode()` when available, else reads that same fallback key, defaulting to `"auto"` (`settings-appearance.js:58-64`)
-- [ ] Radio values per template: `auto` / `pane` / `rail`, labeled "Auto" / "Pane" / "Collapsed" — note the radio VALUE for the "Collapsed" label is literally `rail`, and the fallback storage key is `serf-hub.sidebar.rail` (NOT `...sidebar-mode`) (`templates/partials/settings/theme.html:30-32`)
+- [ ] Radio values per template: `auto` / `pane` / `rail`, labeled "Auto" / "Pane" / "Collapsed" — note the radio VALUE for the "Collapsed" label is literally `rail`, and the fallback storage key is `evener-hub.sidebar.rail` (NOT `...sidebar-mode`) (`templates/partials/settings/theme.html:30-32`)
 
 ### 4.7 Font size (`settings-appearance.js`)
 
-- [ ] `input[name="font-size"]` change writes `localStorage["serf-hub.appearance.fontSize"]` and sets `document.body.dataset.fontSize` immediately (`settings-appearance.js:36-41`)
+- [ ] `input[name="font-size"]` change writes `localStorage["evener-hub.appearance.fontSize"]` and sets `document.body.dataset.fontSize` immediately (`settings-appearance.js:36-41`)
 - [ ] Values are `s` / `m` / `l` / `xl` (`templates/partials/settings/theme.html:41-44`); default when unset is `"m"` (`settings-appearance.js:67, 86`)
 - [ ] Applied to `<body>` on every page load via a standalone parse-time IIFE, same pattern as density (`settings-appearance.js:83-87`)
 - [ ] `applyAppearanceState` also re-checks the font-size radio group on swap/load (`settings-appearance.js:65-69`)
 
 ### 4.8 Composer display prefs (`settings-display.js`) — grouped with theme/density/font in scope, functionally a separate "composer" prefs blob
 
-- [ ] Single JSON blob at `localStorage["serf-hub.composer"]`; a parse failure or absent key degrades to `{}` (`settings-display.js:11-13`)
+- [ ] Single JSON blob at `localStorage["evener-hub.composer"]`; a parse failure or absent key degrades to `{}` (`settings-display.js:11-13`)
 - [ ] Defaults are baked into the READER, not written eagerly: `enterToSend` defaults to `false` (only `true` when the stored value is `=== true`); `showCost` defaults to `true` (only `false` when the stored value is `=== false`) (`settings-display.js:14-18`)
 - [ ] `enterToSend` checkbox change persists, syncs the ON/OFF label, re-applies composer keybind hints, and toasts "Settings saved" (`settings-display.js:33-40`)
 - [ ] `showCost` checkbox change persists, syncs the label, sets `document.body.dataset.showCost`, and toasts "Settings saved" (`settings-display.js:42-49`)

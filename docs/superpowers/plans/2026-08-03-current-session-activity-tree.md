@@ -2,21 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the flat Jobs sheet and `serf/jobs/list` payload with a recursive, paginated Activity tree that shows every retained shell job beneath its authoritative session or subagent owner.
+**Goal:** Replace the flat Jobs sheet and `evener/jobs/list` payload with a recursive, paginated Activity tree that shows every retained shell job beneath its authoritative session or subagent owner.
 
-**Architecture:** The agent package builds one authoritative recursive tree from durable job/delegate records with live overlays, explicit partial-branch errors, stable IDs, aggregate counts, and bounded continuation. The existing `serf/jobs/list` method returns that tree for live and exited local sessions; a root-scoped tree revision notification invalidates nested activity. The Web UI parses the recursive payload, reconciles it by stable IDs, and renders a responsive accessible master-detail Activity sheet.
+**Architecture:** The agent package builds one authoritative recursive tree from durable job/delegate records with live overlays, explicit partial-branch errors, stable IDs, aggregate counts, and bounded continuation. The existing `evener/jobs/list` method returns that tree for live and exited local sessions; a root-scoped tree revision notification invalidates nested activity. The Web UI parses the recursive payload, reconciles it by stable IDs, and renders a responsive accessible master-detail Activity sheet.
 
-**Tech Stack:** Go, AppWire JSON-RPC, jobstore event logs, Serf session metadata, React 19, TypeScript 6, Zustand, CSS modules, Vitest/Testing Library, headless-Chrome layout guards.
+**Tech Stack:** Go, AppWire JSON-RPC, jobstore event logs, Evener session metadata, React 19, TypeScript 6, Zustand, CSS modules, Vitest/Testing Library, headless-Chrome layout guards.
 
 ## Global Constraints
 
 - Read `docs/testing.md` before changing tests; all default tests must be deterministic and credential-, network-, quota-, model-, and ambient-state-independent.
-- Replace the existing `serf/jobs/list` payload in place. Do not add a second tree endpoint.
-- Keep `serf/jobs/output`; select descendant output by the owner session ref supplied in the tree.
+- Replace the existing `evener/jobs/list` payload in place. Do not add a second tree endpoint.
+- Keep `evener/jobs/output`; select descendant output by the owner session ref supplied in the tree.
 - The local activity-tree capability must never cross source or state-directory boundaries.
 - Count work units, not visible rows: each shell job and each delegate turn counts once; session and subagent rows do not count.
 - Aggregate precedence is `working` → `failed` → `unavailable` → `ended` → `idle`, using the exact rules in the design spec.
-- Bound each response to 2,000 work units, 32 newly expanded delegation levels, and 4 MiB encoded JSON; expose truncated branches through continuation on `serf/jobs/list`.
+- Bound each response to 2,000 work units, 32 newly expanded delegation levels, and 4 MiB encoded JSON; expose truncated branches through continuation on `evener/jobs/list`.
 - Unknown statuses retain their exact label, authoritative terminal bit, and neutral visual tone.
 - Green means working, red means failure, gray means terminal/idle, blue means focus/selection/link, and amber only means human input is required.
 - Generated files `docs/appwire-protocol.md` and `cmd/evener-hub/frontend/src/protocol/types.gen.ts` are regenerated with `make generate`, never hand-edited.
@@ -47,7 +47,7 @@
 - `agent/jobs_panel.go` and tests — retain output-tail projection; remove flat-list projection after callers move.
 - `agent/events/payloads.go`, `agent/events/eventdata.go`, and event tests — carry root tree identity/revision on job lifecycle events.
 - `agent/session.go`, `agent/session_init.go`, `agent/subagents.go` — share one monotonic tree revision and root session identity across descendants.
-- `internal/appprojector/appwire_projection.go` and tests — emit `serf/jobs/treeUpdated` beside child job lifecycle notifications.
+- `internal/appprojector/appwire_projection.go` and tests — emit `evener/jobs/treeUpdated` beside child job lifecycle notifications.
 - `server/server.go`, `server/appwire_runtime.go`, `server/server_test.go` — pass `JobsListParams` to the new tree provider.
 - `cmd/evener/serve.go`, `cmd/evener/serve_residual_fuzz_test.go` — wire the live session tree provider.
 - `cmd/evener-hub/app_jobs.go`, `cmd/evener-hub/app_jobs_test.go` — live-first tree routing and exited-local fallback.
@@ -106,7 +106,7 @@ func TestJobsListReplacementTreeWireShape(t *testing.T) {
 }
 ```
 
-Also extend notification-catalog tests to require `serf/jobs/treeUpdated` with `JobsTreeUpdatedParams`.
+Also extend notification-catalog tests to require `evener/jobs/treeUpdated` with `JobsTreeUpdatedParams`.
 
 - [ ] **Step 2: Run the tests and verify RED**
 
@@ -197,7 +197,7 @@ Write explicit JSON tags for every field in `appwire/types.go`; do not rely on G
 
 - [ ] **Step 4: Register the notification and regenerate**
 
-Add `NotifySerfJobsTreeUpdated = "serf/jobs/treeUpdated"`, its params type, and the notification catalog entry. Then run:
+Add `NotifySerfJobsTreeUpdated = "evener/jobs/treeUpdated"`, its params type, and the notification catalog entry. Then run:
 
 ```bash
 make generate
@@ -451,7 +451,7 @@ srv.SetJobsFunc(func(got appwire.JobsListParams) (any, error) {
 })
 ```
 
-Call `serf/jobs/list` with both fields and assert the tree response.
+Call `evener/jobs/list` with both fields and assert the tree response.
 
 - [ ] **Step 2: Write failing hub fallback tests**
 
@@ -536,7 +536,7 @@ git commit -m "feat(hub): serve recursive session activity"
 **Interfaces:**
 - Produces: one `jobTreeClock` shared by root and descendants: `{rootSessionID string; revision atomic.Uint64}`.
 - Adds to `JobStartedData` and `JobFinishedData`: `RootSessionID string`, `TreeRevision uint64`.
-- Emits: `serf/jobs/treeUpdated` targeted at `local:<rootSessionID>`.
+- Emits: `evener/jobs/treeUpdated` targeted at `local:<rootSessionID>`.
 - Produces: `ThreadModel.jobsTreeRevision: number | null`.
 
 - [ ] **Step 1: Write failing shared-clock agent tests**
@@ -560,7 +560,7 @@ Do not emit tree updates when root identity/revision is absent in old persisted 
 
 - [ ] **Step 3: Write failing frontend reducer/store tests**
 
-Route a `serf/jobs/treeUpdated` frame for `local:root` while the currently open event source is a child. Assert only the root model's `jobsTreeRevision` and `jobsUpdatedAt` change; `lastFrameAt` on the root must not claim conversational activity from a nested job.
+Route a `evener/jobs/treeUpdated` frame for `local:root` while the currently open event source is a child. Assert only the root model's `jobsTreeRevision` and `jobsUpdatedAt` change; `lastFrameAt` on the root must not claim conversational activity from a nested job.
 
 - [ ] **Step 4: Run and verify RED**
 
@@ -676,7 +676,7 @@ Keep the AppWire method name in the store:
 
 ```ts
 listJobs: async (ref: string, continuation?: string) =>
-  (await requireClient().request("serf/jobs/list", { ref, ...(continuation ? { continuation } : {}) })).data
+  (await requireClient().request("evener/jobs/list", { ref, ...(continuation ? { continuation } : {}) })).data
 ```
 
 - [ ] **Step 6: Verify and commit**
@@ -959,7 +959,7 @@ Expected: PASS. If a failure repeats after a focused fix, stop and investigate t
 
 ```bash
 rg 'JobSummary|JobSummaries|LoadSessionJobList|JobsPanel|jobData|jobspanel\.module' --glob '!docs/superpowers/**'
-rg 'serf/jobs/treeUpdated|JobActivityTree|ActivityPanel' appwire agent internal server cmd/evener cmd/evener-hub
+rg 'evener/jobs/treeUpdated|JobActivityTree|ActivityPanel' appwire agent internal server cmd/evener cmd/evener-hub
 git status --short
 git diff --check
 ```

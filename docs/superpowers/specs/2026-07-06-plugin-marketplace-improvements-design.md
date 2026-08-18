@@ -17,7 +17,7 @@ Two plugin-marketplace pain points, raised together:
    path then deletes the cache dir). Real cause: some marketplace plugins (e.g.
    `private-journal-mcp` in `superpowers-marketplace`) are bare MCP/npm packages with no manifest
    in the source; Claude Code treats the **marketplace entry** as the manifest in that case
-   (`"strict": true`), but serf drops the entry's manifest-shaped fields and can't install them.
+   (`"strict": true`), but evener drops the entry's manifest-shaped fields and can't install them.
 
 ## Decisions (Jesse, 2026-07-06)
 
@@ -35,8 +35,8 @@ Two plugin-marketplace pain points, raised together:
 
 All UI, client-side, in `cmd/evener-hub/templates/partials/settings/plugins-manager.html` (the pane
 is fully rendered by its inline `<script>`); RPCs via `cmd/evener-hub/assets/plugins.js`. No backend
-change for Part 1 — it reuses the existing `serf/marketplace/list`, `serf/marketplace/browse`,
-`serf/plugin/list`, `serf/plugin/install` RPCs.
+change for Part 1 — it reuses the existing `evener/marketplace/list`, `evener/marketplace/browse`,
+`evener/plugin/list`, `evener/plugin/install` RPCs.
 
 ### Structure
 
@@ -51,7 +51,7 @@ The "Browse" section (`renderBrowseSection()`, plugins-manager.html:133-157) bec
       some-plugin          …                            Install
 ```
 
-- **Top level:** one collapsible node per registered marketplace (from `serf/marketplace/list`),
+- **Top level:** one collapsible node per registered marketplace (from `evener/marketplace/list`),
   showing the marketplace name + a plugin count once its catalog is loaded. Collapsed by default.
 - **Expand → plugins:** the marketplace's plugins as rows, reusing the existing `renderBrowseRow`
   content (name, description, and — kept from today — the `· category` suffix when present).
@@ -60,19 +60,19 @@ The "Browse" section (`renderBrowseSection()`, plugins-manager.html:133-157) bec
 
 ### Lazy-load
 
-- A marketplace's catalog is fetched via `serf/marketplace/browse` (`pluginsAdmin.marketplaceBrowse`,
+- A marketplace's catalog is fetched via `evener/marketplace/browse` (`pluginsAdmin.marketplaceBrowse`,
   plugins.js:9) on **first expand**, then cached client-side (keyed by marketplace name).
 - While fetching: a small inline "loading…" under the node. On error: the existing
   "Failed to browse: …" text inline under that node (per-marketplace, non-fatal — other nodes
   still work).
 - Rationale: browsing every marketplace on pane-open could be many RPCs; lazy-load keeps it snappy.
-- Cache is invalidated for a marketplace on `serf/marketplace/refresh` of that marketplace and on
-  the `serf/marketplace/updated` notification (re-fetch on next expand).
+- Cache is invalidated for a marketplace on `evener/marketplace/refresh` of that marketplace and on
+  the `evener/marketplace/updated` notification (re-fetch on next expand).
 
 ### Inline install + state
 
 - Each plugin row shows install-state, computed client-side as today by cross-referencing
-  `serf/plugin/list` (`isInstalled(plugin, marketplace)`, plugins-manager.html:39-41):
+  `evener/plugin/list` (`isInstalled(plugin, marketplace)`, plugins-manager.html:39-41):
   a `✓ Installed` badge, or an **Install** button (`data-action="install"`, existing handler
   plugins-manager.html:307-319 calling `pluginInstall(plugin, marketplace)`).
 - On install success: refresh the installed set + flip that row to Installed (existing flow), and
@@ -139,7 +139,7 @@ marketplace entry's manifest fields (`mcpServers`, `commands`, `agents`, `hooks`
 
 ### Part 2 scope guard
 
-- Honor only the component kinds serf already supports (mcpServers/commands/agents/hooks/skills as
+- Honor only the component kinds evener already supports (mcpServers/commands/agents/hooks/skills as
   they map to the existing `agent/plugin` `Manifest`). Do not invent new component types.
 - **`strict` semantics (corrected — verified against code.claude.com/docs/en/plugin-marketplaces):**
   `strict: true` (the default) means the source's `plugin.json` is the authority (entry only

@@ -4,7 +4,7 @@ Date: 2026-07-07
 
 ## Summary
 
-Serf's web UI should show images inline when an agent produces them. The first version covers three sources:
+Evener's web UI should show images inline when an agent produces them. The first version covers three sources:
 
 1. tool results that already contain image bytes, such as `read_file` on a PNG or a screenshot-like tool result;
 2. image files written or modified by structured file tools, such as `write_file`, `edit_file`, and `apply_patch`;
@@ -51,7 +51,7 @@ When a tool produces several images, the row shows one compact contact sheet bel
 
 The image preview should not replace text output. If a shell command prints useful output and writes `out.png`, the UI shows both the text preview and the image preview.
 
-If Serf cannot validate or serve an image, it should omit that preview. The tool row remains otherwise unchanged.
+If Evener cannot validate or serve an image, it should omit that preview. The tool row remains otherwise unchanged.
 
 ## AppWire contract
 
@@ -90,7 +90,7 @@ For live display, the descriptor may use a sha-addressed URL whose bytes are ava
 
 ### Written image files
 
-For structured file-writing tools, Serf should inspect explicit target paths after the tool succeeds:
+For structured file-writing tools, Evener should inspect explicit target paths after the tool succeeds:
 
 - `write_file`: `file_path`;
 - `edit_file`: `file_path` or `path`;
@@ -125,7 +125,7 @@ Add `/doc/image?session=<id>&path=<rel>` for file-backed generated images. It sh
 
 For transcript-backed tool-result images, generalize the existing sha route or add a sibling route that can find image bytes in both user-input image parts and tool-result image fields. The descriptor should use a same-origin URL with a content hash, so browser caching remains safe.
 
-Supported media for v1: PNG, JPEG, GIF, and WebP. Exclude SVG in v1. SVG is text but can carry active content and should not be treated as an ordinary image until Serf has a sanitization policy.
+Supported media for v1: PNG, JPEG, GIF, and WebP. Exclude SVG in v1. SVG is text but can carry active content and should not be treated as an ordinary image until Evener has a sanitization policy.
 
 ## Backend data flow
 

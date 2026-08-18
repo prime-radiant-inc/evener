@@ -26,7 +26,7 @@ is asserted in depth by job-nested-visibility.md.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-jstop-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-jstop-XXXXX)`.
 
 ## Steps
 
@@ -65,7 +65,7 @@ is asserted in depth by job-nested-visibility.md.
    >    same fields.
    > 6. End your turn.
 4. Read the transcript and the parent durable log
-   (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`).
+   (`find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"`).
 
 ## Expected
 

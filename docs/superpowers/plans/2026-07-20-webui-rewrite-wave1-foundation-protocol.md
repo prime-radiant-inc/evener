@@ -9,7 +9,7 @@ complete AppWire protocol core (generated types, client, reducer, stores) proven
 hub.
 
 **Architecture:** New app lives in `cmd/evener-hub/frontend/` (Vite 8 + React 19 + TS strict),
-embedded into `serf-hub` via `go:embed all:frontend/dist` and served only when `SERF_HUB_WEB=new`;
+embedded into `evener-hub` via `go:embed all:frontend/dist` and served only when `SERF_HUB_WEB=new`;
 the legacy UI stays untouched until the M10 deletion wave. TS wire types are generated from the
 `appwire` Go catalog with a drift test. One `AppwireClient` per browser window; one pure
 `reducer.ts` turns notifications into `ThreadModel`s; zustand stores wire them together.
@@ -77,7 +77,7 @@ npm install react react-dom dockview dockview-react zustand @tanstack/react-virt
 npm install -D vite @vitejs/plugin-react typescript vitest @testing-library/react @testing-library/user-event jsdom eslint typescript-eslint @types/react @types/react-dom @types/dompurify
 ```
 
-Then edit `package.json`: set `"name": "serf-hub-frontend"`, `"private": true`,
+Then edit `package.json`: set `"name": "evener-hub-frontend"`, `"private": true`,
 `"type": "module"`, and scripts:
 
 ```json
@@ -100,7 +100,7 @@ Then edit `package.json`: set `"name": "serf-hub-frontend"`, `"private": true`,
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// The dev server proxies every hub-owned route to a locally running serf-hub.
+// The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth?token= capability flow
 // works through the proxy unchanged.
 const hub = process.env.SERF_HUB_ADDR ?? "http://127.0.0.1:9180";
@@ -155,7 +155,7 @@ SPA for client routing. `bypass` returning the URL serves index.html from Vite.)
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>serf</title>
+    <title>evener</title>
     <link rel="manifest" href="/manifest.webmanifest" />
   </head>
   <body>
@@ -180,7 +180,7 @@ createRoot(document.getElementById("root")!).render(<App />);
 
 ```tsx
 export function App() {
-  return <main>serf workspace shell — wave 1</main>;
+  return <main>evener workspace shell — wave 1</main>;
 }
 ```
 
@@ -335,7 +335,7 @@ func serveSPAIndex(w http.ResponseWriter, r *http.Request, dist fs.FS) {
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("serf-hub web app not built: run `make build-web` and rebuild\n"))
+		_, _ = w.Write([]byte("evener-hub web app not built: run `make build-web` and rebuild\n"))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -659,9 +659,9 @@ one prior turn → `turn/started` (inline `{threadId, ref, turn}`) → `item/sta
 (agentMessage) → three `item/agentMessage/delta` → `item/completed` → `turn/completed`.
 The other three fixtures cover: `item/agentMessage/reset` mid-stream +
 `item/reasoning/summaryTextDelta` with two summaryIndexes; a `commandExecution` item with
-`item/toolOutput/delta` + `serf/job/started`/`finished` + `serf/steering/injected`;
+`item/toolOutput/delta` + `evener/job/started`/`finished` + `evener/steering/injected`;
 `thread/queueChanged` + `thread/status/changed` + `thread/model/changed` +
-`serf/task/updated` + `serf/thread/name/changed`.
+`evener/task/updated` + `evener/thread/name/changed`.
 
 - [ ] **Step 2: Failing golden test.**
 

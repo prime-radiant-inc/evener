@@ -6,7 +6,7 @@
 
 **Architecture:** Add lightweight `outputImages` descriptors to AppWire `commandExecution` items. Backend resolvers validate tool-result images, structured write target paths, and conservative shell path candidates; file-backed images load through a new `/doc/image` route, while transcript-backed image bytes load through the existing sha-addressed session image route extended to tool results. The frontend passes descriptors through AppWire event conversion and reuses the existing thumbnail, sheet, lightbox, and open-beside image UI.
 
-**Tech Stack:** Go stdlib HTTP, Serf AppWire JSON structs, Serf event/projector packages, existing `fspaths.ResolveInRoot`, vanilla JavaScript renderer, JSDOM renderer tests.
+**Tech Stack:** Go stdlib HTTP, Evener AppWire JSON structs, Evener event/projector packages, existing `fspaths.ResolveInRoot`, vanilla JavaScript renderer, JSDOM renderer tests.
 
 ## Global Constraints
 

@@ -26,9 +26,9 @@ control is the shared ARIA combobox in `widgets/modelCatalog/` — its
 `provider/model`, or the empty label when nothing is set**
 (`widgets/modelCatalog/index.tsx:388-406`).
 
-**Namespace warning**: these keys are `serf-hub.spawn-defaults.*`, a
-*different* namespace from the `serf.prefs.*` flat keys the runbook's
-seeding section describes. Unlike `serf.prefs.*`, they are read on the
+**Namespace warning**: these keys are `evener-hub.spawn-defaults.*`, a
+*different* namespace from the `evener.prefs.*` flat keys the runbook's
+seeding section describes. Unlike `evener.prefs.*`, they are read on the
 spawn pane's own mount, not once at module load — but the sweep still
 runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 `/new` and do a full reload rather than an SPA navigation.
@@ -36,9 +36,9 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (see the
-  Setup checklist in `docs/agentic-testing.md`), with `--serf`
+  Setup checklist in `docs/agentic-testing.md`), with `--evener`
   resolvable so the harness enumerates models. This matters — kata
-  `6bdb`: with no `serf` on PATH and no `--serf`, the list is empty and
+  `6bdb`: with no `evener` on PATH and no `--evener`, the list is empty and
   `validateSerfLaunchModel` fails open, so nothing is ever classified
   stale and the sweep silently does nothing.
 - A frontend built with `make build-web` before the hub binary.
@@ -71,13 +71,13 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
    and reload:
    ```js
    // GLOBAL_MODEL_KEY - a plain string, never JSON (spawnDefaults.ts:20)
-   localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5-mini");
+   localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5-mini");
    // A per-project blob, keyed by working dir (defaultsKeyFor, :71-74).
    // access_mode is a real declared sibling (SpawnDefaultsBlob, :27-33) -
    // it is what proves the sweep strips .model surgically rather than
    // deleting the whole blob.
    localStorage.setItem(
-     "serf-hub.spawn-defaults./tmp/some-project",
+     "evener-hub.spawn-defaults./tmp/some-project",
      JSON.stringify({model: "openai/gpt-5-mini", access_mode: "full"})
    );
    ```
@@ -99,8 +99,8 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
      // same widget (Spawn.tsx:620-631).
      trigger: document.getElementById("spawn-model-label")
        ?.parentElement?.querySelector("button")?.textContent.trim(),
-     globalDefault: localStorage.getItem("serf-hub.spawn-defaults.global.model"),
-     perProject: localStorage.getItem("serf-hub.spawn-defaults./tmp/some-project"),
+     globalDefault: localStorage.getItem("evener-hub.spawn-defaults.global.model"),
+     perProject: localStorage.getItem("evener-hub.spawn-defaults./tmp/some-project"),
      notice: document.querySelector('[role="status"]')?.textContent?.trim(),
    })
    ```
@@ -136,8 +136,8 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
 ## Cleanup
 
 ```js
-localStorage.removeItem("serf-hub.spawn-defaults.global.model");
-localStorage.removeItem("serf-hub.spawn-defaults./tmp/some-project");
+localStorage.removeItem("evener-hub.spawn-defaults.global.model");
+localStorage.removeItem("evener-hub.spawn-defaults./tmp/some-project");
 ```
 
 Then kill the hub by the PID you captured and remove your `$run` dir.
@@ -156,7 +156,7 @@ Then kill the hub by the PID you captured and remove your `$run` dir.
   value (`Spawn.tsx:359-361`), so opening the picker to "check the
   chip" and picking something destroys the evidence. Read the notice
   before touching the picker.
-- The sweep filters on the `serf-hub.spawn-defaults.` prefix and skips
+- The sweep filters on the `evener-hub.spawn-defaults.` prefix and skips
   the three known global scalar keys — `global.model`,
   `global.working_dir`, `global.last-working-dir` (`SCALAR_KEYS`,
   `spawnDefaults.ts:19-25`) — because those are plain strings, not

@@ -1,4 +1,4 @@
-# Serf Sandboxing — M1: Policy Core + Cross-Backend Contract Tests
+# Evener Sandboxing — M1: Policy Core + Cross-Backend Contract Tests
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -58,7 +58,7 @@ fuzzes heavily — see `docs/fuzzing.md`).
   per-mode grants exactly. M2/M3/M6 import and satisfy it. Treat its correctness
   as the milestone's primary output.
 - **snake_case** for any JSON/config/flag key that hits the wire or a config
-  file. `make lint` (serf-namingcheck) is a gate.
+  file. `make lint` (evener-namingcheck) is a gate.
 - Never `git add -A` without a prior `git status`. Stage exact paths.
 
 ## File Structure

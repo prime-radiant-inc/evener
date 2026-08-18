@@ -42,8 +42,8 @@ Payload-size result:
 Checkable line: live discovery is explicit opt-in and blocks treating Phases 1A-11 as committed implementation work for a target endpoint family until the target endpoint family has accepted valid anchors, rejected invalid anchors clearly, resolved co-present `previous_response_id` plus `conversation`, and shown net request-payload reduction on the scripted probe.
 
 Commands:
-- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
-- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
+- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
 - Public OpenAI: run with an SSM-loaded API key and `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1`.

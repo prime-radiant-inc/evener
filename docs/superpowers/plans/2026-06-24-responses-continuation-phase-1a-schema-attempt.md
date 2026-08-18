@@ -145,7 +145,7 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip' -count=1 -v
 ```
 
 Expected: FAIL with missing fields/types.
@@ -247,7 +247,7 @@ Run:
 
 ```sh
 gofmt -w llm/responses_continuation.go llm/types.go llm/apilog.go llm/apilog_test.go
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILoggerWritesJSONL|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILoggerWritesJSONL|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
 ```
 
 Expected: PASS.
@@ -359,7 +359,7 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestTranscriptContinuationMetadataRoundTrips -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestTranscriptContinuationMetadataRoundTrips -count=1 -v
 ```
 
 Expected: FAIL with missing fields.
@@ -396,7 +396,7 @@ Run:
 
 ```sh
 gofmt -w agent/schema/turn.go agent/transcript/transcript.go agent/transcript_test.go
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestTranscriptContinuationMetadataRoundTrips|TestTranscriptWriter_AppendAPICallWritesValidLine|TestReadTranscriptFull_ParsesAllLineTypes' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestTranscriptContinuationMetadataRoundTrips|TestTranscriptWriter_AppendAPICallWritesValidLine|TestReadTranscriptFull_ParsesAllLineTypes' -count=1 -v
 ```
 
 Expected: PASS.
@@ -496,7 +496,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_SingleAttemptMetadataRecorded -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run TestSession_SingleAttemptMetadataRecorded -count=1 -v
 ```
 
 Expected: FAIL because history mode, attempt fields, and response metadata are not threaded.
@@ -621,7 +621,7 @@ Run:
 
 ```sh
 gofmt -w agent/session_model_call.go agent/session_lifecycle.go agent/session.go agent/session_test.go
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_SingleAttemptMetadataRecorded|TestAssistantTurn_CapturesUsageAndResponseID|TestSession_TranscriptAPICallRecordsFullToolDefinitions' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_SingleAttemptMetadataRecorded|TestAssistantTurn_CapturesUsageAndResponseID|TestSession_TranscriptAPICallRecordsFullToolDefinitions' -count=1 -v
 ```
 
 Expected: PASS.
@@ -700,8 +700,8 @@ Verdict: `attempt_group_id`, adapter fallback records, retry/fallback classifier
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILoggerWritesJSONL|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestAssistantTurn_CapturesUsageAndResponseID|TestSession_TranscriptAPICallRecordsFullToolDefinitions' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestBuildAPILogRequest_IncludesContinuationMetadata|TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILoggerWritesJSONL|TestAPILoggerWrapStreamWritesRawLogOnFinish' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestAssistantTurn_CapturesUsageAndResponseID|TestSession_TranscriptAPICallRecordsFullToolDefinitions' -count=1 -v
 rg -n 'DefaultResponsesContinuationSupportRegistry|ResponsesContinuationAuto|HistoryModeResponsesDelta' --glob '*.go'
 git diff --check
 ```

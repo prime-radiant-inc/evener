@@ -6,7 +6,7 @@
 
 **Architecture:** The session loop continues to retain the provider's original tool calls for validation and dispatch, while `appendAssistantTurn` creates a copy-on-write semantic-history message that replaces only non-empty syntactically invalid tool arguments with `{}`. Assistant persistence becomes durable and precedes the live-history append; `emitAssistantResponse` propagates a persistence failure, and its existing position before tool dispatch makes the round stop safely. The one historical orphan result is converted in place to a semantic steering note after a byte-for-byte backup and an open-writer check.
 
-**Tech Stack:** Go, `encoding/json`, Serf's `llm`/`schema`/`transcript` packages, deterministic scripted provider and filesystem boundaries, `serf-doctor`, JSONL transcript v2.
+**Tech Stack:** Go, `encoding/json`, Evener's `llm`/`schema`/`transcript` packages, deterministic scripted provider and filesystem boundaries, `evener-doctor`, JSONL transcript v2.
 
 ## Global Constraints
 
@@ -15,7 +15,7 @@
 - Preserve the original `llm.Response` and the `resp.ToolCalls()` values used for pre-validation and dispatch.
 - Sanitize only non-empty `ToolCallData.Arguments` for which `json.Valid` is false; leave empty and syntactically valid values unchanged.
 - Preserve call ID, item ID, name, type, parsed arguments, thought signature, text, thinking, usage, and response-attempt metadata.
-- Do not change provider serializers, transcript schemas, `repairOrphanedToolResults`, `serf-doctor`, the doctoring skill, or any other historical session.
+- Do not change provider serializers, transcript schemas, `repairOrphanedToolResults`, `evener-doctor`, the doctoring skill, or any other historical session.
 - Use deterministic provider/filesystem boundaries; no provider credentials, network model behavior, sleeps, or ambient machine state in default tests.
 - Repair transcript `seq=3070` only after confirming no process has the file open and making a byte-for-byte backup beside it.
 - The existing `webui-workspace-shell` baseline is not globally green: identifier-audit, AppWire protocol/client-mutation, and dependent TUI tests already fail. Scoped agent tests must pass, and the final full-suite run must add no failures outside that recorded baseline.
@@ -124,7 +124,7 @@ if !strings.Contains(fmt.Sprint(result.Content), "arguments were not valid JSON"
 }
 ```
 
-Read the real transcript through Serf's canonical decoder, prove the call precedes its result, and restore from that same file:
+Read the real transcript through Evener's canonical decoder, prove the call precedes its result, and restore from that same file:
 
 ```go
 _, entries, skipped, err := readTranscript(transcriptPath)
@@ -569,11 +569,11 @@ no tool or result can follow a failed assistant append."
 ### Task 3: Repair only session `033wtttaNuBna9dXsZMO34`
 
 **Files:**
-- Modify operationally: `/Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl`
-- Create operational backup: `/Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729`
+- Modify operationally: `/Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl`
+- Create operational backup: `/Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729`
 
 **Interfaces:**
-- Consumes: transcript v2 `transcript.Entry`/`schema.Turn` format and `serf-doctor` canonical readers.
+- Consumes: transcript v2 `transcript.Entry`/`schema.Turn` format and `evener-doctor` canonical readers.
 - Produces: the same transcript sequence and timestamps, with orphan result `seq=3070` replaced by a model-visible semantic steering note.
 
 - [ ] **Step 1: Build the branch's canonical doctor and capture the pre-repair evidence**
@@ -581,10 +581,10 @@ no tool or result can follow a failed assistant append."
 Run:
 
 ```bash
-go build -o /tmp/serf-doctor-malformed-tool-history ./cmd/evener-doctor
-/tmp/serf-doctor-malformed-tool-history locate 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34'
-/tmp/serf-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range 3068-3073
-/tmp/serf-doctor-malformed-tool-history apilog 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --errors
+go build -o /tmp/evener-doctor-malformed-tool-history ./cmd/evener-doctor
+/tmp/evener-doctor-malformed-tool-history locate 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34'
+/tmp/evener-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range 3068-3073
+/tmp/evener-doctor-malformed-tool-history apilog 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34' --errors
 ```
 
 Expected: doctor turn 3071 / transcript `seq=3070` is the `shell` pre-validation result for `tool_v0T1OucHwVb5xYFsyIIfsNm3`, and the API log owns the provider failure evidence.
@@ -594,7 +594,7 @@ Expected: doctor turn 3071 / transcript `seq=3070` is the `shell` pre-validation
 Run:
 
 ```bash
-lsof -- /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl
+lsof -- /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl
 ```
 
 Expected: no output. If any process has the file open, stop this task without editing it.
@@ -604,9 +604,9 @@ Expected: no output. If any process has the file open, stop this task without ed
 Run:
 
 ```bash
-test ! -e /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
-cp -p /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
-cmp /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
+test ! -e /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
+cp -p /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
+cmp /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
 ```
 
 Expected: `cmp` exits 0.
@@ -632,8 +632,8 @@ Do not renumber or rewrite any other entry.
 Run:
 
 ```bash
-wc -l /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant/toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant/toil-suite-serf-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
-/tmp/serf-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range 3068-3073
+wc -l /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant/toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant/toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729
+/tmp/evener-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range 3068-3073
 ```
 
 Expected: both files have the same line count; doctor parses the complete transcript; turn 3071 is steering rather than an orphan result.
@@ -643,14 +643,14 @@ Expected: both files have the same line count; doctor parses the complete transc
 Run the patched branch directly against the repaired bucket:
 
 ```bash
-go run ./cmd/evener --resume 033wtttaNuBna9dXsZMO34 --state-dir /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa --dir /Users/jesse/prime-radiant/toil-suite/serf 'Continue from the latest user request.'
+go run ./cmd/evener --resume 033wtttaNuBna9dXsZMO34 --state-dir /Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa --dir /Users/jesse/prime-radiant/toil-suite/evener 'Continue from the latest user request.'
 ```
 
 Expected: the session accepts the message without `tool_call_id is not found`. Re-run:
 
 ```bash
-/tmp/serf-doctor-malformed-tool-history apilog 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --errors
-/tmp/serf-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range last:8
+/tmp/evener-doctor-malformed-tool-history apilog 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34' --errors
+/tmp/evener-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range last:8
 ```
 
 Expected: a new accepted turn appears and no new missing-tool-call error is recorded.

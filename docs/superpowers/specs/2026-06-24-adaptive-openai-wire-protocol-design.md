@@ -2,17 +2,17 @@
 
 Date: 2026-06-24
 Status: draft for Jesse review
-Scope: OpenAI-shaped Serf providers that can plausibly speak Chat Completions, Responses, or both.
+Scope: OpenAI-shaped Evener providers that can plausibly speak Chat Completions, Responses, or both.
 
 ## Problem
 
-Serf currently treats OpenAI-shaped providers as fixed-wire adapters:
+Evener currently treats OpenAI-shaped providers as fixed-wire adapters:
 
 - `openai` with `api_style="responses"` uses the OpenAI Responses adapter.
 - `openai` with `api_style="chat-completions"` and the legacy `openai-compatible` provider use the Chat Completions adapter.
 - Responses continuation enablement is keyed to hardcoded endpoint families: public OpenAI is enabled, Codex remains disabled, and there is no generic OpenAI-compatible Responses family.
 
-That is too rigid for real OpenAI-compatible deployments. Some providers only expose `/chat/completions`; some expose `/responses`; some expose both but support different subsets by model, auth scope, or deployment. Serf should be able to adapt at runtime when configured to do so, while keeping failures observable and avoiding silent semantic loss.
+That is too rigid for real OpenAI-compatible deployments. Some providers only expose `/chat/completions`; some expose `/responses`; some expose both but support different subsets by model, auth scope, or deployment. Evener should be able to adapt at runtime when configured to do so, while keeping failures observable and avoiding silent semantic loss.
 
 ## Goals
 
@@ -56,7 +56,7 @@ Capability results must be scoped tightly enough that one successful probe canno
 - relevant feature or feature set;
 - request-shape fingerprint when feature support depends on fields.
 
-The cache should live under Serf state, not the repo or provider config. It should include a timestamp, status, failure class, and proof metadata such as the probed endpoint and method. Use a bounded TTL so transient provider changes recover without manual cleanup.
+The cache should live under Evener state, not the repo or provider config. It should include a timestamp, status, failure class, and proof metadata such as the probed endpoint and method. Use a bounded TTL so transient provider changes recover without manual cleanup.
 
 ## Runtime Flow
 
@@ -78,7 +78,7 @@ Fallback is allowed only when the requested semantics have a known Chat Completi
 
 - Plain text, ordinary tool calls, temperature/top-p/max-token controls, and stop sequences can generally fall back.
 - `previous_response_id`, provider-side conversation handles, encrypted reasoning replay, hosted web search, Responses-only file/content items, and continuation-owned storage cannot be silently downgraded.
-- If a request depends on an unsupported Responses-only feature and no equivalent exists, Serf must fail clearly with the selected provider, endpoint, feature, and fallback decision.
+- If a request depends on an unsupported Responses-only feature and no equivalent exists, Evener must fail clearly with the selected provider, endpoint, feature, and fallback decision.
 
 This keeps adaptive transport from hiding correctness bugs behind a successful but semantically different Chat Completions response.
 
@@ -92,7 +92,7 @@ An adaptive provider can become eligible for continuation only after all of thes
 - Full-history anchor requests return durable response IDs.
 - Valid `previous_response_id` follow-up requests are accepted.
 - Invalid anchors fail clearly rather than being silently treated as fresh context.
-- Storage behavior is classified and compatible with Serf's continuation storage policy.
+- Storage behavior is classified and compatible with Evener's continuation storage policy.
 - Deterministic session tests cover request shaping and fallback, and live opt-in tests record the provider behavior.
 
 Until that proof exists, adaptive providers may use Responses for ordinary requests but must keep continuation disabled.
@@ -119,7 +119,7 @@ ChatGPT/Codex backend remains a distinct case. Current upstream Codex source sho
 
 OpenAI-compatible providers should be allowed to change runtime protocol only in adaptive mode. The existing `openai-compatible` Chat Completions behavior should remain available and stable.
 
-For adaptive compatible providers, Serf should try `/responses` first when the request is representable and the cache does not already say it is unsupported. If `/responses` is not available, Serf should fall back to `/chat/completions` for safe request shapes. This allows vLLM, LiteLLM, local gateways, and provider proxies to use richer Responses behavior when they expose it without breaking providers that only implement Chat Completions.
+For adaptive compatible providers, Evener should try `/responses` first when the request is representable and the cache does not already say it is unsupported. If `/responses` is not available, Evener should fall back to `/chat/completions` for safe request shapes. This allows vLLM, LiteLLM, local gateways, and provider proxies to use richer Responses behavior when they expose it without breaking providers that only implement Chat Completions.
 
 ## Testing
 

@@ -2,7 +2,7 @@
 
 Date: 2026-08-03
 Status: Approved
-Scope: Serf Hub WebUI session pins
+Scope: Evener Hub WebUI session pins
 
 ## Summary
 
@@ -48,7 +48,7 @@ An unpinned top-level session exposes **Pin this session…** in its row menu. S
 
 Choosing an existing section pins the session there immediately.
 
-Choosing **New section…** opens a small name prompt. The WebUI trims surrounding whitespace. An empty result is invalid. If the normalized name matches an existing section case-insensitively, Serf reuses that section and assigns the session to it. Otherwise, Serf creates the section and assigns the session in one server operation.
+Choosing **New section…** opens a small name prompt. The WebUI trims surrounding whitespace. An empty result is invalid. If the normalized name matches an existing section case-insensitively, Evener reuses that section and assigns the session to it. Otherwise, Evener creates the section and assigns the session in one server operation.
 
 There is no standalone **Add pinned section** control in the sidebar.
 
@@ -106,7 +106,7 @@ Section names contain at most 80 Unicode code points after trimming. The API and
 
 The current `favorite` table serves both session and project decisions. Named sections replace only `kind="session"` favorites. Project favorite reads and `POST /api/favorite` with `kind="project"` remain unchanged.
 
-On first use of the new pin-section store, Serf performs an idempotent internal migration:
+On first use of the new pin-section store, Evener performs an idempotent internal migration:
 
 1. create the section and assignment tables if absent;
 2. if any legacy `favorited=true`, `kind="session"` rows exist, create or reuse a section named **Pinned**;

@@ -1,6 +1,6 @@
 # auth-device-poll-concurrent: device-code poll detects parallel login
 
-**What this covers**: kata `24p1`. When `serf openai login --device` is
+**What this covers**: kata `24p1`. When `evener openai login --device` is
 mid-poll (no human has entered the user code), a parallel login —
 possibly from a `--no-device` browser flow in another shell, possibly
 from a different machine refreshing the same XDG state dir over a
@@ -21,14 +21,14 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 
 ## Pre-state
 
-- Repo built: `./serf` exists at the repo root.
-- Other `serf openai login` processes may be running; leave them
-  alone. `pgrep -f 'serf openai login'` counts every login on the
+- Repo built: `./evener` exists at the repo root.
+- Other `evener openai login` processes may be running; leave them
+  alone. `pgrep -f 'evener openai login'` counts every login on the
   box, including other agents' (the auto-detect scenario is a
   common source of orphaned pollers), and this card is isolated
   from all of them by its own `XDG_STATE_HOME` and its own `$PID`.
   Reap only a poller you started, by the pid you recorded — never
-  `pkill -f 'serf openai login'`, which would also kill a
+  `pkill -f 'evener openai login'`, which would also kill a
   concurrent agent's login flow.
 - Network reachable to `auth.openai.com` — `RequestDeviceCode` is
   a real HTTPS call before the poll begins.
@@ -38,21 +38,21 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 
 ## Steps
 
-1. **Create an isolated state dir** and point serf at it via
+1. **Create an isolated state dir** and point evener at it via
    `XDG_STATE_HOME`:
    ```bash
    tmpdir=$(mktemp -d)
    export XDG_STATE_HOME="$tmpdir"
    ```
-   `DefaultStateDir()` will append `/serf`, so the watcher reads
-   `$tmpdir/serf/auth/openai.json`.
+   `DefaultStateDir()` will append `/evener`, so the watcher reads
+   `$tmpdir/evener/auth/openai.json`.
 
 2. **Spawn the device login in the background**, capturing
    stdout+stderr together into this run's own state dir — never a
    fixed `/tmp/login-out.txt`, which a second agent running this card
    would truncate out from under step 3's `grep` (kata `k2rx`):
    ```bash
-   ./serf openai login --device > "$tmpdir/login-out.txt" 2>&1 &
+   ./evener openai login --device > "$tmpdir/login-out.txt" 2>&1 &
    PID=$!
    echo "$PID" >"$tmpdir/login.pid"   # so a later shell can kill it by pid, not by pattern
    ```
@@ -74,10 +74,10 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
    here is safe because we only reach this step *after* step 3
    confirmed the poller is up:
    ```bash
-   mkdir -p "$tmpdir/serf/auth"
+   mkdir -p "$tmpdir/evener/auth"
    NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.000000000Z)
    EXPIRY=$(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%S.000000000Z)
-   cat > "$tmpdir/serf/auth/openai.json" <<JSON
+   cat > "$tmpdir/evener/auth/openai.json" <<JSON
    {
      "version": 1,
      "provider": "openai",
@@ -161,7 +161,7 @@ one removal covers it.
 The `kill $PID` step is NOT needed here — the process exits on
 its own once the watcher fires. If the test fails and the process
 hangs, `kill "$PID"` it — the pid step 2 recorded, never a
-`pkill -f 'serf openai login'` pattern, which would also kill a
+`pkill -f 'evener openai login'` pattern, which would also kill a
 concurrent agent's login flow. From a second shell, read it back
 from `$tmpdir/login.pid`, spelling that directory out in full —
 the variable is not set there.
@@ -199,6 +199,6 @@ the variable is not set there.
   scenario back-to-back (the device-code endpoint is bot-protected).
   If step 3 fails with `device code request failed with status
   403`, wait a few minutes before re-running.
-- **`XDG_STATE_HOME` affects every subsequent `serf` invocation
+- **`XDG_STATE_HOME` affects every subsequent `evener` invocation
   in the same shell** — `unset` it during cleanup or you will
   pollute later commands' view of the auth file.

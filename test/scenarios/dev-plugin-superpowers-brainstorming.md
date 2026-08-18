@@ -1,9 +1,9 @@
-# dev-plugin-superpowers-brainstorming: serf picks up brainstorming skill from a cloned plugin dir
+# dev-plugin-superpowers-brainstorming: evener picks up brainstorming skill from a cloned plugin dir
 
 **What this covers**: end-to-end smoke test of the `--plugin-dir`
 mechanism (exposed via `launch_overrides.pluginDirs` on
 `/api/spawn`). Clones the upstream Superpowers plugin into a run-
-specific tmpdir, points a serf session at it, and confirms the
+specific tmpdir, points a evener session at it, and confirms the
 agent can see the `brainstorming` skill in its catalog.
 
 This is a load test (does the plugin wire in?), not a behavior
@@ -12,7 +12,7 @@ heavy and worth its own scenario.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable, on an isolated `$HOME` and a
+- Hub running with `--evener` resolvable, on an isolated `$HOME` and a
   free port (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`).
 - OpenAI OAuth signed in (or an alternative model the harness
@@ -24,7 +24,7 @@ heavy and worth its own scenario.
 1. Create a hermetic tmpdir and clone Superpowers into it. Shallow
    clone keeps the test small (~10 MB):
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-superpowers-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-superpowers-XXXXX)
    git clone --depth=1 https://github.com/obra/superpowers "$tmpdir/superpowers"
    ```
 2. Sanity-check the layout: the plugin root has a `skills/`
@@ -33,13 +33,13 @@ heavy and worth its own scenario.
    ```bash
    ls "$tmpdir/superpowers/skills/brainstorming/SKILL.md"
    ```
-3. Spawn a serf session with the plugin dir in `launch_overrides`.
+3. Spawn a evener session with the plugin dir in `launch_overrides`.
    The wire key is `pluginDirs` (camelCase, `appwire/types.go:1715`):
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
-        -d "{\"prompt\":\"Inspect your available skills. Specifically: do you have access to a 'brainstorming' skill (likely listed as 'superpowers:brainstorming' or similar)? If yes, list its first paragraph of description. If no, say so plainly. Do not invoke the skill — just report whether you can see it.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{\"pluginDirs\":[\"$tmpdir/superpowers\"]}}" \
+        -d "{\"prompt\":\"Inspect your available skills. Specifically: do you have access to a 'brainstorming' skill (likely listed as 'superpowers:brainstorming' or similar)? If yes, list its first paragraph of description. If no, say so plainly. Do not invoke the skill — just report whether you can see it.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{\"pluginDirs\":[\"$tmpdir/superpowers\"]}}" \
         $HUB/api/spawn
    ```
    Capture `session_id`.
@@ -47,7 +47,7 @@ heavy and worth its own scenario.
    ```bash
    deadline=$((SECONDS + 90))
    while [ $SECONDS -lt $deadline ]; do
-     if find "$HOME/.local/state/serf/projects" -name "<sid>.transcript.jsonl" \
+     if find "$HOME/.local/state/evener/projects" -name "<sid>.transcript.jsonl" \
           -exec grep -l '"communicate"' {} \; 2>/dev/null | grep -q .; then
        break
      fi
@@ -56,7 +56,7 @@ heavy and worth its own scenario.
    ```
 5. Inspect the transcript:
    ```bash
-   find "$HOME/.local/state/serf/projects" -name "<sid>.transcript.jsonl" \
+   find "$HOME/.local/state/evener/projects" -name "<sid>.transcript.jsonl" \
      -exec cat {} \;
    ```
 
@@ -64,7 +64,7 @@ heavy and worth its own scenario.
 
 - Transcript contains a `STEERING` entry early on that includes the
   `using-superpowers` skill content (`<EXTREMELY_IMPORTANT>You have
-  superpowers...`). This is serf injecting the plugin's introduction
+  superpowers...`). This is evener injecting the plugin's introduction
   skill at session start — proof the plugin dir was discovered.
 - The agent's `communicate` message confirms it can see the
   `brainstorming` skill and quotes (loosely) from its description
@@ -81,7 +81,7 @@ heavy and worth its own scenario.
 rm -rf "$tmpdir"
 ```
 
-The session metadata under `$HOME/.local/state/serf/projects/...`
+The session metadata under `$HOME/.local/state/evener/projects/...`
 lingers but is harmless. Worth `find ... -name "<sid>*" -delete`
 between runs if you care about a clean past index.
 
@@ -95,7 +95,7 @@ between runs if you care about a clean past index.
   layout (e.g. moves skills into a versioned subdir), step 2's
   sanity check fires first. Update the path expectations.
 - The introductory `using-superpowers` skill auto-injects as a
-  STEERING turn — that's by Superpowers design, not a serf
+  STEERING turn — that's by Superpowers design, not a evener
   behavior. The presence of that injection is a strong loaded-
   successfully signal even before the agent's communicate reply.
 - This test does NOT verify skill EXECUTION (running brainstorming
@@ -111,7 +111,7 @@ between runs if you care about a clean past index.
 - The `launch_overrides.pluginDirs` field is a per-session
   override that takes precedence over global / in-repo launch
   config. To make a plugin available across all sessions, set it
-  in `$HOME/.serf/launch.toml` or via `serf-hub`'s settings UI under
+  in `$HOME/.evener/launch.toml` or via `evener-hub`'s settings UI under
   Settings → Extensions → Plugins, in the "Plugin directories" list
   (`panes/settings/sections.ts:30,49`;
   `panes/settings/sections/pluginsDirs.tsx:11-12`). There is no

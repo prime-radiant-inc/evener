@@ -341,7 +341,7 @@ assert(spawnTemplateSrc.indexOf('data-spawn-advanced-toggle') !== -1, "spawn tem
     <form data-spawn-form>
       <textarea class="spawn-input" name="prompt" style="min-height:96px;max-height:320px;"></textarea>
       <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
-      <input type="hidden" name="harness" value="serf">
+      <input type="hidden" name="harness" value="evener">
       <input type="hidden" name="model" value="openai/gpt-5.5">
       <input type="hidden" name="working_dir" value="/tmp/expand">
       <input type="hidden" name="branch" value="">

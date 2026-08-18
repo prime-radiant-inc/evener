@@ -11,10 +11,10 @@
 This is **Phase 5 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §10 (nested jobs), §5.7 (`job_list include_nested`), §3.2/§3.3 (`parent_job_id`, `terminal_generation`), §3.4 (output routing), §5.8 (`job_stop include_children`), §7 (forwarded nested-job reconciliation), and the reference contract `docs/job-control.md` §"Nested jobs" (lines 1007–1023). It depends on **Phases 1–4** being merged: Phase 1 (`agent/internal/jobstore`), Phase 2 (the `jobManager`, the job-capable `shell`, `job_read_output`/`job_list`/`job_stop`, the durable notification bridge, restart reconciliation), Phase 3 (`delegate` + `job_send_message`, the `spawnAgent` `communicateOutputSchema` parameter), Phase 4 (watches). The behavior here registers/extends **alongside** the legacy subagent surface — **Phase 6 deletes the legacy surface**; this phase adds no new model-facing tools (it activates `include_nested`/`include_children`, which already exist as parameters on `DefJobList`/`DefJobStop` from Phase 2).
 
 **Conventions for every task below:**
-- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/serf/agent`.
+- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/evener/agent`.
 - TDD: write the failing test first, watch it fail, write the minimal implementation, watch it pass, commit.
 - Commit messages use the repo's `type(scope): subject` style, e.g. `feat(agent): ...`.
-- Full `make test` + `make lint` from repo root (`/Users/jesse/prime-radiant/toil-suite/serf`) before the final task.
+- Full `make test` + `make lint` from repo root (`/Users/jesse/prime-radiant/toil-suite/evener`) before the final task.
 
 ---
 
@@ -87,7 +87,7 @@ This task establishes the seam **without** any forwarding logic yet — just the
 - [ ] **Step 0: Confirm the prerequisite names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "newJobManager(" agent/session_init.go            # where the child jobManager is built (Phase 2 Task 6)
 grep -n "type spawnConfig" agent/session_config.go        # VERIFIED :189
 grep -n "ctxToolCallID" agent/session_tools.go            # VERIFIED key def :28, set :313
@@ -235,7 +235,7 @@ The `jobManager` struct fields `forward func(jobstore.Event)` and `parentJobID s
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_config.go agent/session_tools.go agent/subagents.go agent/session_init.go agent/job_delegate.go agent/job_nested_test.go
 git commit -m "feat(agent): spawn seam to forward nested job events to the parent"
 ```
@@ -254,7 +254,7 @@ Now the child's `createShell` records `parent_job_id` and forwards the `job_star
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "type jobManager\|func newJobManager\|sessionID\|type createShellOpts\|func (jm \*jobManager) createShell\|EventJobStarted" agent/jobs.go
 ```
 
@@ -389,7 +389,7 @@ LOCK NOTE: `forwardEvent` runs on the child's goroutine but touches the **parent
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/jobs_nested.go agent/job_nested_test.go
 git commit -m "feat(agent): forward nested shell job_started + record parent_job_id"
 ```
@@ -407,7 +407,7 @@ The owner's `finalize` mints `terminal_generation` once (Phase 2) and writes `jo
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "func (jm \*jobManager) finalize\|NewTerminalGeneration\|EventJobFinished\|EventJobNotificationPending\|jm.enqueue" agent/jobs.go
 ```
 
@@ -518,7 +518,7 @@ Wire option (A). It keeps the parent's notification path identical to a top-leve
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/jobs_nested.go agent/job_nested_test.go
 git commit -m "feat(agent): forward nested terminal + notification with verbatim terminal_generation"
 ```
@@ -537,7 +537,7 @@ Phase 2's `job_list` handler hard-coded `IncludeNested:false` (Phase 2 Task 9). 
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "type listFilter\|IncludeNested\|func (jm \*jobManager) list" agent/jobs.go
 grep -n "include_nested\|listFilter{" agent/session_tools_jobs.go
 ```
@@ -615,7 +615,7 @@ The `include_nested` parameter is already on `DefJobList` (Phase 2 §5.7); no to
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/session_tools_jobs.go agent/job_nested_test.go
 git commit -m "feat(agent): job_list include_nested surfaces forwarded nested jobs"
 ```
@@ -634,7 +634,7 @@ Per spec §3.4/§10: the parent reads a nested job's output via the parent-visib
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "func (jm \*jobManager) readOutput\|func (m \*subagentManager) get\|\.sess.jobs\|func (s \*Session) jobs" agent/jobs.go agent/subagent_manager.go agent/session.go
 grep -n "job_read_output\|readOutput(" agent/session_tools_jobs.go
 ```
@@ -743,7 +743,7 @@ In `agent/session_tools_jobs.go`, the `job_read_output` handler: replace the dir
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs_nested.go agent/session_tools_jobs.go agent/job_nested_test.go
 git commit -m "feat(agent): job_read_output routes a nested job_id to the owner runtime"
 ```
@@ -764,7 +764,7 @@ Two cases (spec §5.8/§10):
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "func (jm \*jobManager) stop\|func (m \*subagentManager) get\|include_children\|func (s \*Session) ownerJobManagerFor" agent/jobs.go agent/subagent_manager.go agent/session_tools_jobs.go agent/jobs_nested.go
 ```
 
@@ -911,7 +911,7 @@ In `agent/session_tools_jobs.go`, the `job_stop` handler:
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs_nested.go agent/session_tools_jobs.go agent/job_nested_test.go
 git commit -m "feat(agent): job_stop routes nested job_id to owner; include_children stops nested jobs"
 ```
@@ -929,7 +929,7 @@ Per spec §7/§10: after a restart, the parent reconstructs its store (including
 - [ ] **Step 0: Confirm names.**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "func (jm \*jobManager) reconcileLostJobs\|jobstore.Reconcile\|jm.running" agent/jobs.go
 ```
 
@@ -1002,7 +1002,7 @@ NOTE: `reconcileLostJobs` is Phase 2 Task 6; it builds the live set from `jm.run
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/jobs.go agent/job_nested_test.go
 git commit -m "test(agent): forwarded nested job reconciles to runtime_lost on restart"
 ```
@@ -1078,18 +1078,18 @@ NOTE: `child.reg.Get("shell")` — the child session has the job-capable `shell`
 - [ ] **Step 3: Run the full module test + lint**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 make test && make lint
 ```
-Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the new `spawnConfig` fields (ensure they do not break the converter/round-trip tests — they are `json:"-"`, so they should not appear in `schema.ConfigSnapshot`; if a snapshot/parity test enumerates `spawnConfig`, it should still pass since these are runtime-only); any nested-visibility change to `job_list`'s projected shape (update the expected JSON in Phase 2's `job_list` tests if `parent_job_id` projection changed).
+Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the new `spawnConfig` fields (ensure they do not break the converter/round-trip tests — they are `json:"-"`, so they should not appear in `schema.ConfigSnapshot`; if a snapshot/parity test enumerates `spawnConfig`, it should still pass since these are runtime-only); any nested-visibility change to `job_list`'s projected shape (update the expected JSON in Phase 2's `job_list` tests if `parent_job_id` projection changed).
 
 - [ ] **Step 4: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/evener
+cd /Users/jesse/prime-radiant/toil-suite/evener
+go build -o /tmp/evener ./cmd/evener
 . "$PWD/.env"
-# In a scratch dir, run serf with a real model (--model oai-work/<model>) and ask it to:
+# In a scratch dir, run evener with a real model (--model oai-work/<model>) and ask it to:
 #  1. delegate a task that itself starts a background shell job (e.g. "delegate: start a background `sleep 60` shell job and report its job_id");
 #  2. from the parent, job_list(include_nested=true) → confirm the nested job appears with a parent_job_id;
 #  3. job_read_output on the nested job_id from the parent → confirm it routes (returns the child's output);
@@ -1101,7 +1101,7 @@ Expected: the nested shell job is parent-visible only under `include_nested`, co
 - [ ] **Step 5: Commit any test/lint fixups**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git status   # review before adding
 git add -A
 git commit -m "test(job-control): phase 5 nested shell jobs suite green"

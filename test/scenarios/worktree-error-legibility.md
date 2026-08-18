@@ -12,7 +12,7 @@ Live end-to-end, real provider (billed).
 ## Pre-state
 
 Same harness. Fixture: a repo where a managed worktree `busy-lane` already
-exists with an UNCOMMITTED edit (dirty tree), pre-seeded in a separate serf
+exists with an UNCOMMITTED edit (dirty tree), pre-seeded in a separate evener
 run so it's unlocked.
 
 ## Steps

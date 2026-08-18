@@ -14,7 +14,7 @@
 new*. That is the **oracle ceiling, not the time ceiling** — more hours and more targets
 won't help. Almost every real bug we found came from the few *semantic* oracles
 (metamorphic stream divergence, tool-call-order nondeterminism, the reload dups) and the
-sandbox containment tripwires (the `serf/instance/remove` path-traversal). Oracle census
+sandbox containment tripwires (the `evener/instance/remove` path-traversal). Oracle census
 today: 34 "never panic", 34 round-trip, 26 fixed-point, 23 invariant, 14 metamorphic,
 ~9 path-escape, 3 wedge, 2 monotonic, **0 differential**, and only **3 stateful** targets
 vs 72 single-input. The four levers below change *what we can detect*, not how long we look.
@@ -34,7 +34,7 @@ point the logic goes wrong*, not when it surfaces externally. Our oracles are al
 targets** from crash-finders into logic-bug-finders.
 
 **8.1.0 — the assertion mechanism (prerequisite, single agent, build FIRST).**
-A tiny package (propose `internal/invariant`, serf-wide importable) exposing
+A tiny package (propose `internal/invariant`, evener-wide importable) exposing
 `invariant.Hold(cond bool, format string, args ...any)`:
 - **Zero-cost in production.** Gate the body behind a build tag (`//go:build serffuzz`) so
   a normal build compiles it to an empty inlinable no-op — verify with a disassembly/bench
@@ -101,12 +101,12 @@ divergence by 8.2b.
 
 **Idea.** Only 3 stateful targets; every non-crash bug we found was a *state* bug. Build
 `rapid` state machines (mirror the lifecycle/Phase-2 pattern: declarative op table → thin
-machine → invariants weakest-first → failures through `fuzz/promoter`) for serf's other
+machine → invariants weakest-first → failures through `fuzz/promoter`) for evener's other
 stateful subsystems. Fan out, one per lane:
 - **jobstore as a state machine:** legal event sequences (start→…→terminal, delegate
   spawn/finalize, watch/grant) → fold → invariants over the *sequence* (not just one log).
 - **context-manager / compaction:** message accumulation → compact → history invariants
-  (the shrink-exception, needle retention, no-lost-turn) — the surface behind serf's
+  (the shrink-exception, needle retention, no-lost-turn) — the surface behind evener's
   reload/compaction history.
 - **hub multi-session / multi-source:** the appserver/hub state across several sessions and
   sources (list/start/clear/steer interleavings) — beyond the single-session lifecycle.

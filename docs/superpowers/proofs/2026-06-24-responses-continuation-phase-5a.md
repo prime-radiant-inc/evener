@@ -17,7 +17,7 @@ This phase keeps the existing single-attempt path only. Adapter-callable attempt
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 ```
 
 Result before implementation: failed to build because `AttemptGroupID` was absent from `APILogEntry`, `APILogContext`, `APIRawLogEntry`, `transcript.APICall`, and `ModelAttemptMetadata`, and raw entries had no attempt fields.
@@ -25,7 +25,7 @@ Result before implementation: failed to build because `AttemptGroupID` was absen
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSession_SingleAttemptMetadataRecorded|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 ```
 
 Result: pass.

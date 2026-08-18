@@ -2,7 +2,7 @@
 
 **Status:** approved (Jesse, 2026-07-24)
 
-One `PathField` widget replaces `widgets/pathpicker` and `panes/spawn/DirField`, and fills in the five surfaces that render a bare text box for a path today. `serf/dirs/complete` is renamed `serf/paths/complete` and learns to list files, which is what unblocks those surfaces.
+One `PathField` widget replaces `widgets/pathpicker` and `panes/spawn/DirField`, and fills in the five surfaces that render a bare text box for a path today. `evener/dirs/complete` is renamed `evener/paths/complete` and learns to list files, which is what unblocks those surfaces.
 
 This is the same treatment the model picker got (`2026-07-24-model-picker-redesign-design.md`): a field-shaped trigger, a list that is already expanded when the panel opens, a pre-filled input whose first keystroke replaces the value, no Cancel button, and no dismissal on page scroll. Unlike that round, this one changes the wire.
 
@@ -24,7 +24,7 @@ The three "no browse at all" rows are documented scope cuts from waves 7/8, and 
 
 ### 2.1 Rename
 
-`serf/dirs/complete` becomes **`serf/paths/complete`**. No alias, no deprecation shim: nothing outside this repo speaks appwire.
+`evener/dirs/complete` becomes **`evener/paths/complete`**. No alias, no deprecation shim: nothing outside this repo speaks appwire.
 
 | File | Change |
 | --- | --- |
@@ -150,7 +150,7 @@ Where the panel opens:
 - `kind: "dir"` — lists the children of `value` (falling back to the last-working-directory global on the spawn field, then `""`, which the hub resolves to `$HOME`).
 - `kind: "file" | "outputFile"` — lists the children of `dirname(value)` with `includeFiles: true`.
 
-`outputFile` behaves exactly like `file`. The file being named may not exist yet, so typing is the expected path and existing files are pickable references; whether the parent directory is writable stays `serf/path/validate`'s job at submit time.
+`outputFile` behaves exactly like `file`. The file being named may not exist yet, so typing is the expected path and existing files are pickable references; whether the parent directory is writable stays `evener/path/validate`'s job at submit time.
 
 ### 3.5 Typing
 
@@ -182,7 +182,7 @@ Seven conversions:
 
 `PathListEditor` is instantiated twice — `DirListSetting` (`skillsDirs`/`pluginDirs`, dir) and `mcp.tsx` (`mcpConfigs`, file) — so it grows a `kind` prop it forwards. Both `pathList` add rows follow the `ModelListField` pattern: `renderAddField` renders the picker plus `CollectionEditor`'s own submit `Button`, and the picker's portaled panel sits outside the add `<form>`, so Enter inside the panel picks rather than submitting.
 
-Server-side validation is unchanged everywhere: `serf/path/validate` still gates every `pathList` add and every scalar `path` field at submit time.
+Server-side validation is unchanged everywhere: `evener/path/validate` still gates every `pathList` add and every scalar `path` field at submit time.
 
 `stores/extensions.ts`'s `listDirChildren(path)` becomes `completePaths(prefix, includeFiles)` — the trailing-slash normalization moves into the widget, which needs to control the prefix directly for typed-prefix filtering.
 
@@ -205,7 +205,7 @@ Not in scope: **`widgets/combobox` will have zero production consumers** once `P
 
 **`pathfield.test.tsx`** (jsdom) — input pre-filled and fully selected on open (`selectionStart`/`selectionEnd`); a directory click writes the value *and* re-lists; a file click commits and closes; `Enter` with nothing active commits the typed literal; a page scroll does **not** dismiss; focus returns to the trigger on close; the Recent group disappears on the first keystroke; a stale completion resolving after a newer one is dropped; a rejected `complete` renders the empty state rather than throwing.
 
-**Call-site tests** — updated at all seven sites: `Spawn.test.tsx`, `AdvancedOptions.test.tsx`, `fields.test.tsx` (the "path kind renders as a free-text input" test is inverted — it asserted the limitation being removed), `collectionFields.test.tsx`, `dirListSetting`/`mcp` tests, `MarketplacesSection` tests, `extensions.test.ts` (three `serf/dirs/complete` cases renamed and extended for `includeFiles`).
+**Call-site tests** — updated at all seven sites: `Spawn.test.tsx`, `AdvancedOptions.test.tsx`, `fields.test.tsx` (the "path kind renders as a free-text input" test is inverted — it asserted the limitation being removed), `collectionFields.test.tsx`, `dirListSetting`/`mcp` tests, `MarketplacesSection` tests, `extensions.test.ts` (three `evener/dirs/complete` cases renamed and extended for `includeFiles`).
 
 **Gates** — `make test-web` (tsc → vitest → biome), `make build-web`, `make test` for the Go side, `make lint`. Then live verification against a real hub across every converted surface, in both themes and at 390 px, the way the model-picker round was verified — fixtures did not catch three of that round's real defects.
 

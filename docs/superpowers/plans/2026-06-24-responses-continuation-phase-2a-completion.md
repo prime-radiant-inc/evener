@@ -85,7 +85,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *t
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation$' -count=1
 ```
 
 Expected: FAIL because `RestoreSessionConfig` does not carry the override.
@@ -135,8 +135,8 @@ on the existing `SessionConfig` in `TestSession_OpenAIResponsesContinuationDisab
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run '^$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener -run '^$' -count=1
 ```
 
 Expected: PASS.

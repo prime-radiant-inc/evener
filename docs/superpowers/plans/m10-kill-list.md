@@ -93,7 +93,7 @@ Spec §10: `templates/` (all). Every template is consumed only by the SSR/fragme
 - `partials/workspace.html`, `partials/workspace_empty.html`, `partials/input_strip.html` — the workspace/launchpad/status-strip fragments.
 - `partials/spawn.html` — spawn fragment.
 - `partials/credentials.html` — credentials fragment.
-- `partials/settings.html` + `partials/settings/{general,theme,transcript,display,notifications,providers,agents,launch-serf,launch-codex,inrepo,plugins,plugins-manager,skills,mcp,hub,storage,project}.html` (17 files) — the settings section fragments.
+- `partials/settings.html` + `partials/settings/{general,theme,transcript,display,notifications,providers,agents,launch-evener,launch-codex,inrepo,plugins,plugins-manager,skills,mcp,hub,storage,project}.html` (17 files) — the settings section fragments.
 
 ### 1.3 JS test suite — `cmd/evener-hub/jstest/` (all 203 files DELETE)
 
@@ -140,14 +140,14 @@ reachable **only** through a legacy route.
 | `renderSessionTasks` — **KEEP.** Named `render*` but returns **JSON**, and is reached by `/api/sessions/{ref}/tasks` (TUI keep-list). Delete only its legacy `/_partials/s/{id}/tasks` dispatch. | |
 
 **`web_settings.go` — delete `renderSettingsPartial` + `renderProjectSettingsPartial`; keep the shared helpers:**
-- KEEP `builtinAgentNames`, `settingsSpawnTimeoutDisplay` — consumed by `hubSettingsOverview` (the AppWire `serf/settings/overview` replacement, `app_rpc_settings_overview.go:58,68`).
+- KEEP `builtinAgentNames`, `settingsSpawnTimeoutDisplay` — consumed by `hubSettingsOverview` (the AppWire `evener/settings/overview` replacement, `app_rpc_settings_overview.go:58,68`).
 - `handleSettings` → reduce to `serveSPAIndex` (§3).
 
 **`web_launchconfig.go` — delete `handleCredentialsPartial`** (`/_partials/credentials`); reduce `handleCredentials` to `serveSPAIndex`.
 
 **`web_spawn.go` — delete `handleWorkspaceSpawn`** (the `/_partials/workspace/spawn` fragment). KEEP `handleApiSpawn`, `handleApiModels` (TUI: `/api/spawn`, `/api/models`).
 
-**`app_subagent_preview.go` — delete `handleSubagentPreview`** (the `/_api/subagent-preview` REST/htmx route) **and its writeJSON helper if orphaned**. **KEEP** `subagentPreviewFromThread`, `subagentPreviewItem`, `clampSubagentPreviewLimit`, and the constants — they are shared with the AppWire `serf/subagentPreview` handler (`app_rpc.go:224`), which the new protocol keeps.
+**`app_subagent_preview.go` — delete `handleSubagentPreview`** (the `/_api/subagent-preview` REST/htmx route) **and its writeJSON helper if orphaned**. **KEEP** `subagentPreviewFromThread`, `subagentPreviewItem`, `clampSubagentPreviewLimit`, and the constants — they are shared with the AppWire `evener/subagentPreview` handler (`app_rpc.go:224`), which the new protocol keeps.
 
 **`web_types.go` — delete the legacy template-data + legacy-request structs** (verify with
 `staticcheck U1000`/`deadcode` after the handlers above are removed — Go does not flag unused
@@ -177,10 +177,10 @@ consumers — today they are unimplemented).
 | Endpoint | Handler (file) | Legacy JS caller (all deleted §1.1) | SPA equivalent |
 |---|---|---|---|
 | `GET /api/search` | `handleApiSearch` (`web_api.go:32`) | `search.js`, `renderer-panels.js` | none yet (⌘K unimplemented, Wave 6) |
-| `GET /api/upgrade` | `handleAPIUpgrade` (`web_api.go:159`) | `search.js` | AppWire `serf/upgrade` (declared, uncalled) |
+| `GET /api/upgrade` | `handleAPIUpgrade` (`web_api.go:159`) | `search.js` | AppWire `evener/upgrade` (declared, uncalled) |
 | `POST /api/sessions/{ref}/reasoning-effort` | `handleAPIReasoningEffort` (`web_api.go:334`) | `model-switch.js` et al. | AppWire `thread/reasoning-effort/set` |
-| `POST /api/path/validate` | `handleAPIPathValidate` (`web_api.go:363`) | `spawn.js`, `launchconfig.js` | AppWire `serf/path/validate` |
-| `POST /api/dirs/create` | `handleAPIDirCreate` (`web_api.go:381`) | `spawn.js` | AppWire `serf/dirs/complete` |
+| `POST /api/path/validate` | `handleAPIPathValidate` (`web_api.go:363`) | `spawn.js`, `launchconfig.js` | AppWire `evener/path/validate` |
+| `POST /api/dirs/create` | `handleAPIDirCreate` (`web_api.go:381`) | `spawn.js` | AppWire `evener/dirs/complete` |
 | `GET /api/git/head` | `handleApiGitHead` (`web_api.go:446`) | `spawn.js` | none found (verify Wave 6 spawn) |
 
 If `/api/search` goes, also delete its exclusive helpers: `sortLiveForSearch` (`web_api.go:71`),
@@ -262,8 +262,8 @@ assertions). Consumers: **S** = new SPA, **T** = TUI/`hubapi.Client`.
 - **Infra:** `main.go`, `main_background.go`, `config.go`, `http_recorder.go`, `token.go`,
   `openai_state_dir.go`, `transcript_limits.go`, and `internal/{hubcore,hubedge,httpsec,appsource,codexlaunch,fspaths,hostlock,launchconfig,strutil}`.
 - **AppWire methods the SPA doesn't call yet** (`thread/start`, `thread/resume`,
-  `serf/subagentPreview`, `serf/command/list`, `serf/projects/recent`, `serf/harnesses/list`,
-  `serf/upgrade`, `serf/auth/status`, …) are protocol surface, **not** legacy web. They stay
+  `evener/subagentPreview`, `evener/command/list`, `evener/projects/recent`, `evener/harnesses/list`,
+  `evener/upgrade`, `evener/auth/status`, …) are protocol surface, **not** legacy web. They stay
   (some are TUI/reserved; the wave-6 spawn pane will call several). Out of M10 scope.
 - **Legacy-only internal package candidate:** `internal/editorurl` is imported **only** by
   `web_settings.go` (for settings "edit" links). If `renderSettingsPartial` is deleted and the
@@ -341,7 +341,7 @@ unimplemented today and are the plausible future consumers. `/api/git/head` has 
 equivalent found — if the wave-6 spawn pane needs branch detection, it may reach for this REST
 route again. **Recommendation:** delete with Jesse's explicit sign-off, but **only after wave-6/8
 land**, and re-run the Appendix-B grep against the final SPA source. If wave-6 spawn is built on
-AppWire (it already has `serf/path/validate` + `serf/dirs/complete` in its stores), the whole
+AppWire (it already has `evener/path/validate` + `evener/dirs/complete` in its stores), the whole
 cluster is safe to delete; if any REST caller reappears, keep that endpoint.
 
 ### R2 — `/doc/file` + `/doc/image` are in limbo, with a broken-asset trap
@@ -376,7 +376,7 @@ change. Confirm the final icon location before touching the auth allowlist.
   set of now-dead structs (`web_types.go`) and helpers (`web_format.go` `formatWorkMillis`/
   `htmlEscape`, `app_subagent_preview.go` `writeJSON`) must be swept mechanically, not by eye.
   (`web.go` `validAssetPath` is NOT dead — the `/assets/` handler survives to serve the icons.)
-- **Docs to update (spec §10):** `docs/serf-hub-web-routing.md`, `cmd/evener-hub/README.md`,
+- **Docs to update (spec §10):** `docs/evener-hub-web-routing.md`, `cmd/evener-hub/README.md`,
   `docs/web-ui/*`. Acceptance gate: `git grep htmx` returns nothing.
 - **CSP tightening (spec §7.4):** drop the inline-script `'unsafe-inline'` exemption once
   templates are gone (`internal/httpsec`). Not a deletion, but part of the same milestone.
@@ -428,7 +428,7 @@ Wave 6 (spawn/palette/notifications/rail) is merged to integration (`ed5057be2`,
 
 2. **Re-sweep `frontend/src` for `fetch(`/URL literals (§1.6, R2).** Enumerated every `fetch(` and `new WebSocket(` in non-test source. The SPA now uses **11 REST paths + `/rpc`** (was 8 at the original sweep): the original 8 (`tree`, `tree/project`, `rename`, `archive`, `favorite`, `project/delete`, `images/{sha}`, `manifest.webmanifest`) plus three new ones wave 6 added — `/api/search`, `/api/dirs/create`, `/api/git/head` — all three are exactly the endpoints §1.6/R1 flagged as "plausible future consumers." Zero `/doc/*` references anywhere in the current integration tree — the doc pane doesn't exist on this side of the merge yet (it's wave-8 T5, unmerged). **Confirms new REST dependencies on 3 of the 6 §1.6 endpoints; confirms none yet on `/doc/*` in the merged tree** (see wave-8 pending-protection below).
 
-3. **Orphaned-cluster literal grep (§1.6).** `grep -rn '/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort' cmd/evener-hub/frontend/src` → **not empty.** Decomposes into: real `fetch()` calls for `/api/search`, `/api/dirs/create`, `/api/git/head` (production dependencies — see reclassification table); and every `reasoning-effort` hit is the **AppWire method name** `thread/reasoning-effort/set`/`changed`, never the REST path (zero literal hits for the REST endpoint itself). Separately, zero hits anywhere for `/api/upgrade` or `/api/path/validate` as REST literals — both live only as AppWire `serf/upgrade` / `serf/path/validate` now. **The check no longer passes as originally written — 3 of 6 endpoints must leave the orphaned cluster; the other 3 are now confirmed (not just predicted) fully migrated to AppWire, which is stronger evidence than the original doc had.**
+3. **Orphaned-cluster literal grep (§1.6).** `grep -rn '/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort' cmd/evener-hub/frontend/src` → **not empty.** Decomposes into: real `fetch()` calls for `/api/search`, `/api/dirs/create`, `/api/git/head` (production dependencies — see reclassification table); and every `reasoning-effort` hit is the **AppWire method name** `thread/reasoning-effort/set`/`changed`, never the REST path (zero literal hits for the REST endpoint itself). Separately, zero hits anywhere for `/api/upgrade` or `/api/path/validate` as REST literals — both live only as AppWire `evener/upgrade` / `evener/path/validate` now. **The check no longer passes as originally written — 3 of 6 endpoints must leave the orphaned cluster; the other 3 are now confirmed (not just predicted) fully migrated to AppWire, which is stronger evidence than the original doc had.**
 
 4. **`hubapi/client.go` route count (§2.1).** Exactly 13 `c.get`/`c.post` call sites, matching the 13 listed T-routes exactly (health, tree, sessions/{ref} bare, spawn-schema, spawn, models, send, tasks, interrupt, compact, clear, fork, model); confirmed `c.get`/`c.post` are the only two request-issuing helpers in the file (no stray `http.NewRequest`/`.Get`/`.Post`). **PASS, no drift.**
 
@@ -456,9 +456,9 @@ Consequence of the `/api/search` move: its "exclusive helpers" clause (§1.6 —
 
 | Endpoint | Confirmed live replacement | REST literal anywhere in `frontend/src`? |
 |---|---|---|
-| `GET /api/upgrade` | AppWire `serf/upgrade` (`shell/palette/commands.ts:137`, palette `/upgrade` command) | none |
+| `GET /api/upgrade` | AppWire `evener/upgrade` (`shell/palette/commands.ts:137`, palette `/upgrade` command) | none |
 | `POST /api/sessions/{ref}/reasoning-effort` | AppWire `thread/reasoning-effort/set` (`stores/threads.ts:745`; `chrome/StatusRow.tsx`; palette `/reasoning-effort`) | none |
-| `POST /api/path/validate` | AppWire `serf/path/validate` (`stores/extensions.ts:257`, `stores/launchConfig.ts:93`, spawn `preflight.ts`/`Spawn.tsx`, settings `dirListSetting.tsx`/`mcp.tsx`/`collectionFields.tsx`) | none |
+| `POST /api/path/validate` | AppWire `evener/path/validate` (`stores/extensions.ts:257`, `stores/launchConfig.ts:93`, spawn `preflight.ts`/`Spawn.tsx`, settings `dirListSetting.tsx`/`mcp.tsx`/`collectionFields.tsx`) | none |
 
 Per the standing rule, all three are **KEPT, not deleted** — this needs no sign-off (sign-off was only ever for the delete path). TUI (`hubapi.Client`, check 4) still references none of the six original cluster members either, so nothing here depends on the TUI changing.
 

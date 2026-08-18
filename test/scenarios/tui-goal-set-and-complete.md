@@ -1,6 +1,6 @@
 # tui-goal-set-and-complete: set a /goal from the TUI and watch it drive to completion
 
-**What this covers**: the `/goal` objective engine on the serf-tui surface
+**What this covers**: the `/goal` objective engine on the evener-tui surface
 (branch `goal-objective-engine`; `cmd/evener-tui/hub_commands.go` `runHubGoal`,
 command registered in `hub_command_registry.go` as `/goal`, header chip in
 `hub_session_view.go:60`). The TUI counterpart to
@@ -22,16 +22,16 @@ command and the header chip are wired to it.
 ## Pre-state
 
 - Fresh binaries and a hub on a kernel-assigned port, both under one
-  `mktemp` run directory — never a fixed `/tmp/serf-hub-test` a second
+  `mktemp` run directory — never a fixed `/tmp/evener-hub-test` a second
   concurrent build would overwrite mid-run (kata `k2rx`), never a port a
   human picked (kata `68fm`). Same recipe as `docs/agentic-testing.md`'s
   Setup checklist:
   ```bash
-  run=$(mktemp -d -t serf-e2e-goaltui-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/evener-hub
-  go build -o "$run/serf"     ./cmd/evener
-  go build -o "$run/serf-tui" ./cmd/evener-tui
-  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  run=$(mktemp -d -t evener-e2e-goaltui-XXXXXX)
+  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener"     ./cmd/evener
+  go build -o "$run/evener-tui" ./cmd/evener-tui
+  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -54,10 +54,10 @@ command and the header chip are wired to it.
 1. **Start the TUI in tmux** at a fixed size with `--debug` (plain-text
    capture, stderr to a log):
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-goaltui-work-XXXXX)
-   TMUX_SESSION="serf-goal-$(basename "$tmpdir")"
+   tmpdir=$(mktemp -d -t evener-e2e-goaltui-work-XXXXX)
+   TMUX_SESSION="evener-goal-$(basename "$tmpdir")"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/goaltui-stderr.log"
+     "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/goaltui-stderr.log"
    sleep 2
    ```
 
@@ -103,10 +103,10 @@ command and the header chip are wired to it.
    chip. Scroll the body to the top first:
    ```bash
    tmux send-keys -t "$TMUX_SESSION" PageUp; tmux send-keys -t "$TMUX_SESSION" PageUp; sleep 0.5
-   tmux capture-pane -t "$TMUX_SESSION" -p | grep -nE "src .*serf .*goal (active|complete|blocked) [0-9]"
+   tmux capture-pane -t "$TMUX_SESSION" -p | grep -nE "src .*evener .*goal (active|complete|blocked) [0-9]"
    ```
    **Expected:** a line like
-   `src serf · model … · dir … · ctx … · goal complete 0`. Falsify: if
+   `src evener · model … · dir … · ctx … · goal complete 0`. Falsify: if
    `/goal status` reports a goal (step 4) but this strip never shows a
    `goal` part after scrolling to the top, the chip wiring
    (`m.detail.Goal` → `addPart`) has regressed.
@@ -129,7 +129,7 @@ command and the header chip are wired to it.
 
 ```bash
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
-kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f serf-hub` would take out
+kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f evener-hub` would take out
                              # another agent's hub too (docs/agentic-testing.md)
 rm -rf "$run" "$tmpdir"
 ```

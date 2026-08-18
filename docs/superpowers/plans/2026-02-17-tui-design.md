@@ -1,8 +1,8 @@
-# Serf TUI Design
+# Evener TUI Design
 
 ## Overview
 
-An interactive TUI for serf built as a daemon/client architecture. The serf agent runs as an HTTP server exposing REST+SSE, and a separate Bubble Tea terminal client connects to it.
+An interactive TUI for evener built as a daemon/client architecture. The evener agent runs as an HTTP server exposing REST+SSE, and a separate Bubble Tea terminal client connects to it.
 
 ## Goals
 
@@ -15,7 +15,7 @@ An interactive TUI for serf built as a daemon/client architecture. The serf agen
 
 ```
 ┌─────────────────┐         HTTP          ┌─────────────────┐
-│   serf-tui      │◄──── SSE events ─────►│   serf serve    │
+│   evener-tui      │◄──── SSE events ─────►│   evener serve    │
 │  (Bubble Tea)   │──── REST input ──────►│  (HTTP server)  │
 │                 │                        │                 │
 │  cmd/evener-tui/  │                        │  cmd/evener/      │
@@ -28,8 +28,8 @@ An interactive TUI for serf built as a daemon/client architecture. The serf agen
 ```
 
 Two binaries:
-- `serf serve` — subcommand on the existing serf binary. Starts HTTP server, creates/manages a single session.
-- `serf-tui` — separate binary. Pure display client connecting to the server.
+- `evener serve` — subcommand on the existing evener binary. Starts HTTP server, creates/manages a single session.
+- `evener-tui` — separate binary. Pure display client connecting to the server.
 
 ## Server API
 
@@ -79,7 +79,7 @@ New binary: `cmd/evener-tui/`. Bubble Tea application.
 
 ```
 ┌─────────────────────────────────────────────┐
-│ serf ● connected  model: gpt-5  turns: 3    │  status bar
+│ evener ● connected  model: gpt-5  turns: 3    │  status bar
 ├─────────────────────────────────────────────┤
 │                                             │
 │ ▌ User                                      │

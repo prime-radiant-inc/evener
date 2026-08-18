@@ -4,7 +4,7 @@ Date: 2026-06-25
 
 ## Goal
 
-Reduce visual noise in the Serf web transcript by visually hiding task/tool timing metadata until the user shows interest in the relevant row. Time and runtime details should remain available to assistive technology at all times, and visually revealed on hover and keyboard focus.
+Reduce visual noise in the Evener web transcript by visually hiding task/tool timing metadata until the user shows interest in the relevant row. Time and runtime details should remain available to assistive technology at all times, and visually revealed on hover and keyboard focus.
 
 ## Context
 

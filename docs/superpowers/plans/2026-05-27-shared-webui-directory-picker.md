@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every serf-hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
+**Goal:** Make every evener-hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
 
 **Architecture:** Extract the existing canonical directory picker behavior from `cmd/evener-hub/assets/spawn.js` into a shared `window.SerfDirPicker.open(options)` helper in a new `cmd/evener-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
 
-**Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing serf-hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
+**Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing evener-hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
 
 ---
 
@@ -23,7 +23,7 @@
 - Modify: `cmd/evener-hub/assets/spawn.js`
   - Replace the body of the local `openDirPicker(chip)` function with a call to `window.SerfDirPicker.open(...)`.
   - Keep top-screen behavior unchanged from the user's perspective.
-  - Continue setting `serf-hub.spawn-defaults.global.last-working-dir` when a value is accepted.
+  - Continue setting `evener-hub.spawn-defaults.global.last-working-dir` when a value is accepted.
 
 - Modify: `cmd/evener-hub/assets/settings-pickers.js`
   - Remove the advanced/settings-only directory picker and datalist implementation.
@@ -181,7 +181,7 @@ function deferred() {
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-dir-picker.js
 ```
 
 Expected: FAIL or file-read error for missing `../assets/dir-picker.js`.
@@ -191,7 +191,7 @@ Expected: FAIL or file-read error for missing `../assets/dir-picker.js`.
 Create `cmd/evener-hub/assets/dir-picker.js` with this content:
 
 ```javascript
-// dir-picker.js — shared directory picker used by all serf-hub web UI path controls.
+// dir-picker.js — shared directory picker used by all evener-hub web UI path controls.
 (function (global) {
   "use strict";
 
@@ -345,7 +345,7 @@ Create `cmd/evener-hub/assets/dir-picker.js` with this content:
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-dir-picker.js
 ```
 
 Expected: `PASS test-dir-picker`.
@@ -411,7 +411,7 @@ assert(formDom.window.document.querySelector(".chip-picker-dir"),
 assert(dirCalls[0] === "/tmp/project-with-oauth",
   "working directory chip should fetch suggestions for the current chip value");
 formDom.window.document.querySelector(".chip-picker-dir-row").click();
-assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/project-with-oauth",
+assert(formDom.window.localStorage.getItem("evener-hub.spawn-defaults.global.last-working-dir") === "/tmp/project-with-oauth",
   "working directory chip should remember accepted directory");
 ```
 
@@ -422,7 +422,7 @@ If `test-spawn.js` is not already inside an async function where this block is i
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-spawn.js
 ```
 
 Expected: failure until `spawn.js` calls the shared helper or test loading is corrected.
@@ -456,7 +456,7 @@ In `cmd/evener-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` func
     const current = display && display.textContent.trim() === "(pick a directory)"
       ? ""
       : (display ? display.textContent.trim() : "");
-    const fallback = window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") || "";
+    const fallback = window.localStorage.getItem("evener-hub.spawn-defaults.global.last-working-dir") || "";
     if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
     window.SerfDirPicker.open({
       anchor: chip,
@@ -464,7 +464,7 @@ In `cmd/evener-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` func
       placeholder: "/path/to/repo",
       onAccept(value) {
         setChipValue("working_dir", value);
-        window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", value);
+        window.localStorage.setItem("evener-hub.spawn-defaults.global.last-working-dir", value);
       },
     });
   }
@@ -472,7 +472,7 @@ In `cmd/evener-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` func
 
 This deliberately keeps the existing top-screen behavior:
 - Uses current chip value unless the placeholder is shown.
-- Falls back to `serf-hub.spawn-defaults.global.last-working-dir`.
+- Falls back to `evener-hub.spawn-defaults.global.last-working-dir`.
 - Accepting any path updates the working-dir chip.
 - Accepting any path updates `last-working-dir`.
 
@@ -481,7 +481,7 @@ This deliberately keeps the existing top-screen behavior:
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-spawn.js
 ```
 
 Expected: existing test output remains passing and the new shared-picker assertions pass.
@@ -596,7 +596,7 @@ function assert(cond, msg) {
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-settings-dir-picker.js
 ```
 
 Expected: failure because current `settings-pickers.js` creates a datalist for `data-settings-dir-input` and has its own `buildDirPicker`.
@@ -672,7 +672,7 @@ The updated button section should be:
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-settings-dir-picker.js
 ```
 
 Expected: `PASS test-settings-dir-picker`.
@@ -716,7 +716,7 @@ These assertions avoid testing `settings-pickers.js` twice while protecting the 
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-launchconfig-controls.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-launchconfig-controls.js
 ```
 
 Expected: PASS.
@@ -762,7 +762,7 @@ cd cmd/evener-hub/jstest && ./run-all.sh
 Expected: every `test-*.js` exits successfully. If `NODE_PATH` is missing in the local environment, run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules ./run-all.sh
 ```
 
 - [ ] **Step 3: Run targeted Go tests for hub web/static routing**
@@ -821,7 +821,7 @@ If there were no additional changes, do not create an empty commit.
   - Renders directory rows and git tags.
   - Tab autocompletes to first suggestion plus `/`.
   - Enter selects an exact matching suggestion, otherwise accepts typed literal.
-  - Accepted value updates `working_dir` and `serf-hub.spawn-defaults.global.last-working-dir`.
+  - Accepted value updates `working_dir` and `evener-hub.spawn-defaults.global.last-working-dir`.
 
 - Advanced/settings path controls use the same shared picker:
   - No settings path input uses browser datalist autocomplete.

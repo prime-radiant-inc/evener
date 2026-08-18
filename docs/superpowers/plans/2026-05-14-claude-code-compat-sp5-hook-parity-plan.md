@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring serf's plugin hook system to Claude Code A-tier parity: nine new events, three new hook types (`http`, `mcp_tool`, `agent`), six new config fields, five new output fields, five new input fields, three new env vars, and the documented dual-mode matcher.
+**Goal:** Bring evener's plugin hook system to Claude Code A-tier parity: nine new events, three new hook types (`http`, `mcp_tool`, `agent`), six new config fields, five new output fields, five new input fields, three new env vars, and the documented dual-mode matcher.
 
 **Architecture:** Additive extension of `agent/plugin_hooks.go`. New files in package `agent/`: `plugin_hooks_matcher.go`, `plugin_hooks_http.go`, `plugin_hooks_mcp.go`, `plugin_hooks_agent.go`, `plugin_hooks_async.go`, `config_watcher.go`. Existing files (`session.go`, `subagents.go`, `context_strategy.go`) gain firing sites for new events. Strict TDD throughout: every new exported symbol gets a unit test before implementation; `t.TempDir()` for filesystem; existing `llm` stub for `agent`/`prompt` hooks; `httptest.NewServer` for `http` hooks.
 
@@ -952,7 +952,7 @@ func TestHookInput_EventSpecificFields(t *testing.T) {
 		PermissionCat:    "destructive",
 		DenialReason:     "blocked by policy",
 		ConfigSource:     "user_settings",
-		ConfigFile:       "/etc/serf/config.json",
+		ConfigFile:       "/etc/evener/config.json",
 		ChangedKeys:      []string{"hooks", "permissions"},
 	}
 	b, _ := json.Marshal(in)
@@ -968,7 +968,7 @@ func TestHookInput_EventSpecificFields(t *testing.T) {
 		`"permission_category":"destructive"`,
 		`"denial_reason":"blocked by policy"`,
 		`"config_source":"user_settings"`,
-		`"config_file":"/etc/serf/config.json"`,
+		`"config_file":"/etc/evener/config.json"`,
 		`"changed_keys":["hooks","permissions"]`,
 	} {
 		if !strings.Contains(string(b), want) {
@@ -2858,7 +2858,7 @@ func TestExecuteCommandHook_NewEnvVars(t *testing.T) {
 		CWD:    "/tmp",
 		Effort: &EffortField{Level: "high"},
 	})
-	// Expect serf to surface remote via input/session, not hook fields; this test
+	// Expect evener to surface remote via input/session, not hook fields; this test
 	// sets it via context env injection in Task 33.
 	if err != nil {
 		t.Fatal(err)
@@ -5193,7 +5193,7 @@ The self-review pass was run against the SP5 sub-spec section-by-section.
 
 **Known gaps the plan accepts (per spec §14.4):**
 
-- MCP-prompt expansion site is a stub (no live serf code expands MCP prompts yet). Task 46 wires the skill branch; MCP-prompt branch waits for a future SP.
+- MCP-prompt expansion site is a stub (no live evener code expands MCP prompts yet). Task 46 wires the skill branch; MCP-prompt branch waits for a future SP.
 - `config_source = "skills"` is a reserved matcher value with no live firing today; the matcher value is parseable per Task 1, but Task 47 (PostCompact) and Task 40 (config watcher) do not yet emit it.
 - `addPermissionRule` is honored in-session only (Task 36); persistence is deferred to a future SP per spec §14.4.
 - Two test helpers (`appendSteeringMessage`, `markTurnHalted`) referenced in Tasks 42-48 may not exist in the codebase verbatim; the plan instructs the implementer to map them to whatever existing path the agent uses for steering/halt, which is the right move given SP5 is additive and shouldn't invent terminology.

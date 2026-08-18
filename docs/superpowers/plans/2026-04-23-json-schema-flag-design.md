@@ -1,26 +1,26 @@
-# Implementation Spec: `--output-schema` flag for serf
+# Implementation Spec: `--output-schema` flag for evener
 
 **Flag name rationale:** `--output-schema` matches Codex CLI's flag. Claude CLI uses `--json-schema` for the same concept; toil's claude_runner adapter translates from its single `OutputSchemaJSON` request field to whichever CLI flag the runner natively uses.
 
 **Status:** Approved for implementation
-**Related:** serf issue #2 (heuristic bug), toil issue in-flight
+**Related:** evener issue #2 (heuristic bug), toil issue in-flight
 
 ## Goal
 
-Replace the brittle env-var + key-name heuristic path (`SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` + `defCommunicateWithRequiredDataKeys`) with a new CLI flag `--output-schema <string>` that accepts a full JSON schema verbatim. The schema becomes the `communicate` tool's `output` field schema, exactly as supplied, with no inference. Ends the silent data-loss bug tracked in serf issue #2.
+Replace the brittle env-var + key-name heuristic path (`SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` + `defCommunicateWithRequiredDataKeys`) with a new CLI flag `--output-schema <string>` that accepts a full JSON schema verbatim. The schema becomes the `communicate` tool's `output` field schema, exactly as supplied, with no inference. Ends the silent data-loss bug tracked in evener issue #2.
 
 ## 1. CLI flag specification
 
 Add `--output-schema` to:
 
-- **`cmd/evener/main.go`** (the top-level `serf run` command) — added to `flag.String`, wired into `runConfig.jsonSchema`, forwarded to `runConfig`.
-- **`cmd/evener/serve.go`** (the `serf serve` subcommand) — added to its `fs.String`, passed into `SelectProfile`.
+- **`cmd/evener/main.go`** (the top-level `evener run` command) — added to `flag.String`, wired into `runConfig.jsonSchema`, forwarded to `runConfig`.
+- **`cmd/evener/serve.go`** (the `evener serve` subcommand) — added to its `fs.String`, passed into `SelectProfile`.
 
 **Semantics:**
 
 - Flag value: raw JSON string carrying a JSON Schema object (e.g. `--json-schema '{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}'`).
 - If absent or empty: `communicate.output` uses the default permissive shape from `defCommunicate()`. No-op.
-- If present: parsed with `json.Unmarshal` into `map[string]any` at flag-parse time. On parse failure: the command exits 1 with `serf: --json-schema: invalid JSON: <err>` written to stderr.
+- If present: parsed with `json.Unmarshal` into `map[string]any` at flag-parse time. On parse failure: the command exits 1 with `evener: --json-schema: invalid JSON: <err>` written to stderr.
 - The parsed schema is NOT further validated (no JSON-Schema-draft validation). Provider adapters reject malformed schemas downstream; those errors surface to the user.
 - Whitespace-only values are treated as absent.
 - YAGNI: no `@/path/to/file` support. Inline only.
@@ -57,7 +57,7 @@ Every caller of `SelectProfile` must update to the new three-arg signature:
 
 - `cmd/evener/run.go` — pass `cfg.jsonSchema`.
 - `cmd/evener/serve.go` — pass `*jsonSchema`.
-- Any other internal callers (confirm none via `grep -rn "SelectProfile(" serf/`).
+- Any other internal callers (confirm none via `grep -rn "SelectProfile(" evener/`).
 
 ## 3. New function: `WithCommunicateOutputSchema`
 
@@ -81,7 +81,7 @@ Implementation pattern mirrors `WithAllowedDecisions`:
 5. Preserve the surrounding structure: `message`, `await_reply`, and `output` remain the three top-level properties of `communicate`; only `output`'s schema is replaced.
 6. Return the correctly-typed clone (same wrapper logic as existing functions).
 
-**Why replace the whole `output` schema rather than just `output.data`:** the goal is a single explicit contract. The caller (toil) decides whether to include `message`, `artifacts`, `data`, or a completely different shape. Serf no longer opines.
+**Why replace the whole `output` schema rather than just `output.data`:** the goal is a single explicit contract. The caller (toil) decides whether to include `message`, `artifacts`, `data`, or a completely different shape. Evener no longer opines.
 
 **Strict-mode interaction:** The OpenAI adapter's `strictifyJSONSchemaInPlace` already walks the whole `Parameters` tree and injects `additionalProperties: false` and fully-populated `required` on every object. Any user-supplied schema flows through this pass untouched in structure. If the user supplies `additionalProperties: true`, strictify will overwrite to `false` — call this out in the flag help. Users who need lax object shapes should use `additionalProperties: false` + enumerated properties.
 
@@ -155,8 +155,8 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 
 ## Critical Files for Implementation
 
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/main.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/run.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/serve.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmdutil/cmdutil.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/agent/profile_overrides.go`
+- `/Users/jesse/prime-radiant/toil-suite/evener/cmd/evener/main.go`
+- `/Users/jesse/prime-radiant/toil-suite/evener/cmd/evener/run.go`
+- `/Users/jesse/prime-radiant/toil-suite/evener/cmd/evener/serve.go`
+- `/Users/jesse/prime-radiant/toil-suite/evener/cmdutil/cmdutil.go`
+- `/Users/jesse/prime-radiant/toil-suite/evener/agent/profile_overrides.go`

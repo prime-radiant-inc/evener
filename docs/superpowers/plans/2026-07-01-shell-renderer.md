@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Improve Serf Hub's shell/bash renderer and standardize expandable tool row/body components across visible tools.
+**Goal:** Improve Evener Hub's shell/bash renderer and standardize expandable tool row/body components across visible tools.
 
 **Architecture:** Keep the existing no-bundler renderer split, but make `renderer.js` own a shared expandable row contract and make `renderer-tools.js` supply standardized body variants. Shell-like tools become a terminal variant: collapsed rows use `$`, expanded bodies repeat the full command with pre-wrapped output and an exit/runtime footer.
 
@@ -14,7 +14,7 @@
 - Do not change backend event shapes.
 - Do not change tool execution semantics or output capture.
 - Do not turn `communicate`, `task_list`, or `delegate` into ordinary visible tool cards.
-- Keep Serf's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
+- Keep Evener's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
 - Disclosure is subtle but visible, inline at the end of the action/command text, and keyboard accessible.
 - Shell output uses `pre-wrap`, and the expanded terminal body always shows the full untruncated command.
 
@@ -735,7 +735,7 @@ If `style.css` was not modified, omit it from `git add`.
 - Consumes: all implementation tasks.
 - Produces: full deterministic renderer test pass and a clean commit for any compatibility fixes.
 
-- [ ] **Step 1: Run all Serf Hub JS renderer tests**
+- [ ] **Step 1: Run all Evener Hub JS renderer tests**
 
 Run:
 

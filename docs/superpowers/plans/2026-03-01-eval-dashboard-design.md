@@ -33,7 +33,7 @@ tools/dashboard/
 markdown without any flags.
 
 **Data sources.** Configurable via CLI flags:
-- `--runs-dir /data/serf-evals/runs/` — completed, archived runs
+- `--runs-dir /data/evener-evals/runs/` — completed, archived runs
 - `--live-dir /tmp/` — in-progress harbor jobs (pattern: `full-*/`)
 
 No archiving step required to view results. The dashboard reads harbor's native directory
@@ -147,5 +147,5 @@ Eval runs will have multiple reps per task. The dashboard shows per-task pass ra
 same build, different outcomes. This reveals nondeterminism: "Rep 1 passed because
 it tried approach X, Rep 2 failed because it tried approach Y."
 
-Cross-harness comparison (serf vs codex on the same task) uses the same trajectory
+Cross-harness comparison (evener vs codex on the same task) uses the same trajectory
 side-by-side view, filtered by adapter.

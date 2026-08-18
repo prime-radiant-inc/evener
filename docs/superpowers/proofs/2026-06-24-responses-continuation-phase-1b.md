@@ -45,7 +45,7 @@ Verdict:
 Checkable line: Phase 1B adds helpers only; no session path selects `responses_delta`, no provider payload changes, and no assistant turn becomes anchor-eligible solely from this phase.
 
 Evidence:
-- `GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuation' -count=1 -v`
+- `GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuation' -count=1 -v`
 - Runtime-disabled scan in this phase found `responses_delta` only in the continuation decision layer and tests.
 
 Verdict: runtime continuation remains disabled.

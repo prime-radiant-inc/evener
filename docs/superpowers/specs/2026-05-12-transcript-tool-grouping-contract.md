@@ -1,7 +1,7 @@
 # Transcript Tool Grouping Contract
 
 This contract applies to Hub AppWire transcript projection in the web UI and
-serf-tui.
+evener-tui.
 
 ## Contract
 

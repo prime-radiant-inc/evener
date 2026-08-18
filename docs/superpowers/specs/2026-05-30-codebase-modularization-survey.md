@@ -45,7 +45,7 @@ splits, dedup, and a few clean leaf extractions.
 ### server/ (~2.4k, clean one-way deps)
 - **God-files:** `server.go` (788 — struct + 12 handlers + 24 `Set*` injection methods), `appwire_runtime.go` (816 — RPC handlers + notification-replay reconstruction + snapshot builder).
 - **Cleanest win:** `AppEventProjector` (appwire_projection.go, 689) has **no `*Server` dependency** — a pure, well-tested leaf → `internal/appprojector` (S/low). Split `appwire_runtime.go` (S). `security.go` → `internal` (S). Dead code: `reserveAppTurnID`.
-- **DTO debt:** a 3-layer `DetailedStatus` stack (`agent.` → `server.` → `appwire.Serf`) forces hand-written fan-out translators; `server.` types could become aliases of `agent.` ones (server already imports agent). The 24 `Set*` methods → a config interface is the long-term direction (L/high, defer).
+- **DTO debt:** a 3-layer `DetailedStatus` stack (`agent.` → `server.` → `appwire.Evener`) forces hand-written fan-out translators; `server.` types could become aliases of `agent.` ones (server already imports agent). The 24 `Set*` methods → a config interface is the long-term direction (L/high, defer).
 
 ### internal/ (~9k, 13 subpackages — best-organized area)
 - **God-files:** `appsource/codex_source.go` (1,258 — 5 concerns in one file → split codexLiveThread + mapping out, M/low), `appwire/types.go` (884 — cohesive protocol monolith, split only if it becomes a merge-conflict site).

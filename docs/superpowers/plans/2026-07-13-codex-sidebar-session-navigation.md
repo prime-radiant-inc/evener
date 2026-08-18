@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Preserve source-qualified AppWire identity when a user opens a Codex session from the Web UI sidebar while keeping local Serf session URLs unchanged.
+**Goal:** Preserve source-qualified AppWire identity when a user opens a Codex session from the Web UI sidebar while keeping local Evener session URLs unchanged.
 
 **Architecture:** Add one client-side route-identity helper to `sidebar.js`. Every sidebar navigation and active-row lookup derives its URL from that helper, so external refs remain qualified and local refs retain the existing short URL. Exercise the real sidebar code in a deterministic jsdom regression test; rely on existing Go tests for source-qualified workspace dispatch and Codex controls.
 
@@ -16,7 +16,7 @@
 - Preserve `/s/<session-id>` for valid `local:<session-id>` refs.
 - Missing or malformed refs fall back to the existing bare `session_id` behavior and existing not-found handling.
 - Tests must not require credentials, network access, a live Codex binary, wall-clock sleeps, or ambient developer state.
-- Do not add `package.json`, `package-lock.json`, or a checked-in jsdom dependency; use `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules`.
+- Do not add `package.json`, `package-lock.json`, or a checked-in jsdom dependency; use `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules`.
 
 ## File Structure
 
@@ -133,7 +133,7 @@ The menu descriptor's `href` is an intentional inspectable value; its `run` call
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
@@ -253,7 +253,7 @@ Update the nearby comments from `session_id`/`sessionId` terminology to `canonic
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
@@ -268,11 +268,11 @@ PASS: sidebar session routes preserve source identity
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-row-layout.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-menu.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-model.js
 ```
 
@@ -319,7 +319,7 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules JSTEST_TIMEOUT=90 sh run-all.sh
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules JSTEST_TIMEOUT=90 sh run-all.sh
 cd ../../..
 ```
 
@@ -346,7 +346,7 @@ git diff HEAD^ -- cmd/evener-hub/assets/sidebar.js \
   cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
-Expected: the implementation commit touches only the two Task 1 files. Pre-existing untracked `.private-journal` files and `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md` remain untouched.
+Expected: the implementation commit touches only the two Task 1 files. Pre-existing untracked `.private-journal` files and `docs/superpowers/plans/2026-05-07-evener-daemon-prereqs.md` remain untouched.
 
 - [ ] **Step 5: Record verification without an empty commit**
 

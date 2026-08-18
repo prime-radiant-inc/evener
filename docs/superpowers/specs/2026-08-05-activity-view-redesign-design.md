@@ -6,7 +6,7 @@ Status: Approved design (brainstormed with visual mockups; direction and interac
 ## Overview
 
 Replace the card-based master-detail Activity view (`Activity · <session>` tab in
-the serf-hub web UI) with a dense, hierarchical tree of everything a session has
+the evener-hub web UI) with a dense, hierarchical tree of everything a session has
 spawned: subagents (delegates) and background shell jobs. One line per job or
 agent showing status, tokens in/out, and — for live rows — time since last
 output. Terminal items fold away behind a single "N inactive · M failed" row,

@@ -79,7 +79,7 @@ func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandle
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1
 ```
 
 Expected: FAIL because Codex currently also drops `store`.
@@ -151,7 +151,7 @@ Add tests proving:
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope' -count=1
 ```
 
 Expected: FAIL because the type and hash helper do not exist.
@@ -203,7 +203,7 @@ Add tests proving:
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStoreOverride' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuationStoreOverride' -count=1
 ```
 
 Expected: FAIL because the helpers do not exist.
@@ -246,7 +246,7 @@ Add tests proving:
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*StorageScope|TestNewForInstance_ContinuationHasher' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*StorageScope|TestNewForInstance_ContinuationHasher' -count=1
 ```
 
 Expected: FAIL because planner storage scope is empty.
@@ -300,9 +300,9 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4a.md` w
 - [x] **Step 2: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope|TestContinuationStoreOverride|TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceParamsFromConfig|TestInstanceFactory_EnvTunables' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope|TestContinuationStoreOverride|TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceParamsFromConfig|TestInstanceFactory_EnvTunables' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
 git diff --check
 ```
 

@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire the hub's embedded web UI to the launch-config and credentials RPCs introduced by the Backend plan. Users gain (a) form-based editing of global and per-project layers under `/settings`, (b) a credentials page with one row per provider, (c) an Advanced disclosure on `/new` for per-launch overrides, and (d) live updates via `serf/auth/updated` and `serf/launch/updated` SSE events.
+**Goal:** Wire the hub's embedded web UI to the launch-config and credentials RPCs introduced by the Backend plan. Users gain (a) form-based editing of global and per-project layers under `/settings`, (b) a credentials page with one row per provider, (c) an Advanced disclosure on `/new` for per-launch overrides, and (d) live updates via `evener/auth/updated` and `evener/launch/updated` SSE events.
 
 **Architecture:** Reuses the existing HTMX-driven `/settings/<tab>` machinery (each tab is a partial template). Adds three new tabs (Launch, In-Repo) and adapts four existing tabs (Providers, Plugins, Skills, MCP). New `/credentials` route uses the same partial pattern. `assets/launchconfig.js` is a tiny RPC helper; existing `appwire.js` carries SSE.
 
 **Tech Stack:** Go html/template (existing), HTMX 1.x (existing), vanilla JS (existing). No new dependencies.
 
-**Prerequisite:** Backend plan landed — `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`, and the two notifications are wired in `cmd/evener-hub/app_rpc.go`.
+**Prerequisite:** Backend plan landed — `evener/launch/*`, `evener/auth/list`, `evener/auth/apiKey/set`, and the two notifications are wired in `cmd/evener-hub/app_rpc.go`.
 
-**Spec:** `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
+**Spec:** `docs/superpowers/specs/2026-05-16-hub-evener-launch-config-design.md`
 
 ---
 
@@ -36,7 +36,7 @@
 - `cmd/evener-hub/templates/partials/settings/providers.html` — show provider rows with auth modes, add `/credentials` link
 - `cmd/evener-hub/assets/spawn.js` — extend new-thread form to read Advanced fields and submit them as `launch_overrides`
 - `cmd/evener-hub/assets/style.css` — minor additions for the new forms
-- `cmd/evener-hub/assets/notifications.js` — handle `serf/auth/updated` and `serf/launch/updated` to refresh open partials
+- `cmd/evener-hub/assets/notifications.js` — handle `evener/auth/updated` and `evener/launch/updated` to refresh open partials
 
 ---
 
@@ -58,25 +58,25 @@ You should find an exported `appwire.request(method, params)` or similar JSON-RP
 `cmd/evener-hub/assets/launchconfig.js`:
 
 ```js
-// launchconfig.js — thin wrappers around serf/launch/* and serf/auth/*
+// launchconfig.js — thin wrappers around evener/launch/* and evener/auth/*
 // RPCs. Re-uses appwire.request from appwire.js.
 (function (global) {
   const { request } = global.appwire;
 
   global.launchconfig = {
     resolve: (cwd, overrides) =>
-      request("serf/launch/resolve", { cwd, launchOverrides: overrides || undefined }),
-    getLayer: (cwd, layer) => request("serf/launch/getLayer", { cwd, layer }),
-    setLayer: (cwd, layer, config) => request("serf/launch/setLayer", { cwd, layer, config }),
-    trustRepo: (cwd, hash) => request("serf/launch/trustRepo", { cwd, hash }),
+      request("evener/launch/resolve", { cwd, launchOverrides: overrides || undefined }),
+    getLayer: (cwd, layer) => request("evener/launch/getLayer", { cwd, layer }),
+    setLayer: (cwd, layer, config) => request("evener/launch/setLayer", { cwd, layer, config }),
+    trustRepo: (cwd, hash) => request("evener/launch/trustRepo", { cwd, hash }),
 
-    authList: () => request("serf/auth/list", {}),
-    authStatus: (provider) => request("serf/auth/status", { provider }),
-    authApiKeySet: (provider, value) => request("serf/auth/apiKey/set", { provider, value }),
-    authLoginStart: (provider) => request("serf/auth/login/start", { provider }),
+    authList: () => request("evener/auth/list", {}),
+    authStatus: (provider) => request("evener/auth/status", { provider }),
+    authApiKeySet: (provider, value) => request("evener/auth/apiKey/set", { provider, value }),
+    authLoginStart: (provider) => request("evener/auth/login/start", { provider }),
     authLoginComplete: (provider, flowId, redirectUrl) =>
-      request("serf/auth/login/complete", { provider, flowId, redirectUrl }),
-    authLogout: (provider) => request("serf/auth/logout", { provider }),
+      request("evener/auth/login/complete", { provider, flowId, redirectUrl }),
+    authLogout: (provider) => request("evener/auth/logout", { provider }),
   };
 })(window);
 ```
@@ -160,7 +160,7 @@ Wire `credsTmpl` into the `WebServer` struct similarly to `spawnTmpl`. Look at h
 </header>
 <div class="credentials-pane">
   <p class="credentials-help">
-    Provider credentials. Keys are stored in <code>~/.serf/credentials.toml</code>
+    Provider credentials. Keys are stored in <code>~/.evener/credentials.toml</code>
     (chmod 600). Env vars in the hub process take precedence only when no file
     entry exists. The UI never displays stored values.
   </p>
@@ -350,7 +350,7 @@ git commit -m "web: providers settings tab reads auth/list"
 - Modify: `cmd/evener-hub/templates/partials/settings/skills.html`
 - Modify: `cmd/evener-hub/templates/partials/settings/mcp.html`
 
-All three share the same form pattern: read `serf/launch/getLayer` for the global layer, render a list of values with add/remove controls, persist with `serf/launch/setLayer`. The plan repeats the structure for each so the implementer doesn't have to cross-reference.
+All three share the same form pattern: read `evener/launch/getLayer` for the global layer, render a list of values with add/remove controls, persist with `evener/launch/setLayer`. The plan repeats the structure for each so the implementer doesn't have to cross-reference.
 
 ### Plugins
 
@@ -360,7 +360,7 @@ All three share the same form pattern: read `serf/launch/getLayer` for the globa
 {{define "settings-content"}}
 <h2 class="settings-h2">Plugin directories</h2>
 <p class="settings-help">
-  Directories serf scans for plugins at launch. Applied to every spawn.
+  Directories evener scans for plugins at launch. Applied to every spawn.
   Per-project additions live in <a href="/settings/launch">Launch config → Project</a>.
 </p>
 <div id="plugins-form" data-loaded="false">
@@ -418,7 +418,7 @@ Same structure, replace `pluginDirs` with `skillsDirs` and adjust the heading/he
 {{define "settings-content"}}
 <h2 class="settings-h2">MCP servers</h2>
 <p class="settings-help">
-  MCP servers serf spawns alongside each session. Stored in the global launch layer.
+  MCP servers evener spawns alongside each session. Stored in the global launch layer.
 </p>
 <div id="mcps-form" data-loaded="false"><p>Loading…</p></div>
 <script>
@@ -533,7 +533,7 @@ Add `"launch"` to the list/map.
   </label>
   <label>Max rounds <input type="number" name="maxRounds" min="0" step="1"></label>
   <label>Max subagent depth <input type="number" name="maxSubagentDepth" min="0" step="1"></label>
-  <label><input type="checkbox" name="noProjectPrompts"> Suppress .serf/prompts loading</label>
+  <label><input type="checkbox" name="noProjectPrompts"> Suppress .evener/prompts loading</label>
   <button type="submit">Save</button>
   <p id="launch-form-status" class="settings-help"></p>
 </form>
@@ -612,7 +612,7 @@ Register `"inrepo"` in the valid-sections list in `web.go`.
 
 ```html
 {{define "settings-content"}}
-<h2 class="settings-h2">In-repo config (.serf/launch.toml)</h2>
+<h2 class="settings-h2">In-repo config (.evener/launch.toml)</h2>
 <p class="settings-help">
   Per-project launch config shipped inside the working directory. Hub
   only applies it after you confirm trust.
@@ -630,7 +630,7 @@ Register `"inrepo"` in the valid-sections list in `web.go`.
       const r = await launchconfig.resolve(cwd);
       const repo = r.repo || { trust: "absent" };
       if (repo.trust === "absent") {
-        status.innerHTML = `<p>No <code>.serf/launch.toml</code> in <code>${cwd}</code>.</p>`;
+        status.innerHTML = `<p>No <code>.evener/launch.toml</code> in <code>${cwd}</code>.</p>`;
         return;
       }
       const preview = repo.preview ? `<pre class="settings-code">${escapeHtml(repo.preview)}</pre>` : "";
@@ -663,7 +663,7 @@ Register `"inrepo"` in the valid-sections list in `web.go`.
 
 - [ ] **Step 3: Test**
 
-Create a `.serf/launch.toml` in some directory, point the cwd field at it, observe the trust prompt and approval flow.
+Create a `.evener/launch.toml` in some directory, point the cwd field at it, observe the trust prompt and approval flow.
 
 - [ ] **Step 4: Commit**
 
@@ -831,7 +831,7 @@ grep -n "notification\|onNotify\|EventSource\|onmessage" cmd/evener-hub/assets/n
 Append to `notifications.js`:
 
 ```js
-appwire.subscribe("serf/auth/updated", () => {
+appwire.subscribe("evener/auth/updated", () => {
   // Reload credentials page if open.
   const credsRows = document.getElementById("credentials-rows");
   if (credsRows) {
@@ -848,7 +848,7 @@ appwire.subscribe("serf/auth/updated", () => {
   }
 });
 
-appwire.subscribe("serf/launch/updated", () => {
+appwire.subscribe("evener/launch/updated", () => {
   // Reload whatever settings tab is open under /settings/.
   const path = window.location.pathname;
   if (path.startsWith("/settings/")) {
@@ -867,7 +867,7 @@ Open `/credentials` in tab A, `/credentials` in tab B; set an API key in A; veri
 
 ```bash
 git add cmd/evener-hub/assets/notifications.js cmd/evener-hub/templates/partials/credentials.html
-git commit -m "web: SSE handlers for serf/auth/updated and serf/launch/updated"
+git commit -m "web: SSE handlers for evener/auth/updated and evener/launch/updated"
 ```
 
 ---
@@ -936,9 +936,9 @@ Open in a browser:
 - `/credentials` — set, clear, see SSE update across tabs
 - `/settings/launch` — edit scalars, save, reload, confirm persist
 - `/settings/plugins`, `/settings/skills`, `/settings/mcp` — add and remove entries, switch to a project cwd, do the same in the project section
-- `/settings/inrepo` — point at a directory with `.serf/launch.toml`, see the preview, click Trust, observe state → trusted
+- `/settings/inrepo` — point at a directory with `.evener/launch.toml`, see the preview, click Trust, observe state → trusted
 - `/settings/providers` — confirm rows render with `authModes`
-- `/new` — expand Advanced, add per-launch overrides, click Show resolved config, then spawn a thread and confirm the new daemon has the overrides reflected (e.g., via `ps -eo args | grep serf` showing the flag presence)
+- `/new` — expand Advanced, add per-launch overrides, click Show resolved config, then spawn a thread and confirm the new daemon has the overrides reflected (e.g., via `ps -eo args | grep evener` showing the flag presence)
 
 - [ ] **Step 3: Commit any tweaks**
 

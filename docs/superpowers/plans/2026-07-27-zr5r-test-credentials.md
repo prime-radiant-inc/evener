@@ -1,4 +1,4 @@
-# Add Test credentials actions to Serf UIs
+# Add Test credentials actions to Evener UIs
 
 ## Goal
 

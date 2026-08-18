@@ -1,4 +1,4 @@
-# hooks-claude-compat-matcher: Claude-style hooks.json drives a real serf tool call — exact matcher + exec-form
+# hooks-claude-compat-matcher: Claude-style hooks.json drives a real evener tool call — exact matcher + exec-form
 
 **What this covers**: the Phase-1 Claude-compatible hook behavior on
 branch `lifecycle-hooks-claude-compat` (commits `a4685d3d` matcher,
@@ -6,7 +6,7 @@ branch `lifecycle-hooks-claude-compat` (commits `a4685d3d` matcher,
 real `shell` tool call, that:
 
 1. **Exact matcher**: a `PreToolUse` hook with matcher `"Bash"` fires
-   on serf's shell tool and does NOT substring-match a near name. The
+   on evener's shell tool and does NOT substring-match a near name. The
    headline fix: previously `"Bash"` was compiled as a regex and
    substring-matched (so `"Bas"` would have matched `"Bash"`); now a
    matcher of only `[A-Za-z0-9_|]` is exact / pipe-list, not regex
@@ -19,11 +19,11 @@ real `shell` tool call, that:
 
 The deterministic Go tests (`agent/internal/hooks/*_test.go`) cover the
 unit behavior; this card is the LIVE proof that a hooks.json on disk
-reaches a real serf session and gates a real model-driven tool call.
+reaches a real evener session and gates a real model-driven tool call.
 
 ### Loading mechanism (how a hooks.json reaches a live session)
 
-`serf` (the CLI) takes a repeatable `--plugin-dir <dir>` flag
+`evener` (the CLI) takes a repeatable `--plugin-dir <dir>` flag
 (`cmd/evener/main.go`, wired to `SessionConfig.PluginDirs`). Each `<dir>`
 is a plugin ROOT: it must contain `.claude-plugin/plugin.json` (or
 `.codex-plugin/plugin.json`), and hooks are read from
@@ -34,10 +34,10 @@ shape `{"hooks": {"PreToolUse": [ {"matcher": ..., "hooks": [...]} ]}}`.
 
 ### Tool name to match against — IMPORTANT
 
-serf's shell tool is canonically named `shell`
+evener's shell tool is canonically named `shell`
 (`agent/internal/tool/definitions.go` `DefShell`). Matchers, however,
 are tested against the **Claude** tool name: at the PreToolUse site
-(`agent/session_tools.go` `execTool`) serf sets the hook input's tool
+(`agent/session_tools.go` `execTool`) evener sets the hook input's tool
 name to `toolname.SerfToClaude(call.Name)`, and `shell` → `Bash`
 (`agent/internal/toolname/toolname.go`). So the matcher that fires on
 the shell tool is `"Bash"`, NOT `"shell"`. Matching the substring proof
@@ -46,16 +46,16 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 
 ## Pre-state
 
-- `serf` built **from the checkout under test**, not from whichever one
+- `evener` built **from the checkout under test**, not from whichever one
   this path happens to name. Run these from the worktree you are testing;
   a hardcoded `cd` into the main checkout would silently build and prove
   the wrong branch. The binary lands in this run's own directory, never a
-  fixed `/tmp/serf` a second concurrent run would overwrite mid-test
+  fixed `/tmp/evener` a second concurrent run would overwrite mid-test
   (kata `k2rx`):
   ```bash
   cd "$(git rev-parse --show-toplevel)"   # must be the branch under test
-  WORK=$(mktemp -d /tmp/serf-hook-scenario.XXXXXX)
-  go build -o "$WORK/serf" ./cmd/evener
+  WORK=$(mktemp -d /tmp/evener-hook-scenario.XXXXXX)
+  go build -o "$WORK/evener" ./cmd/evener
   set -a; . "$PWD/.env"; set +a   # zsh: bare `. .env` fails; use the explicit form
   ```
 - A model whose instance is credentialed by `.env`. This card uses
@@ -91,12 +91,12 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
    Hook A (`"Bash"`, exact) should fire; hook B (`"Bas"`, a substring of
    the real tool name) should NOT.
 
-2. Run serf live, forcing the shell tool. `--verbose` emits NDJSON
+2. Run evener live, forcing the shell tool. `--verbose` emits NDJSON
    lifecycle events to stderr:
    ```bash
-   "$WORK/serf" --model openai/gpt-5.4-mini --dir "$PROJ" \
+   "$WORK/evener" --model openai/gpt-5.4-mini --dir "$PROJ" \
      --plugin-dir "$WORK/plugin" --verbose \
-     "Use the shell tool to run exactly this command: echo serf-hook-probe-marker. Then tell me the output. Do not use any other tool." \
+     "Use the shell tool to run exactly this command: echo evener-hook-probe-marker. Then tell me the output. Do not use any other tool." \
      > "$WORK/run.log" 2>&1
    echo "exit=$?"
    ```
@@ -126,9 +126,9 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
                     "args": ["$PROJ/CONTROL_BAS_FIRED"] } ] }
    ] } }
    EOF
-   "$WORK/serf" --model openai/gpt-5.4-mini --dir "$PROJ" \
+   "$WORK/evener" --model openai/gpt-5.4-mini --dir "$PROJ" \
      --plugin-dir "$WORK/plugin-control" --verbose \
-     "Use the shell tool to run exactly this command: echo serf-hook-control-marker. Then tell me the output. Do not use any other tool." \
+     "Use the shell tool to run exactly this command: echo evener-hook-control-marker. Then tell me the output. Do not use any other tool." \
      > "$WORK/run-control.log" 2>&1
    ls "$PROJ"/CONTROL_BAS_FIRED                          # MUST be absent
    grep -c '"tool_name":"shell"' "$WORK/run-control.log" # >0 (shell ran)
@@ -140,7 +140,7 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 - After step 3:
   - `HOOK_FIRED_EXACT` exists — the `"Bash"` hook fired via exec-form
     `/usr/bin/touch` (no shell), and exit 0 did not block the tool call
-    (serf exits 0; the model returns `serf-hook-probe-marker`).
+    (evener exits 0; the model returns `evener-hook-probe-marker`).
   - `HOOK_FIRED_SUBSTRING` is absent — `"Bas"` did not substring-match.
   - The NDJSON shows, in order: `PLUGIN_LOADED` (`hook-matcher-probe`);
     one `HOOK_START` with `"event":"PreToolUse","matcher":"Bash"`; the
@@ -158,23 +158,23 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 - Falsification (the regression is back, in priority order):
   - `HOOK_FIRED_EXACT` is absent after a shell call → the exact matcher
     fails to fire on the real tool name (matcher broken, or
-    serf→Claude name mapping changed and the matcher no longer tracks
+    evener→Claude name mapping changed and the matcher no longer tracks
     the real tool name).
   - `HOOK_FIRED_SUBSTRING` or `CONTROL_BAS_FIRED` appears → `"Bas"`
     substring-matched `"Bash"`: the regex-substring behavior regressed.
     (Counterfactual confirming this is the old behavior:
     `regexp.MustCompile("Bas").MatchString("Bash") == true`, whereas
     `"Bas" == "Bash"` is false.)
-  - The hook never runs / serf errors spawning it → exec-form (`args`
+  - The hook never runs / evener errors spawning it → exec-form (`args`
     direct spawn) is broken.
-  - serf exits non-zero or the tool is denied on an exit-0 hook →
+  - evener exits non-zero or the tool is denied on an exit-0 hook →
     exit-0 wrongly blocks.
 
 ## Cleanup
 
 ```bash
 # leave the tmpdir in place (rm -rf is blocked in this environment);
-# the dir is self-contained under /tmp/serf-hook-scenario.*
+# the dir is self-contained under /tmp/evener-hook-scenario.*
 echo "tmpdir retained: $WORK"
 ```
 
@@ -183,12 +183,12 @@ Session metadata under the XDG state dir lingers but is harmless.
 ## Sharp edges
 
 - **Match against the Claude name, not `shell`.** The matcher is tested
-  against `toolname.SerfToClaude(call.Name)`; for serf's `shell` tool
-  that is `"Bash"`. A matcher of `"shell"` would NOT fire. If serf adds
+  against `toolname.SerfToClaude(call.Name)`; for evener's `shell` tool
+  that is `"Bash"`. A matcher of `"shell"` would NOT fire. If evener adds
   a shell tool with no Claude alias (passing through unchanged), match
   on that raw name instead.
 - **Why `"Bas"`, not `"BashOutput"`.** The original regression note is
-  `"Bash"` substring-matching `BashOutput`, but serf exposes no
+  `"Bash"` substring-matching `BashOutput`, but evener exposes no
   `BashOutput` tool, so that exact demo can't run live. `"Bas"` is a
   substring of the real tool name `"Bash"`, so it exercises the same
   substring-vs-exact distinction on a tool that actually exists. Both
@@ -207,7 +207,7 @@ Session metadata under the XDG state dir lingers but is harmless.
   tighten the prompt; confirm a `"tool_name":"shell"` `TOOL_CALL_START`
   is present before trusting a "did not fire" result.
 - **Absolute marker paths.** `args` paths are absolute so the exec-form
-  child needs no working-directory assumptions; serf does not chdir the
+  child needs no working-directory assumptions; evener does not chdir the
   hook process to `--dir`.
 - Use `--verbose` for the NDJSON lifecycle stream; without it the
   `HOOK_START`/`HOOK_END` evidence is not emitted and you must rely on

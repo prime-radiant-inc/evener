@@ -12,7 +12,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-drift-detector-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-drift-detector-XXXXX)`.
 - Use `kimi/kimi-for-coding` when validating the Kimi path.
 
 ## Steps

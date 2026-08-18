@@ -12,7 +12,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-artifact-freshness-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-artifact-freshness-XXXXX)`.
 - Do not create `$tmpdir/missing-report.md`.
 - Use `kimi/kimi-for-coding` for Kimi fluency validation.
 

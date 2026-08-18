@@ -3,10 +3,10 @@
 **Date:** 2026-07-04
 **Status:** Approved design (v3 — adversarial review + YAGNI cuts folded in); ready
 for implementation planning
-**Scope:** Give serf — CLI, web hub, and TUI — full support for Claude Code plugin
+**Scope:** Give evener — CLI, web hub, and TUI — full support for Claude Code plugin
 marketplaces: add/remove/list marketplaces, explore plugins in a marketplace,
 and install / upgrade / auto-upgrade / disable / remove plugins. Bundle a couple
-of standard marketplaces. Integrate plugin health into `serf-doctor`.
+of standard marketplaces. Integrate plugin health into `evener-doctor`.
 
 **v2 revision (adversarial review).** Two competing reviewers verified this spec
 against the code; 15 legitimate findings were folded in. Material changes from v1:
@@ -22,7 +22,7 @@ model is specified (§7). Builds on the repo's prior `sp3-marketplace-design.md`
 cut — v1 is user-scope only** (a repo-local plugin can still be hand-pointed with
 `--plugin-dir`); this removes the second registry, `projectRoot` threading, and
 cross-scope dedup. (2) **GC is a dumb sweep, not live-session-aware** — upgrade
-never deletes, and a sweep on hub start (plus `serf plugin gc`) reclaims dirs no
+never deletes, and a sweep on hub start (plus `evener plugin gc`) reclaims dirs no
 registry entry references (§12). Retained by explicit request: `git-subdir`
 **sparse/partial clone** (§6) and **`renames` tracking** across upgrade (§6).
 
@@ -30,14 +30,14 @@ registry entry references (§12). Retained by explicit request: `git-subdir`
 
 ## 1. Goal & non-goals
 
-**Goal.** A user can, from any of serf's three surfaces, register a plugin
+**Goal.** A user can, from any of evener's three surfaces, register a plugin
 marketplace, browse its catalog, install a plugin, keep it up to date (manually
-or automatically), disable it without removing it, and remove it — with serf
+or automatically), disable it without removing it, and remove it — with evener
 loading the plugin's hooks, skills, subagents, MCP servers, **and slash
 commands** into sessions.
 
 **Non-goals (v1).**
-- Sharing plugin state with an installed Claude Code (serf keeps its own store;
+- Sharing plugin state with an installed Claude Code (evener keeps its own store;
   see §3).
 - Live hot-reload of plugins into a running session (activation is next-session;
   see §12).
@@ -48,20 +48,20 @@ commands** into sessions.
   future extension (§5.3).
 - The `/` slash-command **autocomplete menu** UI — v1 makes typing `/name` work;
   discoverability polish (the web `/` menu, TUI palette merge) is deferred. The
-  `serf/command/list` RPC still ships (the TUI needs it to route `/name`).
-- Interactive permission prompts for plugin-declared hooks beyond serf's existing
+  `evener/command/list` RPC still ships (the TUI needs it to route `/name`).
+- Interactive permission prompts for plugin-declared hooks beyond evener's existing
   hook policy (out of scope; unchanged).
 
 ---
 
 ## 2. Context: what already exists vs. what is greenfield
 
-serf is **not** starting from zero. `agent/plugin` explicitly models Claude Code
+evener is **not** starting from zero. `agent/plugin` explicitly models Claude Code
 plugins: its package doc states it "loads Claude Code-style plugins from disk —
 their manifest, skills, subagents, hooks, and MCP server configs."
 
 **Already implemented (the consumption foundation):**
-- `--plugin-dir` points serf at a plugin directory (`cmd/evener/serve.go` →
+- `--plugin-dir` points evener at a plugin directory (`cmd/evener/serve.go` →
   `SessionConfig.PluginDirs`, `agent/session_config.go`).
 - `plugin.Load(dir)` / `plugin.LoadAll(dirs)` (`agent/plugin/plugin.go`) read the
   `.claude-plugin/plugin.json` manifest (with `.codex-plugin/` fallback), expand
@@ -79,21 +79,21 @@ their manifest, skills, subagents, hooks, and MCP server configs."
   provider CRUD (PRI-1880) — and a read-only **Extensions** settings group
   (Plugins / Skills / MCP).
 - The hub already hosts long-running background goroutines on the signal context
-  (`cmd/evener-hub/main.go`), and spawns `serf serve` **subprocess** daemons that
+  (`cmd/evener-hub/main.go`), and spawns `evener serve` **subprocess** daemons that
   outlive the spawning call (`cmd/evener-hub/spawn.go`); sessions receive their
   config as CLI argv, not an in-process `SessionConfig` (see §8).
 
 **Greenfield (this design):**
 - Any marketplace concept: registry, catalog parsing, git fetch, install/upgrade.
-- Enable/disable state and loader gating (today serf loads *every* dir it is
+- Enable/disable state and loader gating (today evener loads *every* dir it is
   pointed at, and aborts session init on any bad or duplicate-named plugin — §7).
 - Auto-upgrade.
-- **Slash-command loading** — the one component type serf does not load at all.
+- **Slash-command loading** — the one component type evener does not load at all.
   `Manifest.Commands` (`agent/plugin/plugin.go:31`) is parsed and dropped; there is
   no `discoverPluginCommands`, no `Commands` field on `Instance`, no `commands/`
-  scan, and no slash-command execution model anywhere in serf.
+  scan, and no slash-command execution model anywhere in evener.
 - Web + TUI management surfaces for all of the above.
-- `serf-doctor` plugin health checks.
+- `evener-doctor` plugin health checks.
 
 **Prior art (designed, never built).** A Claude-Code-compat effort
 (`docs/superpowers/{plans,specs}/2026-05-14-claude-code-compat-*`) planned but did
@@ -104,7 +104,7 @@ not implement the lifecycle:
   types verbatim** (the v1 draft's `git` was wrong).
 - `sp4-install-plan.md` — the lifecycle/registry: an `internal/plugins` package
   with `Registry` (matching Claude's `installed_plugins.json`), atomic IO, file
-  lock, version resolution, enable/disable, and a `serf plugin` CLI.
+  lock, version resolution, enable/disable, and a `evener plugin` CLI.
 - `spb-manage-plugins-skill-plan.md` — a deliberately minimal stopgap (a markdown
   skill, no registry, no enable/disable, no auto-update, no UI). This design
   supersedes it.
@@ -114,19 +114,19 @@ UIs, doctoring, and bundling, corrected by the adversarial review.
 
 ---
 
-## 3. Approach: native, serf-owned store
+## 3. Approach: native, evener-owned store
 
-**Decision:** serf implements marketplaces and the plugin lifecycle itself. State
-lives under serf's own config roots — never `~/.claude`. The on-disk *formats*
+**Decision:** evener implements marketplaces and the plugin lifecycle itself. State
+lives under evener's own config roots — never `~/.claude`. The on-disk *formats*
 mirror Claude Code so plugins and marketplaces authored for Claude Code drop in
-unchanged, but a plugin installed in serf is invisible to Claude Code and vice
+unchanged, but a plugin installed in evener is invisible to Claude Code and vice
 versa.
 
 Rejected alternatives: *wrap the `claude` CLI / share `~/.claude/plugins`* (hard
 dependency on `claude`, shared mutable state, coupling to a private format, no fit
 for bundling or scheduled auto-upgrade); *native + read-only import of `~/.claude`*
 (a confusing second source of truth — deferrable to a later one-shot import). This
-matches how serf owns all its other config and carries no runtime dependency on
+matches how evener owns all its other config and carries no runtime dependency on
 the `claude` binary.
 
 ---
@@ -139,10 +139,10 @@ all in the root module `primeradiant.com/evener`). It is the single source of tr
 for on-disk plugin state, serialized by one file lock. Three things drive it; none
 reimplement it:
 
-- **`serf plugin` CLI** (`cmd/evener/plugin/`) — calls the package directly.
+- **`evener plugin` CLI** (`cmd/evener/plugin/`) — calls the package directly.
 - **Web + TUI** — call it over new appwire RPCs the hub exposes
-  (`serf/marketplace/*`, `serf/plugin/*`), the same way `/credentials` uses
-  `serf/instance/*` today.
+  (`evener/marketplace/*`, `evener/plugin/*`), the same way `/credentials` uses
+  `evener/instance/*` today.
 - **The existing `agent/plugin` loader stays the *consumer*.** The manager
   *materializes plugin directories and computes the validated, enabled dir set*
   (§7–§8); the loader *reads dirs it is handed*. The **only** change to the
@@ -161,7 +161,7 @@ internal/plugins/            NEW — the manager (root module)
   locks.go / atomic.go       flock + tmp-rename writes
   seed.go                    first-run default-marketplace seed (§11)
 
-cmd/evener/plugin/             NEW — `serf plugin …` CLI (§9.5)
+cmd/evener/plugin/             NEW — `evener plugin …` CLI (§9.5)
 cmd/evener-doctor/             MODIFY — add a `plugins` subcommand (§13)
 agent/plugin/commands.go     NEW — commands/*.md discovery (§10)
 agent/plugin/plugin.go       MODIFY — Instance.Commands; agent/session_init.go registers them
@@ -177,11 +177,11 @@ hub/CLI compute dirs with the manager and hand them to the agent as argv/config.
 
 ## 5. On-disk state & formats
 
-Serf-native, Claude-*shaped*. A single user-scope store (§5.3 on why v1 is
+Evener-native, Claude-*shaped*. A single user-scope store (§5.3 on why v1 is
 user-scope only):
 
 ```
-~/.config/serf/plugins/
+~/.config/evener/plugins/
   known_marketplaces.json
   installed_plugins.json
   marketplaces/<name>/                   cloned marketplace repo (.claude-plugin/marketplace.json)
@@ -203,7 +203,7 @@ user-scope only):
 `source.source` is one of the four **sp3** kinds (§6): `directory`, `github`,
 `url`, `git-subdir`. (`git` is accepted as a **read-only legacy alias** for `url`
 on the marketplace container, because real `known_marketplaces.json` files written
-by older Claude Code contain it; serf never writes `git`.) A single user-level
+by older Claude Code contain it; evener never writes `git`.) A single user-level
 registry, matching Claude Code's model.
 
 ### 5.2 `installed_plugins.json`
@@ -233,14 +233,14 @@ for familiarity:
 
 The value is a one-element **array** (Claude's shape) rather than a bare object,
 for schema drop-in familiarity; v1 writes one entry per plugin. `enabled` and
-`autoUpgrade` are folded into the entry (serf has no `settings.json` to hold a
+`autoUpgrade` are folded into the entry (evener has no `settings.json` to hold a
 separate `enabledPlugins` map). Mutations go through atomic tmp-rename writes under
 a flock.
 
 ### 5.3 Scope: user-only in v1
 
 v1 has a **single user-scope store**. Project scope (a repo-local
-`<git-root>/.serf/plugins/`) is cut for v1 to avoid a second registry,
+`<git-root>/.evener/plugins/`) is cut for v1 to avoid a second registry,
 `projectRoot` threading, cross-scope dedup, and the fact that the hub serves many
 working directories at once and a global settings page cannot disambiguate "which
 project." A repo-local or in-development plugin is still fully supported via
@@ -269,7 +269,7 @@ category, source, homepage}` — "explore plugins in a marketplace").
 
 **Fetching = shell out to `git`** (present on dev machines; Claude Code does the
 same; avoids a `go-git` dependency). Missing `git` → clear error, reported by
-`serf-doctor` (§13). `git.go` centralizes clone, **partial/sparse clone** for
+`evener-doctor` (§13). `git.go` centralizes clone, **partial/sparse clone** for
 `git-subdir`, pinned checkout (`git checkout <ref|sha>`), and `pull --ff-only`.
 The manifest's `renames` map (old→new plugin name) is recorded and followed across
 an upgrade.
@@ -331,7 +331,7 @@ writes:
   confirm key, the CLI an interactive prompt (or an explicit `--yes` for
   `--json`/non-interactive use). **Auto-upgrade needs no per-run confirmation
   because enabling `autoUpgrade` on an already-installed, git-backed plugin *is*
-  the standing consent.** (serf's existing repo-trust precedent
+  the standing consent.** (evener's existing repo-trust precedent
   `LaunchConfigTrustRepo`, `cmd/evener-hub/app_launch.go`, is the model to reuse if a
   future project scope needs per-repo marketplace trust.)
 - flock serializes concurrent CLI / hub / TUI mutations.
@@ -340,7 +340,7 @@ writes:
 
 ## 8. Loader gating & the real injection seams
 
-Today serf loads **every** dir in `SessionConfig.PluginDirs`, and the loader is
+Today evener loads **every** dir in `SessionConfig.PluginDirs`, and the loader is
 **fail-hard**: `plugin.LoadAll` (`agent/plugin/plugin.go:238`) returns on the first
 `Load` error *and* on any duplicate plugin **name**, and `agent/session_init.go`
 (~`:574`, `:704`) propagates that so `NewSession` fails. A single broken or
@@ -358,11 +358,11 @@ duplicate-named enabled plugin would otherwise brick every new session.
 **The injection seams differ by surface (corrected from v1):**
 - **CLI** (`cmd/evener`) builds a `SessionConfig` in-process, so it sets
   `SessionConfig.PluginDirs = EnabledPluginDirs() + explicit --plugin-dir`.
-- **Hub** does **not** build a `SessionConfig` — it **spawns a `serf serve`
+- **Hub** does **not** build a `SessionConfig` — it **spawns a `evener serve`
   subprocess** (`cmd/evener-hub/spawn.go`) and passes config as **argv**. Enabled
   dirs are injected as `--plugin-dir` arguments via the launch-config
   `plugin_dirs` → `ToArgs` path (`cmd/evener-hub/internal/launchconfig/args.go`).
-  The `~/.config/serf/plugins/*` scan in `web_settings.go` is **display-only**
+  The `~/.config/evener/plugins/*` scan in `web_settings.go` is **display-only**
   (`discoverPluginsForSettings`) and is *not* a session seam; the unused
   `hubcore/config.go` `PluginDirs` default is not the mechanism either.
 
@@ -376,7 +376,7 @@ merged and deduped with registry-enabled dirs.
 
 ### 9.1 Auto-upgrade daemon
 
-Lives in the **hub** (`serf-hub`) — the only persistent process; it already hosts
+Lives in the **hub** (`evener-hub`) — the only persistent process; it already hosts
 background goroutines on the signal context (`cmd/evener-hub/main.go`).
 
 - A background goroutine on a configurable interval (proposed default ~12h, plus
@@ -389,7 +389,7 @@ background goroutines on the signal context (`cmd/evener-hub/main.go`).
   hook/MCP commands bake the dir at load in `agent/plugin/hooks.go`) keeps using
   its dir; new sessions pick up the new one. Superseded dirs are reclaimed only by
   the sweep (§12). A successful upgrade updates `lastUpdated` and emits
-  `serf/plugin/updated`. Failure-isolated: one plugin's failure never blocks
+  `evener/plugin/updated`. Failure-isolated: one plugin's failure never blocks
   others; logged and surfaced in `doctor`.
 - Global on/off + interval in `hub.toml`; per-plugin opt-in via `autoUpgrade`;
   manual "check now" from any surface runs the same code path.
@@ -397,15 +397,15 @@ background goroutines on the signal context (`cmd/evener-hub/main.go`).
 ### 9.2 Shared RPC surface
 
 One method set the hub exposes; web and TUI both call it (as `/credentials` shares
-`serf/instance/*`). Declared in `appwire/protocol.go`, registered in
+`evener/instance/*`). Declared in `appwire/protocol.go`, registered in
 `cmd/evener-hub/app_rpc.go` via `HandleTyped`, delegating to a `hubPluginsController`
 that mirrors `app_instances.go` (reload → mutate → atomic write, mutex; delegates
 to `internal/plugins`). All operate on the single user-scope store.
 
-- `serf/marketplace/{list, add, remove, refresh, browse}`
-- `serf/plugin/{list, install, upgrade, remove, enable, disable, setAutoUpgrade, doctor}`
-- `serf/command/list` (slash-command catalog for autocomplete — **owned by P3**, §10)
-- Notifications: `serf/marketplace/updated`, `serf/plugin/updated`.
+- `evener/marketplace/{list, add, remove, refresh, browse}`
+- `evener/plugin/{list, install, upgrade, remove, enable, disable, setAutoUpgrade, doctor}`
+- `evener/command/list` (slash-command catalog for autocomplete — **owned by P3**, §10)
+- Notifications: `evener/marketplace/updated`, `evener/plugin/updated`.
 
 ### 9.3 Web surface (`cmd/evener-hub`)
 
@@ -430,7 +430,7 @@ wrappers in `launchconfig_client.go` calling the same RPCs as web.
 
 ### 9.5 CLI (`cmd/evener/plugin/`)
 
-The `serf plugin` tree (sp4 design), thin over the same manager:
+The `evener plugin` tree (sp4 design), thin over the same manager:
 `marketplace add|remove|list|refresh`, `install <plugin>@<mkt>`, `upgrade [--all]`,
 `remove`, `enable`, `disable`, `list`, `gc`, `doctor` — each with `--json`, and
 `--yes` (for non-interactive install/add).
@@ -439,7 +439,7 @@ The `serf plugin` tree (sp4 design), thin over the same manager:
 
 ## 10. Slash-command execution
 
-The one component type serf cannot load today. serf's prompt-template engine
+The one component type evener cannot load today. evener's prompt-template engine
 (`agent/section_resolver.go`) is a *system-prompt assembler* and supports none of
 `$ARGUMENTS` / `$1` / `` !`cmd` `` / `@file`, so command expansion is net-new.
 
@@ -469,16 +469,16 @@ lives where the session is, and both surfaces must reach it — but they differ:
   (`runHubSlashCommand`), and dead-ends an unrecognized command with "Unknown
   command" — it **never** forwards to `turn/start`. P6 must add a real dispatch
   change: after the built-in registry misses, consult the plugin-command catalog
-  (`serf/command/list`) and, on a match, forward `/name args` to the session
+  (`evener/command/list`) and, on a match, forward `/name args` to the session
   (`sendHubInput`/`turn/start`) instead of erroring.
 
 **Precedence is therefore split by construction:** built-in UI control commands
 (`/model`, `/compact`, `/plugins`, …) are handled client-side in each surface and
 win; only unrecognized-but-known-plugin commands are forwarded to the session
-expander. The server-side expander also runs for headless `serf /name args`
+expander. The server-side expander also runs for headless `evener /name args`
 (`cmd/evener/main.go` → `run` prompt path).
 
-**Security.** `` !`cmd` `` and the command's tools run under serf's existing
+**Security.** `` !`cmd` `` and the command's tools run under evener's existing
 execution-environment / permission model — no extra privilege. A plugin running
 bash is the trust decision `install` already surfaced (§7).
 
@@ -512,7 +512,7 @@ the **next session**.
 auto-upgrade can never remove the dir a running session was spawned against — the
 superseded dir just lingers on disk. Reclamation is a separate sweep that deletes
 any `cache/` dir no registry entry points at, run **only when it is safe**: on hub
-start (before any session exists) and on demand via `serf plugin gc` (the user runs
+start (before any session exists) and on demand via `evener plugin gc` (the user runs
 it when idle). Superseded dirs therefore accumulate at most across one hub uptime.
 The one eager delete is a user-initiated `remove`, by intent — a live session using
 that plugin may error on lazy access until restarted (acceptable, as it is
@@ -522,14 +522,14 @@ API do not need to change for it.
 
 ---
 
-## 13. Doctoring (`serf-doctor plugins`)
+## 13. Doctoring (`evener-doctor plugins`)
 
-`serf-doctor` is a read-only forensic inspector (`locate` / `transcript` /
+`evener-doctor` is a read-only forensic inspector (`locate` / `transcript` /
 `apilog` / `watches` / `tree`), a thin `main` over a checker package, human summary
-+ `--json`. Plugin doctoring lands as a new **`serf-doctor plugins`** subcommand
++ `--json`. Plugin doctoring lands as a new **`evener-doctor plugins`** subcommand
 backed by `internal/plugins/doctor.go` (reusing `plugin.Load` for component
 validity — the root module already imports `agent/plugin`), plus a
-`serf plugin doctor` alias. Read-only; not session-scoped (takes `--json`, not a
+`evener plugin doctor` alias. Read-only; not session-scoped (takes `--json`, not a
 session selector). Each finding OK/WARN/FAIL with a remediation hint:
 - **Registry ↔ disk drift** — orphaned entries (missing dir), orphaned cache dirs
   (no entry), registry version ≠ manifest version.
@@ -565,12 +565,12 @@ One design spec, built in independently-shippable phases; each gets its own plan
 | Phase | Deliverable | Depends on |
 |---|---|---|
 | **P1 Backend core** | `internal/plugins`: registry, `known_marketplaces.json`, sp3 source resolution (incl. partial clone), git fetcher, Install/Upgrade/Remove/Enable/Disable/List/UpdateAll, **full-validate on install/upgrade**, sha-keyed cache, flock + atomic IO | — |
-| **P2 CLI + gating + bundling** | `serf plugin` tree (`--yes`); `EnabledPluginDirs` (validate + dedup) feeding CLI `SessionConfig` **and** hub spawn argv (`--plugin-dir` via `ToArgs`); user-scope first-run seeding | P1 |
-| **P3 Slash commands** | `commands.go` discovery + `Instance.Commands`; expander; server-side `ProcessInput` interception; **`serf/command/list`**; `serf /name` headless | independent of P1 |
-| **P4 Auto-upgrade** | hub daemon + `hub.toml` config + sweep-based GC (`serf plugin gc` + hub-start sweep) + `serf/plugin/updated` + manual check-now | P1 |
+| **P2 CLI + gating + bundling** | `evener plugin` tree (`--yes`); `EnabledPluginDirs` (validate + dedup) feeding CLI `SessionConfig` **and** hub spawn argv (`--plugin-dir` via `ToArgs`); user-scope first-run seeding | P1 |
+| **P3 Slash commands** | `commands.go` discovery + `Instance.Commands`; expander; server-side `ProcessInput` interception; **`evener/command/list`**; `evener /name` headless | independent of P1 |
+| **P4 Auto-upgrade** | hub daemon + `hub.toml` config + sweep-based GC (`evener plugin gc` + hub-start sweep) + `evener/plugin/updated` + manual check-now | P1 |
 | **P5 Web** | appwire methods + `hubPluginsController` + Marketplaces & Plugins page + `plugins.js` (autocomplete menu deferred, §1) | P1–P4 RPCs, **P3** |
 | **P6 TUI** | `PluginsPanel`; **plugin-command dispatch/forwarding change** (§10) so `/name` routes to the session (palette-merge polish deferred, §1) | P1–P4 RPCs, **P3** |
-| **P7 Doctoring** | `serf-doctor plugins` + `internal/plugins/doctor.go` + `serf plugin doctor` alias | P1 |
+| **P7 Doctoring** | `evener-doctor plugins` + `internal/plugins/doctor.go` + `evener plugin doctor` alias | P1 |
 
 ---
 

@@ -12,7 +12,7 @@ finding without becoming a second author. Driving mechanism:
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-quality-auditor-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-quality-auditor-XXXXX)`.
 
 ## Steps
 

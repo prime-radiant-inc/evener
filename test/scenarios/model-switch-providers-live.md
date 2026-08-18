@@ -13,7 +13,7 @@ thinking-absence-when-effort=none contract against a **real** wire body, with
 deterministic backstop for the same rule.
 
 This is an end-to-end test against **real** provider APIs. It needs live
-credentials and makes billed calls. It talks to the `serf serve` daemon's
+credentials and makes billed calls. It talks to the `evener serve` daemon's
 own HTTP surface directly (`POST /input`, `POST /model`, `GET /status`) —
 no hub, no browser — so the switch path under test is exactly
 `Session.SetModel` via `server/server_handlers.go:handleModel`.
@@ -24,11 +24,11 @@ no hub, no browser — so the switch path under test is exactly
   the isolated config, the state dir, the workdir — never a fixed `/tmp` name a
   second concurrent run would overwrite mid-run (kata `k2rx`):
   ```sh
-  run=$(mktemp -d -t serf-e2e-msw-XXXXXX)
-  go build -o "$run/serf" ./cmd/evener
+  run=$(mktemp -d -t evener-e2e-msw-XXXXXX)
+  go build -o "$run/evener" ./cmd/evener
   mkdir -p "$run/cfg" "$run/state" "$run/wd" "$run/rendezvous"
   ```
-- An **isolated** provider config so the live `~/.serf/providers.toml` is
+- An **isolated** provider config so the live `~/.evener/providers.toml` is
   untouched. Instance NAMES below are deployment-local — declare whatever
   names your deployment's credentials resolve to; refs in this card are
   `instanceName/model`. Write `$run/cfg/providers.toml`:
@@ -47,7 +47,7 @@ no hub, no browser — so the switch path under test is exactly
   type = "kimi-anthropic"
   ```
 
-  and `$run/cfg/credentials.toml` (mode `0600` — serf's credential store
+  and `$run/cfg/credentials.toml` (mode `0600` — evener's credential store
   rejects a looser mode):
 
   ```sh
@@ -75,13 +75,13 @@ no hub, no browser — so the switch path under test is exactly
    anthropic (or anthropic-family) model. Bind `127.0.0.1:0` and read the
    address back from the daemon's own startup line — never a port a human
    picked (kata `68fm`) — and give it its own `--run-dir`, so its rendezvous
-   entry lands under `$run` instead of `~/.serf/run`, where a real hub watches
+   entry lands under `$run` instead of `~/.evener/run`, where a real hub watches
    and would otherwise adopt this daemon into a live roster
    (`rendezvous/rendezvous.go`'s package doc; `DefaultDir()` is
-   `$HOME/.serf/run`):
+   `$HOME/.evener/run`):
 
    ```sh
-   "$run/serf" serve --addr 127.0.0.1:0 \
+   "$run/evener" serve --addr 127.0.0.1:0 \
      --model anthropic/claude-opus-4-6 --reasoning-effort none \
      --state-dir "$run/state" --run-dir "$run/rendezvous" \
      --non-interactive --no-project-prompts \
@@ -178,13 +178,13 @@ no hub, no browser — so the switch path under test is exactly
 ## Cleanup
 
 - `curl -s -X POST "$DAEMON/shutdown"`, or `kill "$DPID"` — the pid this card
-  recorded, never a `pkill -f 'serf serve'` pattern, which would also kill a
+  recorded, never a `pkill -f 'evener serve'` pattern, which would also kill a
   concurrent agent's daemon.
 - `rm -rf "$run"` — the binary, config, state dir, workdir, rendezvous dir and
-  logs all live under it. Remove it by name, never a `/tmp/serf-e2e-msw-*`
+  logs all live under it. Remove it by name, never a `/tmp/evener-e2e-msw-*`
   glob, which would take out every other concurrent run of this card (kata
   `k2rx`). Also remove any one-shot session dirs left under
-  `~/.local/state/serf/projects/*/sessions/`.
+  `~/.local/state/evener/projects/*/sessions/`.
 
 ## Sharp edges
 
@@ -214,13 +214,13 @@ no hub, no browser — so the switch path under test is exactly
 ## Results (this run — 2026-07-13, worktree `model-switching` @ 3668f093)
 
 **Environment reality on this machine** (checked, not assumed): the live
-`~/.serf/providers.toml` has NO native `anthropic` instance and NO
-`ANTHROPIC_API_KEY`/OpenAI-native credential anywhere (`~/.serf/credentials.toml`
-holds only `kimi` and `lunaroute` keys; `~/.serf/providers.toml` declares
+`~/.evener/providers.toml` has NO native `anthropic` instance and NO
+`ANTHROPIC_API_KEY`/OpenAI-native credential anywhere (`~/.evener/credentials.toml`
+holds only `kimi` and `lunaroute` keys; `~/.evener/providers.toml` declares
 `kimi` (type `kimi`, OpenAI-style, UA-gated), `lunaroute` (type `openai`,
 openai-compat gateway), `ollama` (local, one model: `gemma4:latest`), and
 `openai` (type `openai`, Responses — no key resolves for it). No
-`~/.serf/credentials.toml` entry for `openai` or `anthropic`.
+`~/.evener/credentials.toml` entry for `openai` or `anthropic`.
 
 Given that, the isolated config actually used for this run substituted:
 `kimi` → `type = "kimi-anthropic"` (the sanctioned anthropic-compatible
@@ -234,8 +234,8 @@ partner).
 **Rungs run, with outcome:**
 
 - **Step 1-2 (kimi-anthropic, tool-using turn), tried at both default effort
-  and `--reasoning-effort none`**: FAILED, not a serf regression. Every
-  attempt (via `serf serve` and via a one-shot CLI invocation identical in
+  and `--reasoning-effort none`**: FAILED, not a evener regression. Every
+  attempt (via `evener serve` and via a one-shot CLI invocation identical in
   shape to `reasoning-effort-providers.md`'s pattern) returned `kimi error
   (status=400): tool_choice 'required' is incompatible with thinking
   enabled` — but the then-current optional raw sidecar captured a request body
@@ -243,28 +243,28 @@ partner).
   Kimi's coding-plan backend is
   defaulting extended thinking on server-side even when the client sends no
   `thinking` object and effort is `none`; `llm/providers/anthropic/request.go`'s
-  downgrade guard (lines 174-183) only fires when serf itself sets
+  downgrade guard (lines 174-183) only fires when evener itself sets
   `body["thinking"]`, so it cannot see or correct a server-side default.
   Confirmed this is unrelated to this branch: `git diff --stat
   665e82a0..HEAD -- llm/providers/anthropic llm/providers/kimi_anthropic`
   is empty — neither adapter changed on this branch. SKIPPED as a live rung
   here; the marker/response_model/ladder assertions for this leg are
   untestable against Kimi's current backend behavior on this host. Not
-  filed as a serf bug in this report (adapter code unowned by this task);
+  filed as a evener bug in this report (adapter code unowned by this task);
   flagging for Jesse to decide whether it merits its own ticket.
 - **Step 3-4 (lunaroute as the openai-family leg)**: FAILED — the gateway
   itself returned `HTTP 500 {"error":{"code":"INTERNAL_ERROR","message":"An
   internal error occurred"}}` on a bare raw `curl` to
-  `https://gw.lunaroute.com/v1/chat/completions` (no serf involved), and a
-  `serf --model lunaroute/glm-5.2-nvfp4` one-shot call hung with no output
+  `https://gw.lunaroute.com/v1/chat/completions` (no evener involved), and a
+  `evener --model lunaroute/glm-5.2-nvfp4` one-shot call hung with no output
   for 2+ minutes before being killed. This is a live third-party outage/bug
-  in the gateway, not a serf issue. SKIPPED.
+  in the gateway, not a evener issue. SKIPPED.
 - **Ollama leg (`ollama/gemma4:latest`, local, no credential)**: RAN, but
   is unusable as a ladder rung — `gemma4:latest` cannot reliably call the
   `communicate` result tool; the one-shot run exhausted all 3 bare-text
   retries and exited with `model returned bare text without calling
   communicate after 3 retries`. This is a small-model capability gap, not a
-  serf bug, and there is only one model on this instance (no same-instance
+  evener bug, and there is only one model on this instance (no same-instance
   hop partner either). SKIPPED as a ladder rung; confirms `response_model`
   plumbing reaches the daemon status/transcript path (`ollama/gemma4:latest`
   showed correctly in `/status` before the retry exhaustion), but that's

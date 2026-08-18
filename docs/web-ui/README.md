@@ -1,4 +1,4 @@
-# Serf Web Hub — UI/UX
+# Evener Web Hub — UI/UX
 
 Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 

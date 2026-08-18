@@ -19,7 +19,7 @@
 - Do not show aggregate `N done`, aggregate `N up next`, unchanged neighboring tasks, `show all`, `more`, or any full-plan disclosure.
 - Do not change task state, task ordering, sidebar behavior, or the `task_list` tool contract.
 - Use the returned authoritative task snapshot for final row data and auto-activation; degraded replay must not invent transitions.
-- Run JavaScript renderer tests from `cmd/evener-hub/jstest` with `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules`.
+- Run JavaScript renderer tests from `cmd/evener-hub/jstest` with `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules`.
 
 ## File Structure
 
@@ -96,7 +96,7 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: FAIL because repeated mutations still reuse one living card, the card still contains aggregate/disclosure UI, and update-only cards are not appended independently.
@@ -200,7 +200,7 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: all scenarios print `PASS` and the process exits 0.
@@ -211,8 +211,8 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-realistic-flow.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-realistic-flow.js
 ```
 
 Expected: both scripts exit 0. If a test encodes the superseded living-card contract, update only that contract assertion and rerun it; do not weaken unrelated assertions.
@@ -266,7 +266,7 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
 ```
 
 Expected: FAIL because living-plan summary, toggle, and fold selectors still exist.
@@ -316,8 +316,8 @@ Run:
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-renderer-plan.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-renderer-plan.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh
 ```
 
 Expected: the focused test and every `test-*.js` script pass with no failures or timeouts.
@@ -359,7 +359,7 @@ Expected: one commit containing only CSS contract cleanup, its test assertions, 
 
 ```bash
 cd cmd/evener-hub/jstest
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.

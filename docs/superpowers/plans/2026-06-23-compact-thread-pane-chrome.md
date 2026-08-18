@@ -275,7 +275,7 @@ Run:
 
 ```bash
 go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-input-area.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-input-area.js
 ```
 
 Expected: PASS. If `test-input-area.js` asserts the old model chip location, update it to require the same data attributes in the new `.composer-model` element and controls inside `.input-card`.
@@ -317,14 +317,14 @@ Expected: PASS.
 - [ ] **Step 3: Run JS suite**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.
 
 - [ ] **Step 4: Manual HTTP smoke test**
 
-Start a local isolated `serf-hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
+Start a local isolated `evener-hub` binary with temporary config and fetch `/s/manual` and `/thread/manual` using the auth token. Assert:
 
 ```text
 /s/manual includes id="sidebar"

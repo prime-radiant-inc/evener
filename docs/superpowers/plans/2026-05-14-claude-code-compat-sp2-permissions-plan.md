@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn the `permissions` block produced by SP1 into a decision oracle that serf consults on every tool call — parse Claude Code's permission-rule grammar, evaluate `allow`/`deny`/`ask` against `(toolName, toolInput)`, honor `defaultMode`, and wire enforcement into `Session.execTool` immediately after `PreToolUse` hooks fire.
+**Goal:** Turn the `permissions` block produced by SP1 into a decision oracle that evener consults on every tool call — parse Claude Code's permission-rule grammar, evaluate `allow`/`deny`/`ask` against `(toolName, toolInput)`, honor `defaultMode`, and wire enforcement into `Session.execTool` immediately after `PreToolUse` hooks fire.
 
 **Architecture:** All public symbols live in a new `agent/permissions.go`. `PermissionMatcher` is built once at session construction from a `PermissionsConfig` and an `ExecutionEnvironment`. Per-rule patterns compile at parse time; `Evaluate` is a pure function. `Session` grows one field and one helper to consult the matcher between `PreToolUse` and tool execution. Test-driven: each rule shape lands a failing table-driven test first, then minimal code.
 
@@ -107,7 +107,7 @@ const (
 )
 
 // AskFallback dictates what Evaluate returns when a rule yields "ask" on a
-// surface that has no human (serf -p, serfeval, hub batch).
+// surface that has no human (evener -p, serfeval, hub batch).
 type AskFallback int
 
 const (
@@ -1457,7 +1457,7 @@ Update the `switch tool` in `ParseRule` to add Skill and Agent. Skill uses bare 
 			return nil, fmt.Errorf("permission rule %q: %w", s, err)
 		}
 		return nameMatchRule{
-			// Serf maps spawn_agent → "Task" (Claude's name). The rule keyword
+			// Evener maps spawn_agent → "Task" (Claude's name). The rule keyword
 			// is "Agent" per Claude docs; accept both forms so a rule typed as
 			// Agent(Explore) fires on a Task{subagent_type:"Explore"} call.
 			toolNames:  []string{"Task", "Agent"},
@@ -1473,7 +1473,7 @@ Also extend bare-form handling so that bare `Agent` fires on `Task` calls. Updat
 	if spec == "" || spec == "*" {
 		if tool == "Agent" {
 			// Bare Agent — any subagent invocation. Accept Claude's "Task"
-			// tool name (serf's spawn_agent maps to Task).
+			// tool name (evener's spawn_agent maps to Task).
 			return agentBareRule{source: s}, nil
 		}
 		if knownTools[tool] {
@@ -1651,13 +1651,13 @@ Append to `agent/permissions_test.go`:
 func TestParseRule_UnknownAndInert(t *testing.T) {
 	env := NewLocalExecutionEnvironment(t.TempDir())
 
-	// PowerShell parses but never matches under serf.
+	// PowerShell parses but never matches under evener.
 	psRule, err := ParseRule("PowerShell(Get-ChildItem *)")
 	if err != nil {
 		t.Fatalf("ParseRule(PowerShell) error: %v", err)
 	}
 	if psRule.Matches("PowerShell", map[string]any{"command": "Get-ChildItem foo"}, env) {
-		t.Errorf("PowerShell rule should be inert under serf")
+		t.Errorf("PowerShell rule should be inert under evener")
 	}
 
 	// Unknown tool keyword parses (forward-compat) and treats the specifier as
@@ -1682,8 +1682,8 @@ Expected: FAIL — "tool keyword not supported yet".
 Append to `agent/permissions.go`:
 
 ```go
-// inertRule parses cleanly but never matches under serf. Used for PowerShell
-// and any other Claude Code tool family serf does not host.
+// inertRule parses cleanly but never matches under evener. Used for PowerShell
+// and any other Claude Code tool family evener does not host.
 type inertRule struct{ source string }
 
 func (r inertRule) String() string                                              { return r.source }
@@ -2662,7 +2662,7 @@ In `agent/session.go`, add fields to `SessionConfig` (right after `DeniedToolNam
 	Permissions PermissionsConfig `json:"-"`
 
 	// PermissionAskFallback is the policy each entry-point selects for
-	// surfaces that have no human (serf -p, serfeval). Defaults to
+	// surfaces that have no human (evener -p, serfeval). Defaults to
 	// AskFallbackInteractive on TTY surfaces. SP8 owns the surface defaults.
 	PermissionAskFallback AskFallback `json:"-"`
 ```

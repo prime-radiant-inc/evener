@@ -4,7 +4,7 @@ TUI counterpart of `web-steer-success-reconciles.md`. Drives a
 Ctrl+S force-steer against a processing turn and verifies the
 two-frame transition: first capture-pane shows the faint `⠋ `
 spinner prefix on the optimistic placeholder; second capture-pane
-(after the daemon's `serf/steering/injected` notification arrives)
+(after the daemon's `evener/steering/injected` notification arrives)
 shows the prefix gone and the authoritative steering chip in its
 place.
 
@@ -27,14 +27,14 @@ Driver: tmux send-keys / capture-pane.
 ## Pre-state
 
 - `tmux` installed.
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`. The pane captures below land in that
+  `$HOME/.evener/auth-token`. The pane captures below land in that
   checklist's own `$run` directory, never a fixed `/tmp/pane-*.txt`
   that a second agent running this card would overwrite between this
   card's capture and its grep (kata `k2rx`).
-- `./serf-tui` built fresh from this branch.
+- `./evener-tui` built fresh from this branch.
 - Anthropic OAuth or API key configured for
   `anthropic/claude-haiku-4-5-20251001`.
 - The tmux session name is derived from this run's own scratch dir
@@ -47,8 +47,8 @@ Driver: tmux send-keys / capture-pane.
 1. **Prepare a workdir with a pacing AGENTS.md** so the first
    turn stays in `processing` long enough to send Ctrl+S:
    ```
-   WORKDIR=$(mktemp -d -t serf-steer-ok-XXXX)
-   TMUX_SESSION="serf-steer-ok-$(basename "$WORKDIR")"
+   WORKDIR=$(mktemp -d -t evener-steer-ok-XXXX)
+   TMUX_SESSION="evener-steer-ok-$(basename "$WORKDIR")"
    cat > "$WORKDIR/AGENTS.md" <<'EOF'
    # Working agreement
 
@@ -61,7 +61,7 @@ Driver: tmux send-keys / capture-pane.
 2. **Launch the TUI in tmux**:
    ```
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 
@@ -89,7 +89,7 @@ Driver: tmux send-keys / capture-pane.
    ```
 
 5. **Wait for reconcile** — the daemon ack + appwire round-trip
-   for `serf/steering/injected` typically lands within 1-2 s:
+   for `evener/steering/injected` typically lands within 1-2 s:
    ```
    sleep 3
    tmux capture-pane -t "$TMUX_SESSION" -p > "$run/pane-reconciled.txt"
@@ -119,7 +119,7 @@ Driver: tmux send-keys / capture-pane.
   ```
   SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
     grep -oE '01[0-9A-Z]{24}' | head -1)
-  TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+  TS=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
   grep -c '"kind":"STEERING"' "$TS"  # 1
   ```
 - Session settles to `idle` with the model honoring the steer
@@ -130,7 +130,7 @@ Falsification:
 - `⠋ ` still present in `pane-reconciled.txt` after 3 s — reconcile
   failed to match. Most likely cause: `TryReconcile` normalization
   mismatch between the typed text and the authoritative
-  `serf/steering/injected` payload.
+  `evener/steering/injected` payload.
 - Two `↻ Change of plans` lines in `pane-reconciled.txt` — the
   reducer appended the authoritative chip without removing the
   pending placeholder (reconcile dropped the entry but left the

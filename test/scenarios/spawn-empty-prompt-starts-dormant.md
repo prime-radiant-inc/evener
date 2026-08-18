@@ -65,7 +65,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
      -d "{\"prompt\":\"\",\"model\":\"$MODEL\",\"working_dir\":\"$tmpdir\",
-          \"harness\":\"serf\",\"access_mode\":\"full\",\"agent\":\"default\",
+          \"harness\":\"evener\",\"access_mode\":\"full\",\"agent\":\"default\",
           \"launch_overrides\":{}}" "$HUB/api/spawn")
    SID=$(echo "$resp" | jq -r '.session_id')
    ```

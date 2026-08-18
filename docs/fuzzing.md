@@ -1,6 +1,6 @@
-# Fuzzing serf — a developer's guide
+# Fuzzing evener — a developer's guide
 
-This is the front door to serf's fuzzing toolkit: a large set of `testing.F`
+This is the front door to evener's fuzzing toolkit: a large set of `testing.F`
 ("native") and `rapid.Check` ("stateful") targets that exercise every package
 that decodes untrusted/model-generated input and every API surface, plus the
 tooling that measures coverage, gates completeness, and turns any failure into a
@@ -59,7 +59,7 @@ So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 vi
 protected. There are two ceilings:
 
 - **per run** (`SERF_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
-- **shared total** (`SERF_MEM_TOTAL`, default 32G) — all concurrent serf runs
+- **shared total** (`SERF_MEM_TOTAL`, default 32G) — all concurrent evener runs
   join one slice, so launching several at once still can't exhaust the host.
 
 A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
@@ -119,7 +119,7 @@ Each native target runs once. Each Rapid target runs with
 `RAPID_NOFAILFILE=true`, `RAPID_LOG=false`, `RAPID_V=false`,
 `RAPID_DEBUG=false`, `RAPID_DEBUGVIS=false`, and `RAPID_SHRINKTIME=30s`;
 `RAPID_FAILFILE` is explicitly unset. Their coverage profiles are unioned only
-within the owning package, then passed to `serf-fuzzcov` for the strict raw
+within the owning package, then passed to `evener-fuzzcov` for the strict raw
 threshold, reviewed file-only exclusions, and upward-only floors. There is no
 `-coverpkg` cross-package instrumentation.
 
@@ -127,7 +127,7 @@ The runner exports `GOWORK=<repository>/go.work` and derives its canonical,
 repo-relative module labels from that file at invocation, so it does not depend
 on an ambient workspace setting or a stale hard-coded list. `--modules` accepts
 only those derived labels. `--format json` reserves stdout for the final
-`serf-fuzzcov` JSON document; runner progress and replay output go to stderr.
+`evener-fuzzcov` JSON document; runner progress and replay output go to stderr.
 Any registry, listing, replay, profile, or accounting failure is fatal; the
 command never turns a failed target into an omitted or synthetic zero profile.
 
@@ -266,7 +266,7 @@ trip it, restore).
 ## Differential oracles
 
 The strongest class: drive two things that must agree from one input and assert
-they match. serf has several flavors — both real decoder bugs this codebase has
+they match. evener has several flavors — both real decoder bugs this codebase has
 found came from here:
 
 - **golden / snapshot** — a decoder vs a committed picture of its own past output

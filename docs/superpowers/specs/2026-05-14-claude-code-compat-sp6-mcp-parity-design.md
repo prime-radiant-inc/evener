@@ -7,7 +7,7 @@ Sibling: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-loader
 
 ## 1. Goal
 
-SP6 closes the three documented gaps between Claude Code's MCP behavior and serf's
+SP6 closes the three documented gaps between Claude Code's MCP behavior and evener's
 existing implementation in `agent/mcp_config.go` and `agent/mcp_manager.go`. It
 teaches the config loader to accept `streamable-http` as an alias for the `http`
 transport type, injects `CLAUDE_PROJECT_DIR` into the environment of every
@@ -152,7 +152,7 @@ original spelling.
 
 ### 4.1 Value
 
-`CLAUDE_PROJECT_DIR` is the absolute path serf chooses to call the
+`CLAUDE_PROJECT_DIR` is the absolute path evener chooses to call the
 "project root" for one session. Picking it is `resolveProjectDir(env)`,
 which walks three sources, lowest-precedence last:
 
@@ -271,13 +271,13 @@ For each placeholder, in order:
 
 The order matters in exactly one case: a user defines an OS env var
 literally named `CLAUDE_PROJECT_DIR` while also running in a session
-where serf has a different project root. **Serf's resolved value wins**;
+where evener has a different project root. **Evener's resolved value wins**;
 the OS env var is shadowed. Rationale: the whole point of the auto-
 injection is to give MCP servers a stable project pointer. Letting the
 parent shell override it would defeat the purpose. Users who want the
 parent value still have it — they can `${CLAUDE_PROJECT_DIR:-"$OTHER"}`,
 or simply read `os.environ["CLAUDE_PROJECT_DIR"]` *inside the spawned
-server*, where the value is exactly what serf injected (which itself can
+server*, where the value is exactly what evener injected (which itself can
 be the parent's value if `resolveProjectDir` chose to propagate it; this
 case is documented but not algorithmically privileged).
 
@@ -341,7 +341,7 @@ Plugin `acme-tools` provides:
 }
 ```
 
-With `ctx.ProjectDir = "/Users/jesse/work/serf"`,
+With `ctx.ProjectDir = "/Users/jesse/work/evener"`,
 `ctx.PluginRoot = "/cache/acme-tools/0.1.0"`,
 `ctx.PluginData = "/data/acme-tools"`, and a SP7-provided lookup
 returning `JIRA_TOKEN=t`, `DB_KEY=k` (but no `JIRA_URL`):
@@ -350,13 +350,13 @@ returning `JIRA_TOKEN=t`, `DB_KEY=k` (but no `JIRA_URL`):
 - `issues.URL` becomes `https://example.atlassian.net/mcp` (default
   kicks in).
 - `issues.Headers.Authorization` becomes `Bearer t`.
-- `issues.Headers["X-Project"]` becomes `/Users/jesse/work/serf`.
+- `issues.Headers["X-Project"]` becomes `/Users/jesse/work/evener`.
 - `db.Command` becomes `/cache/acme-tools/0.1.0/bin/db-mcp`.
 - `db.Args[1]` becomes `/data/acme-tools/db.sqlite`.
 - `db.Env["API_KEY"]` becomes `k`.
 - `db.Env["FALLBACK"]` becomes `x` (since `SOMETHING` is unset).
 - When `db` is spawned, the merged process env additionally contains
-  `CLAUDE_PROJECT_DIR=/Users/jesse/work/serf` (injected by
+  `CLAUDE_PROJECT_DIR=/Users/jesse/work/evener` (injected by
   `transportForConfig` because the existing `db.Env` did not specify
   it).
 
@@ -395,7 +395,7 @@ Until SP7 lands, SP6 ships with a no-op `userConfigLookup` (returns
 `(_, false)` for every key) wired into the plugin loader. Plugins that
 reference `${user_config.K}` without a default will then fail to load
 with the documented error. This is acceptable because: (a) no such
-plugin exists in the marketplaces serf integrates today; (b) SP7 lands
+plugin exists in the marketplaces evener integrates today; (b) SP7 lands
 before SP8's end-to-end test runs.
 
 ## 7. Backward Compatibility
@@ -595,11 +595,11 @@ in `go.mod`) exposes `ClientOptions.ToolListChangedHandler`,
 `PromptListChangedHandler`, `ResourceListChangedHandler`, and
 `ResourceUpdatedNotificationHandler` (see
 `go-sdk/mcp/client.go:128` and `client.go:940`). The notifications are
-delivered to the handler if registered. Today's serf code passes `nil`
+delivered to the handler if registered. Today's evener code passes `nil`
 for `ClientOptions` to `mcp.NewClient` (`agent/mcp_manager.go:38–41`),
 so the handler is unset and `list_changed` notifications are silently
 ignored. The discovered tool list captured at `NewMCPManager` time is
-the only one serf ever sees within a session.
+the only one evener ever sees within a session.
 
 **Decision.** Out of SP6's A-tier scope. Capture as a B-tier follow-up:
 "SP6.A — dynamic tool-list refresh." Implementation sketch (for the
@@ -612,7 +612,7 @@ session loop. Defer until SP8 or later.
 
 ### 11.2 `roots/list` server-initiated request
 
-**Verified.** Serf does **not** implement `roots/list`. The go-sdk
+**Verified.** Evener does **not** implement `roots/list`. The go-sdk
 defines `RootsListChangedHandler` on `ServerOptions` (server-side) and
 the `mcp.RootsListChangedRequest` type, but the client-side response to
 a server-initiated `roots/list` request is not auto-wired by passing
@@ -622,7 +622,7 @@ call `roots/list` to discover the launch directory.
 **Decision.** Out of SP6's A-tier scope. Capture as a B-tier follow-up:
 "SP6.B — implement `roots/list` response." Without it, MCP servers that
 rely on `roots/list` (vs. reading `CLAUDE_PROJECT_DIR` from their env)
-will not see the project root from serf sessions. The high-level spec
+will not see the project root from evener sessions. The high-level spec
 already lists `roots/list` as deferred.
 
 ### 11.3 Should top-level `mcp.json` allow `${user_config.*}`?

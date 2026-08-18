@@ -139,13 +139,13 @@ func NameToTag(cfg Config) map[string]string {
 	return m
 }
 
-// DefaultStateRoot returns $hubStateRoot (default ~/.serf), relocated here so
+// DefaultStateRoot returns $hubStateRoot (default ~/.evener), relocated here so
 // cmd/evener and cmd/evener-hub resolve the identical path.
 func DefaultStateRoot() string {
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".serf")
+		return filepath.Join(home, ".evener")
 	}
-	return ".serf"
+	return ".evener"
 }
 ```
 
@@ -322,8 +322,8 @@ Run: `grep -rnE '"(openai|anthropic|google|gemini|openrouter|openrouter-anthropi
 Triage each hit: a routing/registration literal is fine; a *behavior* comparison on `profile.ID()`/`req.Provider`/`resp.Provider` is a bug — fix it (re-key on tag/`NameToTag`) with a test.
 
 - [ ] **Step 2: Full build + test.** Run: `go build ./... && go test ./...` → all green.
-- [ ] **Step 3: Run the app** (per the `run` skill): build, start a `serf` session against a default (type-named) instance, switch `/model`, confirm a live turn streams — proving the refactor is behavior-preserving end to end.
-- [ ] **Step 4: Final commit.** `git commit -m "refactor(serf): complete Phase 1a behavior-tag separation (PRI-1880)"`
+- [ ] **Step 3: Run the app** (per the `run` skill): build, start a `evener` session against a default (type-named) instance, switch `/model`, confirm a live turn streams — proving the refactor is behavior-preserving end to end.
+- [ ] **Step 4: Final commit.** `git commit -m "refactor(evener): complete Phase 1a behavior-tag separation (PRI-1880)"`
 
 ---
 

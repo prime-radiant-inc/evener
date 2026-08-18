@@ -9,7 +9,7 @@ launch harbor in tmux, poll progress, collect/normalize to structured archive, g
 summary and HTML report. Python tools handle statistics and reporting. The adapter
 (`serf_agent.py`) extracts filtered artifacts from containers.
 
-**Tech Stack:** Bash (orchestration), Python 3.11+ (stats/reports), Go (serf build),
+**Tech Stack:** Bash (orchestration), Python 3.11+ (stats/reports), Go (evener build),
 harbor (eval framework), tmux (process management), SSH/rsync (remote ops).
 
 **Design doc:** `docs/plans/2026-02-28-benchmark-infrastructure-design.md`
@@ -356,8 +356,8 @@ The full mapping (harbor → archive):
 ```
 task__hash/
   agent/command-0/stdout.txt     →  agent-stdout.txt
-  agent/serf-state/sessions/*    →  sessions/
-  agent/serf-state/api.jsonl     →  api.jsonl
+  agent/evener-state/sessions/*    →  sessions/
+  agent/evener-state/api.jsonl     →  api.jsonl
   agent/artifacts/*              →  artifacts/   (filtered)
   verifier/test-stdout.txt       →  verifier-stdout.txt
   verifier/reward.txt            →  reward.txt
@@ -594,10 +594,10 @@ git commit -m "feat: summary.json generation with all three pass rate metrics"
 
 ---
 
-### Task 4: Update serf adapter (`serf_agent.py`)
+### Task 4: Update evener adapter (`serf_agent.py`)
 
 Add artifact filtering and bind-mount state dir. This file lives on the eval server,
-not in the serf repo, but we keep a copy in `tools/` for version control.
+not in the evener repo, but we keep a copy in `tools/` for version control.
 
 **Files:**
 - Create: `tools/serf_agent.py` (canonical copy, deployed to eval servers)
@@ -605,13 +605,13 @@ not in the serf repo, but we keep a copy in `tools/` for version control.
 **Step 1: Write the updated adapter**
 
 Key changes from existing `serf_agent.py`:
-- Change `_CONTAINER_STATE_DIR` from `/tmp/serf-state` to `/logs/agent/serf-state`
+- Change `_CONTAINER_STATE_DIR` from `/tmp/evener-state` to `/logs/agent/evener-state`
 - Add artifact extraction with exclusion filter in `run()` `finally` block
-- Keep the existing `download_dir` for serf-state as fallback
+- Keep the existing `download_dir` for evener-state as fallback
 
 ```python
 # Added constants:
-_CONTAINER_STATE_DIR = "/logs/agent/serf-state"   # bind-mounted by harbor
+_CONTAINER_STATE_DIR = "/logs/agent/evener-state"   # bind-mounted by harbor
 
 _ARTIFACT_EXCLUDES = [
     ".git", "node_modules", "__pycache__", ".venv",
@@ -626,12 +626,12 @@ async def run(self, instruction, environment, context):
     try:
         await super().run(instruction, environment, context)
     finally:
-        local_state_dir = self.logs_dir / "serf-state"
+        local_state_dir = self.logs_dir / "evener-state"
         try:
             await environment.download_dir(_CONTAINER_STATE_DIR, local_state_dir)
-            logger.info("Downloaded serf traces to %s", local_state_dir)
+            logger.info("Downloaded evener traces to %s", local_state_dir)
         except Exception as e:
-            logger.warning("Could not download serf traces: %s", e)
+            logger.warning("Could not download evener traces: %s", e)
 
         # Extract agent artifacts from /app (filtered)
         try:
@@ -684,7 +684,7 @@ NO_BUILD=1 MODEL="openai/gpt-5.3-codex" ./tools/eval-task.sh adapter-test build-
 
 ```bash
 git add tools/serf_agent.py
-git commit -m "feat: serf adapter with artifact extraction and bind-mount state dir"
+git commit -m "feat: evener adapter with artifact extraction and bind-mount state dir"
 ```
 
 ---
@@ -735,12 +735,12 @@ fi
 ```bash
 SNAPSHOT_DIR="$RUN_STAGING/agent"
 mkdir -p "$SNAPSHOT_DIR"
-cp /tmp/serf-linux-amd64 "$SNAPSHOT_DIR/"
+cp /tmp/evener-linux-amd64 "$SNAPSHOT_DIR/"
 cp -r agent/prompts/ "$SNAPSHOT_DIR/prompts/"
 cp -r agent/agents/ "$SNAPSHOT_DIR/agents/"
 cp -r agent/skills/ "$SNAPSHOT_DIR/skills/"
 cp tools/serf_agent.py "$SNAPSHOT_DIR/adapter.py"
-cp tools/install-serf.sh.j2 "$SNAPSHOT_DIR/" 2>/dev/null || true
+cp tools/install-evener.sh.j2 "$SNAPSHOT_DIR/" 2>/dev/null || true
 if [ "$ALLOW_DIRTY" = "1" ]; then
     git diff HEAD > "$SNAPSHOT_DIR/git-diff.patch"
 fi
@@ -907,7 +907,7 @@ ssh jesse@magic-kingdom 'uname -a && docker --version && tmux -V && python3 --ve
 **Step 2: Create directory structure**
 
 ```bash
-ssh jesse@magic-kingdom 'mkdir -p /data/serf-evals/runs ~/eval/jobs'
+ssh jesse@magic-kingdom 'mkdir -p /data/evener-evals/runs ~/eval/jobs'
 ```
 
 **Step 3: Install harbor**
@@ -921,7 +921,7 @@ ssh jesse@magic-kingdom 'pip install uv && uv tool install harbor==0.1.44'
 ```bash
 scp .env jesse@magic-kingdom:~/eval/.env
 scp tools/serf_agent.py jesse@magic-kingdom:~/eval/serf_agent.py
-scp tools/install-serf.sh.j2 jesse@magic-kingdom:~/eval/install-serf.sh.j2
+scp tools/install-evener.sh.j2 jesse@magic-kingdom:~/eval/install-evener.sh.j2
 ssh jesse@magic-kingdom 'chmod 600 ~/eval/.env'
 ```
 
@@ -935,9 +935,9 @@ ssh jesse@magic-kingdom 'chmod 600 ~/eval/.env'
 ./tools/run-eval.sh --job smoke-test --status
 
 # After completion, verify archive
-ssh jesse@magic-kingdom 'find /data/serf-evals/runs/ -type f | head -30'
-ssh jesse@magic-kingdom 'cat /data/serf-evals/runs/*/manifest.json'
-ssh jesse@magic-kingdom 'cat /data/serf-evals/runs/*/summary.json'
+ssh jesse@magic-kingdom 'find /data/evener-evals/runs/ -type f | head -30'
+ssh jesse@magic-kingdom 'cat /data/evener-evals/runs/*/manifest.json'
+ssh jesse@magic-kingdom 'cat /data/evener-evals/runs/*/summary.json'
 ```
 
 **Step 6: Verify the full chain**
@@ -945,7 +945,7 @@ ssh jesse@magic-kingdom 'cat /data/serf-evals/runs/*/summary.json'
 ```bash
 # Collect should have happened automatically
 # Check the report
-rsync -avz jesse@magic-kingdom:/data/serf-evals/runs/*smoke-test*/ /tmp/smoke-test-result/
+rsync -avz jesse@magic-kingdom:/data/evener-evals/runs/*smoke-test*/ /tmp/smoke-test-result/
 open /tmp/smoke-test-result/report.html
 ```
 

@@ -6,7 +6,7 @@ Workstream: 1 of 6 from the 2026-07-03 web-UI UX diagnostic
 
 ## Problem
 
-When an agent ends its turn — question or not — the thread shows plain gray **Idle**: `agent.SessionState` collapses "waiting for your reply" and "genuinely idle" into one value (agent/session_state.go:13), so the wire `ThreadStatusAwaiting` is unreachable for serf sessions. The NeedsYou tier never lists them, notifications key on impossible transitions behind a 5s poll with channels off, and nothing pushes sidebar updates for unopened sessions.
+When an agent ends its turn — question or not — the thread shows plain gray **Idle**: `agent.SessionState` collapses "waiting for your reply" and "genuinely idle" into one value (agent/session_state.go:13), so the wire `ThreadStatusAwaiting` is unreachable for evener sessions. The NeedsYou tier never lists them, notifications key on impossible transitions behind a 5s poll with channels off, and nothing pushes sidebar updates for unopened sessions.
 
 ## Decisions (Jesse, 2026-07-03)
 
@@ -58,11 +58,11 @@ When an agent ends its turn — question or not — the thread shows plain gray 
 
 - **Wedge unification:** the stale-stream heuristic (app_threadlist.go:254) moves to shared hubcore, applied by tree build and list/read enrichment; the watcher probes only sessions sampled `active` beyond a **new** hub constant (3 min, mirroring the client's `LIVENESS_STALL_MS` — round-4 B6 caught v4 attributing this to a heuristic constant that doesn't exist). Small set, bounded tail reads.
 - **Watcher:** per-source async collectors with per-source timeouts; debounced fsnotify; empty-success hysteresis; differ over `id → (state, archived, topLevel)` fed by a **meta-projection cache** (`id → {isSubagent, project, lastActivity}`) refreshed on past-index rebuilds, rendezvous events, and archive-handler pushes.
-- **Broadcast:** `serf/attention/changed` via `BroadcastAll` with `changed[]` + `summary`; **summary is authoritative for badge counts**, computed from the tier-eligible set — which, with the tier archive filter above, is now genuinely the same definition. Restart re-seeds silently.
+- **Broadcast:** `evener/attention/changed` via `BroadcastAll` with `changed[]` + `summary`; **summary is authoritative for badge counts**, computed from the tier-eligible set — which, with the tier archive filter above, is now genuinely the same definition. Restart re-seeds silently.
 
 ## Web client
 
-- Sidebar/NeedsYou/rollups: the errored-lane edits; `serf/attention/changed` joins the refresh allowlist.
+- Sidebar/NeedsYou/rollups: the errored-lane edits; `evener/attention/changed` joins the refresh allowlist.
 - **notifications.js:** delete the 5s poll. Baseline = one `/api/tree` fetch on connect; thereafter counts come from `summary` in each broadcast (no per-change refetch). **Per-tab latency, stated honestly (round-4 A5/B12):** `thread/status/changed` arrives id-less (appwire.js:827) on a single-thread subscription, so only the tab with the thread open can attribute it — that tab adjusts its own badge instantly for its own thread (it knows which thread it's subscribed to); other tabs, a TUI-only open, and a non-owner leader tab reconcile at the ≤5s broadcast. The instant-clear invariant is: *the tab you replied in clears instantly; everything else within a tick.* No baseline → no edge-firing. OS + sound on transitions into `needs_you`/`error`; focused-tab suppression; multi-tab **leader election** (Web Locks, localStorage-CAS fallback) for OS/sound only — badges stay per-tab.
 - **Prefs migration:** versioned one-time backfill (existing blob → absent keys as explicit `false`; absent blob → new defaults ON). Settings copy + pill labels use the unified vocabulary.
 
@@ -87,7 +87,7 @@ Old daemons degrade to today's behavior. Watcher: per-source isolation, panic re
 
 ## Out of scope
 
-Read-tracking (punted; protocol-clean path recorded: hub-inferred cursor + hub-terminated `serf/thread/seen/set`), ask detection (job-control's `ask` lands as another `awaiting` producer; its background jobs fit the working-projection rule **subject to the ask-precedence rule above**), subagent attention propagation, child-stall wedge extension, per-message read receipts, background push, workstreams 2–6 (recorded: keep ⌘↵ + setting; project-level delete only).
+Read-tracking (punted; protocol-clean path recorded: hub-inferred cursor + hub-terminated `evener/thread/seen/set`), ask detection (job-control's `ask` lands as another `awaiting` producer; its background jobs fit the working-projection rule **subject to the ask-precedence rule above**), subagent attention propagation, child-stall wedge extension, per-message read receipts, background push, workstreams 2–6 (recorded: keep ⌘↵ + setting; project-level delete only).
 
 ## Estimate
 

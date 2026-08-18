@@ -24,10 +24,10 @@ harnesses by hand.
 
 ## WS1 — Inject the four effect seams (FOUNDATIONAL; do first)
 
-Almost all un-fuzzable code touches one of four effects. serf injects two well;
+Almost all un-fuzzable code touches one of four effects. evener injects two well;
 finish the set.
 
-| Effect | serf state | What to add |
+| Effect | evener state | What to add |
 | --- | --- | --- |
 | Clock | **done** — `agent/internal/clock`, advanceable fake | thread it into the remaining direct `time.Now()` sites the lanes worked around |
 | LLM network | **done** — `llm.ProviderAdapter` + stub adapters | — |
@@ -46,7 +46,7 @@ place a full library beats a hand-rolled interface is the **filesystem**: rather
 than a bespoke `Filesystem`, adopt **Afero** — it's Francia's os-mirroring drop-in
 built for exactly this (fake the FS in tests), with `NewMemMapFs` for fuzzing and
 `NewBasePathFs` to sandbox writes against escape. That's the deliberate exception to
-"a little copying beats a little dependency," justified because serf's fs-write
+"a little copying beats a little dependency," justified because evener's fs-write
 surface is broad and Afero is the canonical, stable answer.
 
 **Order (D2, resolved):** HTTP + Filesystem first — the *demonstrated* need (the
@@ -62,7 +62,7 @@ together, one subsystem at a time.
 ## WS2 — Entry-point ("front door") fuzzers (cash in WS1)
 
 Once the seams exist, stop fuzzing 280 functions and fuzz the handful of front
-doors that cover them transitively. serf already proves this pattern works
+doors that cover them transitively. evener already proves this pattern works
 (`FuzzLifecycleSeq` = whole session machine; `FuzzAppWireDispatch` = all 46 RPC
 handlers; `FuzzWebHandler`). Add/deepen:
 
@@ -80,13 +80,13 @@ leaf-function harness.
 
 ## WS3 — Differential pairs (INDEPENDENT, cheap, continuous)
 
-Every bug serf actually *found* came from a differential oracle, and a differential
+Every bug evener actually *found* came from a differential oracle, and a differential
 needs **no hand-written oracle** — "these two agree" is the oracle. Build one
 wherever two paths should match:
 
 - existing: cross-provider, stream-vs-nonstream, encode∘decode, the conformance
   goldens.
-- new, serf-concrete: an optimized path vs a naive reference (the lanes already
+- new, evener-concrete: an optimized path vs a naive reference (the lanes already
   wrote reference implementations — e.g. jobstore's `OutputMatcher` vs the hand
   reference splitter; token estimation fast path vs a recompute); old-version vs
   new (golden snapshots); two providers' request builders for the same logical
@@ -100,7 +100,7 @@ everything else.
 The root cause of low fuzz-reachability is **logic tangled with effects**
 (read → parse → decide → write). Extract the pure decision into a pure function;
 leave a thin I/O shell. The core fuzzes with **zero seams**; the shell is too thin
-to need fuzzing. serf's decoders are already this shape — that's *why* they fuzz
+to need fuzzing. evener's decoders are already this shape — that's *why* they fuzz
 well. Push it into the business logic (agent turn decisions, hub routing decisions,
 provider request assembly).
 

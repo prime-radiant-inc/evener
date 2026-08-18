@@ -33,12 +33,12 @@ Ticket: PRI-1880
 
 ## 1. Goal
 
-Turn serf's hardcoded provider registry into a **type/instance** model: provider
+Turn evener's hardcoded provider registry into a **type/instance** model: provider
 *types* that users *instantiate* into named, multi-instance, configured providers
 — including arbitrary OpenAI-compatible and Anthropic-compatible endpoints and
 multiple instances of one vendor. Replace the two duplicative web settings
 screens with one CRUD screen. Unify credential storage so the hub and standalone
-`serf` read the same provider config.
+`evener` read the same provider config.
 
 ## 2. Non-Goals
 
@@ -151,18 +151,18 @@ EqualFold(provider,"openrouter-anthropic")` (`app_rpc.go:1526`, `:1518`). Resume
 ### 3.5 Credentials, OAuth, config path
 
 API keys fragmented: hub uses `cfg.CredsStore` (loaded from `hubStateRoot`,
-default `~/.serf` — `config.go:51 DefaultHubStateRoot`, `app_rpc.go:103`);
-standalone `serf` reads **only env** (`serve.go:39`/`run.go:127` → `NewFromEnv`).
+default `~/.evener` — `config.go:51 DefaultHubStateRoot`, `app_rpc.go:103`);
+standalone `evener` reads **only env** (`serve.go:39`/`run.go:127` → `NewFromEnv`).
 (A pre-existing inconsistency: the `newHubAuthController` fallback computes a
 *different*, XDG-derived `filepath.Dir(openAIStateDir)/credentials.toml` at
 `app_auth.go:57` — the unified loader supersedes it.) FIVE type→env/mode maps:
 `credentials/store.go:38,60`, `launchconfig/env.go:30`, `app_auth.go:133`,
 `cmdutil.go:266`. `openai`-literal auth branches: `app_auth.go:108,151,191,249,
-292,430,461`, `serf-tui/auth.go:26,27,80`, `spawn.go:466`, `openai_login.go:215`,
+292,430,461`, `evener-tui/auth.go:26,27,80`, `spawn.go:466`, `openai_login.go:215`,
 and `AuthRecord.Validate()` rejects `Provider != "openai"` (`storage.go:142-143`).
 
-**OAuth is machine-global** at `$XDG_STATE_HOME/serf/auth/openai.json`:
-`serf openai login`'s `resolveOpenAIStateDir` ignores workDir →
+**OAuth is machine-global** at `$XDG_STATE_HOME/evener/auth/openai.json`:
+`evener openai login`'s `resolveOpenAIStateDir` ignores workDir →
 `DefaultStateDir()` (`openai_login.go:216-220`); the adapter reads it via
 `cfg.StateHome ← XDG_STATE_HOME` (`openai/adapter.go:80`, `env_registry.go:52`).
 The per-project `RuntimeDir` (`runtime_dir.go:18`) governs transcripts only.
@@ -187,7 +187,7 @@ unselectable, `cmdutil.go:72`). `NewFromEnv` consumers: `serve.go:39`,
    on**. `BehaviorTag(type, apiStyle)`: openai+responses→`openai`;
    openai+chat-completions→`openai-compatible`; otherwise == type.
 
-**Package layering** (verified: `llm` imports **zero** `serf` packages, so no
+**Package layering** (verified: `llm` imports **zero** `evener` packages, so no
 cycle):
 - **`internal/providerconfig`** (leaf): `Config`, `InstanceConfig {name, type,
   apiStyle, baseURL, credential}`, the loader, `BehaviorTag(type,apiStyle)`,
@@ -353,12 +353,12 @@ Phase 1 (§2).
 ### 4.9 Per-instance OAuth (keyed by instance name)
 
 OAuth is keyed by **instance name** end to end (no "by behavior tag" variant):
-`AuthFilePath(stateHome, instanceName)` → `$XDG_STATE_HOME/serf/auth/
+`AuthFilePath(stateHome, instanceName)` → `$XDG_STATE_HOME/evener/auth/
 <instanceName>.json` (same global root; per-instance filename). Default `openai`
 instance keeps `auth/openai.json`. Thread instance name + `cfg.StateHome` through
 `LoadAuth`/`SaveAuth`/`DeleteAuth`, the `Service`/`ResolveRuntimeCredentials`, the
 adapter recipe (`openai/adapter.go:80`), the hub auth controller
-(`app_auth.go`'s `openai` branches), the TUI (`serf-tui/auth.go:26,27,80` —
+(`app_auth.go`'s `openai` branches), the TUI (`evener-tui/auth.go:26,27,80` —
 `authStatus` gains the tag), `validateProviderCredentials` (`spawn.go:466`), and
 **`cmd/evener/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
 param). **`AuthRecord.Validate()` drops the `Provider == "openai"` check**
@@ -369,18 +369,18 @@ only for tag `openai`.
 
 ### 4.10 Storage — pinned path, ephemeral env, flag day
 
-- **`$hubStateRoot/providers.toml`** (default **`~/.serf/providers.toml`**,
-  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `serf`.
+- **`$hubStateRoot/providers.toml`** (default **`~/.evener/providers.toml`**,
+  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `evener`.
   The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/evener-hub`
   `package main`) **moves to `internal/providerconfig`** so `cmd/evener` can resolve
-  the identical path. OAuth stays under `$XDG_STATE_HOME/serf` (§3.5) — separate
+  the identical path. OAuth stays under `$XDG_STATE_HOME/evener` (§3.5) — separate
   root, unchanged. Format: `schema`, `default` (instance name),
   `[instances.<name>]` with `type`, `base_url`, `api_style`, inline `api_key`
   (omitted for OAuth/none).
 - **No migration (flag day).** Old `credentials.toml`/env/`openai.json` are not
   converted (zero deployed instances).
 - **Env fallback keeps the existing path (no synthesis).** When `providers.toml`
-  is absent, serf uses the **existing** `NewFromEnv` + the existing
+  is absent, evener uses the **existing** `NewFromEnv` + the existing
   `SelectProfile`-based resolution, with **`NameToTag` = identity** (env instances
   are named after their type, which == their behavior tag; `openrouter` →
   `openrouter`, etc.). This deliberately does **not** try to synthesize a
@@ -388,7 +388,7 @@ only for tag `openai`.
   `EnvAdapterFactory` (ollama's always-on registration, the openrouter
   dual-registration, OpenAI's OAuth-first detection, the import-order default).
   `NewFromEnv` already does all of that correctly; we reuse it. Zero-config
-  `OPENAI_API_KEY=… serf run` is unchanged. The new `Config` resolver +
+  `OPENAI_API_KEY=… evener run` is unchanged. The new `Config` resolver +
   config-derived `NameToTag` apply **only** when `providers.toml` exists (the file
   is then authoritative; env is not a layer).
 - **Default:** the file's `default` field (file case); `NewFromEnv`'s existing
@@ -412,13 +412,13 @@ key, or OAuth by instance name §4.9).
 ### 4.12 Spawn plumbing
 
 The hub threads `SERF_PROVIDERS_CONFIG=<path>` into `req.Env` via
-`launchconfig.ToEnv`, reaching **both** spawned `serf serve` and the `serf
+`launchconfig.ToEnv`, reaching **both** spawned `evener serve` and the `evener
 launch-check` subprocess (validate + `--models` paths). The load helper (§4.11)
 consults `SERF_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
 then the env fallback — so the spawned daemon uses exactly the hub's config. The
 single-provider env injection is removed. (A `hub.toml`-customized `hubStateRoot`
 reaches spawned daemons via `SERF_PROVIDERS_CONFIG`; a *directly* invoked
-`serf run` against a custom-root hub must set `SERF_PROVIDERS_CONFIG` itself —
+`evener run` against a custom-root hub must set `SERF_PROVIDERS_CONFIG` itself —
 documented, §9.)
 
 ### 4.13 Unified UI (Phase 2)
@@ -535,7 +535,7 @@ git history. v6 **validated the architecture**; these are the folded refinements
 - **Provider-conditional tools not re-run on switch** (gemini `web_search`) →
   §4.5 `SetModel` re-runs the registration.
 - **`hubStateRoot` resolver unreachable from `cmd/evener`** → §4.10 move it to
-  `internal/providerconfig`; custom-root + direct `serf run` documented (§9).
+  `internal/providerconfig`; custom-root + direct `evener run` documented (§9).
 - **Same-instance rebuild needs the tag** → §4.4 thread name + tag through the
   rebuild constructor.
 - **anthropic `WithModel` strip / minimax+openrouter-anthropic recipe / TUI
@@ -554,8 +554,8 @@ profile-swap-safe; finish-norm needs no change; catalog-by-tag works
   7th review.
 - **Same-tag cross-instance fallback (§4.2):** the guard now allows it (safe —
   identical surface). Confirm no caller depended on the stricter same-id rule.
-- **Custom `hubStateRoot` + direct `serf run`:** hub-spawned daemons get the right
-  config via `SERF_PROVIDERS_CONFIG`; a *directly* invoked `serf run` against a
+- **Custom `hubStateRoot` + direct `evener run`:** hub-spawned daemons get the right
+  config via `SERF_PROVIDERS_CONFIG`; a *directly* invoked `evener run` against a
   hub configured with a non-default root must set `SERF_PROVIDERS_CONFIG` itself
   (it can't read `hub.toml`). Default-root setups need nothing. Documented
   limitation, not a blocker.

@@ -152,8 +152,8 @@ Assert that phone rules preserve:
 Run:
 
 ```sh
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
 cd cmd/evener-hub/jstest && ./run-all.sh
 go test ./cmd/evener-hub -count=1
 git diff --check

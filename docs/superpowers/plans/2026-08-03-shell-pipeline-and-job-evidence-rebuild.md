@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make shell pipeline status trustworthy on every supported POSIX execution path, and make the agent guidance rely on Serf's existing durable job evidence instead of a fragile output marker.
+**Goal:** Make shell pipeline status trustworthy on every supported POSIX execution path, and make the agent guidance rely on Evener's existing durable job evidence instead of a fragile output marker.
 
 **Architecture:** The local execution environment will select only a shell that supports the explicitly requested `pipefail` option. It will never fall back to `/bin/sh` while still passing Bash-specific options; if Bash is unavailable, process startup will fail explicitly. Shell and job instructions will describe the existing automatic output retention, completion notification, exit status, and `read_transcript` path. An external `tee` artifact remains an optional user-directed escape hatch, not a completion protocol.
 
-**Tech Stack:** Go, `os/exec`, POSIX shell behavior, Serf shell/job tools, Markdown prompt sections.
+**Tech Stack:** Go, `os/exec`, POSIX shell behavior, Evener shell/job tools, Markdown prompt sections.
 
 ## Global Constraints
 

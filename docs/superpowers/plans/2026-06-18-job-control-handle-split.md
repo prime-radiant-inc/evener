@@ -6,7 +6,7 @@
 
 **Architecture:** Add durable delegate and watch projections to the existing jobstore event log, then route session tools through those projections instead of overloading delegate job records. Keep observer sidecars as `delegate` + `job_watch` + `delegate_send`; no observer-specific primitive is added.
 
-**Tech Stack:** Go, Serf `jobstore` JSONL events, Serf session tool registry, existing Go test suites, existing TUI/web JavaScript renderers.
+**Tech Stack:** Go, Evener `jobstore` JSONL events, Evener session tool registry, existing Go test suites, existing TUI/web JavaScript renderers.
 
 ---
 

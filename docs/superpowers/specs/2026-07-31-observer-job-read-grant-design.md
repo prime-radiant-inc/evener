@@ -33,11 +33,11 @@ most sidecar work. `job.notification` frames carry `job_id`, `job_type`,
 never the result. A handoff packager, a quality auditor, or a triage sidecar
 that must look at what the finished job actually produced has no path to it.
 
-Serf has the machinery for that path and cannot reach it.
+Evener has the machinery for that path and cannot reach it.
 `EventWatchReadGrant`, `lookupGrantedJobRead`, `mintWatchCreateReadGrant`, and
 `mintWatchSendReadGrant` all exist, are unit-tested, are folded durably by
 `jobstore.FoldGrants`, and are described in `docs/job-control.md` as a live
-capability (`:1211` "Serf grants the observer `job_read_output` for that
+capability (`:1211` "Evener grants the observer `job_read_output` for that
 watched job"). No model can mint a grant and no model could spend one:
 
 - both mint paths return early when the watch target is a session alias
@@ -67,7 +67,7 @@ Three commits, not two. The design must answer all three.
 | --- | --- | --- |
 | `9d0d777c6` (Jun 22) | `job_watch` `target`/`send` routing; `delegate_send(to="caller")` | Watching becomes source-owned; delivery is implicit to the watch's creator. `delegate.watch_parent` becomes the explicit, non-transitive parent-observation grant. |
 | `cf84923c6` (Jun 23) | `job_read_output` from the tool registry | "the public tool surface moves off the overloaded read API"; supervision splits onto `job_status`, evidence onto `read_transcript`, readiness onto `wait_for_transcript_match`. Handler kept "reachable from tests only". |
-| `64a3bcb21` (Jun 23) | `wait_for_transcript_match` | "Serf should not add a blocking transcript wait primitive; one future readiness signal belongs on `job_watch(output_match)`, and raw evidence stays on `read_transcript`." |
+| `64a3bcb21` (Jun 23) | `wait_for_transcript_match` | "Evener should not add a blocking transcript wait primitive; one future readiness signal belongs on `job_watch(output_match)`, and raw evidence stays on `read_transcript`." |
 
 Read together those reasons are narrower than "observers may not read". They
 are three statements about *shape*:
@@ -87,7 +87,7 @@ string.
 **Frame-referenced grant, minted by the runtime at delivery, spent through
 `read_transcript(transcript_ref="job:<job_id>")`.**
 
-When Serf delivers a watch frame whose event payload structurally names a
+When Evener delivers a watch frame whose event payload structurally names a
 concrete job, it durably records that the receiving observer session may read
 that one job's output. The observer spends the grant by passing the `job_id`
 it read out of the frame's `event:` block to the evidence tool every session
@@ -476,7 +476,7 @@ the retained-output/windowing coverage `cf84923c6` deliberately kept.
   primitive is gone; it must point at `job_watch(output_match)`;
 - the V1 tool availability matrix (`:903-904`), which lists `job_read_output`
   in both the root and the delegate row;
-- the observer bullet (`:1211`), rewritten from "Serf grants the observer
+- the observer bullet (`:1211`), rewritten from "Evener grants the observer
   `job_read_output` for that watched job" to name the concrete frame kind, the
   concrete call, and the terminal-only scope;
 - the "Relationship to transcript tools" decision table (`:1235-1236`), whose
@@ -497,7 +497,7 @@ the retained-output/windowing coverage `cf84923c6` deliberately kept.
 
 **`docs/agentic-testing.md`** needs its two audit recipes revisited:
 `## Auditing sidecar scenarios` (`:336`) greps
-`serf-doctor transcript --count job_read_output` and asserts the count is zero
+`evener-doctor transcript --count job_read_output` and asserts the count is zero
 before an observer callback, treating any such call as an impatience smell;
 `## Inspecting watch sidecars` (`:867`) lists parent-side `job_read_output`
 polling as a fluency anti-pattern. Both are about *polling*, and both are still

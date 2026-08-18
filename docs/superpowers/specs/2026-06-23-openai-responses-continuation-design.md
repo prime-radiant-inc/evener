@@ -6,7 +6,7 @@ Scope: OpenAI public `/v1/responses` and ChatGPT/Codex backend `/backend-api/cod
 
 ## 1. Problem
 
-Serf already has most of the raw materials for Responses API continuation, but it does not use them as a coherent request path:
+Evener already has most of the raw materials for Responses API continuation, but it does not use them as a coherent request path:
 
 - `llm.Request` exposes `PreviousResponseID` and `ConversationID`.
 - The OpenAI Responses adapter serializes `previous_response_id` and `conversation`.
@@ -15,7 +15,7 @@ Serf already has most of the raw materials for Responses API continuation, but i
 
 The missing piece is session-level request shaping. `prepareModelRequest` expands full local history every round, and `toResponsesInput` serializes every historical assistant tool call again. That means a malformed tool call from an earlier assistant turn can be resent to the provider before the model sees the error tool result. The current provider-safe argument sanitizer is a necessary full-history fallback defense, but it is not Codex parity.
 
-Codex's Responses path keeps function-call arguments raw, lets tool execution parse them, returns parse failures as tool outputs, and uses `previous_response_id` plus incremental input so prior provider output items are not resent. Serf should do the same for OpenAI Responses traffic where the active endpoint supports it.
+Codex's Responses path keeps function-call arguments raw, lets tool execution parse them, returns parse failures as tool outputs, and uses `previous_response_id` plus incremental input so prior provider output items are not resent. Evener should do the same for OpenAI Responses traffic where the active endpoint supports it.
 
 ## 2. Goals
 
@@ -32,7 +32,7 @@ Codex's Responses path keeps function-call arguments raw, lets tool execution pa
 Why this much scope:
 
 - The minimal alternative is a public-OpenAI-only malformed-tool-call delta experiment with no durable anchor metadata, no storage-scope fingerprint, no default export redaction, and no Codex-ready shared contracts.
-- That alternative is not safe to ship as a general session feature because `previous_response_id` turns provider response IDs into durable provider-state handles. Once Serf persists and reuses those handles, it needs auth/storage scoping, redaction, private local storage, fallback logging, and endpoint-family enablement gates from the first runtime-enabled endpoint.
+- That alternative is not safe to ship as a general session feature because `previous_response_id` turns provider response IDs into durable provider-state handles. Once Evener persists and reuses those handles, it needs auth/storage scoping, redaction, private local storage, fallback logging, and endpoint-family enablement gates from the first runtime-enabled endpoint.
 - The current full-history sanitizer prevents provider validation failures during replay, but it does not provide Responses continuation semantics: the malformed assistant item is still locally resent on full-history paths, and request-payload reduction cannot be proven.
 - The minimum acceptable V1-public win is semantic and observable: for a malformed-tool-call recovery turn, public OpenAI must accept a `responses_delta` request whose raw body contains only the resulting tool output plus `previous_response_id`, omits the malformed historical assistant item, and is net smaller than the paired full-history shadow after accounting for added continuation overhead such as `previous_response_id` and continuation-owned storage fields. Phase 12A-public must report omitted historical-item bytes, added continuation-overhead bytes, and net body-size delta separately. If Phase 12A-public cannot prove accepted anchor semantics and net request-payload reduction, Phase 12B-public does not land even if all deterministic plumbing works.
 - Before Phase 0A starts, Jesse must explicitly approve choosing the V1-public cut in Section 14 over the minimal experiment. If that approval is not given, this spec remains design collateral and implementation should stop at the already-landed sanitizer/raw-logging work.
@@ -44,11 +44,11 @@ Endpoint rollout scope:
 - Public OpenAI may be the first runtime-enabled endpoint family after its registry entry has production-path proof.
 - Codex backend request-shape discovery, deterministic fixtures, and shared adapter/session plumbing may land before Codex runtime enablement, but the Codex endpoint-family registry entry must remain `Enabled=false` until Phase 12A-codex records its production-path live proof and Phase 12B-codex enables that endpoint family.
 - While the Codex registry entry is disabled, Codex backend sessions must use `full_history` and must not send continuation-owned `previous_response_id` or storage flags, even if shared delta-building code already exists.
-- Public OpenAI implementation is intentionally included in V1 because Serf already exposes public Responses traffic and the shared logging/redaction/fallback contracts must be exercised there. Runtime enablement is still optional: Phase 12B-public may land only if the Phase 12A-public artifact shows provider acceptance, explicit invalid-anchor errors, real request-payload reduction, and no unacceptable provider-token/cost/quota behavior. Phase 12A artifacts must record concrete rollout thresholds such as eligible-hit-rate floor, prompt-cache hit-rate floor, storage-quota/error ceiling, provider-token/cost ceiling, and any rate-limit ceiling; if rollout diagnostics cross those artifact thresholds, flip the affected registry entry back to `Enabled=false` in a small 12C rollback commit.
+- Public OpenAI implementation is intentionally included in V1 because Evener already exposes public Responses traffic and the shared logging/redaction/fallback contracts must be exercised there. Runtime enablement is still optional: Phase 12B-public may land only if the Phase 12A-public artifact shows provider acceptance, explicit invalid-anchor errors, real request-payload reduction, and no unacceptable provider-token/cost/quota behavior. Phase 12A artifacts must record concrete rollout thresholds such as eligible-hit-rate floor, prompt-cache hit-rate floor, storage-quota/error ceiling, provider-token/cost ceiling, and any rate-limit ceiling; if rollout diagnostics cross those artifact thresholds, flip the affected registry entry back to `Enabled=false` in a small 12C rollback commit.
 
 Must-have driver and measurable target:
 
-- The must-have driver is Responses continuation parity, first runtime-realized on public OpenAI after Phase 12B-public and then on the Codex backend only after Phase 12B-codex. In both endpoint families, after a malformed assistant tool call, Serf must be able to send only the resulting tool output via `previous_response_id` without resending the malformed assistant item. The existing full-history sanitizer remains necessary, but it does not prove the continuation path or Codex backend parity.
+- The must-have driver is Responses continuation parity, first runtime-realized on public OpenAI after Phase 12B-public and then on the Codex backend only after Phase 12B-codex. In both endpoint families, after a malformed assistant tool call, Evener must be able to send only the resulting tool output via `previous_response_id` without resending the malformed assistant item. The existing full-history sanitizer remains necessary, but it does not prove the continuation path or Codex backend parity.
 - Each endpoint-family live proof must show that the delta request payload omits all pre-anchor assistant/tool-call items present in the paired full-history shadow request, report the gross omitted serialized-item bytes separately from added continuation-overhead bytes, and show a net body-size reduction for the scripted proof conversation. If an endpoint family cannot show this request-payload reduction and accepted anchor semantics in Phase 12A, its Phase 12B-public or Phase 12B-codex enablement does not land.
 
 Early discovery gates:
@@ -274,7 +274,7 @@ Schema compatibility expectations:
 - New `Turn` fields are optional `omitempty` fields. Old transcript readers must tolerate their absence.
 - Old transcripts with only `response_id` remain readable and exportable but are not eligible anchors.
 - New anchor-eligible Responses turns must include `ResponseIDHash` when they include `ResponseID`, so default exports do not depend on nearby `api_call` records to redact response handles.
-- Older Serf versions that read newer transcripts should ignore unknown metadata fields; if an older version rewrites a transcript and drops those fields, newer versions must treat the affected turns as non-anchorable and use `full_history`.
+- Older Evener versions that read newer transcripts should ignore unknown metadata fields; if an older version rewrites a transcript and drops those fields, newer versions must treat the affected turns as non-anchorable and use `full_history`.
 - ATIF/export code should pass these fields through according to the export mode: default exports include redacted/hash provider-state handles plus non-secret metadata, while local diagnostic raw exports include raw provider-state handles only when explicitly requested.
 - No transcript migration is required.
 
@@ -370,15 +370,15 @@ Hash construction:
 
 - Use a versioned HMAC-SHA256 identity such as `cont-scope-v1:<kind>:<base64url(hmac(scope_subkey, normalized_value))>`.
 - Provider-state handle hashes use the parallel form `cont-handle-v1:<kind>:<base64url(hmac(redaction_subkey, normalized_handle))>`, where `kind` is `response_id`, `previous_response_id`, or `conversation_id`. Changing the handle hash version affects newly written/exported hashes only and must never require rewriting historical raw handles.
-- `local_scope_secret` lives under the resolved private Serf state directory (`SERF_STATE_DIR` / XDG state home), outside per-session transcripts, in a dedicated continuation-secret file chosen in Phase 1B-secret. It is created with private file permissions, is never exported, and is not the provider credential.
-- `local_scope_secret` is a local root secret, not the direct HMAC key. Phase 1B-secret must derive separate subkeys with distinct labels, for example `serf-continuation-scope-v1` for `ContinuationStorageScope.Fingerprint` / auth-scope hashes and `serf-continuation-redaction-v1` for redacted provider-handle export/display hashes. Rotating one derived-key version must not force rotating the other unless the root secret itself is compromised.
+- `local_scope_secret` lives under the resolved private Evener state directory (`SERF_STATE_DIR` / XDG state home), outside per-session transcripts, in a dedicated continuation-secret file chosen in Phase 1B-secret. It is created with private file permissions, is never exported, and is not the provider credential.
+- `local_scope_secret` is a local root secret, not the direct HMAC key. Phase 1B-secret must derive separate subkeys with distinct labels, for example `evener-continuation-scope-v1` for `ContinuationStorageScope.Fingerprint` / auth-scope hashes and `evener-continuation-redaction-v1` for redacted provider-handle export/display hashes. Rotating one derived-key version must not force rotating the other unless the root secret itself is compromised.
 - API-key `CredentialHash` input is the normalized API key. OAuth `CredentialHash` input is a stable auth-record identity such as auth source plus account/workspace/subject identifiers, never an access token.
 - `AccountHash`, `WorkspaceHash`, `OrgIDHash`, and `ProjectIDHash` inputs are normalized identifiers.
 - `ContinuationStorageScope.Fingerprint` is a versioned canonical hash over endpoint family, normalized base URL/path, org/project hashes, `AuthScopeIdentity`, conversation id hash, and storage policy.
 
-If `local_scope_secret` cannot be created or no durable private Serf state home is available, continuation must fail closed for that session: use `full_history`, do not send continuation-owned `store:true`, do not persist anchor eligibility metadata, and log a diagnostic such as `continuation_scope_secret_unavailable`. The model call itself may still proceed on the normal full-history path.
+If `local_scope_secret` cannot be created or no durable private Evener state home is available, continuation must fail closed for that session: use `full_history`, do not send continuation-owned `store:true`, do not persist anchor eligibility metadata, and log a diagnostic such as `continuation_scope_secret_unavailable`. The model call itself may still proceed on the normal full-history path.
 
-The session may compare and log the `Fingerprint`, endpoint family, storage policy, and hash version, but it must not hash raw secrets itself. Never persist raw API keys, bearer tokens, OAuth tokens, or full account identifiers in transcript fields. Changing hash construction or rotating `local_scope_secret` changes `HashVersion`/fingerprints and invalidates old anchors predictably; Serf should use `full_history` rather than trying to migrate those anchors. Continuation eligibility requires exact `ResponseStorageScopeFingerprint` match so a restored session cannot reuse `previous_response_id` across API keys, orgs/projects, ChatGPT accounts, conversations, base URLs, or proxies.
+The session may compare and log the `Fingerprint`, endpoint family, storage policy, and hash version, but it must not hash raw secrets itself. Never persist raw API keys, bearer tokens, OAuth tokens, or full account identifiers in transcript fields. Changing hash construction or rotating `local_scope_secret` changes `HashVersion`/fingerprints and invalidates old anchors predictably; Evener should use `full_history` rather than trying to migrate those anchors. Continuation eligibility requires exact `ResponseStorageScopeFingerprint` match so a restored session cannot reuse `previous_response_id` across API keys, orgs/projects, ChatGPT accounts, conversations, base URLs, or proxies.
 
 Context boundary membership is relative to the active visible history slice used for the next request. V1 computes it only from explicit boundary turns in `s.history`. Eligibility always recomputes active-slice boundary membership for both the candidate anchor and the current request, in live sessions and restored sessions alike. The persisted `ResponseContextMarker` is the literal `cont-ctx-v1`: only its presence and version (`== "cont-ctx-v1"`) gate whether a turn was written by the continuation-aware schema. It is a diagnostic breadcrumb and must not encode a boundary hash or slice origin. On restore, compute the active visible slice after `ResumeHistory` has selected `[last checkpoint/summary, ...subsequent turns]`, then recompute boundary membership from that restored slice. Do not compare a persisted marker value from the old slice origin to a freshly restored slice origin. A future rewrite path that changes effective context without emitting a boundary turn must land a persisted epoch offset or explicit boundary record in the same change; v1 must not use an unpersisted live-only counter for continuation.
 
@@ -390,7 +390,7 @@ A request is eligible for `responses_delta` only when all of these are true:
 - The round is going to the OpenAI Responses adapter path, not a known Chat Completions fallback.
 - The resolved launch/runtime setting is `openai_responses_continuation=auto`.
 - The endpoint-family support registry entry for the current endpoint family is `Enabled=true`.
-- `SystemPromptAsUser` is disabled. If it is enabled, Serf must use `full_history`; this design does not add a separate system-as-user delta builder.
+- `SystemPromptAsUser` is disabled. If it is enabled, Evener must use `full_history`; this design does not add a separate system-as-user delta builder.
 - The visible history since the latest context boundary is text/tool-call/tool-result only for the first implementation. If prior image, document/file, web-search, provider-hosted reference inputs, provider-exposed reasoning items, encrypted reasoning blobs, or reasoning summary items appear before the anchor or in the delta, use `full_history` until endpoint-specific fixtures prove those item types can be safely continued and replayed. This item-kind gate owns reasoning-content detection even when reasoning content is attached to an assistant turn rather than represented as a separate turn kind.
 - The latest assistant turn in the visible history slice is the candidate anchor and has a non-empty response id, response id hash, response endpoint metadata, storage scope, request fingerprint, and `ResponseContextMarker="cont-ctx-v1"` marking it as written by the continuation-aware schema. The persisted marker value is a presence/version gate only. If a newer assistant turn exists but is not anchor-eligible, use `full_history`; do not skip over it to select an older anchor.
 - The anchor endpoint is compatible with the current endpoint family:
@@ -405,15 +405,15 @@ A request is eligible for `responses_delta` only when all of these are true:
 - No assistant output turn appears after the anchor. The delta may contain user input, tool results, and other explicitly supported non-assistant items only.
 - The delta after the anchor is non-empty.
 
-If any condition fails, Serf uses `full_history`.
+If any condition fails, Evener uses `full_history`.
 
-If an endpoint rejects the storage policy required for continuation, Serf must mark that endpoint family as continuation-disabled for the current session/key described in failure handling and use `full_history` rather than repeatedly issuing doomed delta requests.
+If an endpoint rejects the storage policy required for continuation, Evener must mark that endpoint family as continuation-disabled for the current session/key described in failure handling and use `full_history` rather than repeatedly issuing doomed delta requests.
 
 Eligibility computation is expected to be O(active visible history slice) per model round in V1 because it recomputes boundary membership, request fingerprint inputs, storage scope, and item-kind gates from the visible slice. This is acceptable for the first implementation because the model request already expands the same local history for fallback and shadow accounting. If rollout diagnostics show eligibility computation itself becoming material on long restored sessions, cache eligibility inputs with the same invalidation keys used for the shadow full-history estimate.
 
 ## 8. Anchor Selection
 
-The anchor is the latest assistant turn in `historyTurns`, and it must satisfy continuation eligibility and appear after the latest context boundary. Serf must not skip over a newer non-anchorable assistant turn to continue from an older anchor, because the provider-side state behind the older `previous_response_id` does not contain that newer assistant output.
+The anchor is the latest assistant turn in `historyTurns`, and it must satisfy continuation eligibility and appear after the latest context boundary. Evener must not skip over a newer non-anchorable assistant turn to continue from an older anchor, because the provider-side state behind the older `previous_response_id` does not contain that newer assistant output.
 
 Anchor selection and assistant-turn persistence must be serialized per session under the same session history lock/turn-order discipline used for normal model calls. A request may only continue from committed assistant turns already present in `s.history`. In-flight or partially streamed responses are not eligible anchors. If future work introduces overlapping model calls inside one session, each call must reserve its history base and reject continuation if another call commits a newer turn before dispatch.
 
@@ -430,7 +430,7 @@ The delta is expanded through the same `expandHistory` logic used today, so tool
 
 If the turn slice after the candidate anchor contains any assistant output turn, use `full_history`. The first implementation does not try to replay intervening assistant output inside a delta, and it must not strip such output while leaving later tool results behind.
 
-Any `function_call_output` / tool-result item in the delta must reference a `call_id` owned by the selected anchor response's server-side state or by another supported item inside the same delta. If Serf cannot prove that linkage from local transcript ordering and call ids, use `full_history`; do not send orphaned tool results in a delta.
+Any `function_call_output` / tool-result item in the delta must reference a `call_id` owned by the selected anchor response's server-side state or by another supported item inside the same delta. If Evener cannot prove that linkage from local transcript ordering and call ids, use `full_history`; do not send orphaned tool results in a delta.
 
 Anchor selection starts after the latest context boundary:
 
@@ -444,7 +444,7 @@ ASSISTANT(response_id=resp_2)
 eligible anchors: resp_2 only
 ```
 
-This is stricter than only checking the delta. Continuing from `resp_1` would ask the provider to reuse the full pre-compaction server-side state while Serf's local history now contains a compacted replacement for that state.
+This is stricter than only checking the delta. Continuing from `resp_1` would ask the provider to reuse the full pre-compaction server-side state while Evener's local history now contains a compacted replacement for that state.
 
 Examples:
 
@@ -496,7 +496,7 @@ For `responses_delta`, `buildModelRequest` still includes the current system pro
 
 The non-input request fields should remain the same as the full request would have used: model, tools, tool choice, reasoning effort, include fields, provider options, session/thread metadata, and Codex backend metadata. This follows the Codex pattern: previous server state supplies prior items, while the new request still declares the current request parameters.
 
-Reasoning-model continuity follows the same rule. Prior reasoning items are assumed to live in provider-side state behind `previous_response_id`; Serf does not replay them locally in `responses_delta`. The request fingerprint keeps `reasoning` and `include` fields, so changing reasoning effort, encrypted-reasoning settings, or reasoning-summary inclusion disables continuation. If a provider exposes reasoning items as local transcript inputs before the anchor or inside the delta, use `full_history` until endpoint-specific fixtures prove those items can be continued safely.
+Reasoning-model continuity follows the same rule. Prior reasoning items are assumed to live in provider-side state behind `previous_response_id`; Evener does not replay them locally in `responses_delta`. The request fingerprint keeps `reasoning` and `include` fields, so changing reasoning effort, encrypted-reasoning settings, or reasoning-summary inclusion disables continuation. If a provider exposes reasoning items as local transcript inputs before the anchor or inside the delta, use `full_history` until endpoint-specific fixtures prove those items can be continued safely.
 
 Prompt-cache controls remain in the request fingerprint. `responses_delta` intentionally changes the locally sent prefix, so existing full-history prompt-cache hit rates may change; that is a rollout observation, not an eligibility shortcut. Do not remove prompt-cache controls from the fingerprint to chase cache reuse.
 
@@ -506,7 +506,7 @@ V1 does not introduce new `ConversationID` population. The continuation handle i
 
 This means the `conversation` branch may be exercised only by tests or unusual profile/config paths in V1. It stays in the spec as a security boundary for already-present provider-state handles and for the Codex backend discovery path; it must not become an excuse to populate new conversations solely for continuation.
 
-Phase 0B-discovery must cover the concrete request shape where `previous_response_id` and `conversation` are both present. If an endpoint rejects or ambiguously handles co-presence, its enabled runtime path must either omit the explicit `conversation` on delta requests through a documented adapter canonicalization rule, or keep continuation disabled for requests with `ConversationID`. Serf must not rely on storage-scope matching alone to send an unproven co-present handle shape.
+Phase 0B-discovery must cover the concrete request shape where `previous_response_id` and `conversation` are both present. If an endpoint rejects or ambiguously handles co-presence, its enabled runtime path must either omit the explicit `conversation` on delta requests through a documented adapter canonicalization rule, or keep continuation disabled for requests with `ConversationID`. Evener must not rely on storage-scope matching alone to send an unproven co-present handle shape.
 
 Request shaping order:
 
@@ -560,7 +560,7 @@ Context and token accounting:
 Launch configuration and storage policy:
 
 - Add a launch-time setting with a global default and per-launch UI override for OpenAI Responses continuation.
-- Use one runtime/config key across direct CLI, `serf serve`, and hub-launched sessions: `openai_responses_continuation`, values `off` / `auto`.
+- Use one runtime/config key across direct CLI, `evener serve`, and hub-launched sessions: `openai_responses_continuation`, values `off` / `auto`.
 - Wire that key through `SessionConfig` as the single runtime source of truth, expose it to direct CLI users as `--openai-responses-continuation=off|auto`, and allow `SERF_OPENAI_RESPONSES_CONTINUATION` only as launch-time input into the same setting. The hub UI/global default must write the same config field rather than maintaining a parallel UI-only preference.
 - Persist the resolved launch value in `ConfigSnapshot` for session reproducibility.
 - Restore precedence is: explicit resume override first, persisted `ConfigSnapshot.openai_responses_continuation` second, current global default only for new sessions or old restored sessions with no persisted value.
@@ -568,11 +568,11 @@ Launch configuration and storage policy:
 - When an explicit resume override is used, record the effective value in the resumed session's snapshot so later resumes are not ambiguous.
 - Add `SERF_OPENAI_RESPONSES_CONTINUATION` to the envvars registry and update `docs/environment.md`, serve/hub environment help, and launch-setting docs so the CLI, server, and UI surfaces describe the same values and retention implications.
 - The shipping default must preserve existing public OpenAI retention semantics. In practice, public OpenAI/API-key continuation is off until the global default or launch override is set to `auto`.
-- `off` preserves current public OpenAI behavior: Serf must not send `previous_response_id` and must not change public OpenAI requests from `store:false` to `store:true` solely to create continuation anchors.
-- `auto` authorizes Serf to use endpoint-specific provider-side response storage when all continuation eligibility checks pass.
+- `off` preserves current public OpenAI behavior: Evener must not send `previous_response_id` and must not change public OpenAI requests from `store:false` to `store:true` solely to create continuation anchors.
+- `auto` authorizes Evener to use endpoint-specific provider-side response storage when all continuation eligibility checks pass.
 - The UI/docs copy must say that public OpenAI continuation stores response state with OpenAI because that is a provider-side retention change from today's default.
-- The same UI/docs surface must disclose that provider-side stored state and server-retained prior context can have cost implications even when Serf sends a smaller local request payload; Phase 12A artifacts record observed provider token counts instead of promising savings.
-- User-facing docs must state that changing or not syncing the Serf state directory across machines changes `local_scope_secret`, invalidates continuation anchors, and makes restored sessions use `full_history` until they create new eligible anchors.
+- The same UI/docs surface must disclose that provider-side stored state and server-retained prior context can have cost implications even when Evener sends a smaller local request payload; Phase 12A artifacts record observed provider token counts instead of promising savings.
+- User-facing docs must state that changing or not syncing the Evener state directory across machines changes `local_scope_secret`, invalidates continuation anchors, and makes restored sessions use `full_history` until they create new eligible anchors.
 
 Public OpenAI storage policy when continuation is `auto`:
 
@@ -594,7 +594,7 @@ Retention lifecycle:
 - Disabling continuation stops future `previous_response_id` use and stops future public OpenAI `store:true` requests made solely for continuation.
 - Disabling continuation does not delete response state already stored with the provider.
 - User-facing docs must state that provider retention duration and deletion controls are provider-defined. Stored provider-state deletion is out of scope for this implementation: if OpenAI exposes a supported deletion API for stored Responses state, deletion should be a separate explicit user action and phase, not an automatic side effect of changing the launch setting.
-- If a request sent continuation-owned provider storage and then was canceled, interrupted, or failed before Serf persisted a final anchor, provider-side stored state may exist without a local handle. Serf cannot clean that up in V1; it must log a diagnostic such as `continuation_orphaned_provider_state_possible` on incomplete stored attempts and disclose this retention case in the same user-facing storage copy.
+- If a request sent continuation-owned provider storage and then was canceled, interrupted, or failed before Evener persisted a final anchor, provider-side stored state may exist without a local handle. Evener cannot clean that up in V1; it must log a diagnostic such as `continuation_orphaned_provider_state_possible` on incomplete stored attempts and disclose this retention case in the same user-facing storage copy.
 - Stored local transcript anchors remain in the transcript but are ignored while continuation is off or storage scope no longer matches.
 - Phase 12A must estimate steady-state stored-response creation rate for the target endpoint family, using the expected eligible-hit rate and typical hub/session volume, and compare it with any known provider storage quota, retention limit, or cleanup/deletion capability. If storage growth is unbounded relative to known limits, or provider quota behavior cannot be bounded by rollback thresholds, Phase 12B must not enable that endpoint family.
 
@@ -603,7 +603,7 @@ Codex backend storage policy:
 - The implementation must not assume public OpenAI `store` semantics apply unchanged to `/backend-api/codex/responses`.
 - Codex backend continuation remains disabled until endpoint discovery has recorded the accepted request shape, Phase 12A-codex has recorded the production-path live proof artifact, and Phase 12B-codex has enabled the Codex endpoint family. Public OpenAI continuation can ship independently after its own Phase 12A-public/12B-public proof and enablement while Codex remains gated.
 - The first Codex-enabled implementation must cover the Codex backend request shape with deterministic tests and one opt-in live proof.
-- If the Codex backend rejects `store: true` but supports `previous_response_id` anyway, Serf should continue using the backend-accepted storage shape and document that endpoint behavior in the live test log.
+- If the Codex backend rejects `store: true` but supports `previous_response_id` anyway, Evener should continue using the backend-accepted storage shape and document that endpoint behavior in the live test log.
 - If the Codex backend requires a new explicit provider-side storage flag, that flag is also gated by the continuation launch setting.
 
 Endpoint-family enablement gate:
@@ -639,7 +639,7 @@ Chat Completions fallback safety:
 
 ## 11. Failure Handling
 
-Continuation is optimistic and has exactly one semantic continuation-recovery dispatch per primary provider/model round. The recovery dispatch may be a `full_history_fallback` retry, or an immutable-base retry without continuation-owned storage when the first attempt failed because provider-side storage quota/limits rejected continuation storage. If a `full_history_fallback` recovery attempt itself fails only because continuation-owned storage hit provider quota/limits, Serf may use one final storage-demotion retry with the immutable base request, no `previous_response_id`, and no continuation-owned storage. That demotion exists only to preserve today's safe full-history answer path; it cannot create a new anchor. After the semantic recovery plus optional storage-demotion retry, any further permanent continuation/storage error is surfaced or passed to the normal model-fallback policy. Serf must not keep chaining per-class continuation retries.
+Continuation is optimistic and has exactly one semantic continuation-recovery dispatch per primary provider/model round. The recovery dispatch may be a `full_history_fallback` retry, or an immutable-base retry without continuation-owned storage when the first attempt failed because provider-side storage quota/limits rejected continuation storage. If a `full_history_fallback` recovery attempt itself fails only because continuation-owned storage hit provider quota/limits, Evener may use one final storage-demotion retry with the immutable base request, no `previous_response_id`, and no continuation-owned storage. That demotion exists only to preserve today's safe full-history answer path; it cannot create a new anchor. After the semantic recovery plus optional storage-demotion retry, any further permanent continuation/storage error is surfaced or passed to the normal model-fallback policy. Evener must not keep chaining per-class continuation retries.
 
 | Provider result | Action |
 |---|---|
@@ -681,8 +681,8 @@ Continuation-disabled state:
 - Endpoint-level rejection of the `previous_response_id` field or the storage policy disables continuation for the current session only, keyed by provider, normalized endpoint URL/path, storage scope fingerprint, storage policy, and stream/non-stream request path.
 - Disabled state is not process-global, not persisted across sessions, and not shared across concurrent sessions.
 - Storage-quota disabled state is also session-local in V1. Concurrent or later sessions using the same key may rediscover the quota once, but each session's failure is bounded by the semantic recovery plus optional storage-demotion retry. A shared cross-process quota signal is future work because it would need its own persistence, expiry, and credential-scope privacy design.
-- Concurrent restored sessions may branch from the same stored `previous_response_id`. That is safe because Serf treats the provider-side anchor as read-only input, records each session's next successful anchor in that session's transcript, and keeps disabled state session-local.
-- Concurrent sessions may also produce independent stored responses from the same local ancestor. Serf must treat chaining as explicit through the selected `previous_response_id`, not as implicit provider conversation memory. If an endpoint family later requires an implicit `conversation` chain, that behavior must be proven in its endpoint-family fixtures and enforced through `ConversationIDHash` before enablement.
+- Concurrent restored sessions may branch from the same stored `previous_response_id`. That is safe because Evener treats the provider-side anchor as read-only input, records each session's next successful anchor in that session's transcript, and keeps disabled state session-local.
+- Concurrent sessions may also produce independent stored responses from the same local ancestor. Evener must treat chaining as explicit through the selected `previous_response_id`, not as implicit provider conversation memory. If an endpoint family later requires an implicit `conversation` chain, that behavior must be proven in its endpoint-family fixtures and enforced through `ConversationIDHash` before enablement.
 - Store disabled endpoint-family/key state in the live `Session` model-call state, not in transcript turns and not in adapter globals. It lasts until the session process ends or the launch/config storage-policy key changes.
 - Model fallback consults disabled state before selecting a delta attempt. If fallback changes provider, endpoint, model, or storage scope, that fallback attempt starts with no reused disabled entry, but continuation is still disabled unless the normal exact compatibility and registry checks pass.
 - On session restore, disabled state starts empty; persisted anchor metadata, storage scope, fingerprint, and reconstructed context marker still gate whether a delta can be attempted.
@@ -719,7 +719,7 @@ Attempt records use a stable grouping schema:
 
 Attempt records are append-only. `attempt_group_id`, `attempt_index`, `history_mode`, and the `attempt_count` value known at write time must match across transcript `api_call`, `llm.APILogger`, and raw HTTP entries for the same provider attempt. `attempt_count=0` permanently means "unknown at the time this record was emitted"; earlier records are never updated after fallback/retry classification completes. Phase 0A-audits must audit the current `llm.APILogger` write model and choose one final-count shape before Phase 5A starts: either the terminal attempt record carries `final_attempt_count`, or a separate group-summary record with the same `attempt_group_id` carries `final_attempt_count`. Phase 5A implements only the chosen shape. Tests in early phases should assert stable group/index fields and tolerate immutable `attempt_count=0`; retry/fallback phases own `final_attempt_count` semantics.
 
-Serf should also expose an aggregate diagnostic counter or existing metrics/log-summary field for `responses_delta`, `full_history`, and `full_history_fallback` counts by endpoint family. Metric labels must stay low-cardinality: endpoint family, history mode, and coarse diagnostic reason are acceptable; attempt ids, response hashes, storage-scope fingerprints, and provider handles must stay in logs, not metric labels. This is for rollout visibility and hit-rate debugging; correctness still comes from per-attempt logs and deterministic tests.
+Evener should also expose an aggregate diagnostic counter or existing metrics/log-summary field for `responses_delta`, `full_history`, and `full_history_fallback` counts by endpoint family. Metric labels must stay low-cardinality: endpoint family, history mode, and coarse diagnostic reason are acceptable; attempt ids, response hashes, storage-scope fingerprints, and provider handles must stay in logs, not metric labels. This is for rollout visibility and hit-rate debugging; correctness still comes from per-attempt logs and deterministic tests.
 
 Provider-state handle source of truth:
 
@@ -775,11 +775,11 @@ Provider-state handles:
 
 - `response_id`, `previous_response_id`, and conversation ids are sensitive provider-state handles.
 - The local transcript may store raw `ResponseID` because continuation/resume requires it, but only when the transcript/API sinks are private or have been hardened. Transcript files that contain raw provider handles inherit the same sensitivity as local session state.
-- Transcript files, raw HTTP logs, and local diagnostic exports that contain raw provider-state handles must be created with private user-only permissions (`0600` for files, `0700` for containing directories) or inside an already-private Serf state directory with equivalent effective permissions.
-- On first open/write after this change, Serf should check the active transcript, API log, raw HTTP log, and containing directories that may contain raw provider handles. If the current user owns a too-permissive file or directory, tighten it to the private mode above before writing new raw provider handles.
-- If Serf cannot harden an active transcript/API log that would receive raw provider handles, the model call may still proceed and ordinary assistant content may still be appended, but all raw provider-handle writes for that attempt must be suppressed: do not persist `Turn.ResponseID`, `APILogResponse.ID`, raw `previous_response_id`, raw conversation ids, or anchor eligibility metadata. Log a diagnostic and use `full_history` for future requests. If raw HTTP logging is enabled and its target cannot be made private, disable raw HTTP logging for that session and log a diagnostic rather than writing raw bodies to a permissive file.
+- Transcript files, raw HTTP logs, and local diagnostic exports that contain raw provider-state handles must be created with private user-only permissions (`0600` for files, `0700` for containing directories) or inside an already-private Evener state directory with equivalent effective permissions.
+- On first open/write after this change, Evener should check the active transcript, API log, raw HTTP log, and containing directories that may contain raw provider handles. If the current user owns a too-permissive file or directory, tighten it to the private mode above before writing new raw provider handles.
+- If Evener cannot harden an active transcript/API log that would receive raw provider handles, the model call may still proceed and ordinary assistant content may still be appended, but all raw provider-handle writes for that attempt must be suppressed: do not persist `Turn.ResponseID`, `APILogResponse.ID`, raw `previous_response_id`, raw conversation ids, or anchor eligibility metadata. Log a diagnostic and use `full_history` for future requests. If raw HTTP logging is enabled and its target cannot be made private, disable raw HTTP logging for that session and log a diagnostic rather than writing raw bodies to a permissive file.
 - Symlinks, non-owned files/directories, hard-linked files, and world/group-searchable session directories must be treated as unsafe for raw provider-handle writes unless the hardening code can prove the final target is owned by the current user and privately permissioned. Do not chmod through an untrusted symlink.
-- On Windows or any platform where POSIX `0600`/`0700` semantics cannot prove user-only access, use an ACL/equivalent check that proves only the current user and required system accounts can read the file. If Serf cannot prove an equivalent private ACL, use the same fail-closed behavior: suppress raw provider-handle writes, disable raw HTTP body logging, omit anchor eligibility metadata, and continue ordinary full-history operation with diagnostics.
+- On Windows or any platform where POSIX `0600`/`0700` semantics cannot prove user-only access, use an ACL/equivalent check that proves only the current user and required system accounts can read the file. If Evener cannot prove an equivalent private ACL, use the same fail-closed behavior: suppress raw provider-handle writes, disable raw HTTP body logging, omit anchor eligibility metadata, and continue ordinary full-history operation with diagnostics.
 - Existing historical raw response IDs are not removed in place. Default export and doctor/dashboard surfaces must treat older transcripts as sensitive local state and redact by default.
 - Keep existing raw local fields such as `APILogResponse.ID` for transcript compatibility and resume diagnostics, but add separate redacted/hash fields for user-facing navigation. Doctor/dashboard consumers must prefer the redacted field by default and treat the raw field as sensitive local debug data.
 - During the transition, default doctor/dashboard views must not display existing raw `APILogResponse.ID` or `Turn.ResponseID`. If a redacted hash is unavailable, omit the handle and show a diagnostic placeholder rather than falling back to raw.
@@ -802,8 +802,8 @@ Surface matrix:
 
 | Surface | Raw provider handles | Redacted/hash handles | Default | Permissions / audience |
 |---|---|---|---|---|
-| Local transcript turns | `Turn.ResponseID` for successful local Responses anchors. | Add hash fields for user-facing navigation when available. | Raw retained for resume. | Private Serf state; `0600` files or equivalent state-dir protection. |
-| Transcript `api_call` | Existing local `APILogResponse.ID` may remain for compatibility. | `APICall.Request.previous_response_id_hash`, `conversation_id_hash`, `APICall.Response.id_hash`. | Hashes preferred by readers. | Private Serf state; raw fields treated as local debug only. |
+| Local transcript turns | `Turn.ResponseID` for successful local Responses anchors. | Add hash fields for user-facing navigation when available. | Raw retained for resume. | Private Evener state; `0600` files or equivalent state-dir protection. |
+| Transcript `api_call` | Existing local `APILogResponse.ID` may remain for compatibility. | `APICall.Request.previous_response_id_hash`, `conversation_id_hash`, `APICall.Response.id_hash`. | Hashes preferred by readers. | Private Evener state; raw fields treated as local debug only. |
 | `llm.APILogger` `api.jsonl` | Existing local response IDs may remain. | Same attempt/group/hash fields as transcript. | Hashes preferred by readers. | Private local diagnostic log. |
 | Raw HTTP log | Raw request/response bodies may include provider handles. | Optional hashes in wrapper metadata. | Off unless raw logging enabled. | Explicit opt-in, private file permissions. |
 | Doctor/dashboard | Must not display raw handles by default. | Use hash/redacted fields. | Redacted. | User-facing local UI. |
@@ -820,7 +820,7 @@ Normal malformed-tool-call handling remains:
 
 ```text
 model emits raw malformed arguments
-  -> Serf stores raw arguments
+  -> Evener stores raw arguments
   -> tool execution parses/validates
   -> parse failure becomes an error tool result
   -> Responses continuation sends only the tool result
@@ -846,7 +846,7 @@ The first user-visible V1-public cut is public OpenAI runtime enablement: Phases
 | 1B-posix | Harden transcript/API/raw-log file creation for new raw provider-handle writes on the supported POSIX path. | New raw-handle transcript/API/raw-log files use private permissions; too-permissive owned paths are tightened; non-owned, symlinked, hard-linked, or non-private paths fail closed with diagnostics and without new raw provider-handle writes. Non-POSIX ACL support remains fail-closed until implemented. |
 | 1C-export | Add default ATIF/export redaction for provider handles and the shared `redacted|raw-local` export enum. | Request/response handle hashes are recorded without raw handle leakage in default exports; `raw-local` is recognized but rejected until Phase 11; compatibility audit records whether default raw `response_id` output changed or a compatible redacted shape was preserved. |
 | 1C-surfaces | Add doctor/dashboard redaction for provider handles. | Doctor/dashboard views prefer redacted/hash handles and omit unavailable hashes rather than falling back to raw `APILogResponse.ID` or `Turn.ResponseID`. |
-| 2A-config | Add runtime configuration for OpenAI Responses continuation and provider-side storage, wire direct CLI / `serf serve` / hub launch config to the same setting, and update `ConfigSnapshot` restore conversion. | Config tests prove direct CLI, `serf serve`, and hub-launched sessions resolve the same value; golden snapshots cover persisted values and old snapshots with no value; restore-precedence tests cover global `auto -> off`, global `off -> auto`, and explicit resume override. With endpoint support registry `Enabled=false` and planner/storage eligibility absent, `auto` still sends no `previous_response_id` and does not change public OpenAI from `store:false` to `store:true`; positive `store:true` assertions wait until planner/storage eligibility exists. |
+| 2A-config | Add runtime configuration for OpenAI Responses continuation and provider-side storage, wire direct CLI / `evener serve` / hub launch config to the same setting, and update `ConfigSnapshot` restore conversion. | Config tests prove direct CLI, `evener serve`, and hub-launched sessions resolve the same value; golden snapshots cover persisted values and old snapshots with no value; restore-precedence tests cover global `auto -> off`, global `off -> auto`, and explicit resume override. With endpoint support registry `Enabled=false` and planner/storage eligibility absent, `auto` still sends no `previous_response_id` and does not change public OpenAI from `store:false` to `store:true`; positive `store:true` assertions wait until planner/storage eligibility exists. |
 | 2B-docs-help | Wire envvars registry and docs/help surfaces for the same launch setting. | `SERF_OPENAI_RESPONSES_CONTINUATION`, `docs/environment.md`, direct CLI help, serve help, and hub launch-setting docs describe the same values, defaults, restore behavior, and retention/cost implications. |
 | 3A-auth | Add auth-scope identity propagation and the pure planner helper boundary. | Unit tests prove adapters receive sanitized `AuthScopeIdentity` produced with the Phase 1B-secret HMAC utility, and the pure planner helper cannot read raw credentials, bearer tokens, OAuth tokens, or raw org/project identifiers. Storage-scope fields on the planner result are present but zero/stubbed until Phase 4A. |
 | 3B-fingerprint | Add `llm.Client` planner access, adapter-owned request fingerprint canonicalization, and production-prompt determinism checks. | Unit tests prove the session obtains request-shape fields through `Client.PlanResponsesContinuation` without duplicating adapter body-building logic. Tests render the real production system prompt with fixed `WorkingDir`, `Platform`, `OSVersion`, `Today`, `Model`, and `KnowledgeCutoff` values and prove stable fingerprints, then render two different `Today` values and prove the expected fingerprint mismatch or explicit normalization behavior. Codex fingerprint tests cover the fields known at this phase; later Codex storage-field discovery must update these tests and bump the fingerprint version before Phase 12B-codex. |
@@ -933,7 +933,7 @@ Required deterministic coverage below is grouped by scenario, and each group nam
   - public OpenAI requests keep `store:false` and do not send `previous_response_id` when continuation/storage is disabled.
   - continuation-owned storage overrides are distinguishable from explicit user/provider storage settings and clearing an override never strips explicit settings.
 - Runtime configuration (Phase 2A-config and Phase 2B-docs-help):
-  - direct CLI, `serf serve`, env launch input, and hub launch UI all resolve through the same `openai_responses_continuation` runtime field.
+  - direct CLI, `evener serve`, env launch input, and hub launch UI all resolve through the same `openai_responses_continuation` runtime field.
   - envvars registry, `docs/environment.md`, serve/hub help, and launch-setting docs list `SERF_OPENAI_RESPONSES_CONTINUATION` with the same accepted values.
   - launch-setting docs disclose provider-side retention and possible provider-token/cost implications without promising billed-token savings.
   - `ConfigSnapshot` persists the resolved launch value; restore precedence is explicit override, then snapshot, then current global default only when no snapshot value exists.
@@ -982,7 +982,7 @@ Required deterministic coverage below is grouped by scenario, and each group nam
 - Provider-state handle redaction (Phase 1B-secret, 1B-posix, 1C-export, 1C-surfaces):
   - raw local transcript fields remain available for compatibility;
   - `cont-handle-v1:<kind>:<hmac>` hashes are produced with `local_scope_secret` for response id, previous response id, and conversation id handles;
-  - `local_scope_secret` is stored under the resolved private Serf state directory outside per-session transcripts and is created with private permissions;
+  - `local_scope_secret` is stored under the resolved private Evener state directory outside per-session transcripts and is created with private permissions;
   - `Turn.ResponseIDHash`, `APICall.Request.previous_response_id_hash`, and `APICall.Response.id_hash` are the persisted sources for default exports;
   - default ATIF/export redaction is present in Phase 1C-export before new provider-handle metadata can appear in shareable artifacts;
   - `raw-local` is recognized but rejected until Phase 11 local diagnostic export is implemented;
@@ -1054,8 +1054,8 @@ Required deterministic coverage below is grouped by scenario, and each group nam
 Live tests remain opt-in:
 
 ```sh
-SERF_OPENAI_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_OpenAIResponsesContinuation' -count=1 -v
-SERF_OPENAI_CODEX_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuation' -count=1 -v
+SERF_OPENAI_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_OpenAIResponsesContinuation' -count=1 -v
+SERF_OPENAI_CODEX_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuation' -count=1 -v
 ```
 
 Live tests prove endpoint acceptance, response-id reuse, two-branch behavior from one stored anchor, invalid/expired `previous_response_id` behavior, the proposed maximum anchor age, and observed provider token counts only. The semantic contract remains covered by deterministic tests.
@@ -1067,7 +1067,7 @@ Live tests prove endpoint acceptance, response-id reuse, two-branch behavior fro
 - If Jesse withholds that approval, this spec ships no new continuation runtime work; the maintained state is the already-landed sanitizer/raw-logging path until a separately scoped experiment is approved.
 - Continuation never skips over a newer non-anchorable assistant turn; any assistant output after the candidate anchor forces `full_history`.
 - Malformed historical assistant tool calls are not resent on the normal Responses continuation path.
-- Delta tool results must have provable `call_id` linkage to the selected anchor's server-side function calls or same-delta calls; otherwise Serf uses `full_history`.
+- Delta tool results must have provable `call_id` linkage to the selected anchor's server-side function calls or same-delta calls; otherwise Evener uses `full_history`.
 - Eligible full-history requests can produce the first future anchor by sending continuation-owned storage and persisting anchor metadata after success.
 - Public OpenAI continuation requests use a storage policy that actually preserves response state.
 - Public OpenAI storage behavior changes only when the launch/global setting permits continuation.
@@ -1089,7 +1089,7 @@ Live tests prove endpoint acceptance, response-id reuse, two-branch behavior fro
 - OpenAI org/project identifiers are hashed before they enter continuation planner metadata, storage scope, logs, or transcripts.
 - Credential-hash version changes or local scope-secret rotation invalidate old anchors predictably.
 - Missing `local_scope_secret` or missing private state home fails closed to full history without continuation-owned provider storage.
-- `local_scope_secret` lives under the resolved private Serf state directory outside per-session transcripts.
+- `local_scope_secret` lives under the resolved private Evener state directory outside per-session transcripts.
 - Storage-scope fingerprints and provider-handle redaction hashes use distinct derived subkeys from `local_scope_secret` so redaction-key rotation and scope-key rotation can be reasoned about separately.
 - Doctor/export diagnostics explain when secret rotation or state-dir replacement invalidated continuation anchor eligibility.
 - The session reaches continuation planning through `llm.Client`, not direct adapter registry access or duplicated body builders.
@@ -1141,19 +1141,19 @@ Live tests prove endpoint acceptance, response-id reuse, two-branch behavior fro
 - Tests can enable endpoint families only through injected test registry fixtures; production registry defaults remain disabled until the corresponding Phase 12B-public or Phase 12B-codex enablement commit lands.
 - Every phase proof rechecks the concrete substrate facts it relies on, such as current `appendAssistantTurn` call sites, current model-call serialization, or the reservation guard that replaced serialization.
 - Delta request billing usage and context-pressure accounting are recorded separately when provider usage undercounts full effective context.
-- The shadow full-history estimate is computed from the same full-history expansion that fallback would use; if that estimate is unavailable, Serf uses `full_history` instead of sending a delta request.
+- The shadow full-history estimate is computed from the same full-history expansion that fallback would use; if that estimate is unavailable, Evener uses `full_history` instead of sending a delta request.
 - Aggregate diagnostics expose continuation hit-rate inputs by endpoint family: `responses_delta`, `full_history`, and `full_history_fallback` counts, with no per-attempt or per-handle metric labels.
 - Rollout diagnostics expose provider storage-quota failure clustering by endpoint family while keeping disabled state session-local in V1.
 - History mode is represented with typed constants, not free-form strings.
 - ATIF/export preserves the new response metadata fields when present, while redacting provider-state handles by default.
 - Environment/help/docs surfaces describe `SERF_OPENAI_RESPONSES_CONTINUATION` consistently.
 - User-facing docs disclose provider-side retention and possible provider-token/cost implications without promising billed-token savings.
-- User-facing docs disclose that changing or not syncing the Serf state directory across machines changes `local_scope_secret`, invalidates continuation anchors, and causes full-history operation until new anchors are created.
+- User-facing docs disclose that changing or not syncing the Evener state directory across machines changes `local_scope_secret`, invalidates continuation anchors, and causes full-history operation until new anchors are created.
 - Raw provider-handle transcripts/logs are stored with private local permissions or equivalent private state-dir protection.
 - If transcript/API/raw-log hardening fails, raw provider-handle fields are suppressed for that attempt; ordinary assistant content may still be written without anchor metadata.
 - Shared-reader log tooling does not get an implicit compatibility carveout for raw provider handles; any multi-user raw-log access requires a separate explicit design, while default exports remain redacted.
 - Existing owned permissive transcript/API/raw-log files are tightened before new raw handles are written; if hardening fails, continuation or raw HTTP logging fails closed with diagnostics.
-- On non-POSIX platforms, raw provider-handle writes require an equivalent private ACL proof; otherwise Serf follows the same fail-closed path.
+- On non-POSIX platforms, raw provider-handle writes require an equivalent private ACL proof; otherwise Evener follows the same fail-closed path.
 - Default doctor/dashboard views never display raw `APILogResponse.ID` or `Turn.ResponseID`; they omit unavailable hashes rather than falling back to raw handles.
 - Concurrent restored sessions may branch from the same read-only provider anchor without sharing disabled state or overwriting each other's next anchor.
 - Stored provider-state deletion is not implemented in this scope and must be a separate explicit user action/phase if a provider exposes supported deletion.

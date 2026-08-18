@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cap the Serf hub workspace content column at a sensible width and center it on wide screens.
+**Goal:** Cap the Evener hub workspace content column at a sensible width and center it on wide screens.
 
 **Architecture:** Keep `#workspace` as the app-shell flex item and apply the max-width behavior to its existing child content sections. Add one named CSS custom property on `#workspace` and a shared width/margin rule for `.workspace-header`, `.conversation`, and `.workspace-input`.
 

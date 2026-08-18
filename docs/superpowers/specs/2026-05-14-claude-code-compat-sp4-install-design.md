@@ -1,13 +1,13 @@
 # SP4 — Plugin Install, Uninstall, Update (Detailed Design)
 
 Date: 2026-05-14
-Status: DEFERRED (2026-05-14 scope reduction). Go-side plugin install/uninstall/update is not in the initial release. Plugin lifecycle is handled by filesystem auto-discovery (SP-A) plus the SP-B manage-plugins skill — the agent stages plugin directories under `~/.config/serf/plugins/` or `<project>/.serf/plugins/`, where SP-A picks them up at session start. This spec stands as the design when CLI-driven install tooling is reintroduced.
+Status: DEFERRED (2026-05-14 scope reduction). Go-side plugin install/uninstall/update is not in the initial release. Plugin lifecycle is handled by filesystem auto-discovery (SP-A) plus the SP-B manage-plugins skill — the agent stages plugin directories under `~/.config/evener/plugins/` or `<project>/.evener/plugins/`, where SP-A picks them up at session start. This spec stands as the design when CLI-driven install tooling is reintroduced.
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Depends on: SP1 (config loader), SP3 (marketplace resolution)
 
 ## 1. Goal
 
-SP4 owns the plugin lifecycle: install, uninstall, update, list, enable, disable. It maintains the on-disk install state under `~/.config/serf/plugins/`, mirrors Claude Code's `installed_plugins.json` shape, and exposes a `serf plugin` subcommand tree that mirrors `claude plugin`'s CLI surface so existing scripts and muscle memory transfer.
+SP4 owns the plugin lifecycle: install, uninstall, update, list, enable, disable. It maintains the on-disk install state under `~/.config/evener/plugins/`, mirrors Claude Code's `installed_plugins.json` shape, and exposes a `evener plugin` subcommand tree that mirrors `claude plugin`'s CLI surface so existing scripts and muscle memory transfer.
 
 SP4 does not parse marketplace catalogs, does not fetch plugin source bytes, and does not load plugin contents at session startup. It calls SP3 to resolve a `(plugin, marketplace)` pair to a fetched payload directory and records the result. SP1 supplies the merged `SerfConfig`; SP4 updates the `enabledPlugins` field on disk in the appropriate scope's `config.json`. SP8 reads that field at session startup and asks SP4 for the cache path of every enabled plugin.
 
@@ -68,7 +68,7 @@ func LoadRegistry(registryPath string) (Registry, error)
 // missing (mode 0755). The caller holds the registry file lock (see §11).
 func SaveRegistry(registryPath string, r Registry) error
 
-// DefaultRegistryPath returns "~/.config/serf/plugins/installed_plugins.json"
+// DefaultRegistryPath returns "~/.config/evener/plugins/installed_plugins.json"
 // for the current user. Honors XDG_CONFIG_HOME the same way SP1 does.
 func DefaultRegistryPath() string
 ```
@@ -80,8 +80,8 @@ func DefaultRegistryPath() string
 // registry file lock and the cache root. Construct once per CLI invocation.
 type Installer struct {
     RegistryPath string                  // typically DefaultRegistryPath()
-    CacheRoot    string                  // typically ~/.config/serf/plugins/cache
-    GlobalConfig string                  // ~/.config/serf/config.json
+    CacheRoot    string                  // typically ~/.config/evener/plugins/cache
+    GlobalConfig string                  // ~/.config/evener/config.json
     ProjectRoot  string                  // git-root or "" if no project
     Marketplaces MarketplaceResolver     // SP3-provided, see §2.4
     Now          func() time.Time        // injectable for tests
@@ -296,7 +296,7 @@ Split on the last `@` in `req.Plugin`. If `req.Marketplace` is set and the spec 
 
 ### 4.2 resolveMarketplace
 
-Call `i.Marketplaces.Resolve(ctx, pluginName, marketplaceName)`. Any error propagates with the prefix `resolving plugin "<plugin>@<marketplace>": <err>`. If the marketplace is unknown to SP3, the user-facing error matches Claude Code's wording: `plugin "<plugin>@<marketplace>" is not in any known marketplace; run 'serf plugin marketplace add ...'`.
+Call `i.Marketplaces.Resolve(ctx, pluginName, marketplaceName)`. Any error propagates with the prefix `resolving plugin "<plugin>@<marketplace>": <err>`. If the marketplace is unknown to SP3, the user-facing error matches Claude Code's wording: `plugin "<plugin>@<marketplace>" is not in any known marketplace; run 'evener plugin marketplace add ...'`.
 
 ### 4.3 computeVersion
 
@@ -382,15 +382,15 @@ Step 3 is idempotent: a missing `enabledPlugins` entry is not an error. Step 4 i
 
 Step 5 garbage-collects the cache dir conservatively. Two scopes can share the same `installPath` (same version installed at user and project scope). We delete only when no registry entry of any scope still points at that path. Parent directory cleanup walks upward, stopping at the first non-empty parent or at `CacheRoot`.
 
-Failures in step 5 do not abort uninstall — the plugin is no longer installed once the registry is updated. We log and continue. A leftover cache dir is harmless; the next `serf plugin install` for that version reuses it (via the "already at" short-circuit).
+Failures in step 5 do not abort uninstall — the plugin is no longer installed once the registry is updated. We log and continue. A leftover cache dir is harmless; the next `evener plugin install` for that version reuses it (via the "already at" short-circuit).
 
-`--keep-data` is reserved for SP7's plugin data dir feature and is a no-op in SP4 v1 (no data dirs exist). The flag is accepted at the CLI for forward compatibility but logs a warning the first time per session: `--keep-data is reserved; serf does not maintain plugin data directories yet`.
+`--keep-data` is reserved for SP7's plugin data dir feature and is a no-op in SP4 v1 (no data dirs exist). The flag is accepted at the CLI for forward compatibility but logs a warning the first time per session: `--keep-data is reserved; evener does not maintain plugin data directories yet`.
 
-`--prune` (Claude Code's auto-remove of orphaned dependencies) is **rejected** at the CLI with a clear error: `--prune is not supported; serf v1 does not auto-install plugin dependencies`. Plugin dependencies are deferred per the parent spec.
+`--prune` (Claude Code's auto-remove of orphaned dependencies) is **rejected** at the CLI with a clear error: `--prune is not supported; evener v1 does not auto-install plugin dependencies`. Plugin dependencies are deferred per the parent spec.
 
 ## 6. Update Algorithm
 
-`serf plugin update` re-fetches the source and installs side-by-side at the new version, then swaps enable.
+`evener plugin update` re-fetches the source and installs side-by-side at the new version, then swaps enable.
 
 ```
 Update(req) =
@@ -415,7 +415,7 @@ Step 9 is the only place SP4 mutates `enabledPlugins` outside of explicit enable
 
 ### 6.1 update --all
 
-`serf plugin update --all [--scope <scope>]` updates every installed plugin at the given scope (default `user`). Iteration is sequential, in the same order keys are sorted in `installed_plugins.json` (alphabetical by `plugin@marketplace`).
+`evener plugin update --all [--scope <scope>]` updates every installed plugin at the given scope (default `user`). Iteration is sequential, in the same order keys are sorted in `installed_plugins.json` (alphabetical by `plugin@marketplace`).
 
 **Stance (resolves §14.2):** continue past failures. Each plugin's update is independent. Per-plugin errors collect into a `multierr`. The CLI prints a per-plugin status line as each finishes (`✓ plugin@mkt: 1.2.0 → 1.3.0`, `✗ plugin@mkt: <err>`) and a summary at the end (`updated 7 of 9 plugins`). Exit code: 0 if all succeed, 1 if any failed. JSON mode emits an array of `UpdateResult` entries with embedded errors.
 
@@ -441,37 +441,37 @@ Disable(req) = same but step 5 deletes the key. If the key is absent,
 
 `pathForScope`:
 
-- `ScopeUser` → `~/.config/serf/config.json` (i.e. SP4's `i.GlobalConfig`).
-- `ScopeProject` → `<i.ProjectRoot>/.serf/config.json`; requires `i.ProjectRoot != ""`. If empty, error: `--scope project requires a git repository`.
+- `ScopeUser` → `~/.config/evener/config.json` (i.e. SP4's `i.GlobalConfig`).
+- `ScopeProject` → `<i.ProjectRoot>/.evener/config.json`; requires `i.ProjectRoot != ""`. If empty, error: `--scope project requires a git repository`.
 - `ScopeLocal`, `ScopeManaged` → rejected as unsupported in v1.
 
 `loadRawConfig` and `writeRawConfig` read/write the raw JSON object, preserving any fields SP4 does not own. Their implementation lives in `internal/plugins/config_rewrite.go`. They do not parse hooks/mcpServers/permissions semantically — they treat the JSON as a `map[string]json.RawMessage` with a destructured `enabledPlugins` field, exactly mirroring SP1's read shape but for the writeback direction.
 
 Atomicity: same tmp+rename dance as `SaveRegistry`. If the file did not previously exist, `writeRawConfig` creates a minimal `{ "enabledPlugins": { ... } }`.
 
-`requireInstalled` checks SP4's registry, not the cache dir. The install/enable decoupling means a user can install at user scope and then `serf plugin enable plugin@mkt --scope project` to flip on for the project — but only if the registry shows the plugin installed at project scope. Cross-scope enable (enable at project, installed at user only) is rejected with a clear error suggesting `serf plugin install --scope project ...`.
+`requireInstalled` checks SP4's registry, not the cache dir. The install/enable decoupling means a user can install at user scope and then `evener plugin enable plugin@mkt --scope project` to flip on for the project — but only if the registry shows the plugin installed at project scope. Cross-scope enable (enable at project, installed at user only) is rejected with a clear error suggesting `evener plugin install --scope project ...`.
 
 ## 8. CLI Surface
 
-The subcommand tree lives at `cmd/evener/plugin/install.go` and is registered under the root `serf plugin` group alongside SP3's `serf plugin marketplace`. Cobra-style flags, matching the rest of the serf CLI.
+The subcommand tree lives at `cmd/evener/plugin/install.go` and is registered under the root `evener plugin` group alongside SP3's `evener plugin marketplace`. Cobra-style flags, matching the rest of the evener CLI.
 
 ### 8.1 Commands
 
 ```
-serf plugin install <plugin>[@<marketplace>] [flags]
-serf plugin uninstall <plugin>[@<marketplace>] [flags]    (aliases: remove, rm)
-serf plugin update <plugin>[@<marketplace>] [flags]
-serf plugin update --all [flags]
-serf plugin enable <plugin>[@<marketplace>] [flags]
-serf plugin disable <plugin>[@<marketplace>] [flags]
-serf plugin list [flags]
+evener plugin install <plugin>[@<marketplace>] [flags]
+evener plugin uninstall <plugin>[@<marketplace>] [flags]    (aliases: remove, rm)
+evener plugin update <plugin>[@<marketplace>] [flags]
+evener plugin update --all [flags]
+evener plugin enable <plugin>[@<marketplace>] [flags]
+evener plugin disable <plugin>[@<marketplace>] [flags]
+evener plugin list [flags]
 ```
 
 ### 8.2 Flags
 
 | Flag | Applies to | Default | Description |
 |---|---|---|---|
-| `-s, --scope <user\|project>` | install, uninstall, update, enable, disable, list | `user` | Target scope. `local` and `managed` are rejected with "not yet supported in serf". |
+| `-s, --scope <user\|project>` | install, uninstall, update, enable, disable, list | `user` | Target scope. `local` and `managed` are rejected with "not yet supported in evener". |
 | `--marketplace <name>` | install | "" | Marketplace name when not encoded in the plugin spec. Mismatch with `@suffix` is an error. |
 | `--version <ver>` | install | "" | Pin install to a specific version. Verified against `plugin.json.version` post-fetch. |
 | `--pin` | install, enable | false | Write `{"version": "..."}` to `enabledPlugins` instead of `true`. |
@@ -502,7 +502,7 @@ The CLI runs a single registry lock per invocation. Lock contention exits 3 afte
 Human (default):
 
 ```
-$ serf plugin install formatter@my-marketplace
+$ evener plugin install formatter@my-marketplace
 Resolving plugin "formatter" from marketplace "my-marketplace"...
 Fetching version 1.2.0 (sha 6d3752c)...
 Installed formatter@my-marketplace 1.2.0 to user scope.
@@ -577,13 +577,13 @@ The "`unknown`" version is mutable: every subsequent install or update at "unkno
 
 A single advisory file lock at `<RegistryPath>.lock` serializes every mutating operation. The lock is held for the entirety of `Install`, `Uninstall`, `Update`, `Enable`, `Disable`. `List` does not acquire the lock — it tolerates a stale read because the JSON loader either reads a complete prior snapshot or a complete new snapshot (atomic rename guarantees there is no in-between).
 
-Implementation: `golang.org/x/sys/unix` flock on POSIX, `LockFileEx` on Windows. We already have a precedent in the codebase if the existing `.serf/` session lock pattern is reused; otherwise add `github.com/gofrs/flock` as a dependency.
+Implementation: `golang.org/x/sys/unix` flock on POSIX, `LockFileEx` on Windows. We already have a precedent in the codebase if the existing `.evener/` session lock pattern is reused; otherwise add `github.com/gofrs/flock` as a dependency.
 
-Lock acquisition uses an exponential backoff up to `LockTimeout` (default 30s, configurable via `SERF_PLUGIN_LOCK_TIMEOUT_MS`). On timeout, the CLI exits 3 with `another serf plugin operation is in progress (locked: <lockpath>)`.
+Lock acquisition uses an exponential backoff up to `LockTimeout` (default 30s, configurable via `SERF_PLUGIN_LOCK_TIMEOUT_MS`). On timeout, the CLI exits 3 with `another evener plugin operation is in progress (locked: <lockpath>)`.
 
 ### 10.2 What happens when two installs race
 
-Two `serf plugin install` invocations on the same machine race for the lock. Second waits. When second acquires, it re-reads the registry (first's writes are visible) and proceeds. If both target the same `(plugin, marketplace, scope, version)` tuple, the second short-circuits via "already at" — no double-fetch.
+Two `evener plugin install` invocations on the same machine race for the lock. Second waits. When second acquires, it re-reads the registry (first's writes are visible) and proceeds. If both target the same `(plugin, marketplace, scope, version)` tuple, the second short-circuits via "already at" — no double-fetch.
 
 Two installs of *different* `(plugin, marketplace)` pairs still serialize. SP4 v1 does not parallelize fetches. This matches Claude Code and keeps the failure model simple.
 
@@ -593,27 +593,27 @@ A crashed process can leave the lock file behind. On POSIX, the kernel releases 
 
 ### 10.4 Cross-machine concurrency
 
-Out of scope. `installed_plugins.json` is per-machine. If a project mounts the same `~/.config/serf/` over NFS (rare), flock semantics across NFS are not guaranteed; SP4 assumes a local filesystem. Cross-machine reproducibility is the job of `enabledPlugins` in committed `.serf/config.json`, not the registry.
+Out of scope. `installed_plugins.json` is per-machine. If a project mounts the same `~/.config/evener/` over NFS (rare), flock semantics across NFS are not guaranteed; SP4 assumes a local filesystem. Cross-machine reproducibility is the job of `enabledPlugins` in committed `.evener/config.json`, not the registry.
 
 ## 11. Error Contracts
 
-All exported `Installer` methods return errors that start with `serf plugin <subcommand>:` so the CLI can wrap them once for display without duplicating context.
+All exported `Installer` methods return errors that start with `evener plugin <subcommand>:` so the CLI can wrap them once for display without duplicating context.
 
 | Class | Triggered by | User-facing message |
 |---|---|---|
-| Bad spec | `parsePluginSpec` failure | `serf plugin install: plugin spec "x" requires a marketplace; pass plugin@marketplace or --marketplace <name>` |
-| Unsupported scope | `--scope local` or `--scope managed` | `serf plugin install: scope "local" is not yet supported in serf` |
-| Missing project | `--scope project` outside a git repo | `serf plugin install: --scope project requires a git repository (no .git found from <cwd>)` |
-| Marketplace miss | SP3 returns not-found | `serf plugin install: plugin "x@y" is not in any known marketplace; run 'serf plugin marketplace add ...'` |
-| Source fetch failure | `PluginSource.Fetch` errors | `serf plugin install: fetching "x@y": <wrapped err>` |
-| Validation failure | post-fetch invariant violated | `serf plugin install: validating "x@y" version "v": <reason>` |
-| Version mismatch | `--version` vs `plugin.json.version` | `serf plugin install: --version "1.0.0" does not match plugin.json version "1.0.1"` |
+| Bad spec | `parsePluginSpec` failure | `evener plugin install: plugin spec "x" requires a marketplace; pass plugin@marketplace or --marketplace <name>` |
+| Unsupported scope | `--scope local` or `--scope managed` | `evener plugin install: scope "local" is not yet supported in evener` |
+| Missing project | `--scope project` outside a git repo | `evener plugin install: --scope project requires a git repository (no .git found from <cwd>)` |
+| Marketplace miss | SP3 returns not-found | `evener plugin install: plugin "x@y" is not in any known marketplace; run 'evener plugin marketplace add ...'` |
+| Source fetch failure | `PluginSource.Fetch` errors | `evener plugin install: fetching "x@y": <wrapped err>` |
+| Validation failure | post-fetch invariant violated | `evener plugin install: validating "x@y" version "v": <reason>` |
+| Version mismatch | `--version` vs `plugin.json.version` | `evener plugin install: --version "1.0.0" does not match plugin.json version "1.0.1"` |
 | Already installed | Install short-circuit | (not an error; `InstallResult.AlreadyAt == true`) |
-| Not installed | Uninstall/enable/disable/update target missing | `serf plugin <op>: plugin "x@y" is not installed at scope "user"` |
-| Registry write failure | I/O error during atomic save | `serf plugin <op>: writing installed_plugins.json: <wrapped err>` |
-| Config write failure | I/O error writing config.json | `serf plugin <op>: writing <path>: <wrapped err>` (install reports success + this warning; uninstall reports success + this warning) |
-| Lock timeout | Could not acquire registry lock within `LockTimeout` | `serf plugin <op>: another serf plugin operation is in progress` |
-| Multi-error (update --all) | One or more sub-updates failed | `serf plugin update: 2 of 9 plugins failed: <joined>` |
+| Not installed | Uninstall/enable/disable/update target missing | `evener plugin <op>: plugin "x@y" is not installed at scope "user"` |
+| Registry write failure | I/O error during atomic save | `evener plugin <op>: writing installed_plugins.json: <wrapped err>` |
+| Config write failure | I/O error writing config.json | `evener plugin <op>: writing <path>: <wrapped err>` (install reports success + this warning; uninstall reports success + this warning) |
+| Lock timeout | Could not acquire registry lock within `LockTimeout` | `evener plugin <op>: another evener plugin operation is in progress` |
+| Multi-error (update --all) | One or more sub-updates failed | `evener plugin update: 2 of 9 plugins failed: <joined>` |
 
 Wrapping convention: every error is `fmt.Errorf("...: %w", inner)` so callers can `errors.Is` / `errors.As` for the underlying cause. The CLI uses `errors.As` to map specific error types to specific exit codes.
 
@@ -684,7 +684,7 @@ TDD: every test row below lands before the corresponding implementation. No mock
 | 1 | Save → Load returns identical struct | byte-equal JSON not required (we control key order, so byte-equality also passes) |
 | 2 | Save with sorted keys | output's `plugins` keys are alphabetical |
 | 3 | Atomic write: kill mid-rename simulated by injecting a rename failure | original file is untouched |
-| 4 | Save creates parent directory | `~/.config/serf/plugins/` mkdir-p works |
+| 4 | Save creates parent directory | `~/.config/evener/plugins/` mkdir-p works |
 | 5 | Save preserves indent: 2 spaces, trailing newline | byte-level assertion |
 
 ### 13.2 `version.go` tests
@@ -711,7 +711,7 @@ TDD: every test row below lands before the corresponding implementation. No mock
 | 1 | Fresh install at user scope | cache dir created; registry has one entry; global config.json has `enabledPlugins["x@y"]: true` |
 | 2 | Re-install same version, Force=false | InstallResult.AlreadyAt == true; mtime of cache dir unchanged |
 | 3 | Re-install same version, Force=true | cache dir's contents are re-fetched; registry `lastUpdated` advances |
-| 4 | Install at project scope | project's `.serf/config.json` populated; global config.json untouched |
+| 4 | Install at project scope | project's `.evener/config.json` populated; global config.json untouched |
 | 5 | Install with `--pin` | `enabledPlugins["x@y"] == {"version": "1.0.0"}` not `true` |
 | 6 | Install with `--no-enable` | registry updated; enabledPlugins absent |
 | 7 | Install with explicit `--version "1.0.0"` matching plugin.json | success, version recorded as "1.0.0" |
@@ -792,16 +792,16 @@ Exercise flag parsing, exit codes, and rendering. Stub the `Installer` interface
 
 | # | Case | Expect |
 |---|---|---|
-| 1 | `serf plugin install x@y` | exit 0; human-readable output mentions "Installed" |
-| 2 | `serf plugin install x` (no @) | exit 2; error mentions marketplace required |
-| 3 | `serf plugin install x@y --scope managed` | exit 2; error mentions "not yet supported" |
-| 4 | `serf plugin install x@y --json` | stdout is parseable JSON with `ok:true` |
-| 5 | `serf plugin install x@y` when resolver fails | exit 4; error mentions marketplace |
-| 6 | `serf plugin update --all --json` with mixed results | exit 1; JSON results array has both ok and error entries |
-| 7 | `serf plugin uninstall x@y --prune` | exit 2; error names `--prune` |
-| 8 | `serf plugin list --available` without `--json` | exit 2 |
-| 9 | `serf plugin list --json` | parseable JSON `plugins` array |
-| 10 | `serf plugin uninstall x@y --keep-data` | exit 0; one-shot warning printed to stderr |
+| 1 | `evener plugin install x@y` | exit 0; human-readable output mentions "Installed" |
+| 2 | `evener plugin install x` (no @) | exit 2; error mentions marketplace required |
+| 3 | `evener plugin install x@y --scope managed` | exit 2; error mentions "not yet supported" |
+| 4 | `evener plugin install x@y --json` | stdout is parseable JSON with `ok:true` |
+| 5 | `evener plugin install x@y` when resolver fails | exit 4; error mentions marketplace |
+| 6 | `evener plugin update --all --json` with mixed results | exit 1; JSON results array has both ok and error entries |
+| 7 | `evener plugin uninstall x@y --prune` | exit 2; error names `--prune` |
+| 8 | `evener plugin list --available` without `--json` | exit 2 |
+| 9 | `evener plugin list --json` | parseable JSON `plugins` array |
+| 10 | `evener plugin uninstall x@y --keep-data` | exit 0; one-shot warning printed to stderr |
 
 ### 13.6 Coverage gate
 
@@ -819,13 +819,13 @@ Exercise flag parsing, exit codes, and rendering. Stub the `Installer` interface
 
 **Rationale.** Three considerations dominate:
 
-1. **Reproducibility scope.** `installed_plugins.json` lives in `~/.config/serf/` and is per-machine. Committing it would be awkward — it contains absolute paths, machine-specific timestamps, and a `gitCommitSha` that depends on when each user happened to install. The thing users actually commit and share is `.serf/config.json`, where `enabledPlugins` lives. So the question is really "do we want `.serf/config.json` to be sufficient to reproduce an install on a teammate's machine?"
+1. **Reproducibility scope.** `installed_plugins.json` lives in `~/.config/evener/` and is per-machine. Committing it would be awkward — it contains absolute paths, machine-specific timestamps, and a `gitCommitSha` that depends on when each user happened to install. The thing users actually commit and share is `.evener/config.json`, where `enabledPlugins` lives. So the question is really "do we want `.evener/config.json` to be sufficient to reproduce an install on a teammate's machine?"
 2. **Default ergonomics.** Most users will be the only one on their project, or will not care about exact version pinning. Bare `true` keeps the file diff-friendly and matches Claude Code's most common config form.
-3. **Opt-in pinning.** Users who do want reproducibility (CI, shared `.serf/config.json` in a monorepo) get it via `--pin` at install time. The resulting `enabledPlugins["x@y"] = {"version": "1.2.0"}` reproduces the same version on any machine that re-runs the install during session startup (SP8's job).
+3. **Opt-in pinning.** Users who do want reproducibility (CI, shared `.evener/config.json` in a monorepo) get it via `--pin` at install time. The resulting `enabledPlugins["x@y"] = {"version": "1.2.0"}` reproduces the same version on any machine that re-runs the install during session startup (SP8's job).
 
-A `--pin-all` migration helper (`serf plugin pin --all`) that rewrites every bare `true` to a pinned object is a small, deferred follow-up — not part of v1.
+A `--pin-all` migration helper (`evener plugin pin --all`) that rewrites every bare `true` to a pinned object is a small, deferred follow-up — not part of v1.
 
-### 14.2 `serf plugin update --all` — continue or stop on first failure
+### 14.2 `evener plugin update --all` — continue or stop on first failure
 
 **Decision.** Continue past failures. Per-plugin errors collect; the CLI prints one status line per plugin as it finishes and a summary at the end. Exit code 0 if all succeed, 1 if any failed. `--json` returns the full results array.
 
@@ -840,9 +840,9 @@ The CLI surfaces failures clearly: each `✗ plugin@mkt: <err>` line is on its o
 ## 15. Other Open Questions (Not Resolved Here)
 
 - **SP3 type names.** SP4 calls SP3's resolver via the `MarketplaceResolver` and `PluginSource` interfaces defined in §2.4. If SP3's spec names them differently, SP4 renames before implementation. Coordination point.
-- **Plugin data directories.** Claude Code's `${CLAUDE_PLUGIN_DATA}` (persistent state surviving updates) is owned by SP7 if/when serf adopts it. `--keep-data` is wired through SP4's CLI for forward compat but is a no-op in v1.
+- **Plugin data directories.** Claude Code's `${CLAUDE_PLUGIN_DATA}` (persistent state surviving updates) is owned by SP7 if/when evener adopts it. `--keep-data` is wired through SP4's CLI for forward compat but is a no-op in v1.
 - **Bare-name resolution.** Claude Code's `claude plugin install <name>` (no `@mkt`) searches across known marketplaces. SP4 v1 requires the explicit `@mkt` suffix. A follow-up can layer cross-marketplace search on top.
-- **`local` and `managed` scopes.** Rejected as inputs in v1. Round-tripped in registry reads for compat. A future spec adds them when serf grows a `.serf/settings.local.json` and a managed-settings mechanism.
+- **`local` and `managed` scopes.** Rejected as inputs in v1. Round-tripped in registry reads for compat. A future spec adds them when evener grows a `.evener/settings.local.json` and a managed-settings mechanism.
 - **`plugin prune`.** Claude Code's dependency auto-remove. Rejected in v1 because the parent spec defers plugin dependencies.
-- **Cache GC grace period.** Claude Code keeps orphaned cache dirs for 7 days. SP4 v1 removes immediately on uninstall/update. Concurrent serf sessions that loaded the old version keep using the in-memory path until the session ends. A future spec can introduce the 7-day delay if mid-session updates become common.
+- **Cache GC grace period.** Claude Code keeps orphaned cache dirs for 7 days. SP4 v1 removes immediately on uninstall/update. Concurrent evener sessions that loaded the old version keep using the in-memory path until the session ends. A future spec can introduce the 7-day delay if mid-session updates become common.
 - **Trust prompts for project-declared marketplaces.** SP3 owns. SP4 calls SP3 to resolve; if SP3 refuses on trust grounds, SP4 surfaces the error.

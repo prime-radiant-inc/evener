@@ -1,14 +1,14 @@
-# Agentic-UX session study: every serf session, 2026-07-31 → 2026-08-05
+# Agentic-UX session study: every evener session, 2026-07-31 → 2026-08-05
 
-**Corpus:** 464 sessions (241MB of transcripts), all from the serf-repo bucket.
+**Corpus:** 464 sessions (241MB of transcripts), all from the evener-repo bucket.
 **Method:** 194 study agents, one per size-balanced session group, each working
-through `serf-doctor` per the doctoring-serf skill (outline → targeted markdown
+through `evener-doctor` per the doctoring-evener skill (outline → targeted markdown
 ranges, apilog, jobs, mutations, watches), writing evidence-backed findings per
 session; 10 reducer agents clustered the 851 raw findings into cross-session
 patterns; this document is the synthesis. Shard aggregations (per-pattern
 session lists and evidence) are preserved alongside the raw per-session findings
 in the study workspace; every claim below cites example session ids that can be
-re-checked with `serf-doctor`.
+re-checked with `evener-doctor`.
 
 **Outcomes:** 382 success, 57 partial, 19 failure, 6 unclear. 74 sessions
 (16%) were fully clean — zero findings.
@@ -18,10 +18,10 @@ incident, biased toward single fixes that close whole classes.
 
 ---
 
-## 0. Meta-finding: serf-doctor's apilog decoder is blind to OpenAI-family responses — ~248 sessions (53%)
+## 0. Meta-finding: evener-doctor's apilog decoder is blind to OpenAI-family responses — ~248 sessions (53%)
 
 The single most widespread defect in the corpus, and it corrupts the forensic
-layer itself. `serf-doctor apilog` reports `text_length=0, tool_call_count=0,
+layer itself. `evener-doctor apilog` reports `text_length=0, tool_call_count=0,
 empty=true` for essentially **100% of calls** from every OpenAI-family
 provider (gpt-5.4, gpt-5.4-mini, gpt-5.6-sol, gpt-5.6-luna, and the
 openai_codex Responses/continuation endpoints), even on sessions with hundreds
@@ -35,9 +35,9 @@ persisted body is an OpenAI **Responses-API SSE stream**
 `response.function_call_arguments.delta/.done`), and the extractor only walks
 the anthropic/chat-completions shape. Worse, it **fails closed to zero** —
 "confident empty" — instead of erroring or flagging "unparseable," exactly the
-failure mode the doctoring-serf skill exists to prevent. Related: `apilog
+failure mode the doctoring-evener skill exists to prevent. Related: `apilog
 --errors` hangs on very large logs (0340PfoBnXbBWnLToQU0DM; 608MB api.jsonl in
-03410Qj0SmX9L46Iv1Gb41 blew the 120s shell timeout), and `serf-doctor jobs`
+03410Qj0SmX9L46Iv1Gb41 blew the 120s shell timeout), and `evener-doctor jobs`
 reports "no jobs recorded" for sessions whose activity folded under a different
 `parent_session_id` (03426lfveEYC4NbYREX0hY) — another confident zero.
 
@@ -116,7 +116,7 @@ The most expensive cluster by turns and wall-clock:
   fire (0/18 deliveries in 03410Qj0SmX9L46Iv1Gb41 despite the matched string
   demonstrably appearing; 6/6 unfired in 0340YXtjqeXd1vZOdype8k), duplicate
   notification turns per completion (0342Cv2Nc0NTKhwnO4E1Yq — invisible to
-  `serf-doctor watches`, which showed 0 deliveries), and **stale notifications
+  `evener-doctor watches`, which showed 0 deliveries), and **stale notifications
   after end_turn** (~14 sessions): completion events arriving up to 54 minutes
   late, after the final answer, each costing a wasted acknowledgment turn.
 - **Premature success declarations** (~12 sessions): "Merged to main" while
@@ -127,7 +127,7 @@ The most expensive cluster by turns and wall-clock:
   (0341fGUxl8r3sxnOabufKp).
 
 **Fix:** (a) preserve and return partial output on run_timeout, and say
-explicitly "serf's job watchdog killed this, not your tool"; (b) make
+explicitly "evener's job watchdog killed this, not your tool"; (b) make
 auto-backgrounding a structured, unmissable field; (c) add a blocking
 `job_wait` (or equivalent) primitive; (d) root-cause the output_match
 non-delivery and duplicate/stale notification delivery; (e) consider warning
@@ -316,10 +316,10 @@ arguments (§4, liberal-output-caps, merged 2026-08-05).
 
 - Per-session findings JSON (464 files) and shard aggregations (10 files):
   session scratchpad `study/` directory
-  (`/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf/cc78eb94-b80a-4a06-a9c9-865a1b25eb66/scratchpad/study/`);
-  ephemeral — re-derivable from the durable session state via `serf-doctor`.
+  (`/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-evener/cc78eb94-b80a-4a06-a9c9-865a1b25eb66/scratchpad/study/`);
+  ephemeral — re-derivable from the durable session state via `evener-doctor`.
 - Every session id in this document is a selector:
-  `serf-doctor transcript <sid> --format outline` reproduces the evidence.
+  `evener-doctor transcript <sid> --format outline` reproduces the evidence.
 
 Caveat on self-reference: the study's forensic layer itself leaned on the
 tools it indicts. Where apilog was blind (§0), study agents fell back to

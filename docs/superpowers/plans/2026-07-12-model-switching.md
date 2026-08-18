@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Finish serf's mid-session model switching per the spec at
+**Goal:** Finish evener's mid-session model switching per the spec at
 `docs/superpowers/specs/2026-07-12-model-switching-design.md` (PRI-2574):
 validated + acknowledged switches, change notifications, snapshot freshness,
 turn-boundary gating, replay provenance rules, transcript markers, web/TUI
@@ -273,7 +273,7 @@ pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
   `[data-model-display]` without a thread re-read and re-keys the cached
   effort levels; (d) while `Status.Type == "active"` / `ActiveTurnID` is set
   (the signal `workspace.html:84-87` already uses — NOT `activeFlags`,
-  which serf daemons never populate) the trigger is disabled and the
+  which evener daemons never populate) the trigger is disabled and the
   palette action refuses with a notice; (e) an AppWire error from the set
   call renders the server message as a notice and leaves the chip
   unchanged; (f) a failed `model/list` fetch renders an error state in the
@@ -391,7 +391,7 @@ paragraph, `:663-666`)
   `test/scenarios/reasoning-effort-providers.md`'s conventions exactly: an
   **isolated `SERF_PROVIDERS_CONFIG`** declaring the instances the ladder
   needs (instance NAMES are deployment-local config, not repo facts — the
-  live `~/.serf/providers.toml` on this machine has no `anthropic` instance;
+  live `~/.evener/providers.toml` on this machine has no `anthropic` instance;
   discover/declare names in the card, refs are `instanceName/model`). Ladder:
   one session, tool-using turn on the anthropic instance, switch → openai
   instance → turn → switch → the kimi coding instance → turn, plus one

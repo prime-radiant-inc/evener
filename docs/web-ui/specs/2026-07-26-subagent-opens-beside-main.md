@@ -70,7 +70,7 @@ When an activated nested session's pane is currently in the main slot,
 Rail closes and reopens it in secondary. One-time correction per stuck
 pane, costing one transcript reload.
 
-Chosen over bumping the layout storage key (`serf.workspace.layout.v2`),
+Chosen over bumping the layout storage key (`evener.workspace.layout.v2`),
 which would fix it globally but discard every saved arrangement to
 repair a state most layouts are not in.
 

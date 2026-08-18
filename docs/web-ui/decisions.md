@@ -624,7 +624,7 @@ aside rather than another call to action.
 ## 2026-08-14 launch-error presentation: pass-through by default
 
 `friendlyLaunchErrorMessage` initially mapped the whole hubLaunch family to
-"no daemon — run serf" guidance. A live repro (credentialed daemon,
+"no daemon — run evener" guidance. A live repro (credentialed daemon,
 uncredentialed default provider) showed that masks the family's config half
 with actively wrong advice, and review showed it also destroyed the daemon's
 own propagated stderr — a diagnosis the hub has a dedicated Go test to

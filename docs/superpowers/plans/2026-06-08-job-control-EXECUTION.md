@@ -21,7 +21,7 @@ The design contract is `docs/superpowers/specs/2026-06-08-job-control-design.md`
 plan task references a `§`-section.
 
 **Phase gate (hard).** At each phase boundary, `make test` + the full `make lint` (golangci ×4 +
-`serf-namingcheck`/`internalcheck`/`docscheck`) must be green across all modules before the next phase
+`evener-namingcheck`/`internalcheck`/`docscheck`) must be green across all modules before the next phase
 begins. The phase plans' final task runs this; never skip it, never start the next plan on a red gate.
 
 All work stays on branch `job-control-spec`. Merging to `main` is a **separate human step** (branch

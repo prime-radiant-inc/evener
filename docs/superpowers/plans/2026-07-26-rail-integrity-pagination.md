@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Default tests remain deterministic and use real Serf code below scripted/external boundaries.
+- Default tests remain deterministic and use real Evener code below scripted/external boundaries.
 - Preserve per-tier recency ordering and the existing 50-row sidebar cap; pagination only reveals rows already classified and ordered by hubcore.
 - Do not hand-edit generated appwire code; run generation/drift checks after the wire changes.
 - Do not merge controller changes or close katas; comment on each owned kata with its commit and focused test evidence when ready.

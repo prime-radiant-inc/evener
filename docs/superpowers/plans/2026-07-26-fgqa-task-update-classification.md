@@ -12,7 +12,7 @@
 
 - Do not change `src/shell/rail/**` or any `Steering*` renderer/behavior.
 - Do not make `updates[].status` optional in the model-facing tool schema; report that alternative only in the handoff.
-- Read and follow `docs/testing.md`; default tests remain deterministic and use real Serf code below any external boundary.
+- Read and follow `docs/testing.md`; default tests remain deterministic and use real Evener code below any external boundary.
 - Write each regression test first, run it red for the intended reason, then implement the smallest change and run it green.
 - Preserve the existing task store single-`in_progress` validation and batch atomicity.
 - Do not hand-edit generated files; this kata has no generated-file change.

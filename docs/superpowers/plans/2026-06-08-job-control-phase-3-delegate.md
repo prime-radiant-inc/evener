@@ -11,10 +11,10 @@
 This is **Phase 3 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §5.4 (delegate), §5.4.1 (delegate result production), §5.5 (`job_send_message`), §5.10 (errors), §5.11 (discovery), §6 (notifications). It depends on **Phase 1** (`agent/internal/jobstore` merged) and **Phase 2** (the `JobManager`, `job_read_output`/`job_list`/`job_stop` tools, `capabilityJobControl`, the durable notification bridge, all merged). The new `delegate` and `job_send_message` tools register **alongside** the legacy subagent tools (`spawn_agent`/`resume_agent`/`wait`/…) — a temporary parallel surface; Phase 6 removes the legacy one.
 
 **Conventions for every task below:**
-- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/serf/agent`.
+- Work in the `agent` module: run Go commands from `/Users/jesse/prime-radiant/toil-suite/evener/agent`.
 - TDD: write the failing test first, watch it fail, write the minimal implementation, watch it pass, commit.
 - Commit messages use the repo's `type(scope): subject` style, e.g. `feat(agent): ...`.
-- Full `make test` + `make lint` from repo root (`/Users/jesse/prime-radiant/toil-suite/serf`) before the final task.
+- Full `make test` + `make lint` from repo root (`/Users/jesse/prime-radiant/toil-suite/evener`) before the final task.
 
 ---
 
@@ -195,7 +195,7 @@ In `agent/session_tools_communicate.go`, in the communicate Exec, capture the ra
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session.go agent/session_tool_registry.go agent/session_tools_communicate.go agent/session_tools_communicate_test.go
 git commit -m "feat(agent): capture raw communicate output for delegate structured_result"
 ```
@@ -308,7 +308,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false. A timeout leaves the job running."},
 				"result_schema": map[string]any{
 					"type":                 "object",
-					"description":          "JSON-Schema-like object for a structured result. Becomes the delegate's structured communicate output; Serf validates it and surfaces structured_result.",
+					"description":          "JSON-Schema-like object for a structured result. Becomes the delegate's structured communicate output; Evener validates it and surfaces structured_result.",
 					"additionalProperties": true,
 				},
 			},
@@ -323,7 +323,7 @@ func DefJobSendMessage() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "job_send_message",
 		Description: "Send a follow-up message to a delegate by `job_id`. If that delegate is still running, your " +
-			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
+			"message steers the live run; if it has finished, Evener resumes the same conversation as a new " +
 			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
 			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
 			"The same tool delivers observer commentary to a session alias (`caller`, `main`, `watched`).",
@@ -352,7 +352,7 @@ func DefJobSendMessage() llm.ToolDefinition {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go
 git commit -m "feat(tool): DefDelegate (agent_type enum) and DefJobSendMessage"
 ```
@@ -405,7 +405,7 @@ func TestJobControlCapabilityIncludesDelegateAndSendMessage(t *testing.T) {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/provider/profile.go agent/provider/profile_test.go
 git commit -m "feat(provider): wire delegate + job_send_message under capabilityJobControl"
 ```
@@ -506,7 +506,7 @@ This is the single, named special-case (parallel to the `communicate` dynamic-sc
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_tools.go agent/session_tools_test.go
 git commit -m "feat(agent): advertise live agent_type enum on the delegate tool"
 ```
@@ -723,7 +723,7 @@ type delegateResult struct {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_delegate.go agent/job_delegate_test.go agent/subagents.go agent/session_tools_subagent.go agent/session_config.go
 git commit -m "feat(agent): delegate jobs over the child-session runtime + structured_result capture"
 ```
@@ -857,7 +857,7 @@ func marshalDelegateResult(res delegateResult) string {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_tools_jobs.go agent/session_tools_jobs_test.go
 git commit -m "feat(agent): delegate tool handler"
 ```
@@ -981,7 +981,7 @@ NOTE on the §5.5 `delegate_session_busy` case (another job already running in t
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_delegate.go agent/job_delegate_test.go
 git commit -m "feat(agent): job_send_message steer/resume for delegate jobs"
 ```
@@ -1099,7 +1099,7 @@ The role gate (concrete `job_id` resume/steer = root-only) is enforced inside `s
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/session_tools_jobs.go agent/session_tools_jobs_test.go
 git commit -m "feat(agent): job_send_message tool handler"
 ```
@@ -1153,7 +1153,7 @@ NOTE: `jm.stop` (Phase 2 §5.8) calls `running[jobID].signal()` then awaits/fina
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_delegate.go agent/job_delegate_test.go
 git commit -m "test(agent): delegate job_stop maps to cancelled"
 ```
@@ -1223,7 +1223,7 @@ NOTE: `s.jobs.enqueue` is the Phase 2 field name on `jobManager` (`enqueue func(
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git add agent/job_delegate.go agent/jobs.go agent/job_delegate_test.go
 git commit -m "feat(agent): delegate terminal notification carries transcript_ref"
 ```
@@ -1237,7 +1237,7 @@ git commit -m "feat(agent): delegate terminal notification carries transcript_re
 - [ ] **Step 1: Grep-verify the `spawnAgent` signature change landed at both call sites** (per the file-state-race rule):
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 grep -n "func (s \*Session) spawnAgent" agent/subagents.go
 grep -rn "\.spawnAgent(" agent/ | grep -v "_test.go"
 ```
@@ -1245,16 +1245,16 @@ Confirm `spawnConfig` has the new `communicateOutputSchema` field, `spawnAgent` 
 
 - [ ] **Step 2: Run the full module test + lint**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && make test && make lint`
-Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the `spawnAgent` signature change may ripple to other tests that call it (update them to pass `nil`); the new `delegate`/`job_send_message` tools may appear in tool-count/parity/snapshot tests (update the expected tool inventory to include them — they are additive, alongside the legacy subagent tools).
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && make test && make lint`
+Expected: all modules PASS; lint clean (golangci ×4 + `evener-namingcheck`/`internalcheck`/`docscheck`). Fix any fallout. Likely touch points: the `spawnAgent` signature change may ripple to other tests that call it (update them to pass `nil`); the new `delegate`/`job_send_message` tools may appear in tool-count/parity/snapshot tests (update the expected tool inventory to include them — they are additive, alongside the legacy subagent tools).
 
 - [ ] **Step 3: Live smoke** (per `reference_serf_live_run` recipe — build a standalone binary, do NOT touch a running serve):
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/evener
+cd /Users/jesse/prime-radiant/toil-suite/evener
+go build -o /tmp/evener ./cmd/evener
 . "$PWD/.env"
-# In a scratch dir, run serf with a real model (e.g. --model oai-work/<model>) and ask it to:
+# In a scratch dir, run evener with a real model (e.g. --model oai-work/<model>) and ask it to:
 #  1. delegate a small task with background=false → confirm a job_id + completed + output;
 #  2. delegate with background=true → confirm a job_id + running, then job_read_output/job_list;
 #  3. job_send_message to the finished delegate's job_id → confirm action:"resumed" + a new job_id;
@@ -1266,7 +1266,7 @@ Expected: each step returns the spec §5.4/§5.5 shapes; the resumed job preserv
 - [ ] **Step 4: Commit any test/lint fixups**
 
 ```bash
-cd /Users/jesse/prime-radiant/toil-suite/serf
+cd /Users/jesse/prime-radiant/toil-suite/evener
 git status   # review before adding
 git add -A
 git commit -m "test(job-control): phase 3 delegate + job_send_message suite green"
