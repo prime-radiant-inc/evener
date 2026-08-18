@@ -1211,6 +1211,12 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 // is live.
 func (a *tmuxTUI) waitForInputReady(hub *tuiE2EHub) {
 	a.t.Helper()
+	// The baseline has to be taken AFTER the TUI's own startup tree fetch has
+	// landed. Taken before it, that fetch is itself an increase over the
+	// baseline, and the probe below returns satisfied by a round trip no
+	// keystroke caused — declaring the input reader live while the window this
+	// exists to close is still wide open.
+	hub.WaitForTreeRequests(a.t, 1)
 	baseline := hub.TreeRequests()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	nextDeadCheck := time.Now()
