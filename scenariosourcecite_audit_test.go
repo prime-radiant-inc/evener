@@ -25,7 +25,19 @@ import (
 // is the whole point of those sentences, so they are not checked.
 var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-z0-9_.]+)|:([0-9][0-9,-]*))`")
 
-// TestScenarioSourceCitationsResolve keeps a card's pointer into Go code
+// scenarioSourceCitation is scenarioGoCitation widened to every compiled
+// surface the corpus cites — the frontend's `.ts`/`.tsx` as well as Go.
+//
+// The Go-only spelling was not a decision, it was the language kata ypwb
+// happened to be looking at, and the corpus cites the frontend nearly as
+// heavily: 915 anchored source citations, 418 of them non-Go, none of which any
+// audit read until this one. Kata yj52 found the hole from the other side,
+// asking why a `.tsx` citation survived a green gate; the answer is that no
+// needle in the suite matched a `.tsx` path at all.
+var scenarioSourceCitation = regexp.MustCompile(
+	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#[A-Za-z0-9_.]+|:[0-9][0-9,-]*)`")
+
+// TestScenarioSourceCitationsResolve keeps a card's pointer into source code
 // attached to a file that still exists. Kata 2mzk's audit deliberately exempts
 // source paths from the no-line-numbers rule, because code has no headings to
 // anchor to; that exemption said nothing about whether the paths were right.
@@ -38,8 +50,12 @@ var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-
 // resolution is by path SUFFIX against the tree. That still catches the failure
 // that matters — the file moved out from under the citation, or was renamed,
 // or never existed under that name.
+//
+// What this does NOT check is the anchor behind the path: `DocPane.tsx:133`
+// and `DocPane.tsx:1` are the same claim here. Line ranges rot faster than
+// paths do, and nothing in the suite reads one.
 func TestScenarioSourceCitationsResolve(t *testing.T) {
-	byBase := scenarioGoFilesByBase(t)
+	byBase := scenarioSourceFilesByBase(t)
 	var findings []string
 	resolved := 0
 	for _, path := range scenarioCardFiles(t) {
@@ -48,11 +64,11 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
-			for _, m := range scenarioGoCitation.FindAllStringSubmatch(line, -1) {
+			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
 				cited := m[1]
-				if len(scenarioResolveGoPath(byBase, cited)) == 0 {
+				if len(scenarioResolveCitedPath(byBase, cited)) == 0 {
 					findings = append(findings, path+":"+strconv.Itoa(i+1)+
-						": `"+cited+"` names no Go file in the tree: "+strings.TrimSpace(line))
+						": `"+cited+"` names no source file in the tree: "+strings.TrimSpace(line))
 					continue
 				}
 				resolved++
@@ -61,20 +77,20 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 	}
 	// A corpus audit is green either because the corpus is clean or because its
 	// needle stopped matching anything; only a floor on matches tells the two
-	// apart. Cards cite Go code by the hundred today, so zero resolutions means
+	// apart. Cards cite source by the hundred today, so zero resolutions means
 	// the citation needle broke, not that the citations left.
 	if resolved == 0 {
-		t.Fatalf("the Go-citation needle matched nothing across the corpus — " +
+		t.Fatalf("the source-citation needle matched nothing across the corpus — " +
 			"the detector is dead and this audit is checking nothing")
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("a scenario card that points into a Go file must name a file "+
-			"that is still there — a package move or a rename silently turns "+
-			"every citation into it into a pointer at nothing, and no other "+
-			"audit sees it (kata ypwb). Repoint at the file that carries the "+
-			"code now, or drop the anchor if the sentence is deliberately "+
-			"naming something deleted:\n%s", strings.Join(findings, "\n"))
+		t.Fatalf("a scenario card that points into a source file must name a file "+
+			"that is still there — a package move, a rename, or a deleted "+
+			"component silently turns every citation into it into a pointer at "+
+			"nothing, and no other audit sees it (katas ypwb, yj52). Repoint at "+
+			"the file that carries the code now, or drop the claim if the code "+
+			"it described is gone:\n%s", strings.Join(findings, "\n"))
 	}
 }
 
@@ -108,7 +124,7 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 				}
 				checked++
 				found := false
-				for _, file := range scenarioResolveGoPath(byBase, cited) {
+				for _, file := range scenarioResolveCitedPath(byBase, cited) {
 					names, err := scenarioDeclarationsIn(declared, file)
 					if err != nil {
 						t.Fatalf("parsing %s cited by %s: %v", file, path, err)
@@ -142,6 +158,59 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 			"(kata ypwb). Repoint at the file and symbol that carry the code "+
 			"now:\n%s", strings.Join(findings, "\n"))
 	}
+}
+
+// scenarioSourceExtensionAlternation builds the regexp alternation for the
+// compiled-source extensions from the set itself, longest first, so the needle
+// and the file index cannot drift apart as that set grows.
+func scenarioSourceExtensionAlternation() string {
+	quoted := make([]string, 0, len(scenarioNeedleSourceExtensions))
+	for ext := range scenarioNeedleSourceExtensions {
+		quoted = append(quoted, regexp.QuoteMeta(ext))
+	}
+	sort.Slice(quoted, func(i, j int) bool {
+		if len(quoted[i]) != len(quoted[j]) {
+			return len(quoted[i]) > len(quoted[j])
+		}
+		return quoted[i] < quoted[j]
+	})
+	return strings.Join(quoted, "|")
+}
+
+// TestScenarioSourceCitationNeedleReadsEveryCompiledExtension pins the widening
+// itself. The audit above is a corpus scan, so it is green both when the corpus
+// is clean and when the needle quietly stops matching a language; the resolved
+// floor catches a needle that matches NOTHING, and this catches one that
+// matches only Go again.
+func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
+	for extension := range scenarioNeedleSourceExtensions {
+		cited := "panes/session/composer/Composer" + extension
+		m := scenarioSourceCitation.FindStringSubmatch("(`" + cited + ":641-643`)")
+		if m == nil || m[1] != cited {
+			t.Fatalf("the source-citation needle does not read a %s citation: %v", extension, m)
+		}
+		if m := scenarioSourceCitation.FindStringSubmatch("`Composer" + extension + "#handleSteerClick`"); m == nil {
+			t.Fatalf("the source-citation needle does not read a %s symbol anchor", extension)
+		}
+	}
+	// An anchorless path is a mention, not a citation — "the package was
+	// extracted out of `cmd/serf-tui/pending.go`" names a file on purpose.
+	for _, mention := range []string{"`Composer.tsx`", "`docs/job-control.md:940`", "`fixture.tsx.snap:12`"} {
+		if m := scenarioSourceCitation.FindStringSubmatch(mention); m != nil {
+			t.Fatalf("the source-citation needle read %s as a citation: %v", mention, m)
+		}
+	}
+}
+
+// scenarioSourceFilesByBase indexes the tracked compiled-source files in the
+// worktree by base name.
+func scenarioSourceFilesByBase(t *testing.T) map[string][]string {
+	t.Helper()
+	byBase, err := scenarioTrackedFilesByBase(".", scenarioNeedleSourceExtensions)
+	if err != nil {
+		t.Fatalf("listing tracked source files: %v", err)
+	}
+	return byBase
 }
 
 func TestScenarioDeviceFlowCitationCitesPackageDefault(t *testing.T) {
@@ -215,14 +284,14 @@ func (*Beta) Run() {}
 	}
 }
 
-func TestScenarioTrackedGoFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
+func TestScenarioTrackedFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go"} {
+	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go", "excluded.tsx"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("package fixture\n"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	for _, args := range [][]string{{"init", "--quiet"}, {"add", "tracked.go", "deleted.go"}} {
+	for _, args := range [][]string{{"init", "--quiet"}, {"add", "tracked.go", "deleted.go", "excluded.tsx"}} {
 		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
@@ -232,9 +301,9 @@ func TestScenarioTrackedGoFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
 		t.Fatalf("remove deleted fixture: %v", err)
 	}
 
-	byBase, err := scenarioTrackedGoFilesByBase(root)
+	byBase, err := scenarioTrackedFilesByBase(root, map[string]bool{".go": true})
 	if err != nil {
-		t.Fatalf("scenarioTrackedGoFilesByBase: %v", err)
+		t.Fatalf("scenarioTrackedFilesByBase: %v", err)
 	}
 	if got := byBase["tracked.go"]; len(got) != 1 || got[0] != "tracked.go" {
 		t.Fatalf("tracked Go files = %v, want tracked.go only", got)
@@ -244,6 +313,16 @@ func TestScenarioTrackedGoFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
 	}
 	if _, ok := byBase["deleted.go"]; ok {
 		t.Fatalf("deleted Go file appeared in checkout index: %v", byBase["deleted.go"])
+	}
+	if _, ok := byBase["excluded.tsx"]; ok {
+		t.Fatalf("file outside the requested extensions appeared in the index: %v", byBase["excluded.tsx"])
+	}
+	withTSX, err := scenarioTrackedFilesByBase(root, map[string]bool{".go": true, ".tsx": true})
+	if err != nil {
+		t.Fatalf("scenarioTrackedFilesByBase with .tsx: %v", err)
+	}
+	if got := withTSX["excluded.tsx"]; len(got) != 1 || got[0] != "excluded.tsx" {
+		t.Fatalf("requested .tsx files = %v, want excluded.tsx", got)
 	}
 }
 
@@ -339,10 +418,11 @@ func scenarioReceiverName(fields *ast.FieldList) string {
 	return receiverName(fields.List[0].Type)
 }
 
-// scenarioTrackedGoFilesByBase indexes tracked Go files by base name, so a
-// cited path suffix can be resolved without rewalking the tree per citation.
-func scenarioTrackedGoFilesByBase(root string) (map[string][]string, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go")
+// scenarioTrackedFilesByBase indexes the tracked files carrying one of the
+// given extensions by base name, so a cited path suffix can be resolved without
+// rewalking the tree per citation.
+func scenarioTrackedFilesByBase(root string, extensions map[string]bool) (map[string][]string, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z")
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
@@ -353,11 +433,14 @@ func scenarioTrackedGoFilesByBase(root string) (map[string][]string, error) {
 			continue
 		}
 		path = filepath.ToSlash(path)
+		if !extensions[filepath.Ext(path)] {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("stat tracked Go file %s: %w", path, err)
+			return nil, fmt.Errorf("stat tracked file %s: %w", path, err)
 		}
 		byBase[filepath.Base(path)] = append(byBase[filepath.Base(path)], path)
 	}
@@ -367,18 +450,18 @@ func scenarioTrackedGoFilesByBase(root string) (map[string][]string, error) {
 // scenarioGoFilesByBase indexes tracked Go files in the worktree by base name.
 func scenarioGoFilesByBase(t *testing.T) map[string][]string {
 	t.Helper()
-	byBase, err := scenarioTrackedGoFilesByBase(".")
+	byBase, err := scenarioTrackedFilesByBase(".", map[string]bool{".go": true})
 	if err != nil {
 		t.Fatalf("listing tracked Go files: %v", err)
 	}
 	return byBase
 }
 
-// scenarioResolveGoPath returns every Go file whose path is, or ends with, the
+// scenarioResolveCitedPath returns every file whose path is, or ends with, the
 // cited path. Cards abbreviate, so `internal/hubcore/tree.go` must find
 // `cmd/serf-hub/internal/hubcore/tree.go`; a bare `main.go` legitimately finds
 // many, which is imprecise but not stale.
-func scenarioResolveGoPath(byBase map[string][]string, cited string) []string {
+func scenarioResolveCitedPath(byBase map[string][]string, cited string) []string {
 	var out []string
 	for _, candidate := range byBase[scenarioCitedBaseName(cited)] {
 		if candidate == cited || strings.HasSuffix(candidate, "/"+cited) {
