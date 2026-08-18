@@ -82,6 +82,10 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	}
 	drainSessionEvents(sess)
 
+	// TRIPWIRE: this is a live, opt-in proof against the real public OpenAI
+	// Responses API (skipped unless SERF_OPENAI_RESPONSES_PHASE12_E2E=1). Two
+	// sequential real round trips share this budget; 240s is generous
+	// headroom over normal latency and only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "Reply exactly: anchor ok. Marker: "+priorMarker, nil); err != nil {

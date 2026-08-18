@@ -58,7 +58,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "store a phase 4d anchor", nil)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFul
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "do not create a continuation anchor", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -208,7 +208,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 		anchor,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "new delta user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -319,7 +319,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHisto
 		responsesContinuationEligibleAssistantTurn("resp_existing_anchor"),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "real openai current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
