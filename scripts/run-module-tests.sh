@@ -222,8 +222,6 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-tmp_base="${TMPDIR:-/tmp}"
-tmp_base="${tmp_base%/}"
 scratch_dir logdir serf-module-tests
 fail=0
 failed_modules=()

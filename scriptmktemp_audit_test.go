@@ -146,7 +146,7 @@ func uncheckedMktempAssignment(line string) bool {
 // list is the finding rather than an exemption, and removing an entry after
 // converting its suite to scratch_dir is the intended lifecycle.
 //
-// All 28 suites now build their scratch root with scratch_dir, so what is
+// All 21 suites now build their scratch root with scratch_dir, so what is
 // left here is not a suite root at all: fuzz-continuous-selftest.sh's remaining
 // unchecked `mktemp` is inside a stub's heredoc, minting a temp FILE that the
 // stub redirects into and then `mv`s. It never canonicalizes and nothing deletes
@@ -316,8 +316,10 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// check and exits 2 without deleting.
 	"e2e-webui-turn-controls.sh":  1,
 	"e2e-ratelimited-provider.sh": 1,
-	// Printed operator guidance inside a quoted heredoc — instructions for a
-	// human to review and run by hand, never executed by the script.
+	// Printed operator guidance, not a delete. The heredoc is unquoted — the
+	// scanned root has to interpolate — so this line escapes its own
+	// expansion (`rm -rf "\$dir"`) to reach the reader verbatim. Nothing
+	// runs it; a human reviews each entry and removes it by hand (kata gmpr).
 	"report-tmp-debris.sh": 1,
 	// Fake binaries simulating a scratch directory vanishing mid-run; the
 	// delete IS the behaviour under test, and its targets are pinned to the

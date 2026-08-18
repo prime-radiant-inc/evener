@@ -81,9 +81,17 @@ leftovers whose pid suffix no longer answers `kill -0`
 (scripts/covscratch-lib.sh). Every remaining variable-fed recursive
 delete in scripts/ lives on
 `TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned list with the
-reason it is allowed to exist, and the list only shrinks. `find -exec rm`
-and `xargs rm` spellings are equally banned; the audit cannot see them,
-so reviewers must.
+reason it is allowed to exist, and the list only shrinks.
+
+Two parts of the rule the audit cannot hold, which is why it is written
+here for people. Its scan is textual and per-line, so four equally banned
+spellings are invisible to it: `find -exec rm`, `xargs rm`, a tab between
+`rm` and its flags, and a backslash-newline continuation that puts the
+flags or the path on the next line. And the count pin is narrower than it
+sounds — it stops a file gaining an *extra* variable-fed delete and it
+fails a listed file whose lines went away, but it cannot see one blessed
+delete being swapped for a different one inside an already-listed file.
+Read the deletes in any diff that touches a listed file.
 
 **Hazards are banned by construction and enforced statically, never
 proven by firing live weapons.** A test never contains a live destructive
