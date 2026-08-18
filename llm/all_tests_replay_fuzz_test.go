@@ -231,6 +231,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestEmbeddedModelCatalog(t)
 		TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5(t)
 		TestEmbeddedModelCatalog_Claude5RequestShape(t)
+		TestEmbeddedModelCatalog_Claude5FlagCoversEveryClaude5CatalogKey(t)
 		TestEmbeddedModelCatalog_GPT56Family(t)
 		TestLookupModelInfo_CanonicalizesRefs(t)
 		TestLookupModelInfo_OneMillionContext(t)

@@ -1,9 +1,12 @@
 package llm
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -333,6 +336,79 @@ func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
 		}
 		if !mi.Claude5RequestShape {
 			t.Errorf("LookupModelInfo(%q).Claude5RequestShape = false, want true", ref)
+		}
+	}
+}
+
+// claude5OrNewerByID restates the Anthropic request builder's model-ID
+// generation parse (isClaude5OrNewer in llm/providers/anthropic/request.go):
+// the first numeric segment after "claude-" is the major generation. It is
+// restated rather than imported because that package imports this one.
+func claude5OrNewerByID(model string) bool {
+	if !strings.HasPrefix(model, "claude-") {
+		return false
+	}
+	for seg := range strings.SplitSeq(strings.TrimPrefix(model, "claude-"), "-") {
+		if n, err := strconv.Atoi(seg); err == nil {
+			return n >= 5
+		}
+	}
+	return false
+}
+
+// The Anthropic request builder treats the catalog as authoritative for every
+// model the catalog knows: a catalog entry without claude5_request_shape gets
+// the pre-5 wire shape, and the ID-generation parse is unreachable for it. So a
+// refresh of the vendored litellm_model_catalog.json that lands a Claude 5+ key
+// — claude-opus-6, or a renamed Claude 5 — without a matching overrides entry
+// would silently start sending that model sampling params it answers with a 400,
+// every other test still green.
+//
+// This replays the generation parse over the raw keys of both catalog data files
+// and demands the flag on each match, so that refresh breaks the build instead.
+func TestEmbeddedModelCatalog_Claude5FlagCoversEveryClaude5CatalogKey(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	var matched []string
+	for _, file := range []string{
+		"data/litellm_model_catalog.json",
+		"data/serf_model_catalog_overrides.json",
+	} {
+		data, err := embeddedCatalogFS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for id := range raw {
+			if !claude5OrNewerByID(id) {
+				continue
+			}
+			matched = append(matched, id)
+			mi := cat.GetModelInfo(id)
+			if mi == nil {
+				// Dropped at parse time (non-chat mode, no provider), so no
+				// request is ever built for it. isClaude5OrNewer's no-entry
+				// fallback would keep it on the safe shape regardless.
+				continue
+			}
+			if !mi.Claude5RequestShape {
+				t.Errorf("%s (in %s) reads as Claude 5+ by generation but carries no claude5_request_shape; "+
+					"add it to serf_model_catalog_overrides.json or the Anthropic request builder "+
+					"will send it the pre-5 wire shape", id, file)
+			}
+		}
+	}
+	// Non-vacuity: a broken rule restatement above must not silently turn this
+	// guard into a no-op that checks nothing.
+	slices.Sort(matched)
+	for _, want := range []string{"claude-fable-5", "claude-opus-5", "claude-sonnet-5"} {
+		if !slices.Contains(matched, want) {
+			t.Errorf("generation parse did not match %q; the drift guard only checked %v", want, matched)
 		}
 	}
 }
