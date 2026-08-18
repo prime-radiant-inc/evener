@@ -59,7 +59,13 @@ func restoreQueuePersistTestSession(t *testing.T, dir, id string) *Session {
 // must be the same fs the writing session used.
 func restoreQueuePersistTestSessionWithFS(t *testing.T, dir, id string, metaFS afero.Fs) *Session {
 	t.Helper()
-	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, id)
+	var meta schema.SessionMeta
+	var err error
+	if metaFS != nil {
+		meta, err = schema.LoadSessionMetaWithFS(metaFS, dir, id)
+	} else {
+		meta, err = schema.LoadSessionMeta(dir, id)
+	}
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
