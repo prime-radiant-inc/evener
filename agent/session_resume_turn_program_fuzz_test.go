@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -146,13 +148,14 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	}
 	pluginDir := rttWriteResumeHookPlugin(t, root)
 	clk := agenttest.NewFakeClock()
+	metaFS := afero.NewMemMapFs()
 	cfg := SessionConfig{
 		StateDir:         stateDir,
 		MaxTurns:         program.maxTurns,
 		PluginDirs:       []string{pluginDir},
 		NoProjectPrompts: true,
 		clock:            clk,
-		testOnly:         rttTestConfig(),
+		testOnly:         rttTestConfig(metaFS),
 	}
 
 	// The initial session creates the real metadata/transcript pair. Its plugin
@@ -179,7 +182,7 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 				schema.NewTurn(schema.TurnAssistant, llm.Assistant(rttPriorAssistant)),
 			},
 			clock:    clk,
-			testOnly: rttTestConfig(),
+			testOnly: rttTestConfig(metaFS),
 		},
 	)
 	if err != nil {
@@ -203,10 +206,11 @@ func rttClient() (*llm.Client, *agenttest.ScriptedAdapter) {
 	return client, adapter
 }
 
-func rttTestConfig() testConfig {
+func rttTestConfig(metaFS afero.Fs) testConfig {
 	return testConfig{
 		skipGitSnapshot: true,
 		noSyncJobStore:  true,
+		metaFS:          metaFS,
 		environmentInfo: func(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {
 			return schema.EnvironmentInfo{
 				WorkingDir: env.WorkingDirectory(),

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -188,6 +190,7 @@ func jtlpNewRootSession(t *testing.T) *Session {
 		environmentInfo:     jtlpEnvironmentInfo,
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
+		metaFS:              afero.NewMemMapFs(),
 	}
 	root := newSession(t, withConfig(cfg))
 	return root

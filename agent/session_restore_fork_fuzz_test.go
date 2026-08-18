@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/spf13/afero"
 
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -254,6 +255,7 @@ func FuzzRfzRestoreSessionFromMeta(f *testing.F) {
 		restoreCfg := RestoreSessionConfig{
 			StateDir:                stateDir,
 			deferRestoreSideEffects: r.intn(2) == 0,
+			testOnly:                testConfig{metaFS: afero.NewMemMapFs()},
 		}
 
 		sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5"), env, meta, restoreCfg)

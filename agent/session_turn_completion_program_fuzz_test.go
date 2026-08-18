@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -236,6 +238,7 @@ func tfpNewSession(t *testing.T, program tfpProgram, adapter *tfpAdapter) *Sessi
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			metaFS:              afero.NewMemMapFs(),
 		},
 	}
 	if program.usesContinuation() {

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -48,6 +50,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		program := decodePIFProgram(data)
 		root := t.TempDir()
+		metaFS := afero.NewMemMapFs()
 		t.Setenv(envvars.XDGConfigHome.Name, filepath.Join(root, "xdg"))
 		t.Setenv(envvars.SERFSessionOrigin.Name, "test")
 
@@ -55,7 +58,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 		newClock := agenttest.NewFakeClock()
 		newClient, newAdapter := pifClient(t)
 		newEnv := pifNewDenyEnv(workspace, uint64(program.seed))
-		cfg := pifSessionConfig(program, stateDir, pluginDir, promptFile, appendFile, newClock)
+		cfg := pifSessionConfig(program, stateDir, pluginDir, promptFile, appendFile, newClock, metaFS)
 
 		fresh, err := NewSession(newClient, NewOpenAIProfile("gpt-5.2"), newEnv, cfg)
 		if err != nil {
@@ -63,7 +66,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 		}
 		pifAssertFreshSession(t, fresh, program, workspace, promptFile, appendFile, newAdapter)
 
-		meta, err := schema.LoadSessionMeta(stateDir, fresh.ID())
+		meta, err := schema.LoadSessionMetaWithFS(metaFS, stateDir, fresh.ID())
 		if err != nil {
 			fresh.Close()
 			t.Fatalf("load fresh meta: %v", err)
@@ -87,7 +90,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 				StateDir:                stateDir,
 				deferRestoreSideEffects: program.deferRestoreSideEffects,
 				clock:                   restoreClock,
-				testOnly:                pifTestConfig(),
+				testOnly:                pifTestConfig(metaFS),
 			},
 		)
 		if err != nil {
@@ -203,11 +206,12 @@ func pifClient(t *testing.T) (*llm.Client, *agenttest.ScriptedAdapter) {
 	return client, adapter
 }
 
-func pifTestConfig() testConfig {
+func pifTestConfig(metaFS afero.Fs) testConfig {
 	return testConfig{
 		skipGitSnapshot: true,
 		environmentInfo: pifEnvironmentInfo,
 		noSyncJobStore:  true,
+		metaFS:          metaFS,
 	}
 }
 
@@ -224,6 +228,7 @@ func pifSessionConfig(
 	program pifProgram,
 	stateDir, pluginDir, promptFile, appendFile string,
 	clk clock.Clock,
+	metaFS afero.Fs,
 ) SessionConfig {
 	agentName := ""
 	if program.pluginAgent {
@@ -242,7 +247,7 @@ func pifSessionConfig(
 		AgentName:          agentName,
 		SessionStartKind:   program.startKind,
 		clock:              clk,
-		testOnly:           pifTestConfig(),
+		testOnly:           pifTestConfig(metaFS),
 	}
 }
 

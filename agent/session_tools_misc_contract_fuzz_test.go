@@ -13,6 +13,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -535,6 +537,7 @@ func stmNewSession(t *testing.T, program []byte) (*Session, *agenttest.DenyEnv, 
 		environmentInfo:     stmEnvironmentInfo,
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
+		metaFS:              afero.NewMemMapFs(),
 	}
 	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
 	if err != nil {
