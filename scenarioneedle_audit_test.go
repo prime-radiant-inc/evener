@@ -31,7 +31,7 @@ import (
 // READ THIS BEFORE TRUSTING A GREEN RUN. The claim this audit establishes is
 // narrow, and sitting green beside ten other scenario audits it will be read as
 // broader than it is. Stated exactly: NO CARD NAMES A snake_case TOKEN, IN A
-// CODE SPAN THIS EXTRACTOR RECOGNISES, THAT APPEARS NOWHERE IN SERF'S SOURCE.
+// CODE SPAN THIS EXTRACTOR RECOGNISES, THAT APPEARS NOWHERE IN EVENER'S SOURCE.
 // That is not "the corpus is checked". Four gaps, all deliberate, all measured:
 //
 //  1. Existence, not reachability. A token that exists ANYWHERE passes, even if

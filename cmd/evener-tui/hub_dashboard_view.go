@@ -143,7 +143,7 @@ func (m hubModel) dashboardUsesWideLayout() bool {
 // TopBar and break AppShell's single-line height accounting.
 func dashboardHeader(hubURL string, liveCount int, width int, badge string) string {
 	right := fmt.Sprintf("%s · %d live", hubURL, liveCount) + badge
-	return tuiprim.SectionDivider(width, "SERF LIVE", right)
+	return tuiprim.SectionDivider(width, "EVENER LIVE", right)
 }
 
 // needsYouCount reports how many live sessions are in a state that needs the

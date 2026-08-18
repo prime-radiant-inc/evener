@@ -89,7 +89,7 @@ primeradiant.com/evener/                      (repo root)
 │   ├── events/                              public event-stream subpackage (already carved)
 │   └── internal/                            agent-private (agenttest, workspace, promptpath, installid, …)
 │
-└── (root module: primeradiant.com/evener — the SERF APPLICATION; requires agent, llm)
+└── (root module: primeradiant.com/evener — the EVENER APPLICATION; requires agent, llm)
     ├── go.mod
     ├── appwire/                             CONTRACT: versioned engine↔hub↔tui wire protocol
     ├── hubapi/                              CONTRACT: hub HTTP API (client + server types)

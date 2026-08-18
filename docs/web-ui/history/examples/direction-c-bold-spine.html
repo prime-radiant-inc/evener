@@ -577,7 +577,7 @@
 
       <div class="disc" onclick="toggleGroup(this)">
         <span class="car" style="transform:rotate(90deg)">▸</span>
-        <span class="nm">SERF</span>
+        <span class="nm">EVENER</span>
         <span class="liverollup"></span>
         <span class="when">5m</span>
       </div>
@@ -671,7 +671,7 @@
           <!-- 3. ASSISTANT -->
           <div class="entry reveal">
             <div class="node asst"><span class="knob"></span><span class="arm"></span></div>
-            <div class="who"><span class="badge evener">SERF</span> assistant</div>
+            <div class="who"><span class="badge evener">EVENER</span> assistant</div>
             <div class="prose">
               I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.
             </div>
@@ -726,7 +726,7 @@
           <!-- 6. ASSISTANT (streaming) -->
           <div class="entry reveal">
             <div class="node asst active"><span class="knob"></span><span class="arm"></span></div>
-            <div class="who"><span class="badge evener">SERF</span> assistant · streaming</div>
+            <div class="who"><span class="badge evener">EVENER</span> assistant · streaming</div>
             <div class="prose">
               Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="caret"></span>
             </div>

@@ -25,7 +25,7 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 	}
 	got := strings.Join(m.sessionHeaderLines(), "\n")
 	// 1. rule with breadcrumb + turn count
-	if !strings.Contains(got, "SERF / SESSION") {
+	if !strings.Contains(got, "EVENER / SESSION") {
 		t.Errorf("missing breadcrumb: %q", got)
 	}
 	if !strings.Contains(got, "12 turns") {

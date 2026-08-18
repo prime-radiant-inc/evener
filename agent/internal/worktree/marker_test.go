@@ -74,7 +74,7 @@ func TestParseMarker_Foreign(t *testing.T) {
 		"random text",                      // not a evener marker at all
 		"evenerx:01HXYZABCD0123456789ABCDEF", // looks close but wrong prefix token
 		" evener:01HXYZABCD0123456789ABCDEF", // leading whitespace corrupts the prefix
-		"SERF:01HXYZABCD0123456789ABCDEF",  // case-sensitive: not a match
+		"EVENER:01HXYZABCD0123456789ABCDEF",  // case-sensitive: not a match
 	}
 	for _, reason := range cases {
 		if m, ok := ParseMarker(reason); ok {

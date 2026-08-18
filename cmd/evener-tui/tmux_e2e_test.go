@@ -83,12 +83,12 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// Ended sessions fold by default: awaited as an absence so the check
 	// cannot race a partial repaint (see WaitForWithout).
 	app.WaitForWithout([]string{"ended maintenance"},
-		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "evener", "live task", "ops task", "1 recent")
+		"EVENER LIVE", hub.URL(), "Launch New Session", "▾", "▍", "evener", "live task", "ops task", "1 recent")
 	app.SendKeys("/")
 	app.TypeText("ops")
 	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
 	app.SendKeys("Escape")
-	app.WaitFor("SERF LIVE", "live task", "ops task")
+	app.WaitFor("EVENER LIVE", "live task", "ops task")
 
 	initialTreeRequests := hub.WaitForTreeRequests(t, 1)
 	app.SendKeys("r")
@@ -96,21 +96,21 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 
 	// The cursor starts on the evener project row; Enter collapses the group
 	// and folds its child sessions out of the tree.
-	app.WaitFor("SERF LIVE", "Project:  evener", "Action:   enter toggles project")
+	app.WaitFor("EVENER LIVE", "Project:  evener", "Action:   enter toggles project")
 	app.SendKeys("Enter")
-	app.WaitForWithout([]string{"live task", "ended maintenance"}, "SERF LIVE", "▸ ● evener")
+	app.WaitForWithout([]string{"live task", "ended maintenance"}, "EVENER LIVE", "▸ ● evener")
 	app.SendKeys("Right")
-	app.WaitFor("SERF LIVE", "live task", "1 recent")
+	app.WaitFor("EVENER LIVE", "live task", "1 recent")
 	// Down to the ended-sessions toggle, Enter to reveal the ended session.
 	app.SendKeys("Down", "Down")
-	app.WaitFor("SERF LIVE", "Action:   enter toggles ended sessions")
+	app.WaitFor("EVENER LIVE", "Action:   enter toggles ended sessions")
 	app.SendKeys("Enter")
-	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
+	app.WaitFor("EVENER LIVE", "live task", "ended maintenance")
 	app.SendKeys("/")
 	app.TypeText("ended")
 	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ended", "ended maintenance")
 	app.SendKeys("Escape")
-	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
+	app.WaitFor("EVENER LIVE", "live task", "ended maintenance")
 
 	app.SendKeys("n")
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
@@ -132,7 +132,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	app.SendKeys("n")
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
@@ -149,7 +149,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	app.SendKeys("q")
 	app.WaitForExit()
 }
@@ -172,11 +172,11 @@ func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	app.WaitForWithout([]string{"ended maintenance"}, "SERF LIVE", "live task", "ops task")
+	app.WaitForWithout([]string{"ended maintenance"}, "EVENER LIVE", "live task", "ops task")
 	app.TypeText("/ops")
 	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
 	app.SendKeys("Escape")
-	app.WaitFor("SERF LIVE", "live task", "ops task")
+	app.WaitFor("EVENER LIVE", "live task", "ops task")
 }
 
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
@@ -188,28 +188,28 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "live task", "dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
+	screen := app.WaitFor("EVENER LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "EVENER LIVE", "live task", "dashboard")
 
 	app.SendKeys("/")
 	screen = app.WaitFor("Command palette", "dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "dashboard")
+	requirePaneOrder(t, screen, "EVENER LIVE", "Command palette", "dashboard")
 
 	app.Resize(60, 30)
 	screen = app.WaitFor("Command palette", "dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "dashboard")
+	requirePaneOrder(t, screen, "EVENER LIVE", "Command palette", "dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("SERF LIVE", "live task", "dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
+	screen = app.WaitFor("EVENER LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "EVENER LIVE", "live task", "dashboard")
 
 	app.SendKeys("n")
 	screen = app.WaitFor("evener / new session", "Prompt (optional):", "ctrl+o: dashboard")
 	requirePaneOrder(t, screen, "evener / new session", "Prompt (optional):", "ctrl+o: dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("SERF LIVE", "live task", "dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
+	screen = app.WaitFor("EVENER LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "EVENER LIVE", "live task", "dashboard")
 }
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
@@ -222,7 +222,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	wide := startTUITmuxSized(t, bin, hub, 140, 40)
 	defer wide.Close()
-	wideScreen := wide.WaitFor("SERF LIVE", "details", "Project:  evener", "Live:     1", "Dir:      "+tuiE2EProjectDir)
+	wideScreen := wide.WaitFor("EVENER LIVE", "details", "Project:  evener", "Live:     1", "Dir:      "+tuiE2EProjectDir)
 	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
 		t.Fatalf("wide dashboard rendered a composer:\n%s", wideScreen)
 	}
@@ -235,7 +235,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	// The narrow dashboard collapses to a single column: the session list
 	// still renders (with the long title hard-truncated to the pane width)
 	// but the wide-only details drawer must not appear.
-	narrowScreen := narrow.WaitFor("SERF LIVE", "live dashboard task with a title long")
+	narrowScreen := narrow.WaitFor("EVENER LIVE", "live dashboard task with a title long")
 	if strings.Contains(narrowScreen, "truncate cleanly") {
 		t.Fatalf("narrow dashboard did not truncate the long session title:\n%s", narrowScreen)
 	}
@@ -259,7 +259,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	app := startTUITmuxSized(t, bin, hub, 124, 18)
 	defer app.Close()
 
-	app.WaitFor("SERF LIVE", "select")
+	app.WaitFor("EVENER LIVE", "select")
 	footerAnchored := func(screen string) bool {
 		lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 		lastNonEmpty := -1
@@ -286,7 +286,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "0 live", "2 recent", "1 recent", "filter")
+	screen := app.WaitFor("EVENER LIVE", "0 live", "2 recent", "1 recent", "filter")
 	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
 		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
 	}
@@ -296,7 +296,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	t.Logf("recent-only dashboard capture:\n%s", screen)
 
 	app.SendKeys("Down", "Enter")
-	app.WaitFor("SERF LIVE", "ended maintenance")
+	app.WaitFor("EVENER LIVE", "ended maintenance")
 	app.SendKeys("q")
 	app.WaitForExit()
 }
@@ -310,8 +310,8 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	app.WaitFor("SERF LIVE", "live task")
-	screen := app.WaitFor("SERF LIVE", "live task", "1 recent")
+	app.WaitFor("EVENER LIVE", "live task")
+	screen := app.WaitFor("EVENER LIVE", "live task", "1 recent")
 	for _, unwanted := range []string{"enter: send", "Prompt (optional):"} {
 		if strings.Contains(screen, unwanted) {
 			t.Fatalf("dashboard rendered composer/spawn text %q:\n%s", unwanted, screen)
@@ -343,7 +343,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	app.SendKeys("n")
 	app.WaitFor("Harness:  evener", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Enter")
@@ -412,12 +412,12 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	// /project returns to the dashboard focused on this session's project.
 	app.TypeLine("/project")
-	app.WaitFor("SERF LIVE", "Project:  evener", "live task")
+	app.WaitFor("EVENER LIVE", "Project:  evener", "live task")
 	// Down to the ended-sessions toggle, Enter to reveal the ended session.
 	app.SendKeys("Down", "Down")
-	app.WaitFor("SERF LIVE", "Action:   enter toggles ended sessions")
+	app.WaitFor("EVENER LIVE", "Action:   enter toggles ended sessions")
 	app.SendKeys("Enter")
-	app.WaitFor("SERF LIVE", "ended maintenance")
+	app.WaitFor("EVENER LIVE", "ended maintenance")
 	app.SendKeys("/")
 	app.WaitFor("Command palette", "live task", "ended maintenance")
 	app.TypeText("ended")
@@ -491,12 +491,12 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/project")
-	app.WaitFor("SERF LIVE", "Project:  evener")
+	app.WaitFor("EVENER LIVE", "Project:  evener")
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task")
 
 	app.TypeLine("/dashboard")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task")
 
@@ -552,7 +552,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
 	}
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 }
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
@@ -820,7 +820,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE")
+	app.WaitFor("EVENER LIVE")
 	openLiveSession(t, app)
 	app.WaitFor("● IDLE", "send: ready")
 
@@ -831,7 +831,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.WaitFor("enter send")
 
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE")
+	app.WaitFor("EVENER LIVE")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
 	app.WaitFor("Launch New Session", "hub default")
 	app.SendKeys("Down", "Down", "Down")
@@ -866,7 +866,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 
 	hub.AppendAssistantFinal("01LIVE", "partial live answer done")
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("partial live answer done")
 }
@@ -890,7 +890,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 
 	hub.AppendToolFinal("01LIVE")
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("read  /tmp/tmux-tool.txt", "tmux tool output")
 }
@@ -922,7 +922,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("enter send")
 
 	app.SendKeys("C-o")
-	app.WaitFor("SERF LIVE", "live task")
+	app.WaitFor("EVENER LIVE", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("n")
 	app.WaitFor("evener / new session", "Prompt (optional):")
@@ -988,9 +988,9 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 // row cursor.
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "evener", "live task")
+	app.WaitFor("EVENER LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
-	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
+	app.WaitFor("EVENER LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down")
 	app.WaitFor("Session:  01LIVE", "Action:   enter opens session")
 	app.SendKeys("Enter")
@@ -1045,9 +1045,9 @@ func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 // Anchoring to row 0 first keeps the helper robust to prior selection state.
 func openEndedSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "evener", "live task")
+	app.WaitFor("EVENER LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
-	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
+	app.WaitFor("EVENER LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down", "Down")
 	app.WaitFor("Action:   enter toggles ended sessions")
 	app.SendKeys("Enter")
@@ -1177,7 +1177,7 @@ func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height i
 	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, socket, session, width, height)
 	app := &tmuxTUI{t: t, session: session, socket: socket}
-	app.WaitFor("SERF LIVE")
+	app.WaitFor("EVENER LIVE")
 	app.waitForInputReady(hub)
 	return app
 }
@@ -1205,7 +1205,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	runTmux(t, socket, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, socket, session, width, height)
 	app := &tmuxTUI{t: t, session: session, socket: socket}
-	app.WaitFor("SERF LIVE")
+	app.WaitFor("EVENER LIVE")
 	app.waitForInputReady(hub)
 	return app
 }
@@ -1227,7 +1227,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 // around to it. On an oversubscribed host (this fleet's shared worktree
 // machine, 8 concurrent agents' worth of Go builds/tests) the independent
 // ticker goroutine can flush the queued first frame to the pty — making
-// "SERF LIVE" appear in a tmux capture-pane — a good while before the
+// "EVENER LIVE" appear in a tmux capture-pane — a good while before the
 // read-loop goroutine is ever scheduled onto an OS thread. Any keys tmux
 // sends to the pty in that window are not observed by the running program.
 //

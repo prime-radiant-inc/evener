@@ -152,7 +152,7 @@ func TestSeatbeltLiveSecretDenied(t *testing.T) {
 	requireLiveSeatbelt(t)
 	secretDir := t.TempDir()
 	secret := filepath.Join(secretDir, "token")
-	const sentinel = "SERF-LIVE-SECRET-42"
+	const sentinel = "EVENER-LIVE-SECRET-42"
 	if err := os.WriteFile(secret, []byte(sentinel), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestSeatbeltLiveFirmlinkAliasDenied(t *testing.T) {
 	requireLiveSeatbelt(t)
 	secretDir := t.TempDir()
 	secret := filepath.Join(secretDir, "token")
-	const sentinel = "SERF-LIVE-FIRMLINK-42"
+	const sentinel = "EVENER-LIVE-FIRMLINK-42"
 	if err := os.WriteFile(secret, []byte(sentinel), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestSeatbeltLiveInfraPathIsReadOnly(t *testing.T) {
 // authoritative over every allow — must not be dented by session infrastructure.
 func TestSeatbeltLiveInfraGrantNeverUnmasksDenylist(t *testing.T) {
 	requireLiveSeatbelt(t)
-	const sentinel = "SERF-LIVE-INFRA-SECRET-42"
+	const sentinel = "EVENER-LIVE-INFRA-SECRET-42"
 
 	t.Run("denylisted subtree inside a granted hook path", func(t *testing.T) {
 		infra, script := liveInfraDir(t)
@@ -722,7 +722,7 @@ func TestSeatbeltLiveSymlinkReadRootSpellings(t *testing.T) {
 	}
 	target := filepath.Join(dir, "target")
 	link := filepath.Join(dir, "link")
-	writeFile(t, target, "SERF-LIVE-SYMLINK-42\n")
+	writeFile(t, target, "EVENER-LIVE-SYMLINK-42\n")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ func TestSeatbeltLiveSymlinkReadRootSpellings(t *testing.T) {
 	bothSpellings := base
 	bothSpellings.Spawned.ReadRoots = append(slices.Clone(base.Spawned.ReadRoots), link)
 	out, exit := runUnderSeatbeltCanon(t, bothSpellings, cwd, realCanonicalizer, readThroughLink...)
-	if exit != 0 || !strings.Contains(out, "SERF-LIVE-SYMLINK-42") {
+	if exit != 0 || !strings.Contains(out, "EVENER-LIVE-SYMLINK-42") {
 		t.Errorf("a symlink-spelled read root must be granted under both spellings (exit=%d):\n%s", exit, out)
 	}
 }
@@ -769,7 +769,7 @@ func TestSeatbeltLiveGitCredentialsStayMasked(t *testing.T) {
 	}
 	config := filepath.Join(home, ".gitconfig")
 	credentials := filepath.Join(home, ".git-credentials")
-	const secret = "SERF-LIVE-GIT-CREDENTIAL-42"
+	const secret = "EVENER-LIVE-GIT-CREDENTIAL-42"
 	writeFile(t, config, "[credential]\n\thelper = store\n")
 	writeFile(t, credentials, "https://user:"+secret+"@example.invalid\n")
 

@@ -91,7 +91,7 @@ func TestDashboardHeaderBadgeKeepsExactWidth(t *testing.T) {
 	}
 	// Zero badge: byte-identical to the pre-badge header so quiet dashboards
 	// render exactly as before.
-	want := tuiprim.SectionDivider(width, "SERF LIVE", "http://hub.test · 3 live")
+	want := tuiprim.SectionDivider(width, "EVENER LIVE", "http://hub.test · 3 live")
 	if gotZero := dashboardHeader("http://hub.test", 3, width, needsYouBadge(0)); gotZero != want {
 		t.Fatalf("zero-badge header changed:\ngot  %q\nwant %q", gotZero, want)
 	}

@@ -76,12 +76,12 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 	<-sess.Events()
 
 	ctx := context.Background()
-	result, err := sess.ProcessInput(ctx, "Reply with exactly: HELLO SERF", nil)
+	result, err := sess.ProcessInput(ctx, "Reply with exactly: HELLO EVENER", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	if !strings.Contains(strings.ToUpper(result), "HELLO SERF") {
-		t.Fatalf("expected response to contain 'HELLO SERF', got: %q", result)
+	if !strings.Contains(strings.ToUpper(result), "HELLO EVENER") {
+		t.Fatalf("expected response to contain 'HELLO EVENER', got: %q", result)
 	}
 }
 

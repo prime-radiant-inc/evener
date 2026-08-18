@@ -271,7 +271,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
-   capture_until "$RUN_ROOT/dashboard-live-pane.txt" 'SERF LIVE'
+   capture_until "$RUN_ROOT/dashboard-live-pane.txt" 'EVENER LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-live-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
@@ -327,7 +327,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    tmux kill-session -t "$TMUX_SESSION"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
-   capture_until "$RUN_ROOT/dashboard-cold-pane.txt" 'SERF LIVE'
+   capture_until "$RUN_ROOT/dashboard-cold-pane.txt" 'EVENER LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-cold-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"

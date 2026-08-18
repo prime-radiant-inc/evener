@@ -67,7 +67,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
 
 4. **[TUI]** In the TUI dashboard, filter to the same session (`/` + a suffix
    of its ID + Enter) and press Enter again to open/attach it. Capture the
-   pane and find the `SERF / SESSION` header line, which carries the state
+   pane and find the `EVENER / SESSION` header line, which carries the state
    badge.
 
 5. **Force a genuine `ask_user` question**, then repeat steps 2, 3 and 4, and
@@ -100,7 +100,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   a substring, never the whole string. Falsification: the two rendered rows
   carry different state words, or a row's word contradicts step 2's wire
   value.
-- **Step 4**: the `SERF / SESSION` header's badge line reads `● YOUR MOVE`.
+- **Step 4**: the `EVENER / SESSION` header's badge line reads `● YOUR MOVE`.
 - **Step 5 (ask-pending)**: step 2's wire rows all flip to
   `ask_pending:true`; every rail row's activity text contains
   `question waiting`; the TUI header badge reads `● QUESTION WAITING`; and

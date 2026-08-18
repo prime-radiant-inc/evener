@@ -15,7 +15,7 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	requireOrderedText(t, got, "SERF LIVE", "Command palette", "dashboard")
+	requireOrderedText(t, got, "EVENER LIVE", "Command palette", "dashboard")
 }
 
 func TestHubModelAppShellBoundsPaletteOverlayToShortHeight(t *testing.T) {
@@ -24,8 +24,8 @@ func TestHubModelAppShellBoundsPaletteOverlayToShortHeight(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	if !strings.Contains(got, "SERF LIVE") {
-		t.Fatalf("short-height palette frame lost the SERF LIVE header:\n%s", got)
+	if !strings.Contains(got, "EVENER LIVE") {
+		t.Fatalf("short-height palette frame lost the EVENER LIVE header:\n%s", got)
 	}
 	if !strings.Contains(got, "dashboard") {
 		t.Fatalf("short-height palette frame lost the dashboard footer hint:\n%s", got)
@@ -172,7 +172,7 @@ func TestDashboardFooterContainsKbdHintChrome(t *testing.T) {
 func TestDashboardHeaderUsesSectionDivider(t *testing.T) {
 	withTestColorProfile(t)
 	got := dashboardHeader("http://hub.test", 3, 100, "")
-	for _, want := range []string{"SERF LIVE", "http://hub.test", "─", "┄"} {
+	for _, want := range []string{"EVENER LIVE", "http://hub.test", "─", "┄"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dashboardHeader missing %q in: %q", want, got)
 		}

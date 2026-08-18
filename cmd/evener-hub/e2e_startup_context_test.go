@@ -43,7 +43,7 @@ func TestE2E_StartingASessionThatHasDaemonStartupContext(t *testing.T) {
 
 	stack := startHubStack(t, provider)
 
-	const contextMarker = "SERF-E2E-DAEMON-STARTUP-CONTEXT"
+	const contextMarker = "EVENER-E2E-DAEMON-STARTUP-CONTEXT"
 	pluginDir := writeSessionStartContextPlugin(t, contextMarker)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -51,7 +51,7 @@ func TestE2E_StartingASessionThatHasDaemonStartupContext(t *testing.T) {
 
 	client := stack.dialRPC(ctx, t)
 
-	const openingPrompt = "SERF-E2E-OPENING-PROMPT"
+	const openingPrompt = "EVENER-E2E-OPENING-PROMPT"
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness:         "evener",
 		CWD:             stack.workDir,

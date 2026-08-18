@@ -57,9 +57,9 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const (
-		openingPrompt = "SERF-E2E-OPENING-PROMPT"
-		steerText     = "SERF-E2E-STEER-TEXT"
-		queuedText    = "SERF-E2E-QUEUED-TEXT"
+		openingPrompt = "EVENER-E2E-OPENING-PROMPT"
+		steerText     = "EVENER-E2E-STEER-TEXT"
+		queuedText    = "EVENER-E2E-QUEUED-TEXT"
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -200,8 +200,8 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const (
-		openingPrompt = "SERF-E2E-GOAL-OPENING"
-		steerText     = "SERF-E2E-GOAL-STEER"
+		openingPrompt = "EVENER-E2E-GOAL-OPENING"
+		steerText     = "EVENER-E2E-GOAL-STEER"
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -318,7 +318,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 
 	client := stack.dialRPC(ctx, t)
 
-	const steerText = "SERF-E2E-NOTIFICATION-STEER"
+	const steerText = "EVENER-E2E-NOTIFICATION-STEER"
 	// A bare name, not a path: the shell tool runs in the session's working
 	// directory, so nothing is interpolated into the command and a temp dir
 	// with a space in it cannot break the wait loop — which would exit
@@ -329,7 +329,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness:         "evener",
 		CWD:             stack.workDir,
-		Input:           []appwire.InputItem{{Type: "text", Text: "SERF-E2E-NOTIFICATION-OPENING"}},
+		Input:           []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-NOTIFICATION-OPENING"}},
 		Model:           stack.model,
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
 	})

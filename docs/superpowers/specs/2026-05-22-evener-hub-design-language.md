@@ -793,7 +793,7 @@ LIVE 3
     prime-radiant/evener · 14m
   ● tune token usage in llm-proxy retry path     ← idle
     llm-proxy · 1h
-▸ PRIME-RADIANT / SERF  6  ⚙ ＋
+▸ PRIME-RADIANT / EVENER  6  ⚙ ＋
   ● add input validation to signup handler
     feat/signup-validation · 2m
     ↳ explore existing handler tests             ← subagent (purple dot, indented)
@@ -802,7 +802,7 @@ LIVE 3
        fork of: signup-validation · 5m
 ▸ PRIME-RADIANT / HUB  2  ●                       ← rollup dot when project has live work
 ▸ LLM-PROXY  4
-▸ SERF-TUI  1
+▸ EVENER-TUI  1
 ```
 
 Project headers use mono `--text-2xs` uppercase with `letter-spacing: 0.14em`. The ⚙ (project settings) and ＋ (new session in project) buttons are **persistent at `--text-dim`** — no hover-only reveal — and brighten to `--text-muted` on row hover.

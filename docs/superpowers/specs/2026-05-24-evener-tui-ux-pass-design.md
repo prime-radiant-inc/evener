@@ -266,9 +266,9 @@ Three rendered lines replace the current five.
 
 **Line 1 — top rule (workshop-log voice):**
 ```
-─ SERF / SESSION ────────────────────────────────────────── 12 turns ┄
+─ EVENER / SESSION ────────────────────────────────────────── 12 turns ┄
 ```
-- Left: breadcrumb `SERF / SESSION`, bold dim uppercase via `SectionDivider`.
+- Left: breadcrumb `EVENER / SESSION`, bold dim uppercase via `SectionDivider`.
 - Right: turn count in `TextGhost`.
 - `─` segments in `RuleSoft`, trailing `┄` in `Rule`.
 
@@ -351,19 +351,19 @@ Entered via `f` on a user turn in scroll-browse. Existing behavior; new visuals:
 ### 6.1 · Top rule + actions
 
 ```
-─ SERF LIVE ────────────────────────────────────── http://hub.test · 3 live ┄
+─ EVENER LIVE ────────────────────────────────────── http://hub.test · 3 live ┄
 
   + new session  ⌘N
   / filter sessions
 ```
 
-- `SERF LIVE` left, hub URL + live count right (URL in `TextGhost`, count in `TextDim`).
+- `EVENER LIVE` left, hub URL + live count right (URL in `TextGhost`, count in `TextDim`).
 - Two compose-style action rows below the rule (one blank line gap). Each row is a `KbdHint` for its binding.
 
 ### 6.2 · Project sections
 
 ```
-  ▾ ● SERF                                                  2 live · 1 recent
+  ▾ ● EVENER                                                  2 live · 1 recent
 ```
 
 - `▾` / `▸` chevron in `TextDim`.

@@ -22,7 +22,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 
 	// Line 1: section divider rule with breadcrumb + turn count
-	rule := tuiprim.SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
+	rule := tuiprim.SectionDivider(m.sessionHeaderWidth(), "EVENER / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
 
 	// Line 2: title + state badge (truncate title if needed to fit width)
 	// Use stateLabel to normalize raw states (e.g. "closed" → "ended").

@@ -60,7 +60,7 @@ func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-STOP-UNNAMED-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-STOP-UNNAMED-OPENING")
 
 	// Hold round 1 open. The turn can now end only by cancellation.
 	if _, err := provider.Next(ctx.Done()); err != nil {
@@ -132,9 +132,9 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-RACED-SEND-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-RACED-SEND-OPENING")
 
-	const followUpText = "SERF-E2E-RACED-SEND-FOLLOWUP"
+	const followUpText = "EVENER-E2E-RACED-SEND-FOLLOWUP"
 
 	if _, err := provider.Next(ctx.Done()); err != nil {
 		t.Fatalf("waiting for the session's first model request: %v", err)
@@ -217,9 +217,9 @@ func TestE2E_SteerWithNoTurnIDReachesTheModelAndTheTranscript(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-STEER-DELIVERY-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-STEER-DELIVERY-OPENING")
 
-	const steerText = "SERF-E2E-STEER-DELIVERY-TEXT"
+	const steerText = "EVENER-E2E-STEER-DELIVERY-TEXT"
 
 	round1, err := provider.Next(ctx.Done())
 	if err != nil {
@@ -286,9 +286,9 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-LATE-STEER-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-LATE-STEER-OPENING")
 
-	const steerText = "SERF-E2E-LATE-STEER-TEXT"
+	const steerText = "EVENER-E2E-LATE-STEER-TEXT"
 
 	round1, err := provider.Next(ctx.Done())
 	if err != nil {
@@ -361,7 +361,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-PRECONDITION-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-PRECONDITION-OPENING")
 
 	round1, err := provider.Next(ctx.Done())
 	if err != nil {
@@ -372,7 +372,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	first, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "SERF-E2E-QUEUED-FIRST"}},
+		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-FIRST"}},
 	})
 	if err != nil {
 		t.Fatalf("turn/queue (first): %v", err)
@@ -386,7 +386,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),
-		Input:            []appwire.InputItem{{Type: "text", Text: "SERF-E2E-QUEUED-SECOND"}},
+		Input:            []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-QUEUED-SECOND"}},
 	}); err != nil {
 		t.Fatalf("turn/queue (second): %v", err)
 	}
@@ -450,7 +450,7 @@ func TestE2E_QueuePreconditionsStillRefuseAStaleClient(t *testing.T) {
 		Ref:                   ref,
 		ClientMutationID:      newMutationID(t),
 		ExpectedQueueRevision: drained.Revision,
-		Input:                 []appwire.InputItem{{Type: "text", Text: "SERF-E2E-DRAIN-WITH-CURRENT-REVISION"}},
+		Input:                 []appwire.InputItem{{Type: "text", Text: "EVENER-E2E-DRAIN-WITH-CURRENT-REVISION"}},
 	}); err != nil {
 		t.Fatalf("turn/drainAsSteer with the current revision %d was refused, so the refusal above proves nothing: %v", drained.Revision, err)
 	}
@@ -527,7 +527,7 @@ type = %q
 	awaitTurnStatus(ctx, t, client, ref, running, "interrupted")
 
 	// And a steer aimed at a turn that is already over lands in the next one.
-	const steerText = "SERF-E2E-LIVE-STEER-TEXT"
+	const steerText = "EVENER-E2E-LIVE-STEER-TEXT"
 	steerReceipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),

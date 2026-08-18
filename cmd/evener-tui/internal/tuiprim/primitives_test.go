@@ -26,8 +26,8 @@ func TestFocusedStateBarReturnsDoubleGlyph(t *testing.T) {
 }
 
 func TestSectionDividerEmitsLeftRight(t *testing.T) {
-	out := SectionDivider(60, "SERF / SESSION", "12 turns")
-	if !strings.Contains(out, "SERF / SESSION") {
+	out := SectionDivider(60, "EVENER / SESSION", "12 turns")
+	if !strings.Contains(out, "EVENER / SESSION") {
 		t.Errorf("SectionDivider missing left label: %q", out)
 	}
 	if !strings.Contains(out, "12 turns") {

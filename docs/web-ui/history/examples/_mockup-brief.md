@@ -24,7 +24,7 @@ Top actions row: `＋ New`   `Search ⌘K`   `Settings`
 - ● **Audit error handling** — `kimi` · needs you   ← awaiting (red/attention color)
 
 **RECENT**
-- ▾ **SERF** · 5m   *(has a live child — show a live rollup dot)*
+- ▾ **EVENER** · 5m   *(has a live child — show a live rollup dot)*
     - ● Refactor auth token cache · 1:12   *(working; this is the open one — mark as selected)*
         - ⤷ trace-callers · ✓ done   *(subagent: dim, indented, connector rail, done glyph)*
         - ⤷ find-tests · ⟳ running   *(subagent: running glyph)*

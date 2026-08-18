@@ -41,7 +41,7 @@ func TestE2E_QueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 	defer cancel()
 
 	client := stack.dialRPC(ctx, t)
-	ref := startLiveThread(ctx, t, client, stack, "SERF-E2E-ASK-OPENING")
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-ASK-OPENING")
 
 	// Round 1 ends by asking the user something, which leaves the question
 	// pending and the session awaiting a reply.
@@ -65,7 +65,7 @@ func TestE2E_QueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 		return thread.Status.Type == appwire.ThreadStatusAwaiting
 	})
 
-	const queuedText = "SERF-E2E-QUEUED-UNDER-ASK"
+	const queuedText = "EVENER-E2E-QUEUED-UNDER-ASK"
 	receipt, err := clientRequest[appwire.TurnQueueResponse](ctx, client, appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref:              ref,
 		ClientMutationID: newMutationID(t),

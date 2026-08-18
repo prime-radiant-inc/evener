@@ -1,4 +1,4 @@
-// serf `agent` package intra-package dependency map.
+// evener `agent` package intra-package dependency map.
 // Generated from a go/types symbol-reference analysis (see /tmp/agentdep):
 // every edge = "cluster A uses a package-level symbol/method/type defined in cluster B".
 // Clusters = concern groupings of the 70 source files. Edge labels = reference counts.
@@ -9,7 +9,7 @@ digraph agentdeps {
   rankdir=TB;
   bgcolor="#0a0a0e";
   fontname="Helvetica"; fontcolor="#ececf0"; fontsize=20; labelloc=t;
-  label="serf `agent` package (70 files) — concern-level packaging is blocked by one dependency knot\l\l13 of 14 concern-clusters form a single strongly-connected core. Only `events` is cleanly extractable today.\lThe knot is held shut by FOUR direct back-cycles into session (red). Sever those (via interface seams) and the core falls apart.\l";
+  label="evener `agent` package (70 files) — concern-level packaging is blocked by one dependency knot\l\l13 of 14 concern-clusters form a single strongly-connected core. Only `events` is cleanly extractable today.\lThe knot is held shut by FOUR direct back-cycles into session (red). Sever those (via interface seams) and the core falls apart.\l";
   node [style=filled, shape=box, fontname="Courier", fontsize=13, fontcolor="#0a0a0e", color="#0a0a0e", margin=0.14];
   edge [color="#5a5a64", fontcolor="#9aa0aa", fontname="Courier", fontsize=10];
 

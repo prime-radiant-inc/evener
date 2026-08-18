@@ -829,8 +829,8 @@ git commit -m "feat(tui): add StatusBadge primitive (wave 2 task 2.2)"
 // append to cmd/evener-tui/primitives_test.go
 
 func TestSectionDividerEmitsLeftRight(t *testing.T) {
-	out := SectionDivider(60, "SERF / SESSION", "12 turns")
-	if !strings.Contains(out, "SERF / SESSION") {
+	out := SectionDivider(60, "EVENER / SESSION", "12 turns")
+	if !strings.Contains(out, "EVENER / SESSION") {
 		t.Errorf("SectionDivider missing left label: %q", out)
 	}
 	if !strings.Contains(out, "12 turns") {
@@ -1117,7 +1117,7 @@ Adopts primitives in the dashboard render path. Drops tree connectors, adds stat
 
 func TestDashboardHeaderUsesSectionDivider(t *testing.T) {
 	got := dashboardHeader("http://hub.test", 3, 100)
-	for _, want := range []string{"SERF LIVE", "http://hub.test", "─", "┄"} {
+	for _, want := range []string{"EVENER LIVE", "http://hub.test", "─", "┄"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dashboardHeader missing %q in: %q", want, got)
 		}
@@ -1140,7 +1140,7 @@ Run: `grep -n "func dashboardHeader" cmd/evener-tui/hub_model.go`
 ```go
 func dashboardHeader(hubURL string, liveCount int, width int) string {
 	right := fmt.Sprintf("%s · %d live", hubURL, liveCount)
-	return SectionDivider(width, "SERF LIVE", right)
+	return SectionDivider(width, "EVENER LIVE", right)
 }
 ```
 
@@ -1417,7 +1417,7 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 	}
 	got := strings.Join(m.sessionHeaderLines(), "\n")
 	// 1. rule with breadcrumb + turn count
-	if !strings.Contains(got, "SERF / SESSION") {
+	if !strings.Contains(got, "EVENER / SESSION") {
 		t.Errorf("missing breadcrumb: %q", got)
 	}
 	if !strings.Contains(got, "12 turns") {
@@ -1456,7 +1456,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 
 	// Line 1: rule
-	rule := SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
+	rule := SectionDivider(m.sessionHeaderWidth(), "EVENER / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
 
 	// Line 2: title + state badge
 	badge := StatusBadge(stateColor(state), state)

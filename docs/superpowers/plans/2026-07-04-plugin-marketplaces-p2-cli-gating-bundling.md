@@ -330,7 +330,7 @@ git commit -m "plugins: first-run default-marketplace seeding (lazy-fetch pointe
 - Consumes: `internal/plugins` (`NewManager`, `AddMarketplace`, `ListMarketplaces`, `RemoveMarketplace`, `RefreshMarketplace`, `Source`/`SourceKind`).
 - Produces: `func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error` — nested switch (`marketplace`, and in Task 4 the lifecycle verbs); `func runPluginMarketplace(args []string, stdout, stderr io.Writer) error` — `add|remove|list|refresh`. Marketplace `add <url-or-owner/repo> [--yes]` parses the source (owner/repo → `github`; `https://`/`git@` → `url`; local path → `directory`).
 
-- [ ] **Step 1: Write the failing test** (drive the command with a temp store via an env override or a `--root` hidden flag; here use `SERF`-style: the CLI builds a `NewManager("")` = `DefaultRoot()`, so the test sets `XDG_CONFIG_HOME` to a temp dir)
+- [ ] **Step 1: Write the failing test** (drive the command with a temp store via an env override or a `--root` hidden flag; here use `EVENER`-style: the CLI builds a `NewManager("")` = `DefaultRoot()`, so the test sets `XDG_CONFIG_HOME` to a temp dir)
 
 ```go
 package main

@@ -390,15 +390,15 @@ func sampleRenders() []tuiSampleRender {
 		width    int
 		contains []string
 	}{
-		{name: "dashboard-narrow", width: 60, contains: []string{"SERF LIVE", "─", "┄", "new", "filter"}},
-		{name: "dashboard-normal", width: 100, contains: []string{"SERF LIVE", "codex-local", "Restore hub TUI widgets"}},
-		{name: "dashboard-wide", width: 140, contains: []string{"SERF LIVE", "─", "┄", "Codex app-server smoke"}},
-		{name: "session-idle", width: 100, contains: []string{"SERF / SESSION", "IDLE", "draft stays visible"}},
-		{name: "session-streaming", width: 100, contains: []string{"SERF / SESSION", "The running agent harness", "all task steps completed"}},
-		{name: "session-busy-steer", width: 100, contains: []string{"SERF / SESSION", "queue", "ctrl+s", "steer", "Please also check", "work 3m", "tok ↑46k ↓12k"}},
-		{name: "session-busy-readonly", width: 100, contains: []string{"SERF / SESSION", "read-only", "source does not advertise queue"}},
-		{name: "session-browse", width: 100, contains: []string{"SERF / SESSION", "esc/i/q: compose", "f: fork"}},
-		{name: "session-fork", width: 100, contains: []string{"SERF / SESSION", "fork draft", "edited prompt"}},
+		{name: "dashboard-narrow", width: 60, contains: []string{"EVENER LIVE", "─", "┄", "new", "filter"}},
+		{name: "dashboard-normal", width: 100, contains: []string{"EVENER LIVE", "codex-local", "Restore hub TUI widgets"}},
+		{name: "dashboard-wide", width: 140, contains: []string{"EVENER LIVE", "─", "┄", "Codex app-server smoke"}},
+		{name: "session-idle", width: 100, contains: []string{"EVENER / SESSION", "IDLE", "draft stays visible"}},
+		{name: "session-streaming", width: 100, contains: []string{"EVENER / SESSION", "The running agent harness", "all task steps completed"}},
+		{name: "session-busy-steer", width: 100, contains: []string{"EVENER / SESSION", "queue", "ctrl+s", "steer", "Please also check", "work 3m", "tok ↑46k ↓12k"}},
+		{name: "session-busy-readonly", width: 100, contains: []string{"EVENER / SESSION", "read-only", "source does not advertise queue"}},
+		{name: "session-browse", width: 100, contains: []string{"EVENER / SESSION", "esc/i/q: compose", "f: fork"}},
+		{name: "session-fork", width: 100, contains: []string{"EVENER / SESSION", "fork draft", "edited prompt"}},
 		{name: "ask-card-pending", width: 100, contains: []string{
 			"[DB choice]", "Postgres", "SQLite", "(recommended)", "why:", "if unanswered:", "(pick any)",
 		}},

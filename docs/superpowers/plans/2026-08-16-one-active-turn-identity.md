@@ -773,7 +773,7 @@ Append `TestE2E_TurnControlReachesAGoalContinuationTurn` to
 `startHubStack`, same `t.Cleanup` thread shutdown — and differs only in the
 middle:
 
-1. `thread/start` with `SERF-E2E-GOAL-OPENING`; capture `ref`.
+1. `thread/start` with `EVENER-E2E-GOAL-OPENING`; capture `ref`.
 2. `provider.Next` for the opening round, `awaitActiveTurn(ctx, t, client, ref, "")`
    to capture `firstTurn`, then answer with
    `communicate` / `communicateArgs("opening turn done")` and

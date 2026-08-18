@@ -320,7 +320,7 @@ for (const scene of scenes) {
         case "goto": {
           let url = BASE + arg;
           if (!authed) {
-            const token = readFileSync(path.join(process.env.HOME, ".serf/auth-token"), "utf8").trim();
+            const token = readFileSync(path.join(process.env.HOME, ".evener/auth-token"), "utf8").trim();
             url = `${BASE}/auth?token=${token}&next=${encodeURIComponent(arg)}`;
             authed = true;
           }

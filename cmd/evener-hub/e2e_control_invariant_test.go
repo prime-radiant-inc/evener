@@ -122,7 +122,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	const openingSentinel = "SERF-E2E-FIRST-TURN-PARKED"
+	const openingSentinel = "EVENER-E2E-FIRST-TURN-PARKED"
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -199,7 +199,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
 
-	const openingSentinel = "SERF-E2E-STOP-OFFERED-PARKED"
+	const openingSentinel = "EVENER-E2E-STOP-OFFERED-PARKED"
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -291,8 +291,8 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const (
-		openingPrompt = "SERF-E2E-PUSHED-STOP-OPENING"
-		queuedText    = "SERF-E2E-PUSHED-STOP-QUEUED"
+		openingPrompt = "EVENER-E2E-PUSHED-STOP-OPENING"
+		queuedText    = "EVENER-E2E-PUSHED-STOP-QUEUED"
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
@@ -458,8 +458,8 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const (
-		openingPrompt = "SERF-E2E-BOUNDARY-OPENING"
-		queuedText    = "SERF-E2E-BOUNDARY-QUEUED"
+		openingPrompt = "EVENER-E2E-BOUNDARY-OPENING"
+		queuedText    = "EVENER-E2E-BOUNDARY-QUEUED"
 	)
 	pluginDir := parkInPreTurnWork(t, queuedText)
 
