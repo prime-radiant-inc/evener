@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
@@ -42,7 +44,7 @@ func queueOneMutation(t *testing.T, sess *Session, clientMutationID, text string
 // follows must return the claim, because the entry is already out of the input
 // queue and the only other recovery for this state runs at startup.
 func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
+	sess := newQueuePersistTestSessionWithFS(t, t.TempDir(), afero.NewMemMapFs())
 	defer sess.Close()
 
 	queueOneMutation(t, sess, "queue-behind-stop", "please still run me")
@@ -105,7 +107,7 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 // with a message queued behind it would leave the session reporting itself as
 // working with a queue nobody drains.
 func TestStopWakesTheSessionForWorkItLeftQueued(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
+	sess := newQueuePersistTestSessionWithFS(t, t.TempDir(), afero.NewMemMapFs())
 	defer sess.Close()
 
 	queueOneMutation(t, sess, "queued-through-stop", "run me after the stop")
@@ -140,7 +142,7 @@ func TestStopWakesTheSessionForWorkItLeftQueued(t *testing.T) {
 // refusing while the UI says "working" is the failure the session-scoped rule
 // exists to prevent -- but it must not cost the queued message.
 func TestStopIsHonestAboutAQueuedMessage(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
+	sess := newQueuePersistTestSessionWithFS(t, t.TempDir(), afero.NewMemMapFs())
 	defer sess.Close()
 
 	queueOneMutation(t, sess, "queue-behind-stop", "please still run me")
@@ -237,6 +239,7 @@ func (a *stopHoldAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 // finished.
 func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := newStopHoldAdapter()
 	sess := newSession(t,
 		withAdapter(adapter),
@@ -245,7 +248,7 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 			MaxSubagentDepth: 1,
 			NoProjectPrompts: true,
 			StateDir:         dir,
-			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: metaFS},
 		}),
 	)
 
@@ -390,7 +393,7 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 // that had been accepted but not yet finalized could still have the queue head
 // claimed out from under it.
 func TestQueueClaimRespectsAPendingInterruptFence(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
+	sess := newQueuePersistTestSessionWithFS(t, t.TempDir(), afero.NewMemMapFs())
 	defer sess.Close()
 
 	queueOneMutation(t, sess, "queued-under-fence", "do not claim me yet")

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -23,6 +25,7 @@ import (
 func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 	const credentialSentinel = "credential_phase5b_must_not_persist"
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/responses":
@@ -60,7 +63,10 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 	}
 	client.Use(apiLogger)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-4.1-mini"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-4.1-mini"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
+	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

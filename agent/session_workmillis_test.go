@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -191,9 +193,10 @@ func TestWorkMillis_CloseMidTurnCounts(t *testing.T) {
 func TestWorkMillis_InterruptThenCloseFlushesToDisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	clk := agenttest.NewFakeClock()
 	blocked := make(chan struct{})
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir}),
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir, testOnly: testConfig{metaFS: metaFS}}),
 		withAdapter(&blockingAdapter{name: "openai", blocked: blocked}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -226,7 +229,7 @@ func TestWorkMillis_InterruptThenCloseFlushesToDisk(t *testing.T) {
 
 	sess.Close() // e.g. an explicit /shutdown with no further turn.
 
-	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	reloaded, err := schema.LoadSessionMetaWithFS(metaFS, dir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -246,8 +249,9 @@ func TestWorkMillis_InterruptThenCloseFlushesToDisk(t *testing.T) {
 func TestClose_MidTurnFlushesWorkAndUsageToDisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir}))
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir, testOnly: testConfig{metaFS: metaFS}}))
 
 	sess.mu.Lock()
 	sess.state = SessionProcessing
@@ -262,7 +266,7 @@ func TestClose_MidTurnFlushesWorkAndUsageToDisk(t *testing.T) {
 
 	sess.Close()
 
-	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	reloaded, err := schema.LoadSessionMetaWithFS(metaFS, dir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -284,6 +288,7 @@ func TestClose_MidTurnFlushesWorkAndUsageToDisk(t *testing.T) {
 func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	clk := agenttest.NewFakeClock()
 	const delta = 2000 * time.Millisecond
 	turnUsage := llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
@@ -316,9 +321,9 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 		},
 	}
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), env, meta, dir)
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), env, meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer sess.Close()
 	// Restore has no public hook to inject a fake clock (RestoreSessionConfig
@@ -339,7 +344,7 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 
 	sess.maybeAutoSave()
 
-	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	reloaded, err := schema.LoadSessionMetaWithFS(metaFS, dir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
