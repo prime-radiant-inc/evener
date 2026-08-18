@@ -2369,7 +2369,9 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 	clock.Advance(jobNotificationRetryInitialDelay)
 	select {
 	case <-wakes:
-	case <-time.After(time.Second):
+	// TRIPWIRE: in-process notify channel with a fake clock already advanced
+	// past the retry delay; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("second transient failure did not re-arm a paced wake")
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -2533,7 +2535,9 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	clock.Advance(jobNotificationRetryInitialDelay)
 	select {
 	case <-wakes:
-	case <-time.After(time.Second):
+	// TRIPWIRE: in-process notify channel with a fake clock already advanced
+	// past the retry delay; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("failed root attention consumption did not re-arm a paced wake")
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {

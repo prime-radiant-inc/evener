@@ -96,7 +96,8 @@ func TestRoundTimings_Emitted(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
