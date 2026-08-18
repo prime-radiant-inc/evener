@@ -294,6 +294,49 @@ func TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5(t *testing.T) {
 	}
 }
 
+// claude5_request_shape marks the Claude 5+ generation request contract:
+// adaptive thinking only, no sampling params, and a thinking display that must
+// be asked for. The Anthropic request builder reads this instead of parsing the
+// model ID, so a renamed, aliased or provider-qualified Claude 5 ref still gets
+// the right wire shape. The overrides layer is the only source: LiteLLM has no
+// equivalent field.
+func TestEmbeddedModelCatalog_Claude5RequestShape(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	for _, id := range []string{"claude-sonnet-5", "claude-fable-5", "claude-opus-5"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s not found in embedded catalog", id)
+		}
+		if !mi.Claude5RequestShape {
+			t.Errorf("%s Claude5RequestShape = false, want true", id)
+		}
+	}
+	for _, id := range []string{"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4-5"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s not found in embedded catalog", id)
+		}
+		if mi.Claude5RequestShape {
+			t.Errorf("%s Claude5RequestShape = true, want false (pre-5 request contract)", id)
+		}
+	}
+	// Dated snapshots and provider-qualified refs carry no entry of their own;
+	// they inherit the flag through LookupModelInfo's family and last-segment
+	// fallbacks, which is what makes the flag safe to key request shaping on.
+	for _, ref := range []string{"claude-sonnet-5-20260901", "anthropic/claude-opus-5"} {
+		mi := cat.LookupModelInfo(ref)
+		if mi == nil {
+			t.Fatalf("LookupModelInfo(%q) = nil", ref)
+		}
+		if !mi.Claude5RequestShape {
+			t.Errorf("LookupModelInfo(%q).Claude5RequestShape = false, want true", ref)
+		}
+	}
+}
+
 func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	if cat == nil {

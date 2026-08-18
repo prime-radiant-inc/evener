@@ -24,19 +24,21 @@ import (
 //
 // FuzzApplyCatalogOverrides drives applyOverrides/applyOverlayFields (the
 // serf_model_catalog_overrides.json merge layer, including the newer
-// thinking_always_on, supports_vision, per-million pricing, and aliases
-// plumbing) over arbitrary override JSON against a small fixed base catalog.
+// thinking_always_on, claude5_request_shape, supports_vision, per-million
+// pricing, and aliases plumbing) over arbitrary override JSON against a small
+// fixed base catalog.
 //
 // Oracles:
 //   - never panics; the base catalog's model IDs all survive the merge.
 //   - deterministic: two fresh merges of the same bytes agree on the ordered
-//     (ID, ContextWindow, ThinkingAlwaysOn, level-count) tuples.
+//     (ID, ContextWindow, ThinkingAlwaysOn, Claude5RequestShape, level-count)
+//     tuples.
 //   - materialized entries always carry a positive context window (the
 //     materialization gate), and every model resolves through GetModelInfo.
 //   - alias index round-trip: each whitespace-free alias resolves to a model
 //     that lists it (or was shadowed by a real ID / earlier alias).
 func FuzzApplyCatalogOverrides(f *testing.F) {
-	f.Add([]byte(`{"claude-fable-5": {"thinking_always_on": true, "supports_web_search": true}}`))
+	f.Add([]byte(`{"claude-fable-5": {"thinking_always_on": true, "claude5_request_shape": true, "supports_web_search": true}}`))
 	f.Add([]byte(`{"gpt-5.6-sol": {"provider":"openai","context_window":1050000,"max_output_tokens":128000,"supports_vision":true,"input_cost_per_million":5.0,"output_cost_per_million":30.0,"cache_read_input_cost_per_million":0.5,"aliases":["gpt-5.6"],"reasoning_effort_levels":["low","medium","high","xhigh","max"]}}`))
 	f.Add([]byte(`{"base-model": {"reasoning_effort_levels": ["low", 7, "max"], "aliases": ["base-model", 3]}}`))
 	f.Add([]byte(`{"_comment": "x", "overlay-only": {"supports_tools": true}}`))
@@ -76,6 +78,7 @@ func FuzzApplyCatalogOverrides(f *testing.F) {
 				t.Fatalf("model %q present in one merge only", m.ID)
 			}
 			if o.ContextWindow != m.ContextWindow || o.ThinkingAlwaysOn != m.ThinkingAlwaysOn ||
+				o.Claude5RequestShape != m.Claude5RequestShape ||
 				len(o.ReasoningEffortLevels) != len(m.ReasoningEffortLevels) {
 				t.Fatalf("merge not deterministic for %q: %+v vs %+v", m.ID, m, o)
 			}
