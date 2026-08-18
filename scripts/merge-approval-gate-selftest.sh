@@ -146,8 +146,8 @@ assert_has "$work/blocked-and-failed.out" "BLOCKED loopback-bind" "the blocked-c
 # commands (go, npm, git) and the scripts it shells out to, so it proves
 # make-level target wiring — web-preflight before the frontend build, the
 # frontend build before runtime Go work, dist's default-platform discovery —
-# independent of what run-module-lint-selftest.sh and
-# run-module-tests-selftest.sh already cover for their own targets.
+# independent of what run-module-tests-selftest.sh and the serf-dev
+# module-lint tests already cover for their own targets.
 make_case="$work/make-wiring"
 make_repo="$make_case/repo"
 make_state="$make_case/state"
@@ -167,18 +167,13 @@ cat >"$make_repo/scripts/build-runtime-pair.sh" <<'FAKE_RUNTIME_BUILD'
 set -u
 printf 'go-build-runtime\n' >>"$FAKE_STATE/calls"
 FAKE_RUNTIME_BUILD
-cat >"$make_repo/scripts/run-module-lint.sh" <<'FAKE_MODULE_LINT'
-#!/usr/bin/env bash
-set -u
-printf 'module-lint\n' >>"$FAKE_STATE/calls"
-FAKE_MODULE_LINT
 cat >"$make_repo/scripts/gitleaks-scan.sh" <<'FAKE_GITLEAKS'
 #!/usr/bin/env bash
 set -u
 printf 'gitleaks\t%s\n' "$*" >>"$FAKE_STATE/calls"
 FAKE_GITLEAKS
 chmod +x "$make_repo/scripts/web-preflight.sh" "$make_repo/scripts/build-runtime-pair.sh" \
-	"$make_repo/scripts/run-module-lint.sh" "$make_repo/scripts/gitleaks-scan.sh"
+	"$make_repo/scripts/gitleaks-scan.sh"
 
 cat >"$make_bin/go" <<'FAKE_GO'
 #!/usr/bin/env bash
