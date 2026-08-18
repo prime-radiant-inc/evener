@@ -32,8 +32,8 @@ func TestDetailsDrawerShowsMCPServerStatusAndError(t *testing.T) {
 	withTestColorProfile(t)
 	d := detailsDrawer{Detail: hubSessionDetail{
 		Title: "Test",
-		Diagnostics: &appwire.SerfDiagnostics{
-			MCP: []appwire.SerfMCPServerInfo{
+		Diagnostics: &appwire.EvenerDiagnostics{
+			MCP: []appwire.EvenerMCPServerInfo{
 				{Name: "linear", Tools: []string{"linear_create"}},
 				{Name: "slack", Tools: []string{"slack_post"}, Status: "connected"},
 				{Name: "github", Tools: []string{"repo_search"}, Status: "degraded", Error: "connection refused"},
@@ -65,7 +65,7 @@ func TestDetailsDrawerShowsWorkTimeAndTokens(t *testing.T) {
 	withTestColorProfile(t)
 	d := detailsDrawer{Detail: hubSessionDetail{
 		WorkMillis: 4200,
-		Usage: &appwire.SerfUsage{
+		Usage: &appwire.EvenerUsage{
 			InputTokens:     100,
 			OutputTokens:    50,
 			CacheReadTokens: 10,
@@ -127,7 +127,7 @@ func TestDetailsDrawerBandsContextPressure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := hubSessionDetail{
 				Title:           "Pressured",
-				SourceLabel:     "serf",
+				SourceLabel:     "evener",
 				ContextUsed:     tc.used,
 				ContextWindow:   tc.window,
 				ContextPressure: tc.pressure,

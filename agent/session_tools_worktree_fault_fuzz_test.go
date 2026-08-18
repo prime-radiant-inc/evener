@@ -191,7 +191,7 @@ func worktreeFaultRestoreProgram(t *testing.T, program []byte) {
 	if _, err := h.exec(map[string]any{"operation": "switch", "name": betaName}); err != nil {
 		t.Fatalf("switch away from restore target: %v", err)
 	}
-	foreignReason := "serf:foreign-restore"
+	foreignReason := "evener:foreign-restore"
 	h.setLock(alpha, foreignReason)
 	out, err := h.exec(map[string]any{"operation": "exit"})
 	if err != nil {
@@ -268,7 +268,7 @@ func worktreeFaultRemoveProgram(t *testing.T, program []byte) {
 		name := faultName(program, "guarded")
 		path := scriptedCreate(t, h, name)
 		h.exitToRoot(t)
-		h.setLock(path, "serf:foreign-owner")
+		h.setLock(path, "evener:foreign-owner")
 		if _, err := h.exec(map[string]any{"operation": "remove", "name": name, "force": true}); err == nil {
 			t.Fatal("foreign-lock removal succeeded")
 		}
@@ -322,7 +322,7 @@ func worktreeFaultPruneSweepOneProgram(t *testing.T, program []byte) {
 	lockedName := faultName(program, "locked")
 	lockedPath := scriptedCreate(t, h, lockedName)
 	h.exitToRoot(t)
-	h.setLock(lockedPath, "serf:foreign-prune")
+	h.setLock(lockedPath, "evener:foreign-prune")
 
 	liveName := faultName(program, "live")
 	livePath := scriptedCreate(t, h, liveName)
@@ -899,7 +899,7 @@ func worktreeFaultRemoveTailProgram(t *testing.T, program []byte) {
 		h, _ := newWorktreeFaultSession(t)
 		name := faultName(program, "current-foreign")
 		path := scriptedCreate(t, h, name)
-		foreign := "serf:foreign-current"
+		foreign := "evener:foreign-current"
 		h.setLock(path, foreign)
 
 		if _, err := h.exec(map[string]any{"operation": "remove", "name": name}); err == nil {
@@ -946,7 +946,7 @@ func worktreeFaultRemoveTailProgram(t *testing.T, program []byte) {
 			t.Fatalf("switch away from restore target: %v", err)
 		}
 
-		foreign := "serf:foreign-remove-restore"
+		foreign := "evener:foreign-remove-restore"
 		h.setLock(alpha, foreign)
 		out, err := h.exec(map[string]any{"operation": "remove", "name": betaName})
 		if err != nil {

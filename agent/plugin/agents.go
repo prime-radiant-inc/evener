@@ -20,7 +20,7 @@ type Agent struct {
 	Model        string              // "inherit", "sonnet", "opus", "haiku"
 	Color        string              // display color hint from frontmatter
 	AllTools     bool                // when true, the agent may use every tool (Tools is ignored)
-	Tools        []string            // serf canonical names (mapped at load time)
+	Tools        []string            // evener canonical names (mapped at load time)
 	Skills       []string            // skill names to auto-inject at dispatch time
 	Tasks        []task.TaskTemplate // default workflow tasks from YAML
 	SystemPrompt string              // markdown body
@@ -41,7 +41,7 @@ func splitCommaList(s string) []string {
 
 // ParseAgent parses a markdown file with YAML frontmatter into an Agent.
 // Required frontmatter fields: name, description.
-// Optional: model, color, tools (mapped to serf canonical names, or the scalar string "all"), skills (plain strings).
+// Optional: model, color, tools (mapped to evener canonical names, or the scalar string "all"), skills (plain strings).
 func ParseAgent(data []byte, pluginName string) (Agent, error) {
 	doc, err := frontmatter.Parse(string(data))
 	if err != nil {

@@ -80,7 +80,7 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 
 // startPluginAutoUpgradeDaemon runs runPluginAutoUpgradeTick once immediately
 // (the design's "plus once on hub start") and then every interval until ctx is
-// canceled, broadcasting serf/plugin/updated for each plugin actually
+// canceled, broadcasting evener/plugin/updated for each plugin actually
 // upgraded. Meant to be launched with `go` from main, mirroring the hub's
 // other ticker goroutines (roster watch, past-index rebuild, attention
 // watcher).
@@ -104,14 +104,14 @@ func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, int
 	}
 }
 
-// registerPluginAutoUpgradeHandlers registers the serf/plugin/checkNow RPC
+// registerPluginAutoUpgradeHandlers registers the evener/plugin/checkNow RPC
 // handler: it runs one daemon tick synchronously on demand and reports what
 // happened, so a user isn't stuck waiting up to the full interval to see an
-// opted-in plugin move. The full serf/plugin/* CRUD surface (list, install,
+// opted-in plugin move. The full evener/plugin/* CRUD surface (list, install,
 // upgrade, ...) is a separate phase's hubPluginsController; this handler only
 // owns the auto-upgrade tick.
 func registerPluginAutoUpgradeHandlers(server *appserver.Server, mgr *plugins.Manager) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginCheckNow, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginCheckNowResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckNow, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginCheckNowResponse, error) {
 		updated, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 		refs := make([]string, len(updated))
 		for i, u := range updated {

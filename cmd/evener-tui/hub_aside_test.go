@@ -27,7 +27,7 @@ func TestSendHubAsideForksAtTip(t *testing.T) {
 			ID:        "child1",
 			SessionID: "child1",
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: "local:child1"},
+			Evener:      appwire.EvenerThread{Ref: "local:child1"},
 		}}, nil
 	})
 	client, cleanup := newTUIAppWireClient(t, app)

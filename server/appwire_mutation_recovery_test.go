@@ -404,7 +404,7 @@ func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	}
 	data, ok := failed.Error.Error.Data.(appwire.ErrorData)
 	if !ok ||
-		data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
 		data.ClientMutationID != params.ClientMutationID ||
 		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 		data.RetryDisposition != appwire.RetryDispositionBlocked ||

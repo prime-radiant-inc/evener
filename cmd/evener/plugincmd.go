@@ -71,7 +71,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: serf plugin marketplace add|remove|list|refresh|browse")
+		return errors.New("usage: evener plugin marketplace add|remove|list|refresh|browse")
 	}
 	m := newPluginManager()
 	switch args[0] {
@@ -95,7 +95,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin marketplace add <url|owner/repo|path> [--yes]")
+			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--yes]")
 		}
 		src, err := parsePluginMarketplaceSource(fs.Arg(0))
 		if err != nil {
@@ -118,7 +118,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin marketplace remove <name>")
+			return errors.New("usage: evener plugin marketplace remove <name>")
 		}
 		name := fs.Arg(0)
 		if err := m.RemoveMarketplace(name); err != nil {
@@ -133,7 +133,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin marketplace refresh <name>")
+			return errors.New("usage: evener plugin marketplace refresh <name>")
 		}
 		name := fs.Arg(0)
 		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
@@ -149,7 +149,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin marketplace browse <name> [--json]")
+			return errors.New("usage: evener plugin marketplace browse <name> [--json]")
 		}
 		name := fs.Arg(0)
 		cat, err := m.Browse(context.Background(), name)
@@ -203,7 +203,7 @@ func parseMarketplaceSourceArg(arg string) (plugins.Source, error) {
 }
 
 func printPluginUsage(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "Usage: serf plugin <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "Usage: evener plugin <command> [flags]\n\n")
 	_, _ = fmt.Fprintf(w, "Manage plugins and plugin marketplaces.\n\n")
 	_, _ = fmt.Fprintf(w, "Commands:\n")
 	_, _ = fmt.Fprintf(w, "  marketplace   Manage plugin marketplaces (add, remove, list, refresh, browse)\n")
@@ -329,7 +329,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin install <plugin>@<marketplace> [--yes]")
+			return errors.New("usage: evener plugin install <plugin>@<marketplace> [--yes]")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -356,7 +356,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin remove <plugin>@<marketplace>")
+			return errors.New("usage: evener plugin remove <plugin>@<marketplace>")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -375,7 +375,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin enable <plugin>@<marketplace>")
+			return errors.New("usage: evener plugin enable <plugin>@<marketplace>")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -394,7 +394,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin disable <plugin>@<marketplace>")
+			return errors.New("usage: evener plugin disable <plugin>@<marketplace>")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -431,7 +431,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		}
 
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin upgrade <plugin>@<marketplace> | upgrade --all")
+			return errors.New("usage: evener plugin upgrade <plugin>@<marketplace> | upgrade --all")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -452,7 +452,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: serf plugin auto-upgrade <plugin>@<marketplace> [--off]")
+			return errors.New("usage: evener plugin auto-upgrade <plugin>@<marketplace> [--off]")
 		}
 		plugin, marketplace, err := splitPluginRef(fs.Arg(0))
 		if err != nil {
@@ -498,7 +498,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 	}
 }
 
-// runPluginDoctor is the `serf plugin doctor` alias for `serf-doctor plugins`
+// runPluginDoctor is the `evener plugin doctor` alias for `evener-doctor plugins`
 // (design spec §13): the same read-only Manager.Doctor health check, rendered
 // or JSON-encoded the same way, reachable without a separate binary.
 func runPluginDoctor(args []string, stdout, stderr io.Writer) error {
@@ -528,12 +528,12 @@ type checkNowResult struct {
 	Error   string   `json:"error,omitempty"`
 }
 
-// runPluginCheckNow is `serf plugin check-now` (design spec §9.1): manually
+// runPluginCheckNow is `evener plugin check-now` (design spec §9.1): manually
 // triggers one auto-upgrade pass — upgrading every installed, git-backed
 // plugin with autoUpgrade enabled — right now instead of waiting for the hub
 // daemon's timer. The hub already exposes this on demand via the
-// serf/plugin/checkNow RPC, but nothing reachable from the CLI did; a user
-// running serf without the hub (or wanting a scriptable check) had no way to
+// evener/plugin/checkNow RPC, but nothing reachable from the CLI did; a user
+// running evener without the hub (or wanting a scriptable check) had no way to
 // trigger it. Failures are reported alongside successes rather than aborting
 // the report, matching Manager.UpdateAutoUpgrade's own failure-isolation.
 func runPluginCheckNow(args []string, stdout, stderr io.Writer) error {

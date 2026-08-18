@@ -527,7 +527,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spawnHarnesses = msg.harnesses
 		if len(m.spawnHarnesses) == 0 {
-			m.spawnHarnesses = []string{"serf"}
+			m.spawnHarnesses = []string{"evener"}
 		}
 		m.spawnHarnessKinds = msg.harnessKinds
 		if m.spawnHarnessKinds == nil {
@@ -543,7 +543,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for _, harness := range m.spawnHarnesses {
 			if m.spawnHarnessKinds[harness] == "" {
-				m.spawnHarnessKinds[harness] = "serf"
+				m.spawnHarnessKinds[harness] = "evener"
 			}
 		}
 		if !stringInSlice(m.spawnHarness, m.spawnHarnesses) {

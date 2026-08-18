@@ -1,4 +1,4 @@
-// Package shardfixture is the real test module serf-dev's agent-shards tests
+// Package shardfixture is the real test module evener-dev's agent-shards tests
 // run: a handful of tests with distinct costs, one that fails on command, one
 // that dies without a `go test` failure marker, and one that holds until
 // signaled — real work for a real toolchain, no fakes.

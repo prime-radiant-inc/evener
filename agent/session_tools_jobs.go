@@ -432,7 +432,7 @@ func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any,
 //
 // It is recorded durably as its own state (consumed, not delivered) so the
 // told-the-caller invariant stays true without claiming a notification turn
-// that never happened — serf-doctor can still tell the two apart.
+// that never happened — evener-doctor can still tell the two apart.
 //
 // Only the OWNER's own reads consume. A parent's forwarded copy of a
 // child-owned pending is a drive signal, not the parent's news to hear:

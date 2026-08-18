@@ -11,8 +11,8 @@ import (
 // TestApplyHubNotification_DecodesEveryCatalogedNotification is a
 // characterization test for kata vbp3: applyHubNotification and
 // reconcilePendingFromNotification used to decode several notifications
-// (turn/started, item/started, item/completed, serf/job/started,
-// serf/steering/injected, turn/completed) into hand-rolled anonymous structs
+// (turn/started, item/started, item/completed, evener/job/started,
+// evener/steering/injected, turn/completed) into hand-rolled anonymous structs
 // even though appwire's catalog already names their shape. This test drives
 // each through the real dispatcher with realistic JSON and asserts the
 // resulting model/pending-coordinator state, so a field-name slip made while
@@ -58,8 +58,8 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 	// item/completed: ItemLifecycleParams.Item (same struct as item/started).
 	send(appwire.NotifyItemCompleted, `{"item":{"id":"i1","type":"userMessage","text":"hi","status":"completed"}}`)
 
-	// serf/job/started: SerfJobParams.Job. Job notifications are shell-only.
-	send(appwire.NotifySerfJobStarted, `{"job":{"jobId":"j1","jobType":"shell","status":"running","background":true}}`)
+	// evener/job/started: EvenerJobParams.Job. Job notifications are shell-only.
+	send(appwire.NotifyEvenerJobStarted, `{"job":{"jobId":"j1","jobType":"shell","status":"running","background":true}}`)
 	sawJob := false
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Subagent != nil && msg.Tool.Subagent.JobID == "j1" {
@@ -70,8 +70,8 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 		t.Fatalf("session.messages = %+v, want a shell row for job j1", m.session.messages)
 	}
 
-	// serf/delegate/updated: SerfDelegateParams.Delegate.
-	send(appwire.NotifySerfDelegateUpdated, `{"delegate":{"delegateId":"dlg1","status":"running","projectionRevision":1}}`)
+	// evener/delegate/updated: EvenerDelegateParams.Delegate.
+	send(appwire.NotifyEvenerDelegateUpdated, `{"delegate":{"delegateId":"dlg1","status":"running","projectionRevision":1}}`)
 	sawDelegate := false
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Subagent != nil && msg.Tool.Subagent.DelegateID == "dlg1" {
@@ -82,10 +82,10 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 		t.Fatalf("session.messages = %+v, want a stable delegate row for dlg1", m.session.messages)
 	}
 
-	// serf/steering/injected: SerfSteeringInjectedParams.Text. Also exercises
+	// evener/steering/injected: EvenerSteeringInjectedParams.Text. Also exercises
 	// reconcilePendingFromNotification's steering case (MethodTurnSteer).
 	m.pending.Register(appwire.MethodTurnSteer, "steered", "")
-	send(appwire.NotifySerfSteeringInjected, `{"text":"steered"}`)
+	send(appwire.NotifyEvenerSteeringInjected, `{"text":"steered"}`)
 	sawSteering := false
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgSteering && msg.Text == "steered" {
@@ -96,7 +96,7 @@ func TestApplyHubNotification_DecodesEveryCatalogedNotification(t *testing.T) {
 		t.Fatalf("session.messages = %+v, want a MsgSteering entry with text %q", m.session.messages, "steered")
 	}
 	if m.pending.TryReconcile(appwire.MethodTurnSteer, "steered", "") {
-		t.Fatal("serf/steering/injected should have already reconciled the pending turn/steer placeholder")
+		t.Fatal("evener/steering/injected should have already reconciled the pending turn/steer placeholder")
 	}
 
 	// turn/completed: TurnCompletedParams.Turn, clears ActiveTurnID. Also

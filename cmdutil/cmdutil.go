@@ -1,4 +1,4 @@
-// Package cmdutil provides shared helpers for serf CLI binaries.
+// Package cmdutil provides shared helpers for evener CLI binaries.
 package cmdutil
 
 import (

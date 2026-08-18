@@ -60,11 +60,11 @@ func fuzzMCPConfigDiscoverLayers(t *testing.T, token string) {
 	projectRoot := t.TempDir()
 	cliPath := filepath.Join(t.TempDir(), "cli-mcp.json")
 
-	fuzzMCPConfigWrite(t, filepath.Join(globalDir, "serf", "mcp.json"), map[string]map[string]any{
+	fuzzMCPConfigWrite(t, filepath.Join(globalDir, "evener", "mcp.json"), map[string]map[string]any{
 		"shared":      {"command": "global-" + token},
 		"global-only": {"command": "${MCP_CONFIG_DISCOVERY_VALUE}"},
 	})
-	fuzzMCPConfigWrite(t, filepath.Join(projectRoot, ".serf", "mcp.json"), map[string]map[string]any{
+	fuzzMCPConfigWrite(t, filepath.Join(projectRoot, ".evener", "mcp.json"), map[string]map[string]any{
 		"shared":       {"command": "project-" + token},
 		"project-only": {"command": "project-only"},
 	})
@@ -103,9 +103,9 @@ func fuzzMCPConfigDiscoverOptionalFailures(t *testing.T, token string) {
 
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
-	globalPath := filepath.Join(globalDir, "serf", "mcp.json")
+	globalPath := filepath.Join(globalDir, "evener", "mcp.json")
 	projectRoot := t.TempDir()
-	projectPath := filepath.Join(projectRoot, ".serf", "mcp.json")
+	projectPath := filepath.Join(projectRoot, ".evener", "mcp.json")
 
 	fuzzMCPConfigWriteRaw(t, globalPath, []byte(`{"mcpServers":`))
 	fuzzMCPConfigWriteRaw(t, projectPath, []byte(`{"mcpServers":{"broken":{"command":"`+token+`"}`))
@@ -157,7 +157,7 @@ func fuzzMCPConfigDiscoverNoProjectRoot(t *testing.T, token string) {
 
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
-	fuzzMCPConfigWrite(t, filepath.Join(globalDir, "serf", "mcp.json"), map[string]map[string]any{
+	fuzzMCPConfigWrite(t, filepath.Join(globalDir, "evener", "mcp.json"), map[string]map[string]any{
 		"global-only": {"command": "global-" + token},
 	})
 
@@ -193,7 +193,7 @@ func fuzzMCPConfigDiscoverHomeFallback(t *testing.T, token string) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", home)
-	fuzzMCPConfigWrite(t, filepath.Join(home, ".config", "serf", "mcp.json"), map[string]map[string]any{
+	fuzzMCPConfigWrite(t, filepath.Join(home, ".config", "evener", "mcp.json"), map[string]map[string]any{
 		"home-only": {"command": "home-" + token},
 	})
 

@@ -1,5 +1,5 @@
-// Package launchconfig owns the layered configuration that hub-serf
-// passes when launching a serf serve subprocess. Layers (global, in-repo,
+// Package launchconfig owns the layered configuration that hub-evener
+// passes when launching a evener serve subprocess. Layers (global, in-repo,
 // local per-project, per-launch) are merged into a single Resolved
 // value which is then turned into argv + env via ToArgs/ToEnv.
 package launchconfig
@@ -51,7 +51,7 @@ type Layer struct {
 }
 
 // MCPServerSpec describes one MCP server entry. Matches the shape passed
-// to `serf serve --mcp name:command args...`.
+// to `evener serve --mcp name:command args...`.
 type MCPServerSpec struct {
 	Name    string   `toml:"name"`
 	Command string   `toml:"command"`
@@ -81,7 +81,7 @@ type Resolved struct {
 	Diagnostics []Diagnostic
 }
 
-// TrustState describes the in-repo .serf/launch.toml trust outcome.
+// TrustState describes the in-repo .evener/launch.toml trust outcome.
 type TrustState string
 
 const (
@@ -107,7 +107,7 @@ type Diagnostic struct {
 	Message string
 }
 
-// Meta is the contents of ~/.serf/projects/<id>/meta.toml.
+// Meta is the contents of ~/.evener/projects/<id>/meta.toml.
 type Meta struct {
 	Schema    int       `toml:"schema"`
 	CWD       string    `toml:"cwd"`
@@ -119,7 +119,7 @@ type Meta struct {
 type MetaTrust struct {
 	// Hashes is the set of content hashes that have been explicitly trusted or
 	// rejected. New trust decisions append to this set so that branch-switching
-	// with different .serf/launch.toml content does not require re-prompting.
+	// with different .evener/launch.toml content does not require re-prompting.
 	Hashes []string `toml:"hashes,omitempty"`
 	// Hash is the singular trusted hash from the original TOFU implementation.
 	//

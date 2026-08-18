@@ -516,7 +516,7 @@ type listFilter struct {
 // jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
 func jobsDir(stateDir, sessionID string) string {
 	if strings.TrimSpace(stateDir) == "" {
-		return filepath.Join(os.TempDir(), "serf-jobs", sessionID)
+		return filepath.Join(os.TempDir(), "evener-jobs", sessionID)
 	}
 	return filepath.Join(stateDir, "sessions", sessionID)
 }
@@ -1157,7 +1157,7 @@ type jobOutputWindow struct {
 
 // readOutputWindow reads up to maxBytes of jobID's output ending at lifetime
 // offset beforeBytes (exclusive); beforeBytes <= 0 reads the tail. It backs
-// serf/jobs/output paging for both the live output store and terminal logs.
+// evener/jobs/output paging for both the live output store and terminal logs.
 func (jm *jobManager) readOutputWindow(jobID string, beforeBytes, maxBytes int64) (jobOutputWindow, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -1834,7 +1834,7 @@ func validateStructuredResultWithAddResource(value any, resultSchema any, addRes
 		return err
 	}
 	c := jsonschema.NewCompiler()
-	const schemaURI = "urn:serf:delegate-result-schema"
+	const schemaURI = "urn:evener:delegate-result-schema"
 	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return err
 	}

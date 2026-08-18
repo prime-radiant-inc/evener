@@ -46,7 +46,7 @@ type threadEnvelope struct {
 	PendingMutations      []appwire.PendingMutation
 	Tasks                 *appwire.TaskAggregate
 	Goal                  *appwire.GoalState
-	Usage                 *appwire.SerfUsage
+	Usage                 *appwire.EvenerUsage
 	WorkMillis            int64
 	ActiveTurnStartedAt   int64
 	FailedToolCalls       *int
@@ -88,7 +88,7 @@ type ThreadEnvelopeSource interface {
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TaskAggregate() *appwire.TaskAggregate
 	GoalStatus() (status string, iterations int, ok bool)
-	WorkMetrics() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
 	AskPending() bool
 	PendingEscalations() []appwire.SandboxEscalationRequested

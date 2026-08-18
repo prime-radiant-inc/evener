@@ -1,4 +1,4 @@
-// Command serf-fuzzregistry audits scripts/run-fuzz.sh's target manifest against
+// Command evener-fuzzregistry audits scripts/run-fuzz.sh's target manifest against
 // the native and explicitly marked Rapid fuzz surfaces declared in the workspace.
 package main
 
@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	rapidMarker  = "serf:fuzz rapid"
+	rapidMarker  = "evener:fuzz rapid"
 	fuzzBuildTag = "serffuzz"
 )
 
@@ -70,7 +70,7 @@ var registryPackagePath = packagePath
 var registryParseWork = modfile.ParseWork
 
 func runRegistry(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("serf-fuzzregistry", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-fuzzregistry", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repoRoot := fs.String("repo-root", ".", "repository root containing go.work")
 	registryPath := fs.String("registry", "", "path to scripts/run-fuzz.sh --list output")
@@ -119,7 +119,7 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 }
 
 func registryError(w io.Writer, format string, args ...any) int {
-	_, _ = fmt.Fprintf(w, "serf-fuzzregistry: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(w, "evener-fuzzregistry: "+format+"\n", args...)
 	return 1
 }
 

@@ -157,7 +157,7 @@ func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
 
 func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
 	store := newFakeArtifactStore()
-	const sensitivePath = "/Users/operator/.serf/private/session-artifacts/model-output"
+	const sensitivePath = "/Users/operator/.evener/private/session-artifacts/model-output"
 	store.putErr = &os.PathError{
 		Op:   "write",
 		Path: sensitivePath,

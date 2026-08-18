@@ -43,7 +43,7 @@ func ExtractEmbeddedSkills() (string, error) {
 // tests exercise filesystem failures without changing the exported bundled
 // asset behavior.
 func extractEmbeddedSkills(skillsFS fs.FS, mkdirTemp func(string, string) (string, error)) (string, error) {
-	dir, err := mkdirTemp("", "serf-skills-*")
+	dir, err := mkdirTemp("", "evener-skills-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir for embedded skills: %w", err)
 	}

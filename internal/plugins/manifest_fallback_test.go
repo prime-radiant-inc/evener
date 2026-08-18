@@ -54,7 +54,7 @@ func TestEnsureManifestFallback_ExistingManifestIsNoop(t *testing.T) {
 // .mcp.json, no commands/agents/skills/hooks dirs) and a marketplace entry
 // that declares no components either. Claude Code installs this shape
 // successfully (the plugin just contributes whatever conventional dirs
-// exist — here, none), so serf must too: synthesize a minimal manifest from
+// exist — here, none), so evener must too: synthesize a minimal manifest from
 // the entry's name/description and load with zero components.
 func TestEnsureManifestFallback_NoManifestNoFields_Installs(t *testing.T) {
 	dir := t.TempDir()
@@ -99,7 +99,7 @@ func TestEnsureManifestFallback_NotStaged_ClearError(t *testing.T) {
 		t.Errorf("error must not name the misleading .codex-plugin path, got: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, ".claude-plugin", "plugin.json")); statErr == nil {
-		t.Fatal("must not write a manifest into a directory-source plugin serf does not own")
+		t.Fatal("must not write a manifest into a directory-source plugin evener does not own")
 	}
 }
 
@@ -160,7 +160,7 @@ func fallbackAndLoad(t *testing.T, dir string, cp CatalogPlugin) (agentplugin.In
 
 // TestEnsureManifestFallback_PackageJSONBin_WiresMCP is the feature's happy
 // path: a manifest-less bare npm MCP-server repo whose package.json declares
-// exactly one bin, with the bin target actually built and present. serf goes
+// exactly one bin, with the bin target actually built and present. evener goes
 // beyond Claude Code's zero-component parity here: the synthesized manifest
 // carries an mcpServers entry (node + the bin path under
 // ${CLAUDE_PLUGIN_ROOT}) so installing the plugin makes its MCP available.
@@ -194,7 +194,7 @@ func TestEnsureManifestFallback_PackageJSONBin_WiresMCP(t *testing.T) {
 // cached private-journal-mcp/2.0.1: package.json points bin at ./dist/index.js
 // but the git clone ships only src/ (dist/ is produced by npm's prepare
 // script, which never ran). Wiring node at a nonexistent file would install a
-// broken server, so serf must skip wiring and surface an install-time note.
+// broken server, so evener must skip wiring and surface an install-time note.
 func TestEnsureManifestFallback_BinTargetMissing_NoteNoWire(t *testing.T) {
 	dir := t.TempDir()
 	writeBinPlugin(t, dir, "private-journal-mcp",
@@ -230,7 +230,7 @@ func TestEnsureManifestFallback_MultipleBins_PicksPluginName(t *testing.T) {
 }
 
 // TestEnsureManifestFallback_MultipleBins_NoMatch_NoteSkip: several bins, none
-// named after the plugin — serf must not guess which is the MCP server.
+// named after the plugin — evener must not guess which is the MCP server.
 func TestEnsureManifestFallback_MultipleBins_NoMatch_NoteSkip(t *testing.T) {
 	dir := t.TempDir()
 	writeBinPlugin(t, dir, "some-plugin",
@@ -363,7 +363,7 @@ func TestEnsureManifestFallback_EmptyBinName_NoteSkip(t *testing.T) {
 }
 
 // TestEnsureManifestFallback_StringBin_NoteSkip: npm also allows "bin" to be a
-// bare string, but no real plugin in the surveyed caches uses it, so serf
+// bare string, but no real plugin in the surveyed caches uses it, so evener
 // deliberately does not wire that shape — skip with a note (don't guess).
 func TestEnsureManifestFallback_StringBin_NoteSkip(t *testing.T) {
 	dir := t.TempDir()

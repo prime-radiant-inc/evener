@@ -328,9 +328,9 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
 	m.setSpawnDir("")
 	m.spawnProject = ""
-	m.spawnHarness = "serf"
-	m.spawnHarnesses = []string{"serf"}
-	m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+	m.spawnHarness = "evener"
+	m.spawnHarnesses = []string{"evener"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener"}
 	m.spawnEmptyTaskReasons = nil
 	m.spawnEmptyTaskNext = nil
 	m.spawnModel = ""
@@ -361,7 +361,7 @@ func (m *hubModel) setSpawnDir(dir string) {
 
 func (m *hubModel) cycleSpawnHarness() {
 	if len(m.spawnHarnesses) == 0 {
-		m.spawnHarnesses = []string{"serf"}
+		m.spawnHarnesses = []string{"evener"}
 	}
 	for i, harness := range m.spawnHarnesses {
 		if harness == m.spawnHarness {
@@ -382,7 +382,7 @@ func (m hubModel) spawnHarnessKind() string {
 	if kind := strings.TrimSpace(m.spawnHarnessKinds[m.spawnHarness]); kind != "" {
 		return kind
 	}
-	return "serf"
+	return "evener"
 }
 
 func (m hubModel) spawnHarnessUsesSerfModels() bool {
@@ -502,7 +502,7 @@ func (m hubModel) spawnProjectName() string {
 
 func (m hubModel) spawnView() string {
 	var b strings.Builder
-	topBar := "serf / new session"
+	topBar := "evener / new session"
 	var overlay string
 	if m.spawnModelPicker != nil {
 		overlay = m.spawnModelPicker.View()

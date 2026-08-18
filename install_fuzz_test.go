@@ -1,6 +1,6 @@
 //go:build serffuzz
 
-package serf_test
+package evener_test
 
 import (
 	"bytes"
@@ -80,8 +80,8 @@ done
 [ -n "$dest" ] || exit 2
 [ "$SERF_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
 mkdir -p "$dest/$SERF_FUZZ_ARCHIVE_ROOT"
-for bin in serf serf-hub serf-tui serf-doctor; do
-  [ "$SERF_FUZZ_ARCHIVE_MODE:$bin" = 2:serf-doctor ] && continue
+for bin in evener evener-hub evener-tui evener-doctor; do
+  [ "$SERF_FUZZ_ARCHIVE_MODE:$bin" = 2:evener-doctor ] && continue
   printf '#!/bin/sh\nexit 0\n' > "$dest/$SERF_FUZZ_ARCHIVE_ROOT/$bin"
 done
 `)
@@ -136,11 +136,11 @@ done
 		if envMode == 1 {
 			wantPrefix = prefix
 		}
-		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "serf", "bin")
+		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "evener", "bin")
 		if envMode == 3 {
 			bindir, shareDir = filepath.Join(root, "commands"), filepath.Join(root, "payload")
 		}
-		for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+		for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 			installed := filepath.Join(shareDir, bin)
 			info, statErr := os.Stat(installed)
 			if statErr != nil || info.Mode().Perm() != 0o755 {
@@ -159,7 +159,7 @@ done
 		if versioned {
 			versionPath = "download/v1.2.3"
 		}
-		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/serf/releases/%s/serf_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
+		wantURL := fmt.Sprintf("https://github.com/prime-radiant-inc/evener/releases/%s/evener_%s_%s.tar.gz", versionPath, strings.ToLower(osName), installArch(archName))
 		if strings.TrimSpace(string(gotURL)) != wantURL {
 			t.Fatalf("URL = %q, want %q", strings.TrimSpace(string(gotURL)), wantURL)
 		}
@@ -174,5 +174,5 @@ func installArch(arch string) string {
 }
 
 func installArchiveRoot(osName, arch string) string {
-	return "serf_" + strings.ToLower(osName) + "_" + installArch(arch)
+	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }

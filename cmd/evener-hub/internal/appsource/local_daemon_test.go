@@ -47,7 +47,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 				return appwire.ThreadReadResponse{Thread: appwire.Thread{
 					ID:     "thread-1",
 					Source: "local",
-					Serf:   appwire.SerfThread{Ref: "local:thread-1"},
+					Evener:   appwire.EvenerThread{Ref: "local:thread-1"},
 				}}, nil
 			default:
 				return nil, fmt.Errorf("unexpected method %q", method)
@@ -355,7 +355,7 @@ func fuzzScenarioLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Serf.Ref != "local:th_1" {
+	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -402,7 +402,7 @@ func fuzzScenarioLocalDaemonSourceThreadTimestampsUseStartedAtAndZeroForMissing(
 func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
@@ -421,7 +421,7 @@ func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadThread: %v", err)
 	}
-	if resp.Thread.ID != "th_1" || resp.Thread.Serf.Ref != "local:th_1" {
+	if resp.Thread.ID != "th_1" || resp.Thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -429,12 +429,12 @@ func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	var listParams appwire.JobsListParams
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(_ context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsList, func(_ context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 		listParams = params
 		return appwire.JobsListResponse{Data: appwire.JobActivityTree{Root: appwire.JobActivitySession{SessionID: "sess_1", Ref: "local:sess_1"}}}, nil
 	})
 	var outputParams appwire.JobsOutputParams
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		outputParams = params
 		return appwire.JobsOutputResponse{Data: map[string]any{"jobId": params.JobID, "output": "hello"}}, nil
 	})
@@ -524,7 +524,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:   "local:th_1",
 				Queue: wantQueue,
 			},
@@ -547,7 +547,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadThread: %v", err)
 	}
-	got := resp.Thread.Serf.Queue
+	got := resp.Thread.Evener.Queue
 	if got.Depth != wantQueue.Depth {
 		t.Fatalf("queue depth=%d, want %d", got.Depth, wantQueue.Depth)
 	}
@@ -578,7 +578,7 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 	}
 	capsByID := map[string]appwire.ThreadCapabilities{}
 	for _, thread := range resp.Data {
-		capsByID[thread.ID] = thread.Serf.Capabilities
+		capsByID[thread.ID] = thread.Evener.Capabilities
 	}
 	if capsByID["th_idle"].Queue {
 		t.Fatalf("idle thread advertised queue capability: %+v", capsByID["th_idle"])
@@ -591,7 +591,7 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 // TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
 // 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
 // on a LocalDaemonEntry, threadFromEntry must carry it through to
-// appwire.SerfThread.AskPending, since that's the field the TUI dashboard
+// appwire.EvenerThread.AskPending, since that's the field the TUI dashboard
 // reads (cmd/evener-tui/hub_types.go).
 func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
@@ -607,13 +607,13 @@ func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	}
 	askByID := map[string]bool{}
 	for _, thread := range resp.Data {
-		askByID[thread.ID] = thread.Serf.AskPending
+		askByID[thread.ID] = thread.Evener.AskPending
 	}
 	if !askByID["th_ask"] {
-		t.Fatalf("ask-pending thread must carry Serf.AskPending=true: %+v", resp.Data)
+		t.Fatalf("ask-pending thread must carry Evener.AskPending=true: %+v", resp.Data)
 	}
 	if askByID["th_idle"] {
-		t.Fatalf("non-ask-pending thread must carry Serf.AskPending=false: %+v", resp.Data)
+		t.Fatalf("non-ask-pending thread must carry Evener.AskPending=false: %+v", resp.Data)
 	}
 }
 
@@ -622,7 +622,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		gotSubscribe <- params.Subscribe
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	defer httpServer.Close()
@@ -682,7 +682,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testin
 		t.Fatalf("SubscribeThread error %T=%v, want WireError", err, err)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+	if !ok || wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		t.Fatalf("wire=%+v", wire)
 	}
 }
@@ -787,7 +787,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcome
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok ||
 		wire.Code != appwire.CodeInternalError ||
-		data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
 		data.ClientMutationID != "test-mutation" ||
 		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 		data.RetryDisposition != appwire.RetryDispositionAutomatic {
@@ -799,7 +799,7 @@ func fuzzScenarioLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
 	gotAuth := make(chan string, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth <- r.Header.Get("Authorization")
@@ -870,7 +870,7 @@ func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *tes
 // through its owner's daemon endpoint. threadFromEntry must mark it as a
 // subagent with a non-empty ParentRef so hub views (web_api_tree.go's
 // IsSubagent/parent-lookup) can distinguish it from a top-level session,
-// instead of leaving Serf.Kind/ParentRef at their zero values.
+// instead of leaving Evener.Kind/ParentRef at their zero values.
 func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
 	item := LocalDaemonEntry{
@@ -886,10 +886,10 @@ func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 
 	thread := source.threadFromEntry(item)
 
-	if thread.Serf.Kind != "subagent" {
-		t.Fatalf("Serf.Kind = %q, want %q", thread.Serf.Kind, "subagent")
+	if thread.Evener.Kind != "subagent" {
+		t.Fatalf("Evener.Kind = %q, want %q", thread.Evener.Kind, "subagent")
 	}
-	if thread.Serf.ParentRef == "" {
-		t.Fatal("Serf.ParentRef is empty, want a non-empty parent reference")
+	if thread.Evener.ParentRef == "" {
+		t.Fatal("Evener.ParentRef is empty, want a non-empty parent reference")
 	}
 }

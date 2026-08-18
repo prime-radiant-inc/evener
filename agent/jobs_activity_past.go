@@ -23,7 +23,7 @@ var activityUsageCache = apptranscript.NewTurnCache()
 // transcript. nil (not zero) when the transcript carries no usage, so the wire
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
-func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.SerfUsage {
+func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
 	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
 	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {

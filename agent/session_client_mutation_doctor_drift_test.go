@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/agent/doctor"
 )
 
-// serf-doctor's mutations reader cannot import clientMutationSnapshot — it is
+// evener-doctor's mutations reader cannot import clientMutationSnapshot — it is
 // unexported — so it mirrors the persisted shape and decodes with
 // DisallowUnknownFields. That leaves exactly one way for the two to drift: a
 // field added here that the mirror has never heard of, which would make the
@@ -39,7 +39,7 @@ func TestClientMutationSnapshotStaysReadableByTheDoctor(t *testing.T) {
 
 	report, err := doctor.Mutations(base, sid)
 	if err != nil {
-		t.Fatalf("serf-doctor cannot read a fully populated client-mutation store — its mirror "+
+		t.Fatalf("evener-doctor cannot read a fully populated client-mutation store — its mirror "+
 			"has drifted from clientMutationSnapshot (add the field to clientMutationStoreFile "+
 			"in agent/doctor/mutations.go): %v", err)
 	}

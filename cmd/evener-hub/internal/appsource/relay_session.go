@@ -35,7 +35,7 @@ type relaySession struct {
 	recovering     bool
 	// resyncPending records that the feed listeners are on was interrupted and
 	// has not yet been resumed. The next connection this session installs
-	// publishes one serf/thread/resync ahead of anything that connection
+	// publishes one evener/thread/resync ahead of anything that connection
 	// produces, whichever caller drove the reconnect (kata 8nyk).
 	resyncPending bool
 	closed        bool
@@ -426,7 +426,7 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
 		return
 	}
 	s.resyncPending = false
-	resync := *appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: params.ThreadID,
 		Ref:      params.Ref,
 	}).Notification

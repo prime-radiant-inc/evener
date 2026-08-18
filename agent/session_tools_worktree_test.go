@@ -24,7 +24,7 @@ func resolvedProjectID(t *testing.T, env execenv.ExecutionEnvironment, path stri
 
 // TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity ensures a
 // RuntimeDir failure is returned to the worktree caller rather than silently
-// switching storage to <mainRepoRoot>/.serf/worktrees.
+// switching storage to <mainRepoRoot>/.evener/worktrees.
 func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) {
 	s := newSession(t)
 	missingRoot := filepath.Join(t.TempDir(), "missing-main-checkout")
@@ -33,7 +33,7 @@ func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) 
 	if err == nil {
 		t.Fatal("worktreeRootFor returned nil error for an unresolvable project")
 	}
-	fallback := filepath.Join(missingRoot, ".serf", "worktrees")
+	fallback := filepath.Join(missingRoot, ".evener", "worktrees")
 	if got == fallback {
 		t.Fatalf("worktreeRootFor selected fallback identity %q after resolution error", got)
 	}

@@ -90,7 +90,7 @@ import (
 // A discovered failure is routed through fuzz/promoter (mirroring the Phase-2
 // appwire target): a deterministic reproduction survives the flake-guard and is
 // emitted to a temp dir as a regression test; a flaky one is quarantined.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestLifecycleSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestLifecycleSeqFuzz -count=1 -v")
@@ -580,7 +580,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 
 const (
 	lifecycleSurface = "agent-lifecycle-seq"
-	lifecycleWorkDir = "/serf-fuzz-nonexistent-workdir"
+	lifecycleWorkDir = "/evener-fuzz-nonexistent-workdir"
 )
 
 // lifecycleOpResult carries an op's outcome: completed, panicked (recovered), or wedged.
@@ -1032,8 +1032,8 @@ func captureLifecycleStack() []string {
 	for {
 		fr, more := frames.Next()
 		fn := fr.Function
-		if i := strings.LastIndex(fn, "serf/"); i >= 0 {
-			fn = fn[i+len("serf/"):]
+		if i := strings.LastIndex(fn, "evener/"); i >= 0 {
+			fn = fn[i+len("evener/"):]
 		}
 		out = append(out, fmt.Sprintf("%s:%d", fn, fr.Line))
 		if !more || len(out) >= 8 {
@@ -1060,7 +1060,7 @@ var _ clock.Clock = (*agenttest.FakeClock)(nil)
 // second sighting dedups. This proves the four hooks wire up without depending
 // on the live fuzzer finding a real bug. The panicking tool is a fixture (it
 // locks in that ProcessInput propagates a tool-handler panic to the caller), not
-// a claim about serf production code.
+// a claim about evener production code.
 func TestLifecycleAdapter_PromotesDeterministicFailure(t *testing.T) {
 	inject := lifecycleInject{panicTool: true}
 	art := lifecycleArtifact{

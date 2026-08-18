@@ -1,4 +1,4 @@
-// Command serf-transcript-v2-upgrade converts selected legacy transcript v1
+// Command evener-transcript-v2-upgrade converts selected legacy transcript v1
 // files into the semantic-only transcript v2 format.
 package main
 
@@ -50,28 +50,28 @@ func main() {
 }
 
 func run(args []string, now time.Time, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("serf-transcript-v2-upgrade", flag.ContinueOnError)
+	flags := flag.NewFlagSet("evener-transcript-v2-upgrade", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", "", "projects root containing */sessions/*.transcript.jsonl (required)")
 	since := flags.Duration("since", 120*time.Hour, "upgrade v1 transcripts modified within this rolling window")
 	apply := flags.Bool("apply", false, "replace eligible transcripts and retain .v1.bak backups")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "Usage: serf-transcript-v2-upgrade --root <projects-root> [--since 120h] [--apply]")
+		_, _ = fmt.Fprintln(stderr, "Usage: evener-transcript-v2-upgrade --root <projects-root> [--since 120h] [--apply]")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "serf-transcript-v2-upgrade: positional arguments are not accepted")
+		_, _ = fmt.Fprintln(stderr, "evener-transcript-v2-upgrade: positional arguments are not accepted")
 		return 2
 	}
 	if strings.TrimSpace(*root) == "" {
-		_, _ = fmt.Fprintln(stderr, "serf-transcript-v2-upgrade: --root is required")
+		_, _ = fmt.Fprintln(stderr, "evener-transcript-v2-upgrade: --root is required")
 		return 2
 	}
 	if *since <= 0 {
-		_, _ = fmt.Fprintln(stderr, "serf-transcript-v2-upgrade: --since must be positive")
+		_, _ = fmt.Fprintln(stderr, "evener-transcript-v2-upgrade: --since must be positive")
 		return 2
 	}
 
@@ -81,11 +81,11 @@ func run(args []string, now time.Time, stdout, stderr io.Writer) int {
 		apply:  *apply,
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "serf-transcript-v2-upgrade: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-transcript-v2-upgrade: %v\n", err)
 		return 1
 	}
 	for _, failure := range failures {
-		_, _ = fmt.Fprintf(stderr, "serf-transcript-v2-upgrade: %v\n", failure)
+		_, _ = fmt.Fprintf(stderr, "evener-transcript-v2-upgrade: %v\n", failure)
 	}
 	_, _ = fmt.Fprintf(stdout,
 		"candidates=%d eligible=%d upgraded=%d skipped_current=%d skipped_old=%d removed_api_calls=%d errors=%d\n",
@@ -337,7 +337,7 @@ func replaceTranscript(prepared preparedTranscript) error {
 	if err := requireUnusedBackup(prepared.path); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(prepared.path), ".serf-transcript-v2-*")
+	temporary, err := os.CreateTemp(filepath.Dir(prepared.path), ".evener-transcript-v2-*")
 	if err != nil {
 		return fmt.Errorf("%s: create temporary transcript: %w", prepared.path, err)
 	}

@@ -127,7 +127,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 			r.Error = err.Error()
 			return r
 		}
-		client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf-mcpprobe", Version: "v1"}, nil)
+		client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "evener-mcpprobe", Version: "v1"}, nil)
 		session, err := client.Connect(ctx, clientTransport, nil)
 		if err != nil {
 			r.Status = "unreachable"

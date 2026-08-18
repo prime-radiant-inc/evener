@@ -567,7 +567,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	}
 }
 
-// webSearchRaw captures the provider-native web-search payload shapes serf's
+// webSearchRaw captures the provider-native web-search payload shapes evener's
 // adapters store in WebSearchData.Raw: OpenAI's web_search_call (action.query),
 // Anthropic's server_tool_use (input.query) and web_search_tool_result
 // (content[]), and Gemini's grounding metadata (webSearchQueries +
@@ -575,9 +575,9 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 type webSearchRaw struct {
 	Action struct{ Query string } `json:"action"`
 	Input  struct{ Query string } `json:"input"`
-	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
 	WebSearchQueries []string `json:"webSearchQueries"`
-	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	// evener:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
 	GroundingChunks []struct {
 		Web struct {
 			URI   string `json:"uri"`
@@ -704,7 +704,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
 		}
-		if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+		if usage := appwire.EvenerUsageFromLLM(entry.Turn.Usage); usage != nil {
 			turn.Usage = usage
 		}
 		turns = append(turns, turn)

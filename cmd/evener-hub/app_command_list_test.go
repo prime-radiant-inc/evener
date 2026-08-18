@@ -1,6 +1,6 @@
 package main
 
-// Tests for serf/command/list (design §10 / P3): the hub RPC handler that
+// Tests for evener/command/list (design §10 / P3): the hub RPC handler that
 // flattens loaded plugins' slash commands into a catalog for autocomplete
 // display.
 
@@ -67,7 +67,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	// registry under the XDG default plugins root. Point it at an empty temp
 	// dir so the result is deterministically empty regardless of what the
 	// machine running this test actually has installed under
-	// ~/.config/serf/plugins.
+	// ~/.config/evener/plugins.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	resp, err := hubCommandList(hubcore.WebConfig{})
@@ -82,7 +82,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	commandsDir := filepath.Join(xdg, "serf", "commands")
+	commandsDir := filepath.Join(xdg, "evener", "commands")
 	if err := os.MkdirAll(commandsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	commandsDir := filepath.Join(xdg, "serf", "commands")
+	commandsDir := filepath.Join(xdg, "evener", "commands")
 	if err := os.MkdirAll(commandsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 // (pluginDirsFromConfig). Before this fix, a plugin installed and enabled
 // through the marketplace/registry system (living at
 // cache/<marketplace>/<plugin>/<sha>, not a direct child of the plugins
-// root) could never appear in serf/command/list, even though a spawned
+// root) could never appear in evener/command/list, even though a spawned
 // session would load its commands just fine.
 func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

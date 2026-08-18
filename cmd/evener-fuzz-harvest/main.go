@@ -1,4 +1,4 @@
-// Command serf-fuzz-harvest turns recorded serf traffic — provider SSE bodies
+// Command evener-fuzz-harvest turns recorded evener traffic — provider SSE bodies
 // from canonical per-session API logs, conversation transcripts, AppWire/HTTP recorder
 // logs, and jobs.jsonl — into Go fuzz seed corpora under each target's native
 // testdata/fuzz/<FuzzName>/.
@@ -8,7 +8,7 @@
 // survive), so committed seeds carry no PII or secrets by construction. An
 // always-on abort gate (known-secret regexes + entropy quarantine) drops any
 // seed in which a secret survived and fails the run. --keep-values (gated to a
-// designated capture box, ignored for a personal ~/.serf) preserves real values
+// designated capture box, ignored for a personal ~/.evener) preserves real values
 // for local-only campaigns and is never committed.
 package main
 
@@ -52,11 +52,11 @@ var harvestResolveStateBase = doctor.ResolveStateBase
 var harvestIsDir = isDir
 
 func run(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("serf-fuzz-harvest", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-fuzz-harvest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	var stateDirs stringSlice
-	fs.Var(&stateDirs, "state-dir", "state directory to harvest (repeatable; default: the serf state root)")
+	fs.Var(&stateDirs, "state-dir", "state directory to harvest (repeatable; default: the evener state root)")
 	outRoot := fs.String("out-root", ".", "repo root under which seeds land in each target's testdata/fuzz/<Name>/")
 	surfaceList := fs.String("surface", strings.Join(allSurfaces, ","), "comma-separated surfaces to harvest")
 	keepValues := fs.Bool("keep-values", false, "skip shape-scrub, keep real values (GATED; local-only, never committed)")
@@ -155,7 +155,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // defaultStateDirs returns the roots to harvest when no --state-dir is given.
-// Serf installations may have session state under an explicit/default state
+// Evener installations may have session state under an explicit/default state
 // root or the XDG session base. Both are walked and deduplicated.
 func defaultStateDirs() stringSlice {
 	seen := map[string]bool{}
@@ -173,7 +173,7 @@ func defaultStateDirs() stringSlice {
 	}
 	add(harvestDefaultStateRoot())
 	base := harvestResolveStateBase("")
-	if sub := filepath.Join(base, "serf"); harvestIsDir(sub) {
+	if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
 		add(sub)
 	} else {
 		add(base)

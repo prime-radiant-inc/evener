@@ -622,7 +622,7 @@ func writeGlobalFloorsFile(filename string, floors map[string]globalFloor) error
 	sort.Strings(modules)
 	var out strings.Builder
 	out.WriteString("# Global fuzz-reachable coverage floors (whole-module statement coverage).\n")
-	out.WriteString("# Managed by serf-fuzzcov global mode. Floors rise only after raw coverage is strictly above 95.0%.\n")
+	out.WriteString("# Managed by evener-fuzzcov global mode. Floors rise only after raw coverage is strictly above 95.0%.\n")
 	out.WriteString("# Legacy decimal percentages are accepted; blessed floors use exact covered/total ratios.\n")
 	out.WriteString("# A blessing never lowers an existing floor.\n")
 	for _, module := range modules {
@@ -723,7 +723,7 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 
 	code := 0
 	if options.check && !report.RawPass {
-		_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: RAW THRESHOLD BREACH: every module must be strictly above %.4f%%\n", options.minimum)
+		_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: RAW THRESHOLD BREACH: every module must be strictly above %.4f%%\n", options.minimum)
 		code = 1
 	}
 	if options.check || options.bless {
@@ -732,22 +732,22 @@ func runGlobalMode(options globalModeOptions, stdout, stderr io.Writer) (int, er
 			if !ok || globalMeetsFloor(module.Covered, module.Total, floor) {
 				continue
 			}
-			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, globalFloorPercent(floor))
+			_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: REGRESSION %s: raw %.4f%% < floor %.4f%%\n", module.Module, module.Percent, globalFloorPercent(floor))
 			code = 1
 		}
 	}
 	if options.bless {
 		if !report.RawPass {
-			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: refusing to bless: every module must be strictly above %.4f%%\n", options.minimum)
+			_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: refusing to bless: every module must be strictly above %.4f%%\n", options.minimum)
 			return 1, nil
 		}
 		if err := writeGlobalFloorsFile(options.floorsPath, RaiseGlobalFloors(floors, report)); err != nil {
 			return 0, fmt.Errorf("write global floors: %w", err)
 		}
 		if options.json {
-			_, _ = fmt.Fprintf(stderr, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
+			_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: raised global floors in %s\n", options.floorsPath)
 		} else {
-			_, _ = fmt.Fprintf(stdout, "serf-fuzzcov: raised global floors in %s\n", options.floorsPath)
+			_, _ = fmt.Fprintf(stdout, "evener-fuzzcov: raised global floors in %s\n", options.floorsPath)
 		}
 	}
 	return code, nil

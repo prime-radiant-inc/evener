@@ -124,7 +124,7 @@ func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
 	if thread.Source != "" {
 		return thread.Source
 	}
-	if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil && ref.SourceID != "" {
+	if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil && ref.SourceID != "" {
 		return ref.SourceID
 	}
 	return defaultSourceID
@@ -200,11 +200,11 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 	if live.Source == "" {
 		live.Source = past.Source
 	}
-	if live.Serf.Ref == "" {
-		live.Serf.Ref = past.Serf.Ref
+	if live.Evener.Ref == "" {
+		live.Evener.Ref = past.Evener.Ref
 	}
-	if live.Serf.Profile == "" {
-		live.Serf.Profile = past.Serf.Profile
+	if live.Evener.Profile == "" {
+		live.Evener.Profile = past.Evener.Profile
 	}
 	return live
 }
@@ -238,7 +238,7 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 		thread.CWD,
 		thread.Path,
 		thread.ModelProvider,
-		thread.Serf.Profile,
+		thread.Evener.Profile,
 	}, " "))
 	return strings.Contains(haystack, q)
 }

@@ -39,10 +39,10 @@ func newTestRun(t *testing.T, modules []string, parallel int, newCmd func(string
 	}, &out, &errOut
 }
 
-// scratchLeft lists serf-module-lint.* entries under the test's TMPDIR.
+// scratchLeft lists evener-module-lint.* entries under the test's TMPDIR.
 func scratchLeft(t *testing.T) []string {
 	t.Helper()
-	got, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "serf-module-lint.*"))
+	got, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "evener-module-lint.*"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestLintRunFindingsReplayFailedLogsInOrder(t *testing.T) {
 
 func TestLintRunMissingLinterIsNotChecked(t *testing.T) {
 	r, out, errOut := newTestRun(t, []string{".", "agent", "llm"}, 4, nil)
-	r.linter = "serf-dev-absent-linter-fixture"
+	r.linter = "evener-dev-absent-linter-fixture"
 	r.newCmd = func(module string) *exec.Cmd {
 		t.Errorf("a check was launched for %s despite the missing linter", module)
 		return exec.Command("false") //nolint:noctx // unreachable fixture
@@ -125,7 +125,7 @@ func TestLintRunMissingLinterIsNotChecked(t *testing.T) {
 	if code := r.run(); code != 127 {
 		t.Fatalf("run = %d, want 127", code)
 	}
-	if n := strings.Count(errOut.String(), "serf-dev-absent-linter-fixture"); n != 1 {
+	if n := strings.Count(errOut.String(), "evener-dev-absent-linter-fixture"); n != 1 {
 		t.Errorf("missing-linter diagnostic appears %d times in stderr, want once: %q", n, errOut.String())
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
@@ -142,7 +142,7 @@ func TestLintRunMissingLinterIsNotChecked(t *testing.T) {
 
 func TestLintRunScratchMintFailureIsSetup(t *testing.T) {
 	r, out, errOut := newTestRun(t, []string{".", "agent"}, 4, echoCmd(nil))
-	t.Setenv("TMPDIR", "/nonexistent-tmpdir-for-serf-dev-module-lint-test")
+	t.Setenv("TMPDIR", "/nonexistent-tmpdir-for-evener-dev-module-lint-test")
 	if code := r.run(); code != 1 {
 		t.Fatalf("run = %d, want 1", code)
 	}

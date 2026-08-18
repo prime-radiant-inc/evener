@@ -41,7 +41,7 @@ const (
 	// hub's cookie, 401ing the earlier hub on its next reload until the user
 	// re-visits its /auth?token= URL. A per-token name gives each hub its
 	// own slot in the browser's by-name jar.
-	authCookiePrefix = "serf_hub_auth"
+	authCookiePrefix = "evener_hub_auth"
 
 	// TokenFileName is the basename inside hub_state_root for the token.
 	TokenFileName = "auth-token"

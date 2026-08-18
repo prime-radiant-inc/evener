@@ -30,7 +30,7 @@ func (s *lifecycleFuzzSource) ResumeThread(context.Context, appwire.ThreadResume
 
 func (s *lifecycleFuzzSource) ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 	child := s.thread
-	child.ID, child.SessionID, child.Serf.Ref = "child", "child", s.id+":child"
+	child.ID, child.SessionID, child.Evener.Ref = "child", "child", s.id+":child"
 	return appwire.ThreadForkResponse{Thread: child}, nil
 }
 
@@ -74,7 +74,7 @@ func FuzzRPCLifecyclePass4(f *testing.F) {
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote", Name: "root",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:   appwire.SerfThread{Ref: "remote:thread", Capabilities: caps},
+			Evener:   appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
 			Turns:  []appwire.Turn{{ID: "turn_1"}, {ID: "turn_2"}},
 		}
 		base := &scriptedAppSource{id: "remote", thread: thread}
@@ -100,12 +100,12 @@ func FuzzRPCLifecyclePass4(f *testing.F) {
 			appwire.ThreadResumeParams{Ref: "remote:thread"})
 		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodThreadFork,
 			appwire.ThreadForkParams{Ref: "remote:thread", SourceTurnID: "turn_1", EditedInput: "edit"})
-		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodSerfThreadTranscriptsList,
+		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodEvenerThreadTranscriptsList,
 			appwire.ThreadTranscriptListParams{Ref: "remote:thread"})
 		_, _ = hubThreadList(ctx, hubcore.WebConfig{}, registry, appwire.ThreadListParams{IncludeSubagents: true})
 
 		localThread := thread
-		localThread.Source, localThread.Serf.Ref = "local", "local:thread"
+		localThread.Source, localThread.Evener.Ref = "local", "local:thread"
 		localBase := &scriptedAppSource{id: "local", thread: localThread}
 		local := &lifecycleFuzzSource{scriptedAppSource: localBase}
 		localRegistry := appsource.NewRegistry()

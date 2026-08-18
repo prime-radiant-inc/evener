@@ -33,7 +33,7 @@ func toolResult(name string, content any, isError bool) llm.ContentPart {
 }
 
 // writeRichSession writes the semantic transcript, canonical API log, and meta
-// file through Serf's durable record types so fixtures match production.
+// file through Evener's durable record types so fixtures match production.
 func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, apiRecords []apilog.APILogRecord, meta schema.SessionMeta) {
 	t.Helper()
 	path := filepath.Join(bucket, "sessions", sid+".transcript.jsonl")

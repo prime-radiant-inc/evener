@@ -15,7 +15,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 )
 
-// hubSettingsOverview answers serf/settings/overview: the field bag behind
+// hubSettingsOverview answers evener/settings/overview: the field bag behind
 // Settings → General/Hub/Storage/Agents/Codex launch/MCP servers (probed
 // half). See appwire.SettingsOverviewResponse's doc comment for the exact
 // web_settings.go field citations this mirrors — it is the JSON-RPC

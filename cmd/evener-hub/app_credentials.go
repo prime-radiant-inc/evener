@@ -123,7 +123,7 @@ func configuredInstance(cfg providercfg.Config, name string) (providercfg.Instan
 }
 
 // credentialRequired reports whether there is a credential to look for at all,
-// which is the question serf/auth/test asks before it decides the instance is
+// which is the question evener/auth/test asks before it decides the instance is
 // unconfigured. The envvars registry owns the auth-mode half of that answer —
 // envvars.RequiresNoCredential is the predicate the launch preflight,
 // credentials.Store.List and instanceStatus all ask — and it is keyed on the

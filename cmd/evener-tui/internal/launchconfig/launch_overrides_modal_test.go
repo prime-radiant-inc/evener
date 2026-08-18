@@ -69,7 +69,7 @@ func TestLaunchOverridesModal_EscapeCancels(t *testing.T) {
 }
 
 func TestLaunchOverridesModal_UsesSchemaRows(t *testing.T) {
-	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{Agent: "serf"}, testLaunchSchema())
+	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{Agent: "evener"}, testLaunchSchema())
 	view := m.View()
 	if !strings.Contains(view, "Agent") {
 		t.Fatalf("view should use schema label:\n%s", view)

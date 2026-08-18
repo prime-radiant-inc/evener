@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// FuzzRunFlagParse drives serf's real CLI argument parser. newRunFlagSet builds
+// FuzzRunFlagParse drives evener's real CLI argument parser. newRunFlagSet builds
 // the production flag set (including the repeatable StringSliceFlag values), and
 // fs.Parse is the seam that turns argv into the runConfig. Parsing only — run()
 // is never invoked, so there is no agent execution, network, or FS access.

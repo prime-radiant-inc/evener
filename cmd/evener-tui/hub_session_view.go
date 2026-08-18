@@ -304,7 +304,7 @@ func isSubagentRunMessage(msg transcript.ChatMessage) bool {
 // share the same chrome calculation.
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
-	topBar = truncateSessionLine("serf / session / "+title, m.sessionHeaderWidth())
+	topBar = truncateSessionLine("evener / session / "+title, m.sessionHeaderWidth())
 
 	// Footer is computed before the overlay so the command palette can window
 	// itself to the rows left between the anchored TopBar and Footer (mirrors the

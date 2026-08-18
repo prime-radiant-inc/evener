@@ -32,7 +32,7 @@ func TestPathsUseConfiguredStateAndHomeRoots(t *testing.T) {
 	if gotStateHome != stateHome {
 		t.Fatalf("Paths configured state home = %q, want %q", gotStateHome, stateHome)
 	}
-	if want := filepath.Join(userHome, ".serf", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths configured providers file = %q, want %q", gotProviders, want)
 	}
 }
@@ -45,7 +45,7 @@ func TestPathsDefaultStateHomeFollowsUserHome(t *testing.T) {
 	if want := filepath.Join(userHome, ".local", "state"); gotStateHome != want {
 		t.Fatalf("Paths default state home = %q, want %q", gotStateHome, want)
 	}
-	if want := filepath.Join(userHome, ".serf", "providers.toml"); gotProviders != want {
+	if want := filepath.Join(userHome, ".evener", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths default providers file = %q, want %q", gotProviders, want)
 	}
 }

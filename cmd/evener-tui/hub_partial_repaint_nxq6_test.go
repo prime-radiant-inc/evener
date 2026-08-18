@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// Kata nxq6: serf-tui under tmux repeatedly rendered a pane blank except the
+// Kata nxq6: evener-tui under tmux repeatedly rendered a pane blank except the
 // bottom three composer lines (label / prompt / key hints), with the
 // transcript and chip strip missing above them; any keypress restored the
 // full frame including unchanged content. Two candidates: (a) a real
@@ -206,11 +206,11 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 		})})
 	}
 
-	apply("job-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
-		Ref: nxq6SessionRef, Job: appwire.SerfJobInfo{JobID: "job-1", JobType: "delegate", Status: "running"},
+	apply("job-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyEvenerJobStarted, appwire.EvenerJobParams{
+		Ref: nxq6SessionRef, Job: appwire.EvenerJobInfo{JobID: "job-1", JobType: "delegate", Status: "running"},
 	})})
-	apply("job-finished", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifySerfJobFinished, appwire.SerfJobParams{
-		Ref: nxq6SessionRef, Job: appwire.SerfJobInfo{JobID: "job-1", JobType: "delegate", Status: "completed"},
+	apply("job-finished", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyEvenerJobFinished, appwire.EvenerJobParams{
+		Ref: nxq6SessionRef, Job: appwire.EvenerJobInfo{JobID: "job-1", JobType: "delegate", Status: "completed"},
 	})})
 
 	apply("item-completed-agent", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{

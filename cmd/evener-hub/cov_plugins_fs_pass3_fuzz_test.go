@@ -74,14 +74,14 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	_, _ = c.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "repo"})
 	_, _ = c.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: filepath.Join(root, "missing"), Layer: "global"})
 	_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "none"})
-	fuzzWriteFile(t, filepath.Join(cwd, ".serf", "launch.toml"), "model = \"openai/gpt\"\n")
+	fuzzWriteFile(t, filepath.Join(cwd, ".evener", "launch.toml"), "model = \"openai/gpt\"\n")
 	resolved, _ := c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 	if resolved.Repo != nil {
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "wrong"})
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 	}
-	fuzzWriteFile(t, filepath.Join(cwd, ".serf", "launch.local.toml"), "[")
+	fuzzWriteFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), "[")
 	_, _ = c.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "project"})
 	fuzzWriteFile(t, filepath.Join(state, "launch.toml"), "[")
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
@@ -120,7 +120,7 @@ func fuzzExerciseModels(data []byte) {
 	_ = launchProviderAllowsUnreportedModels("openai", nil)
 	_ = launchHarnessDescriptors(hubcore.WebConfig{})
 	_ = launchHarnessDescriptors(hubcore.WebConfig{
-		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "serf"}, {ID: "remote"}},
+		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "remote"}},
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "remote"}, {ID: "other"}},
 	})
 	past := hubcore.NewPastIndex("")
@@ -153,19 +153,19 @@ func fuzzExerciseModels(data []byte) {
 
 	contract := &fakeRPCModelContractSpawner{contract: appwire.ModelListResponse{Data: models, Diagnostics: diags}}
 	ccfg := hubcore.WebConfig{Spawner: contract}
-	_, _ = serfLaunchModelList(ctx, ccfg, "")
+	_, _ = evenerLaunchModelList(ctx, ccfg, "")
 	_ = hasSerfLaunchModelLister(ccfg)
 	contract.err = errors.New("contract")
-	_, _ = serfLaunchModelList(ctx, ccfg, "")
+	_, _ = evenerLaunchModelList(ctx, ccfg, "")
 	working := &fakeRPCWorkingDirModelContractSpawner{contractForWorkingDir: func(context.Context, string) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{Data: models, Diagnostics: diags}, nil
 	}}
 	wcfg := hubcore.WebConfig{Spawner: working}
-	_, _ = serfLaunchModelList(ctx, wcfg, "/tmp")
+	_, _ = evenerLaunchModelList(ctx, wcfg, "/tmp")
 	working.contractForWorkingDir = func(context.Context, string) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{}, errors.New("cwd")
 	}
-	_, _ = serfLaunchModelList(ctx, wcfg, "/tmp")
+	_, _ = evenerLaunchModelList(ctx, wcfg, "/tmp")
 	_ = hasSerfLaunchModelLister(hubcore.WebConfig{})
 }
 
@@ -219,7 +219,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-updated")), &bytes.Buffer{})
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "fuzz"})
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(filepath.Join(root, "forced-updated")))
-	_, _ = server.Router().Dispatch(ctx, appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodSerfPluginCheckNow})
+	_, _ = server.Router().Dispatch(ctx, appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodEvenerPluginCheckNow})
 	cancelCtx, cancel := context.WithCancel(ctx)
 	cancel()
 	startPluginAutoUpgradeDaemon(cancelCtx, mgr, time.Hour, server)
@@ -229,7 +229,7 @@ func fuzzExerciseUpgrade() {
 	old := runHubSelfUpgrade
 	defer func() { runHubSelfUpgrade = old }()
 	runHubSelfUpgrade = func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
-		return selfupdate.Result{Release: "r", Channel: "c", URL: "u", Archive: "a", Prefix: "p", BinDir: "b", ShareBinDir: "s", Installed: []string{"serf"}, RestartMessage: "restart"}, nil
+		return selfupdate.Result{Release: "r", Channel: "c", URL: "u", Archive: "a", Prefix: "p", BinDir: "b", ShareBinDir: "s", Installed: []string{"evener"}, RestartMessage: "restart"}, nil
 	}
 	_, _ = hubUpgrade(context.Background(), appwire.UpgradeParams{Requested: "latest"})
 	runHubSelfUpgrade = func(context.Context, selfupdate.Options) (selfupdate.Result, error) {

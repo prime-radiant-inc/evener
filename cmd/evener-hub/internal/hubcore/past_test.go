@@ -183,7 +183,7 @@ func fuzzScenarioPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 		UpdatedAt:      time.Now(),
 	})
 
-	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".evener", "index.db"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func fuzzScenarioPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 		OriginalPrompt: "invoice cleanup",
 	})
 
-	dbPath := filepath.Join(root, ".serf", "index.db")
+	dbPath := filepath.Join(root, ".evener", "index.db")
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.
 		OriginalPrompt: "preauth redirect cleanup",
 	})
 
-	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".evener", "index.db"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testi
 		OriginalPrompt: "preauth cleanup",
 	})
 
-	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".evener", "index.db"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func fuzzScenarioPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "sensitive prompt",
 	})
-	indexDir := filepath.Join(root, ".serf")
+	indexDir := filepath.Join(root, ".evener")
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func fuzzScenarioPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix auth",
 	})
-	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".evener", "index.db"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

@@ -66,8 +66,8 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		_ = hubErrorReason(nil)
 		_ = hubErrorReason(errors.New("plain"))
 		_ = hubErrorReason(errors.New("appwire request: reason"))
-		_ = renderHubSessionStatus(hubSessionDetail{SourceLabel: "serf"}, nil, appwire.AuthStatusResponse{}, errors.New("tasks"), errors.New("auth"), 0)
-		ds := &appwire.SerfDiagnostics{Plugins: []appwire.SerfPluginInfo{{Name: "p"}}}
+		_ = renderHubSessionStatus(hubSessionDetail{SourceLabel: "evener"}, nil, appwire.AuthStatusResponse{}, errors.New("tasks"), errors.New("auth"), 0)
+		ds := &appwire.EvenerDiagnostics{Plugins: []appwire.EvenerPluginInfo{{Name: "p"}}}
 		var status strings.Builder
 		appendDiagnosticsSections(&status, ds, 0)
 
@@ -93,19 +93,19 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 			{Method: appwire.NotifyReasoningSummaryDelta, Params: []byte(`!`)},
 			{Method: appwire.NotifyAgentMessageReset, Params: []byte(`!`)},
 			{Method: appwire.NotifyToolOutputDelta, Params: []byte(`!`)},
-			{Method: appwire.NotifySerfJobStarted, Params: []byte(`!`)},
-			{Method: appwire.NotifySerfSteeringInjected, Params: []byte(`!`)},
+			{Method: appwire.NotifyEvenerJobStarted, Params: []byte(`!`)},
+			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`!`)},
 			{Method: appwire.NotifyThreadQueueChanged, Params: []byte(`!`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`!`)},
 			{Method: appwire.NotifyTurnCompleted, Params: []byte(`!`)},
-			{Method: appwire.NotifySerfSandboxEscalationRequested, Params: []byte(`!`)},
+			{Method: appwire.NotifyEvenerSandboxEscalationRequested, Params: []byte(`!`)},
 		} {
 			_ = m.applyHubNotification(n)
 		}
 		m.credentialsPanel, m.launchSettingsPanel, m.pluginsPanel = nil, nil, nil
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfAuthUpdated})
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfLaunchUpdated})
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfPluginUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerLaunchUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerPluginUpdated})
 		m.mode = hubModeDashboard
 		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyWarning})
 		m.mode = hubModeSession
@@ -117,8 +117,8 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		for _, n := range []appwire.Notification{
 			{Method: appwire.NotifyAgentMessageReset, Params: []byte(`{}`)},
 			{Method: appwire.NotifyThreadQueueChanged, Params: []byte(`{"queue":{"depth":1,"preview":["q"]}}`)},
-			{Method: appwire.NotifySerfSteeringInjected, Params: []byte(`{"images":[{"type":"image","url":"x"}]}`)},
-			{Method: appwire.NotifySerfSteeringInjected, Params: []byte(`{"text":"Job job_123 finished: headline"}`)},
+			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"images":[{"type":"image","url":"x"}]}`)},
+			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"text":"Job job_123 finished: headline"}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"warning":{"message":"provider unavailable"}}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"message":"provider error: openai rate limited"}`)},
 			{Method: appwire.NotifyTurnCompleted, Params: []byte(`{"turnId":"turn","turn":{"status":"failed","error":{"message":"bad"},"items":[{"type":"agentMessage"}]}}`)},
@@ -136,7 +136,7 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		m.watchedChildRefs = map[string]bool{"child": true}
 		m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "child", JobID: "job_T", Status: "running"}}}}
 		jobText := `<job-notification job_id="job_T" event="completed" job_type="delegate" status="completed" transcript_ref="child">` + "\n" + `{"message":"done","data":{"status":"DONE","test_summary":"passed"}}` + "\n</job-notification>"
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfSteeringInjected, Params: []byte(`{"text":` + strconv.Quote(jobText) + `}`)})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"text":` + strconv.Quote(jobText) + `}`)})
 		for _, n := range []appwire.Notification{{Method: "other"}, {Method: appwire.NotifyItemStarted, Params: []byte(`!`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"other"}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"child","item":"bad"}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"ref":"child","item":{"type":"reasoning"}}`)}} {
 			_, _ = m.handleChildActivityFrame(n)
 		}
@@ -179,10 +179,10 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		}
 		creds := launchconfig.NewCredentialsPanel()
 		m.credentialsPanel = &creds
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfAuthUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
 		settings := launchconfig.NewLaunchSettingsPanel(client, "")
 		m.launchSettingsPanel = &settings
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfLaunchUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerLaunchUpdated})
 		plugins := launchconfig.NewPluginsPanel()
 		updated, _ := plugins.Update(launchconfig.MarketplaceListResultMsg{List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{Name: "market"}}}})
 		plugins = updated.(launchconfig.PluginsPanel)
@@ -191,7 +191,7 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		updated, _ = plugins.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		plugins = updated.(launchconfig.PluginsPanel)
 		m.pluginsPanel = &plugins
-		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfPluginUpdated})
+		_ = m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerPluginUpdated})
 		_ = m.refreshPluginsPanel()
 		_ = transport.Close()
 

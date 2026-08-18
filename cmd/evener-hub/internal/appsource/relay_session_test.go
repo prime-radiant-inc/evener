@@ -110,7 +110,7 @@ func relaySnapshot(threadID, text string) appwire.ThreadReadResponse {
 	return appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID:      threadID,
 		Source:  "local",
-		Serf:    appwire.SerfThread{Ref: "local:" + threadID},
+		Evener:    appwire.EvenerThread{Ref: "local:" + threadID},
 		Preview: text,
 	}}
 }
@@ -583,7 +583,7 @@ func TestRelaySessionEOFBeforeConnectionInstallForcesNextReadToRedial(t *testing
 			})
 			client.Start(ctx)
 			if _, err := client.Initialize(ctx, appwire.InitializeParams{
-				ClientInfo: appwire.ClientInfo{Name: "serf-hub"},
+				ClientInfo: appwire.ClientInfo{Name: "evener-hub"},
 			}); err != nil {
 				return nil, nil, err
 			}
@@ -739,8 +739,8 @@ func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversLis
 		relaySnapshot("thread-1", "recovered"),
 	)
 	resync := <-deliveries
-	if resync.Notification.Method != appwire.NotifySerfThreadResync {
-		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifySerfThreadResync)
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 	resync.Acknowledge()
 }
@@ -1064,8 +1064,8 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 	recoveryCall.transport.recv <- appwire.ResponseMessage(recoveryCall.request.ID, relaySnapshot("thread-1", "recovered"))
 
 	resync := <-deliveries
-	if resync.Notification.Method != appwire.NotifySerfThreadResync {
-		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifySerfThreadResync)
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 	resync.Acknowledge()
 	recoveryCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "live again"))}
@@ -1115,8 +1115,8 @@ func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t 
 		relaySnapshot("thread-1", "first recovery"),
 	)
 	firstResync := <-deliveries
-	if firstResync.Notification.Method != appwire.NotifySerfThreadResync {
-		t.Fatalf("first recovery delivery method = %q, want %q", firstResync.Notification.Method, appwire.NotifySerfThreadResync)
+	if firstResync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("first recovery delivery method = %q, want %q", firstResync.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 
 	lease.session.mu.Lock()
@@ -1131,8 +1131,8 @@ func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t 
 		relaySnapshot("thread-1", "successor recovery"),
 	)
 	successorResync := <-deliveries
-	if successorResync.Notification.Method != appwire.NotifySerfThreadResync {
-		t.Fatalf("successor recovery delivery method = %q, want %q", successorResync.Notification.Method, appwire.NotifySerfThreadResync)
+	if successorResync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("successor recovery delivery method = %q, want %q", successorResync.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 	successorResync.Acknowledge()
 	successor.transport.recv <- appwire.Message{
@@ -1237,9 +1237,9 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
 	)
 
 	first := <-deliveries
-	if first.Notification.Method != appwire.NotifySerfThreadResync {
+	if first.Notification.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("first delivery after the replacement connection = %q, want %q -- generation 2's frames reached a listener still holding generation 1's model",
-			first.Notification.Method, appwire.NotifySerfThreadResync)
+			first.Notification.Method, appwire.NotifyEvenerThreadResync)
 	}
 	first.Acknowledge()
 

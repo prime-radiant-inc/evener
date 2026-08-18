@@ -91,7 +91,7 @@ func TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
 	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
 	p = updated.(LaunchSettingsPanel)
-	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Agent: "evener"}})
 	view := updated.(LaunchSettingsPanel).View()
 	if !strings.Contains(view, "Agent") {
 		t.Fatalf("view should use schema labels:\n%s", view)
@@ -106,7 +106,7 @@ func TestLaunchSettingsPanel_ProjectSchemaRowsExcludeGlobalOnly(t *testing.T) {
 	p.tab = launchTabProject
 	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
 	p = updated.(LaunchSettingsPanel)
-	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "project", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "project", Data: appwire.LaunchConfigLayer{Agent: "evener"}})
 	view := updated.(LaunchSettingsPanel).View()
 	if strings.Contains(view, "App replay size") {
 		t.Fatalf("project schema view should exclude global-only field:\n%s", view)

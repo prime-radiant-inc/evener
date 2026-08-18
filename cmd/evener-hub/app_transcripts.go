@@ -35,7 +35,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 	}}
 	seen := map[string]struct{}{rootRef: {}}
 	addTarget := func(thread appwire.Thread, turnsUsed int) {
-		if thread.Serf.Kind != "subagent" || thread.Serf.ParentRef != rootRef {
+		if thread.Evener.Kind != "subagent" || thread.Evener.ParentRef != rootRef {
 			return
 		}
 		ref := threadRef(thread)
@@ -68,10 +68,10 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 				if thread.Source == "" {
 					thread.Source = source.ID()
 				}
-				if thread.Serf.Ref == "" {
+				if thread.Evener.Ref == "" {
 					threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 					if threadID != "" {
-						thread.Serf.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
+						thread.Evener.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 					}
 				}
 				addTarget(thread, len(thread.Turns))
@@ -112,8 +112,8 @@ func hubTranscriptRoot(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 }
 
 func threadRef(thread appwire.Thread) string {
-	if strings.TrimSpace(thread.Serf.Ref) != "" {
-		return thread.Serf.Ref
+	if strings.TrimSpace(thread.Evener.Ref) != "" {
+		return thread.Evener.Ref
 	}
 	sourceID := strings.TrimSpace(thread.Source)
 	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)

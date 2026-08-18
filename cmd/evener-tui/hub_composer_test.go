@@ -748,7 +748,7 @@ func TestHubModelSpawnPromptIsGroupedWithLaunchFields(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.openSpawnForm()
 	m.height = 20
-	m.spawnDir = "/tmp/serf"
+	m.spawnDir = "/tmp/evener"
 	m.spawnDirInput.SetValue(m.spawnDir)
 	m.session.setInputValue("launch task")
 

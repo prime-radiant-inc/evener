@@ -18,7 +18,7 @@ const (
 	pluginsSlowTimeout = 60 * time.Second
 )
 
-// MarketplaceListResultMsg carries the result of a passive serf/marketplace/list
+// MarketplaceListResultMsg carries the result of a passive evener/marketplace/list
 // fetch (including one forwarded from a successful mutation). The panel
 // understands only this type for populating its marketplace list.
 type MarketplaceListResultMsg struct {
@@ -36,7 +36,7 @@ type MarketplaceMutateResultMsg struct {
 	Err  error
 }
 
-// MarketplaceBrowseResultMsg carries the result of a serf/marketplace/browse
+// MarketplaceBrowseResultMsg carries the result of a evener/marketplace/browse
 // fetch for the panel's Browse tab.
 type MarketplaceBrowseResultMsg struct {
 	Name     string
@@ -44,29 +44,29 @@ type MarketplaceBrowseResultMsg struct {
 	Err      error
 }
 
-// MarketplaceAddSubmitMsg triggers serf/marketplace/add, emitted when the
+// MarketplaceAddSubmitMsg triggers evener/marketplace/add, emitted when the
 // panel's add-marketplace form is submitted.
 type MarketplaceAddSubmitMsg struct {
 	Params appwire.MarketplaceAddParams
 }
 
-// MarketplaceRemoveMsg triggers serf/marketplace/remove for Name.
+// MarketplaceRemoveMsg triggers evener/marketplace/remove for Name.
 type MarketplaceRemoveMsg struct {
 	Name string
 }
 
-// MarketplaceRefreshMsg triggers serf/marketplace/refresh for Name.
+// MarketplaceRefreshMsg triggers evener/marketplace/refresh for Name.
 type MarketplaceRefreshMsg struct {
 	Name string
 }
 
-// MarketplaceBrowseRequestMsg triggers serf/marketplace/browse for Name,
+// MarketplaceBrowseRequestMsg triggers evener/marketplace/browse for Name,
 // emitted when the panel's Browse tab picks a marketplace to view.
 type MarketplaceBrowseRequestMsg struct {
 	Name string
 }
 
-// PluginListResultMsg carries the result of a passive serf/plugin/list fetch
+// PluginListResultMsg carries the result of a passive evener/plugin/list fetch
 // (including one forwarded from a successful mutation).
 type PluginListResultMsg struct {
 	List appwire.PluginListResponse
@@ -89,7 +89,7 @@ type PluginActionMsg struct {
 	Marketplace string
 }
 
-// PluginSetAutoUpgradeMsg triggers serf/plugin/setAutoUpgrade.
+// PluginSetAutoUpgradeMsg triggers evener/plugin/setAutoUpgrade.
 type PluginSetAutoUpgradeMsg struct {
 	Plugin      string
 	Marketplace string

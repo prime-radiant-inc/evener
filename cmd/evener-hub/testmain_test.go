@@ -35,7 +35,7 @@ const testEnvRootVar = "SERF_HUB_TEST_ENV_ROOT"
 // (nothing reads them any more), so they are carried here.
 var retiredSerfEnvVars = []string{"SERF_API_TOKEN"}
 
-// productSerfEnvVars is every SERF_* variable Serf itself reads. TestMain
+// productSerfEnvVars is every SERF_* variable Evener itself reads. TestMain
 // clears the lot; TestHostSerfEnvNeverReachesTheTestEnvironment asserts it did.
 // Deriving the set from envvars rather than writing it out is the point: a
 // variable added to the product is isolated from these tests the day it exists,
@@ -43,7 +43,7 @@ var retiredSerfEnvVars = []string{"SERF_API_TOKEN"}
 // one for as long as it took a developer to export it).
 //
 // The harness's own SERF_-prefixed variables — testEnvRootVar,
-// serfEnvScrubHelperVar, SERF_FAKE_CODEX_APP_SERVER, SERF_LIVE_TESTS,
+// evenerEnvScrubHelperVar, SERF_FAKE_CODEX_APP_SERVER, SERF_LIVE_TESTS,
 // SERF_TEST_PROVIDER, SERF_TEST_MODEL, SERF_CODEX_APP_SERVER_BINARY — name the
 // test rig, not the product, so they are absent from envvars and survive.
 func productSerfEnvVars() []envvars.Var {
@@ -67,9 +67,9 @@ func TestMain(m *testing.M) {
 		}
 	}
 	if !inherited {
-		created, err := os.MkdirTemp("", "serf-hub-test-env-")
+		created, err := os.MkdirTemp("", "evener-hub-test-env-")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "serf-hub test env: %v\n", err)
+			fmt.Fprintf(os.Stderr, "evener-hub test env: %v\n", err)
 			os.Exit(1)
 		}
 		root = created
@@ -77,7 +77,7 @@ func TestMain(m *testing.M) {
 	testEnvRoot = root
 	for _, dir := range []string{"home", "config", "state", "cache", "codex"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
-			fmt.Fprintf(os.Stderr, "serf-hub test env: %v\n", err)
+			fmt.Fprintf(os.Stderr, "evener-hub test env: %v\n", err)
 			_ = os.RemoveAll(root)
 			os.Exit(1)
 		}
@@ -105,12 +105,12 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	_ = os.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
-	// Clear Serf's own configuration environment. HOME and the XDG roots above
+	// Clear Evener's own configuration environment. HOME and the XDG roots above
 	// redirect where these tests look; this decides what configures them, and
 	// the two have to agree or the fixtures written into the throwaway root are
 	// not what the code under test reads. SERF_PROVIDERS_CONFIG is the sharp
-	// edge — it names the providers.toml every serf process loads, so a value in
-	// the developer's shell reached the live-stack hub and its `serf
+	// edge — it names the providers.toml every evener process loads, so a value in
+	// the developer's shell reached the live-stack hub and its `evener
 	// launch-check` and enumerated that developer's real providers instead of
 	// the scripted "fake" instance the harness had just written.
 	// TestHostSerfEnvNeverReachesTheTestEnvironment is the guard.
@@ -125,7 +125,7 @@ func TestMain(m *testing.M) {
 	// every run, and nobody heard.
 	if !inherited {
 		if err := os.RemoveAll(root); err != nil {
-			fmt.Fprintf(os.Stderr, "serf-hub test env: leaked %s: %v\n", root, err)
+			fmt.Fprintf(os.Stderr, "evener-hub test env: leaked %s: %v\n", root, err)
 		}
 	}
 	os.Exit(code)
@@ -207,7 +207,7 @@ func (p fakeProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 // A child that inherits SERF_HUB_TEST_ENV_ROOT must therefore create nothing of
 // its own, and must not remove what it did not create.
 func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
-	pattern := filepath.Join(os.TempDir(), "serf-hub-test-env-*")
+	pattern := filepath.Join(os.TempDir(), "evener-hub-test-env-*")
 	before, err := filepath.Glob(pattern)
 	if err != nil {
 		t.Fatalf("glob throwaway roots: %v", err)
@@ -251,25 +251,25 @@ func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
 	}
 }
 
-// serfEnvScrubHelperVar gates the helper below, which is only meaningful in a
+// evenerEnvScrubHelperVar gates the helper below, which is only meaningful in a
 // re-executed copy of this binary whose parent seeded a developer-shaped
 // environment. Like testEnvRootVar it names the harness rather than the
 // product, so it is absent from envvars.All() and TestMain's scrub leaves it
 // alone -- the same property that keeps SERF_LIVE_TESTS and
 // SERF_FAKE_CODEX_APP_SERVER working.
-const serfEnvScrubHelperVar = "SERF_HUB_TEST_ENV_SCRUB_HELPER"
+const evenerEnvScrubHelperVar = "SERF_HUB_TEST_ENV_SCRUB_HELPER"
 
 // TestHostSerfEnvNeverReachesTheTestEnvironment pins the isolation rule that
 // makes this package's results a property of its fixtures rather than of the
 // machine it runs on.
 //
 // Every SERF_* variable in envvars is production configuration, and the hub,
-// the daemons it spawns and the `serf launch-check` it shells out to all read
+// the daemons it spawns and the `evener launch-check` it shells out to all read
 // the test process's environment. One of them, SERF_PROVIDERS_CONFIG, names the
-// providers.toml every serf process loads: exported in a developer's shell it
+// providers.toml every evener process loads: exported in a developer's shell it
 // overrode the fake instance the live-stack harness writes into its throwaway
 // HOME, so the launch harness enumerated that developer's real providers and
-// rejected every spawn with "model provider is not reported by the Serf launch
+// rejected every spawn with "model provider is not reported by the Evener launch
 // harness: fake". Fifteen e2e cases failed on one machine and passed on
 // another with the same commit.
 //
@@ -290,7 +290,7 @@ func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
 	if seeded == 0 {
 		t.Fatal("envvars declares no SERF_* variables, so this test asserts nothing")
 	}
-	env = append(env, testEnvRootVar+"="+testEnvRoot, serfEnvScrubHelperVar+"=1")
+	env = append(env, testEnvRootVar+"="+testEnvRoot, evenerEnvScrubHelperVar+"=1")
 
 	cmd := exec.Command(exe, "-test.run=^TestSerfEnvScrubHelper$")
 	cmd.Env = env
@@ -304,12 +304,12 @@ func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
 // TestHostSerfEnvNeverReachesTheTestEnvironment. It runs after this package's
 // TestMain, so what it sees is what every subprocess the tests start would see.
 func TestSerfEnvScrubHelper(t *testing.T) {
-	if os.Getenv(serfEnvScrubHelperVar) == "" {
+	if os.Getenv(evenerEnvScrubHelperVar) == "" {
 		t.Skip("re-executed helper for TestHostSerfEnvNeverReachesTheTestEnvironment")
 	}
 	for _, v := range productSerfEnvVars() {
 		if value, ok := os.LookupEnv(v.Name); ok {
-			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `serf launch-check` all inherit it", v.Name, value)
+			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}
 	}
 }

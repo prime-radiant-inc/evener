@@ -255,7 +255,7 @@ func crossProviderDivergence(t *testing.T, ps []provider, lr logicalResponse) st
 	return ""
 }
 
-// FuzzCrossProviderDifferential is serf's first differential oracle. It
+// FuzzCrossProviderDifferential is evener's first differential oracle. It
 // generates one canonical logical response from the fuzz bytes, encodes it into
 // all four providers' SSE wire formats, decodes each back through the REAL
 // adapter's public Stream path, and asserts the decoded responses are

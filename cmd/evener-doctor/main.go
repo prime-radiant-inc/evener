@@ -1,22 +1,22 @@
-// Command serf-doctor is the read-only forensic data plane of serf's doctoring
+// Command evener-doctor is the read-only forensic data plane of evener's doctoring
 // system: a thin main over the agent/doctor package. It resolves a session
 // selector and inspects settled on-disk state — transcript, private API log,
 // meta, jobs.jsonl, and the client-mutation store —
-// with the same folds and types the serf runtime uses, so a schema change either
+// with the same folds and types the evener runtime uses, so a schema change either
 // flows through automatically or fails to compile.
 //
 // Usage:
 //
-//	serf-doctor locate     <selector>
-//	serf-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B] [--text-max N] [--full-text]
-//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
-//	serf-doctor jobs       <selector> [--job <id>]
-//	serf-doctor mutations  <selector>
-//	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
-//	serf-doctor tree       <selector> [--depth N] [--observers]
-//	serf-doctor turnids    (no selector — sweeps every session under the state root)
-//	serf-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
-//	serf-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
+//	evener-doctor locate     <selector>
+//	evener-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|A-B] [--text-max N] [--full-text]
+//	evener-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
+//	evener-doctor jobs       <selector> [--job <id>]
+//	evener-doctor mutations  <selector>
+//	evener-doctor watches    <selector> [--watch <id>] [--self-loops]
+//	evener-doctor tree       <selector> [--depth N] [--observers]
+//	evener-doctor turnids    (no selector — sweeps every session under the state root)
+//	evener-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
+//	evener-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
@@ -79,7 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "-h", "--help", "help":
 		return usage(stdout)
 	default:
-		if code := writef(stderr, "serf-doctor: unknown subcommand %q\n\n", sub); code != 0 {
+		if code := writef(stderr, "evener-doctor: unknown subcommand %q\n\n", sub); code != 0 {
 			return code
 		}
 		if code := usage(stderr); code != 0 {
@@ -90,10 +90,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) int {
-	return writef(w, `serf-doctor — read-only forensic inspector for serf sessions, jobs, and watches
+	return writef(w, `evener-doctor — read-only forensic inspector for evener sessions, jobs, and watches
 
 USAGE:
-  serf-doctor <subcommand> <selector> [flags]
+  evener-doctor <subcommand> <selector> [flags]
 
 SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
@@ -105,8 +105,8 @@ SUBCOMMANDS:
   tree        parent ↔ delegate/observer session tree across buckets
   turnids     sweep every session for reserved turn ids minted inside the transcript's entry-index namespace (no selector — the whole state root is the question)
   sessions    enumerate every session (or one --bucket's), sorted by last activity, for batch forensic studies (no selector)
-  audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "serf-doctor audit -h")
-  plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
+  audit       run a runbook's mechanical checks across a session set, emitting deduped, contract-valid Findings (no selector — see "evener-doctor audit -h")
+  plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "evener-doctor plugins -h")
 
 SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<project-id>:<id>   <id>
@@ -115,7 +115,7 @@ COMMON FLAGS:
   --state-dir <path>   state root (default: %s, then %s, then ~/.local/state)
   --json               emit JSON instead of the human summary
 
-Run "serf-doctor <subcommand> -h" for subcommand flags.
+Run "evener-doctor <subcommand> -h" for subcommand flags.
 `, envvars.SERFStateDir.Name, envvars.XDGStateHome.Name)
 }
 
@@ -150,7 +150,7 @@ func stateFlags(name string, stderr io.Writer) (*flag.FlagSet, *string, *bool) {
 }
 
 // parseSelectorAndFlags parses flags while supporting the documented
-// `serf-doctor <cmd> <selector> [flags]` form (selector first — the form the
+// `evener-doctor <cmd> <selector> [flags]` form (selector first — the form the
 // skill docs and the doctor persona use), as well as `<cmd> [flags] <selector>`.
 // Go's flag package stops at the first non-flag arg, so a bare leading selector
 // is peeled off before parsing the rest. Returns the selector and a process exit
@@ -174,14 +174,14 @@ func emitJSON(w io.Writer, v any) int {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		_ = writeln(w, "serf-doctor: encode json:", err)
+		_ = writeln(w, "evener-doctor: encode json:", err)
 		return 1
 	}
 	return 0
 }
 
 func fail(stderr io.Writer, sub string, err error) int {
-	if code := writef(stderr, "serf-doctor %s: %v\n", sub, err); code != 0 {
+	if code := writef(stderr, "evener-doctor %s: %v\n", sub, err); code != 0 {
 		return code
 	}
 	return 1
@@ -421,7 +421,7 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		if code := writef(stderr, "serf-doctor turnids: takes no selector; it sweeps every session under the state root (got %q)\n", fs.Arg(0)); code != 0 {
+		if code := writef(stderr, "evener-doctor turnids: takes no selector; it sweeps every session under the state root (got %q)\n", fs.Arg(0)); code != 0 {
 			return code
 		}
 		return 2
@@ -450,7 +450,7 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		if code := writef(stderr, "serf-doctor sessions: takes no selector; it enumerates every session (or one --bucket's) under the state root (got %q)\n", fs.Arg(0)); code != 0 {
+		if code := writef(stderr, "evener-doctor sessions: takes no selector; it enumerates every session (or one --bucket's) under the state root (got %q)\n", fs.Arg(0)); code != 0 {
 			return code
 		}
 		return 2
@@ -481,12 +481,12 @@ func cmdSessions(args []string, stdout, stderr io.Writer) int {
 // a fixture runbook without touching the embedded skill assets.
 var bundledSkills = bundled.Skills
 
-// loadRunbook resolves a runbook by name from the bundled doctoring-serf
+// loadRunbook resolves a runbook by name from the bundled doctoring-evener
 // skill's runbooks/ dir and parses it. It is the only place this binary
 // touches internal/bundled — agent/doctor stays a pure reader over durable
 // session state, per its package doc.
 func loadRunbook(name string) (doctor.Runbook, error) {
-	rbPath := path.Join("doctoring-serf", "runbooks", name+".md")
+	rbPath := path.Join("doctoring-evener", "runbooks", name+".md")
 	content, err := fs.ReadFile(bundledSkills(), rbPath)
 	if err != nil {
 		return doctor.Runbook{}, fmt.Errorf("load runbook %q: %w", name, err)
@@ -501,14 +501,14 @@ func loadRunbook(name string) (doctor.Runbook, error) {
 // required.
 func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("audit", stderr)
-	runbookName := fs.String("runbook", "", "runbook name to run, resolved from the bundled doctoring-serf skill's runbooks/ (required)")
+	runbookName := fs.String("runbook", "", "runbook name to run, resolved from the bundled doctoring-evener skill's runbooks/ (required)")
 	sessions := fs.String("sessions", "", "comma-separated session selectors to audit (mutually exclusive with --since)")
 	since := fs.String("since", "", "audit every session with last activity within this duration ago, e.g. 120h (mutually exclusive with --sessions)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		if code := writef(stderr, "serf-doctor audit: takes no selector; use --sessions or --since (got %q)\n", fs.Arg(0)); code != 0 {
+		if code := writef(stderr, "evener-doctor audit: takes no selector; use --sessions or --since (got %q)\n", fs.Arg(0)); code != 0 {
 			return code
 		}
 		return 2
@@ -553,7 +553,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 func cmdPlugins(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plugins", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	storeRoot := fs.String("store-root", "", fmt.Sprintf("plugin store root (default: ~/.config/serf/plugins, honoring %s)", envvars.XDGConfigHome.Name))
+	storeRoot := fs.String("store-root", "", fmt.Sprintf("plugin store root (default: ~/.config/evener/plugins, honoring %s)", envvars.XDGConfigHome.Name))
 	asJSON := fs.Bool("json", false, "emit JSON instead of the human summary")
 	if err := fs.Parse(args); err != nil {
 		return 2

@@ -14,7 +14,7 @@ func TestMergeHeaders(t *testing.T) {
 	}
 	// Override wins on collision; base survives when not overridden.
 	got := MergeHeaders(
-		map[string]string{"User-Agent": "serf-default", "X-Base": "b"},
+		map[string]string{"User-Agent": "evener-default", "X-Base": "b"},
 		map[string]string{"User-Agent": "user-set"},
 	)
 	want := map[string]string{"User-Agent": "user-set", "X-Base": "b"}

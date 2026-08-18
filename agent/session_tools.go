@@ -474,7 +474,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.SerfToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
 		if len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
@@ -656,7 +656,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PostToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.SerfToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field

@@ -196,7 +196,7 @@ type Session struct {
 	// (spec §3 step 7) and the occupancy-lock choreography.
 	//
 	// worktreeCurrentManaged is true when worktreeCurrentPath is a
-	// serf-managed worktree (entered via create, or switch by name/managed
+	// evener-managed worktree (entered via create, or switch by name/managed
 	// path) rather than a non-managed path-entered one — it gates whether the
 	// occupancy-lock rule applies and is persisted alongside worktreeCurrentPath
 	// (SessionMeta.WorktreeManaged, spec §7).
@@ -464,8 +464,8 @@ type Session struct {
 	pendingTranscriptWarnings []events.WarningData
 	hookRunner                *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands
-	// (namespaced "plugin-name:command-name") and all serf-wide commands
-	// (bare-name keys from .serf/commands and the user-global config dir).
+	// (namespaced "plugin-name:command-name") and all evener-wide commands
+	// (bare-name keys from .evener/commands and the user-global config dir).
 	// Looked up by expandSlashCommand via plugin.ResolveCommand.
 	pluginCommands map[string]plugin.Command
 	// pendingSessionStartKind defers restore SessionStart hook output until the
@@ -487,7 +487,7 @@ type Session struct {
 	pluginAgents                   map[string]plugin.Agent
 	pluginMCPConfigs               []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
-	// declared by loaded plugins that serf does not currently fire.
+	// declared by loaded plugins that evener does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
 	unsupportedPluginHookEvents map[plugin.HookEvent]bool
 
@@ -1205,7 +1205,7 @@ func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.
 		req.SessionID = s.id
 		req.ThreadID = s.id
 		if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheKey) == "" {
-			req.PromptCacheKey = "serf-session-" + s.id
+			req.PromptCacheKey = "evener-session-" + s.id
 		}
 	}
 	if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheRetention) == "" {

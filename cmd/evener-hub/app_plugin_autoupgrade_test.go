@@ -142,7 +142,7 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 
 // TestRunPluginAutoUpgradeTick_NoOpWhenUpstreamUnchanged confirms a tick with
 // nothing new upstream reports zero updates (the daemon must not broadcast
-// serf/plugin/updated on a no-op check).
+// evener/plugin/updated on a no-op check).
 func TestRunPluginAutoUpgradeTick_NoOpWhenUpstreamUnchanged(t *testing.T) {
 	t.Parallel()
 	mgr, _, _ := autoUpgradeFixture(t)
@@ -172,7 +172,7 @@ func TestRunPluginAutoUpgradeTick_NoMarketplacesIsNoOp(t *testing.T) {
 }
 
 // TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick dispatches
-// serf/plugin/checkNow directly through the router (bypassing the WS
+// evener/plugin/checkNow directly through the router (bypassing the WS
 // transport) against an isolated Manager, verifying the RPC wiring runs the
 // same tick logic and reports the upgraded ref.
 func TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick(t *testing.T) {
@@ -185,7 +185,7 @@ func TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick(t *testing.T) {
 
 	resp, err := server.Router().Dispatch(context.Background(), appwire.Request{
 		ID:     appwire.NewIntID(1),
-		Method: appwire.MethodSerfPluginCheckNow,
+		Method: appwire.MethodEvenerPluginCheckNow,
 	})
 	if err != nil {
 		t.Fatalf("dispatch checkNow: %v", err)

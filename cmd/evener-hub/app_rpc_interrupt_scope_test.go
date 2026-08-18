@@ -24,7 +24,7 @@ func TestHubRPCRelaysSessionScopedInterrupt(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	var seen []appwire.TurnInterruptParams

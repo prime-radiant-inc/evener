@@ -82,11 +82,11 @@ func TestLaunchConfigLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {
 
 var stringArraySchema = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 
-// buildRegistry reflects the whole AppWire catalog into a serf-free typegen
+// buildRegistry reflects the whole AppWire catalog into a evener-free typegen
 // Registry: a #params and #result entry for every method, and a #payload entry
 // for every typed notification (a nil-payload notification would be skipped —
 // no Go type to reflect). The returned typeFor maps a registry name back to its
-// concrete reflect.Type, the only serf↔registry coupling, crossing the boundary
+// concrete reflect.Type, the only evener↔registry coupling, crossing the boundary
 // as a stdlib reflect.Type.
 func buildRegistry() (*typegen.Registry, func(string) reflect.Type) {
 	reg := typegen.NewRegistry()

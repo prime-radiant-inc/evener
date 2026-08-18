@@ -129,7 +129,7 @@ func writeModelOrProviderLine(b *strings.Builder, model, profile string) {
 	}
 }
 
-func writeSerfDiagnostics(b *strings.Builder, diag *appwire.SerfDiagnostics) {
+func writeSerfDiagnostics(b *strings.Builder, diag *appwire.EvenerDiagnostics) {
 	core := []string{}
 	mcpTools := map[string][]string{}
 	custom := []string{}

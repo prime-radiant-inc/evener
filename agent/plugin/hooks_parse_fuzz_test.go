@@ -16,7 +16,7 @@ const hooksFuzzPluginDir = "/PLUGIN_ROOT_SENTINEL"
 // FuzzParsePluginHooks drives parsePluginHooks (via parsePluginHooksDiagWithSource)
 // and its helpers (dropHookMetaKeys, captureUnknownFields, expandPluginRootArgs)
 // over arbitrary hook-config JSON in both the wrapper ({"hooks":{...}}) and direct
-// (events at top level) shapes. This is serf's Claude-compatible hook classifier;
+// (events at top level) shapes. This is evener's Claude-compatible hook classifier;
 // only unit tests with fixed configs touched it, and FuzzPluginManifestParse /
 // FuzzPluginLoad do not reach the hook parser.
 //

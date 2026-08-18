@@ -26,7 +26,7 @@ func fuzzScenarioCodexSourceUsesAdapterNativeInitialize(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodInitialize, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		if _, ok := params["protocolVersion"]; ok {
-			t.Fatalf("Codex initialize included Serf protocolVersion: %#v", params)
+			t.Fatalf("Codex initialize included Evener protocolVersion: %#v", params)
 		}
 		return map[string]any{"userAgent": "codex-test"}, nil
 	})
@@ -89,14 +89,14 @@ func fuzzScenarioCodexSourceListsThreads(t *testing.T) {
 	if thread.ID != "th_codex" || thread.SessionID != "sess_codex" || thread.Source != "codex" {
 		t.Fatalf("thread identity=%+v", thread)
 	}
-	if thread.Serf.Ref != "codex:th_codex" {
-		t.Fatalf("ref=%q", thread.Serf.Ref)
+	if thread.Evener.Ref != "codex:th_codex" {
+		t.Fatalf("ref=%q", thread.Evener.Ref)
 	}
 	if thread.Status.Type != appwire.ThreadStatusNotLoaded {
 		t.Fatalf("status=%+v", thread.Status)
 	}
-	if thread.Serf.Capabilities.Send || !thread.Serf.Capabilities.Compact || thread.Serf.Capabilities.ForkFromTurn || thread.Serf.Capabilities.Steer || thread.Serf.Capabilities.Interrupt || thread.Serf.Capabilities.Shutdown {
-		t.Fatalf("capabilities=%+v", thread.Serf.Capabilities)
+	if thread.Evener.Capabilities.Send || !thread.Evener.Capabilities.Compact || thread.Evener.Capabilities.ForkFromTurn || thread.Evener.Capabilities.Steer || thread.Evener.Capabilities.Interrupt || thread.Evener.Capabilities.Shutdown {
+		t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
 	}
 }
 
@@ -202,15 +202,15 @@ func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 	if len(resp.Data) != 3 {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
-	active := resp.Data[0].Serf.Capabilities
+	active := resp.Data[0].Evener.Capabilities
 	if active.Send || !active.Compact || active.Steer || active.Interrupt {
 		t.Fatalf("active capabilities=%+v", active)
 	}
-	idle := resp.Data[1].Serf.Capabilities
+	idle := resp.Data[1].Evener.Capabilities
 	if idle.Send || !idle.Compact || idle.Steer || idle.Interrupt {
 		t.Fatalf("idle capabilities=%+v", idle)
 	}
-	unloaded := resp.Data[2].Serf.Capabilities
+	unloaded := resp.Data[2].Evener.Capabilities
 	if unloaded.Steer || unloaded.Interrupt {
 		t.Fatalf("unloaded capabilities=%+v", unloaded)
 	}
@@ -218,7 +218,7 @@ func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 
 // The outbound codex input wire shape is asserted here and in
 // fuzzScenarioCodexSourceStartThreadAcceptsCodexNativeInputItems below, and
-// nowhere else. Both used to drive CodexSource.StartTurn, which serf-appwire-v2
+// nowhere else. Both used to drive CodexSource.StartTurn, which evener-appwire-v2
 // reduced to an Unavailable stub; they reach the same startTurnWithClient path
 // through StartThread's initial prompt turn instead, which is how a codex turn
 // now starts at all.
@@ -489,7 +489,7 @@ func fuzzScenarioCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex" {
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	if captured["threadSource"] != "user" {
@@ -538,7 +538,7 @@ func fuzzScenarioCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
 		t.Fatalf("ForkThread: %v", err)
 	}
 	for _, thread := range []appwire.Thread{start.Thread, resume.Thread, fork.Thread} {
-		if thread.ModelProvider != "gpt-5.3-codex" || thread.Serf.Profile != "azure" {
+		if thread.ModelProvider != "gpt-5.3-codex" || thread.Evener.Profile != "azure" {
 			t.Fatalf("thread model metadata=%+v", thread)
 		}
 	}
@@ -586,7 +586,7 @@ func fuzzScenarioCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T)
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
@@ -641,7 +641,7 @@ func fuzzScenarioCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *t
 	cancel()
 	time.Sleep(50 * time.Millisecond)
 
-	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
@@ -693,11 +693,11 @@ func fuzzScenarioCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T)
 		t.Fatalf("StartThread: %v", err)
 	}
 	ctx1, cancel1 := context.WithCancel(context.Background())
-	sub1, err := source.SubscribeThread(ctx1, appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	sub1, err := source.SubscribeThread(ctx1, appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread 1: %v", err)
 	}
-	sub2, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	sub2, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread 2: %v", err)
 	}
@@ -792,11 +792,11 @@ func fuzzScenarioCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySub
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	notifications1, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	notifications1, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread 1: %v", err)
 	}
-	notifications2, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	notifications2, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread 2: %v", err)
 	}
@@ -907,7 +907,7 @@ func fuzzScenarioCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveCon
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Serf.Ref})
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref})
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
@@ -980,8 +980,8 @@ func assertResync(t *testing.T, notifications <-chan appwire.Notification) {
 		if !ok {
 			t.Fatal("notification channel closed before full-state replacement")
 		}
-		if got.Method != appwire.NotifySerfThreadResync {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfThreadResync)
+		if got.Method != appwire.NotifyEvenerThreadResync {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
 		}
 		var params appwire.ThreadResyncParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
@@ -1005,7 +1005,7 @@ func assertSessionUnavailable(t *testing.T, err error, label string) {
 		t.Fatalf("%s: error %T=%v, want appwire.WireError", label, err, err)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+	if !ok || wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		t.Fatalf("%s: wire=%+v, want SessionUnavailable", label, wire)
 	}
 }
@@ -1042,7 +1042,7 @@ func fuzzScenarioCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *t
 	if err != nil {
 		t.Fatalf("ReadThread: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex" {
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	if len(includeTurnsValues) != 2 || includeTurnsValues[0] != true || includeTurnsValues[1] != false {
@@ -1347,13 +1347,13 @@ func TestCodexDirtyFullStateSuppressesRawDelta(t *testing.T) {
 
 	select {
 	case got := <-notifications:
-		if got.Method != appwire.NotifySerfThreadResync {
+		if got.Method != appwire.NotifyEvenerThreadResync {
 			t.Fatalf("live event method=%q, want authoritative full-state resync", got.Method)
 		}
 	case <-readStarted:
 		close(releaseRead)
 		got := <-notifications
-		if got.Method != appwire.NotifySerfThreadResync {
+		if got.Method != appwire.NotifyEvenerThreadResync {
 			t.Fatalf("post-read method=%q, want authoritative full-state resync", got.Method)
 		}
 	}
@@ -1398,14 +1398,14 @@ func TestCodexDirtyFullStateReadsAgainWhenEventRacesRead(t *testing.T) {
 	}
 	live.markDirty()
 	releaseRead <- struct{}{}
-	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-notifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("first replacement method=%q", got.Method)
 	}
 	if call := <-readStarted; call != 2 {
 		t.Fatalf("second read call=%d, want 2", call)
 	}
 	releaseRead <- struct{}{}
-	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-notifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("second replacement method=%q", got.Method)
 	}
 
@@ -1466,7 +1466,7 @@ func TestCodexDirtyFullStateRetriesFinalFailedReadWithoutAnotherEvent(t *testing
 	}
 	close(releaseRetry)
 
-	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-notifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("replacement method=%q", got.Method)
 	}
 	if got := readCount.Load(); got != 2 {
@@ -1523,7 +1523,7 @@ func TestCodexDirtyCacheIsNotAuthoritativeWhileRefreshRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
-	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-notifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("generation 1 replacement method=%q", got.Method)
 	}
 
@@ -1578,7 +1578,7 @@ func TestCodexDirtyFullStateReconnectForcesReadWithWarmCache(t *testing.T) {
 	if call := <-readStarted; call != 1 {
 		t.Fatalf("first connection read=%d, want 1", call)
 	}
-	if got := <-firstNotifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-firstNotifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("first replacement method=%q", got.Method)
 	}
 	firstLive := source.liveThread("th_codex")
@@ -1595,7 +1595,7 @@ func TestCodexDirtyFullStateReconnectForcesReadWithWarmCache(t *testing.T) {
 	if call := <-readStarted; call != 2 {
 		t.Fatalf("reconnect read=%d, want unconditional second read", call)
 	}
-	if got := <-secondNotifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-secondNotifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("reconnect replacement method=%q", got.Method)
 	}
 	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex", IncludeTurns: true})
@@ -1636,7 +1636,7 @@ func TestCodexNoRolloutReconnectInvalidatesWarmCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first SubscribeThread: %v", err)
 	}
-	if got := <-firstNotifications; got.Method != appwire.NotifySerfThreadResync {
+	if got := <-firstNotifications; got.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("first replacement method=%q", got.Method)
 	}
 	firstLive := source.liveThread("th_codex")

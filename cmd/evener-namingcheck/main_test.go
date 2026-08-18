@@ -166,7 +166,7 @@ type Good struct {
 	Model      string ` + "`json:\"model\"`" + `
 	WorkingDir string ` + "`json:\"working_dir\"`" + `
 	ID         string ` + "`json:\"id\"`" + `
-	// serf:naming-ignore: legacy wire format from upstream tool
+	// evener:naming-ignore: legacy wire format from upstream tool
 	LegacyField string ` + "`json:\"legacyField\"`" + `
 	Skipped     string ` + "`json:\"-\"`" + `
 }
@@ -489,7 +489,7 @@ some-key = 2
 bad_section.foo-key = 3
 bad-section.good_key = 4
 
-# serf:naming-ignore: kata.toml legacy
+# evener:naming-ignore: kata.toml legacy
 some-other-key = 3
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -607,10 +607,10 @@ type X struct { F string ` + "`json:\"badField\"`" + ` }
 
 	// cmd/evener-namingcheck/ is excluded so the tool never lints itself
 	// (test source files contain camelCase string literals that would fire).
-	if err := os.MkdirAll(filepath.Join(root, "cmd", "serf-namingcheck"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener-namingcheck"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "cmd", "serf-namingcheck", "x.go"), []byte(badSrc), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "cmd", "evener-namingcheck", "x.go"), []byte(badSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

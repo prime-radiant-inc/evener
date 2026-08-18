@@ -210,7 +210,7 @@ func TestHubTasksList_InternalErrorFromLiveSourceIsNotMaskedByPast(t *testing.T)
 // a LIVE rendezvous entry (entryForRef finds a match on ThreadID/SessionID —
 // this is NOT the dead-session case) whose endpoint is unreachable. The dial
 // failure (ECONNREFUSED) is mapped by localDaemonDialError to the identical
-// SessionUnavailable Code+SerfErrorInfo shape entryForRef's own dead-session
+// SessionUnavailable Code+EvenerErrorInfo shape entryForRef's own dead-session
 // error uses — only the message differs ("local daemon unavailable: ..." vs
 // "thread not found: ..."). isSessionUnavailableError alone cannot tell these
 // apart; isDeadSessionError must, and hubTasksList must propagate this

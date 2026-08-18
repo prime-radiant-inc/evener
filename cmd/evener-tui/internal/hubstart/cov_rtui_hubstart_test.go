@@ -27,13 +27,13 @@ func TestHubRPCURL(t *testing.T) {
 }
 
 func TestStateHomeForSerfStateDir(t *testing.T) {
-	got := StateHomeForSerfStateDir("/home/me/.local/state/serf")
-	want := filepath.Dir(filepath.Clean("/home/me/.local/state/serf"))
+	got := StateHomeForSerfStateDir("/home/me/.local/state/evener")
+	want := filepath.Dir(filepath.Clean("/home/me/.local/state/evener"))
 	if got != want {
 		t.Fatalf("StateHomeForSerfStateDir = %q, want %q", got, want)
 	}
 	// Trailing slash + whitespace are cleaned before taking the parent.
-	if got := StateHomeForSerfStateDir("  /a/b/serf/  "); got != "/a/b" {
+	if got := StateHomeForSerfStateDir("  /a/b/evener/  "); got != "/a/b" {
 		t.Fatalf("StateHomeForSerfStateDir(padded) = %q, want /a/b", got)
 	}
 }
@@ -58,7 +58,7 @@ func TestStartupError_ErrorMessagesPerKind(t *testing.T) {
 		kind   StartupErrorKind
 		prefix string
 	}{
-		{StartupErrorMissingHubBinary, "cannot find serf-hub binary: "},
+		{StartupErrorMissingHubBinary, "cannot find evener-hub binary: "},
 		{StartupErrorBindFailure, "hub failed to bind: "},
 		{StartupErrorUnhealthyHub, "hub is unhealthy: "},
 		{StartupErrorIncompatibleAPI, "hub API is incompatible: "},

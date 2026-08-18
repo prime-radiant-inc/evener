@@ -23,7 +23,7 @@ func TestBuildTreeLiveExcludesArchivedSessions(t *testing.T) {
 			ID:        id,
 			CreatedAt: activity,
 			UpdatedAt: activity,
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 		}
 	}
 	entry := func(id string) LiveEntry {

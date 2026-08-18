@@ -216,7 +216,7 @@ func TestProjectActivityJobStampsLastOutputAt(t *testing.T) {
 }
 
 func TestProjectStableActivityDelegateCopiesChildUsage(t *testing.T) {
-	want := &appwire.SerfUsage{InputTokens: 41200, OutputTokens: 6100}
+	want := &appwire.EvenerUsage{InputTokens: 41200, OutputTokens: 6100}
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child", Usage: want}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",

@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-var googleCoverageSeedMarker = []byte("serf-google-coverage-seed-union-v1")
+var googleCoverageSeedMarker = []byte("evener-google-coverage-seed-union-v1")
 
 // FuzzGoogleComplete drives the Gemini non-streaming Complete path against a
 // local httptest server replaying the fuzz bytes, status steered by the first

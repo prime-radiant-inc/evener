@@ -145,7 +145,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{
-		Name:    "serf",
+		Name:    "evener",
 		Version: "v1",
 	}, nil)
 
@@ -297,9 +297,9 @@ func productionDialWithEnv(cfg mcpconfig.ServerConfig, wrapper *sandbox.Wrapper,
 // confineCommandUnderSandbox rewrites a stdio MCP server's *exec.Cmd so it runs
 // inside the session sandbox: the bwrap invocation is prepended to the argv, the
 // env is rebuilt with secret hygiene + the sandbox floor, and ExtraFiles is
-// emptied so the server inherits no serf fds beyond stdio.
+// emptied so the server inherits no evener fds beyond stdio.
 //
-// The parent environment is scrubbed of credential-named vars (serf's own
+// The parent environment is scrubbed of credential-named vars (evener's own
 // provider key et al.) BEFORE the server's configured cfg.Env is layered on top,
 // so an ambient secret never reaches the confined server while an explicitly
 // configured cfg.Env var — even a secret-named one, which is deliberate server

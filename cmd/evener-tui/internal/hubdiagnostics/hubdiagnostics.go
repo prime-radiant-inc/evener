@@ -38,7 +38,7 @@ func FormatHubDiagnosticWithCause(title, source, message, fallback string, cause
 
 func isLegacyNonProviderDiagnosticTitle(title string) bool {
 	switch strings.ToLower(strings.TrimSpace(title)) {
-	case "", "serf error", "serf warning", "hub error", "hub warning", "ui error", "ui warning", "session error", "session warning":
+	case "", "evener error", "evener warning", "hub error", "hub warning", "ui error", "ui warning", "session error", "session warning":
 		return true
 	default:
 		return false
@@ -49,8 +49,8 @@ func defaultHubDiagnosticTitle(source, fallback string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
 	case "provider":
 		return "Provider error"
-	case "serf":
-		return "Serf error"
+	case "evener":
+		return "Evener error"
 	case "hub":
 		return "Hub error"
 	case "ui":

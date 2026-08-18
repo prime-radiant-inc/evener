@@ -23,7 +23,7 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 		ID:        "thread-closed",
 		SessionID: "thread-closed",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:thread-closed"},
+		Evener:      appwire.EvenerThread{Ref: "local:thread-closed"},
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	acknowledged := make(chan struct{})
@@ -37,7 +37,7 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 					// Verbatim what a closing daemon sends: a status and nothing else.
 					Params: testRawJSON(t, appwire.ThreadStatusChangedParams{
 						ThreadID: thread.ID,
-						Ref:      thread.Serf.Ref,
+						Ref:      thread.Evener.Ref,
 						Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 					}),
 				},
@@ -81,10 +81,10 @@ func TestClosedThreadCapabilitiesMatchTheReadThatWouldAnswerTheReload(t *testing
 	}
 	read := requirePastEntryThread(t, hubcore.WebConfig{}, entry, false)
 
-	if got := pastThreadCapabilities(); got != read.Serf.Capabilities {
-		t.Fatalf("close-frame capabilities = %+v, want the read's %+v", got, read.Serf.Capabilities)
+	if got := pastThreadCapabilities(); got != read.Evener.Capabilities {
+		t.Fatalf("close-frame capabilities = %+v, want the read's %+v", got, read.Evener.Capabilities)
 	}
-	if !read.Serf.Capabilities.Send {
+	if !read.Evener.Capabilities.Send {
 		t.Fatalf("a cold thread's read advertises send=false; the composer this fix restores would have nothing to send with")
 	}
 }
@@ -193,7 +193,7 @@ func relayedNotificationClient(
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)

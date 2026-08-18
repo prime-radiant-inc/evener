@@ -126,7 +126,7 @@ type hubSpawnOptionsMsg struct {
 	models                      []tuipick.ModelPickerItem
 	// recentDirs carries the hub's most recently used project dirs (the Dir
 	// field's prepopulated dropdown options, issue #35). Best-effort: a hub
-	// too old for serf/projects/recent leaves it nil.
+	// too old for evener/projects/recent leaves it nil.
 	recentDirs []string
 	err        error
 	modelErr   error
@@ -184,7 +184,7 @@ func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref,
 	return fetchHubSessionRead(nil, client, ref, expectedState, expectedRefreshToken, false, false)
 }
 
-// resyncHubSession re-reads the viewed thread after serf/thread/resync, so the
+// resyncHubSession re-reads the viewed thread after evener/thread/resync, so the
 // transcript comes from the daemon now behind the relay instead of the one that
 // died. The re-subscribe is ADDITIVE, unlike session entry's: this connection
 // also carries the subagent rail's child-transcript subscriptions, and nothing
@@ -263,7 +263,7 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 			Model:           strings.TrimSpace(req.Model),
 			LaunchOverrides: req.LaunchOverrides,
 		})
-		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
+		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Evener.Ref}, err: err}
 	}
 }
 
@@ -308,7 +308,7 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 			harnesses = append(harnesses, option.ID)
 			kind := strings.TrimSpace(option.Kind)
 			if kind == "" {
-				kind = "serf"
+				kind = "evener"
 			}
 			harnessKinds[option.ID] = kind
 			if reason := strings.TrimSpace(option.EmptyTaskUnsupportedReason); reason != "" {
@@ -319,7 +319,7 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 			}
 		}
 		// Recent project dirs are best-effort: a failure (e.g. an older hub
-		// without serf/projects/recent) must not break spawning.
+		// without evener/projects/recent) must not break spawning.
 		var recentDirs []string
 		if recentResp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{}); err == nil {
 			recentDirs = recentResp.Data
@@ -662,7 +662,7 @@ func formatHubUpgradeResult(resp appwire.UpgradeResponse) string {
 	if target == "" {
 		target = "requested channel"
 	}
-	lines := []string{fmt.Sprintf("Serf upgraded to %s.", target)}
+	lines := []string{fmt.Sprintf("Evener upgraded to %s.", target)}
 	if resp.Archive != "" {
 		lines = append(lines, "Archive: "+resp.Archive)
 	}
@@ -744,7 +744,7 @@ func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) te
 			EditedInput:  req.EditedMessage,
 			Label:        req.Label,
 		})
-		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err}
+		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Evener.Ref}, err: err}
 	}
 }
 
@@ -758,7 +758,7 @@ func sendHubAside(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 			Ref:   ref.String(),
 			Aside: true,
 		})
-		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err, aside: true}
+		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Evener.Ref}, err: err, aside: true}
 	}
 }
 

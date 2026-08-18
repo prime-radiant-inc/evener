@@ -79,7 +79,7 @@ import (
 // cross-check — the only shared fabric they feed is this subscription index,
 // which is keyed by an opaque "<sourceID>:<threadID>" relay key and so is already
 // exercised by the thread pool here (the keys are opaque strings to the fabric).
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestHubMultiSessionSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./internal/appserver -run TestHubMultiSessionSeqFuzz -count=1 -v")
@@ -167,7 +167,7 @@ type msHarness struct {
 
 func newMSHarness() *msHarness {
 	return &msHarness{
-		server:      NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"}),
+		server:      NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"}),
 		live:        map[string]*Connection{},
 		model:       map[string]map[string]bool{},
 		threadsSeen: map[string]bool{},

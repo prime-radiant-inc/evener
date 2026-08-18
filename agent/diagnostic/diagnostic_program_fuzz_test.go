@@ -30,8 +30,8 @@ func FuzzDiagnosticClassificationProgram(f *testing.F) {
 			t.Fatalf("FromFields overrides = %+v", got)
 		}
 
-		assertDiagnosticProgramInfo(t, "FromError nil", FromError(nil), SourceSerf, "Serf error")
-		assertDiagnosticProgramInfo(t, "FromError configuration", FromError(&llm.ConfigurationError{Message: classification.message}), SourceSerf, "Serf configuration error")
+		assertDiagnosticProgramInfo(t, "FromError nil", FromError(nil), SourceSerf, "Evener error")
+		assertDiagnosticProgramInfo(t, "FromError configuration", FromError(&llm.ConfigurationError{Message: classification.message}), SourceSerf, "Evener configuration error")
 		assertDiagnosticProgramInfo(t, "FromError provider", FromError(llm.ErrorFromHTTPStatus("scripted", 500, classification.message, nil, nil)), SourceProvider, "Provider error")
 	})
 }
@@ -43,10 +43,10 @@ type diagnosticProgramMessage struct {
 }
 
 var diagnosticProgramMessages = []diagnosticProgramMessage{
-	{"unknown provider", SourceSerf, "Serf configuration error"},
-	{"configuration error", SourceSerf, "Serf configuration error"},
-	{"must use provider/model", SourceSerf, "Serf configuration error"},
-	{"no model:", SourceSerf, "Serf configuration error"},
+	{"unknown provider", SourceSerf, "Evener configuration error"},
+	{"configuration error", SourceSerf, "Evener configuration error"},
+	{"must use provider/model", SourceSerf, "Evener configuration error"},
+	{"no model:", SourceSerf, "Evener configuration error"},
 	{"rendezvous", SourceHub, "Hub error"},
 	{"daemon spawn", SourceHub, "Hub error"},
 	{"resume timed out", SourceHub, "Hub error"},
@@ -67,7 +67,7 @@ var diagnosticProgramMessages = []diagnosticProgramMessage{
 	{"stream ended without", SourceProvider, "Provider error"},
 	{"stream error", SourceProvider, "Provider error"},
 	{"missing response in finish event", SourceProvider, "Provider error"},
-	{"ordinary local failure", SourceSerf, "Serf error"},
+	{"ordinary local failure", SourceSerf, "Evener error"},
 }
 
 type diagnosticProgramOverride struct {
@@ -79,8 +79,8 @@ type diagnosticProgramOverride struct {
 
 var diagnosticProgramOverrides = []diagnosticProgramOverride{
 	{"provider", "ordinary local failure", SourceProvider, "Provider error"},
-	{"serf", "unknown provider", SourceSerf, "Serf configuration error"},
-	{"serf", "ordinary local failure", SourceSerf, "Serf error"},
+	{"evener", "unknown provider", SourceSerf, "Evener configuration error"},
+	{"evener", "ordinary local failure", SourceSerf, "Evener error"},
 	{"hub", "ordinary local failure", SourceHub, "Hub error"},
 	{"ui", "ordinary local failure", SourceUI, "UI error"},
 	{"hook", "ordinary local failure", SourceHook, "Hook message"},

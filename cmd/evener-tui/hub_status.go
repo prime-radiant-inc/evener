@@ -150,8 +150,8 @@ func compactDuration(d time.Duration) string {
 
 // appendDiagnosticsSections writes the tool/MCP/skill/plugin/hook/job/agent
 // breakdown that the legacy standalone TUI showed under /status. The data is
-// already on the wire (appwire.SerfDiagnostics) — this just renders it.
-func appendDiagnosticsSections(b *strings.Builder, ds *appwire.SerfDiagnostics, width int) {
+// already on the wire (appwire.EvenerDiagnostics) — this just renders it.
+func appendDiagnosticsSections(b *strings.Builder, ds *appwire.EvenerDiagnostics, width int) {
 	if width <= 0 {
 		width = 80
 	}

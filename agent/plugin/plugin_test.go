@@ -234,10 +234,10 @@ func TestLoadPlugin_Valid(t *testing.T) {
 	}
 }
 
-// A plugin that ships BOTH flavors must load the Claude one. Serf's resume
+// A plugin that ships BOTH flavors must load the Claude one. Evener's resume
 // replays the full transcript (context is preserved), so it must not adopt the
 // codex SessionStart hooks, whose matcher includes "resume" to re-inject context
-// that serf already has — that caused the using-superpowers skill to be re-read
+// that evener already has — that caused the using-superpowers skill to be re-read
 // on every resume.
 func TestLoadPlugin_PrefersClaudeManifest(t *testing.T) {
 	dir := makePluginDir(t, "claude-plugin") // writes .claude-plugin/plugin.json (name=claude-plugin)

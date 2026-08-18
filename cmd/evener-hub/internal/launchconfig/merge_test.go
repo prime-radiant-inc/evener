@@ -83,7 +83,7 @@ func checkMerge_Sandbox(t *testing.T) {
 }
 
 // TestMerge_SandboxNetWithoutModeDiagnostic: an effective sandbox_net with no
-// (or off) sandbox mode is a silent no-op at serf serve, so mergeLayers emits a
+// (or off) sandbox mode is a silent no-op at evener serve, so mergeLayers emits a
 // diagnostic. A non-off mode (from ANY layer) suppresses the warning.
 func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 	hasNetDiag := func(diags []Diagnostic) bool {
@@ -128,7 +128,7 @@ func checkMerge_SandboxNetWithoutModeDiagnostic(t *testing.T) {
 }
 
 // TestMerge_UnknownSandboxModeDiagnostic: a typo'd sandbox mode merges cleanly and
-// would only fail at spawn (serf's ParseMode) with no launch-config pointer at the
+// would only fail at spawn (evener's ParseMode) with no launch-config pointer at the
 // typo. mergeLayers emits a diagnostic naming the bad value; the four real modes
 // (case/space-insensitive) and an unset value do not warn.
 func checkMerge_UnknownSandboxModeDiagnostic(t *testing.T) {

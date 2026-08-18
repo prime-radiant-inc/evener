@@ -35,7 +35,7 @@ const sessionIDMaxLen = 128
 
 // windowsReservedSessionIDs are the DOS device names Windows resolves no matter
 // what extension follows them: opening "NUL.meta.json" reaches the NUL device,
-// not a file. serf builds for Windows (agent/internal/installid/
+// not a file. evener builds for Windows (agent/internal/installid/
 // lock_windows.go), and a state directory written on one platform can be read
 // on another, so these are refused everywhere rather than under a GOOS guard.
 // Dots are already banned, so the whole ID is the basename to compare.
@@ -183,10 +183,10 @@ type SessionMeta struct {
 	// classifies an all-"test" project into the "Test runs" group.
 	Origin string `json:"origin,omitempty"`
 	// Goal holds the persisted goal state so the objective survives daemon
-	// restart and serf resume. It is nil when no goal is active or has been set.
+	// restart and evener resume. It is nil when no goal is active or has been set.
 	Goal *GoalSnapshot `json:"goal,omitempty"`
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
-	// survives daemon restart and serf resume (mirrors Goal).
+	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
@@ -202,10 +202,10 @@ type SessionMeta struct {
 	// resume": "managed or path-entered; both switch modes swap the env, so
 	// both must survive resume").
 	WorktreePath string `json:"worktree_path,omitempty"`
-	// WorktreeManaged is true when WorktreePath is a serf-managed worktree
+	// WorktreeManaged is true when WorktreePath is a evener-managed worktree
 	// (entered via create, or switch by name/managed path) — the idempotent
 	// occupancy-lock rule applies to it on resume re-entry. False for a
-	// non-managed worktree entered by path, which carries no serf lock.
+	// non-managed worktree entered by path, which carries no evener lock.
 	WorktreeManaged bool `json:"worktree_managed,omitempty"`
 	// WorktreeRestoreRoot is the root of the env saved the first time the
 	// session entered WorktreePath (native worktree tools spec §7

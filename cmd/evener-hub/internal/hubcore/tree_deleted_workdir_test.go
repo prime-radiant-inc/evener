@@ -20,7 +20,7 @@ import (
 func TestBuildTreeCarriedIdentityForDeletedWorkingDir(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	root := t.TempDir()
-	main := filepath.Join(root, "serf")
+	main := filepath.Join(root, "evener")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +49,8 @@ func TestBuildTreeCarriedIdentityForDeletedWorkingDir(t *testing.T) {
 	if p.Key != mainProject.ID {
 		t.Errorf("Key = %q, want canonical %q", p.Key, mainProject.ID)
 	}
-	if p.Name != "serf" {
-		t.Errorf("Name = %q, want the resolved checkout's basename %q", p.Name, "serf")
+	if p.Name != "evener" {
+		t.Errorf("Name = %q, want the resolved checkout's basename %q", p.Name, "evener")
 	}
 	if p.WorkingDir != mainProject.CanonicalPath {
 		t.Errorf("WorkingDir = %q, want canonical %q", p.WorkingDir, mainProject.CanonicalPath)

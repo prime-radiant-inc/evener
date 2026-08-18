@@ -126,7 +126,7 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 // steps sees both false even though at no instant were they both false, and the
 // drain then returns "" and lets Close() SIGKILL a delegate notification that
 // was already armed and waiting. That is the PRI-2441 B1 flake: a one-shot
-// `serf run` printing "waiting on delegate" instead of the coordinator's real
+// `evener run` printing "waiting on delegate" instead of the coordinator's real
 // final answer.
 //
 // The wake is the one signal that survives the straddle, because every producer

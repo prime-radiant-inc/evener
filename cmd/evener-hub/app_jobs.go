@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// hubJobsList answers serf/jobs/list. A running daemon's recursive activity
+// hubJobsList answers evener/jobs/list. A running daemon's recursive activity
 // tree is authoritative, so it is always tried first; only the specific
 // dead-session condition (isDeadSessionError, app_tasks.go) falls back to the
 // persisted jobs.jsonl through agent.LoadSessionJobActivityTree, behind the
@@ -54,7 +54,7 @@ func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) 
 	return appwire.JobsListResponse{Data: tree}, true, nil
 }
 
-// hubJobsOutput answers serf/jobs/output with the same live-first /
+// hubJobsOutput answers evener/jobs/output with the same live-first /
 // dead-session-fallback split. A job id absent from the persisted store is
 // invalid params — the caller guessed.
 func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {

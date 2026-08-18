@@ -15,7 +15,7 @@ func modelRetryNotification(t *testing.T, params appwire.ThreadModelRetryParams)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	return appwire.Notification{Method: appwire.NotifySerfThreadModelRetry, Params: raw}
+	return appwire.Notification{Method: appwire.NotifyEvenerThreadModelRetry, Params: raw}
 }
 
 // itemLifecycleNotification builds an item/completed notification carrying
@@ -30,7 +30,7 @@ func itemLifecycleNotification(t *testing.T, method, itemType string) appwire.No
 	return appwire.Notification{Method: method, Params: raw}
 }
 
-// kata e79v: the daemon reports a model-call retry on serf/thread/modelRetry
+// kata e79v: the daemon reports a model-call retry on evener/thread/modelRetry
 // (kata 4zn8). The TUI ignored the method outright, so a rate-limited session
 // looked identical to a wedged one — the exact symptom 4zn8 fixed for the web
 // client, still live in the other one.

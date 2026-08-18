@@ -231,7 +231,7 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	writeSession(t, fixture.overrideBase, fixture.overrideSID)
 	fixture.directBase = t.TempDir()
 	fixture.directHash = "Project-direct-0123456789"
-	writeSession(t, filepath.Join(fixture.directBase, "serf", "projects", fixture.directHash), fixture.rootSID)
+	writeSession(t, filepath.Join(fixture.directBase, "evener", "projects", fixture.directHash), fixture.rootSID)
 	return fixture
 }
 

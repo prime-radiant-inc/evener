@@ -206,7 +206,7 @@ func TestReadTranscriptLocalJobRejectsOldIDBeforeIO(t *testing.T) {
 	}
 	t.Cleanup(func() { openLocalJobProjectDirectory = oldOpen })
 
-	_, err := readLocalJobTranscriptForTest(t, filepath.Join(t.TempDir(), "serf", "projects", localJobCurrentProject), identifier.MustNewSessionID(), "job_legacy")
+	_, err := readLocalJobTranscriptForTest(t, filepath.Join(t.TempDir(), "evener", "projects", localJobCurrentProject), identifier.MustNewSessionID(), "job_legacy")
 	if err == nil || !strings.Contains(err.Error(), "invalid job identifier") {
 		t.Fatalf("old job ID error = %v, want invalid job identifier", err)
 	}

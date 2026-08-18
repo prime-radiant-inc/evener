@@ -18,9 +18,9 @@ import (
 // resume" + §5 table row "session init, launch cwd inside a managed worktree").
 //
 // This file is MIXED across the two lane harnesses; see docs/testing.md for the
-// rule. Most tests' subject is serf's own re-entry DECISION — lock, adopt, refuse
+// rule. Most tests' subject is evener's own re-entry DECISION — lock, adopt, refuse
 // to the restore root, warn and co-occupy, no-op — plus the notice text and what
-// serf recorded in its own SessionMeta, so they run on the scripted git boundary
+// evener recorded in its own SessionMeta, so they run on the scripted git boundary
 // (scriptedLaneRepo), with the verification and lock failures the decision reacts
 // to injected at the boundary. These six stay on real git (wtRepo) because their
 // subject IS git's own behavior:
@@ -150,7 +150,7 @@ func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
 }
 
 // TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged covers a
-// by-path switch into a non-managed (unregistered-with-serf) sibling
+// by-path switch into a non-managed (unregistered-with-evener) sibling
 // worktree: Meta() still records WorktreePath/WorktreeRestoreRoot (spec §7:
 // "both switch modes swap the env, so both must survive resume") but
 // WorktreeManaged is false.
@@ -226,7 +226,7 @@ func TestResumeWorktreeReentry_ManagedOwnMarkerStale_Adopts(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	creatorID := sr.s.id // create already locked path with serf:<creatorID>
+	creatorID := sr.s.id // create already locked path with evener:<creatorID>
 
 	meta := schema.SessionMeta{
 		ID:                  creatorID, // same session id resuming: the crash case
@@ -255,7 +255,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 	}
 	path := res["path"].(string)
 	// Simulate another session having moved in after our clean close.
-	sr.setLaneLock(t, path, "serf:someone-else-session")
+	sr.setLaneLock(t, path, "evener:someone-else-session")
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMEMANAGEDFOREIGN001",
@@ -268,7 +268,7 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 	if got := sess.currentEnv().WorkingDirectory(); got != sr.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q (refused re-entry)", got, sr.mainRoot)
 	}
-	if _, _, reason := sr.laneLocked(t, path); reason != "serf:someone-else-session" {
+	if _, _, reason := sr.laneLocked(t, path); reason != "evener:someone-else-session" {
 		t.Errorf("foreign lock must be left untouched, got %q", reason)
 	}
 	msgs := warningMessages(sess)
@@ -428,11 +428,11 @@ func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	r.setLaneLock(t, path, "serf:someone-else-session")
+	r.setLaneLock(t, path, "evener:someone-else-session")
 
 	sess := r.launchInside(t, path).s
 
-	if _, _, reason := r.laneLocked(t, path); reason != "serf:someone-else-session" {
+	if _, _, reason := r.laneLocked(t, path); reason != "evener:someone-else-session" {
 		t.Errorf("foreign lock must be left untouched, got %q", reason)
 	}
 	msgs := warningMessages(sess)
@@ -472,7 +472,7 @@ func TestInitInside_CoOccupyWarningRidesAfterSessionStart(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	r.setLaneLock(t, path, "serf:someone-else-session")
+	r.setLaneLock(t, path, "evener:someone-else-session")
 
 	sess := r.launchInside(t, path).s
 	sess.Close()

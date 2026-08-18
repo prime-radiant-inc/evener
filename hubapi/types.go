@@ -33,7 +33,7 @@ type TreeResponse struct {
 	Projects         []TreeProject    `json:"projects"`
 	ArchivedProjects []TreeProject    `json:"archived_projects"`
 	TestRuns         []TreeProject    `json:"test_runs"`
-	// serf:naming-ignore
+	// evener:naming-ignore
 	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
 }
 
@@ -52,12 +52,12 @@ type PinSectionTree struct {
 // baseline load. It mirrors
 // appwire.AttentionSummary's shape as a parallel wire type — hubapi is the
 // REST client surface and deliberately does not import appwire — including
-// its camelCase tags: this is the same "summary" object serf/attention/changed
+// its camelCase tags: this is the same "summary" object evener/attention/changed
 // pushes incrementally (appwire.AttentionChangedPayload.Summary), so the JS
 // layer applies one field-access path to either the REST baseline or the live
 // notification.
 type AttentionSummary struct {
-	// serf:naming-ignore
+	// evener:naming-ignore
 	NeedsYou int `json:"needsYou"`
 	Error    int `json:"error"`
 	Working  int `json:"working"`
@@ -177,7 +177,7 @@ type SessionDetail struct {
 	// the current in-flight turn began, 0 when idle/ended (WS2).
 	WorkMillis          int64 `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64 `json:"active_turn_started_at,omitempty"`
-	// FailedToolCalls mirrors appwire.SerfThread.FailedToolCalls: how many of
+	// FailedToolCalls mirrors appwire.EvenerThread.FailedToolCalls: how many of
 	// this session's tool calls failed, or absent when nothing counted them
 	// (an unreadable transcript, or a source that never derives the figure).
 	// Kept as a pointer, not a plain int, so a measured zero and "nobody
@@ -195,7 +195,7 @@ type SessionDetail struct {
 	// so only the status and turn count are surfaced.
 	GoalStatus     string `json:"goal_status,omitempty"`
 	GoalIterations int    `json:"goal_iterations,omitempty"`
-	// Usage mirrors appwire.SerfUsage's cumulative self-only token totals
+	// Usage mirrors appwire.EvenerUsage's cumulative self-only token totals
 	// (WS2), flattened into hubapi's own Usage type for the same reason as
 	// GoalStatus above — hubapi cannot depend on appwire. Nil when no token
 	// data is available.
@@ -203,7 +203,7 @@ type SessionDetail struct {
 	Capabilities SessionCapabilities `json:"capabilities"`
 }
 
-// Usage is hubapi's flattened mirror of appwire.SerfUsage — a session's
+// Usage is hubapi's flattened mirror of appwire.EvenerUsage — a session's
 // cumulative self-only token totals. See SessionDetail.Usage.
 type Usage struct {
 	InputTokens     int64 `json:"input_tokens,omitempty"`
@@ -296,5 +296,5 @@ type ForkResponse struct {
 type ErrorResponse struct {
 	Error         string `json:"error"`
 	Code          int    `json:"code,omitempty"`
-	SerfErrorInfo string `json:"serf_error_info,omitempty"`
+	EvenerErrorInfo string `json:"evener_error_info,omitempty"`
 }

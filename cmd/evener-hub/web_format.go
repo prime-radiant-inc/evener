@@ -27,7 +27,7 @@ func htmlEscape(s string) string {
 }
 
 func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
-	ref := thread.Serf.Ref
+	ref := thread.Evener.Ref
 	if ref == "" {
 		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
 	}
@@ -50,16 +50,16 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		RunningFor:            activeTurnRunningFor(thread),
 		Model:                 thread.ModelProvider,
 		WorkingDir:            thread.CWD,
-		CompactContextNumbers: formatCompactContextNumbers(thread.Serf.ContextUsed, thread.Serf.ContextWindow),
-		Capabilities:          hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		CompactContextNumbers: formatCompactContextNumbers(thread.Evener.ContextUsed, thread.Evener.ContextWindow),
+		Capabilities:          hubCapabilitiesFromAppwire(thread.Evener.Capabilities),
 		// WorkMillis/Usage/ActiveTurnStartedAt are WS2's working-state/token
 		// metrics, read on demand by the daemon rather than pushed per event.
-		WorkMillis:          thread.Serf.WorkMillis,
-		Usage:               thread.Serf.Usage,
-		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
+		WorkMillis:          thread.Evener.WorkMillis,
+		Usage:               thread.Evener.Usage,
+		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
 	}
 	data.Cost = appwire.EstimateCost(data.Model, data.Usage)
-	if goal := thread.Serf.Goal; goal != nil {
+	if goal := thread.Evener.Goal; goal != nil {
 		data.GoalStatus = goal.Status
 		data.GoalIterations = goal.Iterations
 	}
@@ -91,8 +91,8 @@ func compactDuration(d time.Duration) string {
 }
 
 func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
-	if thread.Serf.ActiveTurnID != "" {
-		return thread.Serf.ActiveTurnID
+	if thread.Evener.ActiveTurnID != "" {
+		return thread.Evener.ActiveTurnID
 	}
 	for _, turn := range thread.Turns {
 		if turn.Status == appwire.TurnStatusInProgress {
@@ -118,10 +118,10 @@ func completedTurnCount(turns []appwire.Turn) int {
 func sourceLabelFromRefText(refText string) string {
 	ref, err := appwire.ParseRef(refText)
 	if err != nil {
-		return "serf"
+		return "evener"
 	}
 	if ref.SourceID == "" || ref.SourceID == "local" {
-		return "serf"
+		return "evener"
 	}
 	return ref.SourceID
 }

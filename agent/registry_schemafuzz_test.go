@@ -54,7 +54,7 @@ type schemaValidator interface {
 // reproduction becomes a flake-guarded regression test (written to a temp dir;
 // promotion into the tree is the human/opt-in step). rapid shrinks to a minimal
 // failing case before the cleanup promotes it.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
@@ -329,7 +329,7 @@ type toolSchemaDef struct {
 // coreToolSchemaDefs stands up a real Session over a temp dir so registerCoreTools
 // wires the full tool set, then returns each tool's name, raw Parameters schema,
 // and compiled validator. Mirrors the Phase-0 helper but also exposes Parameters
-// so the schema-aware generator sees exactly the schema serf ships.
+// so the schema-aware generator sees exactly the schema evener ships.
 func coreToolSchemaDefs(t testing.TB) []toolSchemaDef {
 	t.Helper()
 	dir := t.TempDir()
@@ -384,8 +384,8 @@ func captureStack() []string {
 	for {
 		fr, more := frames.Next()
 		fn := fr.Function
-		if i := strings.LastIndex(fn, "serf/"); i >= 0 {
-			fn = fn[i+len("serf/"):]
+		if i := strings.LastIndex(fn, "evener/"); i >= 0 {
+			fn = fn[i+len("evener/"):]
 		}
 		out = append(out, fmt.Sprintf("%s:%d", fn, fr.Line))
 		if !more || len(out) >= 8 {

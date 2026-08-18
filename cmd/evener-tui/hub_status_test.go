@@ -11,13 +11,13 @@ import (
 )
 
 // TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary guards the
-// existing contract: when SerfDiagnostics is nil, the rendered status is
+// existing contract: when EvenerDiagnostics is nil, the rendered status is
 // exactly the thin summary (no diagnostics sections leaking through).
 func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T) {
 	withTestColorProfile(t)
 	detail := hubSessionDetail{
 		SessionID:       "01ABC",
-		SourceLabel:     "serf",
+		SourceLabel:     "evener",
 		Model:           "openai/gpt-5",
 		Profile:         "openai",
 		WorkingDir:      "/tmp/proj",
@@ -29,7 +29,7 @@ func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T
 
 	for _, want := range []string{
 		"Session:  01ABC",
-		"Source:   serf",
+		"Source:   evener",
 		"Dir:      /tmp/proj",
 		"Turns:    3",
 		"Context:  21% used",
@@ -53,29 +53,29 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		SessionID: "01ABC",
 		Model:     "openai/gpt-5",
 		Profile:   "openai",
-		Diagnostics: &appwire.SerfDiagnostics{
-			Tools: []appwire.SerfToolInfo{
+		Diagnostics: &appwire.EvenerDiagnostics{
+			Tools: []appwire.EvenerToolInfo{
 				{Name: "read_file", Source: "core"},
 				{Name: "write_file", Source: "core"},
 				{Name: "linear_create", Source: "mcp:linear"},
 				{Name: "custom_thing", Source: "plugin:demo"},
 			},
-			MCP: []appwire.SerfMCPServerInfo{
+			MCP: []appwire.EvenerMCPServerInfo{
 				{Name: "linear", Tools: []string{"linear_create"}},
 				{Name: "slack", Tools: []string{"slack_post"}, Status: "connected"},
 				{Name: "github", Tools: []string{"repo_search"}, Status: "degraded", Error: "connection refused"},
 			},
-			Skills: []appwire.SerfSkillInfo{
+			Skills: []appwire.EvenerSkillInfo{
 				{Name: "writing-plans", Description: "Build implementation plans"},
 			},
-			Plugins: []appwire.SerfPluginInfo{
+			Plugins: []appwire.EvenerPluginInfo{
 				{Name: "superpowers", Version: "5.1.0", SkillCount: 30, AgentCount: 2, HookCount: 4},
 			},
 			Hooks: map[string]int{
 				"SessionStart":     2,
 				"UserPromptSubmit": 1,
 			},
-			Jobs: []appwire.SerfJobInfo{
+			Jobs: []appwire.EvenerJobInfo{
 				{JobID: "job_1", JobType: "delegate", Status: "running"},
 			},
 			Agents: []string{"reviewer", "planner"},
@@ -124,7 +124,7 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 
 func TestRenderHubSessionStatusKeepsJobSuffixesDistinct(t *testing.T) {
 	const owner = "02wMz5TxvEMoJEDTDGOTil"
-	detail := hubSessionDetail{Diagnostics: &appwire.SerfDiagnostics{Jobs: []appwire.SerfJobInfo{
+	detail := hubSessionDetail{Diagnostics: &appwire.EvenerDiagnostics{Jobs: []appwire.EvenerJobInfo{
 		{JobID: "job_" + owner + "_000000000001", JobType: "delegate", Status: "running"},
 		{JobID: "job_" + owner + "_000000000002", JobType: "delegate", Status: "running"},
 	}}}
@@ -179,10 +179,10 @@ func TestFormatContextFragment(t *testing.T) {
 }
 
 // TestHubDetailFromThreadMapsWorkingStateFields asserts hubDetailFromThread
-// carries thread.Serf.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) onto
+// carries thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) onto
 // hubSessionDetail verbatim, mirroring how Queue/Goal are already mapped.
 func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
-	usage := &appwire.SerfUsage{
+	usage := &appwire.EvenerUsage{
 		InputTokens:     46000,
 		OutputTokens:    12000,
 		CacheReadTokens: 100000,
@@ -192,7 +192,7 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 		ID:        "th_1",
 		SessionID: "th_1",
 		Source:    "local",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:                 "local:th_1",
 			Usage:               usage,
 			WorkMillis:          185000,
@@ -203,7 +203,7 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 	detail := hubDetailFromThread(thread)
 
 	if detail.Usage != usage {
-		t.Fatalf("Usage=%p, want the same pointer as thread.Serf.Usage=%p", detail.Usage, usage)
+		t.Fatalf("Usage=%p, want the same pointer as thread.Evener.Usage=%p", detail.Usage, usage)
 	}
 	if detail.WorkMillis != 185000 {
 		t.Fatalf("WorkMillis=%d, want 185000", detail.WorkMillis)
@@ -214,7 +214,7 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 }
 
 // TestHubDetailFromThreadMapsFailedToolCalls asserts hubDetailFromThread
-// carries thread.Serf.FailedToolCalls onto hubSessionDetail verbatim,
+// carries thread.Evener.FailedToolCalls onto hubSessionDetail verbatim,
 // preserving the absent/zero distinction (kata md4g): a nil pointer means
 // nobody counted, not "zero failures".
 func TestHubDetailFromThreadMapsFailedToolCalls(t *testing.T) {
@@ -223,7 +223,7 @@ func TestHubDetailFromThreadMapsFailedToolCalls(t *testing.T) {
 		ID:        "th_1",
 		SessionID: "th_1",
 		Source:    "local",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:             "local:th_1",
 			FailedToolCalls: &count,
 		},
@@ -240,14 +240,14 @@ func TestHubDetailFromThreadMapsFailedToolCalls(t *testing.T) {
 }
 
 // TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone guards the
-// "nobody counted" case: an absent thread.Serf.FailedToolCalls must not
+// "nobody counted" case: an absent thread.Evener.FailedToolCalls must not
 // become a fabricated zero.
 func TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone(t *testing.T) {
 	detail := hubDetailFromThread(appwire.Thread{
 		ID:        "th_2",
 		SessionID: "th_2",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:th_2"},
+		Evener:      appwire.EvenerThread{Ref: "local:th_2"},
 	})
 	if detail.FailedToolCalls != nil {
 		t.Fatalf("FailedToolCalls = %+v, want nil", detail.FailedToolCalls)
@@ -262,7 +262,7 @@ func TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone(t *testing.T) {
 		ID:        "th_2",
 		SessionID: "th_2",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:th_2"},
+		Evener:      appwire.EvenerThread{Ref: "local:th_2"},
 	})
 	if detail.Usage != nil {
 		t.Fatalf("Usage=%+v, want nil", detail.Usage)
@@ -279,7 +279,7 @@ func TestRenderHubSessionStatusShowsWorkAndTokenLines(t *testing.T) {
 	withMetrics := hubSessionDetail{
 		SessionID:  "01ABC",
 		WorkMillis: 185000, // 3m5s -> "3m"
-		Usage: &appwire.SerfUsage{
+		Usage: &appwire.EvenerUsage{
 			InputTokens:     46000,
 			OutputTokens:    12000,
 			CacheReadTokens: 100000,
@@ -338,11 +338,11 @@ func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
 	withMetrics := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Metrics session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   3,
 			WorkMillis:  185000, // "3m"
-			Usage: &appwire.SerfUsage{
+			Usage: &appwire.EvenerUsage{
 				InputTokens:     46000,
 				OutputTokens:    12000,
 				CacheReadTokens: 100000,
@@ -364,7 +364,7 @@ func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
 	noMetrics := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Plain session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   1,
 		},
@@ -385,7 +385,7 @@ func TestSessionHeaderShowsFailedChip(t *testing.T) {
 	withFailures := hubModel{
 		detail: hubSessionDetail{
 			Title:           "Failing session",
-			SourceLabel:     "serf",
+			SourceLabel:     "evener",
 			FailedToolCalls: &three,
 		},
 		width: 200,
@@ -397,8 +397,8 @@ func TestSessionHeaderShowsFailedChip(t *testing.T) {
 
 	zero := 0
 	for _, detail := range []hubSessionDetail{
-		{Title: "Clean session", SourceLabel: "serf", FailedToolCalls: &zero},
-		{Title: "Uncounted session", SourceLabel: "serf"},
+		{Title: "Clean session", SourceLabel: "evener", FailedToolCalls: &zero},
+		{Title: "Uncounted session", SourceLabel: "evener"},
 	} {
 		got = strings.Join((hubModel{detail: detail, width: 200}).sessionHeaderLines(), "\n")
 		if strings.Contains(got, "failed") {
@@ -435,7 +435,7 @@ func TestRenderHubSessionStatusBandsContextPressure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := hubSessionDetail{
 				SessionID:       "01ABC",
-				SourceLabel:     "serf",
+				SourceLabel:     "evener",
 				ContextUsed:     tc.used,
 				ContextWindow:   tc.window,
 				ContextPressure: tc.pressure,

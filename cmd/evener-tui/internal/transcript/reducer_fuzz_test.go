@@ -58,7 +58,7 @@ func FuzzApplyThreadItem(f *testing.F) {
 		r.ApplyThreadItem(item, TurnIndexFromID(item.TurnID), true)
 
 		// Drive the job-folding decode path from the same payload.
-		var job appwire.SerfJobInfo
+		var job appwire.EvenerJobInfo
 		if json.Unmarshal([]byte(raw), &job) == nil {
 			r.ApplySerfJob(job)
 		}

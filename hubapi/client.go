@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 )
 
-// Client is a small typed HTTP client for the serf hub JSON API.
+// Client is a small typed HTTP client for the evener hub JSON API.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client

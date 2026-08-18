@@ -348,7 +348,7 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// The matcher "Edit|Write|MultiEdit" should match these Claude Code tool names.
-	// Our runAll maps serf names → Claude names for matching, so we test with serf names.
+	// Our runAll maps evener names → Claude names for matching, so we test with evener names.
 	// edit_file → Edit (matches), write_file → Write (matches), shell → Bash (no match)
 	editMatched := runner.MatchHooks(plugin.HookPreToolUse, "Edit")
 	if len(editMatched) == 0 {
@@ -376,7 +376,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// Use a unique session ID to avoid state file conflicts from previous runs.
-	sessionID := fmt.Sprintf("serf-test-%d", os.Getpid())
+	sessionID := fmt.Sprintf("evener-test-%d", os.Getpid())
 	t.Cleanup(func() {
 		// Clean up the state file the Python hook creates.
 		stateFile := filepath.Join(os.Getenv("HOME"), ".claude", fmt.Sprintf("security_warnings_state_%s.json", sessionID))
@@ -716,12 +716,12 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 		"NotebookEdit": "notebook_edit",
 	}
 
-	for claude, serf := range mappings {
-		if toolname.ClaudeToSerf(claude) != serf {
-			t.Errorf("ClaudeToSerf(%q) = %q, want %q", claude, toolname.ClaudeToSerf(claude), serf)
+	for claude, evener := range mappings {
+		if toolname.ClaudeToSerf(claude) != evener {
+			t.Errorf("ClaudeToSerf(%q) = %q, want %q", claude, toolname.ClaudeToSerf(claude), evener)
 		}
-		if toolname.SerfToClaude(serf) != claude {
-			t.Errorf("SerfToClaude(%q) = %q, want %q", serf, toolname.SerfToClaude(serf), claude)
+		if toolname.EvenerToClaude(evener) != claude {
+			t.Errorf("EvenerToClaude(%q) = %q, want %q", evener, toolname.EvenerToClaude(evener), claude)
 		}
 	}
 
@@ -729,8 +729,8 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 	if toolname.ClaudeToSerf("custom_tool") != "custom_tool" {
 		t.Error("unknown Claude name should pass through")
 	}
-	if toolname.SerfToClaude("custom_tool") != "custom_tool" {
-		t.Error("unknown serf name should pass through")
+	if toolname.EvenerToClaude("custom_tool") != "custom_tool" {
+		t.Error("unknown evener name should pass through")
 	}
 }
 

@@ -169,7 +169,7 @@ func TestLoginShellPATH_TakesLastLineOverNoisyRCBanner(t *testing.T) {
 }
 
 // TestLoginPATH_SurvivesReRoot: the developer-PATH fix must reach the paths
-// serf actually runs — a worktree-isolated delegate and a managed-worktree
+// evener actually runs — a worktree-isolated delegate and a managed-worktree
 // switch both re-root the session env through WithWorkingDirectory, so a
 // child that dropped LoginPATH would silently revert to the launchd/GUI
 // PATH the fix exists to replace.
@@ -298,7 +298,7 @@ func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
 // TestCleanupReleasesUnsandboxedScratchLease is the leak regression from the
 // task-1 review: off/unsandboxed is the DEFAULT sandbox mode, and
 // session_lifecycle.go calls Cleanup() on every session close, so if Cleanup
-// never released the unsandboxedScratch lease, a long-running `serf serve`
+// never released the unsandboxedScratch lease, a long-running `evener serve`
 // daemon would hold one open file descriptor (the lease flock) per session
 // for the rest of the process's life — sweepCrashedSessionScratch can only
 // reclaim a lease that is currently acquirable. Verified at the OS level: a
@@ -318,10 +318,10 @@ func TestCleanupReleasesUnsandboxedScratchLease(t *testing.T) {
 
 	env.Cleanup()
 
-	// ".serf-session.lock" mirrors sandbox.SessionScratch's lease filename
+	// ".evener-session.lock" mirrors sandbox.SessionScratch's lease filename
 	// convention (agent/sandbox/session_scratch.go); there is no exported way
 	// to introspect lease state, so this checks the real OS-level lock instead.
-	leasePath := filepath.Join(scratch, ".serf-session.lock")
+	leasePath := filepath.Join(scratch, ".evener-session.lock")
 	f, err := os.OpenFile(leasePath, os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatalf("open lease file: %v", err)

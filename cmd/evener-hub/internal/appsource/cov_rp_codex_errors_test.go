@@ -17,16 +17,16 @@ func fuzzScenarioCodexSourceSessionUnavailable(t *testing.T) {
 	mapShape := appwire.WireError{
 		Code:    appwire.CodeUnavailable,
 		Message: "gone",
-		Data:    map[string]any{"serfErrorInfo": string(appwire.ErrorSessionUnavailable)},
+		Data:    map[string]any{"evenerErrorInfo": string(appwire.ErrorSessionUnavailable)},
 	}
 	if !codexSourceSessionUnavailable(mapShape) {
 		t.Error("map-shaped SessionUnavailable data should be recognised")
 	}
 
-	// Right code but a different serfErrorInfo is not a session-unavailable.
+	// Right code but a different evenerErrorInfo is not a session-unavailable.
 	wrongInfo := appwire.WireError{
 		Code: appwire.CodeUnavailable,
-		Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorProviderUnavailable},
+		Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorProviderUnavailable},
 	}
 	if codexSourceSessionUnavailable(wrongInfo) {
 		t.Error("provider-unavailable should not be a session-unavailable")

@@ -704,7 +704,7 @@ func assertHookRunnerProgramPre(t *testing.T, result PreToolUseResult) {
 			t.Fatalf("PreToolUse model context = %#v, want %q", result.ModelContext, want)
 		}
 	}
-	for _, want := range []string{"pre visible", `hook returned permissionDecision "ask" which serf does not support (no interactive permission prompt); the tool will proceed`} {
+	for _, want := range []string{"pre visible", `hook returned permissionDecision "ask" which evener does not support (no interactive permission prompt); the tool will proceed`} {
 		if !containsHookRunnerProgramString(result.UserMessages, want) {
 			t.Fatalf("PreToolUse user messages = %#v, want %q", result.UserMessages, want)
 		}

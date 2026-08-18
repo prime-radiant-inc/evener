@@ -20,7 +20,7 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 		ID:        "thread-atomic",
 		SessionID: "thread-atomic",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:thread-atomic"},
+		Evener:      appwire.EvenerThread{Ref: "local:thread-atomic"},
 	}
 	handoff := &recordingRelayHandoff{
 		committed: make(chan struct{}),
@@ -53,7 +53,7 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 		ID:        "thread-delivery",
 		SessionID: "thread-delivery",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:thread-delivery"},
+		Evener:      appwire.EvenerThread{Ref: "local:thread-delivery"},
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	acknowledged := make(chan struct{})
@@ -104,7 +104,7 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 					Method: appwire.NotifyAgentMessageDelta,
 					Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
 						ThreadID: thread.ID,
-						Ref:      thread.Serf.Ref,
+						Ref:      thread.Evener.Ref,
 						TurnID:   "turn-delivery",
 						ItemID:   "item-delivery",
 						Delta:    "after snapshot",
@@ -140,7 +140,7 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	}
 
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
@@ -160,7 +160,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 		ID:        "thread-wire-order",
 		SessionID: "thread-wire-order",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:thread-wire-order"},
+		Evener:      appwire.EvenerThread{Ref: "local:thread-wire-order"},
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	handoff := &recordingRelayHandoff{
@@ -172,7 +172,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 					Method: appwire.NotifyAgentMessageDelta,
 					Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
 						ThreadID: thread.ID,
-						Ref:      thread.Serf.Ref,
+						Ref:      thread.Evener.Ref,
 						TurnID:   "turn-wire-order",
 						ItemID:   "item-wire-order",
 						Delta:    "after snapshot",
@@ -225,7 +225,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 	}
 
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
@@ -247,7 +247,7 @@ func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 	thread := appwire.Thread{
 		ID:     "thread-no-handoff",
 		Source: "local",
-		Serf:   appwire.SerfThread{Ref: "local:thread-no-handoff"},
+		Evener:   appwire.EvenerThread{Ref: "local:thread-no-handoff"},
 	}
 	lease := &scriptedRelaySessionLease{
 		readResult: appsource.RelayReadResult{
@@ -266,7 +266,7 @@ func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 	)
 
 	_, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	})
 	if err == nil {
@@ -279,7 +279,7 @@ func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotPrepare(t *te
 		ID:        "thread-stale-handoff",
 		SessionID: "thread-stale-handoff",
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:thread-stale-handoff"},
+		Evener:      appwire.EvenerThread{Ref: "local:thread-stale-handoff"},
 	}
 	handoff := &recordingRelayHandoff{
 		committed: make(chan struct{}),
@@ -312,7 +312,7 @@ func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotPrepare(t *te
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       thread.Serf.Ref,
+		Ref:       thread.Evener.Ref,
 		Subscribe: true,
 	}); err == nil {
 		t.Fatal("thread/read confirmed a snapshot after its live handoff could not be prepared")
@@ -338,7 +338,7 @@ func TestHubAtomicRejoinCaptureFailureAbortsPreparedHandoff(t *testing.T) {
 		response: appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:     "thread-no-response-connection",
 			Source: "local",
-			Serf:   appwire.SerfThread{Ref: "local:thread-no-response-connection"},
+			Evener:   appwire.EvenerThread{Ref: "local:thread-no-response-connection"},
 		}},
 		handoff: handoff,
 	}
@@ -349,7 +349,7 @@ func TestHubAtomicRejoinCaptureFailureAbortsPreparedHandoff(t *testing.T) {
 	)
 
 	if relays.captureThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:       read.response.Thread.Serf.Ref,
+		Ref:       read.response.Thread.Evener.Ref,
 		Subscribe: true,
 	}, read) {
 		t.Fatal("capture without a downstream response connection succeeded")
@@ -370,7 +370,7 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 	thread := appwire.Thread{
 		ID:     "thread-turn-start",
 		Source: "local",
-		Serf:   appwire.SerfThread{Ref: "local:thread-turn-start"},
+		Evener:   appwire.EvenerThread{Ref: "local:thread-turn-start"},
 	}
 	handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
 	lease := &scriptedRelaySessionLease{
@@ -398,7 +398,7 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 	)
 
 	if _, err := relays.startTurn(context.Background(), source, appwire.TurnStartParams{
-		Ref:              thread.Serf.Ref,
+		Ref:              thread.Evener.Ref,
 		ThreadID:         thread.ID,
 		ClientMutationID: "mutation-turn-start",
 		Input:            []appwire.InputItem{{Type: "text", Text: "continue"}},
@@ -439,7 +439,7 @@ func TestHubTurnStartStopsBeforeMutationWhenRelayHandoffCannotCommit(t *testing.
 			thread := appwire.Thread{
 				ID:     "thread-turn-start-failed-handoff",
 				Source: "local",
-				Serf:   appwire.SerfThread{Ref: "local:thread-turn-start-failed-handoff"},
+				Evener:   appwire.EvenerThread{Ref: "local:thread-turn-start-failed-handoff"},
 			}
 			handoff := &guardedRelayHandoff{
 				prepareAllowed: test.prepareAllowed,
@@ -469,7 +469,7 @@ func TestHubTurnStartStopsBeforeMutationWhenRelayHandoffCannotCommit(t *testing.
 			)
 
 			if _, err := relays.startTurn(context.Background(), source, appwire.TurnStartParams{
-				Ref:              thread.Serf.Ref,
+				Ref:              thread.Evener.Ref,
 				ThreadID:         thread.ID,
 				ClientMutationID: "mutation-failed-handoff",
 				Input:            []appwire.InputItem{{Type: "text", Text: "must not run"}},
@@ -504,7 +504,7 @@ func TestHubLifecycleRelaySetupUsesCanonicalRelaySession(t *testing.T) {
 	thread := appwire.Thread{
 		ID:     "thread-lifecycle",
 		Source: "local",
-		Serf:   appwire.SerfThread{Ref: "local:thread-lifecycle"},
+		Evener:   appwire.EvenerThread{Ref: "local:thread-lifecycle"},
 	}
 	handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
 	lease := &scriptedRelaySessionLease{
@@ -559,7 +559,7 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 	thread := appwire.Thread{
 		ID:     "thread-idle-command",
 		Source: "local",
-		Serf:   appwire.SerfThread{Ref: "local:thread-idle-command"},
+		Evener:   appwire.EvenerThread{Ref: "local:thread-idle-command"},
 	}
 	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
 	lease := &scriptedRelaySessionLease{
@@ -588,7 +588,7 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 		}},
 		appsource.NewRegistry(),
 	)
-	params := appwire.ThreadReadParams{Ref: thread.Serf.Ref, Subscribe: true}
+	params := appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}
 	first, err := relays.readThread(context.Background(), source, params)
 	if err != nil {
 		t.Fatalf("first readThread: %v", err)
@@ -613,12 +613,12 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	blockedThread := appwire.Thread{
 		ID:     "thread-blocked",
 		Source: "local-a",
-		Serf:   appwire.SerfThread{Ref: "local-a:thread-blocked"},
+		Evener:   appwire.EvenerThread{Ref: "local-a:thread-blocked"},
 	}
 	fastThread := appwire.Thread{
 		ID:     "thread-fast",
 		Source: "local-b",
-		Serf:   appwire.SerfThread{Ref: "local-b:thread-fast"},
+		Evener:   appwire.EvenerThread{Ref: "local-b:thread-fast"},
 	}
 	blockedReadEntered := make(chan struct{})
 	releaseBlockedRead := make(chan struct{})
@@ -659,7 +659,7 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	blockedResult := make(chan error, 1)
 	go func() {
 		read, err := relays.readThread(context.Background(), blockedSource, appwire.ThreadReadParams{
-			Ref:       blockedThread.Serf.Ref,
+			Ref:       blockedThread.Evener.Ref,
 			Subscribe: true,
 		})
 		if err == nil {
@@ -670,7 +670,7 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	<-blockedReadEntered
 
 	fastRead, err := relays.readThread(context.Background(), fastSource, appwire.ThreadReadParams{
-		Ref:       fastThread.Serf.Ref,
+		Ref:       fastThread.Evener.Ref,
 		Subscribe: true,
 	})
 	if err != nil {
@@ -699,7 +699,7 @@ func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 				ID:        threadID,
 				SessionID: threadID,
 				Source:    "local",
-				Serf:      appwire.SerfThread{Ref: ref},
+				Evener:      appwire.EvenerThread{Ref: ref},
 			}},
 			Handoff: handoff,
 		},
@@ -778,7 +778,7 @@ func TestHubAtomicRejoinExcludesDeletionAtHandoffPrepareBoundary(t *testing.T) {
 		ID:        threadID,
 		SessionID: threadID,
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: ref},
+		Evener:      appwire.EvenerThread{Ref: ref},
 	}
 	source := &relaySessionTestSource{
 		relayLifecycleSource: relayLifecycleSource{thread: thread},
@@ -832,7 +832,7 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 		ID:        threadID,
 		SessionID: threadID,
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: ref},
+		Evener:      appwire.EvenerThread{Ref: ref},
 	}
 	deliveries := make(chan appsource.RelayDelivery, 1)
 	source := &relaySessionTestSource{

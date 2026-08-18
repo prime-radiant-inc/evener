@@ -28,7 +28,7 @@ func fixtureWithLegacyReservedTurnID(t *testing.T) (base, affected, clean string
 	t.Setenv(envvars.SERFStateDir.Name, base)
 	affected = "02wLIRxqmq3AUo6vl2OW37"
 	clean = "02wLIRxqmq3AUo6vl2OW38"
-	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")
+	sess := filepath.Join(base, "evener", "projects", "project-test-0123456789", "sessions")
 	if err := os.MkdirAll(sess, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestRun_TurnIDsRefusesASelector(t *testing.T) {
 	if code := run([]string{"turnids", affected, "--state-dir", base}, &out, &errb); code != 2 {
 		t.Fatalf("exit %d, want 2; stdout=%s stderr=%s", code, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "serf-doctor turnids: takes no selector") {
+	if !strings.Contains(errb.String(), "evener-doctor turnids: takes no selector") {
 		t.Errorf("stderr should explain that turnids takes no selector; got %q", errb.String())
 	}
 }

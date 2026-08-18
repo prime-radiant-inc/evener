@@ -15,7 +15,7 @@ import (
 func runSerfDev(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("integration: builds and runs the serf-dev binary")
+		t.Skip("integration: builds and runs the evener-dev binary")
 	}
 	cmd := exec.Command(buildSerfDev(t), args...) //nolint:noctx // one short-lived run, reaped by Run — buildSerfDev is the shard runner's shared helper
 	var errOut strings.Builder
@@ -26,7 +26,7 @@ func runSerfDev(t *testing.T, args ...string) (int, string) {
 	}
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) {
-		t.Fatalf("running serf-dev: %v", err)
+		t.Fatalf("running evener-dev: %v", err)
 	}
 	return exit.ExitCode(), errOut.String()
 }
@@ -36,7 +36,7 @@ func TestDispatchRejectsMissingSubcommand(t *testing.T) {
 	if code != 2 {
 		t.Errorf("no subcommand exits %d, want 2", code)
 	}
-	if !strings.Contains(stderr, "usage: serf-dev") {
+	if !strings.Contains(stderr, "usage: evener-dev") {
 		t.Errorf("usage missing from stderr: %q", stderr)
 	}
 	if !strings.Contains(stderr, "module-lint") {

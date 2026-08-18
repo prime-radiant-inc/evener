@@ -47,7 +47,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 		RunningForMS: &running, QuietForMS: &quiet, DurationMS: &duration, PacketKind: "reported", Message: json.RawMessage("null"),
 		StructuredResult: json.RawMessage("null"), StructuredValid: &valid, StructuredReason: "valid null", Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"},
 		ExhaustionBudget: "max_tool_rounds_per_input", ExhaustionLimit: 4, ExhaustionResumable: &resumable,
-		DelegationAllowance: 2, ParentWatchGranted: true, Usage: &appwire.SerfUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18},
+		DelegationAllowance: 2, ParentWatchGranted: true, Usage: &appwire.EvenerUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18},
 		Worktree: &appwire.JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane", HeadSHA: "abc", Ahead: 2, Dirty: true},
 	}
 	out := agentToServerDetailedStatus(agent.DetailedStatus{Delegates: []agent.DelegateStatusInfo{in}, TurnSlots: &agent.TurnSlotOccupancy{InUse: 3, Cap: 50, Jobs: 2, Drives: 1}})
@@ -261,7 +261,7 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 		done <- runServe(args)
 	}()
 
-	runDir := filepath.Join(tmpHome, ".serf", "run")
+	runDir := filepath.Join(tmpHome, ".evener", "run")
 	pid := os.Getpid()
 	target := filepath.Join(runDir, strconv.Itoa(pid)+".json")
 
@@ -905,11 +905,11 @@ func TestAgentToServerDetailedStatus_Exhaustion(t *testing.T) {
 
 // TestSerfUsageFromLLM_ZeroReturnsNil pins the WS2 A7 helper: an llm.Usage
 // with every total at zero (a fresh session, an old daemon that never seeded
-// usage, or a Codex thread) maps to a nil *appwire.SerfUsage, so the status
+// usage, or a Codex thread) maps to a nil *appwire.EvenerUsage, so the status
 // row hides the usage cluster rather than rendering ↑0 ↓0.
 func TestSerfUsageFromLLM_ZeroReturnsNil(t *testing.T) {
-	if got := serfUsageFromLLM(llm.Usage{}); got != nil {
-		t.Fatalf("serfUsageFromLLM(zero) = %+v, want nil", got)
+	if got := evenerUsageFromLLM(llm.Usage{}); got != nil {
+		t.Fatalf("evenerUsageFromLLM(zero) = %+v, want nil", got)
 	}
 }
 
@@ -918,15 +918,15 @@ func TestSerfUsageFromLLM_ZeroReturnsNil(t *testing.T) {
 // every field so a transposed mapping is detectable).
 func TestSerfUsageFromLLM_MapsTotals(t *testing.T) {
 	cacheRead := 5
-	got := serfUsageFromLLM(llm.Usage{
+	got := evenerUsageFromLLM(llm.Usage{
 		InputTokens:     10,
 		OutputTokens:    20,
 		TotalTokens:     30,
 		CacheReadTokens: &cacheRead,
 	})
-	want := &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+	want := &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
 	if got == nil || *got != *want {
-		t.Fatalf("serfUsageFromLLM = %+v, want %+v", got, want)
+		t.Fatalf("evenerUsageFromLLM = %+v, want %+v", got, want)
 	}
 }
 
@@ -935,9 +935,9 @@ func TestSerfUsageFromLLM_MapsTotals(t *testing.T) {
 // zero, e.g. a fully cache-served turn) must not be hidden.
 func TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
 	cacheRead := 7
-	got := serfUsageFromLLM(llm.Usage{CacheReadTokens: &cacheRead})
+	got := evenerUsageFromLLM(llm.Usage{CacheReadTokens: &cacheRead})
 	if got == nil || got.CacheReadTokens != 7 {
-		t.Fatalf("serfUsageFromLLM(cache-read-only) = %+v, want CacheReadTokens=7", got)
+		t.Fatalf("evenerUsageFromLLM(cache-read-only) = %+v, want CacheReadTokens=7", got)
 	}
 }
 

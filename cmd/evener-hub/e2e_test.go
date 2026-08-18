@@ -16,7 +16,7 @@ import (
 // TestE2E_HubAndDaemon pins the discovery half of the hub: a daemon the hub did
 // NOT spawn, started by hand the way a user starts one, must appear in the
 // roster. That is the only coverage of the rendezvous path
-// (<HOME>/.serf/run/<pid>.json -> hubcore.Roster.Refresh -> the "local"
+// (<HOME>/.evener/run/<pid>.json -> hubcore.Roster.Refresh -> the "local"
 // LocalDaemonSource), and every other e2e in this package goes the other way,
 // asking the hub to spawn the daemon itself.
 //
@@ -46,10 +46,10 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 	stack := startHubStack(t, provider)
 
 	// A daemon of our own, on the hub's HOME so they share
-	// <HOME>/.serf/run, started exactly as a user would. The hub knows
+	// <HOME>/.evener/run, started exactly as a user would. The hub knows
 	// nothing about it beyond what the daemon writes there.
 	daemonDir := t.TempDir()
-	daemon := exec.Command(filepath.Join(stack.binDir, "serf"), "serve",
+	daemon := exec.Command(filepath.Join(stack.binDir, "evener"), "serve",
 		"--model", stack.model,
 		"--addr", "127.0.0.1:0",
 		"--dir", daemonDir,
@@ -108,7 +108,7 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 			if thread.Source != "local" {
 				t.Fatalf("the daemon was listed under source %q, want the local rendezvous source", thread.Source)
 			}
-			if thread.Serf.Ref == "" {
+			if thread.Evener.Ref == "" {
 				t.Fatalf("the roster listed the daemon with no ref, so nothing can address it: %#v", thread)
 			}
 			return
@@ -151,7 +151,7 @@ func TestE2E_LayeredLaunchConfig(t *testing.T) {
 	repoTOML := []byte(`skills_dirs = ["sub"]
 context_strategy = "ooda"
 `)
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

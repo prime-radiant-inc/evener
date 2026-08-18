@@ -601,7 +601,7 @@ func (r *wtRepo) laneDisposalRunner(t *testing.T, lane isolationLane) (worktree.
 
 // TestDisposeUnchangedLaneMechanics_RelockPolicy: a late dirty write races the
 // clean check so git refuses the non-force remove; under downgradeRelockKeep the
-// helper re-locks the lane with the disposer's own serf:dlg marker and keeps it.
+// helper re-locks the lane with the disposer's own evener:dlg marker and keeps it.
 func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -629,7 +629,7 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 		t.Error("relock policy: lane not re-locked")
 	}
 	if m, ok := worktree.ParseMarker(reason); !ok || m.DelegateID != delegateID {
-		t.Errorf("relock policy: reason = %q, want serf:dlg marker for %s", reason, delegateID)
+		t.Errorf("relock policy: reason = %q, want evener:dlg marker for %s", reason, delegateID)
 	}
 	if r.stableDisposalClosurePresent(t, delegateID) {
 		t.Error("relock policy: lane wrongly marked disposed")
@@ -813,7 +813,7 @@ func TestDisposeOneDelegateLane_UnchangedCheckFailsKeepsAndUnlocks(t *testing.T)
 }
 
 // TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched: a changed
-// lane whose lock is no longer the disposer's own serf:dlg: marker (someone
+// lane whose lock is no longer the disposer's own evener:dlg: marker (someone
 // switched into it) is declined — left completely untouched, not unlocked
 // and not reported as kept.
 func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.T) {
@@ -828,7 +828,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 	// Someone switched into the lane after creation: unlock the dlg marker and
 	// relock with a foreign session marker.
 	wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:someone-else-session", lanePath)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "evener:someone-else-session", lanePath)
 
 	r.s.disposeDelegateLanesAtClose(context.Background())
 
@@ -836,7 +836,7 @@ func TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched(t *testing.
 		t.Errorf("foreign-locked changed lane wrongly removed: %v", err)
 	}
 	_, locked, reason := r.laneLocked(t, lanePath)
-	if !locked || reason != "serf:someone-else-session" {
+	if !locked || reason != "evener:someone-else-session" {
 		t.Errorf("lock = (%v,%q), want the foreign lock left untouched", locked, reason)
 	}
 	if !r.branchExists(t, delegateID) {

@@ -84,12 +84,12 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 			e.OwnerSessionID = "S1"
 			e.VisibleToSession = "S1"
 			e.StartedAt = &start
-			e.OutputPath = "/tmp/serf/jobs/job_A.log"
+			e.OutputPath = "/tmp/evener/jobs/job_A.log"
 		}),
 	}
 	r := Fold(events)["job_A"]
-	if r.OutputPath != "/tmp/serf/jobs/job_A.log" {
-		t.Errorf("output_path = %q, want /tmp/serf/jobs/job_A.log", r.OutputPath)
+	if r.OutputPath != "/tmp/evener/jobs/job_A.log" {
+		t.Errorf("output_path = %q, want /tmp/evener/jobs/job_A.log", r.OutputPath)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 // AuditRecord is one redacted sandbox-denial audit line. Its JSON keys are
-// snake_case (the wire contract enforced by serf-namingcheck). The Path is
+// snake_case (the wire contract enforced by evener-namingcheck). The Path is
 // ALREADY redacted (a basename, or the "<denied>" token for a masked/secret
 // surface); the raw path and file contents never appear here.
 type AuditRecord struct {

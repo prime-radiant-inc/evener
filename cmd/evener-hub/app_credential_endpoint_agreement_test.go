@@ -21,7 +21,7 @@ import (
 )
 
 // TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends holds the launch
-// preflight and serf/auth/status to what cmdutil injects, which is the only
+// preflight and evener/auth/status to what cmdutil injects, which is the only
 // credential the spawned process has. Each case seeds exactly one environment
 // variable, asks cmdutil what the child would authenticate with, and requires
 // both hub surfaces to agree.

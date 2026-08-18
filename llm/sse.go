@@ -26,10 +26,10 @@ func (*sseReadTimeoutError) Is(target error) bool {
 	return target == ErrSSEReadTimeout
 }
 
-// APITimeoutSourceForSSE identifies only the timeout emitted by Serf's own SSE
+// APITimeoutSourceForSSE identifies only the timeout emitted by Evener's own SSE
 // timer. Provider and body errors are opaque transport/decode evidence.
 func APITimeoutSourceForSSE(err error) APITimeoutSource {
-	if _, ok := err.(*sseReadTimeoutError); ok { //nolint:errorlint // Provider errors are untrusted; inspect only Serf's concrete inert wrapper.
+	if _, ok := err.(*sseReadTimeoutError); ok { //nolint:errorlint // Provider errors are untrusted; inspect only Evener's concrete inert wrapper.
 		return APITimeoutSSERead
 	}
 	return APITimeoutNone

@@ -32,7 +32,7 @@ import (
 // drawn permutation and asserts the owner-authority outcome per job_id is
 // identical to the in-order run: owner-wins is order-independent (only the kept
 // DEPTH may differ with order, never the authority).
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestJobsFc2DescendantMergeSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestJobsFc2DescendantMergeSeqFuzz -count=1 -v")

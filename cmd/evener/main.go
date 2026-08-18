@@ -99,14 +99,14 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 }
 
 func mainWithDeps(deps mainDeps) {
-	// Report the serf build version in the OpenAI provider's User-Agent and in
+	// Report the evener build version in the OpenAI provider's User-Agent and in
 	// agent session metadata.
 	openaiprovider.ClientVersion = buildinfo.Version()
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
 	if len(deps.args) > 0 && deps.args[0] == "--version" {
-		_, _ = fmt.Fprintln(deps.stdout, "serf", buildinfo.VersionLong())
+		_, _ = fmt.Fprintln(deps.stdout, "evener", buildinfo.VersionLong())
 		return
 	}
 
@@ -137,7 +137,7 @@ func mainWithDeps(deps mainDeps) {
 	if *flags.cpuProfile != "" {
 		stop, err := deps.startCPU(*flags.cpuProfile)
 		if err != nil {
-			_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
 			deps.exit(1)
 			return
 		}
@@ -147,7 +147,7 @@ func mainWithDeps(deps mainDeps) {
 	if *flags.traceFile != "" {
 		stop, err := deps.startTrace(*flags.traceFile)
 		if err != nil {
-			_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+			_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
 			deps.exit(1)
 			return
 		}
@@ -213,7 +213,7 @@ func mainWithDeps(deps mainDeps) {
 		listSessions:                *flags.listSessions,
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(deps.stderr, "serf: %v\n", err)
+		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
 		cancel()
 		deps.exit(1)
 		return
@@ -221,7 +221,7 @@ func mainWithDeps(deps mainDeps) {
 }
 
 func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
-	fs := flag.NewFlagSet("serf", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	flags := &runCLIFlags{}
 
@@ -246,7 +246,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
-	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
+	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading (match container behavior)")
 	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")
 	fs.Var(&flags.skillsDirs, "skills-dir", "extra skill `directory` (repeatable)")
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
@@ -268,14 +268,14 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 }
 
 func printRunUsage(w io.Writer, fs *flag.FlagSet) {
-	_, _ = fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n")
-	_, _ = fmt.Fprintf(w, "       serf <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "Usage: evener --model <provider/model> [flags] <prompt>\n")
+	_, _ = fmt.Fprintf(w, "       evener <command> [flags]\n\n")
 	_, _ = fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
 	_, _ = fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
 	_, _ = fmt.Fprintf(w, "--model can be omitted when %s supplies a default or when resuming.\n\n", envvars.SERFModel.Name)
 	_, _ = fmt.Fprintf(w, "Commands:\n")
 	printRunCommands(w)
-	_, _ = fmt.Fprintf(w, "\nRun 'serf <command> --help' for command-specific flags.\n\n")
+	_, _ = fmt.Fprintf(w, "\nRun 'evener <command> --help' for command-specific flags.\n\n")
 	_, _ = fmt.Fprintf(w, "Options:\n")
 	printLongFlagDefaults(w, fs)
 	_, _ = fmt.Fprintf(w, "\nEnvironment variables:\n")
@@ -285,9 +285,9 @@ func printRunUsage(w io.Writer, fs *flag.FlagSet) {
 func printRunCommands(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
-	_, _ = fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
+	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
-	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Serf binaries\n")
+	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_ = tw.Flush()
 }
@@ -358,15 +358,15 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 
 	switch args[0] {
 	case "serve":
-		return true, "serf serve", runners.serve(args[1:])
+		return true, "evener serve", runners.serve(args[1:])
 	case "launch-check":
-		return true, "serf launch-check", runners.launchCheck(args[1:], stdin, stdout, stderr)
+		return true, "evener launch-check", runners.launchCheck(args[1:], stdin, stdout, stderr)
 	case "openai":
-		return true, "serf openai", runners.openAI(args[1:], stdin, stdout, stderr)
+		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
-		return true, "serf upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
+		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
 	case "plugin":
-		return true, "serf plugin", runners.plugin(args[1:], stdin, stdout, stderr)
+		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

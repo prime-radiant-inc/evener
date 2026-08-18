@@ -378,7 +378,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 		return
 	}
 	// Keep the loop going with a harmless read. The path varies per round so
-	// serf's repeated-identical-failure breaker never trips and the transcript
+	// evener's repeated-identical-failure breaker never trips and the transcript
 	// stays readable.
 	path, err := stageNote(notesDir)
 	if err != nil {

@@ -61,11 +61,11 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "1"}); got["COV_AUTH"] != "1" {
 			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want \"1\"", got["COV_AUTH"])
 		}
-		wantStateDir := filepath.Join(root, ".local", "state", "serf")
+		wantStateDir := filepath.Join(root, ".local", "state", "evener")
 		if runtime.GOOS == "windows" {
 			// The Windows branch looks for USERPROFILE/HOMEDRIVE+HOMEPATH, neither of
 			// which this env map sets, so it falls back to os.TempDir() instead.
-			wantStateDir = filepath.Join(os.TempDir(), ".local", "state", "serf")
+			wantStateDir = filepath.Join(os.TempDir(), ".local", "state", "evener")
 		}
 		if got := openAIStateDirFromEnv(map[string]string{"HOME": root}); got != wantStateDir {
 			t.Fatalf("openAIStateDirFromEnv(HOME=%s) = %q, want %q", root, got, wantStateDir)

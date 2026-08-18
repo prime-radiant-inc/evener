@@ -11,9 +11,9 @@ import (
 )
 
 // TestHubRouterMatchesCatalog keeps appwire.Methods (the source of the
-// generated protocol doc) in lockstep with what serf-hub actually registers.
+// generated protocol doc) in lockstep with what evener-hub actually registers.
 // The hub serves the ScopeHub + ScopeBoth methods. ProvidersConfigPath is set
-// so the serf/instance/* handlers register (they no-op without it).
+// so the evener/instance/* handlers register (they no-op without it).
 func TestHubRouterMatchesCatalog(t *testing.T) {
 	cfg := hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),

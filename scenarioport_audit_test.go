@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -32,7 +32,7 @@ var scenarioPortAllowedMentions = map[string][]string{
 		// are the warnings that survived that rewrite.
 		"never port `9180`, as usual",
 		"checklist, never Jesse's real `9180`",
-		"`pgrep -f 'serf-hub.*:9180'` (matches however the real hub was",
+		"`pgrep -f 'evener-hub.*:9180'` (matches however the real hub was",
 	},
 	"test/scenarios/spawn-empty-prompt-starts-dormant.md": {
 		"never Jesse's port 9180",
@@ -45,8 +45,8 @@ var scenarioPortAllowedMentions = map[string][]string{
 	},
 	"test/scenarios/web-goal-set-and-complete.md": {
 		"default `0.0.0.0:9180` may host an unrelated",
-		"pgrep -f 'serf-hub.*:9180' >/dev/null && \\",
-		"{ echo \"Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.serf/hub.lock)\" >&2; exit 1; }",
+		"pgrep -f 'evener-hub.*:9180' >/dev/null && \\",
+		"{ echo \"Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.evener/hub.lock)\" >&2; exit 1; }",
 	},
 	"test/scenarios/job-restart-durability.md": {
 		"never Jesse's real hub on `9180`",
@@ -62,7 +62,7 @@ var scenarioPortAllowedMentions = map[string][]string{
 	},
 	"test/scenarios/sidecar-approval-broker-communicate.md": {
 		"never Jesse's real hub on `9180`",
-		"holds the flock — check `pgrep -f 'serf-hub.*:9180'` first rather than",
+		"holds the flock — check `pgrep -f 'evener-hub.*:9180'` first rather than",
 	},
 	"test/scenarios/job-watch-caller-send-no-deadlock.md": {
 		"never Jesse's real hub on `9180`",
@@ -118,7 +118,7 @@ var scenarioPortAllowedMentions = map[string][]string{
 // TestScenarioCardsNeverTargetJessesHubPort is the structural half of kata
 // 66mb's fix. 42 scenario cards under test/scenarios/ used to instruct an
 // executing agent to spawn or curl against 127.0.0.1:9180 / 0.0.0.0:9180 —
-// Jesse's own live serf-hub, host-wide flock'd at ~/.serf/hub.lock. This
+// Jesse's own live evener-hub, host-wide flock'd at ~/.evener/hub.lock. This
 // test makes that class of mistake fail the build instead of relying on
 // authors remembering the convention: any future card (or edit to an
 // existing one) that names port 9180 fails here unless the exact line is
@@ -146,7 +146,7 @@ func TestScenarioCardsNeverTargetJessesHubPort(t *testing.T) {
 	if len(findings) > 0 {
 		sort.Strings(findings)
 		t.Fatalf("scenario cards must never target Jesse's live hub on port 9180 "+
-			"(host-wide flock'd at ~/.serf/hub.lock) — use an isolated $HOME and a "+
+			"(host-wide flock'd at ~/.evener/hub.lock) — use an isolated $HOME and a "+
 			"free port instead (see docs/agentic-testing.md \"Setup checklist\"). "+
 			"If this line is a genuine warning against 9180 rather than an "+
 			"instruction to use it, add it to scenarioPortAllowedMentions:\n%s",
@@ -175,7 +175,7 @@ var scenarioLiteralHostPortAllowedMentions = map[string][]string{
 	// Kata keyb ruled that this card keeps the REAL $HOME: its subject is a
 	// goal turn under an already-signed-in OpenAI OAuth session, and that
 	// state only exists under the real user state home. A hub on the real
-	// $HOME contends for Jesse's own `~/.serf/hub.lock`, so the card has to
+	// $HOME contends for Jesse's own `~/.evener/hub.lock`, so the card has to
 	// name the address his hub actually listens on in order to warn about it.
 	// This is the sentence that does the warning; the card's own launch four
 	// lines further down still binds 127.0.0.1:0 like every other card.
@@ -253,7 +253,7 @@ var scenarioHandPickedPortPattern = regexp.MustCompile(`(?:127\.0\.0\.1|0\.0\.0\
 // that bound `127.0.0.1:0` and logged it (kata 68fm), and a port nothing
 // listens on comes from bind-read-close (kata nv03).
 var scenarioHandPickedPortAllowedMentions = map[string][]string{
-	// The placeholder here stands in for the digits serf-hub prints, in a
+	// The placeholder here stands in for the digits evener-hub prints, in a
 	// sentence naming the log line the card reads its port back from — and
 	// that same sentence goes on to forbid writing a port into the card.
 	"test/scenarios/spawn-keyboard-contract.md": {
@@ -263,7 +263,7 @@ var scenarioHandPickedPortAllowedMentions = map[string][]string{
 
 // TestScenarioCardsNeverAskAHumanToPickAPort rejects the last spelling of a
 // hand-picked port. Kata nv03: cli-sibling-binary.md told its executing agent
-// to run `serf-tui --hub-addr 127.0.0.1:<random-unused-port>`, which is the
+// to run `evener-tui --hub-addr 127.0.0.1:<random-unused-port>`, which is the
 // same collision domain as a literal — two agents inventing a port each can
 // invent the same one, and neither knows whether anything is already there —
 // with none of the visibility, because no audit in this file could see a
@@ -315,9 +315,9 @@ func TestScenarioCardsNeverAskAHumanToPickAPort(t *testing.T) {
 // offender is fixed. These cases keep the second reading falsifiable.
 func TestScenarioHandPickedPortPatternMatchesTheShapesItClaims(t *testing.T) {
 	picked := []string{
-		"4. Run `./serf-tui --hub-addr 127.0.0.1:<random-unused-port>` with a",
+		"4. Run `./evener-tui --hub-addr 127.0.0.1:<random-unused-port>` with a",
 		"curl http://localhost:<free port>/api/spawn",
-		`"$run/serf-hub" -addr 0.0.0.0:<PORT>`,
+		`"$run/evener-hub" -addr 0.0.0.0:<PORT>`,
 	}
 	for _, line := range picked {
 		if !scenarioHandPickedPortPattern.MatchString(line) {
@@ -325,9 +325,9 @@ func TestScenarioHandPickedPortPatternMatchesTheShapesItClaims(t *testing.T) {
 		}
 	}
 	derived := []string{
-		`"$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &`,
+		`"$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &`,
 		"HUB=http://127.0.0.1:$PORT",
-		"Run `./serf-tui --hub-addr 127.0.0.1:$PORT` with a 5 second timeout",
+		"Run `./evener-tui --hub-addr 127.0.0.1:$PORT` with a 5 second timeout",
 		"s.bind((\"127.0.0.1\", 0)); port = s.getsockname()[1]",
 	}
 	for _, line := range derived {

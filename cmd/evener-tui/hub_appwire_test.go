@@ -25,7 +25,7 @@ func TestFetchHubTreeUsesAppWireThreadList(t *testing.T) {
 			CWD:       "/tmp/project",
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:      appwire.SerfThread{Ref: "local:th_1"},
+			Evener:      appwire.EvenerThread{Ref: "local:th_1"},
 		}}}, nil
 	})
 	client, cleanup := newTUIAppWireClient(t, app)
@@ -251,7 +251,7 @@ func TestHubModelAppliesSteeringInjectedNotification(t *testing.T) {
 
 	updated, _ := m.Update(hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifySerfSteeringInjected, map[string]any{
+		notification: *appwire.NotificationMessage(appwire.NotifyEvenerSteeringInjected, map[string]any{
 			"threadId": "th_1",
 			"ref":      "local:th_1",
 			"text":     "check the logs",
@@ -449,13 +449,13 @@ func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 			Status: appwire.TurnStatusFailed,
 			Error: &appwire.TurnError{
 				Message: "configuration error: unknown provider: openrouter",
-				Source:  "serf",
-				Title:   "Serf configuration error",
+				Source:  "evener",
+				Title:   "Evener configuration error",
 			},
 		}},
 	})
 
-	if len(messages) != 1 || messages[0].Kind != transcript.MsgSystem || messages[0].Text != "Serf configuration error: configuration error: unknown provider: openrouter" {
+	if len(messages) != 1 || messages[0].Kind != transcript.MsgSystem || messages[0].Text != "Evener configuration error: configuration error: unknown provider: openrouter" {
 		t.Fatalf("messages=%+v", messages)
 	}
 }
@@ -508,10 +508,10 @@ func TestHubModelAppliesStableDelegateNotificationsToDelegateTool(t *testing.T) 
 		},
 	}).Notification})
 
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifySerfDelegateUpdated, map[string]any{
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyEvenerDelegateUpdated, map[string]any{
 		"threadId": "th_1",
 		"ref":      "local:th_1",
-		"delegate": appwire.SerfDelegateInfo{
+		"delegate": appwire.EvenerDelegateInfo{
 			DelegateID: "dlg_A", Status: "completed", Terminal: true, ProjectionRevision: 2, Task: "inspect billing",
 			TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate",
 		},

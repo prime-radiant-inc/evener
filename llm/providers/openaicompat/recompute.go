@@ -12,7 +12,7 @@ import (
 // ExtractRecordedResponse offline re-extracts the canonical llm.Response
 // from a stored API-log response body recorded for the
 // openai_compatible_chat_completions endpoint family (see
-// completeViaChatCompletions), for serf-doctor's `apilog --recompute`. It
+// completeViaChatCompletions), for evener-doctor's `apilog --recompute`. It
 // reuses fromChatCompletionResponse -- the live non-streamed parser for
 // this family -- rather than a second hand-rolled JSON decoder, so
 // recompute output can't silently diverge from what the live path would

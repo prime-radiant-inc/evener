@@ -133,7 +133,7 @@ func (rp ResolvedPolicy) WithSessionScratch(dir string) ResolvedPolicy {
 // from (mode, network, denylist deltas, extra roots). It is what a delegate
 // descriptor persists so a resumed delegate can RE-RESOLVE against its lane plus
 // freshly-probed host facts — never the worktree-anchored resolved roots, which a
-// config that loosened between serf runs must not be able to widen. Zero for a
+// config that loosened between evener runs must not be able to widen. Zero for a
 // hand-built literal (not Resolve-produced).
 func (rp ResolvedPolicy) Inputs() SandboxPolicy { return rp.resolveInputs }
 

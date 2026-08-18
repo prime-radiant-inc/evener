@@ -88,7 +88,7 @@ func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	// lock hold, so the two fields can no longer disagree. Asserting a
 	// non-empty id rather than a specific one - the value is the projector's
 	// to choose, and pinning it here would just restate ReserveTurnID.
-	if data.Thread.Serf.ActiveTurnID == "" {
+	if data.Thread.Evener.ActiveTurnID == "" {
 		t.Fatal("activeTurnId is empty while status reads active: the composer's isTurnActive gate needs both, and offers idle controls for a working session when they disagree")
 	}
 }
@@ -115,7 +115,7 @@ func TestServerAppWireProcessingKeepsAnAlreadyReservedTurnID(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns
-// pins that thread.serf.activeTurnId and the snapshot's turns answer different
+// pins that thread.evener.activeTurnId and the snapshot's turns answer different
 // questions. turn/start RESERVES a turn id before any turn/started exists, so
 // the id it reports is deliberately absent from turns -- which is why nothing
 // downstream may treat it as "the turn to append items to".
@@ -182,8 +182,8 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 			t.Fatalf("reserved turn %q appears in turns; nothing started it yet", turn.ID)
 		}
 	}
-	if out.Thread.Serf.ActiveTurnID != startResp.Turn.ID {
-		t.Fatalf("active turn id=%q, want %q", out.Thread.Serf.ActiveTurnID, startResp.Turn.ID)
+	if out.Thread.Evener.ActiveTurnID != startResp.Turn.ID {
+		t.Fatalf("active turn id=%q, want %q", out.Thread.Evener.ActiveTurnID, startResp.Turn.ID)
 	}
 }
 
@@ -913,19 +913,19 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	if !ok {
 		t.Fatalf("result=%T", resp.Response.Result)
 	}
-	if data.Thread.ID != "th_1" || data.Thread.SessionID != "sess_1" || data.Thread.Serf.Ref != "local:th_1" {
+	if data.Thread.ID != "th_1" || data.Thread.SessionID != "sess_1" || data.Thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", data.Thread)
 	}
-	if data.Thread.ModelProvider != "gpt-5" || data.Thread.Serf.Profile != "openai" {
+	if data.Thread.ModelProvider != "gpt-5" || data.Thread.Evener.Profile != "openai" {
 		t.Fatalf("thread model/profile=%+v", data.Thread)
 	}
-	if data.Thread.Serf.ContextPressure != 0.42 {
-		t.Fatalf("context pressure=%v", data.Thread.Serf.ContextPressure)
+	if data.Thread.Evener.ContextPressure != 0.42 {
+		t.Fatalf("context pressure=%v", data.Thread.Evener.ContextPressure)
 	}
-	if data.Thread.Serf.ContextUsed != 42000 || data.Thread.Serf.ContextWindow != 100000 || data.Thread.Serf.ContextRemaining != 58000 {
-		t.Fatalf("context metrics=%+v", data.Thread.Serf)
+	if data.Thread.Evener.ContextUsed != 42000 || data.Thread.Evener.ContextWindow != 100000 || data.Thread.Evener.ContextRemaining != 58000 {
+		t.Fatalf("context metrics=%+v", data.Thread.Evener)
 	}
-	diag := data.Thread.Serf.Diagnostics
+	diag := data.Thread.Evener.Diagnostics
 	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Jobs) != 1 || len(diag.Agents) != 1 {
 		t.Fatalf("diagnostics=%+v", diag)
 	}
@@ -940,7 +940,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadIncludesWorkMetrics (WS2 A7) verifies appThread
-// populates SerfThread.Usage/WorkMillis/ActiveTurnStartedAt from the
+// populates EvenerThread.Usage/WorkMillis/ActiveTurnStartedAt from the
 // workMetricsFn pull callback, alongside the existing pressure/detailed-status
 // callbacks exercised by TestServerAppWireThreadReadReturnsStatus.
 func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
@@ -948,7 +948,7 @@ func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.workMillis = 4200
-		e.usage = &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+		e.usage = &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
 		e.turnStartedAt = 1234567890
 	})
 
@@ -962,16 +962,16 @@ func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	if !ok {
 		t.Fatalf("result=%T", resp.Response.Result)
 	}
-	serf := data.Thread.Serf
-	if serf.WorkMillis != 4200 {
-		t.Fatalf("workMillis=%d, want 4200", serf.WorkMillis)
+	evener := data.Thread.Evener
+	if evener.WorkMillis != 4200 {
+		t.Fatalf("workMillis=%d, want 4200", evener.WorkMillis)
 	}
-	if serf.ActiveTurnStartedAt != 1234567890 {
-		t.Fatalf("activeTurnStartedAt=%d, want 1234567890", serf.ActiveTurnStartedAt)
+	if evener.ActiveTurnStartedAt != 1234567890 {
+		t.Fatalf("activeTurnStartedAt=%d, want 1234567890", evener.ActiveTurnStartedAt)
 	}
-	wantUsage := appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
-	if serf.Usage == nil || *serf.Usage != wantUsage {
-		t.Fatalf("usage=%+v, want %+v", serf.Usage, wantUsage)
+	wantUsage := appwire.EvenerUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+	if evener.Usage == nil || *evener.Usage != wantUsage {
+		t.Fatalf("usage=%+v, want %+v", evener.Usage, wantUsage)
 	}
 }
 
@@ -991,7 +991,7 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 		if !ok {
 			t.Fatalf("result=%T", resp.Response.Result)
 		}
-		return data.Thread.Serf.Tasks
+		return data.Thread.Evener.Tasks
 	}
 
 	if got := readTasks(nil); got != nil {
@@ -1008,19 +1008,19 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadIncludesCostTotal verifies the live producer
-// stamps SerfThread.Cost from the pulled cumulative usage at the session
+// stamps EvenerThread.Cost from the pulled cumulative usage at the session
 // model's price — the session-level dollar total kept current across
 // snapshots exactly as WorkMillis/Usage are — and omits it when the model is
 // uncataloged (absent-vs-zero honesty).
 func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
-	readSerf := func(model string) appwire.SerfThread {
+	readSerf := func(model string) appwire.EvenerThread {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
 		srv.SetAppIdentity("local", "th_1")
 		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
-			e.usage = &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
 			e.turnStartedAt = 0
 		})
 		conn := srv.AppServer().NewConnection("test")
@@ -1030,7 +1030,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		if !ok {
 			t.Fatalf("result=%T", resp.Response.Result)
 		}
-		return data.Thread.Serf
+		return data.Thread.Evener
 	}
 
 	priced := readSerf("claude-opus-4-5")
@@ -1048,7 +1048,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 
 // TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired (WS2 A7) verifies
 // that a daemon which never wired SetWorkMetricsFunc (e.g. mid-upgrade, or a
-// non-serf thread source) projects zero/nil metrics rather than panicking on
+// non-evener thread source) projects zero/nil metrics rather than panicking on
 // a nil callback.
 func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	srv := NewServer(ServerConfig{})
@@ -1064,9 +1064,9 @@ func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	if !ok {
 		t.Fatalf("result=%T", resp.Response.Result)
 	}
-	serf := data.Thread.Serf
-	if serf.Usage != nil || serf.WorkMillis != 0 || serf.ActiveTurnStartedAt != 0 {
-		t.Fatalf("serf=%+v, want zero work metrics when unwired", serf)
+	evener := data.Thread.Evener
+	if evener.Usage != nil || evener.WorkMillis != 0 || evener.ActiveTurnStartedAt != 0 {
+		t.Fatalf("evener=%+v, want zero work metrics when unwired", evener)
 	}
 }
 
@@ -1114,7 +1114,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:    "th_1",
-		SystemPrompt: "You are Serf.",
+		SystemPrompt: "You are Evener.",
 	})
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
@@ -1134,7 +1134,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if prelude.ID != "turn_system" || len(prelude.Items) != 1 {
 		t.Fatalf("prelude=%+v", prelude)
 	}
-	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
+	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Evener." {
 		t.Fatalf("system item=%+v", got)
 	}
 	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {

@@ -17,9 +17,9 @@ import (
 
 // This file is WS9 Task 5's fixture set for the four standing runbooks
 // (error-loop, stale-notification, run-timeout-waste, truncation-waste)
-// bundled under internal/bundled/skills/doctoring-serf/runbooks/. Unlike
+// bundled under internal/bundled/skills/doctoring-evener/runbooks/. Unlike
 // audit_test.go's tests, none of these substitute bundledSkills -- they run
-// serf-doctor audit against the REAL embedded runbook files, the first
+// evener-doctor audit against the REAL embedded runbook files, the first
 // end-to-end exercise of the bundled-name loading seam (loadRunbook in
 // main.go) with production runbook content rather than an inline fixture.
 
@@ -30,11 +30,11 @@ import (
 const studyProjectID = "project-test-0123456789"
 
 func studySessionBucket(base, _ string) string {
-	return filepath.Join(base, "serf", "projects", studyProjectID)
+	return filepath.Join(base, "evener", "projects", studyProjectID)
 }
 
 // writeStudySession writes a session's semantic transcript + meta through
-// serf's own writer types (transcript.NewWriter, schema.SaveSessionMeta),
+// evener's own writer types (transcript.NewWriter, schema.SaveSessionMeta),
 // the same durable-format path production writes through, plus an empty
 // jobs.jsonl a caller can overwrite with raw job events. cmd/ cannot import
 // agent/internal/jobstore (the internal wall), so job events are written as
@@ -108,7 +108,7 @@ func writeRunTimeoutJobs(t *testing.T, jobsPath, sid string, n int) {
 	mustWrite(t, jobsPath, strings.Join(lines, "\n")+"\n")
 }
 
-// studyAuditJSON runs `serf-doctor audit --runbook name --sessions
+// studyAuditJSON runs `evener-doctor audit --runbook name --sessions
 // sessions... --json` against the REAL bundled runbook (no bundledSkills
 // substitution) and decodes the result.
 func studyAuditJSON(t *testing.T, base, runbookName string, sessions ...string) struct {

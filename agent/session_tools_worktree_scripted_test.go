@@ -192,7 +192,7 @@ func TestScriptedWorktreeSessionPreservesLockAndRestoreInvariants(t *testing.T) 
 	h.requireAtRoot(t)
 	h.requireUnlocked(t, alpha)
 
-	h.setLock(beta, "serf:foreign-session")
+	h.setLock(beta, "evener:foreign-session")
 	before := h.s.currentEnv().WorkingDirectory()
 	if _, err := h.exec(map[string]any{"operation": "switch", "name": "beta"}); err == nil {
 		t.Fatal("switch to a foreign-locked worktree succeeded")
@@ -200,7 +200,7 @@ func TestScriptedWorktreeSessionPreservesLockAndRestoreInvariants(t *testing.T) 
 	if got := h.s.currentEnv().WorkingDirectory(); got != before {
 		t.Fatalf("foreign-lock refusal moved the session to %q, want %q", got, before)
 	}
-	h.requireForeignLock(t, beta, "serf:foreign-session")
+	h.requireForeignLock(t, beta, "evener:foreign-session")
 }
 
 // scriptedWorktreeSession drives a real Session through its registered
@@ -380,7 +380,7 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 	case scriptedArgs(args, "version"):
 		return "git version 2.45.0\n", nil
 	case len(args) == 3 && args[0] == "check-ref-format" && args[1] == "--branch":
-		// Only serf's own ValidateName is modeled here. Git's additional
+		// Only evener's own ValidateName is modeled here. Git's additional
 		// reserved-name rules (HEAD, "@", ".lock" suffixes, …) are NOT modeled:
 		// a test that exists to prove real git rejects such a name must use the
 		// real-git harness, or it would be asserting against this fake's

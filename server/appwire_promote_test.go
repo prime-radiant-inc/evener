@@ -210,7 +210,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("thread/read result type=%T", readResp.Response.Result)
 	}
-	ids := read.Thread.Serf.Queue.IDs
+	ids := read.Thread.Evener.Queue.IDs
 	if len(ids) != 2 || ids[0] == "" || ids[1] == "" {
 		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", ids)
 	}

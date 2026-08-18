@@ -10,11 +10,11 @@ package contextmgr
 // Full eval:
 //   SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionComparison -v -timeout 20m
 //
-// OAuth wiring: the creds are stored at <XDG_STATE_HOME>/serf/auth/openai.json,
+// OAuth wiring: the creds are stored at <XDG_STATE_HOME>/evener/auth/openai.json,
 // not env vars. The live setup resolves XDG_STATE_HOME from the environment or
-// the current user's home, then loads that user's .serf/providers.toml. The
+// the current user's home, then loads that user's .evener/providers.toml. The
 // openai adapter's OAuth resolution (auth/openai.DefaultStateDirWithStateHome ->
-// "<stateHome>/serf") finds the real record, builds a
+// "<stateHome>/evener") finds the real record, builds a
 // client via llm.NewFromAvailableProviders (which threads StateHome from
 // XDG_STATE_HOME into the openai factory), and resolve the "openai" profile via
 // provider.ResolveProfileFromConfig. NewManager(profile, client) then summarizes
@@ -67,8 +67,8 @@ func newOAuthManager(t *testing.T) *Manager {
 	t.Helper()
 	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
 
-	if _, err := os.Stat(filepath.Join(oauthStateHome, "serf", "auth", "openai.json")); err != nil {
-		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", oauthStateHome, err)
+	if _, err := os.Stat(filepath.Join(oauthStateHome, "evener", "auth", "openai.json")); err != nil {
+		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", oauthStateHome, err)
 	}
 
 	// Point OAuth resolution at the real state home for the duration of the test.
@@ -84,7 +84,7 @@ func newOAuthManager(t *testing.T) *Manager {
 
 	// Build the client. NewFromAvailableProviders threads StateHome (from
 	// XDG_STATE_HOME) into each factory, so the openai factory resolves OAuth
-	// from <stateHome>/serf/auth/openai.json and prefers it over any API key.
+	// from <stateHome>/evener/auth/openai.json and prefers it over any API key.
 	client, errs, err := llm.NewFromAvailableProviders(cfg)
 	if err != nil {
 		t.Fatalf("llm.NewFromAvailableProviders: %v (partial errs: %v)", err, errs)

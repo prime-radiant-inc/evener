@@ -84,7 +84,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "Live", CWD: work, ModelProvider: "openai/gpt-4o", Status: appwire.ThreadStatus{Type: "active"}, Serf: appwire.SerfThread{Ref: "remote:thread", ActiveTurnID: "turn", Capabilities: appwire.ThreadCapabilities{Send: true}}}
+		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "Live", CWD: work, ModelProvider: "openai/gpt-4o", Status: appwire.ThreadStatus{Type: "active"}, Evener: appwire.EvenerThread{Ref: "remote:thread", ActiveTurnID: "turn", Capabilities: appwire.ThreadCapabilities{Send: true}}}
 		source := &pass6WorkspaceSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, tasks: []map[string]any{{"id": "task"}}}
 		roster := hubcore.NewRosterWithEntries()
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})

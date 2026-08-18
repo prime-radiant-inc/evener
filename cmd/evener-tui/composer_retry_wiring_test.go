@@ -14,7 +14,7 @@ import (
 // closes that gap: notification in, rendered composer view out.
 func TestComposerPanelRendersModelRetryFromNotification(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "serf"
+	m.detail.SourceLabel = "evener"
 	m.detail.Model = "ratelimited/fake-model"
 	m.width = 200
 
@@ -24,7 +24,7 @@ func TestComposerPanelRendersModelRetryFromNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfThreadModelRetry, Params: raw})
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerThreadModelRetry, Params: raw})
 	if m.modelRetry == nil {
 		t.Fatal("precondition: notification did not record modelRetry")
 	}
@@ -43,7 +43,7 @@ func TestComposerPanelRendersModelRetryFromNotification(t *testing.T) {
 // model (m.detail.Model) to compare against.
 func TestComposerPanelShowsModelTagWhenRetryFallsBackFromPrimary(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "serf"
+	m.detail.SourceLabel = "evener"
 	m.detail.Model = "openai/gpt-5"
 	m.width = 200
 
@@ -54,7 +54,7 @@ func TestComposerPanelShowsModelTagWhenRetryFallsBackFromPrimary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m.applyHubNotification(appwire.Notification{Method: appwire.NotifySerfThreadModelRetry, Params: raw})
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyEvenerThreadModelRetry, Params: raw})
 	if m.modelRetry == nil {
 		t.Fatal("precondition: notification did not record modelRetry")
 	}

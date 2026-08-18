@@ -8,12 +8,12 @@ package appwire
 // appwire — only this plain-data result crosses the boundary, in the
 // direction hubcore already imports (kata 4j2t).
 type AttentionEntry struct {
-	// serf:naming-ignore
+	// evener:naming-ignore
 	ID      string `json:"threadId"`
 	Title   string `json:"title"`
 	Project string `json:"project"`
 	Level   string `json:"level"`
-	// serf:naming-ignore
+	// evener:naming-ignore
 	AskPending bool `json:"askPending,omitempty"`
 }
 
@@ -21,7 +21,7 @@ type AttentionEntry struct {
 // tier-eligible population (hubcore.DeriveAttention's doc has the full
 // definition). camelCase: see AttentionEntry.
 type AttentionSummary struct {
-	// serf:naming-ignore
+	// evener:naming-ignore
 	NeedsYou int `json:"needsYou"`
 	Error    int `json:"error"`
 	Working  int `json:"working"`
@@ -31,11 +31,11 @@ type AttentionSummary struct {
 // AttentionEntry.
 type AttentionChanged struct {
 	AttentionEntry
-	// serf:naming-ignore
+	// evener:naming-ignore
 	PrevLevel string `json:"prevLevel"`
 }
 
-// AttentionChangedPayload is the serf/attention/changed notification body,
+// AttentionChangedPayload is the evener/attention/changed notification body,
 // emitted by hubcore.AttentionWatcher.Tick.
 type AttentionChangedPayload struct {
 	Changed []AttentionChanged `json:"changed"`

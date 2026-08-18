@@ -87,7 +87,7 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 
 	// In a sandboxed session, kernel-confine the hook and its descendants to the
 	// session policy, raise the sandbox env floor on top of the secret scrub, and
-	// empty ExtraFiles so the hook inherits no serf fds beyond stdio.
+	// empty ExtraFiles so the hook inherits no evener fds beyond stdio.
 	env := invocation.Env
 	if sbx := invocation.SandboxWrapper; sbx != nil {
 		env = sandbox.ApplyEnvFloor(env, sbx.Policy(), sbx.SessionTmp())
@@ -185,7 +185,7 @@ func prepareCommandHookInvocation(hook plugin.RegisteredHook, input Input, inher
 
 	// Hook commands historically built their env straight from os.Environ(),
 	// bypassing the *KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL* scrub that shell
-	// tools already apply — so a hook saw serf's provider API key regardless of
+	// tools already apply — so a hook saw evener's provider API key regardless of
 	// sandboxing. Scrub it here so hook commands get the same secret hygiene as
 	// every other spawned command (reconciliation #5).
 	env := sandbox.ScrubSecretEnv(inheritedEnv)
@@ -195,10 +195,10 @@ func prepareCommandHookInvocation(hook plugin.RegisteredHook, input Input, inher
 		"CLAUDE_PROJECT_DIR="+input.CWD,
 	)
 	// CLAUDE_EFFORT: set only when the session has a configured effort level.
-	// The inherited value is stripped either way — when serf itself runs under
+	// The inherited value is stripped either way — when evener itself runs under
 	// an agent that exports CLAUDE_EFFORT, the parent's level must not leak into
 	// hooks as this session's.
-	// CLAUDE_CODE_REMOTE is intentionally not set here: serf has no remote/serve
+	// CLAUDE_CODE_REMOTE is intentionally not set here: evener has no remote/serve
 	// signal reachable at the hook exec site; fabricating a value is forbidden by
 	// the diagnostics spec (07 §"Common environment variables for command hooks").
 	invocation.Env = slices.DeleteFunc(env, func(kv string) bool {

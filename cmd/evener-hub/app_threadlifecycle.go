@@ -114,7 +114,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
+	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
@@ -166,7 +166,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			CWD:           workingDir,
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:          appwire.SerfThread{Ref: ref},
+			Evener:          appwire.EvenerThread{Ref: ref},
 		}
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
@@ -175,7 +175,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err != nil {
 		threadResp.Thread = appwire.Thread{
 			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
-			Source: "local", Serf: appwire.SerfThread{Ref: ref},
+			Source: "local", Evener: appwire.EvenerThread{Ref: ref},
 		}
 	}
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
@@ -201,7 +201,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 func launchSourceID(params appwire.ThreadStartParams) string {
 	harness := strings.TrimSpace(params.Harness)
 	if harness != "" {
-		if harness == "serf" {
+		if harness == "evener" {
 			return "local"
 		}
 		return harness
@@ -393,7 +393,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if ref.SourceID != "local" {
 		if params.Aside {
-			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local serf threads")
+			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local evener threads")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
@@ -438,7 +438,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			ID:        childID,
 			SessionID: childID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: childRef},
+			Evener:      appwire.EvenerThread{Ref: childRef},
 		}}, nil
 	}
 	turn, err := parseSourceTurnID(params.SourceTurnID)
@@ -478,7 +478,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			ID:        childID,
 			SessionID: childID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: childRef},
+			Evener:      appwire.EvenerThread{Ref: childRef},
 		},
 		OriginalInput: originalInput,
 	}, nil

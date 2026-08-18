@@ -1,5 +1,5 @@
 // Package hostlock provides a host-level exclusive lock so at most one
-// serf-hub process runs per machine.
+// evener-hub process runs per machine.
 package hostlock
 
 import (
@@ -28,7 +28,7 @@ func AcquireLock(path string) (func(), error) {
 		// operator's remedy — find the holder, or isolate a test hub under its
 		// own HOME so lock, run dir, state, and auth token all move together —
 		// starts from knowing which lock file this was.
-		return nil, fmt.Errorf("flock %s: %w (another serf-hub may already be running; a disposable hub needs its own HOME)", path, err)
+		return nil, fmt.Errorf("flock %s: %w (another evener-hub may already be running; a disposable hub needs its own HOME)", path, err)
 	}
 	return func() {
 		_ = flockUnlock(f)

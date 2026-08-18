@@ -17,7 +17,7 @@ func TestClientHasProvider(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	c.Register(&serfHelperAdapter{name: "openai"})
+	c.Register(&evenerHelperAdapter{name: "openai"})
 	if !clientHasProvider(c, "openai") {
 		t.Error("expected registered provider to be found")
 	}
@@ -30,13 +30,13 @@ func TestClientHasProvider(t *testing.T) {
 	}
 }
 
-type serfHelperAdapter struct{ name string }
+type evenerHelperAdapter struct{ name string }
 
-func (a *serfHelperAdapter) Name() string { return a.name }
-func (a *serfHelperAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (a *evenerHelperAdapter) Name() string { return a.name }
+func (a *evenerHelperAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
 	return llm.Response{}, errors.New("not implemented")
 }
-func (a *serfHelperAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+func (a *evenerHelperAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, errors.New("not implemented")
 }
 

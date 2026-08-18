@@ -32,8 +32,8 @@ func TestPromptCacheKey_DerivedFromSessionID(t *testing.T) {
 	req := plainReq("m")
 	req.SessionID = "sess-1"
 	body := requestBody(t, req, false, ModelCompat{Quirks: longCacheQuirks()})
-	if body["prompt_cache_key"] != "serf-session-sess-1" {
-		t.Errorf("prompt_cache_key = %v, want serf-session-sess-1", body["prompt_cache_key"])
+	if body["prompt_cache_key"] != "evener-session-sess-1" {
+		t.Errorf("prompt_cache_key = %v, want evener-session-sess-1", body["prompt_cache_key"])
 	}
 	if body["prompt_cache_retention"] != "24h" {
 		t.Errorf("prompt_cache_retention = %v, want 24h", body["prompt_cache_retention"])

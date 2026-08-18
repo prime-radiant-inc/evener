@@ -46,7 +46,7 @@ func (w *blockingWriter) contents() string {
 // tee, and it is a property of the daemon's authoritative consumer, not of
 // logging.
 //
-// `serf serve --verbose` hangs this observer off the BRIDGE, which is the one
+// `evener serve --verbose` hangs this observer off the BRIDGE, which is the one
 // goroutine draining the session's event channel and advancing the projection.
 // A synchronous write there couples the daemon's correctness to whatever is
 // reading its stderr: block the pipe and the 256-deep channel fills, events are
@@ -133,7 +133,7 @@ func TestVerboseEventTeeAnnouncesWhatItDropped(t *testing.T) {
 	w.unblock()
 	tee.close()
 
-	if !strings.Contains(w.contents(), "serfVerboseDropped") {
+	if !strings.Contains(w.contents(), "evenerVerboseDropped") {
 		t.Fatalf("log does not announce the dropped events: %q", truncate(w.contents()))
 	}
 }

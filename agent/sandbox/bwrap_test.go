@@ -29,7 +29,7 @@ func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	args := buildBwrapArgv(rp, "/tmp/serf-session", cwd)
+	args := buildBwrapArgv(rp, "/tmp/evener-session", cwd)
 
 	tmpfsIdx := seqIndex(args, "--tmpfs", "/tmp")
 	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
@@ -43,7 +43,7 @@ func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 
 func TestBuildBwrapArgvBaseHardening(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
-	args := buildBwrapArgv(rp, "/tmp/serf-session", cwd)
+	args := buildBwrapArgv(rp, "/tmp/evener-session", cwd)
 
 	for _, want := range []string{"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session"} {
 		if !slices.Contains(args, want) {
@@ -70,7 +70,7 @@ func TestBuildBwrapArgvProcIsFreshNotHostBind(t *testing.T) {
 	args := buildBwrapArgv(rp, "", cwd)
 
 	// /proc must come ONLY from a fresh --proc mount (pid-ns), never a --ro-bind
-	// of the host /proc (which would expose host process state, e.g. serf's env).
+	// of the host /proc (which would expose host process state, e.g. evener's env).
 	if hasSeq(args, "--ro-bind", "/proc", "/proc") || hasSeq(args, "--tmpfs", "/proc") {
 		t.Errorf("/proc must be a fresh --proc mount, not a host bind/tmpfs: %v", args)
 	}
@@ -156,7 +156,7 @@ func TestBuildBwrapArgvNetwork(t *testing.T) {
 // worktree's common .git lives OUTSIDE the worktree and is only read-granted, so a
 // missing protected surface there (config.worktree) must NOT be pinned — pinning
 // it makes bwrap try to create a mountpoint under the read-only common dir (EROFS)
-// and abort the whole sandbox, which would break serf's primary workflow.
+// and abort the whole sandbox, which would break evener's primary workflow.
 func TestBuildBwrapArgvLinkedWorktreeNoDeadPin(t *testing.T) {
 	requireGitHarness(t)
 	home := t.TempDir()

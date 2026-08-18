@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Fixtures mirror the shapes serf's real tool schemas use (definitions.go):
+// Fixtures mirror the shapes evener's real tool schemas use (definitions.go):
 // a closed object with required+optional scalars, an enum, a nullable union
 // type written as []string, a nested closed object, and an open
 // additionalProperties:true pass-through.
@@ -254,7 +254,7 @@ func TestRequired_AlwaysPresent(t *testing.T) {
 //
 // This is deliberately written as a checker (consume + verify), not by reusing
 // the generator's code, so a shared bug cannot make both agree. The
-// authoritative cross-check against serf's real jsonschema compiler lives in the
+// authoritative cross-check against evener's real jsonschema compiler lives in the
 // agent module's schema-aware tool fuzz target.
 
 func conforms(v any, schema map[string]any) (bool, string) {

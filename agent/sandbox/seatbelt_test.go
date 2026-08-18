@@ -153,7 +153,7 @@ func TestSeatbeltGolden(t *testing.T) {
 			rp, _ := seatbeltResolve(t, tc.mode, tc.net, MainCheckout)
 			// Fixed sessionTmp + identity canonicalizer -> host-independent text
 			// (paths ride in params, which are not part of the golden text).
-			text, _ := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+			text, _ := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 			golden := filepath.Join("testdata", "seatbelt", tc.name+".sbpl")
 
 			if *updateSeatbeltGolden {
@@ -182,7 +182,7 @@ func TestSeatbeltGolden(t *testing.T) {
 // read modes, and the network block ONLY when egress is on.
 func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 	t.Parallel()
-	marker := "; Serf Seatbelt platform defaults"
+	marker := "; Evener Seatbelt platform defaults"
 	for _, tc := range []struct {
 		mode         Mode
 		net          bool
@@ -210,9 +210,9 @@ func TestSeatbeltPlatformDefaultsGating(t *testing.T) {
 func TestSeatbeltReadOnlyNoPersistentWrite(t *testing.T) {
 	t.Parallel()
 	rp, cwd := seatbeltResolve(t, ModeReadOnly, true, MainCheckout)
-	_, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+	_, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 
-	if k := paramKeyForPath(params, "/serf-session-tmp"); !strings.HasPrefix(k, "WRITABLE_ROOT_") {
+	if k := paramKeyForPath(params, "/evener-session-tmp"); !strings.HasPrefix(k, "WRITABLE_ROOT_") {
 		t.Errorf("read-only must grant the session tmp as the writable root; params: %+v", params)
 	}
 	// No writable root covers the worktree.
@@ -228,7 +228,7 @@ func TestSeatbeltReadOnlyNoPersistentWrite(t *testing.T) {
 func TestSeatbeltGitProtection(t *testing.T) {
 	t.Parallel()
 	rp, cwd := seatbeltResolve(t, ModeWorkspaceWrite, true, MainCheckout)
-	text, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 
 	// The worktree is the first writable root.
 	wt, ok := paramFor(params, "WRITABLE_ROOT_0")
@@ -281,7 +281,7 @@ func TestSeatbeltGitProtection(t *testing.T) {
 func TestSeatbeltFirmlinkAliasDenies(t *testing.T) {
 	t.Parallel()
 	rp, _ := seatbeltResolve(t, ModeWorkspaceWrite, true, MainCheckout)
-	text, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 
 	// A masked secret is denied for read+write under BOTH spellings.
 	secret := filepath.Join(seatbeltHost().Home, ".ssh") // /Users/tester/.ssh
@@ -316,7 +316,7 @@ func assertDeniedBothSpellings(t *testing.T, text string, params []DirParam, bas
 func TestSeatbeltLinkedWorktreeReadNotWrite(t *testing.T) {
 	t.Parallel()
 	rp, _ := seatbeltResolve(t, ModeRestricted, true, LinkedWorktree)
-	_, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+	_, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 
 	common := rp.Git.CommonDir
 	if common == "" {
@@ -447,7 +447,7 @@ func TestSeatbeltContractParity(t *testing.T) {
 		if err != nil || rp.Backend != BackendSeatbelt {
 			return rp, err
 		}
-		_, params := SeatbeltPolicy(rp, "/serf-session-tmp", identityCanon)
+		_, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
 
 		grantedRoots := map[string]bool{}
 		maskedDenied := map[string]bool{}

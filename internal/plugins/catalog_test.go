@@ -41,7 +41,7 @@ func TestParseCatalog(t *testing.T) {
 
 // TestParseCatalog_SkipsUnsupportedSourceAndReportsIt is the fix for design
 // spec §7: one plugin entry with an unsupported/unknown source kind (e.g. an
-// npm source, a real Claude Code source type serf's Source doesn't implement)
+// npm source, a real Claude Code source type evener's Source doesn't implement)
 // must not brick the whole marketplace. Before this fix, ParseCatalog did one
 // whole-file json.Unmarshal into Catalog, so a single bad Source.UnmarshalJSON
 // failed the entire parse and made every OTHER plugin in the marketplace
@@ -73,7 +73,7 @@ func TestParseCatalog_SkipsUnsupportedSourceAndReportsIt(t *testing.T) {
 
 // TestBrowse_SkipsUnsupportedSourceAndReturnsTheRest proves the fix reaches
 // Manager.Browse (used by both the CLI's new `marketplace browse` and the
-// hub's serf/marketplace/browse RPC): a marketplace with one unsupported-source
+// hub's evener/marketplace/browse RPC): a marketplace with one unsupported-source
 // plugin must still be browsable, returning every other plugin.
 func TestBrowse_SkipsUnsupportedSourceAndReturnsTheRest(t *testing.T) {
 	dir := t.TempDir()

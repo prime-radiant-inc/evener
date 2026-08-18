@@ -20,7 +20,7 @@ import (
 )
 
 // requestSettingsOverview dials hub, initializes the connection, and issues
-// serf/settings/overview, returning both the typed response and the raw
+// evener/settings/overview, returning both the typed response and the raw
 // result bytes (the latter so security-sensitive assertions — e.g. a secret
 // never appearing on the wire — can inspect the actual JSON rather than only
 // what the typed struct happens to decode into).
@@ -35,12 +35,12 @@ func requestSettingsOverview(t *testing.T, hubCfg hubcore.WebConfig) (appwire.Se
 		t.Fatalf("Initialize: %v", err)
 	}
 	var raw json.RawMessage
-	if err := client.Request(context.Background(), appwire.MethodSerfSettingsOverview, appwire.EmptyParams{}, &raw); err != nil {
-		t.Fatalf("serf/settings/overview: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsOverview, appwire.EmptyParams{}, &raw); err != nil {
+		t.Fatalf("evener/settings/overview: %v", err)
 	}
 	var resp appwire.SettingsOverviewResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		t.Fatalf("decoding serf/settings/overview response: %v", err)
+		t.Fatalf("decoding evener/settings/overview response: %v", err)
 	}
 	return resp, raw
 }
@@ -78,7 +78,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		PastPerPage:   25,
 		Past:          past,
 		// Hermetic: an empty MCPConfigPath would fall back to the ambient
-		// machine's ~/.config/serf/mcp.json, which this test has no business
+		// machine's ~/.config/evener/mcp.json, which this test has no business
 		// touching (this test isn't about MCP at all).
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	}
@@ -91,8 +91,8 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp appwire.SettingsOverviewResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfSettingsOverview, appwire.EmptyParams{}, &resp); err != nil {
-		t.Fatalf("serf/settings/overview: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsOverview, appwire.EmptyParams{}, &resp); err != nil {
+		t.Fatalf("evener/settings/overview: %v", err)
 	}
 
 	if resp.Hub == nil {
@@ -145,7 +145,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 // omits PastIndex rather than reporting a fabricated zero-valued one.
 func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
-	// ambient machine's ~/.config/serf/mcp.json.
+	// ambient machine's ~/.config/evener/mcp.json.
 	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	})
@@ -163,7 +163,7 @@ func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 // to open (EditPath empty).
 func TestHubRPCSettingsOverview_Agents(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
-	// ambient machine's ~/.config/serf/mcp.json.
+	// ambient machine's ~/.config/evener/mcp.json.
 	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
 		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
@@ -194,7 +194,7 @@ func TestHubRPCSettingsOverview_CodexLaunches(t *testing.T) {
 	cfg := hubcore.WebConfig{
 		Past: hubcore.NewPastIndex(""),
 		// Hermetic: pin MCPConfigPath so this test never falls back to the
-		// ambient machine's ~/.config/serf/mcp.json (this test isn't about MCP).
+		// ambient machine's ~/.config/evener/mcp.json (this test isn't about MCP).
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{
 			ID:              "codex-managed",
@@ -229,13 +229,13 @@ func TestHubRPCSettingsOverview_CodexLaunches(t *testing.T) {
 	}
 
 	if strings.Contains(string(raw), secretToken) {
-		t.Fatal("serf/settings/overview response leaks the codex bearer token onto the wire")
+		t.Fatal("evener/settings/overview response leaks the codex bearer token onto the wire")
 	}
 	if strings.Contains(string(raw), "/secrets/codex-token") {
-		t.Fatal("serf/settings/overview response leaks the codex bearer-token-file path onto the wire")
+		t.Fatal("evener/settings/overview response leaks the codex bearer-token-file path onto the wire")
 	}
 	if strings.Contains(string(raw), "--flag") {
-		t.Error(`serf/settings/overview response includes codex launch Args, which the legacy template never rendered`)
+		t.Error(`evener/settings/overview response includes codex launch Args, which the legacy template never rendered`)
 	}
 }
 

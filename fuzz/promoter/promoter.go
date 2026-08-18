@@ -1,5 +1,5 @@
 // Package promoter turns a discovered fuzzing failure into a permanent,
-// deduplicated, flake-guarded regression test. It is the serf-agnostic core of
+// deduplicated, flake-guarded regression test. It is the evener-agnostic core of
 // the fuzzing toolkit: it imports only the standard library, and a project plugs
 // in four hooks (the Adapter) to describe its own surfaces. The load-bearing
 // discipline is flake-guard-before-promote — a failure earns a regression test

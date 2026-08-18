@@ -56,7 +56,7 @@ func TestThinkingFormat_QwenChatTemplate(t *testing.T) {
 		t.Errorf("chat_template_kwargs = %#v, want %#v", got, want)
 	}
 
-	// No effort: nothing emitted (serf's none-clears convention).
+	// No effort: nothing emitted (evener's none-clears convention).
 	body = requestBody(t, plainReq("m"), false, ModelCompat{Quirks: ProviderQuirks{ThinkingFormat: "qwen-chat-template"}})
 	if _, present := body["chat_template_kwargs"]; present {
 		t.Errorf("chat_template_kwargs must be absent with no effort, got %#v", body["chat_template_kwargs"])

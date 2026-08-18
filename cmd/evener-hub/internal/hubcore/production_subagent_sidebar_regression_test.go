@@ -15,9 +15,9 @@ import (
 func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "grandchild", ParentSessionID: "child", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "grandchild", ParentSessionID: "child", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
@@ -50,8 +50,8 @@ func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
 func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	parent := LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
 	tree := BuildTreeAt(metas, []LiveEntry{parent}, nil, now)
@@ -67,7 +67,7 @@ func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "isolated-child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktrees/isolated-child"}},
 		{ID: "nested-isolated-child", ParentSessionID: "isolated-child", IsSubagent: true, UpdatedAt: now,
@@ -89,7 +89,7 @@ func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *tes
 func TestBuildProjectTreeAt_LazyLookupKeepsCrossDirectorySubagent(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
-	projectDir := filepath.Join(root, "projects", "serf")
+	projectDir := filepath.Join(root, "projects", "evener")
 	isolationDir := filepath.Join(root, "worktrees", "isolated-child")
 	for _, dir := range []string{projectDir, isolationDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

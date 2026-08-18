@@ -16,7 +16,7 @@ var (
 	isLiveForRename          = func(s *WebServer, id string) bool { return s.isLive(id) }
 )
 
-// handleAPIRename renames a session. Live serf sessions route through the
+// handleAPIRename renames a session. Live evener sessions route through the
 // daemon method (daemon-truth); ended local sessions have their meta edited
 // behind a probe-resolved Roster.Find re-check. Both paths refresh the past
 // index (UpdateMeta) + bump inputs so the next resync reflects the new name
@@ -109,7 +109,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		writeAPIError(w, http.StatusInternalServerError, "save meta: "+err.Error())
 		return
 	}
-	// re-sort + FTS + inputs bump; notified reports whether serf/tree/changed
+	// re-sort + FTS + inputs bump; notified reports whether evener/tree/changed
 	// already broadcast via the composed onChange hook (main.go).
 	notified := s.cfg.Past.UpdateMeta(pe.ID, meta)
 	if s.cfg.PokeAttention != nil {

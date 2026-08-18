@@ -1,7 +1,7 @@
-// Command serf-docscheck enforces that every exported, package-level declaration
+// Command evener-docscheck enforces that every exported, package-level declaration
 // in the published library packages carries a Go doc comment.
 //
-// The serf monorepo exposes a small set of library modules — llm, agent (plus
+// The evener monorepo exposes a small set of library modules — llm, agent (plus
 // its public agent/events subpackage), and auth/openai — for consumption inside
 // and outside Prime Radiant. A "documented public API" is part of the bar for
 // those libraries, so this check fails CI if any exported type, function,
@@ -69,14 +69,14 @@ func runDocsCheck(packages []string, check func(string) ([]violation, error), st
 	for _, pkg := range packages {
 		v, err := check(pkg)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "serf-docscheck: %s: %v\n", pkg, err)
+			_, _ = fmt.Fprintf(stderr, "evener-docscheck: %s: %v\n", pkg, err)
 			return 2
 		}
 		violations = append(violations, v...)
 	}
 
 	if len(violations) == 0 {
-		_, _ = fmt.Fprintln(stdout, "serf-docscheck: all exported package-level declarations in the library packages are documented")
+		_, _ = fmt.Fprintln(stdout, "evener-docscheck: all exported package-level declarations in the library packages are documented")
 		return 0
 	}
 

@@ -1,4 +1,4 @@
-// Command serf-hub is the web orchestrator for serf serve daemons.
+// Command evener-hub is the web orchestrator for evener serve daemons.
 package main
 
 import (
@@ -33,7 +33,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
-	// adapters `serf serve` uses, so the hub's /api/models reflects what
+	// adapters `evener serve` uses, so the hub's /api/models reflects what
 	// spawning will succeed at — only providers configured in the hub's
 	// environment surface in the picker.
 	_ "primeradiant.com/evener/llm/providers/anthropic"
@@ -87,7 +87,7 @@ type hubShutdowner interface {
 type hubOptions struct {
 	configPath string
 	addr       string
-	serfBinary string
+	evenerBinary string
 }
 
 type mainDeps struct {
@@ -162,7 +162,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()
-	lockPath := filepath.Join(home, ".serf", "hub.lock")
+	lockPath := filepath.Join(home, ".evener", "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -235,13 +235,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		loadedProviderConfig = &materialized
 		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
-	resolvedSerfBinary := resolveSerfBinaryPath(opts.serfBinary, currentExecutable(), exec.LookPath)
-	if opts.serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
+	resolvedSerfBinary := resolveSerfBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
+	if opts.evenerBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "evener" {
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
-		SerfBinary:          resolvedSerfBinary,
+		EvenerBinary:          resolvedSerfBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
 		Creds:               credsStore,
@@ -258,7 +258,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
 	// Keep configured providers available for settings; launch choices come
-	// from the Serf harness contract exposed by HubSpawner.
+	// from the Evener harness contract exposed by HubSpawner.
 	var models []hubcore.ModelDescriptor
 	for _, p := range cfg.Providers {
 		for _, m := range p.Models {
@@ -274,7 +274,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
 	// the shared inputs-version counter, so a decision busts the tree memo.
 	// Past/roster get the same bump below, composed with the
-	// serf/tree/changed broadcast once web (and its appRPC) exists.
+	// evener/tree/changed broadcast once web (and its appRPC) exists.
 	bump := inputs.Bump
 	archive.SetOnChange(bump)
 	favorite.SetOnChange(bump)
@@ -364,7 +364,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteThreadCache:   remoteCache,
 	})
 
-	// serf/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
+	// evener/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
 	// hook already gates on an actual content-fingerprint delta (never a
 	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
 	// into the same hook pushes the sidebar exactly on a daemon appearing/
@@ -421,13 +421,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
-	// broadcasts serf/attention/changed whenever a session's level actually
+	// broadcasts evener/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
 	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
-	// see SeedDefaultMarketplaces). Every serf CLI path does this already
+	// see SeedDefaultMarketplaces). Every evener CLI path does this already
 	// (cmd/evener/run.go, serve.go, plugincmd.go); the hub was the one surface
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
@@ -439,7 +439,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// autoUpgrade enabled. Runs once immediately and then on
 	// cfg.PluginAutoUpgradeInterval; gated by cfg.PluginAutoUpgrade (on by
 	// default — see config.go). Never deletes; superseded dirs are reclaimed
-	// separately by `serf plugin gc` (also run once here, before any session
+	// separately by `evener plugin gc` (also run once here, before any session
 	// exists, per §12).
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
@@ -458,7 +458,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		ln: hubListener,
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
@@ -473,13 +473,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	opts := hubOptions{configPath: DefaultConfigPath()}
-	fs := flag.NewFlagSet("serf-hub", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-hub", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
-	fs.StringVar(&opts.serfBinary, "serf", "", "path to serf binary (default: 'serf' on PATH)")
+	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
@@ -494,7 +494,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 // printVersionInfo prints version information including backend git SHA and frontend hash.
 func printVersionInfo(w io.Writer) error {
 	fHash, _ := frontendDistHash(distFS())
-	if _, err := fmt.Fprintf(w, "serf-hub version: %s\n", buildinfo.VersionLong()); err != nil {
+	if _, err := fmt.Fprintf(w, "evener-hub version: %s\n", buildinfo.VersionLong()); err != nil {
 		return err
 	}
 	if buildinfo.GitSHA != "" {
@@ -573,11 +573,11 @@ func printHubEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
-// currentExecutable returns the path of the running serf-hub binary,
+// currentExecutable returns the path of the running evener-hub binary,
 // preferring os.Executable() (always absolute on supported platforms)
 // and falling back to os.Args[0]. The absolute path is what
-// binresolve.Resolve needs to find a sibling "serf" binary even when
-// serf-hub was launched via a relative path like "./serf-hub".
+// binresolve.Resolve needs to find a sibling "evener" binary even when
+// evener-hub was launched via a relative path like "./evener-hub".
 func currentExecutable() string {
 	if exe, err := hubExecutable(); err == nil && exe != "" {
 		return exe
@@ -589,14 +589,14 @@ func currentExecutable() string {
 	return ""
 }
 
-// resolveSerfBinaryPath determines which "serf" binary the hub should
+// resolveSerfBinaryPath determines which "evener" binary the hub should
 // invoke for launch-check + spawning. Resolution order is:
-//  1. explicit (--serf flag): always wins.
-//  2. sibling next to the running serf-hub binary.
-//  3. lookup of "serf" on $PATH.
+//  1. explicit (--evener flag): always wins.
+//  2. sibling next to the running evener-hub binary.
+//  3. lookup of "evener" on $PATH.
 //
 // When none of those succeed, "" is returned so HubSpawner falls back
-// to its built-in default of running "serf" — which lets exec.Command
+// to its built-in default of running "evener" — which lets exec.Command
 // do its own runtime PATH search (matching pre-kata behaviour).
 func resolveSerfBinaryPath(explicit, currentExecutable string, lookPath func(string) (string, error)) string {
 	if explicit != "" {
@@ -605,10 +605,10 @@ func resolveSerfBinaryPath(explicit, currentExecutable string, lookPath func(str
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
-	path, err := binresolve.Resolve("serf", "", currentExecutable, lookPath)
+	path, err := binresolve.Resolve("evener", "", currentExecutable, lookPath)
 	if err != nil {
 		// Neither a sibling nor a PATH lookup succeeded. Fall back to
-		// the empty default; HubSpawner will invoke "serf" and let
+		// the empty default; HubSpawner will invoke "evener" and let
 		// exec.Command surface a friendly error if it is unavailable.
 		return ""
 	}

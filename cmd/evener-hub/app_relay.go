@@ -576,7 +576,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 
 		subscribeParams := params
 		if subscribeParams.Ref == "" {
-			subscribeParams.Ref = thread.Serf.Ref
+			subscribeParams.Ref = thread.Evener.Ref
 		}
 		if subscribeParams.Ref == "" {
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
@@ -935,7 +935,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						hasFirstNotification = true
 					default:
 					}
-					server.Broadcast(relayKey, appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+					server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 						ThreadID: threadID,
 						Ref:      subscribeParams.Ref,
 					})
@@ -987,7 +987,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if thread.ID == "" {
 			return nil
 		}
-		ref := thread.Serf.Ref
+		ref := thread.Evener.Ref
 		if ref == "" {
 			sourceID := strings.TrimSpace(thread.Source)
 			if sourceID == "" {

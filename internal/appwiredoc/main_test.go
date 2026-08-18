@@ -120,7 +120,7 @@ func TestBuildIncludesJobActivityTypes(t *testing.T) {
 func TestBuildIncludesStableDelegateInfo(t *testing.T) {
 	d := build()
 	for _, tv := range d.Types {
-		if tv.Name != "SerfDelegateInfo" {
+		if tv.Name != "EvenerDelegateInfo" {
 			continue
 		}
 		fields := map[string]bool{}
@@ -129,10 +129,10 @@ func TestBuildIncludesStableDelegateInfo(t *testing.T) {
 		}
 		for _, name := range []string{"delegateId", "lifecycle", "phase", "status", "outcome", "transcriptRef"} {
 			if !fields[name] {
-				t.Fatalf("SerfDelegateInfo missing field %q: %+v", name, tv.Fields)
+				t.Fatalf("EvenerDelegateInfo missing field %q: %+v", name, tv.Fields)
 			}
 		}
 		return
 	}
-	t.Fatal("build() missing SerfDelegateInfo")
+	t.Fatal("build() missing EvenerDelegateInfo")
 }

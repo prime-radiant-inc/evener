@@ -320,13 +320,13 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
 			Data:      events.UserInputData{Text: "stale projected turn"},
 		})
-		staleProjectedTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID
+		staleProjectedTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if staleProjectedTurnID == "" {
 			t.Fatal("failed to prime a stale projected active turn")
 		}
 		start := startHeldClientMutationTurn(t, lifecycle, "stable-start", "pending user input")
 		thread := readSessionControlThread(t, lifecycle, false)
-		activeTurnID := thread.Serf.ActiveTurnID
+		activeTurnID := thread.Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
 		}
@@ -346,7 +346,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
 			Data:      events.WarningData{Message: "pre-input projection"},
 		})
-		if afterWarning := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID; afterWarning != start.Turn.ID {
+		if afterWarning := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID; afterWarning != start.Turn.ID {
 			t.Fatalf("active turn after intervening projection = %q, want %q", afterWarning, start.Turn.ID)
 		}
 
@@ -367,7 +367,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	t.Run("stop", func(t *testing.T) {
 		lifecycle := startSessionControlLifecycle(t)
 		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
-		activeTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID
+		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
 		}
@@ -395,7 +395,7 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		if status := readSessionControlThread(t, lifecycle, false).Status.Type; status != appwire.ThreadStatusIdle {
 			t.Fatalf("thread status after Stop = %q, want idle", status)
 		}
-		if activeTurnID := readSessionControlThread(t, lifecycle, false).Serf.ActiveTurnID; activeTurnID != "" {
+		if activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID; activeTurnID != "" {
 			t.Fatalf("active turn after Stop = %q, want empty", activeTurnID)
 		}
 	})
@@ -513,8 +513,8 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Serf.Capabilities.Send || thread.Thread.Serf.Capabilities.Queue {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue disabled", thread.Thread.Status.Type, thread.Thread.Serf.Capabilities)
+	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
 	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
@@ -577,7 +577,7 @@ const oldClearInputMarker = "OLD-THREAD-INPUT"
 
 // clearTestState records what /clear did, in order, across the real daemon
 // server and the injected serveDeps. Every step it records is a production
-// call site; nothing here stands in for Serf internals.
+// call site; nothing here stands in for Evener internals.
 type clearTestState struct {
 	mu       sync.Mutex
 	steps    []string
@@ -1026,7 +1026,7 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 		if !ok {
 			return
 		}
-		diagnostics = read.Thread.Serf.Diagnostics != nil
+		diagnostics = read.Thread.Evener.Diagnostics != nil
 	})
 	if obs.clearErr != nil {
 		t.Fatalf("clear: %v", obs.clearErr)
@@ -1072,7 +1072,7 @@ func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
 			state.srv.shutdown()
 			return http.ErrServerClosed
 		}
-		diagnostics = read.Thread.Serf.Diagnostics != nil
+		diagnostics = read.Thread.Evener.Diagnostics != nil
 		state.srv.shutdown()
 		return http.ErrServerClosed
 	}

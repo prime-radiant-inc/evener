@@ -19,7 +19,7 @@ func TestPrintHubEnvVars(t *testing.T) {
 	// format string would silently pass.
 	wantSummary := map[string]string{
 		"SERF_PROVIDERS_CONFIG": "Path to providers.toml.",
-		"SERF_STATE_DIR":        "Overrides the Serf state root.",
+		"SERF_STATE_DIR":        "Overrides the Evener state root.",
 		"OPENAI_API_KEY":        "OpenAI API key.",
 		"ANTHROPIC_API_KEY":     "Anthropic API key.",
 		"GEMINI_API_KEY":        "Google Gemini API key; checked before GOOGLE_API_KEY.",
@@ -73,7 +73,7 @@ func TestRunMainHelpReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runMain(--help) err = %v, want nil", err)
 	}
-	if !strings.Contains(stderr.String(), "Usage: serf-hub") {
+	if !strings.Contains(stderr.String(), "Usage: evener-hub") {
 		t.Fatalf("help output missing usage:\n%s", stderr.String())
 	}
 }
@@ -85,7 +85,7 @@ func TestPrintVersionInfo(t *testing.T) {
 		t.Fatalf("printVersionInfo err = %v, want nil", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "serf-hub version:") {
+	if !strings.Contains(output, "evener-hub version:") {
 		t.Fatalf("output missing version label: %q", output)
 	}
 	if !strings.Contains(output, "frontend hash:") {
@@ -116,16 +116,16 @@ func TestRunMainVersionFlag(t *testing.T) {
 		t.Fatalf("runMain(--version) err = %v, want nil", err)
 	}
 	output := stderr.String()
-	if !strings.Contains(output, "serf-hub version:") {
+	if !strings.Contains(output, "evener-hub version:") {
 		t.Fatalf("version output missing label: %q", output)
 	}
 }
 
 func TestResolveSerfBinaryPath(t *testing.T) {
 	t.Run("explicit wins", func(t *testing.T) {
-		got := resolveSerfBinaryPath("/usr/bin/serf", "", nil)
-		if got != "/usr/bin/serf" {
-			t.Fatalf("explicit = %q, want /usr/bin/serf", got)
+		got := resolveSerfBinaryPath("/usr/bin/evener", "", nil)
+		if got != "/usr/bin/evener" {
+			t.Fatalf("explicit = %q, want /usr/bin/evener", got)
 		}
 	})
 
@@ -137,32 +137,32 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 			dir = resolved
 		}
-		serfPath := filepath.Join(dir, "serf")
-		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		evenerPath := filepath.Join(dir, "evener")
+		if err := os.WriteFile(evenerPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		// currentExecutable is the hub binary in the same directory.
-		hubPath := filepath.Join(dir, "serf-hub")
+		hubPath := filepath.Join(dir, "evener-hub")
 		if err := os.WriteFile(hubPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		got := resolveSerfBinaryPath("", hubPath, func(string) (string, error) {
 			return "", errors.New("should not call lookPath")
 		})
-		if got != serfPath {
-			t.Fatalf("sibling resolution = %q, want %q", got, serfPath)
+		if got != evenerPath {
+			t.Fatalf("sibling resolution = %q, want %q", got, evenerPath)
 		}
 	})
 
 	t.Run("PATH resolution", func(t *testing.T) {
 		got := resolveSerfBinaryPath("", "/no/such/hub", func(name string) (string, error) {
-			if name != "serf" {
-				t.Fatalf("lookPath called with %q, want serf", name)
+			if name != "evener" {
+				t.Fatalf("lookPath called with %q, want evener", name)
 			}
-			return "/usr/local/bin/serf", nil
+			return "/usr/local/bin/evener", nil
 		})
-		if got != "/usr/local/bin/serf" {
-			t.Fatalf("PATH resolution = %q, want /usr/local/bin/serf", got)
+		if got != "/usr/local/bin/evener" {
+			t.Fatalf("PATH resolution = %q, want /usr/local/bin/evener", got)
 		}
 	})
 
@@ -176,10 +176,10 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 	})
 
 	t.Run("nil lookPath uses exec.LookPath", func(t *testing.T) {
-		// Create a temp directory with a "serf" binary and put it on PATH.
+		// Create a temp directory with a "evener" binary and put it on PATH.
 		bindir := t.TempDir()
-		serfPath := filepath.Join(bindir, "serf")
-		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		evenerPath := filepath.Join(bindir, "evener")
+		if err := os.WriteFile(evenerPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		oldPath := os.Getenv("PATH")
@@ -187,8 +187,8 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 		os.Setenv("PATH", bindir)
 
 		got := resolveSerfBinaryPath("", "/no/such/hub", nil)
-		if got != serfPath {
-			t.Fatalf("nil lookPath resolution = %q, want %q", got, serfPath)
+		if got != evenerPath {
+			t.Fatalf("nil lookPath resolution = %q, want %q", got, evenerPath)
 		}
 	})
 }

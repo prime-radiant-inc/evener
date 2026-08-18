@@ -1070,14 +1070,14 @@ func TestExecArgv_UsesInjectedLocalVenvPath(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(bin, "serf-execargv-venv-fixture")
+	script := filepath.Join(bin, "evener-execargv-venv-fixture")
 	writeExecFixture(t, script, "#!/bin/sh\nprintf 'venv:<%s>\\n' \"$1\"\n")
 	env := NewLocalExecutionEnvironment(dir)
 
 	// See the comment in TestExecArgv_PreservesArgvAndExitSemantics: this test
 	// asserts venv PATH injection, not exec latency, so the timeout budget is
 	// generous and t.Context() (not the budget) is the real deadline.
-	res, err := env.ExecArgv(t.Context(), "serf-execargv-venv-fixture", []string{"value"}, 300_000, "", nil)
+	res, err := env.ExecArgv(t.Context(), "evener-execargv-venv-fixture", []string{"value"}, 300_000, "", nil)
 	if err != nil {
 		t.Fatalf("ExecArgv: %v (res=%+v)", err, res)
 	}

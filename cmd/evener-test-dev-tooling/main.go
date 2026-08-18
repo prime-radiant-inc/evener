@@ -1,4 +1,4 @@
-// serf-test-dev-tooling runs the scripts/<name>-selftest.sh suites as one
+// evener-test-dev-tooling runs the scripts/<name>-selftest.sh suites as one
 // parallel wave: every suite at once, each in its own process group with a
 // private TMPDIR, quiet on success, a failing suite's whole log replayed. A
 // suite that passes but leaves files in its TMPDIR fails — suites clean up
@@ -22,7 +22,7 @@ func main() {
 	killGrace := flag.Duration("kill-grace", 5*time.Second, "how long a TERMed suite gets before KILL")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: serf-test-dev-tooling [-scripts-dir dir] [-kill-grace d] suite...")
+		fmt.Fprintln(os.Stderr, "usage: evener-test-dev-tooling [-scripts-dir dir] [-kill-grace d] suite...")
 		os.Exit(2)
 	}
 	signals := make(chan os.Signal, 1)

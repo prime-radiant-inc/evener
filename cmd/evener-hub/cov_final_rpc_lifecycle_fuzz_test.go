@@ -44,7 +44,7 @@ func FuzzFinalRPCLifecycle(f *testing.F) {
 		ctx := context.Background()
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote",
-			Serf: appwire.SerfThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{Compact: true}},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{Compact: true}},
 		}
 		remote := &finalLifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}}
 		registry := appsource.NewRegistry()
@@ -91,23 +91,23 @@ func FuzzFinalRPCLifecycle(f *testing.F) {
 		past, _, pastID := pass5Past(t)
 		localThread := thread
 		localThread.ID, localThread.SessionID, localThread.Source = pastID, pastID, "local"
-		localThread.Serf.Ref = "local:" + pastID
+		localThread.Evener.Ref = "local:" + pastID
 		local := &finalLifecycleSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: localThread}}
 		localRegistry := appsource.NewRegistry()
 		localRegistry.Add(local)
 		knownCfg := cfg
 		knownCfg.Past = past
 		local.compactErr = nil
-		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Serf.Ref})
+		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Evener.Ref})
 		local.compactErr = errors.New("compact failed")
-		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Serf.Ref})
+		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Evener.Ref})
 		local.compactErr = appwire.SessionUnavailable("gone")
-		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Serf.Ref})
+		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Evener.Ref})
 		local.compactErr, local.retryCompact, local.compactCalls = nil, true, 0
 		knownCfg.Spawner = &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{ThreadID: pastID, SessionID: pastID}, nil
 		}}
-		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Serf.Ref})
+		_ = compactThreadWithResume(ctx, knownCfg, localRegistry, appwire.ThreadCompactStartParams{Ref: localThread.Evener.Ref})
 
 		// Construct the full router for each seed; mode keeps the target mutable.
 		_ = newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir()}, registry)

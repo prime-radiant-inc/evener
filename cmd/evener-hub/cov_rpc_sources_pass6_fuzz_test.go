@@ -62,7 +62,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote",
-			Serf: appwire.SerfThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}
 		remote := &scriptedAppSource{id: "remote", thread: thread}
 		registry := appsource.NewRegistry()
@@ -103,30 +103,30 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 				method string
 				params any
 			}{
-				{appwire.MethodSerfAuthStatus, appwire.AuthStatusParams{}},
-				{appwire.MethodSerfAuthList, appwire.EmptyParams{}},
-				{appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{}},
-				{appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{}},
-				{appwire.MethodSerfInstanceList, appwire.EmptyParams{}},
-				{appwire.MethodSerfInstanceCreate, appwire.InstanceCreateParams{}},
-				{appwire.MethodSerfInstanceEdit, appwire.InstanceEditParams{}},
-				{appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{}},
-				{appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{}},
-				{appwire.MethodSerfMarketplaceList, appwire.EmptyParams{}},
-				{appwire.MethodSerfMarketplaceAdd, appwire.MarketplaceAddParams{}},
-				{appwire.MethodSerfMarketplaceRemove, appwire.MarketplaceNameParams{}},
-				{appwire.MethodSerfMarketplaceRefresh, appwire.MarketplaceNameParams{}},
-				{appwire.MethodSerfMarketplaceBrowse, appwire.MarketplaceBrowseParams{}},
-				{appwire.MethodSerfPluginList, appwire.EmptyParams{}},
-				{appwire.MethodSerfPluginInstall, appwire.PluginRefParams{}},
-				{appwire.MethodSerfPluginUpgrade, appwire.PluginRefParams{}},
-				{appwire.MethodSerfPluginRemove, appwire.PluginRefParams{}},
-				{appwire.MethodSerfPluginEnable, appwire.PluginRefParams{}},
-				{appwire.MethodSerfPluginDisable, appwire.PluginRefParams{}},
-				{appwire.MethodSerfPluginSetAutoUpgrade, appwire.PluginSetAutoUpgradeParams{}},
-				{appwire.MethodSerfTasksList, appwire.TaskListParams{Ref: "remote:thread"}},
-				{appwire.MethodSerfHarnessesList, appwire.HarnessListParams{}},
-				{appwire.MethodSerfCommandList, appwire.EmptyParams{}},
+				{appwire.MethodEvenerAuthStatus, appwire.AuthStatusParams{}},
+				{appwire.MethodEvenerAuthList, appwire.EmptyParams{}},
+				{appwire.MethodEvenerAuthLogout, appwire.AuthLogoutParams{}},
+				{appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{}},
+				{appwire.MethodEvenerInstanceList, appwire.EmptyParams{}},
+				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{}},
+				{appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{}},
+				{appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{}},
+				{appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{}},
+				{appwire.MethodEvenerMarketplaceList, appwire.EmptyParams{}},
+				{appwire.MethodEvenerMarketplaceAdd, appwire.MarketplaceAddParams{}},
+				{appwire.MethodEvenerMarketplaceRemove, appwire.MarketplaceNameParams{}},
+				{appwire.MethodEvenerMarketplaceRefresh, appwire.MarketplaceNameParams{}},
+				{appwire.MethodEvenerMarketplaceBrowse, appwire.MarketplaceBrowseParams{}},
+				{appwire.MethodEvenerPluginList, appwire.EmptyParams{}},
+				{appwire.MethodEvenerPluginInstall, appwire.PluginRefParams{}},
+				{appwire.MethodEvenerPluginUpgrade, appwire.PluginRefParams{}},
+				{appwire.MethodEvenerPluginRemove, appwire.PluginRefParams{}},
+				{appwire.MethodEvenerPluginEnable, appwire.PluginRefParams{}},
+				{appwire.MethodEvenerPluginDisable, appwire.PluginRefParams{}},
+				{appwire.MethodEvenerPluginSetAutoUpgrade, appwire.PluginSetAutoUpgradeParams{}},
+				{appwire.MethodEvenerTasksList, appwire.TaskListParams{Ref: "remote:thread"}},
+				{appwire.MethodEvenerHarnessesList, appwire.HarnessListParams{}},
+				{appwire.MethodEvenerCommandList, appwire.EmptyParams{}},
 			} {
 				dispatchRPCPass6(t, server, call.method, call.params)
 			}
@@ -145,26 +145,26 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			server := newHubAppServer(hubcore.WebConfig{
 				HubStateRoot: root, PluginRoot: cfg.PluginRoot, PluginDirs: []string{a, b},
 			}, registry)
-			dispatchRPCPass6(t, server, appwire.MethodSerfCommandList, appwire.EmptyParams{})
-			dispatchRPCPass6(t, server, appwire.MethodSerfLaunchResolve, appwire.LaunchConfigResolveParams{})
-			dispatchRPCPass6(t, server, appwire.MethodSerfLaunchSchema, appwire.EmptyParams{})
-			dispatchRPCPass6(t, server, appwire.MethodSerfLaunchGetLayer, appwire.LaunchConfigGetLayerParams{})
-			dispatchRPCPass6(t, server, appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{})
-			dispatchRPCPass6(t, server, appwire.MethodSerfMarketplaceAdd, appwire.MarketplaceAddParams{
+			dispatchRPCPass6(t, server, appwire.MethodEvenerCommandList, appwire.EmptyParams{})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerLaunchResolve, appwire.LaunchConfigResolveParams{})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerLaunchSchema, appwire.EmptyParams{})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerLaunchGetLayer, appwire.LaunchConfigGetLayerParams{})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerMarketplaceAdd, appwire.MarketplaceAddParams{
 				Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: marketplace},
 			})
-			dispatchRPCPass6(t, server, appwire.MethodSerfMarketplaceRefresh, appwire.MarketplaceNameParams{Name: "acme"})
-			dispatchRPCPass6(t, server, appwire.MethodSerfMarketplaceBrowse, appwire.MarketplaceBrowseParams{Name: "acme"})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerMarketplaceRefresh, appwire.MarketplaceNameParams{Name: "acme"})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerMarketplaceBrowse, appwire.MarketplaceBrowseParams{Name: "acme"})
 			ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginInstall, ref)
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginUpgrade, ref)
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginDisable, ref)
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginEnable, ref)
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginSetAutoUpgrade, appwire.PluginSetAutoUpgradeParams{
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginInstall, ref)
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginUpgrade, ref)
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginDisable, ref)
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginEnable, ref)
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginSetAutoUpgrade, appwire.PluginSetAutoUpgradeParams{
 				Plugin: "widget", Marketplace: "acme", AutoUpgrade: true,
 			})
-			dispatchRPCPass6(t, server, appwire.MethodSerfPluginRemove, ref)
-			dispatchRPCPass6(t, server, appwire.MethodSerfMarketplaceRemove, appwire.MarketplaceNameParams{Name: "acme"})
+			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginRemove, ref)
+			dispatchRPCPass6(t, server, appwire.MethodEvenerMarketplaceRemove, appwire.MarketplaceNameParams{Name: "acme"})
 			_, _ = hubCommandList(hubcore.WebConfig{PluginRoot: cfg.PluginRoot})
 		}
 	})

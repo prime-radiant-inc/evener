@@ -30,7 +30,7 @@ func TestTurnRoundTripsCanonicalAttemptProvenance(t *testing.T) {
 // encoding/json can never omit a struct value regardless of the tag, so a
 // non-assistant turn (which never sets Usage) still ships a zero-valued
 // "usage" key. Nothing decodes this field by checking key presence — every
-// reader (agent/internal/atif, appwire.SerfUsageFromLLM) checks the token
+// reader (agent/internal/atif, appwire.EvenerUsageFromLLM) checks the token
 // count fields themselves — so the tag was already a no-op lie.
 func TestTurn_UsageAlwaysShipsOnWire(t *testing.T) {
 	data, err := json.Marshal(Turn{Kind: TurnUserInput})

@@ -26,7 +26,7 @@ type Source string
 // the diagnostic is re-derived downstream.
 const (
 	SourceProvider Source = "provider"
-	SourceSerf     Source = "serf"
+	SourceSerf     Source = "evener"
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
 	SourceHook     Source = "hook"
@@ -46,7 +46,7 @@ func Classify(message string) Info {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	switch {
 	case isSerfConfiguration(lower):
-		return serfConfiguration()
+		return evenerConfiguration()
 	case isHubFailure(lower):
 		return hubFailure()
 	// Checked ahead of the general provider case: an exhausted allowance needs
@@ -56,7 +56,7 @@ func Classify(message string) Info {
 	case isProviderFailure(lower):
 		return providerFailure()
 	default:
-		return serfFailure()
+		return evenerFailure()
 	}
 }
 
@@ -64,11 +64,11 @@ func Classify(message string) Info {
 // wording of its message.
 func FromError(err error) Info {
 	if err == nil {
-		return serfFailure()
+		return evenerFailure()
 	}
 	var cfg *llm.ConfigurationError
 	if errors.As(err, &cfg) {
-		return serfConfiguration()
+		return evenerConfiguration()
 	}
 	// The typed check comes first: an exhausted allowance is recognized from the
 	// error's own category rather than from wording that may vary by provider.
@@ -136,9 +136,9 @@ func defaultForSource(source Source, message string) Info {
 		}
 	case SourceSerf:
 		if isSerfConfiguration(strings.ToLower(strings.TrimSpace(message))) {
-			return serfConfiguration()
+			return evenerConfiguration()
 		}
-		return serfFailure()
+		return evenerFailure()
 	case SourceHook:
 		return Info{
 			Source: SourceHook,
@@ -152,11 +152,11 @@ func defaultForSource(source Source, message string) Info {
 	}
 }
 
-func serfConfiguration() Info {
+func evenerConfiguration() Info {
 	return Info{
 		Source: SourceSerf,
-		Title:  "Serf configuration error",
-		Hint:   "Hub launched Serf with provider configuration this Serf runtime does not recognize. Check the model/provider passed by Hub and the Serf binary Hub is using.",
+		Title:  "Evener configuration error",
+		Hint:   "Hub launched Evener with provider configuration this Evener runtime does not recognize. Check the model/provider passed by Hub and the Evener binary Hub is using.",
 	}
 }
 
@@ -164,7 +164,7 @@ func providerFailure() Info {
 	return Info{
 		Source: SourceProvider,
 		Title:  "Provider error",
-		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Serf automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
+		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Evener automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
 	}
 }
 
@@ -233,11 +233,11 @@ func hubFailure() Info {
 	}
 }
 
-func serfFailure() Info {
+func evenerFailure() Info {
 	return Info{
 		Source: SourceSerf,
-		Title:  "Serf error",
-		Hint:   "Check the Serf session log and daemon state.",
+		Title:  "Evener error",
+		Hint:   "Check the Evener session log and daemon state.",
 	}
 }
 
@@ -301,7 +301,7 @@ func isProviderFailure(message string) bool {
 		strings.Contains(message, "token endpoint") ||
 		// Stream-truncation patterns: the LLM provider closed the stream
 		// without emitting a finish event or response. The previous
-		// classifier mislabeled these as Serf errors and told users to
+		// classifier mislabeled these as Evener errors and told users to
 		// check the daemon — but the daemon is fine; the upstream API
 		// stream is what failed.
 		strings.Contains(message, "stream ended without") ||

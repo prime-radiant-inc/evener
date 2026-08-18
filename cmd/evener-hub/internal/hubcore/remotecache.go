@@ -74,7 +74,7 @@ func inferRemoteSources(threads []appwire.Thread, complete bool) map[string]Remo
 	for _, thread := range threads {
 		sourceID := thread.Source
 		if sourceID == "" {
-			if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+			if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil {
 				sourceID = ref.SourceID
 			}
 		}

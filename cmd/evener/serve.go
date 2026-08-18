@@ -265,7 +265,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
-	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
+	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
@@ -285,8 +285,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: serf serve [flags]\n\n")
-		fmt.Fprintf(os.Stderr, "Start serf as an app-wire JSON-RPC server.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: evener serve [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Start evener as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
 		printServeEnvVars(os.Stderr)
@@ -1262,13 +1262,13 @@ func clientHasProvider(client *llm.Client, name string) bool {
 	return false
 }
 
-// serfUsageFromLLM maps a session's cumulative llm.Usage to the wire
-// appwire.SerfUsage shown in /status and thread/read. Returns nil when every
+// evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
+// appwire.EvenerUsage shown in /status and thread/read. Returns nil when every
 // total (including CacheReadTokens) is zero — a fresh session, an old daemon
 // that never seeded usage, or a Codex thread — so the status row hides the
 // usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
-func serfUsageFromLLM(u llm.Usage) *appwire.SerfUsage {
-	return appwire.SerfUsageFromLLM(u)
+func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
+	return appwire.EvenerUsageFromLLM(u)
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
@@ -1361,7 +1361,7 @@ func cloneServeInt64(value *int64) *int64 {
 	return &clone
 }
 
-func cloneServeUsage(value *appwire.SerfUsage) *appwire.SerfUsage {
+func cloneServeUsage(value *appwire.EvenerUsage) *appwire.EvenerUsage {
 	if value == nil {
 		return nil
 	}
@@ -1439,9 +1439,9 @@ func (l liveThreadEnvelopeSource) GoalStatus() (string, int, bool) {
 	return l.session().GoalStatus()
 }
 
-func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	sess := l.session()
-	return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
+	return sess.WorkMillisSnapshot(), evenerUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
 }
 
 func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {

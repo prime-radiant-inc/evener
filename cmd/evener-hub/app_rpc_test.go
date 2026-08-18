@@ -69,7 +69,7 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Serf.Ref != "local:th_1" {
+	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -337,7 +337,7 @@ func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
 	source := &deletionFenceRelaySource{
 		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
 			ID:   threadID,
-			Serf: appwire.SerfThread{Ref: ref},
+			Evener: appwire.EvenerThread{Ref: ref},
 		}},
 	}
 	cfg := hubcore.WebConfig{
@@ -367,7 +367,7 @@ func TestDeletionFenceCanCommitDuringInitialRelayIOAndBlocksPublication(t *testi
 	source := &deletionOwnershipProbeRelaySource{
 		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
 			ID:   threadID,
-			Serf: appwire.SerfThread{Ref: ref},
+			Evener: appwire.EvenerThread{Ref: ref},
 		}},
 		store:       store,
 		resumeLocks: resumeLocks,
@@ -409,7 +409,7 @@ func TestDeletionFenceCanCommitDuringRecoveryRelayIOAndStopsPublication(t *testi
 	source := &deletionOwnershipProbeRelaySource{
 		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
 			ID:   threadID,
-			Serf: appwire.SerfThread{Ref: ref},
+			Evener: appwire.EvenerThread{Ref: ref},
 		}},
 		store:                store,
 		resumeLocks:          resumeLocks,
@@ -452,7 +452,7 @@ func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: ref},
+			Evener:      appwire.EvenerThread{Ref: ref},
 		}},
 		notifications: make(chan appwire.Notification),
 		subscribed:    make(chan struct{}, 1),
@@ -744,10 +744,10 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 		return selfupdate.Result{
 			Release:        "snapshot",
 			Channel:        "snapshot",
-			Archive:        "serf_linux_amd64.tar.gz",
-			ShareBinDir:    "/tmp/share/serf/bin",
+			Archive:        "evener_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/evener/bin",
 			BinDir:         "/tmp/bin",
-			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+			RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
 		}, nil
 	}
 	t.Cleanup(func() { runHubSelfUpgrade = previous })
@@ -759,7 +759,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 	}
 	raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
 		ID:     appwire.NewIntID(1),
-		Method: appwire.MethodSerfUpgrade,
+		Method: appwire.MethodEvenerUpgrade,
 		Params: params,
 	})
 	if err != nil {
@@ -769,7 +769,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 	if !ok {
 		t.Fatalf("response type=%T", raw)
 	}
-	if resp.Channel != "snapshot" || resp.Archive != "serf_linux_amd64.tar.gz" {
+	if resp.Channel != "snapshot" || resp.Archive != "evener_linux_amd64.tar.gz" {
 		t.Fatalf("response=%+v", resp)
 	}
 	if got.Requested != "snapshot" {
@@ -1090,7 +1090,7 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 	thread := resp.Data[0]
-	if thread.ID != "02wMz5Txv1C3Hut0M8GCeB" || thread.SessionID != "02wMz5Txv1C3Hut0M8GCeB" || thread.Serf.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" {
+	if thread.ID != "02wMz5Txv1C3Hut0M8GCeB" || thread.SessionID != "02wMz5Txv1C3Hut0M8GCeB" || thread.Evener.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" {
 		t.Fatalf("thread identity=%+v", thread)
 	}
 	if thread.Status.Type != appwire.ThreadStatusAwaiting {
@@ -1232,8 +1232,8 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 	if len(resp.Data) != 2 {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
-	if resp.Data[0].Serf.Ref != "codex:02CODEX" || resp.Data[1].Serf.Ref != "local:01SERF" {
-		t.Fatalf("refs=%s,%s", resp.Data[0].Serf.Ref, resp.Data[1].Serf.Ref)
+	if resp.Data[0].Evener.Ref != "codex:02CODEX" || resp.Data[1].Evener.Ref != "local:01SERF" {
+		t.Fatalf("refs=%s,%s", resp.Data[0].Evener.Ref, resp.Data[1].Evener.Ref)
 	}
 }
 
@@ -1251,7 +1251,7 @@ func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "codex-managed:th_fake" {
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-managed:th_fake" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 	if _, ok := sources.Source("codex-managed"); !ok {
@@ -1273,7 +1273,7 @@ func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T)
 		Source:    "local",
 		Preview:   "local thread",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		Serf:      appwire.SerfThread{Ref: "local:01LOCAL"},
+		Evener:      appwire.EvenerThread{Ref: "local:01LOCAL"},
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(&listThreadSource{id: "local", thread: localThread})
@@ -1282,7 +1282,7 @@ func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T)
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "local:01LOCAL" {
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 	if _, ok := sources.Source("codex-managed"); ok {
@@ -1311,7 +1311,7 @@ func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 		Source:    "local",
 		Preview:   "local thread",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		Serf:      appwire.SerfThread{Ref: "local:01LOCAL"},
+		Evener:      appwire.EvenerThread{Ref: "local:01LOCAL"},
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(&listThreadSource{id: "local", thread: localThread})
@@ -1321,7 +1321,7 @@ func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "local:01LOCAL" {
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -1343,7 +1343,7 @@ func TestHubThreadListReturnsErrorWhenAnySelectedSourceFails(t *testing.T) {
 		Source:    "local",
 		Preview:   "local thread",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		Serf:      appwire.SerfThread{Ref: "local:01LOCAL"},
+		Evener:      appwire.EvenerThread{Ref: "local:01LOCAL"},
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(&listThreadSource{id: "local", thread: localThread})
@@ -1422,7 +1422,7 @@ func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
 		Source:    "codex-local",
 		Preview:   "codex replay",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:     "codex-local:th_codex",
 			Profile: "openai",
 		},
@@ -1432,7 +1432,7 @@ func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "codex-local:th_codex" {
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-local:th_codex" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -1501,7 +1501,7 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 		if params.Ref != "local:th_1" {
 			t.Fatalf("ref=%q", params.Ref)
 		}
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -1535,7 +1535,7 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if resp.Thread.ID != "th_1" || resp.Thread.Serf.Ref != "local:th_1" {
+	if resp.Thread.ID != "th_1" || resp.Thread.Evener.Ref != "local:th_1" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -1547,7 +1547,7 @@ func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        sessionID,
 			SessionID: sessionID,
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -1670,7 +1670,7 @@ func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+		Evener:      appwire.EvenerThread{Ref: "local:" + sessionID},
 	}
 	handoff := &recordingRelayHandoff{
 		committed: make(chan struct{}),
@@ -1714,7 +1714,7 @@ func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing
 		t.Fatalf("Initialize: %v", err)
 	}
 	params := appwire.ThreadReadParams{
-		Ref:          thread.Serf.Ref,
+		Ref:          thread.Evener.Ref,
 		IncludeTurns: true,
 		ItemsView:    "full",
 		Subscribe:    true,
@@ -1758,7 +1758,7 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+		Evener:      appwire.EvenerThread{Ref: "local:" + sessionID},
 	}
 	source := &relaySessionTestSource{
 		relayLifecycleSource: relayLifecycleSource{thread: thread},
@@ -1782,7 +1782,7 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 		t.Fatalf("Initialize: %v", err)
 	}
 	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:          thread.Serf.Ref,
+		Ref:          thread.Evener.Ref,
 		IncludeTurns: true,
 		ItemsView:    "full",
 	})
@@ -1807,7 +1807,7 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+		Evener:      appwire.EvenerThread{Ref: "local:" + sessionID},
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(&pastFallbackRelaySource{
@@ -1827,7 +1827,7 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 		t.Fatalf("Initialize: %v", err)
 	}
 	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref:          thread.Serf.Ref,
+		Ref:          thread.Evener.Ref,
 		IncludeTurns: true,
 		ItemsView:    "full",
 		Subscribe:    true,
@@ -1955,7 +1955,7 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 			CWD:       cwd,
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 			Turns: []appwire.Turn{{
 				ID: "turn_1",
 				Items: []appwire.ThreadItem{{
@@ -2020,7 +2020,7 @@ func TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns(t *testing.T) {
 			SessionID: sessionID,
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 			Turns: []appwire.Turn{{
 				ID: "turn_1",
 				Items: []appwire.ThreadItem{{
@@ -2083,7 +2083,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 			SessionID: sessionID,
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -2163,7 +2163,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 			Source:    "codex",
 			Preview:   "live codex thread",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:      appwire.SerfThread{Ref: "codex:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		canceled:      make(chan struct{}, 1),
@@ -2187,7 +2187,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 	if len(resp.Thread.Turns) != 0 {
 		t.Fatalf("non-local live thread received local past turns: %+v", resp.Thread.Turns)
 	}
-	if resp.Thread.Preview != "live codex thread" || resp.Thread.Serf.Ref != "codex:"+sessionID {
+	if resp.Thread.Preview != "live codex thread" || resp.Thread.Evener.Ref != "codex:"+sessionID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -2196,7 +2196,7 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, "th_1")
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -2262,7 +2262,7 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 			SessionID: sessionID,
 			CWD:       cwd,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: "local:th_img", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "local:th_img", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -2348,7 +2348,7 @@ func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
 		appserver.Subscribe(ctx, sessionID)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local",
-			Serf: appwire.SerfThread{Ref: params.Ref},
+			Evener: appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -2423,7 +2423,7 @@ func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
 			ID:        "th_shot",
 			SessionID: sessionID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: "local:th_shot", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "local:th_shot", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -2494,7 +2494,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex-a",
-			Serf:      appwire.SerfThread{Ref: "codex-a:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-a:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		canceled:      make(chan struct{}, 2),
@@ -2505,7 +2505,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex-b",
-			Serf:      appwire.SerfThread{Ref: "codex-b:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-b:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		canceled:      make(chan struct{}, 2),
@@ -2591,7 +2591,7 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 				ID:        threadID,
 				SessionID: threadID,
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 4),
 			subscribed:    make(chan struct{}, 1),
@@ -2645,7 +2645,7 @@ func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) 
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -2702,7 +2702,7 @@ func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *test
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -2796,7 +2796,7 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -2921,7 +2921,7 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3017,7 +3017,7 @@ func TestHubRelayNoSyntheticFailureWithoutActiveTurn(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3081,7 +3081,7 @@ func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNot
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3151,7 +3151,7 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3263,7 +3263,7 @@ func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		established:        established,
 		recoveryStarted:    make(chan struct{}),
@@ -3368,7 +3368,7 @@ func TestHubRPCThreadReadRereadJoinsRelayRecovery(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3438,7 +3438,7 @@ func TestHubRPCThreadReadReplacementStopsOldRelayRecovery(t *testing.T) {
 			ID:        oldThreadID,
 			SessionID: oldThreadID,
 			Source:    "codex-a",
-			Serf:      appwire.SerfThread{Ref: "codex-a:" + oldThreadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-a:" + oldThreadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		id:             "codex-a",
 		results:        results,
@@ -3450,7 +3450,7 @@ func TestHubRPCThreadReadReplacementStopsOldRelayRecovery(t *testing.T) {
 			ID:        "th_active_replacement",
 			SessionID: "th_active_replacement",
 			Source:    "codex-b",
-			Serf:      appwire.SerfThread{Ref: "codex-b:th_active_replacement", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-b:th_active_replacement", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 1),
 		subscribed:    make(chan struct{}, 1),
@@ -3543,7 +3543,7 @@ func TestHubRelayCanceledRecoveryDoesNotSubscribeAgain(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3570,7 +3570,7 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -3666,7 +3666,7 @@ func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFres
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		initialStarted:     make(chan struct{}),
 		initialCanceled:    make(chan struct{}),
@@ -3803,7 +3803,7 @@ func TestHubRelaySurvivesInitiatingRequestCancellationAfterAttachment(t *testing
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: notifications,
 		subscribed:    make(chan struct{}, 1),
@@ -3847,7 +3847,7 @@ func TestHubRelayStoppedInitializerRejectsSuccessfulSubscribeAndLeavesReplacemen
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		initialStarted:     make(chan struct{}),
 		initialCanceled:    make(chan struct{}),
@@ -3953,7 +3953,7 @@ func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -4035,7 +4035,7 @@ func TestHubRelayStopBeforeLaunchCommitPreventsSupervisorAndAllowsFreshStart(t *
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}},
 		results:        results,
 		subscribeCalls: subscribeCalls,
@@ -4126,7 +4126,7 @@ func TestHubRelayInitialRegistrationFailureCancelsAndAllowsFreshStart(t *testing
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification),
 		subscribed:    make(chan struct{}, 2),
@@ -4165,7 +4165,7 @@ func TestHubRelayExistingRegistrationFailureDoesNotReportAttachment(t *testing.T
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification),
 		subscribed:    make(chan struct{}, 1),
@@ -4197,7 +4197,7 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 			ID:        "th_a",
 			SessionID: "th_a",
 			Source:    "codex-a",
-			Serf:      appwire.SerfThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -4209,7 +4209,7 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 			ID:        "th_b",
 			SessionID: "th_b",
 			Source:    "codex-b",
-			Serf:      appwire.SerfThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -4289,7 +4289,7 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 			ID:        "th_a",
 			SessionID: "th_a",
 			Source:    "codex-a",
-			Serf:      appwire.SerfThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -4301,7 +4301,7 @@ func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
 			ID:        "th_b",
 			SessionID: "th_b",
 			Source:    "codex-b",
-			Serf:      appwire.SerfThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 1),
@@ -4382,7 +4382,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 			ID:        ref.ThreadID,
 			SessionID: ref.ThreadID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
@@ -4409,7 +4409,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read running subagent through owner daemon: %v", err)
 	}
-	if read.Thread.ID != "child" || read.Thread.Serf.Ref != "local:child" {
+	if read.Thread.ID != "child" || read.Thread.Evener.Ref != "local:child" {
 		t.Fatalf("child read = %+v", read.Thread)
 	}
 	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:child", ClientMutationID: "must-not-hit-root", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
@@ -4418,7 +4418,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
 	}
 	data, _ := wire.Data.(appwire.ErrorData)
-	if data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
 	}
 }
@@ -4429,7 +4429,7 @@ func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 			ID:        "th_1",
 			SessionID: "th_1",
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		canceled: make(chan struct{}),
 	}
@@ -4465,7 +4465,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 			ID:        "th_1",
 			SessionID: "th_1",
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		canceled:      make(chan struct{}, 2),
@@ -4546,7 +4546,7 @@ func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *te
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 1),
 		subscribed:    make(chan struct{}, 1),
@@ -4636,7 +4636,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 		notifications: make(chan appwire.Notification, 4),
 		subscribed:    make(chan struct{}, 4),
@@ -4714,7 +4714,7 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 		ID:        "th_subscribe_fail",
 		SessionID: "th_subscribe_fail",
 		Source:    "codex",
-		Serf:      appwire.SerfThread{Ref: "codex:th_subscribe_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		Evener:      appwire.EvenerThread{Ref: "codex:th_subscribe_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
 	}
 	source := &blockingFailingRelaySource{
 		relayLifecycleSource: relayLifecycleSource{thread: thread},
@@ -4789,7 +4789,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 				ID:        threadID,
 				SessionID: threadID,
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 4),
 			canceled:      make(chan struct{}, 2),
@@ -4880,7 +4880,7 @@ func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 			Source:    "codex",
 			Preview:   "live codex thread",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:      appwire.SerfThread{Ref: "codex:" + sessionID},
+			Evener:      appwire.EvenerThread{Ref: "codex:" + sessionID},
 		},
 	})
 
@@ -4890,7 +4890,7 @@ func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 	}
 	var foundLocalPast, foundCodexLive bool
 	for _, thread := range resp.Data {
-		switch thread.Serf.Ref {
+		switch thread.Evener.Ref {
 		case "local:" + sessionID:
 			foundLocalPast = true
 		case "codex:" + sessionID:
@@ -4909,7 +4909,7 @@ func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
 		SessionID: "th_codex",
 		Source:    "codex",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-		Serf:      appwire.SerfThread{Ref: "codex:th_codex"},
+		Evener:      appwire.EvenerThread{Ref: "codex:th_codex"},
 	}})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{
@@ -4918,7 +4918,7 @@ func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Serf.Ref != "codex:th_codex" {
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex:th_codex" {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -5159,8 +5159,8 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 	t.Helper()
 	select {
 	case got := <-notifications:
-		if got.Method != appwire.NotifySerfThreadResync {
-			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifySerfThreadResync)
+		if got.Method != appwire.NotifyEvenerThreadResync {
+			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
 		}
 		var params appwire.ThreadResyncParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
@@ -5551,7 +5551,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref: "local:th_1",
 				Capabilities: appwire.ThreadCapabilities{
 					Send:         true,
@@ -5661,7 +5661,7 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          params.Ref,
 				Capabilities: appwire.ThreadCapabilities{},
 			},
@@ -5694,7 +5694,7 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 				Code:    appwire.CodeConflict,
 				Message: "turn changed",
 				Data: appwire.ErrorData{
-					SerfErrorInfo:    appwire.ErrorConflict,
+					EvenerErrorInfo:    appwire.ErrorConflict,
 					ClientMutationID: params.ClientMutationID,
 					MutationOutcome:  appwire.MutationOutcomeNotAccepted,
 					RetryDisposition: appwire.RetryDispositionNone,
@@ -5829,7 +5829,7 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          params.Ref,
 				Capabilities: appwire.ThreadCapabilities{Compact: true},
 			},
@@ -5905,7 +5905,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          params.Ref,
 				Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
 			},
@@ -5977,7 +5977,7 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref: "local:th_1",
 				Capabilities: appwire.ThreadCapabilities{
 					Send:    true,
@@ -6028,7 +6028,7 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 		t.Fatalf("wire=%+v", wire)
 	}
 	data, ok := wire.Data.(map[string]any)
-	if !ok || data["serfErrorInfo"] != string(appwire.ErrorActionUnavailable) {
+	if !ok || data["evenerErrorInfo"] != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("wire data=%#v", wire.Data)
 	}
 }
@@ -6044,7 +6044,7 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "th_1",
 			SessionID: "sess_1",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:th_1",
 				Capabilities: appwire.ThreadCapabilities{Send: true}, // no Goal
 			},
@@ -6384,10 +6384,10 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 func TestHubRPCModelListReportsSerfLaunchDiagnostics(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -6396,7 +6396,7 @@ exit 2
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),
-		Spawner: &HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
+		Spawner: &HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
 		Past:    hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
@@ -6472,7 +6472,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          params.Ref,
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
@@ -6535,7 +6535,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 	if gotPrompt != "review the open PRs" {
 		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
 	}
-	if resp.Thread.Serf.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
 		t.Fatalf("response=%+v", resp)
 	}
 }
@@ -6620,7 +6620,7 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 		"daemon spawn failed",
 		"process exited before rendezvous",
 		"exit status 1",
-		`serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
+		`evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
 	}, ": ")
 	spawner := &fakeRPCSpawner{
 		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -6719,7 +6719,7 @@ func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *te
 	})
 	assertHubLaunchError(t, err)
 	if spawnCalled {
-		t.Fatal("spawn was called for a model outside the Serf launch contract")
+		t.Fatal("spawn was called for a model outside the Evener launch contract")
 	}
 }
 
@@ -6842,7 +6842,7 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 		CWD:           "/tmp",
 	})
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "not reported by the Serf launch harness") {
+	if !strings.Contains(err.Error(), "not reported by the Evener launch harness") {
 		t.Fatalf("error=%v", err)
 	}
 	if spawnCalled {
@@ -6887,7 +6887,7 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
 		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
 	}
-	if resp.Thread.Serf.Ref != "local:th_openrouter_anthropic" {
+	if resp.Thread.Evener.Ref != "local:th_openrouter_anthropic" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7109,7 +7109,7 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	if !startCalled || !turnCalled {
 		t.Fatalf("startCalled=%v turnCalled=%v", startCalled, turnCalled)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
+	if resp.Thread.Evener.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
@@ -7136,7 +7136,7 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
@@ -7176,7 +7176,7 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 	if err != nil {
 		t.Fatalf("second ThreadStart: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
@@ -7208,7 +7208,7 @@ func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex-managed:th_fake" {
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7240,7 +7240,7 @@ func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex-managed:th_fake_child" {
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake_child" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7436,7 +7436,7 @@ func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	if turnCalled {
 		t.Fatal("Codex turn was started for blank prompt")
 	}
-	if resp.Thread.Serf.Ref != "codex:th_blank" || resp.Turn.ID != "" {
+	if resp.Thread.Evener.Ref != "codex:th_blank" || resp.Turn.ID != "" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
@@ -7461,14 +7461,14 @@ func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
 			Kind  string `json:"kind"`
 		} `json:"data"`
 	}
-	if err := client.Request(context.Background(), appwire.MethodSerfHarnessesList, map[string]any{}, &resp); err != nil {
-		t.Fatalf("serf/harnesses/list: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerHarnessesList, map[string]any{}, &resp); err != nil {
+		t.Fatalf("evener/harnesses/list: %v", err)
 	}
 	got := map[string]string{}
 	for _, h := range resp.Data {
 		got[h.ID] = h.Kind
 	}
-	if got["serf"] != "serf" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
+	if got["evener"] != "evener" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
 		t.Fatalf("harnesses=%+v", resp.Data)
 	}
 }
@@ -7479,7 +7479,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 		if params.Ref != "local:th_resumed" {
 			t.Fatalf("ref=%q", params.Ref)
 		}
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Serf: appwire.SerfThread{Ref: "local:th_resumed"}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -7515,7 +7515,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resp.Thread.ID != "th_resumed" || resp.Thread.Serf.Ref != "local:th_resumed" {
+	if resp.Thread.ID != "th_resumed" || resp.Thread.Evener.Ref != "local:th_resumed" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7528,7 +7528,7 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        sessionID,
 			SessionID: sessionID,
-			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Evener:      appwire.EvenerThread{Ref: params.Ref},
 		}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -7537,7 +7537,7 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
 		PID:       104,
-		Protocol:  "serf-appwire-v1",
+		Protocol:  "evener-appwire-v1",
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
 		ThreadID:  sessionID,
@@ -7591,7 +7591,7 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 	if resumeCalls != 1 {
 		t.Fatalf("resume calls=%d, want 1", resumeCalls)
 	}
-	if resp.Thread.ID != sessionID || resp.Thread.Serf.Ref != "local:"+sessionID {
+	if resp.Thread.ID != sessionID || resp.Thread.Evener.Ref != "local:"+sessionID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7609,7 +7609,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 		blockerHTTP = "127.0.0.1:61535"
 		// Verbatim shape of the failure a real replacement daemon dies with.
 		spawnFailure = "resume failed: process exited before rendezvous: exit status 1: " +
-			"serf serve: session sess_old is already running; send work to the live session or fork it: " +
+			"evener serve: session sess_old is already running; send work to the live session or fork it: " +
 			"API log target is already running: /state/sessions/sess_old.api.jsonl"
 	)
 
@@ -7623,7 +7623,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 			name: "live incompatible daemon still owns the session",
 			rosterEntry: &rendezvous.Entry{
 				PID:       blockerPID,
-				Protocol:  "serf-appwire-v1",
+				Protocol:  "evener-appwire-v1",
 				Address:   blockerHTTP,
 				Endpoint:  "ws://" + blockerHTTP + "/rpc",
 				SourceID:  "local",
@@ -7634,7 +7634,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 				// the holder
 				"pid 104",
 				// why the hub will not just talk to it
-				"serf-appwire-v1",
+				"evener-appwire-v1",
 				appwire.ProtocolVersion,
 				// the remedy the operator can actually run
 				"http://" + blockerHTTP + "/shutdown",
@@ -7746,7 +7746,7 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 	if !resumeCalled {
 		t.Fatal("codex resume was not routed")
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex" {
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7790,7 +7790,7 @@ func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
 	if !readCalled {
 		t.Fatal("codex read was not routed")
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex" {
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7890,7 +7890,7 @@ func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
 	if !forkCalled {
 		t.Fatal("configured Codex source was not forked")
 	}
-	if resp.Thread.Serf.Ref != "codex:th_codex_child" {
+	if resp.Thread.Evener.Ref != "codex:th_codex_child" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -7903,7 +7903,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 				ID:        "th_start_relay",
 				SessionID: "th_start_relay",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 4),
 			subscribed:    make(chan struct{}, 1),
@@ -7926,7 +7926,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_start_relay" {
+	if resp.Thread.Evener.Ref != "codex:th_start_relay" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -7960,7 +7960,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 					ID:        "th_start_relay_fail",
 					SessionID: "th_start_relay_fail",
 					Source:    "codex",
-					Serf:      appwire.SerfThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
+					Evener:      appwire.EvenerThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
 				},
 			},
 		},
@@ -7981,7 +7981,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_start_relay_fail" {
+	if resp.Thread.Evener.Ref != "codex:th_start_relay_fail" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	select {
@@ -8009,7 +8009,7 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 				ID:        "th_resume_relay",
 				SessionID: "th_resume_relay",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 4),
 			subscribed:    make(chan struct{}, 1),
@@ -8032,7 +8032,7 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_resume_relay" {
+	if resp.Thread.Evener.Ref != "codex:th_resume_relay" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -8121,7 +8121,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 			if !ok ||
 				wire.Code != appwire.CodeInternalError ||
 				wire.Message != resumeMessage ||
-				data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+				data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
 				data.ClientMutationID != mutationID ||
 				data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 				data.RetryDisposition != appwire.RetryDispositionBlocked ||
@@ -8150,7 +8150,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	var gotPrompt string
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -8212,7 +8212,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 				ID:        sessionID,
 				SessionID: sessionID,
 				Source:    "local",
-				Serf:      appwire.SerfThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 		},
@@ -8266,7 +8266,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		return appwire.TurnStartResponse{}, appwire.Unavailable("session is processing")
@@ -8321,7 +8321,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		return appwire.TurnStartResponse{}, appwire.InternalError("tool output included connection refused")
@@ -8377,7 +8377,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
@@ -8461,7 +8461,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
@@ -8625,7 +8625,7 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 			ID:        "th_managed",
 			SessionID: "th_managed",
 			Source:    "codex-managed",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "codex-managed:th_managed",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
@@ -8720,7 +8720,7 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 			ID:        "th_unknown",
 			SessionID: "th_unknown",
 			Source:    "codex",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "codex:th_unknown",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
@@ -8812,7 +8812,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 }
 
 // TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
-// flows' recent-project source (issue #35): serf/projects/recent serves the
+// flows' recent-project source (issue #35): evener/projects/recent serves the
 // past index's distinct working dirs, most-recently-used first, defaulting to
 // the 15-option cap when the request carries no limit.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
@@ -8887,7 +8887,7 @@ func TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray(t *testing.T) {
 			server := newHubAppServer(cfg, appsource.NewRegistry())
 			raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
 				ID:     appwire.NewIntID(1),
-				Method: appwire.MethodSerfProjectsRecent,
+				Method: appwire.MethodEvenerProjectsRecent,
 				Params: json.RawMessage(`{}`),
 			})
 			if err != nil {
@@ -8912,7 +8912,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 				ID:        "th_fork",
 				SessionID: "th_fork",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_fork", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_fork", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 			canceled:      make(chan struct{}, 1),
@@ -8921,7 +8921,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 			ID:        "th_child",
 			SessionID: "th_child",
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:th_child"},
+			Evener:      appwire.EvenerThread{Ref: "codex:th_child"},
 		}},
 	}
 	srv := httptest.NewUnstartedServer(nil)
@@ -8950,7 +8950,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	if source.forkParams.SourceTurnID != "codex-turn-1" || source.forkParams.EditedInput != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_child" {
+	if resp.Thread.Evener.Ref != "codex:th_child" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -8963,7 +8963,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 				ID:        "th_whole_fork",
 				SessionID: "th_whole_fork",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_whole_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_whole_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 			canceled:      make(chan struct{}, 1),
@@ -8972,7 +8972,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 			ID:        "th_whole_child",
 			SessionID: "th_whole_child",
 			Source:    "codex",
-			Serf:      appwire.SerfThread{Ref: "codex:th_whole_child"},
+			Evener:      appwire.EvenerThread{Ref: "codex:th_whole_child"},
 		}},
 	}
 	srv := httptest.NewUnstartedServer(nil)
@@ -8997,7 +8997,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 	if source.forkParams.SourceTurnID != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
 	}
-	if resp.Thread.Serf.Ref != "codex:th_whole_child" {
+	if resp.Thread.Evener.Ref != "codex:th_whole_child" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -9010,7 +9010,7 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 				ID:        "th_no_fork",
 				SessionID: "th_no_fork",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_no_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_no_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 			canceled:      make(chan struct{}, 1),
@@ -9073,7 +9073,7 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
 	}
-	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Serf.Ref != "local:"+resp.Thread.ID {
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Evener.Ref != "local:"+resp.Thread.ID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
@@ -9115,7 +9115,7 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
 	}
-	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Serf.Ref != "local:"+resp.Thread.ID {
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Evener.Ref != "local:"+resp.Thread.ID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	if resp.OriginalInput != "second task" {
@@ -9380,8 +9380,8 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfInstanceList, appwire.EmptyParams{}, &resp); err != nil {
-		t.Fatalf("serf/instance/list: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
+		t.Fatalf("evener/instance/list: %v", err)
 	}
 	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
 		t.Fatalf("instances=%+v", resp.Instances)
@@ -9402,10 +9402,10 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 
 // TestHubRPCInstanceCreateBroadcastsAuthUpdated proves the "multiple browsers
 // stay in sync" founding requirement for provider-instance CRUD: a successful
-// serf/instance/create must broadcast serf/auth/updated so every other
+// evener/instance/create must broadcast evener/auth/updated so every other
 // connected client refetches its now-stale instance list. The notification is
 // reused rather than a new one minted for instances: notifications.js already
-// treats serf/auth/updated as payload-agnostic ("something about credentials
+// treats evener/auth/updated as payload-agnostic ("something about credentials
 // or instances changed, refetch"), reloading both the instances panel and the
 // providers settings tab on receipt.
 func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
@@ -9427,23 +9427,23 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
-		t.Fatalf("serf/instance/create: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifySerfAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance create")
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance create")
 	}
 }
 
-// TestHubRPCInstanceEditBroadcastsAuthUpdated is the serf/instance/edit sibling
+// TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
 // of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
-// serf/auth/updated is the right (reused) notification.
+// evener/auth/updated is the right (reused) notification.
 func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
@@ -9463,23 +9463,23 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
-		t.Fatalf("serf/instance/edit: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
+		t.Fatalf("evener/instance/edit: %v", err)
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifySerfAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance edit")
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance edit")
 	}
 }
 
-// TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the serf/instance/remove
+// TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
 // sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
-// comment for why serf/auth/updated is the right (reused) notification.
+// comment for why evener/auth/updated is the right (reused) notification.
 func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
@@ -9499,23 +9499,23 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
-		t.Fatalf("serf/instance/remove: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("evener/instance/remove: %v", err)
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifySerfAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance remove")
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance remove")
 	}
 }
 
 // TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated is the
-// serf/instance/setDefault sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated;
-// see its doc comment for why serf/auth/updated is the right (reused)
+// evener/instance/setDefault sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated;
+// see its doc comment for why evener/auth/updated is the right (reused)
 // notification.
 func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
@@ -9536,17 +9536,17 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
-		t.Fatalf("serf/instance/setDefault: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("evener/instance/setDefault: %v", err)
 	}
 
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifySerfAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance setDefault")
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance setDefault")
 	}
 }
 
@@ -9570,7 +9570,7 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
 // returns the constructed *WebServer, for tests that need to wire an
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
-// runMain's composed serf/tree/changed wiring in main.go) before the server
+// runMain's composed evener/tree/changed wiring in main.go) before the server
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
@@ -9623,14 +9623,14 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
 		appwire.MethodThreadTurnsList,
-		appwire.MethodSerfSubagentPreview,
+		appwire.MethodEvenerSubagentPreview,
 		appwire.MethodThreadStart,
 		appwire.MethodThreadResume,
 		appwire.MethodThreadFork,
 		appwire.MethodTurnStart,
 		appwire.MethodTurnSteer,
 		appwire.MethodTurnInterrupt,
-		appwire.MethodSerfSandboxEscalationResolve,
+		appwire.MethodEvenerSandboxEscalationResolve,
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,
@@ -9639,53 +9639,53 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
-		appwire.MethodSerfThreadNameSet,
+		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
-		appwire.MethodSerfAuthStatus,
-		appwire.MethodSerfAuthTest,
-		appwire.MethodSerfAuthLoginStart,
-		appwire.MethodSerfAuthLoginComplete,
-		appwire.MethodSerfAuthLogout,
-		appwire.MethodSerfAuthList,
-		appwire.MethodSerfAuthApiKeySet,
-		appwire.MethodSerfAuthDeviceStart,
-		appwire.MethodSerfAuthDevicePoll,
-		appwire.MethodSerfInstanceList,
-		appwire.MethodSerfInstanceCreate,
-		appwire.MethodSerfInstanceEdit,
-		appwire.MethodSerfInstanceRemove,
-		appwire.MethodSerfInstanceSetDefault,
-		appwire.MethodSerfLaunchResolve,
-		appwire.MethodSerfLaunchSchema,
-		appwire.MethodSerfLaunchGetLayer,
-		appwire.MethodSerfLaunchSetLayer,
-		appwire.MethodSerfLaunchTrustRepo,
-		appwire.MethodSerfUpgrade,
+		appwire.MethodEvenerAuthStatus,
+		appwire.MethodEvenerAuthTest,
+		appwire.MethodEvenerAuthLoginStart,
+		appwire.MethodEvenerAuthLoginComplete,
+		appwire.MethodEvenerAuthLogout,
+		appwire.MethodEvenerAuthList,
+		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthDeviceStart,
+		appwire.MethodEvenerAuthDevicePoll,
+		appwire.MethodEvenerInstanceList,
+		appwire.MethodEvenerInstanceCreate,
+		appwire.MethodEvenerInstanceEdit,
+		appwire.MethodEvenerInstanceRemove,
+		appwire.MethodEvenerInstanceSetDefault,
+		appwire.MethodEvenerLaunchResolve,
+		appwire.MethodEvenerLaunchSchema,
+		appwire.MethodEvenerLaunchGetLayer,
+		appwire.MethodEvenerLaunchSetLayer,
+		appwire.MethodEvenerLaunchTrustRepo,
+		appwire.MethodEvenerUpgrade,
 		appwire.MethodModelList,
-		appwire.MethodSerfTasksList,
-		appwire.MethodSerfJobsList,
-		appwire.MethodSerfJobsOutput,
-		appwire.MethodSerfThreadTranscriptsList,
-		appwire.MethodSerfPathsComplete,
-		appwire.MethodSerfProjectsRecent,
-		appwire.MethodSerfPathValidate,
-		appwire.MethodSerfHarnessesList,
-		appwire.MethodSerfCommandList,
-		appwire.MethodSerfSettingsOverview,
-		appwire.MethodSerfMarketplaceList,
-		appwire.MethodSerfMarketplaceAdd,
-		appwire.MethodSerfMarketplaceRemove,
-		appwire.MethodSerfMarketplaceRefresh,
-		appwire.MethodSerfMarketplaceBrowse,
-		appwire.MethodSerfPluginList,
-		appwire.MethodSerfPluginInstall,
-		appwire.MethodSerfPluginUpgrade,
-		appwire.MethodSerfPluginRemove,
-		appwire.MethodSerfPluginEnable,
-		appwire.MethodSerfPluginDisable,
-		appwire.MethodSerfPluginSetAutoUpgrade,
-		appwire.MethodSerfPluginCheckNow,
+		appwire.MethodEvenerTasksList,
+		appwire.MethodEvenerJobsList,
+		appwire.MethodEvenerJobsOutput,
+		appwire.MethodEvenerThreadTranscriptsList,
+		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerProjectsRecent,
+		appwire.MethodEvenerPathValidate,
+		appwire.MethodEvenerHarnessesList,
+		appwire.MethodEvenerCommandList,
+		appwire.MethodEvenerSettingsOverview,
+		appwire.MethodEvenerMarketplaceList,
+		appwire.MethodEvenerMarketplaceAdd,
+		appwire.MethodEvenerMarketplaceRemove,
+		appwire.MethodEvenerMarketplaceRefresh,
+		appwire.MethodEvenerMarketplaceBrowse,
+		appwire.MethodEvenerPluginList,
+		appwire.MethodEvenerPluginInstall,
+		appwire.MethodEvenerPluginUpgrade,
+		appwire.MethodEvenerPluginRemove,
+		appwire.MethodEvenerPluginEnable,
+		appwire.MethodEvenerPluginDisable,
+		appwire.MethodEvenerPluginSetAutoUpgrade,
+		appwire.MethodEvenerPluginCheckNow,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does
@@ -9696,27 +9696,27 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	}
 
 	// notDispatched are named above but never called: their handlers act
-	// outside this process. serf/upgrade runs the real self-update (fetch and
+	// outside this process. evener/upgrade runs the real self-update (fetch and
 	// install over the running binary), and the marketplace, plugin and
 	// auto-upgrade handlers work against the plugin root — which, with no
 	// PluginRoot configured, is the developer's own plugins.DefaultRoot — and
 	// fetch its remote sources. app_plugins_test.go and
 	// app_plugin_autoupgrade_test.go drive those against fixture roots.
 	notDispatched := map[string]bool{
-		appwire.MethodSerfUpgrade:              true,
-		appwire.MethodSerfMarketplaceList:      true,
-		appwire.MethodSerfMarketplaceAdd:       true,
-		appwire.MethodSerfMarketplaceRemove:    true,
-		appwire.MethodSerfMarketplaceRefresh:   true,
-		appwire.MethodSerfMarketplaceBrowse:    true,
-		appwire.MethodSerfPluginList:           true,
-		appwire.MethodSerfPluginInstall:        true,
-		appwire.MethodSerfPluginUpgrade:        true,
-		appwire.MethodSerfPluginRemove:         true,
-		appwire.MethodSerfPluginEnable:         true,
-		appwire.MethodSerfPluginDisable:        true,
-		appwire.MethodSerfPluginSetAutoUpgrade: true,
-		appwire.MethodSerfPluginCheckNow:       true,
+		appwire.MethodEvenerUpgrade:              true,
+		appwire.MethodEvenerMarketplaceList:      true,
+		appwire.MethodEvenerMarketplaceAdd:       true,
+		appwire.MethodEvenerMarketplaceRemove:    true,
+		appwire.MethodEvenerMarketplaceRefresh:   true,
+		appwire.MethodEvenerMarketplaceBrowse:    true,
+		appwire.MethodEvenerPluginList:           true,
+		appwire.MethodEvenerPluginInstall:        true,
+		appwire.MethodEvenerPluginUpgrade:        true,
+		appwire.MethodEvenerPluginRemove:         true,
+		appwire.MethodEvenerPluginEnable:         true,
+		appwire.MethodEvenerPluginDisable:        true,
+		appwire.MethodEvenerPluginSetAutoUpgrade: true,
+		appwire.MethodEvenerPluginCheckNow:       true,
 	}
 
 	for _, method := range expected {
@@ -9736,7 +9736,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 
 	// Sanity check: an unregistered method must report methodNotFound, proving
 	// the assertion above is meaningful.
-	err := client.Request(context.Background(), "serf/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	err := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
 		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)

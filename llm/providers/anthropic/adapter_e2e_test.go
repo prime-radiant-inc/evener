@@ -45,7 +45,7 @@ func TestAdapter_E2E_AnthropicBasicComplete(t *testing.T) {
 
 	resp, err := a.Complete(ctx, llm.Request{
 		Model:       model,
-		Messages:    []llm.Message{llm.User("Reply with exactly: serf anthropic e2e ok")},
+		Messages:    []llm.Message{llm.User("Reply with exactly: evener anthropic e2e ok")},
 		ServiceTier: "standard_only",
 	})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestAdapter_E2E_AnthropicCountInputTokens(t *testing.T) {
 
 	req := llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Count this short Serf token-counting prompt.")},
+		Messages: []llm.Message{llm.User("Count this short Evener token-counting prompt.")},
 	}
 	got, err := a.CountInputTokens(ctx, req)
 	if err != nil {

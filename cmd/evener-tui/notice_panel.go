@@ -149,17 +149,17 @@ func classifyWarningCategory(message string, cause *appwire.DiagnosticCause) str
 	switch {
 	case strings.HasPrefix(trimmed, "provider error"):
 		return "provider"
-	case strings.HasPrefix(trimmed, "serf error"):
-		return "serf"
+	case strings.HasPrefix(trimmed, "evener error"):
+		return "evener"
 	}
-	return "serf"
+	return "evener"
 }
 
 func noticeCategoryForError(err error, fallback string) string {
 	var wire appwire.WireError
 	if errors.As(err, &wire) {
 		if data, ok := wire.Data.(appwire.ErrorData); ok {
-			switch data.SerfErrorInfo {
+			switch data.EvenerErrorInfo {
 			case appwire.ErrorProviderUnavailable:
 				return "provider"
 			case appwire.ErrorActionUnavailable:
@@ -180,7 +180,7 @@ func noticeCategoryForError(err error, fallback string) string {
 func noticeSummaryForError(err error, fallback string) string {
 	var wire appwire.WireError
 	if errors.As(err, &wire) {
-		if data, ok := wire.Data.(appwire.ErrorData); ok && data.SerfErrorInfo == appwire.ErrorProviderUnavailable {
+		if data, ok := wire.Data.(appwire.ErrorData); ok && data.EvenerErrorInfo == appwire.ErrorProviderUnavailable {
 			return "Check provider auth and runtime readiness."
 		}
 	}

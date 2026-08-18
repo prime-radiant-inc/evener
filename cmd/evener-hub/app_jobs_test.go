@@ -674,16 +674,16 @@ func dispatchHubJobsRPC(t *testing.T, cfg hubcore.WebConfig, sources *appsource.
 	})
 }
 
-// TestSerfJobsListRouteReachesTheHubHandler proves serf/jobs/list is wired to
+// TestSerfJobsListRouteReachesTheHubHandler proves evener/jobs/list is wired to
 // hubJobsList with this hub's cfg and sources: the route answers, the ref
 // decodes, and the past-fallback activity tree built from cfg.Past comes back
 // as the typed JobsListResponse.
 func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
 	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
 
-	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsList, `{"ref":"local:`+sessionID+`"}`)
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodEvenerJobsList, `{"ref":"local:`+sessionID+`"}`)
 	if err != nil {
-		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsList, err)
+		t.Fatalf("dispatch %s: %v", appwire.MethodEvenerJobsList, err)
 	}
 	resp, ok := raw.(appwire.JobsListResponse)
 	if !ok {
@@ -696,7 +696,7 @@ func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
 	}
 }
 
-// TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes drives serf/jobs/output at
+// TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes drives evener/jobs/output at
 // the same boundary. jobId and maxBytes are what no direct hubJobsOutput test
 // can vouch for: they exist only on the wire, so a wrong JSON tag or a route
 // closure forwarding less than it decoded would still answer — with the wrong
@@ -706,9 +706,9 @@ func TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
 		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
 	})
 
-	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_x","maxBytes":4}`)
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodEvenerJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_x","maxBytes":4}`)
 	if err != nil {
-		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsOutput, err)
+		t.Fatalf("dispatch %s: %v", appwire.MethodEvenerJobsOutput, err)
 	}
 	resp, ok := raw.(appwire.JobsOutputResponse)
 	if !ok {
@@ -732,7 +732,7 @@ func TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
 		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
 	})
 
-	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_nope","maxBytes":4}`)
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodEvenerJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_nope","maxBytes":4}`)
 	if raw != nil {
 		t.Fatalf("response = %#v, want no response alongside the error", raw)
 	}

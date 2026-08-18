@@ -176,7 +176,7 @@ func TestReadTranscriptArtifactExpiredWhenNoStoreIsAvailable(t *testing.T) {
 	}
 }
 
-const privateArtifactPathSentinel = "/Users/operator/.serf/private/artifacts/sentinel-output"
+const privateArtifactPathSentinel = "/Users/operator/.evener/private/artifacts/sentinel-output"
 
 type failingArtifactReadSeekCloser struct {
 	total int64

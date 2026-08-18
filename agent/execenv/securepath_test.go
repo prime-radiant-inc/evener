@@ -198,7 +198,7 @@ func TestWriteFilePrimitiveConfinedAndAtomic(t *testing.T) {
 	// No stray temp file left beside it.
 	ents, _ := os.ReadDir(filepath.Dir(target))
 	for _, e := range ents {
-		if strings.HasPrefix(e.Name(), ".serf-sbtmp-") {
+		if strings.HasPrefix(e.Name(), ".evener-sbtmp-") {
 			t.Errorf("stray temp file left behind: %s", e.Name())
 		}
 	}

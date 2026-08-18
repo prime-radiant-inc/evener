@@ -48,14 +48,14 @@ func TestWebFetchCachePath(t *testing.T) {
 		t.Fatalf("cache path %q missing today's date (before=%q, after=%q)", p, dateBefore, dateAfter)
 	}
 
-	// Should be an absolute path under $XDG_CACHE_HOME/serf/web_cache/date/hash.
+	// Should be an absolute path under $XDG_CACHE_HOME/evener/web_cache/date/hash.
 	wantKey := webFetchCacheKey("https://example.com/docs")
 	// Use whichever date the SUT actually embedded in the path.
 	usedDate := dateBefore
 	if strings.Contains(p, dateAfter) {
 		usedDate = dateAfter
 	}
-	want := filepath.Join(xdg, "serf", "web_cache", usedDate, wantKey)
+	want := filepath.Join(xdg, "evener", "web_cache", usedDate, wantKey)
 	if p != want {
 		t.Fatalf("cache path:\n  got  %q\n  want %q", p, want)
 	}
@@ -202,9 +202,9 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	// Verify cache files use date-bucketed directory structure under XDG cache.
 	// Try both dates to tolerate a midnight boundary crossing during the fetch.
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", dateBefore, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "evener", "web_cache", dateBefore, cacheKey)
 	if _, err := os.Stat(filepath.Join(fetchDir, "raw.html")); os.IsNotExist(err) {
-		fetchDir = filepath.Join(cacheHome, "serf", "web_cache", dateAfter, cacheKey)
+		fetchDir = filepath.Join(cacheHome, "evener", "web_cache", dateAfter, cacheKey)
 	}
 
 	rawPath := filepath.Join(fetchDir, "raw.html")
@@ -349,9 +349,9 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	// Verify raw.json was written (no rendered.md for JSON).
 	// Try both dates to tolerate a midnight boundary crossing during the fetch.
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", dateBefore, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "evener", "web_cache", dateBefore, cacheKey)
 	if _, err := os.Stat(filepath.Join(fetchDir, "raw.json")); os.IsNotExist(err) {
-		fetchDir = filepath.Join(cacheHome, "serf", "web_cache", dateAfter, cacheKey)
+		fetchDir = filepath.Join(cacheHome, "evener", "web_cache", dateAfter, cacheKey)
 	}
 
 	rawPath := filepath.Join(fetchDir, "raw.json")

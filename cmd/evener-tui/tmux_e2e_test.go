@@ -30,7 +30,7 @@ func canonicalTUIE2EProjectDir() string {
 	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
 		tmp = canonical
 	}
-	return filepath.Join(tmp, "serf-tui-e2e", "serf")
+	return filepath.Join(tmp, "evener-tui-e2e", "evener")
 }
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
@@ -50,7 +50,7 @@ var tuiE2EDeadCheckInterval = 100 * time.Millisecond
 var tmuxSessionCounter atomic.Int64
 
 func uniqueTmuxSessionName() string {
-	return fmt.Sprintf("serf-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
+	return fmt.Sprintf("evener-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
 }
 
 // tmuxSessionSlots bounds how many tmux+TUI sessions run concurrently. The TUI
@@ -83,7 +83,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// Ended sessions fold by default: awaited as an absence so the check
 	// cannot race a partial repaint (see WaitForWithout).
 	app.WaitForWithout([]string{"ended maintenance"},
-		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "serf", "live task", "ops task", "1 recent")
+		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "evener", "live task", "ops task", "1 recent")
 	app.SendKeys("/")
 	app.TypeText("ops")
 	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
@@ -94,11 +94,11 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("r")
 	hub.WaitForTreeRequests(t, initialTreeRequests+1)
 
-	// The cursor starts on the serf project row; Enter collapses the group
+	// The cursor starts on the evener project row; Enter collapses the group
 	// and folds its child sessions out of the tree.
-	app.WaitFor("SERF LIVE", "Project:  serf", "Action:   enter toggles project")
+	app.WaitFor("SERF LIVE", "Project:  evener", "Action:   enter toggles project")
 	app.SendKeys("Enter")
-	app.WaitForWithout([]string{"live task", "ended maintenance"}, "SERF LIVE", "▸ ● serf")
+	app.WaitForWithout([]string{"live task", "ended maintenance"}, "SERF LIVE", "▸ ● evener")
 	app.SendKeys("Right")
 	app.WaitFor("SERF LIVE", "live task", "1 recent")
 	// Down to the ended-sessions toggle, Enter to reveal the ended session.
@@ -113,16 +113,16 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 
 	app.SendKeys("n")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
-	app.TypeText("/tmp/serf-tui-e2e/custom")
-	app.WaitFor("Dir:      /tmp/serf-tui-e2e/custom")
+	app.TypeText("/tmp/evener-tui-e2e/custom")
+	app.WaitFor("Dir:      /tmp/evener-tui-e2e/custom")
 	app.SendKeys("Enter")
 	app.TypeLine("spawn from dashboard")
-	app.WaitFor("serf / session / spawned session 1")
+	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != "/tmp/serf-tui-e2e/custom" {
-		t.Fatalf("dashboard spawn cwd=%q, want /tmp/serf-tui-e2e/custom", spawns[0].CWD)
+	if spawns[0].CWD != "/tmp/evener-tui-e2e/custom" {
+		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-tui-e2e/custom", spawns[0].CWD)
 	}
 	if testInputText(spawns[0].Input) != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
@@ -134,9 +134,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("C-o")
 	app.WaitFor("SERF LIVE", "live task")
 	app.SendKeys("n")
-	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
-	app.WaitFor("serf / session / spawned session 2")
+	app.WaitFor("evener / session / spawned session 2")
 	spawns = hub.WaitForSpawns(t, 2)
 	if spawns[1].CWD != tuiE2EProjectDir {
 		t.Fatalf("project spawn cwd=%q, want %q", spawns[1].CWD, tuiE2EProjectDir)
@@ -204,8 +204,8 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
 
 	app.SendKeys("n")
-	screen = app.WaitFor("serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
-	requirePaneOrder(t, screen, "serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
+	screen = app.WaitFor("evener / new session", "Prompt (optional):", "ctrl+o: dashboard")
+	requirePaneOrder(t, screen, "evener / new session", "Prompt (optional):", "ctrl+o: dashboard")
 
 	app.SendKeys("C-o")
 	screen = app.WaitFor("SERF LIVE", "live task", "dashboard")
@@ -222,7 +222,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	wide := startTUITmuxSized(t, bin, hub, 140, 40)
 	defer wide.Close()
-	wideScreen := wide.WaitFor("SERF LIVE", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
+	wideScreen := wide.WaitFor("SERF LIVE", "details", "Project:  evener", "Live:     1", "Dir:      "+tuiE2EProjectDir)
 	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
 		t.Fatalf("wide dashboard rendered a composer:\n%s", wideScreen)
 	}
@@ -319,7 +319,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	}
 
 	app.SendKeys("Down", "Down", "Enter", "Down", "Enter")
-	screen = app.WaitFor("ended maintenance", "src serf", "send")
+	screen = app.WaitFor("ended maintenance", "src evener", "send")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
 		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
 	}
@@ -336,7 +336,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetHarnesses([]appwire.HarnessDescriptor{
-		{ID: "serf", Label: "serf", Kind: "serf"},
+		{ID: "evener", Label: "evener", Kind: "evener"},
 		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 	})
 	defer hub.Close()
@@ -345,7 +345,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 
 	app.WaitFor("SERF LIVE", "live task")
 	app.SendKeys("n")
-	app.WaitFor("Harness:  serf", "Model:    openai/gpt-5")
+	app.WaitFor("Harness:  evener", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Enter")
 	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
 	app.SendKeys("Tab", "Enter")
@@ -383,7 +383,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question", "initial answer", "tool output from e2e")
+	app.WaitFor("evener / session / live task", "initial question", "initial answer", "tool output from e2e")
 
 	app.TypeLine("hello from tmux")
 	app.WaitFor("hello from tmux")
@@ -412,7 +412,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	// /project returns to the dashboard focused on this session's project.
 	app.TypeLine("/project")
-	app.WaitFor("SERF LIVE", "Project:  serf", "live task")
+	app.WaitFor("SERF LIVE", "Project:  evener", "live task")
 	// Down to the ended-sessions toggle, Enter to reveal the ended session.
 	app.SendKeys("Down", "Down")
 	app.WaitFor("SERF LIVE", "Action:   enter toggles ended sessions")
@@ -424,7 +424,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.WaitFor("Filter: ended", "ended maintenance")
 	app.SendKeys("Escape")
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "enter send")
+	app.WaitFor("evener / session / live task", "enter send")
 
 	app.TypeLine("/auth openai")
 	app.WaitFor("OpenAI auth: signed out")
@@ -491,17 +491,17 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/project")
-	app.WaitFor("SERF LIVE", "Project:  serf")
+	app.WaitFor("SERF LIVE", "Project:  evener")
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task")
+	app.WaitFor("evener / session / live task")
 
 	app.TypeLine("/dashboard")
 	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task")
+	app.WaitFor("evener / session / live task")
 
 	app.TypeLine("/clear")
-	app.WaitFor("serf / session / cleared session")
+	app.WaitFor("evener / session / cleared session")
 	if got := hub.WaitForActionCount(t, "clear", 1); got != 1 {
 		t.Fatalf("clear count=%d, want 1", got)
 	}
@@ -519,7 +519,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question", "initial answer")
+	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose", "f: fork selected user message", "▶ ▍ initial answer")
@@ -543,7 +543,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 
 	app.SendKeys("Enter")
-	app.WaitFor("serf / session / fork child")
+	app.WaitFor("evener / session / fork child")
 	forks := hub.WaitForForks(t, 1)
 	if forks[0].SourceTurnID != "1" {
 		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
@@ -566,7 +566,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question", "initial answer")
+	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
@@ -605,7 +605,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question")
+	app.WaitFor("evener / session / live task", "initial question")
 
 	// Disabled actions surface as dismissable notice overlays. Each must be
 	// cleared (ctrl+x) before the next command so the composer is reachable.
@@ -716,7 +716,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	openEndedSession(t, app)
 	sendFirstCtrlCAndAssertNoQuitWarning(t, app)
 	// Positive gate: session must still be alive after the settling window.
-	app.WaitFor("serf / session / ended maintenance")
+	app.WaitFor("evener / session / ended maintenance")
 	app.SendKeys("C-c")
 	app.WaitForExit()
 }
@@ -733,15 +733,15 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	openEndedSession(t, app)
 	sendFirstCtrlCAndAssertNoQuitWarning(t, app)
 	// Positive gate: session must still be alive after the settling window.
-	app.WaitFor("serf / session / ended maintenance")
+	app.WaitFor("evener / session / ended maintenance")
 	app.SendKeys("C-c")
-	// serf-tui exits the alternate screen and prints the restore instructions
+	// evener-tui exits the alternate screen and prints the restore instructions
 	// to the normal screen on its way out. The pane is kept alive past
-	// serf-tui's exit (see startTUITmuxAltScreen) so tmux reliably drains that
+	// evener-tui's exit (see startTUITmuxAltScreen) so tmux reliably drains that
 	// trailing output instead of dropping it when freezing a just-dead pane —
 	// then we poll the scrollback until the message renders rather than racing
 	// a single post-exit capture.
-	app.WaitForHistory("Restore this session:", "serf-tui --hub-addr "+hub.URL(), "local:01PAST")
+	app.WaitForHistory("Restore this session:", "evener-tui --hub-addr "+hub.URL(), "local:01PAST")
 }
 
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
@@ -755,7 +755,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question")
+	app.WaitFor("evener / session / live task", "initial question")
 
 	app.TypeLine("/model")
 	// The active model (session model "gpt-5") is marked with an "(active)" tag
@@ -786,9 +786,9 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 	openLiveSession(t, app)
 	app.WaitFor(
-		"serf / session / live task",
+		"evener / session / live task",
 		"● WORKING",
-		"src serf",
+		"src evener",
 		"model gpt-5",
 		"dir "+tuiE2EProjectDir,
 		"2 turns",
@@ -841,7 +841,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.SendKeys("Down")
 	app.WaitFor("Session:  01PAST")
 	app.SendKeys("Enter")
-	screen = app.WaitFor("serf / session / ended maintenance", "● NOT LOADED", "send: ready")
+	screen = app.WaitFor("evener / session / ended maintenance", "● NOT LOADED", "send: ready")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
 		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
 	}
@@ -857,7 +857,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial answer")
+	app.WaitFor("evener / session / live task", "initial answer")
 	app.TypeLine("stream please")
 	hub.WaitForSends(t, 1)
 
@@ -881,7 +881,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial answer")
+	app.WaitFor("evener / session / live task", "initial answer")
 
 	hub.BroadcastToolStarted("01LIVE")
 	hub.BroadcastToolOutputDelta("01LIVE", "tmux tool output\n")
@@ -905,13 +905,13 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial question")
+	app.WaitFor("evener / session / live task", "initial question")
 
 	// Backend failures surface as in-place notice overlays carrying the
 	// source and cause; each is dismissed (ctrl+x) before the next action.
 	hub.SetFailTasks(true)
 	app.TypeLine("/tasks")
-	app.WaitFor("Tasks failed.", "source serf", "cause appwire serf/tasks/list: tasks failed")
+	app.WaitFor("Tasks failed.", "source evener", "cause appwire evener/tasks/list: tasks failed")
 	app.SendKeys("C-x")
 	app.WaitFor("enter send")
 
@@ -925,7 +925,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("SERF LIVE", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("n")
-	app.WaitFor("serf / new session", "Prompt (optional):")
+	app.WaitFor("evener / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
 	app.WaitFor("Hub session start failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
@@ -947,7 +947,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "initial answer", "enter send")
+	app.WaitFor("evener / session / live task", "initial answer", "enter send")
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -968,7 +968,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 
 	for i := range 5 {
 		screen := app.CaptureStable()
-		if !strings.Contains(screen, "serf / session / live task") {
+		if !strings.Contains(screen, "evener / session / live task") {
 			t.Fatalf("capture %d: CaptureStable returned a frame missing the session breadcrumb:\n%s", i, screen)
 		}
 		if !strings.Contains(screen, "enter send") {
@@ -978,9 +978,9 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 }
 
 // openLiveSession navigates from the dashboard to the "live task" session and
-// opens it. The dashboard sorts the serf project first (it owns the live
+// opens it. The dashboard sorts the evener project first (it owns the live
 // session) so the fixed tree positions are: row 0 "Launch New Session",
-// row 1 the serf project, row 2 the serf project's first live session
+// row 1 the evener project, row 2 the evener project's first live session
 // ("live task"). We anchor to row 0 with a burst of Up presses (selection
 // clamps at the top) so the helper works from any prior dashboard state, then
 // step down to the live session and confirm the wide-layout details drawer
@@ -988,13 +988,13 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 // row cursor.
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "serf", "live task")
+	app.WaitFor("SERF LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
 	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down")
 	app.WaitFor("Session:  01LIVE", "Action:   enter opens session")
 	app.SendKeys("Enter")
-	app.WaitFor("serf / session / live task")
+	app.WaitFor("evener / session / live task")
 }
 
 // sendFirstCtrlCAndAssertNoQuitWarning sends a single ctrl+c and asserts that
@@ -1014,7 +1014,7 @@ func openLiveSession(t *testing.T, app *tmuxTUI) {
 // cost of dozens of calls past hubCtrlCQuitWindow, making the second real
 // ctrl+c land too late and get treated as a fresh first press instead of a
 // quit — this is the flake this helper replaces. pipe-pane costs exactly one
-// subprocess for the whole window and captures every byte serf-tui writes,
+// subprocess for the whole window and captures every byte evener-tui writes,
 // so a transient or deferred render can't be missed the way periodic
 // sampling could.
 func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
@@ -1041,11 +1041,11 @@ func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 
 // openEndedSession reveals and opens the folded ended "ended maintenance"
 // session (01PAST), which carries no in-flight turn. Tree positions from the
-// top: 0 Launch, 1 serf project, 2 live session, 3 the ended-sessions toggle.
+// top: 0 Launch, 1 evener project, 2 live session, 3 the ended-sessions toggle.
 // Anchoring to row 0 first keeps the helper robust to prior selection state.
 func openEndedSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "serf", "live task")
+	app.WaitFor("SERF LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
 	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down", "Down")
@@ -1055,7 +1055,7 @@ func openEndedSession(t *testing.T, app *tmuxTUI) {
 	app.SendKeys("Down")
 	app.WaitFor("Session:  01PAST", "Action:   enter opens session")
 	app.SendKeys("Enter")
-	app.WaitFor("serf / session / ended maintenance")
+	app.WaitFor("evener / session / ended maintenance")
 }
 
 func requireTmux(t *testing.T) {
@@ -1074,7 +1074,7 @@ var (
 	errTUIBinary  error
 )
 
-// buildTUIBinary compiles the serf-tui binary once per test process and returns
+// buildTUIBinary compiles the evener-tui binary once per test process and returns
 // the shared path. The E2E tests only execute the binary (never mutate it), so a
 // single build is safe — and it avoids ~20 redundant compiles competing for CPU
 // with the latency-sensitive tmux render loop when the suite runs in parallel.
@@ -1086,12 +1086,12 @@ func buildTUIBinary(t *testing.T) string {
 			errTUIBinary = err
 			return
 		}
-		dir, err := os.MkdirTemp("", "serf-tui-e2e-bin-")
+		dir, err := os.MkdirTemp("", "evener-tui-e2e-bin-")
 		if err != nil {
 			errTUIBinary = err
 			return
 		}
-		bin := filepath.Join(dir, "serf-tui")
+		bin := filepath.Join(dir, "evener-tui")
 		buildArgs := []string{"build", "-o", bin}
 		// SERF_E2E_COVER=<dir>: build an instrumented binary so the tmux'd TUI
 		// subprocess emits coverage into that GOCOVERDIR (see tuiCoverEnvPrefix).
@@ -1103,18 +1103,18 @@ func buildTUIBinary(t *testing.T) string {
 		cmd := exec.Command("go", buildArgs...)
 		cmd.Dir = repoRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
-			errTUIBinary = fmt.Errorf("build serf-tui: %w\n%s", err, out)
+			errTUIBinary = fmt.Errorf("build evener-tui: %w\n%s", err, out)
 			return
 		}
 		tuiBinaryPath = bin
 	})
 	if errTUIBinary != nil {
-		t.Fatalf("build serf-tui: %v", errTUIBinary)
+		t.Fatalf("build evener-tui: %v", errTUIBinary)
 	}
 	return tuiBinaryPath
 }
 
-// tmuxTUI drives one serf-tui process on its own dedicated tmux server,
+// tmuxTUI drives one evener-tui process on its own dedicated tmux server,
 // connected via a unique "-L" socket rather than tmux's shared default server
 // (the one at $TMUX_TMPDIR or /tmp/tmux-$UID/default). uniqueTmuxSessionName
 // already rules out session-NAME collisions on any given server, but without
@@ -1188,7 +1188,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	session := uniqueTmuxSessionName()
 	socket := session
 	stateDir := t.TempDir()
-	// Keep the pane's shell alive past serf-tui's own exit. serf-tui leaves the
+	// Keep the pane's shell alive past evener-tui's own exit. evener-tui leaves the
 	// alternate screen and prints its restore instructions to the normal screen
 	// as the very last thing it does before exiting; if the process then dies
 	// immediately, a detached tmux pane under CPU starvation can freeze on death
@@ -1210,7 +1210,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	return app
 }
 
-// waitForInputReady blocks until serf-tui is provably consuming pty input,
+// waitForInputReady blocks until evener-tui is provably consuming pty input,
 // closing the startup race between bubbletea's first paint and it attaching
 // its stdin reader.
 //
@@ -1257,7 +1257,7 @@ func (a *tmuxTUI) waitForInputReady(hub *tuiE2EHub) {
 		now := time.Now()
 		if !now.Before(nextDeadCheck) {
 			if status, dead := a.PaneDeadStatus(); dead {
-				a.t.Fatalf("serf-tui readiness probe: process exited before input reader became ready (status %s)\nvisible pane:\n%s\nrecent history:\n%s", status, a.Capture(), a.CaptureHistory())
+				a.t.Fatalf("evener-tui readiness probe: process exited before input reader became ready (status %s)\nvisible pane:\n%s\nrecent history:\n%s", status, a.Capture(), a.CaptureHistory())
 			}
 			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
@@ -1267,7 +1267,7 @@ func (a *tmuxTUI) waitForInputReady(hub *tuiE2EHub) {
 		}
 		time.Sleep(tuiE2EPollInterval)
 	}
-	a.t.Fatalf("serf-tui readiness probe: input reader never observed to consume a keystroke within %s (sent %q repeatedly; hub tree requests stayed at %d)\nvisible pane:\n%s", tuiE2EWaitTimeout, "r", baseline, a.Capture())
+	a.t.Fatalf("evener-tui readiness probe: input reader never observed to consume a keystroke within %s (sent %q repeatedly; hub tree requests stayed at %d)\nvisible pane:\n%s", tuiE2EWaitTimeout, "r", baseline, a.Capture())
 }
 
 // pinTmuxWindowSize forces the detached session's window to the exact
@@ -1373,7 +1373,7 @@ func (a *tmuxTUI) CaptureHistory() string {
 //
 // A single Capture() is a snapshot of tmux's OWN terminal-grid state, which
 // updates incrementally as bytes arrive from the pty — not a snapshot of what
-// serf-tui most recently rendered. bubbletea writes each frame as one
+// evener-tui most recently rendered. bubbletea writes each frame as one
 // unsynchronized ANSI byte stream (no terminal synchronized-output mode,
 // bubbletea v1.3.10) with the composer/footer last; a frame is commonly
 // several KB, well past any platform's atomic-pipe-write guarantee, so under
@@ -1423,7 +1423,7 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		now := time.Now()
 		if !now.Before(nextDeadCheck) {
 			if status, dead := a.PaneDeadStatus(); dead {
-				a.t.Fatalf("serf-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
+				a.t.Fatalf("evener-tui exited before %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, status, a.Capture(), a.CaptureHistory())
 			}
 			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
@@ -1459,7 +1459,7 @@ func (a *tmuxTUI) WaitForWithout(without []string, wants ...string) string {
 		now := time.Now()
 		if !now.Before(nextDeadCheck) {
 			if status, dead := a.PaneDeadStatus(); dead {
-				a.t.Fatalf("serf-tui exited before %q without %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, without, status, a.Capture(), a.CaptureHistory())
+				a.t.Fatalf("evener-tui exited before %q without %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, without, status, a.Capture(), a.CaptureHistory())
 			}
 			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
@@ -1529,7 +1529,7 @@ func (a *tmuxTUI) WaitUntil(desc string, check func(screen string) bool) string 
 		now := time.Now()
 		if !now.Before(nextDeadCheck) {
 			if status, dead := a.PaneDeadStatus(); dead {
-				a.t.Fatalf("serf-tui exited before %s (status %s)\nvisible pane:\n%s\nrecent history:\n%s", desc, status, a.Capture(), a.CaptureHistory())
+				a.t.Fatalf("evener-tui exited before %s (status %s)\nvisible pane:\n%s\nrecent history:\n%s", desc, status, a.Capture(), a.CaptureHistory())
 			}
 			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
 		}
@@ -1690,13 +1690,13 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		t:         t,
 		sessions:  map[string]*tuiE2ESession{},
 		actions:   map[string]int{},
-		harnesses: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}},
+		harnesses: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}},
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
 		Title:        "live task",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -1723,7 +1723,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		ID:         "01SUB",
 		Title:      "subagent inspect",
 		State:      appwire.ThreadStatusNotLoaded,
-		Project:    "serf",
+		Project:    "evener",
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
@@ -1743,7 +1743,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		ID:           "01PAST",
 		Title:        "ended maintenance",
 		State:        appwire.ThreadStatusNotLoaded,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         false,
@@ -1756,7 +1756,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		Title:        "ops task",
 		State:        appwire.ThreadStatusIdle,
 		Project:      "ops",
-		WorkingDir:   "/tmp/serf-tui-e2e/ops",
+		WorkingDir:   "/tmp/evener-tui-e2e/ops",
 		Model:        "gpt-5",
 		Live:         true,
 		CreatedAt:    80,
@@ -1771,7 +1771,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		}},
 	})
 
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", SourceID: "local"})
 	h.app = app
 	h.registerHandlers(app)
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1802,24 +1802,24 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, h.handleHarnessList)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, h.handleTurnSteer)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, h.handleTurnQueue)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, h.handleTurnDrainAsSteer)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, h.handleTasksList)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, h.handleThreadModelSet)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, h.handleThreadClear)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, h.handleAuthStatus)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, h.handleAuthLoginStart)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, h.handleAuthLoginComplete)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, h.handleAuthLogout)
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, h.handleThreadTranscriptList)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, h.handleAuthStatus)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginStart, h.handleAuthLoginStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, h.handleAuthLoginComplete)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLogout, h.handleAuthLogout)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, h.handleThreadTranscriptList)
 }
 
 func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
@@ -2070,7 +2070,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 		ID:           id,
 		Title:        fmt.Sprintf("spawned session %d", h.spawnCount),
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   params.CWD,
 		Model:        model,
 		Live:         true,
@@ -2095,7 +2095,7 @@ func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadR
 		ID:           "02RESUME",
 		Title:        "resumed maintenance",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -2190,7 +2190,7 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 		ID:           id,
 		Title:        "cleared session",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -2198,7 +2198,7 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 	}
 	h.addSession(s)
 	thread := h.threadFromSessionLocked(s)
-	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Serf.Ref}, nil
+	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Evener.Ref}, nil
 }
 
 func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
@@ -2214,7 +2214,7 @@ func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadFor
 		ID:           id,
 		Title:        "fork child",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -2251,7 +2251,7 @@ func (h *tuiE2EHub) threadFromSessionLocked(s *tuiE2ESession) appwire.Thread {
 		Source:        "local",
 		Status:        appwire.ThreadStatus{Type: status},
 		Turns:         append([]appwire.Turn(nil), s.Turns...),
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:             appwire.Ref{SourceID: "local", ThreadID: s.ID}.String(),
 			ParentRef:       s.ParentRef,
 			Kind:            s.Kind,

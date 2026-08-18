@@ -60,14 +60,14 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 	}
 	hasSkill := false
 	for _, s := range doc.Skills {
-		if s == "doctoring-serf" {
+		if s == "doctoring-evener" {
 			hasSkill = true
 		}
 	}
 	if !hasSkill {
-		t.Errorf("doctor should auto-inject the doctoring-serf skill, got skills: %v", doc.Skills)
+		t.Errorf("doctor should auto-inject the doctoring-evener skill, got skills: %v", doc.Skills)
 	}
-	// The doctor needs shell (to run serf-doctor) and edit tools (gated Heal/Extend).
+	// The doctor needs shell (to run evener-doctor) and edit tools (gated Heal/Extend).
 	wantTools := map[string]bool{"shell": false, "write_file": false}
 	for _, tool := range doc.Tools {
 		if _, ok := wantTools[tool]; ok {
@@ -195,8 +195,8 @@ func TestBuiltinAgents_ExplorerTools(t *testing.T) {
 	}
 	explorer := agents["explorer"]
 
-	// Explorer tools should be serf canonical names only.
-	// The frontmatter uses serf names which pass through toolname.ClaudeToSerf unchanged.
+	// Explorer tools should be evener canonical names only.
+	// The frontmatter uses evener names which pass through toolname.ClaudeToSerf unchanged.
 	wantTools := map[string]bool{
 		"glob":      true,
 		"grep":      true,
@@ -243,7 +243,7 @@ func TestBuiltinAgents_ToolNamesAreCanonical(t *testing.T) {
 			// If a tool name maps to something different, it was a Claude Code name.
 			mapped := toolname.ClaudeToSerf(tool)
 			if mapped != tool {
-				t.Errorf("agent %q tool %q is a Claude Code name (maps to %q), should use serf canonical name", name, tool, mapped)
+				t.Errorf("agent %q tool %q is a Claude Code name (maps to %q), should use evener canonical name", name, tool, mapped)
 			}
 		}
 	}

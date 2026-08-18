@@ -471,7 +471,7 @@ func TestLoginWithDeviceUsercodeFailureLeavesNoAuth(t *testing.T) {
 
 // TestLoginWithDeviceDetectsConcurrentSuccess covers the kata 24p1 scenario:
 // the device-code poll never naturally succeeds (the token endpoint always
-// returns 403), but a parallel `serf openai login` writes fresh OAuth state
+// returns 403), but a parallel `evener openai login` writes fresh OAuth state
 // to disk. LoginWithDevice should detect that state and return the on-disk
 // status without waiting for the 15-minute device-code timeout.
 func TestLoginWithDeviceDetectsConcurrentSuccess(t *testing.T) {
@@ -655,7 +655,7 @@ func TestRequestDeviceCodeNotEnabledIsSentinel(t *testing.T) {
 
 // TestLoginWithDeviceIgnoresPreExistingState confirms the watcher does NOT
 // fire on auth state that pre-dates the current login attempt. A user who
-// explicitly invokes `serf openai login` while a stale record sits on disk
+// explicitly invokes `evener openai login` while a stale record sits on disk
 // expects the flow to proceed (and ultimately overwrite the stale state) —
 // not to exit immediately just because some old file exists.
 func TestLoginWithDeviceIgnoresPreExistingState(t *testing.T) {

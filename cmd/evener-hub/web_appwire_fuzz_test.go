@@ -50,7 +50,7 @@ func installDenyTransportTB(tb testing.TB) *denyTransport {
 // the test sets it before the hub is built and clears it on cleanup.
 //
 // It returns the path of a path-traversal canary: a .json file planted ONE LEVEL
-// ABOVE the contained OAuth state dir. serf/instance/remove forwards its fuzzed
+// ABOVE the contained OAuth state dir. evener/instance/remove forwards its fuzzed
 // name into authopenai.DeleteAuth, which joins it straight into a filesystem path
 // (stateDir/auth/<name>.json); a name like "../../canary" therefore resolves to
 // this canary. The oracle re-arms it before every input and fails if a handler
@@ -86,7 +86,7 @@ func installSandboxAuthSeam(tb testing.TB) (canaryPath string) {
 	return canaryPath
 }
 
-// stubSelfUpgrade replaces the serf/upgrade seam with an offline stub for the
+// stubSelfUpgrade replaces the evener/upgrade seam with an offline stub for the
 // lifetime of f and restores the real one on cleanup. It returns a benign
 // "nothing installed" result (no network, no error) so the upgrade handler runs
 // its real success-mapping path rather than manufacturing an upstream error.
@@ -99,7 +99,7 @@ func stubSelfUpgrade(f *testing.F) {
 }
 
 // buildParamsRegistry reflects every catalog method's Params type into a
-// serf-free typegen Registry keyed by "<method>#params". FuzzAppWireDispatch
+// evener-free typegen Registry keyed by "<method>#params". FuzzAppWireDispatch
 // uses it to generate schema-shaped Params values (Valid and schema-adjacent)
 // for the selected method, so dispatch exercises typed param shapes that the
 // fuzzer's raw bytes rarely form cleanly — driving the real handler logic past
@@ -132,10 +132,10 @@ func hubMethodNames() []string {
 }
 
 // pinSandboxCWD rewrites the "cwd" field of a fuzzed JSON object to the sandbox
-// working dir. The launch handlers (serf/launch/setLayer with layer "project",
+// working dir. The launch handlers (evener/launch/setLayer with layer "project",
 // and thread spawn) derive a filesystem write path from a caller-supplied,
 // already-existing cwd; an arbitrary fuzzed cwd pointing at a real external dir
-// (e.g. "/tmp") would let serf/launch/setLayer write <cwd>/.serf/launch.local.toml
+// (e.g. "/tmp") would let evener/launch/setLayer write <cwd>/.evener/launch.local.toml
 // OUTSIDE the sandbox. Pinning cwd into the sandbox keeps every cwd-derived FS
 // write contained while still fuzzing every other field. Non-object params and
 // params without a cwd are passed through untouched.
@@ -215,7 +215,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadList, `{}`},
 		{appwire.MethodThreadRead, `{"ref":"` + ref + `"}`},
 		{appwire.MethodThreadTurnsList, `{"ref":"` + ref + `"}`},
-		{appwire.MethodThreadStart, `{"harness":"serf","cwd":"x","model":"openai/gpt-5.5"}`},
+		{appwire.MethodThreadStart, `{"harness":"evener","cwd":"x","model":"openai/gpt-5.5"}`},
 		{appwire.MethodThreadResume, `{"session":"` + sandboxSessionID + `"}`},
 		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceTurnId":"turn_1","editedInput":"hi"}`},
 		{appwire.MethodTurnStart, `{"ref":"` + ref + `","input":[]}`},
@@ -224,35 +224,35 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadModelSet, `{"ref":"` + ref + `","model":"gpt-5.5"}`},
 		{appwire.MethodThreadCompactStart, `{"ref":"` + ref + `"}`},
 		{appwire.MethodModelList, `{}`},
-		{appwire.MethodSerfAuthStatus, `{"provider":"openai"}`},
-		{appwire.MethodSerfAuthLoginStart, `{"provider":"openai"}`},
-		{appwire.MethodSerfAuthLoginComplete, `{"provider":"openai","flowId":"x","redirectUrl":"http://localhost/?code=a&state=b"}`},
-		{appwire.MethodSerfAuthDeviceStart, `{"provider":"openai"}`},
-		{appwire.MethodSerfAuthDevicePoll, `{"provider":"openai","flowId":"x"}`},
-		{appwire.MethodSerfAuthApiKeySet, `{"provider":"anthropic","value":"sk-test"}`},
-		{appwire.MethodSerfAuthLogout, `{"provider":"openai"}`},
-		{appwire.MethodSerfLaunchResolve, `{"cwd":"x"}`},
-		{appwire.MethodSerfLaunchSetLayer, `{"cwd":"x","layer":"project","config":{}}`},
-		{appwire.MethodSerfLaunchGetLayer, `{"cwd":"x","layer":"global"}`},
-		{appwire.MethodSerfLaunchTrustRepo, `{"cwd":"x","hash":"deadbeef"}`},
-		{appwire.MethodSerfPathsComplete, `{"prefix":"/tmp"}`},
-		{appwire.MethodSerfProjectsRecent, `{}`},
-		{appwire.MethodSerfPathValidate, `{"path":"/tmp","kind":"dir"}`},
-		{appwire.MethodSerfHarnessesList, `{}`},
-		{appwire.MethodSerfUpgrade, `{"requested":"latest"}`},
-		{appwire.MethodSerfTasksList, `{"ref":"` + ref + `"}`},
-		{appwire.MethodSerfThreadTranscriptsList, `{"ref":"` + ref + `"}`},
-		{appwire.MethodSerfSubagentPreview, `{"ref":"` + ref + `"}`},
-		{appwire.MethodSerfInstanceList, `{}`},
-		{appwire.MethodSerfInstanceCreate, `{"name":"new","type":"anthropic"}`},
-		{appwire.MethodSerfInstanceEdit, `{"name":"work","apiStyle":"chat_completions"}`},
-		{appwire.MethodSerfInstanceSetDefault, `{"name":"key"}`},
-		{appwire.MethodSerfInstanceRemove, `{"name":"key"}`},
-		// Path-traversal attack shape: serf/instance/remove forwards this name to
+		{appwire.MethodEvenerAuthStatus, `{"provider":"openai"}`},
+		{appwire.MethodEvenerAuthLoginStart, `{"provider":"openai"}`},
+		{appwire.MethodEvenerAuthLoginComplete, `{"provider":"openai","flowId":"x","redirectUrl":"http://localhost/?code=a&state=b"}`},
+		{appwire.MethodEvenerAuthDeviceStart, `{"provider":"openai"}`},
+		{appwire.MethodEvenerAuthDevicePoll, `{"provider":"openai","flowId":"x"}`},
+		{appwire.MethodEvenerAuthApiKeySet, `{"provider":"anthropic","value":"sk-test"}`},
+		{appwire.MethodEvenerAuthLogout, `{"provider":"openai"}`},
+		{appwire.MethodEvenerLaunchResolve, `{"cwd":"x"}`},
+		{appwire.MethodEvenerLaunchSetLayer, `{"cwd":"x","layer":"project","config":{}}`},
+		{appwire.MethodEvenerLaunchGetLayer, `{"cwd":"x","layer":"global"}`},
+		{appwire.MethodEvenerLaunchTrustRepo, `{"cwd":"x","hash":"deadbeef"}`},
+		{appwire.MethodEvenerPathsComplete, `{"prefix":"/tmp"}`},
+		{appwire.MethodEvenerProjectsRecent, `{}`},
+		{appwire.MethodEvenerPathValidate, `{"path":"/tmp","kind":"dir"}`},
+		{appwire.MethodEvenerHarnessesList, `{}`},
+		{appwire.MethodEvenerUpgrade, `{"requested":"latest"}`},
+		{appwire.MethodEvenerTasksList, `{"ref":"` + ref + `"}`},
+		{appwire.MethodEvenerThreadTranscriptsList, `{"ref":"` + ref + `"}`},
+		{appwire.MethodEvenerSubagentPreview, `{"ref":"` + ref + `"}`},
+		{appwire.MethodEvenerInstanceList, `{}`},
+		{appwire.MethodEvenerInstanceCreate, `{"name":"new","type":"anthropic"}`},
+		{appwire.MethodEvenerInstanceEdit, `{"name":"work","apiStyle":"chat_completions"}`},
+		{appwire.MethodEvenerInstanceSetDefault, `{"name":"key"}`},
+		{appwire.MethodEvenerInstanceRemove, `{"name":"key"}`},
+		// Path-traversal attack shape: evener/instance/remove forwards this name to
 		// authopenai.DeleteAuth, which joins it into a filesystem path. "../../canary"
 		// resolves to the canary planted above the contained auth state dir; a hub
 		// that does not reject the name deletes a file outside its sandbox.
-		{appwire.MethodSerfInstanceRemove, `{"name":"../../canary"}`},
+		{appwire.MethodEvenerInstanceRemove, `{"name":"../../canary"}`},
 		{appwire.MethodInitialize, `{}`},
 		{"totally/unknown", `{}`},
 	}
@@ -323,7 +323,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 
 		// Oracle: no handler may have deleted a file outside the contained auth
 		// state dir. A missing canary means a fuzzed name escaped through a
-		// filesystem path join (the serf/instance/remove → DeleteAuth surface).
+		// filesystem path join (the evener/instance/remove → DeleteAuth surface).
 		if _, err := os.Stat(canary); err != nil {
 			t.Fatalf("path escape via %s: out-of-state canary was deleted (%v)", method, err)
 		}

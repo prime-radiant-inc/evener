@@ -26,7 +26,7 @@ var (
 // client makes the live-model probe fall back immediately) to run the real
 // registerCoreTools wiring, then returns the registry's schema-bearing names.
 func CoreToolNames() ([]string, error) {
-	dir, err := coreToolNamesMkdirTemp("", "serf-coretools-")
+	dir, err := coreToolNamesMkdirTemp("", "evener-coretools-")
 	if err != nil {
 		return nil, fmt.Errorf("temp dir: %w", err)
 	}

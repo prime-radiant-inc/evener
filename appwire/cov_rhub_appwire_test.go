@@ -135,7 +135,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTranscriptList", MethodSerfThreadTranscriptsList, `{"ref":"local:th"}`, ThreadTranscriptListResponse{Data: []ThreadTranscriptTarget{{Ref: "local:th"}}}, func(ctx context.Context, c *Client) error {
+		{"ThreadTranscriptList", MethodEvenerThreadTranscriptsList, `{"ref":"local:th"}`, ThreadTranscriptListResponse{Data: []ThreadTranscriptTarget{{Ref: "local:th"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadTranscriptList(ctx, ThreadTranscriptListParams{Ref: "local:th"})
 			if err != nil {
 				return err
@@ -145,8 +145,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadStart", MethodThreadStart, `{"harness":"serf","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "serf"})
+		{"ThreadStart", MethodThreadStart, `{"harness":"evener","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "evener"})
 			if err != nil {
 				return err
 			}
@@ -200,7 +200,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
 		}},
-		{"TasksList", MethodSerfTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
+		{"TasksList", MethodEvenerTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
 			"id": 5, "type": "implement", "description": "Wire up the status row",
 			"prompt": "Follow the existing disclosure idiom.", "status": "in_progress",
 		}}}, func(ctx context.Context, c *Client) error {
@@ -225,7 +225,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"PathsComplete", MethodSerfPathsComplete, `{"prefix":"/","limit":10}`, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+		{"PathsComplete", MethodEvenerPathsComplete, `{"prefix":"/","limit":10}`, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.PathsComplete(ctx, PathsCompleteParams{Prefix: "/", Limit: 10})
 			if err != nil {
 				return err
@@ -235,7 +235,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobsList", MethodSerfJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: JobActivityTree{
+		{"JobsList", MethodEvenerJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: JobActivityTree{
 			Revision: 7,
 			Root: JobActivitySession{
 				SessionID: "th",
@@ -289,7 +289,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobOutput", MethodSerfJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputTail{
+		{"JobOutput", MethodEvenerJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputTail{
 			Tail: "tail-bytes", TotalBytes: 4096, RetainedStart: 3968, Truncated: true,
 		}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
@@ -303,7 +303,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ProjectsRecent", MethodSerfProjectsRecent, `{"limit":15}`, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+		{"ProjectsRecent", MethodEvenerProjectsRecent, `{"limit":15}`, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
 			if err != nil {
 				return err
@@ -313,17 +313,17 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"HarnessList", MethodSerfHarnessesList, `{}`, HarnessListResponse{Data: []HarnessDescriptor{{ID: "serf"}}}, func(ctx context.Context, c *Client) error {
+		{"HarnessList", MethodEvenerHarnessesList, `{}`, HarnessListResponse{Data: []HarnessDescriptor{{ID: "evener"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.HarnessList(ctx, HarnessListParams{})
 			if err != nil {
 				return err
 			}
-			if len(out.Data) != 1 || out.Data[0].ID != "serf" {
+			if len(out.Data) != 1 || out.Data[0].ID != "evener" {
 				return errors.New("HarnessList decode mismatch")
 			}
 			return nil
 		}},
-		{"AuthStatus", MethodSerfAuthStatus, `{"provider":"openai"}`, AuthStatusResponse{Provider: "openai", SignedIn: true}, func(ctx context.Context, c *Client) error {
+		{"AuthStatus", MethodEvenerAuthStatus, `{"provider":"openai"}`, AuthStatusResponse{Provider: "openai", SignedIn: true}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthStatus(ctx, AuthStatusParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -333,7 +333,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLoginStart", MethodSerfAuthLoginStart, `{"provider":"openai"}`, AuthLoginStartResponse{FlowID: "f1", URL: "https://x"}, func(ctx context.Context, c *Client) error {
+		{"AuthLoginStart", MethodEvenerAuthLoginStart, `{"provider":"openai"}`, AuthLoginStartResponse{FlowID: "f1", URL: "https://x"}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthLoginStart(ctx, AuthLoginStartParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -343,7 +343,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLoginComplete", MethodSerfAuthLoginComplete, `{"provider":"openai","flowId":"f1","redirectUrl":"https://x/callback"}`, AuthLoginCompleteResponse{Status: AuthStatusResponse{SignedIn: true}}, func(ctx context.Context, c *Client) error {
+		{"AuthLoginComplete", MethodEvenerAuthLoginComplete, `{"provider":"openai","flowId":"f1","redirectUrl":"https://x/callback"}`, AuthLoginCompleteResponse{Status: AuthStatusResponse{SignedIn: true}}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthLoginComplete(ctx, AuthLoginCompleteParams{Provider: "openai", FlowID: "f1", RedirectURL: "https://x/callback"})
 			if err != nil {
 				return err
@@ -353,7 +353,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLogout", MethodSerfAuthLogout, `{"provider":"openai"}`, AuthLogoutResponse{Removed: true}, func(ctx context.Context, c *Client) error {
+		{"AuthLogout", MethodEvenerAuthLogout, `{"provider":"openai"}`, AuthLogoutResponse{Removed: true}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthLogout(ctx, AuthLogoutParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -363,8 +363,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ModelList", MethodModelList, `{"harness":"serf"}`, ModelListResponse{Data: []ModelDescriptor{{Provider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ModelList(ctx, ModelListParams{Harness: "serf"})
+		{"ModelList", MethodModelList, `{"harness":"evener"}`, ModelListResponse{Data: []ModelDescriptor{{Provider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
+			out, err := c.ModelList(ctx, ModelListParams{Harness: "evener"})
 			if err != nil {
 				return err
 			}
@@ -373,7 +373,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadNameSet", MethodSerfThreadNameSet, `{"ref":"local:th","name":"renamed"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"ThreadNameSet", MethodEvenerThreadNameSet, `{"ref":"local:th","name":"renamed"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadNameSet(ctx, ThreadNameSetParams{Ref: "local:th", Name: "renamed"})
 		}},
 		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
@@ -400,46 +400,46 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			})
 			return err
 		}},
-		{"CommandList", MethodSerfCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
-		{"MarketplaceList", MethodSerfMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
-		{"MarketplaceAdd", MethodSerfMarketplaceAdd, `{"name":"acme","source":{"kind":"git","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"CommandList", MethodEvenerCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
+		{"MarketplaceList", MethodEvenerMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
+		{"MarketplaceAdd", MethodEvenerMarketplaceAdd, `{"name":"acme","source":{"kind":"git","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "git", Repo: "acme/plugins"}})
 			return err
 		}},
-		{"MarketplaceRemove", MethodSerfMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"MarketplaceRemove", MethodEvenerMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.MarketplaceRemove(ctx, MarketplaceNameParams{Name: "acme"})
 			return err
 		}},
-		{"MarketplaceRefresh", MethodSerfMarketplaceRefresh, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"MarketplaceRefresh", MethodEvenerMarketplaceRefresh, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.MarketplaceRefresh(ctx, MarketplaceNameParams{Name: "acme"})
 			return err
 		}},
-		{"MarketplaceBrowse", MethodSerfMarketplaceBrowse, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"MarketplaceBrowse", MethodEvenerMarketplaceBrowse, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.MarketplaceBrowse(ctx, MarketplaceBrowseParams{Name: "acme"})
 			return err
 		}},
-		{"PluginList", MethodSerfPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
-		{"PluginInstall", MethodSerfPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginList", MethodEvenerPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginInstall", MethodEvenerPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginUpgrade", MethodSerfPluginUpgrade, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginUpgrade", MethodEvenerPluginUpgrade, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginUpgrade(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginRemove", MethodSerfPluginRemove, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginRemove", MethodEvenerPluginRemove, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginRemove(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginEnable", MethodSerfPluginEnable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginEnable", MethodEvenerPluginEnable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginEnable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginDisable", MethodSerfPluginDisable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginDisable", MethodEvenerPluginDisable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginDisable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginAutoUpgrade", MethodSerfPluginSetAutoUpgrade, `{"plugin":"fmt","marketplace":"acme","autoUpgrade":true}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+		{"PluginAutoUpgrade", MethodEvenerPluginSetAutoUpgrade, `{"plugin":"fmt","marketplace":"acme","autoUpgrade":true}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginSetAutoUpgrade(ctx, PluginSetAutoUpgradeParams{Plugin: "fmt", Marketplace: "acme", AutoUpgrade: true})
 			return err
 		}},
@@ -648,7 +648,7 @@ func TestRecorderStateRoot(t *testing.T) {
 
 	t.Setenv(envvars.SERFStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := recorderStateRoot(); got != "/home/tester/.serf" {
+	if got := recorderStateRoot(); got != "/home/tester/.evener" {
 		t.Fatalf("recorderStateRoot home fallback=%q", got)
 	}
 }

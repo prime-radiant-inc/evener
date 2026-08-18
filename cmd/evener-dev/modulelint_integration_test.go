@@ -88,7 +88,7 @@ func TestModuleLintHonorsARealSignalThroughTheBinary(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		scratch, err := filepath.Glob(filepath.Join(tmp, "serf-module-lint.*"))
+		scratch, err := filepath.Glob(filepath.Join(tmp, "evener-module-lint.*"))
 		if err == nil && len(scratch) > 0 {
 			break
 		}
@@ -114,7 +114,7 @@ func TestModuleLintHonorsARealSignalThroughTheBinary(t *testing.T) {
 	if last := lines[len(lines)-1]; last != "FAIL lint (interrupted: SIGTERM)" {
 		t.Errorf("final line = %q", last)
 	}
-	left, err := filepath.Glob(filepath.Join(tmp, "serf-module-lint.*"))
+	left, err := filepath.Glob(filepath.Join(tmp, "evener-module-lint.*"))
 	if err != nil || len(left) != 0 {
 		t.Errorf("interrupted binary left scratch: %v (err %v)", left, err)
 	}

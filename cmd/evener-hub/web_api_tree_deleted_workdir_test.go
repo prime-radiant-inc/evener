@@ -22,7 +22,7 @@ import (
 // replicated archived rows this regression test guards.
 func TestAPITreeDeletedWorktreeSessionsStayInOriginalProject(t *testing.T) {
 	root := t.TempDir()
-	main := filepath.Join(root, "serf")
+	main := filepath.Join(root, "evener")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +73,8 @@ func TestAPITreeDeletedWorktreeSessionsStayInOriginalProject(t *testing.T) {
 	if p.Key != mainProject.ID {
 		t.Errorf("Key = %q, want canonical %q", p.Key, mainProject.ID)
 	}
-	if p.Name != "serf" {
-		t.Errorf("Name = %q, want the original project's name %q, not a worktree leaf", p.Name, "serf")
+	if p.Name != "evener" {
+		t.Errorf("Name = %q, want the original project's name %q, not a worktree leaf", p.Name, "evener")
 	}
 	if got := p.TotalSessionCount(); got != 3 {
 		t.Errorf("TotalSessionCount = %d, want 3", got)

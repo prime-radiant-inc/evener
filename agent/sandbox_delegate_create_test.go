@@ -21,7 +21,7 @@ func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {
 	return client
 }
 
-// sandboxScratchDirs lists the per-session sandbox scratch dirs (serf-sandbox-*)
+// sandboxScratchDirs lists the per-session sandbox scratch dirs (evener-sandbox-*)
 // directly under base — the leak surface for a per-delegate sandbox whose spawn
 // fails after EnableSandbox provisioned one.
 func sandboxScratchDirs(t *testing.T, base string) []string {
@@ -32,7 +32,7 @@ func sandboxScratchDirs(t *testing.T, base string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "serf-sandbox-") {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "evener-sandbox-") {
 			out = append(out, e.Name())
 		}
 	}

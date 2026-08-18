@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"

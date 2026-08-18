@@ -71,7 +71,7 @@ func FuzzRootTUIMain(f *testing.F) {
 			parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient = oldParse, oldDirs, oldWarm, oldStart
 			probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 		})
-		processArgs = func() []string { return []string{"serf-tui", "--fixture"} }
+		processArgs = func() []string { return []string{"evener-tui", "--fixture"} }
 		processGetenv = func(string) string { return "fixture" }
 		standardError, standardOutput = &stderr, &stdout
 		parseStartupOptions = func(args []string, getenv func(string) string) (hubstart.TUIStartupOptions, error) {
@@ -150,8 +150,8 @@ func testRootTUIMainAndExecutableBoundaries(t *testing.T) {
 		t.Fatalf("exit=%d", exited)
 	}
 
-	processExecutable = func() (string, error) { return "/bin/serf-tui", nil }
-	if got := currentExecutable(); got != "/bin/serf-tui" {
+	processExecutable = func() (string, error) { return "/bin/evener-tui", nil }
+	if got := currentExecutable(); got != "/bin/evener-tui" {
 		t.Fatal(got)
 	}
 	processExecutable = func() (string, error) { return "", nil }

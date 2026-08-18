@@ -8,7 +8,7 @@ import (
 )
 
 // FuzzDiscoverSerfwideFrontmatter fuzzes command-file content and filenames
-// through serf-wide discovery: no panics, bare keys only, every rejected
+// through evener-wide discovery: no panics, bare keys only, every rejected
 // file produces a warning.
 func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
 	f.Add("review", "body")
@@ -17,7 +17,7 @@ func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
 	f.Add("", "body")
 	f.Fuzz(func(t *testing.T, name, content string) {
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-		dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "serf", "commands")
+		dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "commands")
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatal(err)
 		}

@@ -101,11 +101,11 @@ func (l *lintRun) run() int {
 	_, _ = fmt.Fprintf(l.stdout, "lint: checking %d modules\n", len(l.modules))
 
 	// Acquire reclaims this tool's dead-pid leftovers (a SIGKILLed run has
-	// no trap) before minting serf-module-lint.<pid>. A findings run keeps
+	// no trap) before minting evener-module-lint.<pid>. A findings run keeps
 	// the directory deliberately — the logs are the only record of why — so
 	// that path skips Release and the NEXT run reclaims it, the covscratch
 	// discipline the coverage runners follow.
-	scratchDir, err := scratch.Acquire("serf-module-lint", l.stderr)
+	scratchDir, err := scratch.Acquire("evener-module-lint", l.stderr)
 	if err != nil {
 		_, _ = fmt.Fprintf(l.stderr, "lint: %v\n", err)
 		rep.Fail(report.Setup, "unable to create temporary log directory")

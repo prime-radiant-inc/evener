@@ -101,7 +101,7 @@ func DeleteSidecar(metaDir, name string) error {
 }
 
 // ListSidecars reads every sidecar under metaDir. Entries that are not a
-// serf-written sidecar — non-".json" files, subdirectories, ".json" files
+// evener-written sidecar — non-".json" files, subdirectories, ".json" files
 // whose basename is not valid EncodeSidecarName output, or ".json" files
 // with unparseable content — are silently skipped rather than erroring or
 // panicking: an unmanaged file in metaDir is exactly the "unmanaged_meta"

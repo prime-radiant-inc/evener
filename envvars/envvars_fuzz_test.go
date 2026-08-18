@@ -141,7 +141,7 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 	if got, ok := Provider(raw); ok != wantOK || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Provider(%q) = %#v, %v; want %#v, %v", raw, got, ok, want, wantOK)
 	}
-	if got, ok := Provider("serf-envvars-fuzz-missing"); ok || !reflect.DeepEqual(got, ProviderEnv{}) {
+	if got, ok := Provider("evener-envvars-fuzz-missing"); ok || !reflect.DeepEqual(got, ProviderEnv{}) {
 		t.Fatalf("Provider(missing) = %#v, %v", got, ok)
 	}
 
@@ -155,7 +155,7 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 			t.Fatal("APIKeyVars returned an alias of the provider registry")
 		}
 	}
-	if APIKeyVars("serf-envvars-fuzz-missing") != nil {
+	if APIKeyVars("evener-envvars-fuzz-missing") != nil {
 		t.Fatal("APIKeyVars(missing) did not return nil")
 	}
 
@@ -165,14 +165,14 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 	if key, ok := InjectAPIKeyVar("ollama"); ok || key != (Var{}) {
 		t.Fatalf("InjectAPIKeyVar(ollama) = %#v, %v", key, ok)
 	}
-	if key, ok := InjectAPIKeyVar("serf-envvars-fuzz-missing"); ok || key != (Var{}) {
+	if key, ok := InjectAPIKeyVar("evener-envvars-fuzz-missing"); ok || key != (Var{}) {
 		t.Fatalf("InjectAPIKeyVar(missing) = %#v, %v", key, ok)
 	}
 
 	if base, ok := BaseURLVar(selected.Name); !ok || base != selected.BaseURLVars[0] {
 		t.Fatalf("BaseURLVar(%q) = %#v, %v", selected.Name, base, ok)
 	}
-	if base, ok := BaseURLVar("serf-envvars-fuzz-missing"); ok || base != (Var{}) {
+	if base, ok := BaseURLVar("evener-envvars-fuzz-missing"); ok || base != (Var{}) {
 		t.Fatalf("BaseURLVar(missing) = %#v, %v", base, ok)
 	}
 
@@ -186,7 +186,7 @@ func fuzzProviders(t *testing.T, raw string, selector uint8) {
 			t.Fatal("AuthModes returned an alias of the provider registry")
 		}
 	}
-	if AuthModes("serf-envvars-fuzz-missing") != nil {
+	if AuthModes("evener-envvars-fuzz-missing") != nil {
 		t.Fatal("AuthModes(missing) did not return nil")
 	}
 }

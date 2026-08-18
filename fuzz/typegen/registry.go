@@ -15,8 +15,8 @@ import (
 // stays in schemagen; the registry adds the catalog dimension (many named types
 // in one table), the reflect-intake path, and the per-type override table.
 //
-// It is serf-free: types enter as reflect.Type or as already-built JSON schemas,
-// never as a serf import.
+// It is evener-free: types enter as reflect.Type or as already-built JSON schemas,
+// never as a evener import.
 type Registry struct {
 	entries   map[string]map[string]any
 	overrides map[reflect.Type]map[string]any

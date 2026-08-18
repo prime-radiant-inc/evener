@@ -209,7 +209,7 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
 	if len(params.Input) > 0 {
-		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Input: params.Input})
+		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Evener.Ref, Input: params.Input})
 		if err != nil {
 			s.removeLiveThread(thread.ID, live)
 			live.retire()
@@ -323,7 +323,7 @@ func (s *CodexSource) CancelQueued(context.Context, appwire.TurnCancelQueuedPara
 }
 
 func (s *CodexSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
-	return appwire.Unavailable("codex source does not support serf/sandbox/escalation/resolve")
+	return appwire.Unavailable("codex source does not support evener/sandbox/escalation/resolve")
 }
 
 func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
@@ -362,15 +362,15 @@ func (s *CodexSource) ListModels(ctx context.Context, params appwire.ModelListPa
 }
 
 func (s *CodexSource) ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-	return appwire.TaskListResponse{}, appwire.Unavailable("codex source does not expose serf tasks")
+	return appwire.TaskListResponse{}, appwire.Unavailable("codex source does not expose evener tasks")
 }
 
 func (s *CodexSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	return appwire.JobsListResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+	return appwire.JobsListResponse{}, appwire.Unavailable("codex source does not expose evener jobs")
 }
 
 func (s *CodexSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	return appwire.JobsOutputResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("codex source does not expose evener jobs")
 }
 
 func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
@@ -495,7 +495,7 @@ func (s *CodexSource) runCodexFullReadLoop(threadID string, live *codexLiveThrea
 			if !committed {
 				return
 			}
-			live.publish(notificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+			live.publish(notificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 				ThreadID: threadID,
 				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String(),
 			}))
@@ -671,9 +671,9 @@ func codexSourceSessionUnavailable(err error) bool {
 	}
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
-		return data.SerfErrorInfo == appwire.ErrorSessionUnavailable
+		return data.EvenerErrorInfo == appwire.ErrorSessionUnavailable
 	case map[string]any:
-		return data["serfErrorInfo"] == string(appwire.ErrorSessionUnavailable)
+		return data["evenerErrorInfo"] == string(appwire.ErrorSessionUnavailable)
 	default:
 		return false
 	}
@@ -701,7 +701,7 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 		ClientInfo   appwire.ClientInfo   `json:"clientInfo"`
 		Capabilities appwire.Capabilities `json:"capabilities"`
 	}{
-		ClientInfo:   appwire.ClientInfo{Name: "serf-hub", Version: "0.1.0"},
+		ClientInfo:   appwire.ClientInfo{Name: "evener-hub", Version: "0.1.0"},
 		Capabilities: appwire.Capabilities{ExperimentalAPI: true},
 	}, &initialized); err != nil {
 		_ = transport.Close()
@@ -773,7 +773,7 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 		AgentNickname: thread.AgentNickname,
 		AgentRole:     thread.AgentRole,
 		Name:          thread.Name,
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Profile: thread.ModelProvider,
 			Ref:     ref,
 			Capabilities: appwire.ThreadCapabilities{
@@ -793,7 +793,7 @@ func (s *CodexSource) mapLifecycleThread(thread codexThread, model, modelProvide
 		out.ModelProvider = model
 	}
 	if modelProvider = strings.TrimSpace(modelProvider); modelProvider != "" {
-		out.Serf.Profile = modelProvider
+		out.Evener.Profile = modelProvider
 	}
 	return out
 }

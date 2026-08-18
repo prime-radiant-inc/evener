@@ -60,7 +60,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			if sh == "" {
 				return "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 			}
-			bucketDir = filepath.Join(sh, "serf", "projects", projectID)
+			bucketDir = filepath.Join(sh, "evener", "projects", projectID)
 		}
 		p := transcriptPath(bucketDir, sessionID)
 		if _, statErr := os.Stat(p); statErr != nil {
@@ -137,10 +137,10 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 	}
 }
 
-// enumerateBuckets returns the state-root dirs under <stateHome>/serf/projects/*.
+// enumerateBuckets returns the state-root dirs under <stateHome>/evener/projects/*.
 // It returns bucket roots, not their sessions subdirectories.
 func enumerateBuckets(stateHome string) ([]string, error) {
-	pattern := filepath.Join(stateHome, "serf", "projects", "*")
+	pattern := filepath.Join(stateHome, "evener", "projects", "*")
 	matches, err := transcriptBucketGlob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
@@ -168,22 +168,22 @@ func validLocalBucketDir(stateDir string) bool {
 }
 
 // stateHomeFor returns the stateHome (the <base> parent two levels above the
-// serf/projects/<project-id> path) for a bucket state dir, or "" if the state dir is
-// not under serf/projects/<project-id>.
+// evener/projects/<project-id> path) for a bucket state dir, or "" if the state dir is
+// not under evener/projects/<project-id>.
 func stateHomeFor(stateDir string) string {
-	// Expect the layout: <stateHome>/serf/projects/<project-id>
-	// filepath.Dir(stateDir) == <stateHome>/serf/projects
-	// filepath.Dir(that)     == <stateHome>/serf
+	// Expect the layout: <stateHome>/evener/projects/<project-id>
+	// filepath.Dir(stateDir) == <stateHome>/evener/projects
+	// filepath.Dir(that)     == <stateHome>/evener
 	// filepath.Dir(that)     == <stateHome>
 	projects := filepath.Dir(stateDir)
 	if filepath.Base(projects) != "projects" {
 		return ""
 	}
-	serf := filepath.Dir(projects)
-	if filepath.Base(serf) != "serf" {
+	evener := filepath.Dir(projects)
+	if filepath.Base(evener) != "evener" {
 		return ""
 	}
-	return filepath.Dir(serf)
+	return filepath.Dir(evener)
 }
 
 // transcriptPath builds the path to a transcript JSONL file.
@@ -229,7 +229,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		if sh == "" {
 			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 		}
-		return filepath.Join(sh, "serf", "projects", projectID), id, scopeAllProjects, nil
+		return filepath.Join(sh, "evener", "projects", projectID), id, scopeAllProjects, nil
 	}
 	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)

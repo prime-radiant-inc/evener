@@ -84,7 +84,7 @@ func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 	if !third.IsError {
 		t.Fatalf("call 3: IsError=false, output=%q", third.Output)
 	}
-	want := "serf did not execute this call: s__probe with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
+	want := "evener did not execute this call: s__probe with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
 	if !strings.HasPrefix(third.Output, want) {
 		t.Errorf("call 3 park text = %q, want prefix %q", third.Output, want)
 	}
@@ -99,7 +99,7 @@ func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 // TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError replays the
 // 034163AU8MmLapfXKT7nMu shape: the chrome plugin returned its failure with
 // IsError false and the failure as plain body text, byte-identical every
-// time. The repetition trigger catches it without serf knowing anything
+// time. The repetition trigger catches it without evener knowing anything
 // about the plugin's error convention — and never parks, so every call still
 // reaches the server.
 func TestMCPBreaker_IdenticalBodiesNudgeWithoutIsError(t *testing.T) {

@@ -98,11 +98,11 @@ func TestPastThreadRead_ReportsTheFailedToolCallCountFromTheFullTranscript(t *te
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.FailedToolCalls == nil {
-		t.Fatal("thread.Serf.FailedToolCalls = nil, want the full-transcript count")
+	if thread.Evener.FailedToolCalls == nil {
+		t.Fatal("thread.Evener.FailedToolCalls = nil, want the full-transcript count")
 	}
-	if got := *thread.Serf.FailedToolCalls; got != 2 {
-		t.Fatalf("thread.Serf.FailedToolCalls = %d, want 2", got)
+	if got := *thread.Evener.FailedToolCalls; got != 2 {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want 2", got)
 	}
 }
 
@@ -115,11 +115,11 @@ func TestPastThreadRead_ReportsZeroForASessionWhereNothingFailed(t *testing.T) {
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.FailedToolCalls == nil {
-		t.Fatal("thread.Serf.FailedToolCalls = nil, want a measured 0 for a clean session")
+	if thread.Evener.FailedToolCalls == nil {
+		t.Fatal("thread.Evener.FailedToolCalls = nil, want a measured 0 for a clean session")
 	}
-	if got := *thread.Serf.FailedToolCalls; got != 0 {
-		t.Fatalf("thread.Serf.FailedToolCalls = %d, want 0", got)
+	if got := *thread.Evener.FailedToolCalls; got != 0 {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want 0", got)
 	}
 }
 
@@ -133,11 +133,11 @@ func TestPastThreadRead_ForkFailureCountExcludesTheInheritedParentPrefix(t *test
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.FailedToolCalls == nil {
-		t.Fatal("thread.Serf.FailedToolCalls = nil, want the child's own count")
+	if thread.Evener.FailedToolCalls == nil {
+		t.Fatal("thread.Evener.FailedToolCalls = nil, want the child's own count")
 	}
-	if got := *thread.Serf.FailedToolCalls; got != 1 {
-		t.Fatalf("thread.Serf.FailedToolCalls = %d, want 1 (the parent's two failures are not the child's)", got)
+	if got := *thread.Evener.FailedToolCalls; got != 1 {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want 1 (the parent's two failures are not the child's)", got)
 	}
 }
 
@@ -154,8 +154,8 @@ func TestPastThreadRead_LegacyTranscriptLeavesTheFailureCountAbsent(t *testing.T
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("thread.Serf.FailedToolCalls = %d, want absent for an unreadable transcript", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want absent for an unreadable transcript", *thread.Evener.FailedToolCalls)
 	}
 	if thread.ID != entry.Meta.ID {
 		t.Fatalf("thread.ID = %q, want the rest of the projection intact", thread.ID)
@@ -170,8 +170,8 @@ func TestPastThreadRead_MissingTranscriptLeavesTheFailureCountAbsent(t *testing.
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("thread.Serf.FailedToolCalls = %d, want absent when the transcript is gone", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want absent when the transcript is gone", *thread.Evener.FailedToolCalls)
 	}
 }
 
@@ -191,10 +191,10 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 	if resp.OlderCursor == "" {
 		t.Fatal("OlderCursor is empty; the fixture must actually truncate for this test to mean anything")
 	}
-	if resp.Thread.Serf.FailedToolCalls == nil {
-		t.Fatal("thread.Serf.FailedToolCalls = nil on a windowed read, want the full-transcript count")
+	if resp.Thread.Evener.FailedToolCalls == nil {
+		t.Fatal("thread.Evener.FailedToolCalls = nil on a windowed read, want the full-transcript count")
 	}
-	if got := *resp.Thread.Serf.FailedToolCalls; got != 3 {
+	if got := *resp.Thread.Evener.FailedToolCalls; got != 3 {
 		t.Fatalf("windowed read reported %d failures, want 3 (the whole transcript's, not the window's)", got)
 	}
 }
@@ -211,7 +211,7 @@ func TestPastEntryThread_DoesNotDeriveTheFailureCountOnTheListSweepPath(t *testi
 		t.Fatalf("pastEntryThread: %v", err)
 	}
 
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("sweep projector reported %d failures; it must not scan transcripts", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("sweep projector reported %d failures; it must not scan transcripts", *thread.Evener.FailedToolCalls)
 	}
 }

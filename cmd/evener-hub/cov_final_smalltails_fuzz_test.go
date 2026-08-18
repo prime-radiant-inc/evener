@@ -63,7 +63,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 		}
 		status := daemonStatus{Model: "status-model", State: "active", Turns: 4, WorkingDir: "/status/work", ContextPressure: .5,
 			ContextUsed: 5, ContextWindow: 10, ContextRemaining: 5, WorkMillis: 2222,
-			Usage: &appwire.SerfUsage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6}}
+			Usage: &appwire.EvenerUsage{InputTokens: 4, OutputTokens: 2, TotalTokens: 6}}
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(status) }))
 		defer ts.Close()
 		roster := hubcore.NewRosterWithEntries(
@@ -76,7 +76,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_ = web.workspaceData("status-only")
 		status.Model, status.WorkingDir, status.State, status.Usage, status.WorkMillis, status.ContextWindow = "", "", "", nil, 0, 0
 		_ = web.workspaceData("live")
-		_ = workspaceDataFromAppThread(appwire.Thread{Status: appwire.ThreadStatus{}, Serf: appwire.SerfThread{Goal: &appwire.GoalState{Status: "active", Iterations: 2}}})
+		_ = workspaceDataFromAppThread(appwire.Thread{Status: appwire.ThreadStatus{}, Evener: appwire.EvenerThread{Goal: &appwire.GoalState{Status: "active", Iterations: 2}}})
 
 		bad := filepath.Join(root, "bad-state")
 		if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {
@@ -95,12 +95,12 @@ func FuzzFinalSmalltails(f *testing.F) {
 
 		for _, mode := range []int{0, 1} {
 			cfg := hubcore.WebConfig{Spawner: &finalSmalltailLister{mode: mode}}
-			_, _ = serfLaunchModelList(context.Background(), cfg, "")
+			_, _ = evenerLaunchModelList(context.Background(), cfg, "")
 			_ = hasSerfLaunchModelLister(cfg)
 			_ = validateSerfLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "missing", Model: "m"}, "")
 		}
 
-		thread := appwire.Thread{ID: "child", Source: "remote", Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "remote:root"}, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "agentMessage", Text: "x"}}}}}
+		thread := appwire.Thread{ID: "child", Source: "remote", Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "remote:root"}, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "agentMessage", Text: "x"}}}}}
 		_ = subagentPreviewFromThread(thread, "", 1)
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, web.sources, appwire.ThreadTranscriptListParams{})
 		_ = threadRef(appwire.Thread{})

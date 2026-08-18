@@ -35,7 +35,7 @@ func hasPluginManifest(dir string) bool {
 
 // ensureManifestFallback makes a manifest-less plugin installable by
 // honoring its marketplace entry as a fallback manifest — the fix for
-// serf's real root cause (a bare MCP/npm-package plugin with no
+// evener's real root cause (a bare MCP/npm-package plugin with no
 // .claude-plugin/plugin.json, e.g. private-journal-mcp in
 // superpowers-marketplace, had its entry's manifest-shaped fields silently
 // dropped and could not install). See the plan's Global Constraints for why
@@ -49,11 +49,11 @@ func hasPluginManifest(dir string) bool {
 // of scope for v1).
 //
 // If dir has no plugin.json:
-//   - and dir is a cache directory serf materialized (staged), it writes a
+//   - and dir is a cache directory evener materialized (staged), it writes a
 //     synthesized .claude-plugin/plugin.json built from the entry's fields,
 //     so every later Load() of dir (this install's own validation, a future
-//     session's EnabledPluginDirs(), `serf plugin list`'s Broken check,
-//     serf-doctor) finds an ordinary on-disk manifest and needs no
+//     session's EnabledPluginDirs(), `evener plugin list`'s Broken check,
+//     evener-doctor) finds an ordinary on-disk manifest and needs no
 //     special-casing. The entry may declare no components at all — Claude
 //     Code installs that shape fine (e.g. private-journal-mcp in
 //     superpowers-marketplace: a bare npm MCP-server repo with no plugin
@@ -63,7 +63,7 @@ func hasPluginManifest(dir string) bool {
 //     name/description.
 //   - and dir is NOT a cache directory (staged=false — a directory-source
 //     plugin referenced in place, a local-dev/test convenience), it returns
-//     a clear error: serf will not write a generated file into a directory
+//     a clear error: evener will not write a generated file into a directory
 //     it does not own.
 //
 // The synthesized manifest goes beyond Claude Code's zero-component parity in
@@ -78,7 +78,7 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) (note str
 		return "", nil
 	}
 	if !staged {
-		return "", fmt.Errorf("plugin %q: source has no plugin manifest; serf only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
+		return "", fmt.Errorf("plugin %q: source has no plugin manifest; evener only synthesizes a fallback manifest into a materialized cache install, not a directory source referenced in place", cp.Name)
 	}
 
 	mcpServers := cp.MCPServers
@@ -124,7 +124,7 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) (note str
 //     the cached artifact. A missing target (an unbuilt TypeScript repo whose
 //     dist/ only appears after `npm install` runs the prepare script — the
 //     real private-journal-mcp cache ships this shape) gets a note, not a
-//     broken server: serf never builds at install time.
+//     broken server: evener never builds at install time.
 //
 // The wired command is `node ${CLAUDE_PLUGIN_ROOT}/<bin path>`; Load() expands
 // the root placeholder to the installed plugin dir.

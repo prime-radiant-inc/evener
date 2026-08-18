@@ -11,7 +11,7 @@ import (
 // frontendDistHash computes a deterministic SHA256 hash of the entire
 // embedded frontend distribution directory. It walks the FS in sorted order
 // to ensure the hash is stable across builds. The hash is suitable for
-// identifying which frontend build is embedded in a running serf-hub binary.
+// identifying which frontend build is embedded in a running evener-hub binary.
 func frontendDistHash(distFS fs.FS) (string, error) {
 	h := sha256.New()
 	var paths []string

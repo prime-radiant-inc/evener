@@ -210,7 +210,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 		DelegateID: "dlg_wire", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "completed",
 		Resumable: true, ProjectionRevision: 6, Task: "task", Message: message, StructuredResult: json.RawMessage("null"), StructuredValid: &valid,
-		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.SerfUsage{InputTokens: 3, TotalTokens: 3},
+		Warnings: []string{"warning"}, Diagnostics: []string{"diagnostic"}, Usage: &appwire.EvenerUsage{InputTokens: 3, TotalTokens: 3},
 		Worktree: &appwire.JobActivityWorktree{Path: "/tmp/lane", Branch: "delegate/lane"},
 	}
 	got := appDiagnosticsFromDetailedStatus(DetailedStatus{Delegates: []DelegateStatusInfo{input}, TurnSlots: &TurnSlotStatus{InUse: 2, Cap: 50, Jobs: 1, Drives: 1}})
@@ -287,8 +287,8 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	thread := srv.appThread()
-	if !thread.Serf.AskPending {
-		t.Fatal("expected appThread().Serf.AskPending=true")
+	if !thread.Evener.AskPending {
+		t.Fatal("expected appThread().Evener.AskPending=true")
 	}
 }
 
@@ -306,13 +306,13 @@ func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	})
 
 	thread := srv.appThread()
-	if thread.Serf.ReasoningEffort != "high" {
-		t.Fatalf("ReasoningEffort = %q, want high", thread.Serf.ReasoningEffort)
+	if thread.Evener.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want high", thread.Evener.ReasoningEffort)
 	}
-	if len(thread.Serf.ReasoningEffortLevels) != 3 {
-		t.Fatalf("ReasoningEffortLevels = %v, want 3 levels", thread.Serf.ReasoningEffortLevels)
+	if len(thread.Evener.ReasoningEffortLevels) != 3 {
+		t.Fatalf("ReasoningEffortLevels = %v, want 3 levels", thread.Evener.ReasoningEffortLevels)
 	}
-	if !thread.Serf.SupportsReasoning {
+	if !thread.Evener.SupportsReasoning {
 		t.Fatal("SupportsReasoning = false, want true")
 	}
 }
@@ -398,7 +398,7 @@ func TestAppTurnSnapshotReducesAssistantMessageReset(t *testing.T) {
 	}
 }
 
-// TestAppTurnSnapshotReducesSteeringIntoActiveTurn covers serf/steering/injected.
+// TestAppTurnSnapshotReducesSteeringIntoActiveTurn covers evener/steering/injected.
 // Steering is the only item the daemon adds to a turn it did not itself start,
 // and it carries identity (client mutation ID) the pane needs to retire its
 // optimistic copy. A reducer that drops it loses the user's own message from
@@ -416,13 +416,13 @@ func TestAppTurnSnapshotReducesSteeringIntoActiveTurn(t *testing.T) {
 			ThreadID: "th_1",
 			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
 		}),
-		appTurnSnapshotRecord(t, 2, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID:         "th_1",
 			Text:             "first steer",
 			Source:           "user",
 			ClientMutationID: "mutation-a",
 		}),
-		appTurnSnapshotRecord(t, 3, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 3, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1",
 			Text:     "second steer",
 			Images:   []appwire.InputItem{{Type: "image", MediaType: "image/png", Data: []byte("steer-image"), Name: "steer.png"}},
@@ -548,7 +548,7 @@ func TestAppTurnSnapshotSteeringIndexIsPerTurn(t *testing.T) {
 		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
 			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
 		}),
-		appTurnSnapshotRecord(t, 2, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "steer turn 1",
 		}),
 		appTurnSnapshotRecord(t, 3, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
@@ -557,7 +557,7 @@ func TestAppTurnSnapshotSteeringIndexIsPerTurn(t *testing.T) {
 		appTurnSnapshotRecord(t, 4, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
 			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress},
 		}),
-		appTurnSnapshotRecord(t, 5, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 5, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "steer turn 2",
 		}),
 	})
@@ -595,7 +595,7 @@ func TestAppTurnSnapshotSeedReplacesPriorReducedState(t *testing.T) {
 	snapshot.Seed([]appwire.Turn{{ID: "seeded_turn", Status: appwire.TurnStatusInProgress}})
 
 	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 9, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 9, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "after seed",
 		}),
 	})
@@ -627,7 +627,7 @@ func TestAppTurnSnapshotSeedWithoutLiveTurnClearsSteeringTarget(t *testing.T) {
 	snapshot.Seed([]appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}})
 
 	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 2, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 2, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "steer nothing",
 		}),
 	})
@@ -654,7 +654,7 @@ func TestAppTurnSnapshotSeedFindsLastInProgressTurn(t *testing.T) {
 	})
 
 	snapshot.Apply([]appserver.SequencedNotification{
-		appTurnSnapshotRecord(t, 1, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 1, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "steer the live turn",
 		}),
 	})
@@ -686,7 +686,7 @@ func TestAppTurnSnapshotCompletedTurnClearsActiveSteeringTarget(t *testing.T) {
 			ThreadID: "th_1",
 			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted},
 		}),
-		appTurnSnapshotRecord(t, 3, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		appTurnSnapshotRecord(t, 3, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 			ThreadID: "th_1", Text: "steer after completion",
 		}),
 	})

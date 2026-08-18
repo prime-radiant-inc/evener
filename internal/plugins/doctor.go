@@ -118,14 +118,14 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 		return []DoctorFinding{{
 			Level: LevelFail, Category: catRegistry,
 			Message:     fmt.Sprintf("%s: install path %s is inaccessible: %v", key, e.InstallPath, err),
-			Remediation: fmt.Sprintf("run `serf plugin remove %s` to drop the orphaned entry, or `serf plugin upgrade %s` to re-materialize it", key, key),
+			Remediation: fmt.Sprintf("run `evener plugin remove %s` to drop the orphaned entry, or `evener plugin upgrade %s` to re-materialize it", key, key),
 		}}
 	}
 	if !info.IsDir() {
 		return []DoctorFinding{{
 			Level: LevelFail, Category: catRegistry,
 			Message:     fmt.Sprintf("%s: install path %s is not a directory", key, e.InstallPath),
-			Remediation: fmt.Sprintf("run `serf plugin remove %s` to drop the orphaned entry", key),
+			Remediation: fmt.Sprintf("run `evener plugin remove %s` to drop the orphaned entry", key),
 		}}
 	}
 
@@ -136,9 +136,9 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 		// short-circuit) would make "run upgrade" a permanent no-op, so it
 		// gets an honest alternative instead of a remediation that can never
 		// clear the warning.
-		remediation := fmt.Sprintf("run `serf plugin upgrade %s` to resync the registry", key)
+		remediation := fmt.Sprintf("run `evener plugin upgrade %s` to resync the registry", key)
 		if sourceCannotUpgrade(e.Source) {
-			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a directory source; run `serf plugin remove %s` then `serf plugin install %s` to resync the recorded version", key, key, key)
+			remediation = fmt.Sprintf("%s's plugin.json was edited in place, which is expected for a directory source; run `evener plugin remove %s` then `evener plugin install %s` to resync the recorded version", key, key, key)
 		}
 		findings = append(findings, DoctorFinding{
 			Level: LevelWarn, Category: catRegistry,
@@ -152,7 +152,7 @@ func (m *Manager) doctorEntry(key string, e InstallEntry) []DoctorFinding {
 			findings = append(findings, DoctorFinding{
 				Level: LevelFail, Category: catComponent,
 				Message:     fmt.Sprintf("%s: %v", key, err),
-				Remediation: fmt.Sprintf("fix the plugin's manifest/components, or run `serf plugin disable %s`", key),
+				Remediation: fmt.Sprintf("fix the plugin's manifest/components, or run `evener plugin disable %s`", key),
 			})
 		} else {
 			findings = append(findings, DoctorFinding{
@@ -226,7 +226,7 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 				findings = append(findings, DoctorFinding{
 					Level: LevelWarn, Category: catRegistry,
 					Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
-					Remediation: "run `serf plugin gc` to reclaim disk space",
+					Remediation: "run `evener plugin gc` to reclaim disk space",
 				})
 			}
 		}
@@ -247,9 +247,9 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	// A directory source has nothing to fetch — RefreshMarketplace only bumps
 	// its timestamp for one — so a broken pointer needs re-adding, not a
 	// refresh.
-	fixIt := fmt.Sprintf("run `serf plugin marketplace refresh %s`", name)
+	fixIt := fmt.Sprintf("run `evener plugin marketplace refresh %s`", name)
 	if ref.Source.Kind == SourceDirectory {
-		fixIt = fmt.Sprintf("the referenced directory is gone or invalid; run `serf plugin marketplace remove %s` and re-add it with a valid path", name)
+		fixIt = fmt.Sprintf("the referenced directory is gone or invalid; run `evener plugin marketplace remove %s` and re-add it with a valid path", name)
 	}
 
 	info, err := doctorStat(ref.InstallLocation)
@@ -284,7 +284,7 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 			return DoctorFinding{
 				Level: LevelWarn, Category: catMarketplace,
 				Message:     fmt.Sprintf("%s: last updated %s ago", name, age.Round(time.Hour)),
-				Remediation: fmt.Sprintf("run `serf plugin marketplace refresh %s`", name),
+				Remediation: fmt.Sprintf("run `evener plugin marketplace refresh %s`", name),
 			}
 		}
 	}

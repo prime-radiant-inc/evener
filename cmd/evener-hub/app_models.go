@@ -57,7 +57,7 @@ func attachRecentModels(cfg hubcore.WebConfig, resp appwire.ModelListResponse) a
 
 func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	harness := strings.TrimSpace(params.Harness)
-	if harness != "" && harness != "serf" && harness != "local" {
+	if harness != "" && harness != "evener" && harness != "local" {
 		source, err := sourceForModelHarness(ctx, cfg, sources, harness)
 		if err != nil {
 			return appwire.ModelListResponse{}, err
@@ -73,7 +73,7 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		return resp, nil
 	}
 
-	launchResp, err := serfLaunchModelList(ctx, cfg, params.CWD)
+	launchResp, err := evenerLaunchModelList(ctx, cfg, params.CWD)
 	if hasSerfLaunchModelLister(cfg) {
 		if err != nil {
 			return appwire.ModelListResponse{}, err
@@ -101,8 +101,8 @@ func sourceForModelHarness(ctx context.Context, cfg hubcore.WebConfig, sources *
 	return source, nil
 }
 
-func validateSerfLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmdutil.ModelRef, workingDir string) error {
-	contract, err := serfLaunchModelList(ctx, cfg, workingDir)
+func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmdutil.ModelRef, workingDir string) error {
+	contract, err := evenerLaunchModelList(ctx, cfg, workingDir)
 	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
 		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
 	}
@@ -119,9 +119,9 @@ func validateSerfLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmd
 		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider, cfg.ProviderConfig) {
 			return nil
 		}
-		return appwire.HubLaunchError("model provider is not reported by the Serf launch harness: " + ref.Provider)
+		return appwire.HubLaunchError("model provider is not reported by the Evener launch harness: " + ref.Provider)
 	}
-	return appwire.HubLaunchError("model is not configured for Serf launch: " + ref.Qualified())
+	return appwire.HubLaunchError("model is not configured for Evener launch: " + ref.Qualified())
 }
 
 // behaviorTagFromConfig resolves a provider instance name to its behavior tag
@@ -154,9 +154,9 @@ func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, prov
 	return false
 }
 
-func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir string) (appwire.ModelListResponse, error) {
+func evenerLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir string) (appwire.ModelListResponse, error) {
 	if strings.TrimSpace(workingDir) != "" {
-		if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
+		if lister, ok := cfg.Spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
 			resp, err := lister.ListLaunchModelContractForWorkingDir(ctx, workingDir)
 			if err != nil {
 				return appwire.ModelListResponse{}, err
@@ -166,7 +166,7 @@ func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir 
 			return resp, nil
 		}
 	}
-	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
+	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractLister); ok && lister != nil {
 		resp, err := lister.ListLaunchModelContract(ctx)
 		if err != nil {
 			return appwire.ModelListResponse{}, err
@@ -175,7 +175,7 @@ func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir 
 		resp.Diagnostics = sanitizeModelDiagnostics(resp.Diagnostics)
 		return resp, nil
 	}
-	lister, ok := cfg.Spawner.(SerfLaunchModelLister)
+	lister, ok := cfg.Spawner.(EvenerLaunchModelLister)
 	if !ok || lister == nil {
 		return appwire.ModelListResponse{}, nil
 	}
@@ -187,13 +187,13 @@ func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir 
 }
 
 func hasSerfLaunchModelLister(cfg hubcore.WebConfig) bool {
-	if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
+	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
 		return true
 	}
-	if lister, ok := cfg.Spawner.(SerfLaunchModelContractLister); ok && lister != nil {
+	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractLister); ok && lister != nil {
 		return true
 	}
-	if lister, ok := cfg.Spawner.(SerfLaunchModelLister); ok && lister != nil {
+	if lister, ok := cfg.Spawner.(EvenerLaunchModelLister); ok && lister != nil {
 		return true
 	}
 	return false
@@ -229,8 +229,8 @@ func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwi
 }
 
 func launchHarnessDescriptors(cfg hubcore.WebConfig) []appwire.HarnessDescriptor {
-	out := []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}
-	seen := map[string]bool{"serf": true}
+	out := []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}}
+	seen := map[string]bool{"evener": true}
 	for _, source := range cfg.CodexSources {
 		id := strings.TrimSpace(source.ID)
 		if id == "" {

@@ -193,7 +193,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 		Type:    "stdio",
 		Command: "npx",
 		Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
-		Env:     map[string]string{"MCP_TEST_MARKER": "serf_integration_12345"},
+		Env:     map[string]string{"MCP_TEST_MARKER": "evener_integration_12345"},
 	}}, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -217,8 +217,8 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	if !strings.Contains(result.Output, "MCP_TEST_MARKER") {
 		t.Errorf("output missing MCP_TEST_MARKER key: %s", result.Output)
 	}
-	if !strings.Contains(result.Output, "serf_integration_12345") {
-		t.Errorf("output missing serf_integration_12345 value: %s", result.Output)
+	if !strings.Contains(result.Output, "evener_integration_12345") {
+		t.Errorf("output missing evener_integration_12345 value: %s", result.Output)
 	}
 }
 

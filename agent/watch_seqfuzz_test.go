@@ -55,7 +55,7 @@ import (
 //
 // All new symbols are ws_-prefixed so this file never collides with the
 // delegate-sequence fuzzer a parallel effort adds to package agent.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestWatchSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestWatchSeqFuzz -count=1 -v")

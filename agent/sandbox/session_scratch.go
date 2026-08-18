@@ -16,11 +16,11 @@ var (
 )
 
 const (
-	// sessionScratchPrefix reserves the children that Serf may remove from a
+	// sessionScratchPrefix reserves the children that Evener may remove from a
 	// selected scratch base.
-	sessionScratchPrefix = "serf-sandbox-"
+	sessionScratchPrefix = "evener-sandbox-"
 	// sessionScratchLeaseName is held for the lifetime of a live scratch owner.
-	sessionScratchLeaseName = ".serf-session.lock"
+	sessionScratchLeaseName = ".evener-session.lock"
 )
 
 var crashedSessionScratchMaxAge = 24 * time.Hour
@@ -151,7 +151,7 @@ func (s *SessionScratch) Cleanup() error {
 	return errors.Join(releaseErr, os.RemoveAll(dir))
 }
 
-// sweepCrashedSessionScratch removes old Serf-owned children only when their
+// sweepCrashedSessionScratch removes old Evener-owned children only when their
 // lease is currently acquirable. Errors leave the candidate untouched.
 func sweepCrashedSessionScratch(base string) {
 	entries, err := sessionScratchReadDir(base)

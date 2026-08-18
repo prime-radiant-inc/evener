@@ -641,7 +641,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// A goal continuation decided at the gate is deferred across an interleaved
 	// notification turn and then run INLINE (via continue), so the goal advances
 	// without depending on the idle kick (which no-ops when kickFunc==nil, e.g.
-	// one-shot `serf run`). haveDeferredCont guards both the "don't re-fold while a
+	// one-shot `evener run`). haveDeferredCont guards both the "don't re-fold while a
 	// continuation is already pending" case and the inline run below. The gate-time
 	// render is NOT cached: the inline site re-reads the store and re-renders the
 	// current objective, so a clear/retarget during the interleaved notification turn
@@ -918,7 +918,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			continue
 		}
 		// Run the deferred continuation INLINE (via continue, not the idle kick) so
-		// the goal advances even when kickFunc==nil (e.g. one-shot `serf run` with a
+		// the goal advances even when kickFunc==nil (e.g. one-shot `evener run` with a
 		// restored active goal whose model spawned a subagent).
 		//
 		// Gated on !awaiting (spec §5.3): haveDeferredCont can still be true here

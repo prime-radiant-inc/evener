@@ -17,7 +17,7 @@ var credentialBlocklistSuffixes = []string{
 
 // sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
 // confinement — empty (unset) or "off" (case/space-insensitive). sandbox_net has
-// no effect in that state (serf ignores --sandbox-net without a sandbox mode), so
+// no effect in that state (evener ignores --sandbox-net without a sandbox mode), so
 // ToArgs suppresses the flag and mergeLayers warns.
 func sandboxModeIsOff(mode string) bool {
 	m := strings.ToLower(strings.TrimSpace(mode))
@@ -25,8 +25,8 @@ func sandboxModeIsOff(mode string) bool {
 }
 
 // isKnownSandboxMode reports whether mode is one of the sandbox modes the schema
-// offers (and serf's --sandbox flag accepts), tolerating surrounding whitespace and
-// case the way serf's ParseMode does. Derived from sandboxChoices so the launch UI
+// offers (and evener's --sandbox flag accepts), tolerating surrounding whitespace and
+// case the way evener's ParseMode does. Derived from sandboxChoices so the launch UI
 // and this validation never drift; the empty choice ("(default)") is unset, not a
 // mode. Kept in this package rather than importing agent/sandbox, matching how the
 // choice list is already hardcoded here.
@@ -261,7 +261,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				if prev, ok := mcpNames[m.Name]; ok {
 					diags = append(diags, Diagnostic{
 						Layer: name, Field: "mcps",
-						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); serf launch-check will reject this", m.Name, prev),
+						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); evener launch-check will reject this", m.Name, prev),
 					})
 				} else {
 					mcpNames[m.Name] = name
@@ -291,7 +291,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		}
 	}
 
-	// A typo'd sandbox mode merges cleanly and would only fail at spawn (serf's
+	// A typo'd sandbox mode merges cleanly and would only fail at spawn (evener's
 	// ParseMode dies) with no launch-config pointer at the typo. Warn here; the
 	// fail-loud-at-spawn stays as the backstop.
 	if eff.Sandbox != "" && !isKnownSandboxMode(eff.Sandbox) {
@@ -303,7 +303,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 	}
 
 	// sandbox_net only takes effect alongside a non-off sandbox mode. A merged
-	// effective config with net set but no (or off) mode is a silent no-op at serf
+	// effective config with net set but no (or off) mode is a silent no-op at evener
 	// serve (mirroring the delegate path, which now refuses the same combination), so
 	// warn. Checked on the EFFECTIVE config, not per layer, because the mode and net
 	// may legitimately arrive from different layers.

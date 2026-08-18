@@ -204,7 +204,7 @@ func scriptedWorktreeStep(t *testing.T, h *scriptedWorktreeSession, step int, ra
 		if entry == nil {
 			return
 		}
-		foreign := "serf:foreign-" + fmt.Sprint(step)
+		foreign := "evener:foreign-" + fmt.Sprint(step)
 		h.setLock(entry.path, foreign)
 		before := h.s.currentEnv().WorkingDirectory()
 		if _, err := h.exec(map[string]any{"operation": "switch", "name": entry.branch}); err == nil {

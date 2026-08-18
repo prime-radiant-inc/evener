@@ -736,7 +736,7 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	if req.ThreadID != sess.ID() {
 		t.Fatalf("ThreadID = %q, want %q", req.ThreadID, sess.ID())
 	}
-	wantPromptCacheKey := "serf-session-" + sess.ID()
+	wantPromptCacheKey := "evener-session-" + sess.ID()
 	if req.PromptCacheKey != wantPromptCacheKey {
 		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, wantPromptCacheKey)
 	}
@@ -1633,7 +1633,7 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if d.Source != "serf" || d.Title != "Serf configuration error" {
+		if d.Source != "evener" || d.Title != "Evener configuration error" {
 			t.Fatalf("error diagnostic=%+v", d)
 		}
 		return
@@ -1668,7 +1668,7 @@ func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if d.Source != "serf" || d.Title != "Serf error" {
+		if d.Source != "evener" || d.Title != "Evener error" {
 			t.Fatalf("error diagnostic=%+v", d)
 		}
 		return
@@ -2011,9 +2011,9 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	}
 }
 
-// TestProcessInput_ToolChoiceIsNeverForced pins the decision that serf asks for
+// TestProcessInput_ToolChoiceIsNeverForced pins the decision that evener asks for
 // a tool call rather than forcing one. Forcing is unsafe against the arbitrary
-// gateways and models serf targets: a model that cannot honor a forcing
+// gateways and models evener targets: a model that cannot honor a forcing
 // tool_choice has no legal way to stop, and glm-5.2-vision demonstrably runs
 // away under it (measured 3/3 non-terminating responses, 83-373 tool calls, no
 // finish_reason, against 3/3 clean single-call responses under "auto").

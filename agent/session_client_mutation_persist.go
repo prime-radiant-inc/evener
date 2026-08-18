@@ -170,7 +170,7 @@ type clientMutationPendingExecutionJSON struct {
 }
 
 type clientMutationErrorDataJSON struct {
-	SerfErrorInfo    appwire.ErrorInfo        `json:"serf_error_info"`
+	EvenerErrorInfo    appwire.ErrorInfo        `json:"evener_error_info"`
 	ClientMutationID string                   `json:"client_mutation_id,omitempty"`
 	MutationOutcome  appwire.MutationOutcome  `json:"mutation_outcome,omitempty"`
 	RetryDisposition appwire.RetryDisposition `json:"retry_disposition,omitempty"`
@@ -188,7 +188,7 @@ func (rejection clientMutationRejection) MarshalJSON() ([]byte, error) {
 		Code:    rejection.Code,
 		Message: rejection.Message,
 		Data: clientMutationErrorDataJSON{
-			SerfErrorInfo:    rejection.Data.SerfErrorInfo,
+			EvenerErrorInfo:    rejection.Data.EvenerErrorInfo,
 			ClientMutationID: rejection.Data.ClientMutationID,
 			MutationOutcome:  rejection.Data.MutationOutcome,
 			RetryDisposition: rejection.Data.RetryDisposition,
@@ -211,7 +211,7 @@ func (rejection *clientMutationRejection) UnmarshalJSON(data []byte) error {
 		Code:    stored.Code,
 		Message: stored.Message,
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    stored.Data.SerfErrorInfo,
+			EvenerErrorInfo:    stored.Data.EvenerErrorInfo,
 			ClientMutationID: stored.Data.ClientMutationID,
 			MutationOutcome:  stored.Data.MutationOutcome,
 			RetryDisposition: stored.Data.RetryDisposition,

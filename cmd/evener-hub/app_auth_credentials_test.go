@@ -56,7 +56,7 @@ func (f *credentialProbeFakeClient) callCount() int {
 }
 
 // clearProviderKeysFromEnvironment unsets every API key the envvars registry
-// knows about, for the duration of the test. serf/auth/test asks
+// knows about, for the duration of the test. evener/auth/test asks
 // credentials.Store.ResolveKey whether an instance has a credential, and that
 // reads the environment — so a test asserting an instance is unconfigured means
 // nothing unless it states that the environment holds no key for it
@@ -350,7 +350,7 @@ func TestAuthTestRPCUsesSharedContract(t *testing.T) {
 
 	raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
 		ID:     appwire.NewIntID(1),
-		Method: appwire.MethodSerfAuthTest,
+		Method: appwire.MethodEvenerAuthTest,
 		Params: mustMarshal(t, appwire.AuthTestParams{Provider: "gateway"}),
 	})
 	if err != nil {

@@ -42,8 +42,8 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("launch check output=%+v", out)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "serf-appwire-v3" {
-		t.Fatalf("out.Protocol=%q, want \"serf-appwire-v3\"", out.Protocol)
+	if out.Protocol != "evener-appwire-v3" {
+		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v3\"", out.Protocol)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
 func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
-		"--protocol", "serf-appwire-v0",
+		"--protocol", "evener-appwire-v0",
 		"--model", "openrouter/free",
 		"--json",
 	}, &stdout, &stderr)

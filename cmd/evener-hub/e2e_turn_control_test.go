@@ -24,7 +24,7 @@ import (
 // TestE2E_TurnControlReachesTheSession drives the three mid-turn controls the
 // web composer exposes — Steer, Send (which routes to turn/queue while a turn
 // is running), and Stop — over the hub's AppWire socket against a real
-// serf-hub process and the real serf daemon it spawns, and asserts each one
+// evener-hub process and the real evener daemon it spawns, and asserts each one
 // reaches the session rather than merely returning an applied receipt.
 //
 // "Reaches the session" is asserted at the model boundary, which is the only
@@ -36,7 +36,7 @@ import (
 //
 // The provider is fakellm, so the turn stays in flight for exactly as long as
 // the test declines to answer the model call — no pacing prompt, no sleeps,
-// no credential, no network (AGENTS.md: serf plumbing gets a scripted
+// no credential, no network (AGENTS.md: evener plumbing gets a scripted
 // provider; only model behaviour stays live).
 func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	if testing.Short() {
@@ -63,7 +63,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -72,9 +72,9 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	if ref == "" {
-		t.Fatalf("thread/start returned no serf ref: %+v", started.Thread)
+		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
 	}
 	// The daemon is a grandchild process that deliberately outlives the hub,
 	// so killing the hub alone leaks it. Shut the thread down first —
@@ -127,7 +127,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 		t.Fatalf("turn/queue disposition = %q, want %q", queueReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
 	}
 	awaitThread(ctx, t, client, ref, "queue depth 1", func(thread appwire.Thread) bool {
-		return thread.Serf.Queue.Depth == 1
+		return thread.Evener.Queue.Depth == 1
 	})
 
 	// Let the round finish with a tool call: steering is injected between the
@@ -144,7 +144,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 			steerText, strings.Join(round2.Texts(), "\n"))
 	}
 
-	// End the first turn. A serf turn ends on communicate(end_turn=true), not
+	// End the first turn. A evener turn ends on communicate(end_turn=true), not
 	// on bare assistant text — bare text earns a repair round instead.
 	round2.RespondToolCall("communicate", communicateArgs("first turn done"))
 
@@ -170,7 +170,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
 	}
 	awaitThread(ctx, t, client, ref, "the interrupted turn to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID != secondTurn
+		return thread.Evener.ActiveTurnID != secondTurn
 	})
 }
 
@@ -205,7 +205,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -214,7 +214,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -232,7 +232,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
 	opening.RespondToolCall("communicate", communicateArgs("opening turn done"))
 	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == ""
+		return thread.Evener.ActiveTurnID == ""
 	})
 
 	if _, err := clientRequest[appwire.GoalSetResponse](ctx, client, appwire.MethodGoalSet, appwire.GoalSetParams{
@@ -282,7 +282,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
 	}
 	awaitThread(ctx, t, client, ref, "the interrupted goal turn to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID != goalTurn
+		return thread.Evener.ActiveTurnID != goalTurn
 	})
 }
 
@@ -327,7 +327,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	releasePath := filepath.Join(stack.workDir, releaseName)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: "SERF-E2E-NOTIFICATION-OPENING"}},
 		Model:           stack.model,
@@ -336,7 +336,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -363,7 +363,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	round2.RespondToolCall("communicate", communicateArgs("job launched"))
 
 	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == ""
+		return thread.Evener.ActiveTurnID == ""
 	})
 
 	// Idle. Releasing the job now makes its completion an idle wake.
@@ -377,7 +377,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	}
 	var notificationTurn string
 	awaitThread(ctx, t, client, ref, "the notification turn to be named", func(thread appwire.Thread) bool {
-		id := thread.Serf.ActiveTurnID
+		id := thread.Evener.ActiveTurnID
 		if id == "" || id == firstTurn || !strings.HasPrefix(id, "turn_m") {
 			return false
 		}
@@ -419,7 +419,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 		t.Fatalf("turn/interrupt disposition = %q, want %q", interruptReceipt.Receipt.Disposition, appwire.MutationDispositionApplied)
 	}
 	awaitThread(ctx, t, client, ref, "the interrupted notification turn to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID != notificationTurn
+		return thread.Evener.ActiveTurnID != notificationTurn
 	})
 }
 
@@ -434,10 +434,10 @@ func awaitActiveTurn(ctx context.Context, t *testing.T, client *appwire.Client, 
 		if thread.Status.Type != "active" {
 			return false
 		}
-		if thread.Serf.ActiveTurnID == "" || thread.Serf.ActiveTurnID == excluding {
+		if thread.Evener.ActiveTurnID == "" || thread.Evener.ActiveTurnID == excluding {
 			return false
 		}
-		turnID = thread.Serf.ActiveTurnID
+		turnID = thread.Evener.ActiveTurnID
 		return true
 	})
 	return turnID
@@ -462,10 +462,10 @@ func awaitThread(ctx context.Context, t *testing.T, client *appwire.Client, ref,
 		}
 	}
 	t.Fatalf("timed out waiting for %s; last thread status=%q activeTurnId=%q queueDepth=%d",
-		what, last.Status.Type, last.Serf.ActiveTurnID, last.Serf.Queue.Depth)
+		what, last.Status.Type, last.Evener.ActiveTurnID, last.Evener.Queue.Depth)
 }
 
-// communicateArgs is a schema-valid communicate(end_turn=true) call: serf's
+// communicateArgs is a schema-valid communicate(end_turn=true) call: evener's
 // tool schema requires the full output envelope, and a call missing it is
 // rejected and answered with a repair round instead of ending the turn.
 func communicateArgs(message string) map[string]any {
@@ -495,7 +495,7 @@ func newMutationID(t *testing.T) string {
 	return id
 }
 
-// hubStack is a running serf-hub process on an isolated HOME, pointed at a
+// hubStack is a running evener-hub process on an isolated HOME, pointed at a
 // fake provider, plus the workspace sessions are spawned into.
 type hubStack struct {
 	addr         string
@@ -527,14 +527,14 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	// thread down. Close is what ends the loop here.
 	client.Start(context.Background())
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
-		ClientInfo: appwire.ClientInfo{Name: "serf-e2e-turn-control", Version: "test"},
+		ClientInfo: appwire.ClientInfo{Name: "evener-e2e-turn-control", Version: "test"},
 	}); err != nil {
 		t.Fatalf("appwire initialize: %v", err)
 	}
 	return client
 }
 
-// liveStackBinaries builds serf and serf-hub once per test binary and hands
+// liveStackBinaries builds evener and evener-hub once per test binary and hands
 // every stack the same directory. Each `go build` is a heavy compile running
 // inside an already-parallel `go test ./...`; doing it per test spiked the
 // load enough to starve an unrelated package's FIFO handshake into its
@@ -598,11 +598,11 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 
 	binDir := liveStackBinaries(t, repoRoot)
 
-	serfDir := filepath.Join(home, ".serf")
-	if err := os.MkdirAll(serfDir, 0o700); err != nil {
+	evenerDir := filepath.Join(home, ".evener")
+	if err := os.MkdirAll(evenerDir, 0o700); err != nil {
 		t.Fatalf("create hub state root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(serfDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(evenerDir, "providers.toml"), []byte(providersTOML), 0o600); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
 	}
 
@@ -624,7 +624,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(filepath.Join(binDir, "serf-hub"), "--addr", hubAddr, "--serf", filepath.Join(binDir, "serf"))
+	hub := exec.Command(filepath.Join(binDir, "evener-hub"), "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
 	hub.Env = append(os.Environ(), "HOME="+home)
 	hubLog, err := os.Create(filepath.Join(home, "hub.log"))
 	if err != nil {
@@ -645,7 +645,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 			// Daemons are grandchildren the hub deliberately outlives, and
 			// thread/shutdown is asynchronous — a daemon parked in a held
 			// model round can still be alive here. Reap by the pid the hub
-			// announced, so a passing test leaves no stray serf processes.
+			// announced, so a passing test leaves no stray evener processes.
 			reapDaemons(t, string(body))
 		}
 		if t.Failed() && readErr == nil {
@@ -655,7 +655,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 
 	awaitHubReady(t, hubAddr)
 
-	token, err := os.ReadFile(filepath.Join(serfDir, "auth-token"))
+	token, err := os.ReadFile(filepath.Join(evenerDir, "auth-token"))
 	if err != nil {
 		t.Fatalf("read hub auth token: %v", err)
 	}

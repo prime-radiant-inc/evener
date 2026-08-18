@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -10,7 +10,7 @@ import (
 )
 
 // scenarioPatternKillPattern matches the two commands that kill by name rather
-// than by pid: `pkill -f serf-hub`, `killall serf`. Both signal every process
+// than by pid: `pkill -f evener-hub`, `killall evener`. Both signal every process
 // on the box whose command line matches, so a card that runs one reaches
 // straight into another agent's run — the hub it is mid-scenario against, the
 // login flow it is waiting on, the producer whose output it is about to read.
@@ -40,26 +40,26 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 	"docs/agentic-testing.md": {
 		"instead of by `pkill -f`. Those are the same two files",
 		"(not `pkill -f`, which would also kill any other concurrent agent's hub)",
-		"# `pkill -f serf-hub-test` pattern match, which would also kill any other",
+		"# `pkill -f evener-hub-test` pattern match, which would also kill any other",
 	},
 	"test/scenarios/ask-noninteractive-invisible.md": {
-		"`pkill -f serf-hub`, which takes out every other concurrent agent's hub too",
+		"`pkill -f evener-hub`, which takes out every other concurrent agent's hub too",
 	},
 	"test/scenarios/ask-restart-rederive.md": {
 		"never a `pkill -f serve` pattern, which would also kill a concurrent agent's",
 	},
 	"test/scenarios/ask-subagent-invisible.md": {
-		"`pkill -f serf-hub`, which takes out every other concurrent agent's hub too",
+		"`pkill -f evener-hub`, which takes out every other concurrent agent's hub too",
 	},
 	"test/scenarios/ask-tui-answer.md": {
-		"Never `pkill -f serf-hub`, which takes out every",
+		"Never `pkill -f evener-hub`, which takes out every",
 	},
 	"test/scenarios/attention-needs-you-end-to-end.md": {
-		"never `pkill -f serf-hub`, which would also kill a",
+		"never `pkill -f evener-hub`, which would also kill a",
 	},
 	"test/scenarios/auth-device-poll-concurrent.md": {
-		"`pkill -f 'serf openai login'`, which would also kill a",
-		"`pkill -f 'serf openai login'` pattern, which would also kill a",
+		"`pkill -f 'evener openai login'`, which would also kill a",
+		"`pkill -f 'evener openai login'` pattern, which would also kill a",
 	},
 	"test/scenarios/cli-device-code-flow.md": {
 		"exists for). Never `pkill -f",
@@ -68,7 +68,7 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 		"by name — never `pkill -f",
 	},
 	"test/scenarios/compact-tool-pins-note-and-persists.md": {
-		"`pkill -f serf-hub` also kills every *other* concurrent",
+		"`pkill -f evener-hub` also kills every *other* concurrent",
 		"and a `pkill -f` whose pattern appears in your",
 	},
 	"test/scenarios/meta-flush-on-completion.md": {
@@ -77,19 +77,19 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 		// matches this run's daemon and no other agent's: kata pcev ruled it
 		// "session-scoped and fine" and left it alone; kata 4k48 restated that
 		// it must survive whatever rule replaced the hand-written warnings.
-		"`pkill -f 'serf serve.*<session_id>'` — kill mid-life.",
+		"`pkill -f 'evener serve.*<session_id>'` — kill mid-life.",
 	},
 	"test/scenarios/model-switch-providers-live.md": {
-		"never a `pkill -f 'serf serve'` pattern, which would also kill a",
+		"never a `pkill -f 'evener serve'` pattern, which would also kill a",
 	},
 	"test/scenarios/spawn-failure-ux-post-ws5.md": {
-		"`pkill -f serf-hub` pattern, which would take out any concurrent",
+		"`pkill -f evener-hub` pattern, which would take out any concurrent",
 	},
 	"test/scenarios/spawn-keyboard-contract.md": {
-		"never `pkill -f serf-hub`,",
+		"never `pkill -f evener-hub`,",
 	},
 	"test/scenarios/tui-goal-set-and-complete.md": {
-		"# by pid: `pkill -f serf-hub` would take out",
+		"# by pid: `pkill -f evener-hub` would take out",
 	},
 }
 
@@ -101,7 +101,7 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 //
 // A pattern kill is the process-side twin of the two collisions this repo
 // already fails the build over: a fixed port is one listener two agents fight
-// for, a fixed /tmp path is one file, and `pkill -f serf-hub` is every hub on
+// for, a fixed /tmp path is one file, and `pkill -f evener-hub` is every hub on
 // the box at once. Kill by a pid the card recorded — `$HUBPID`,
 // `$run/hub.pid`, `$tmpdir/login.pid` — per docs/agentic-testing.md's Setup
 // checklist.
@@ -160,10 +160,10 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 // found on its first run; the negatives are the convention that replaced them.
 func TestScenarioPatternKillPatternMatchesTheShapesItClaims(t *testing.T) {
 	byPattern := []string{
-		"   pkill -f 'serf openai login'",
+		"   pkill -f 'evener openai login'",
 		"  daemon dies (SIGPIPE); verify with `pgrep -f TICK_` and `pkill` if",
-		"killall serf-hub",
-		`pkill -9 -f "serf serve"`,
+		"killall evener-hub",
+		`pkill -9 -f "evener serve"`,
 	}
 	for _, line := range byPattern {
 		if !scenarioPatternKillPattern.MatchString(line) {
@@ -174,7 +174,7 @@ func TestScenarioPatternKillPatternMatchesTheShapesItClaims(t *testing.T) {
 		`kill "$HUBPID"; rm -rf "$run"`,
 		"kill $PRODUCER 2>/dev/null",
 		`kill "$(cat "$run/hub.pid")"`,
-		"  pgrep -f 'serf-hub.*:9180' >/dev/null && \\",
+		"  pgrep -f 'evener-hub.*:9180' >/dev/null && \\",
 	}
 	for _, line := range byPID {
 		if scenarioPatternKillPattern.MatchString(line) {

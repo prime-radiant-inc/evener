@@ -89,7 +89,7 @@ func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	if resp.Thread.Serf.Ref == "" || resp.Thread.Source != "codex-real" {
+	if resp.Thread.Evener.Ref == "" || resp.Thread.Source != "codex-real" {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 }
@@ -123,7 +123,7 @@ func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
-	if resp.Thread.Serf.Ref == "" || resp.Thread.Source != "codex-real" || resp.Turn.ID != "" {
+	if resp.Thread.Evener.Ref == "" || resp.Thread.Source != "codex-real" || resp.Turn.ID != "" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }

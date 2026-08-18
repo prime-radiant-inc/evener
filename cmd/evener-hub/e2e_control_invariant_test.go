@@ -50,7 +50,7 @@ func parkInPreTurnWork(t *testing.T, sentinel string) string {
 	if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o755); err != nil {
 		t.Fatalf("create plugin commands dir: %v", err)
 	}
-	// Only a PLUGIN command executes its inline spans; a serf-wide command
+	// Only a PLUGIN command executes its inline spans; a evener-wide command
 	// expands inert (agent/session_slash_command.go). The sentinel rides in the
 	// body so the model request proves this expansion is what ran.
 	body := fmt.Sprintf("---\ndescription: hold the session in pre-turn work\n---\n%s !`sleep %d`\n",
@@ -126,7 +126,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness: "serf",
+		Harness: "evener",
 		CWD:     stack.workDir,
 		// The opening prompt IS the slash command, so the session parks in
 		// pre-turn work before it has ever been processing.
@@ -140,7 +140,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -203,7 +203,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: "/park"}},
 		Model:           stack.model,
@@ -212,7 +212,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -229,15 +229,15 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/read inside the pre-turn window: %v", err)
 	}
-	caps := read.Thread.Serf.Capabilities
+	caps := read.Thread.Evener.Capabilities
 	t.Logf("wire published status=%s activeTurnId=%s with steer=%v interrupt=%v",
-		read.Thread.Status.Type, read.Thread.Serf.ActiveTurnID, caps.Steer, caps.Interrupt)
+		read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID, caps.Steer, caps.Interrupt)
 
 	// Guard the premise: if the park has closed, this read is of a running turn
 	// and says nothing about the window.
-	if read.Thread.Status.Type != string(appwire.ThreadStatusActive) || read.Thread.Serf.ActiveTurnID != turnID {
+	if read.Thread.Status.Type != string(appwire.ThreadStatusActive) || read.Thread.Evener.ActiveTurnID != turnID {
 		t.Fatalf("the window closed before the read: status=%q activeTurnId=%q (turn was %s); rerun",
-			read.Thread.Status.Type, read.Thread.Serf.ActiveTurnID, turnID)
+			read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID, turnID)
 	}
 	if !caps.Steer {
 		t.Fatalf("steer=false while the wire published status=active turn %s: the asymmetry this test is about is not present, so its measurement of interrupt means something else", turnID)
@@ -296,7 +296,7 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -305,7 +305,7 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -368,7 +368,7 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 		t.Fatalf("turn/queue: %v", err)
 	}
 	awaitThread(ctx, t, client, ref, "queue depth 1", func(thread appwire.Thread) bool {
-		return thread.Serf.Queue.Depth == 1
+		return thread.Evener.Queue.Depth == 1
 	})
 
 	round1.RespondToolCall("communicate", communicateArgs("first turn done"))
@@ -464,7 +464,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, queuedText)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness: "serf",
+		Harness: "evener",
 		CWD:     stack.workDir,
 		Input:   []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:   stack.model,
@@ -476,7 +476,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -502,7 +502,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 		t.Fatalf("turn/queue: %v", err)
 	}
 	awaitThread(ctx, t, client, ref, "queue depth 1", func(thread appwire.Thread) bool {
-		return thread.Serf.Queue.Depth == 1
+		return thread.Evener.Queue.Depth == 1
 	})
 
 	// Sample thread/read continuously from before the boundary until after turn
@@ -536,16 +536,16 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 				continue
 			}
 			inBoundary := read.Thread.Status.Type == string(appwire.ThreadStatusActive) &&
-				read.Thread.Serf.ActiveTurnID == firstTurn &&
-				read.Thread.Serf.Queue.Depth == 0
+				read.Thread.Evener.ActiveTurnID == firstTurn &&
+				read.Thread.Evener.Queue.Depth == 0
 			select {
 			case samples <- sample{
 				status:    read.Thread.Status.Type,
-				turnID:    read.Thread.Serf.ActiveTurnID,
-				depth:     read.Thread.Serf.Queue.Depth,
-				send:      read.Thread.Serf.Capabilities.Send,
-				steer:     read.Thread.Serf.Capabilities.Steer,
-				interrupt: read.Thread.Serf.Capabilities.Interrupt,
+				turnID:    read.Thread.Evener.ActiveTurnID,
+				depth:     read.Thread.Evener.Queue.Depth,
+				send:      read.Thread.Evener.Capabilities.Send,
+				steer:     read.Thread.Evener.Capabilities.Steer,
+				interrupt: read.Thread.Evener.Capabilities.Interrupt,
 			}:
 				if inBoundary {
 					sampledInWindow.Add(1)
@@ -572,22 +572,22 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 			continue
 		}
-		if read.Thread.Status.Type == string(appwire.ThreadStatusActive) && read.Thread.Serf.ActiveTurnID == "" {
-			t.Fatalf("the wire published status=active with no turn id at the boundary (queueDepth=%d): the composer hides Stop and Steer for a session that is working", read.Thread.Serf.Queue.Depth)
+		if read.Thread.Status.Type == string(appwire.ThreadStatusActive) && read.Thread.Evener.ActiveTurnID == "" {
+			t.Fatalf("the wire published status=active with no turn id at the boundary (queueDepth=%d): the composer hides Stop and Steer for a session that is working", read.Thread.Evener.Queue.Depth)
 		}
 		if read.Thread.Status.Type == string(appwire.ThreadStatusActive) &&
-			read.Thread.Serf.ActiveTurnID == firstTurn &&
-			read.Thread.Serf.Queue.Depth == 0 {
+			read.Thread.Evener.ActiveTurnID == firstTurn &&
+			read.Thread.Evener.Queue.Depth == 0 {
 			inWindow = read.Thread
 			break
 		}
-		if read.Thread.Serf.ActiveTurnID != "" && read.Thread.Serf.ActiveTurnID != firstTurn {
-			t.Fatalf("turn 2 announced itself (%s) before the window was sampled; the parking command did not hold the boundary open", read.Thread.Serf.ActiveTurnID)
+		if read.Thread.Evener.ActiveTurnID != "" && read.Thread.Evener.ActiveTurnID != firstTurn {
+			t.Fatalf("turn 2 announced itself (%s) before the window was sampled; the parking command did not hold the boundary open", read.Thread.Evener.ActiveTurnID)
 		}
 	}
 	windowSeenAt := time.Now()
 	t.Logf("inside the boundary the wire published status=%s activeTurnId=%s queueDepth=%d (turn 1 was %s)",
-		inWindow.Status.Type, inWindow.Serf.ActiveTurnID, inWindow.Serf.Queue.Depth, firstTurn)
+		inWindow.Status.Type, inWindow.Evener.ActiveTurnID, inWindow.Evener.Queue.Depth, firstTurn)
 
 	// Let the sampler measure the window it is here to measure. The park holds
 	// the boundary open for preTurnParkSeconds, so waiting for a batch of
@@ -665,7 +665,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	})
 	requireStopLandsDuringPreTurnWork(ctx, t, provider, receipt, interruptErr, "at the turn boundary")
 	t.Logf("a Stop pressed %s after the window opened, while the wire showed status=%s activeTurnId=%s, was applied",
-		time.Since(windowSeenAt), inWindow.Status.Type, inWindow.Serf.ActiveTurnID)
+		time.Since(windowSeenAt), inWindow.Status.Type, inWindow.Evener.ActiveTurnID)
 
 	// MEASURED, CLOSED, and now the ruling (kata wms7). Both restart rails end
 	// at popQueueHead, and it refuses while a Stop holds the queue:
@@ -690,7 +690,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 		t.Fatalf("a model round followed the Stop (carries the queued text: %v): a restart rail is still open", carries)
 	}
 	awaitThread(ctx, t, client, ref, "the stopped session to settle with its message parked", func(thread appwire.Thread) bool {
-		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Serf.Queue.Depth == 1
+		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Evener.Queue.Depth == 1
 	})
 	t.Logf("the Stop cancelled its turn and parked the queued message (wms7)")
 }

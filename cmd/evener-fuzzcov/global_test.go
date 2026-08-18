@@ -403,9 +403,9 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		t.Fatal("available platform source must not be excluded")
 	}
 
-	serfFuzzSource := "//go:build serffuzz\n\npackage pkg\n\nfunc ReplayOnly() {}\n"
-	serfFuzzRepo, _ := globalExclusionFixture(t, "serffuzz.go", serfFuzzSource)
-	if _, err := ReadGlobalExclusions(serfFuzzRepo, strings.NewReader("m\t./pkg\tserffuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
+	evenerFuzzSource := "//go:build serffuzz\n\npackage pkg\n\nfunc ReplayOnly() {}\n"
+	evenerFuzzRepo, _ := globalExclusionFixture(t, "serffuzz.go", evenerFuzzSource)
+	if _, err := ReadGlobalExclusions(evenerFuzzRepo, strings.NewReader("m\t./pkg\tserffuzz.go\tplatform\tcompiled by coverage replay\n")); err == nil {
 		t.Fatal("source compiled by serffuzz coverage replay must not be excluded as platform")
 	}
 
@@ -422,7 +422,7 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		{
 			name:   "arbitrary feature tag only",
 			file:   "not_feature.go",
-			source: "//go:build serfcoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
+			source: "//go:build evenercoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
 		},
 		{
 			name:   "cgo tag only",
@@ -457,7 +457,7 @@ func TestPlatformExclusionMustBeUnavailableAndExclusionsRejectInvalidRows(t *tes
 		},
 		{
 			name:   "arbitrary feature condition",
-			source: "//go:build serfcoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
+			source: "//go:build evenercoveragefeature\n\npackage pkg\n\nfunc FeatureOnly() {}\n",
 		},
 	} {
 		t.Run("unavailable filename suffix plus "+tagged.name, func(t *testing.T) {

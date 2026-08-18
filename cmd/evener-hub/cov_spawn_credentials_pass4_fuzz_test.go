@@ -101,7 +101,7 @@ printf '{"pid":%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}' 
 `, "PROTOCOL", appwire.ProtocolVersion)
 		bin := fuzzExecutable(t, body)
 		runDir := t.TempDir()
-		h := HubSpawner{Cfg: Config{SpawnTimeout: time.Second}, SerfBinary: bin, RunDir: runDir, Creds: store}
+		h := HubSpawner{Cfg: Config{SpawnTimeout: time.Second}, EvenerBinary: bin, RunDir: runDir, Creds: store}
 		replay := 9
 		resolved := launchconfig.Resolved{}
 		resolved.Effective.AppReplaySize = &replay

@@ -27,7 +27,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-const serfLaunchCheckTimeout = 30 * time.Second
+const evenerLaunchCheckTimeout = 30 * time.Second
 
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
@@ -46,7 +46,7 @@ var (
 // HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg                 Config
-	SerfBinary          string // path to the serf binary; "" → "serf" on PATH
+	EvenerBinary          string // path to the evener binary; "" → "evener" on PATH
 	RunDir              string
 	HubToken            string
 	Creds               *credentials.Store // credentials store for provider key injection
@@ -54,15 +54,15 @@ type HubSpawner struct {
 	ProvidersConfigPath string             // path of the providers.toml the hub loaded
 }
 
-type SerfLaunchModelLister interface {
+type EvenerLaunchModelLister interface {
 	ListLaunchModels(context.Context) ([]appwire.ModelDescriptor, error)
 }
 
-type SerfLaunchModelContractLister interface {
+type EvenerLaunchModelContractLister interface {
 	ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error)
 }
 
-type SerfLaunchModelContractWorkingDirLister interface {
+type EvenerLaunchModelContractWorkingDirLister interface {
 	ListLaunchModelContractForWorkingDir(context.Context, string) (appwire.ModelListResponse, error)
 }
 
@@ -88,7 +88,7 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContractFn(ctx, h.SerfBinary, env)
+	return listSerfLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
@@ -105,7 +105,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContractFn(ctx, h.SerfBinary, env)
+	return listSerfLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -147,10 +147,10 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
+	if err := validateSerfLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
+	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -198,10 +198,10 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	// session's persisted metadata, not ambient launch config, selects the model;
 	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
 	// resume because of a stale launch-config model.
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, "", req.Env); err != nil {
+	if err := validateSerfLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
+	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 
 func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (launchconfig.Resolved, func(), error) {
@@ -254,7 +254,7 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	return resolved, func() {}, nil
 }
 
-// buildSpawnArgs assembles the arg slice for `serf serve` from a hubcore.SpawnRequest.
+// buildSpawnArgs assembles the arg slice for `evener serve` from a hubcore.SpawnRequest.
 //
 // Always passes --addr 127.0.0.1:0 so the daemon binds an ephemeral port,
 // which it reports via its rendezvous file.
@@ -298,28 +298,28 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	return args
 }
 
-// SpawnDaemon launches a `serf serve` subprocess from the given hubcore.SpawnRequest,
+// SpawnDaemon launches a `evener serve` subprocess from the given hubcore.SpawnRequest,
 // then waits up to timeout for its rendezvous file to appear.
 //
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
 // Caller does NOT manage the subprocess lifecycle — the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return spawnDaemon(ctx, serfBinary, runDir, req, timeout, os.Stderr)
+func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
+	return spawnDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
 }
 
 // spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func spawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
-	if serfBinary == "" {
-		serfBinary = "serf"
+func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
 	args := append([]string{"serve"}, buildSpawnArgs(req)...)
 
 	// NOT CommandContext: the spawned daemon must outlive this call's ctx (it
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
-	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
 	// A fresh spawn cannot name the log after its session yet: the daemon mints
 	// the id and reports it through rendezvous, so the file is adopted below.
@@ -375,7 +375,7 @@ func WithStartedAfter(t time.Time) WaitOption {
 	return func(c *waitConfig) { c.startedAfter = t }
 }
 
-// ResumeDaemon launches `serf serve --resume <sessionID>` and waits for
+// ResumeDaemon launches `evener serve --resume <sessionID>` and waits for
 // rendezvous. Returns the resumed daemon's rendezvous Entry.
 //
 // Note: resume PRESERVES the existing session_id. The daemon restores via
@@ -383,21 +383,21 @@ func WithStartedAfter(t time.Time) WaitOption {
 // (immutable across restart), so the returned Entry.SessionID is the same
 // id the session had before it exited. (A fresh session_id is minted only
 // by /clear, which is a distinct operation.)
-func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
-	return resumeDaemon(ctx, serfBinary, runDir, req, timeout, os.Stderr)
+func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
+	return resumeDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
 }
 
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func resumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
-	if serfBinary == "" {
-		serfBinary = "serf"
+func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
 	args := buildResumeArgs(req)
 	// NOT CommandContext: the resumed daemon must outlive this call's ctx (it
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
-	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
 	// A resume keeps its session's id, so it keeps — and appends to — that
 	// session's own log.
@@ -478,7 +478,7 @@ var errRendezvousTimeout = errors.New("timeout waiting for rendezvous")
 //
 // The text keeps "rendezvous" so a canceled launch stays inside
 // diagnostic.HubFailureKeywords: it is still a hub failure whose honest
-// recovery is to reconnect and re-issue, not a Serf fault with a session log
+// recovery is to reconnect and re-issue, not a Evener fault with a session log
 // to go read.
 var errRendezvousCanceled = errors.New("request canceled before rendezvous")
 
@@ -669,7 +669,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if providerCredentialInEnv(inst.Name, env) || providerCredentialInEnv(credTag, env) {
 				return nil
 			}
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via evener/auth/apiKey/set or set the matching env var", provider))
 		}
 		// Instance name not found in config — don't block launch.
 		return nil
@@ -695,7 +695,7 @@ noConfig:
 		if providerCredentialInEnv(provider, env) {
 			return nil
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via evener/auth/apiKey/set or set the matching env var", provider))
 	}
 	// Unknown provider — don't block launch.
 	return nil
@@ -775,9 +775,9 @@ func envToMap(env []string) map[string]string {
 
 // launchCheckWaitError says which way a launch-check that never produced a
 // verdict was stopped. Its context is done for two unrelated reasons — the
-// serfLaunchCheckTimeout budget elapsed, or the caller went away — and only the
+// evenerLaunchCheckTimeout budget elapsed, or the caller went away — and only the
 // first is a timeout. Calling the second one sends an operator triaging it
-// after a slow machine or a hung `serf launch-check`, when nothing was slow and
+// after a slow machine or a hung `evener launch-check`, when nothing was slow and
 // nobody is waiting for the answer any more (kata zg02).
 //
 // The launch-check runs ahead of the rendezvous wait and carries its own
@@ -796,22 +796,22 @@ func envToMap(env []string) map[string]string {
 // start. The label changes; the family of failure does not.
 func launchCheckWaitError(ctx context.Context) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return appwire.HubLaunchError("serf launch-check canceled")
+		return appwire.HubLaunchError("evener launch-check canceled")
 	}
-	return appwire.HubLaunchError("serf launch-check timed out")
+	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
-func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, env []string) error {
-	if serfBinary == "" {
-		serfBinary = "serf"
+func validateSerfLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
 	args := []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
 	if strings.TrimSpace(model) != "" {
 		args = append(args, "--model", model)
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, serfLaunchCheckTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, serfBinary, args...)
+	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
@@ -822,27 +822,27 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 		if msg == "" {
 			msg = err.Error()
 		}
-		return appwire.HubLaunchError("serf launch-check failed: " + msg)
+		return appwire.HubLaunchError("evener launch-check failed: " + msg)
 	}
 	var resp struct {
 		Protocol string `json:"protocol"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
-		return appwire.HubLaunchError("serf launch-check returned invalid response")
+		return appwire.HubLaunchError("evener launch-check returned invalid response")
 	}
 	if resp.Protocol != appwire.ProtocolVersion {
-		return appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+		return appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	return nil
 }
 
-func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []string) (appwire.ModelListResponse, error) {
-	if serfBinary == "" {
-		serfBinary = "serf"
+func listSerfLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, serfLaunchCheckTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, evenerLaunchCheckTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, serfBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
+	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
@@ -853,7 +853,7 @@ func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []s
 		if msg == "" {
 			msg = err.Error()
 		}
-		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check failed: " + msg)
+		return appwire.ModelListResponse{}, appwire.HubLaunchError("evener launch-check failed: " + msg)
 	}
 	var resp struct {
 		Protocol    string                        `json:"protocol"`
@@ -861,10 +861,10 @@ func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []s
 		Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&resp); err != nil {
-		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check returned invalid response")
+		return appwire.ModelListResponse{}, appwire.HubLaunchError("evener launch-check returned invalid response")
 	}
 	if resp.Protocol != appwire.ProtocolVersion {
-		return appwire.ModelListResponse{}, appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
+		return appwire.ModelListResponse{}, appwire.HubLaunchError(fmt.Sprintf("evener launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	models := make([]appwire.ModelDescriptor, 0, len(resp.Models))
 	for _, model := range resp.Models {

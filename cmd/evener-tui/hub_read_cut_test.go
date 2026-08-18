@@ -80,12 +80,12 @@ func TestHubModelReReadHoldsPostCutFrameUntilSnapshotApplied(t *testing.T) {
 	m.frames = frames
 	m.session.messages = preRelaunchMessages()
 
-	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
 	}).Notification)
 	if cmd == nil {
-		t.Fatal("serf/thread/resync issued no command")
+		t.Fatal("evener/thread/resync issued no command")
 	}
 	// The read has answered: the source-side snapshot is taken and the cut is
 	// closed, but this model has not applied either yet.
@@ -142,7 +142,7 @@ func TestHubModelReReadFoldsPreCutFrameUnderSnapshot(t *testing.T) {
 		server.SetBeforeSubscriptionGate(func() {
 			select {
 			case <-armed:
-				server.Broadcast("01SEND", appwire.NotifySerfSandboxEscalationRequested, appwire.SandboxEscalationRequested{
+				server.Broadcast("01SEND", appwire.NotifyEvenerSandboxEscalationRequested, appwire.SandboxEscalationRequested{
 					ThreadID:     "01SEND",
 					Ref:          "local:01SEND",
 					EscalationID: "esc_precut",
@@ -166,12 +166,12 @@ func TestHubModelReReadFoldsPreCutFrameUnderSnapshot(t *testing.T) {
 	m.session.messages = preRelaunchMessages()
 
 	armed <- struct{}{}
-	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
 	}).Notification)
 	if cmd == nil {
-		t.Fatal("serf/thread/resync issued no command")
+		t.Fatal("evener/thread/resync issued no command")
 	}
 	updated, _ := m.Update(cmd())
 	m = updated.(hubModel)

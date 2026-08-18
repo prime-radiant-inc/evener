@@ -40,13 +40,13 @@ func TestNeedsYouCount(t *testing.T) {
 	rows := []hubRow{
 		// Project rollup row carries the same attention state as its child
 		// sessions; it must not be double-counted alongside them.
-		{kind: hubRowProject, project: "serf", state: "errored"},
-		{kind: hubRowSession, project: "serf", state: "awaiting", live: true},
-		{kind: hubRowSession, project: "serf", state: "systemError", live: true},
-		{kind: hubRowSession, project: "serf", state: "warning", live: true},
-		{kind: hubRowSession, project: "serf", state: "active", live: true},
-		{kind: hubRowSession, project: "serf", state: "idle", live: true},
-		{kind: hubRowSession, project: "serf", state: "ended", live: false},
+		{kind: hubRowProject, project: "evener", state: "errored"},
+		{kind: hubRowSession, project: "evener", state: "awaiting", live: true},
+		{kind: hubRowSession, project: "evener", state: "systemError", live: true},
+		{kind: hubRowSession, project: "evener", state: "warning", live: true},
+		{kind: hubRowSession, project: "evener", state: "active", live: true},
+		{kind: hubRowSession, project: "evener", state: "idle", live: true},
+		{kind: hubRowSession, project: "evener", state: "ended", live: false},
 	}
 	if got := needsYouCount(rows); got != 3 {
 		t.Fatalf("needsYouCount = %d, want 3 (awaiting + raw systemError + warning)", got)
@@ -119,18 +119,18 @@ func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
 }
 
 func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.EvenerThread{AskPending: true}}
 	node := hubNodeFromThread(thread)
 	if !node.AskPending {
-		t.Fatal("expected hubTreeNode.AskPending=true from thread.Serf.AskPending")
+		t.Fatal("expected hubTreeNode.AskPending=true from thread.Evener.AskPending")
 	}
 }
 
 func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.EvenerThread{AskPending: true}}
 	detail := hubDetailFromThread(thread)
 	if !detail.AskPending {
-		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Serf.AskPending")
+		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Evener.AskPending")
 	}
 }
 

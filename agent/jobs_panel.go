@@ -17,7 +17,7 @@ import (
 func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
 
 // JobOutputTail is a wire payload, so its definition lives in appwire beside
-// the serf/jobs/output shape (and under that package's camelCase tag
+// the evener/jobs/output shape (and under that package's camelCase tag
 // carve-out). The alias keeps this package's producer named in domain terms.
 type JobOutputTail = appwire.JobOutputTail
 
@@ -36,7 +36,7 @@ func clampJobTailBytes(maxBytes int64) int64 {
 	return maxBytes
 }
 
-// JobOutputTail is the live-daemon serf/jobs/output payload. found=false
+// JobOutputTail is the live-daemon evener/jobs/output payload. found=false
 // means no job with that id exists; a found job with no output file yet is
 // an empty tail, not an error. beforeBytes > 0 pages backwards: the window of
 // up to maxBytes ending at that lifetime offset, with HasEarlier reporting

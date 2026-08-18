@@ -82,7 +82,7 @@ func (s *Session) ClearGoal() {
 }
 
 // GoalStatus reports the session's current /goal state for status surfaces (the
-// appwire SerfThread.Goal field, `/goal status`). ok is false when no goal is
+// appwire EvenerThread.Goal field, `/goal status`). ok is false when no goal is
 // set. It returns primitives rather than the internal goal.Snapshot so callers
 // outside the agent module (which cannot import agent/internal/goal) can consume
 // it.

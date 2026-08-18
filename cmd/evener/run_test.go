@@ -679,8 +679,8 @@ func TestRunPluginDirsPassthrough(t *testing.T) {
 	}
 }
 
-// TestRun_SlashCommandExpansion verifies headless `serf /name args` (design
-// §10's "the server-side expander also runs for headless serf /name args"):
+// TestRun_SlashCommandExpansion verifies headless `evener /name args` (design
+// §10's "the server-side expander also runs for headless evener /name args"):
 // a plugin command loaded via --plugin-dir is expanded before it reaches the
 // model, not sent to the model as the literal "/greet the-world" text. The
 // scripted step inspects the actual request it receives and only answers

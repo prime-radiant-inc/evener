@@ -26,8 +26,8 @@ func MessagesFromThread(thread appwire.Thread) []ChatMessage {
 			reducer.messages = append(reducer.messages, ChatMessage{Kind: MsgSystem, Text: hubdiagnostics.FormatHubTurnError(turn.Error, "Session error")})
 		}
 	}
-	if thread.Serf.Diagnostics != nil {
-		for _, delegate := range thread.Serf.Diagnostics.Delegates {
+	if thread.Evener.Diagnostics != nil {
+		for _, delegate := range thread.Evener.Diagnostics.Delegates {
 			reducer.ApplySerfDelegate(delegate)
 		}
 	}

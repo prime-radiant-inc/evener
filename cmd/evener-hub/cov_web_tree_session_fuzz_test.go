@@ -50,7 +50,7 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		}
 		_ = liveTitle("0123456789", hubcore.LiveEntry{}, nil)
 		_ = hubUsageFromAppwire(nil)
-		_ = hubUsageFromAppwire(&appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
+		_ = hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote", Name: title,
@@ -59,7 +59,7 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 				{ID: "done", Status: appwire.TurnStatusCompleted},
 				{ID: "running", Status: appwire.TurnStatusInProgress, StartedAt: &now},
 			},
-			Serf: appwire.SerfThread{Ref: refText, ActiveTurnID: "active", Goal: &appwire.GoalState{Status: "active", Iterations: 2}},
+			Evener: appwire.EvenerThread{Ref: refText, ActiveTurnID: "active", Goal: &appwire.GoalState{Status: "active", Iterations: 2}},
 		}
 		_ = workspaceDataFromAppThread(thread)
 		_ = activeTurnRunningFor(thread)
@@ -67,16 +67,16 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		_, _, _ = appThreadTreeEntries(thread)
 		_, _ = appThreadTreeRef(thread)
 		_ = hubRefFromAppThread(thread)
-		thread.Serf.ActiveTurnID = ""
+		thread.Evener.ActiveTurnID = ""
 		_ = activeTurnIDFromAppwireThread(thread)
 		thread.Turns = nil
 		_ = activeTurnIDFromAppwireThread(thread)
 		_ = activeTurnRunningFor(thread)
 		thread.Preview, thread.SessionID = "", "session"
 		_ = workspaceDataFromAppThread(thread)
-		thread.Serf.Ref = "bad"
+		thread.Evener.Ref = "bad"
 		_ = hubRefFromAppThread(thread)
-		thread.Serf.Ref = ""
+		thread.Evener.Ref = ""
 		thread.Name, thread.Preview, thread.SessionID = "", title, ""
 		_ = workspaceDataFromAppThread(thread)
 		_, _, _ = appThreadTreeEntries(thread)

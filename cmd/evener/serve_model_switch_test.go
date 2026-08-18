@@ -308,7 +308,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	if read.Thread.Status.Type != appwire.ThreadStatusIdle {
 		t.Fatalf("thread/read status = %q, want idle", read.Thread.Status.Type)
 	}
-	if !read.Thread.Serf.Capabilities.ChangeModel {
+	if !read.Thread.Evener.Capabilities.ChangeModel {
 		t.Fatal("thread/read ChangeModel = false, want true after provider failure")
 	}
 

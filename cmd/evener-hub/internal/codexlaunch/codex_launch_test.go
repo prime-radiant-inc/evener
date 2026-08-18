@@ -719,5 +719,5 @@ func isHubLaunchError(err error) bool {
 		return false
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
-	return ok && data.SerfErrorInfo == appwire.ErrorHubLaunch
+	return ok && data.EvenerErrorInfo == appwire.ErrorHubLaunch
 }

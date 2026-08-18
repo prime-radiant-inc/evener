@@ -16,13 +16,13 @@ import (
 func TestFetchHubSpawnOptionsIncludesRecentDirs(t *testing.T) {
 	recent := []string{"/proj/alpha", "/proj/beta"}
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
-			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf"}}}, nil
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener"}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfProjectsRecent, func(context.Context, appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerProjectsRecent, func(context.Context, appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
 			return appwire.ProjectsRecentResponse{Data: recent}, nil
 		})
 	})

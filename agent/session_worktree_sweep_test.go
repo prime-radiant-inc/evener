@@ -21,7 +21,7 @@ import (
 // cleanly-closed, unlocked, D0-auto-collectible delegate lanes.
 //
 // This file is MIXED across the two lane harnesses; see docs/testing.md for the
-// rule. Most tests' subject is serf's own sweep DECISION — which skip rung fires
+// rule. Most tests' subject is evener's own sweep DECISION — which skip rung fires
 // (locked, in-grace, not-a-delegate), which arm collects, what it wrote to its
 // stable controller, how the budget and the open timer gate the pass — so they run on
 // the scripted git boundary (scriptedLaneRepo), where a lane is collectible via
@@ -38,7 +38,7 @@ import (
 //   - TestP3CloseResidue_JoinsInFlightOpenPass — concurrent open+close git ops on
 //     one real repository
 
-// unlockLane releases a lane's serf:dlg lock directly with git, simulating the
+// unlockLane releases a lane's evener:dlg lock directly with git, simulating the
 // foreign session's close-time unlock that leaves the lane as P3 residue.
 func (r *wtRepo) unlockLane(t *testing.T, path string) {
 	t.Helper()
@@ -150,7 +150,7 @@ func TestP3Sweep_LockedLaneSkipped(t *testing.T) {
 	id, path := r.seedForeignUnlockedLane(t)
 	r.ageBeyondGrace(t, id, path)
 	// Re-lock it (foreign occupancy) — P3 collects UNLOCKED lanes only.
-	r.setLaneLock(t, path, "serf:sess:other")
+	r.setLaneLock(t, path, "evener:sess:other")
 
 	r.s.runLaneResidueSweep(context.Background())
 

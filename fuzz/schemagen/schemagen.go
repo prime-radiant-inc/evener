@@ -1,4 +1,4 @@
-// Package schemagen turns a JSON Schema (the subset serf's tool and protocol
+// Package schemagen turns a JSON Schema (the subset evener's tool and protocol
 // surfaces actually use: type/properties/required/enum/additionalProperties/
 // items) into generated values. It generates BOTH schema-conforming values
 // (Valid mode) and schema-adjacent ones (Adjacent mode: wrong types,

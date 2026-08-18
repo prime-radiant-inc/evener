@@ -25,7 +25,7 @@ func FuzzHubUpdateProgram(f *testing.F) {
 		m := newHubModel(nil, "http://hub.invalid")
 		m.width, m.height = 80, 24
 		m.mode = hubModeSession
-		m.detail = hubSessionDetail{Ref: "serf:current", SessionID: "s", State: "idle", Model: "m", Queue: appwire.QueueState{Preview: []string{"old"}}}
+		m.detail = hubSessionDetail{Ref: "evener:current", SessionID: "s", State: "idle", Model: "m", Queue: appwire.QueueState{Preview: []string{"old"}}}
 		m.session.sessionID = "s"
 		m.sessionQueueRef = m.detail.Ref
 		m.sessionQueue = []string{"old"}
@@ -37,8 +37,8 @@ func FuzzHubUpdateProgram(f *testing.F) {
 
 		fail := errors.New("fixture failure")
 		partial := errors.New("turn/drainAsSteer partially completed: queued payload before steer failed")
-		current := hubSessionDetail{Ref: "serf:current", SessionID: "s", State: "idle", Model: "m", Queue: appwire.QueueState{Preview: []string{"new"}}}
-		other := hubSessionDetail{Ref: "serf:other", SessionID: "o", State: "idle", Model: "m"}
+		current := hubSessionDetail{Ref: "evener:current", SessionID: "s", State: "idle", Model: "m", Queue: appwire.QueueState{Preview: []string{"new"}}}
+		other := hubSessionDetail{Ref: "evener:other", SessionID: "o", State: "idle", Model: "m"}
 		attachment := []*clipboard.PastedImage{{Path: t.TempDir() + "/gone"}}
 		entry := func(method, ref string) pendingpkg.PendingEntry {
 			return pendingpkg.PendingEntry{ID: 1, Method: method, Text: "payload", Ref: ref, Pending: true}
@@ -49,35 +49,35 @@ func FuzzHubUpdateProgram(f *testing.F) {
 			{struct{}{}},
 			{tea.WindowSizeMsg{Width: 2, Height: 3}},
 			{hubTreeMsg{err: fail}},
-			{hubTreeMsg{tree: hubTreeResponse{Live: []hubTreeNode{{Ref: "serf:one", Title: "one"}}}}},
+			{hubTreeMsg{tree: hubTreeResponse{Live: []hubTreeNode{{Ref: "evener:one", Title: "one"}}}}},
 			{hubSessionMsg{err: fail}},
-			{hubSessionMsg{ref: "serf:other", expectedState: "running", expectedRefreshToken: 7, err: fail}},
+			{hubSessionMsg{ref: "evener:other", expectedState: "running", expectedRefreshToken: 7, err: fail}},
 			{hubSessionMsg{detail: current, ref: current.Ref, expectedState: "idle", expectedRefreshToken: 6}},
 			{hubSessionMsg{detail: hubSessionDetail{Ref: current.Ref, State: "running"}, ref: current.Ref, expectedState: "idle", expectedRefreshToken: 7}},
 			{hubSessionMsg{detail: current, messages: []transcript.ChatMessage{{Text: "hello"}}}},
 			{hubSessionMsg{detail: current, expectedState: "idle", expectedRefreshToken: 7}},
 			{hubSessionMsg{detail: other, messages: []transcript.ChatMessage{{Text: "other"}}}},
 			{hubNotificationMsg{}},
-			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnSteer, "serf:other")}},
-			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnSteer, "serf:current")}},
+			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnSteer, "evener:other")}},
+			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnSteer, "evener:current")}},
 			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnStart, "")}},
 			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnDrainAsSteer, "")}},
 			{pendingpkg.PendingRegisteredMsg{Entry: entry(appwire.MethodTurnQueue, "")}},
-			{pendingpkg.PendingFailedMsg{Entry: entry(appwire.MethodTurnStart, "serf:other"), Reason: "no"}},
+			{pendingpkg.PendingFailedMsg{Entry: entry(appwire.MethodTurnStart, "evener:other"), Reason: "no"}},
 			{pendingpkg.PendingFailedMsg{Entry: entry(appwire.MethodTurnStart, ""), Reason: "no"}},
-			{pendingpkg.PendingConfirmedMsg{Entry: entry(appwire.MethodTurnStart, "serf:other")}},
+			{pendingpkg.PendingConfirmedMsg{Entry: entry(appwire.MethodTurnStart, "evener:other")}},
 			{pendingpkg.PendingConfirmedMsg{Entry: entry(appwire.MethodTurnStart, "")}},
 			{hubSendMsg{trackedAttachmentSubmit: true, submittedAttachments: attachment}},
-			{hubSendMsg{ref: "serf:other", submittedAttachments: attachment}},
+			{hubSendMsg{ref: "evener:other", submittedAttachments: attachment}},
 			{hubSendMsg{err: fail, text: "payload", draft: "draft", submittedAttachments: attachment}},
 			{hubSendMsg{turnID: "turn", submittedAttachments: attachment}},
 			{hubQueueMsg{trackedAttachmentSubmit: true, submittedAttachments: attachment}},
-			{hubQueueMsg{ref: "serf:other", submittedAttachments: attachment}},
+			{hubQueueMsg{ref: "evener:other", submittedAttachments: attachment}},
 			{hubQueueMsg{err: fail, draft: "draft", submittedAttachments: attachment}},
 			{hubQueueMsg{submittedAttachments: attachment}},
 			{hubDrainAsSteerMsg{trackedAttachmentSubmit: true, submittedAttachments: attachment}},
-			{hubDrainAsSteerMsg{ref: "serf:other", err: fail}},
-			{hubDrainAsSteerMsg{ref: "serf:other", queued: true, err: fail, submittedAttachments: attachment}},
+			{hubDrainAsSteerMsg{ref: "evener:other", err: fail}},
+			{hubDrainAsSteerMsg{ref: "evener:other", queued: true, err: fail, submittedAttachments: attachment}},
 			{hubDrainAsSteerMsg{err: partial, queued: true, text: "queued", preQueueDepth: 1, submittedAttachments: attachment}},
 			{hubDrainAsSteerMsg{err: partial, queued: true, hadAttachment: true, preQueueDepth: 2, submittedAttachments: attachment}},
 			{hubDrainAsSteerMsg{err: fail, draft: "draft", submittedAttachments: attachment}},
@@ -94,10 +94,10 @@ func FuzzHubUpdateProgram(f *testing.F) {
 				m.mode = hubModeDashboard
 				return hubUpgradeMsg{resp: appwire.UpgradeResponse{Release: "v1", Archive: "a", RestartMessage: "restart"}}
 			}()},
-			{hubClearMsg{err: fail}}, {hubClearMsg{resp: hubRefResponse{Ref: "bad"}}}, {hubClearMsg{resp: hubRefResponse{Ref: "serf:ok"}}},
+			{hubClearMsg{err: fail}}, {hubClearMsg{resp: hubRefResponse{Ref: "bad"}}}, {hubClearMsg{resp: hubRefResponse{Ref: "evener:ok"}}},
 			{hubGoalMsg{err: fail}}, {hubGoalMsg{cleared: true}}, {hubGoalMsg{started: true}}, {hubGoalMsg{}},
-			{hubForkMsg{err: fail}}, {hubForkMsg{resp: hubRefResponse{Ref: "bad"}}}, {hubForkMsg{resp: hubRefResponse{Ref: "serf:ok"}}},
-			{hubSpawnMsg{err: fail}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "bad"}}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "serf:ok"}}},
+			{hubForkMsg{err: fail}}, {hubForkMsg{resp: hubRefResponse{Ref: "bad"}}}, {hubForkMsg{resp: hubRefResponse{Ref: "evener:ok"}}},
+			{hubSpawnMsg{err: fail}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "bad"}}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "evener:ok"}}},
 			{hubModelsMsg{err: fail}},
 			{func() tea.Msg {
 				m.mode = hubModeSpawn
@@ -116,12 +116,12 @@ func FuzzHubUpdateProgram(f *testing.F) {
 			}()},
 			{hubSessionModelsMsg{err: fail}}, {hubSessionModelsMsg{}}, {hubSessionModelsMsg{models: []tuipick.ModelPickerItem{{ID: "m"}}}},
 			{hubTranscriptTargetsMsg{err: fail}}, {hubTranscriptTargetsMsg{}},
-			{hubTranscriptTargetsMsg{targets: []appwire.ThreadTranscriptTarget{{Ref: "serf:current", Title: "current"}}}},
+			{hubTranscriptTargetsMsg{targets: []appwire.ThreadTranscriptTarget{{Ref: "evener:current", Title: "current"}}}},
 			{func() tea.Msg {
-				m.transcriptView = &hubTranscriptViewState{Ref: "serf:view"}
-				return hubTranscriptTargetsMsg{targets: []appwire.ThreadTranscriptTarget{{Ref: "serf:view", Title: "view"}}}
+				m.transcriptView = &hubTranscriptViewState{Ref: "evener:view"}
+				return hubTranscriptTargetsMsg{targets: []appwire.ThreadTranscriptTarget{{Ref: "evener:view", Title: "view"}}}
 			}()},
-			{hubTranscriptMsg{err: fail}}, {hubTranscriptMsg{target: appwire.ThreadTranscriptTarget{Ref: "serf:view", Title: "view"}}},
+			{hubTranscriptMsg{err: fail}}, {hubTranscriptMsg{target: appwire.ThreadTranscriptTarget{Ref: "evener:view", Title: "view"}}},
 			{func() tea.Msg { m.mode = hubModeSpawn; return hubSpawnOptionsMsg{err: fail} }()},
 			{hubSpawnOptionsMsg{}},
 			{func() tea.Msg {
@@ -145,7 +145,7 @@ func FuzzHubUpdateProgram(f *testing.F) {
 			m.mode = hubModeSpawn
 			m.spawnHarness = "h"
 		case 75:
-			m.transcriptView = &hubTranscriptViewState{Ref: "serf:view"}
+			m.transcriptView = &hubTranscriptViewState{Ref: "evener:view"}
 		case 81:
 			m.mode = hubModeSpawn
 			m.spawnHarness = "codex"

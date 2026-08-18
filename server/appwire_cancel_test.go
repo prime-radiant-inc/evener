@@ -222,7 +222,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("thread/read result type=%T", readResp.Response.Result)
 	}
-	queue := read.Thread.Serf.Queue
+	queue := read.Thread.Evener.Queue
 	if len(queue.IDs) != 2 || queue.IDs[0] == "" || queue.IDs[1] == "" {
 		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", queue.IDs)
 	}

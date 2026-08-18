@@ -1,7 +1,7 @@
-// Package providercfg is the public configuration schema for serf's providers
+// Package providercfg is the public configuration schema for evener's providers
 // (providers.toml) — the leaf instance/type/behavior-tag vocabulary used to
 // build an llm Client from configuration (via llm.NewFromProviders) and to
-// resolve agent profiles. It imports no other serf package.
+// resolve agent profiles. It imports no other evener package.
 package providercfg
 
 import "strings"
@@ -60,12 +60,12 @@ type CompatConfig struct {
 	// SupportsStrictMode, when EXPLICITLY true, adds strict:false inside every
 	// tool definition's "function" object. Default nil/false emits no strict
 	// field. This deliberately diverges from Pi, whose default always sends
-	// strict:false — flipping the wire shape of every existing serf request is
-	// not worth the risk, so serf opts in per instance instead.
+	// strict:false — flipping the wire shape of every existing evener request is
+	// not worth the risk, so evener opts in per instance instead.
 	SupportsStrictMode *bool `toml:"supports_strict_mode"`
 	// ChatTemplateKwargs is emitted verbatim as the request's
 	// chat_template_kwargs object when thinking_format = "chat-template" and an
-	// effort is set. Overlay replaces wholesale (like FinishReasonMap). serf
+	// effort is set. Overlay replaces wholesale (like FinishReasonMap). evener
 	// deliberately skips Pi's per-value $var indirection (YAGNI).
 	ChatTemplateKwargs map[string]any `toml:"chat_template_kwargs"`
 	// SupportsReasoningEffort gates emitting the reasoning_effort field for
@@ -79,7 +79,7 @@ type CompatConfig struct {
 	// incremental tool-call argument streaming.
 	ToolStream *bool `toml:"tool_stream"`
 	// SupportsStore marks providers that accept OpenAI's store parameter;
-	// serf then sends store:false to opt out of server-side retention.
+	// evener then sends store:false to opt out of server-side retention.
 	SupportsStore *bool `toml:"supports_store"`
 	// SupportsDeveloperRole sends the system prompt under the "developer" role.
 	SupportsDeveloperRole *bool `toml:"supports_developer_role"`
@@ -132,7 +132,7 @@ type ModelConfig struct {
 	ContextWindow   int   `toml:"context_window"`
 	MaxOutputTokens int   `toml:"max_output_tokens"`
 	Reasoning       *bool `toml:"reasoning"`
-	// ThinkingLevels maps serf effort levels (minimal/low/medium/high/xhigh/
+	// ThinkingLevels maps evener effort levels (minimal/low/medium/high/xhigh/
 	// max) to the wire string the provider wants. When present it is the
 	// complete authority: levels absent from the map are unsupported and get
 	// clamped away.

@@ -345,16 +345,16 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 // buildServeDev compiles the real binary for signal-delivery scenarios.
 func buildSerfDev(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "serf-dev")
+	bin := filepath.Join(t.TempDir(), "evener-dev")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("building serf-dev: %v\n%s", err, out)
+		t.Fatalf("building evener-dev: %v\n%s", err, out)
 	}
 	return bin
 }
 
-// startHeldRun starts the serf-dev binary against the fixture with one shard
+// startHeldRun starts the evener-dev binary against the fixture with one shard
 // held open, and returns the running command, the held test-binary pid, the
 // scratch TMPDIR, and the hold directory. extraEnv arms fixture behaviour in
 // the shard processes.
@@ -585,9 +585,9 @@ func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
 	out, err := exec.Command(bin).CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-		t.Fatalf("bare serf-dev exit = %v, want 2", err)
+		t.Fatalf("bare evener-dev exit = %v, want 2", err)
 	}
-	if !strings.Contains(string(out), "usage: serf-dev") || !strings.Contains(string(out), "agent-shards") {
+	if !strings.Contains(string(out), "usage: evener-dev") || !strings.Contains(string(out), "agent-shards") {
 		t.Fatalf("usage text missing:\n%s", out)
 	}
 	out, err = exec.Command(bin, "no-such-subcommand").CombinedOutput()

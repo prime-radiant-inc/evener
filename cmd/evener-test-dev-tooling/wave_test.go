@@ -331,8 +331,8 @@ func TestMktempTMinusTIsCaughtByLeakCheck(t *testing.T) {
 	// the runner's mktemp shim these suites would write to the real per-user
 	// temp dir and the leak check could never see it.
 	dir := t.TempDir()
-	writeSuite(t, dir, "leaky", "mktemp -d -t serf-leak-probe >/dev/null\nexit 0\n")
-	writeSuite(t, dir, "tidy", "d=$(mktemp -d -t serf-tidy-probe)\nrmdir \"$d\"\nexit 0\n")
+	writeSuite(t, dir, "leaky", "mktemp -d -t evener-leak-probe >/dev/null\nexit 0\n")
+	writeSuite(t, dir, "tidy", "d=$(mktemp -d -t evener-tidy-probe)\nrmdir \"$d\"\nexit 0\n")
 	var out bytes.Buffer
 	code := runWave(waveConfig{ScriptsDir: dir, Suites: []string{"leaky", "tidy"}, KillGrace: time.Second, Out: &out})
 	if code != 1 {

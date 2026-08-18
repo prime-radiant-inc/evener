@@ -163,7 +163,7 @@ func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testin
 		Code:    appwire.CodeConflict,
 		Message: "expected turn no longer active",
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorConflict,
+			EvenerErrorInfo:    appwire.ErrorConflict,
 			ClientMutationID: "mutation-1",
 			MutationOutcome:  appwire.MutationOutcomeNotAccepted,
 			RetryDisposition: appwire.RetryDispositionNone,
@@ -224,7 +224,7 @@ func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testin
 		Code:    appwire.CodeConflict,
 		Message: "expected turn no longer active",
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorConflict,
+			EvenerErrorInfo:    appwire.ErrorConflict,
 			ClientMutationID: "mutation-1",
 			MutationOutcome:  appwire.MutationOutcomeNotAccepted,
 			RetryDisposition: appwire.RetryDispositionNone,

@@ -115,8 +115,8 @@ func writeSpawnError(w http.ResponseWriter, err error) {
 	writeAPIWireError(w, status, err)
 }
 
-// handleApiModels returns the models the hub can spawn for. Hub-owned Serf
-// launches report their model choices through the Serf launch harness contract;
+// handleApiModels returns the models the hub can spawn for. Hub-owned Evener
+// launches report their model choices through the Evener launch harness contract;
 // the direct live provider query remains a fallback for tests and non-spawning
 // server configurations. Pricing and context-window metadata come from the
 // embedded catalog where provider APIs don't carry it.
@@ -128,7 +128,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	// instead of silently dropping it. The default response stays a bare array
 	// for the settings and command-palette consumers.
 	includeDiagnostics := r.URL.Query().Get("diagnostics") == "1"
-	if harness != "" && harness != "serf" && harness != "local" {
+	if harness != "" && harness != "evener" && harness != "local" {
 		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness, CWD: workingDir})
 		if err != nil {
 			writeAPIWireError(w, http.StatusBadGateway, err)
@@ -139,7 +139,7 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	launchResp, err := serfLaunchModelList(r.Context(), s.cfg, workingDir)
+	launchResp, err := evenerLaunchModelList(r.Context(), s.cfg, workingDir)
 	if err != nil && hasSerfLaunchModelLister(s.cfg) {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
@@ -494,7 +494,7 @@ func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]an
 
 func catalogModelInfo(cat *llm.ModelCatalog, behaviorTag, modelID string) *llm.ModelInfo {
 	// Canonicalized bare lookup first: LookupModelInfo handles the "[1m]"
-	// suffix, provider namespaces, and dated snapshots, and resolves serf's
+	// suffix, provider namespaces, and dated snapshots, and resolves evener's
 	// curated overrides — LiteLLM's provider-qualified entries (e.g.
 	// "openrouter/deepseek/deepseek-chat") often carry NULL capability flags
 	// where the canonical entry is richer. The exact tag-qualified key is the

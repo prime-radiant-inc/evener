@@ -217,13 +217,13 @@ func TestRootSessionAndResultPersistence(t *testing.T) {
 }
 
 func TestRunCLIProbe(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "fake-serf")
+	bin := filepath.Join(t.TempDir(), "fake-evener")
 	mustWrite(t, bin, "#!/bin/sh\nprintf 'ok\\n'\nprintf '%s\\n' '{\"kind\":\""+string(events.EventCommunicate)+"\",\"data\":{\"message\":\"hi\"}}' >&2\n")
 	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	err := runCLIProbe(context.Background(), runConfig{serfBin: bin, model: "openai/m", reasoningEffort: "low"}, probeFile{Prompt: "p"}, probeResult{WorkDir: t.TempDir(), StateDir: t.TempDir()}, &stdout, &stderr)
+	err := runCLIProbe(context.Background(), runConfig{evenerBin: bin, model: "openai/m", reasoningEffort: "low"}, probeFile{Prompt: "p"}, probeResult{WorkDir: t.TempDir(), StateDir: t.TempDir()}, &stdout, &stderr)
 	if err != nil || !strings.Contains(stdout.String(), "ok") || !strings.Contains(stderr.String(), "COMMUNICATE") {
 		t.Fatalf("runCLIProbe = %q %q %v", stdout.String(), stderr.String(), err)
 	}
@@ -244,24 +244,24 @@ func TestCatalogAndSuiteOffline(t *testing.T) {
 	dir := t.TempDir()
 	probes := filepath.Join(dir, "probes")
 	mustWrite(t, filepath.Join(probes, "probe.yaml"), "schema: 1\nid: local\nprompt: hello\nexpect:\n  final_contains: [ok]\n")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	mustWrite(t, bin, "#!/bin/sh\nprintf 'ok\\n'\n")
 	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "out")
-	err = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", probes, "--out", out, "--serf-bin", bin, "--repetitions", "2"})
+	err = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", probes, "--out", out, "--evener-bin", bin, "--repetitions", "2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", probes, "--probe", "missing", "--out", filepath.Join(dir, "none"), "--serf-bin", bin}); err == nil {
+	if err := runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", probes, "--probe", "missing", "--out", filepath.Join(dir, "none"), "--evener-bin", bin}); err == nil {
 		t.Fatal("empty selection returned nil")
 	}
 }
 
 func TestRunProbeOfflineStates(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	mustWrite(t, bin, "#!/bin/sh\nprintf 'ok final\\n'\nprintf '%s\\n' '{\"kind\":\"TOOL_CALL_START\",\"data\":{\"tool_name\":\"read\"}}' >&2\n")
 	if err := os.Chmod(bin, 0o755); err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	// deterministic; go test's -timeout is the hang backstop, so a loaded
 	// host can no longer kill a legitimately slow child mid-probe (kata
 	// 73cb, superseding the 2026-07-13 five-second guard).
-	cfg := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out"), serfBin: bin, timeout: 0, reasoningEffort: "low"}
+	cfg := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out"), evenerBin: bin, timeout: 0, reasoningEffort: "low"}
 	probe := probeFile{ID: "pass", Prompt: "hello", Fixture: fixtureSpec{Files: map[string]string{"a.txt": "a"}}, Expect: expectSpec{Calls: []expectedCall{{Tool: "read"}}, FinalContains: []string{"ok"}}}
 	if res := runProbe(cfg, probe, 1, map[string]bool{}); res.Status != "passed" {
 		t.Fatalf("pass result = %#v", res)
@@ -286,12 +286,12 @@ func TestRunProbeOfflineStates(t *testing.T) {
 		t.Fatalf("fixture result = %#v", res)
 	}
 
-	failBin := filepath.Join(dir, "fail-serf")
+	failBin := filepath.Join(dir, "fail-evener")
 	mustWrite(t, failBin, "#!/bin/sh\nprintf 'rate limit' >&2\nexit 1\n")
 	if err := os.Chmod(failBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg.serfBin = failBin
+	cfg.evenerBin = failBin
 	if res := runProbe(cfg, probeFile{ID: "infra"}, 1, nil); res.Status != "blocked_infra" {
 		t.Fatalf("infra result = %#v", res)
 	}

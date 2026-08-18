@@ -8,7 +8,7 @@ package worktree
 // 3-column grid (unlocked / own marker / foreign-or-reasonless); this file
 // splits the "own marker" column into OwnSession and OwnDelegate so the same
 // core serves both the session-occupancy events (whose owner is the session
-// marker) and the delegate lifecycle events (whose owner is the serf:dlg:
+// marker) and the delegate lifecycle events (whose owner is the evener:dlg:
 // marker). ClassifyReason is what places a parsed lock reason into one of
 // those states; Decide never parses — it only decides.
 
@@ -20,18 +20,18 @@ const (
 	// Unlocked: the worktree carries no git lock (table column "Target
 	// unlocked").
 	Unlocked LockState = iota
-	// OwnSession: locked with this session's own serf:<sid> marker (the
+	// OwnSession: locked with this session's own evener:<sid> marker (the
 	// "own marker" column, for session-occupancy events).
 	OwnSession
 	// OwnDelegate: locked with the acting delegate/disposer's own
-	// serf:dlg:<dlg>:<sid> marker (the "own marker" column, for the delegate
+	// evener:dlg:<dlg>:<sid> marker (the "own marker" column, for the delegate
 	// lifecycle events). For session-occupancy events a delegate marker is a
 	// *live lane of ours* and is treated as foreign — see Decide and §4/§9.
 	OwnDelegate
 	// Foreign: locked with any marker that is not the actor's own — another
 	// session, a delegate that is not the one acting, or a reasonless /
 	// unparseable lock (spec §5: "A lock with no reason or a reason that
-	// doesn't parse as a serf marker is foreign").
+	// doesn't parse as a evener marker is foreign").
 	Foreign
 )
 
@@ -241,7 +241,7 @@ func (a LockAction) String() string {
 //     parent cannot `switch` into an isolated delegate's worktree at all while
 //     the delegate exists").
 //   - Delegate lifecycle events (EvDelegateRevive, EvDisposeUnchanged,
-//     EvDisposeChanged): the owner is the serf:dlg: marker, so OwnDelegate is
+//     EvDisposeChanged): the owner is the evener:dlg: marker, so OwnDelegate is
 //     the "own marker" column (§9 step 4; §5 table note "the dlg lock is the
 //     disposer's"). A plain session marker (OwnSession) on such a tree is not
 //     the reviver's/disposer's own → treated as Foreign.
@@ -402,7 +402,7 @@ func Decide(ev LockEvent, st LockState) LockAction {
 
 	case EvDelegateCreate:
 		// Row "delegate creation (§9)": unlocked → atomic add --lock with
-		// serf:dlg: marker; every locked state is unreachable ("—") — the lane
+		// evener:dlg: marker; every locked state is unreachable ("—") — the lane
 		// is named for a fresh delegate id and does not exist yet.
 		switch st {
 		case Unlocked:
@@ -413,9 +413,9 @@ func Decide(ev LockEvent, st LockState) LockAction {
 
 	case EvDelegateRevive:
 		// Row "delegate revival (delegate_send on a kept lane)": unlocked →
-		// lock (serf:dlg:); own marker → adopt; foreign → refuse revival
+		// lock (evener:dlg:); own marker → adopt; foreign → refuse revival
 		// (§7 delegate revival; §9 Guards). Here the "own marker" is the
-		// delegate's own serf:dlg: marker (OwnDelegate); a plain session marker
+		// delegate's own evener:dlg: marker (OwnDelegate); a plain session marker
 		// (OwnSession) means someone switched in → foreign → refuse.
 		switch st {
 		case Unlocked:
@@ -433,7 +433,7 @@ func Decide(ev LockEvent, st LockState) LockAction {
 	case EvDisposeUnchanged:
 		// Row "disposal, unchanged lane": unlocked → unlock (vacuous) → remove;
 		// own marker → unlock → remove; foreign → "—" (the dlg lock is the
-		// disposer's). Owner is the serf:dlg: marker (OwnDelegate). The
+		// disposer's). Owner is the evener:dlg: marker (OwnDelegate). The
 		// unlocked cell is crash residue (§9 step 4: "a crash after unlock but
 		// before remove leaves an unlocked unchanged lane → prune collects
 		// it"); there is no lock to release, so the *lock action* is ActNone
@@ -457,7 +457,7 @@ func Decide(ev LockEvent, st LockState) LockAction {
 	case EvDisposeChanged:
 		// Row "disposal, changed lane": unlocked → keep; own marker → unlock,
 		// keep; foreign → "—" (the dlg lock is the disposer's). Owner is the
-		// serf:dlg: marker (OwnDelegate). Changed lanes stay resumable; only
+		// evener:dlg: marker (OwnDelegate). Changed lanes stay resumable; only
 		// the lock is released.
 		switch st {
 		case Unlocked:
@@ -504,8 +504,8 @@ func Decide(ev LockEvent, st LockState) LockAction {
 // ClassifyReason only on the reason of an actual lock.
 //
 // Attribution (spec §5, using ParseMarker's strict decode):
-//   - a session marker serf:<sid> with sid == ownSID → OwnSession;
-//   - a delegate marker serf:dlg:<dlg>:<sid> with dlg == ownDlgID (and
+//   - a session marker evener:<sid> with sid == ownSID → OwnSession;
+//   - a delegate marker evener:dlg:<dlg>:<sid> with dlg == ownDlgID (and
 //     ownDlgID != "") → OwnDelegate;
 //   - anything else → Foreign. This includes a delegate marker whose parent
 //     sid == ownSID but whose delegate id is NOT ours: that is a live delegate
@@ -516,16 +516,16 @@ func Decide(ev LockEvent, st LockState) LockAction {
 func ClassifyReason(reason, ownSID, ownDlgID string) LockState {
 	m, ok := ParseMarker(reason)
 	if !ok {
-		return Foreign // reasonless or non-serf lock (§5)
+		return Foreign // reasonless or non-evener lock (§5)
 	}
 	if m.DelegateID == "" {
-		// Plain session marker serf:<sid>.
+		// Plain session marker evener:<sid>.
 		if ownSID != "" && m.SessionID == ownSID {
 			return OwnSession
 		}
 		return Foreign
 	}
-	// Delegate marker serf:dlg:<dlg>:<sid>. Ours only if we are acting as that
+	// Delegate marker evener:dlg:<dlg>:<sid>. Ours only if we are acting as that
 	// exact delegate; a different delegate of our own session is foreign.
 	if ownDlgID != "" && m.DelegateID == ownDlgID {
 		return OwnDelegate

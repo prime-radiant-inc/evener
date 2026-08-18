@@ -2,7 +2,7 @@
 // tests: any request whose path ends "/models" (the launch-check /
 // model-catalog call) answers 200, and every other request (a completion
 // endpoint) answers 429 with a configurable Retry-After. Pointing a
-// providers.toml at it drives serf's model-retry path (kata 4zn8, e79v)
+// providers.toml at it drives evener's model-retry path (kata 4zn8, e79v)
 // end to end without waiting on a real provider to actually throttle.
 //
 // Usage:
@@ -11,7 +11,7 @@
 //
 // <listen-addr> is host:port to listen on. Use 127.0.0.1:0 to let the
 // kernel assign a free port rather than hardcoding one (kata 68fm is the
-// same lesson for serf-hub — see docs/agentic-testing.md) and read the
+// same lesson for evener-hub — see docs/agentic-testing.md) and read the
 // real port back from the "fake429 listening on ..." line this prints to
 // stderr. [retry-after-seconds] is the value sent in the 429 response's
 // Retry-After header; it defaults to 8.

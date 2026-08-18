@@ -65,7 +65,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
 				ID:        "01DOUBLELISTED",
 				CreatedAt: now,
 				UpdatedAt: now,
-				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 			}}
 			live := []LiveEntry{{
 				Entry:     rendezvous.Entry{PID: 1},
@@ -99,7 +99,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 		ID:        "01ASKING",
 		CreatedAt: now,
 		UpdatedAt: now,
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 	}}
 	live := []LiveEntry{{
 		Entry:      rendezvous.Entry{PID: 1},

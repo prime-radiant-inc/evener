@@ -19,7 +19,7 @@ import (
 // file-read path for pending attachments.
 func writeAttachmentTempFile(t *testing.T, bytesPayload []byte) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "serf-attachments-test-*.png")
+	f, err := os.CreateTemp("", "evener-attachments-test-*.png")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}

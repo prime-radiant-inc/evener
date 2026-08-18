@@ -7,7 +7,7 @@ import "strings"
 // predicate shared by every spawn surface (execenv shell/exec, plugin command
 // hooks, stdio MCP servers), matching *API_KEY* / *SECRET* / *TOKEN* /
 // *PASSWORD* / *CREDENTIAL* case-insensitively so a spawned command never
-// inherits serf's provider key or other ambient secrets.
+// inherits evener's provider key or other ambient secrets.
 func IsSecretEnvName(name string) bool {
 	u := strings.ToUpper(name)
 	return strings.Contains(u, "API_KEY") ||

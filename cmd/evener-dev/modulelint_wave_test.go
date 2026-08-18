@@ -188,7 +188,7 @@ func TestLintRunVanishedScratchIsResultsLost(t *testing.T) {
 	sync := t.TempDir()
 	newCmd := func(module string) *exec.Cmd {
 		if module == "three" {
-			scratch, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "serf-module-lint.*"))
+			scratch, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "evener-module-lint.*"))
 			if err != nil || len(scratch) != 1 {
 				t.Errorf("could not find the runner's scratch to remove: %v %v", scratch, err)
 			} else if err := os.RemoveAll(scratch[0]); err != nil {
@@ -232,7 +232,7 @@ func TestLintRunUnrecordableResultIsNarrowResultsLost(t *testing.T) {
 	var logdir string
 	newCmd := func(module string) *exec.Cmd {
 		if module == "two" {
-			scratch, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "serf-module-lint.*"))
+			scratch, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "evener-module-lint.*"))
 			if err != nil || len(scratch) != 1 {
 				t.Errorf("could not find the runner's scratch: %v %v", scratch, err)
 			} else {
@@ -361,11 +361,11 @@ func TestLintRunReclaimsAbandonedScratchAtStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadPid := deadChild.Process.Pid
-	abandoned := filepath.Join(tmp, fmt.Sprintf("serf-module-lint.%d", deadPid))
+	abandoned := filepath.Join(tmp, fmt.Sprintf("evener-module-lint.%d", deadPid))
 	if err := os.MkdirAll(filepath.Join(abandoned, "0.log"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	keeper := filepath.Join(tmp, "serf-module-lint.notapid")
+	keeper := filepath.Join(tmp, "evener-module-lint.notapid")
 	if err := os.Mkdir(keeper, 0o755); err != nil {
 		t.Fatal(err)
 	}

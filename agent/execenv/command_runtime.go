@@ -165,7 +165,7 @@ func (c *systemCommandRuntime) Wait() error {
 		return c.forceCloseOutput(processErr, outputDone, outputErr)
 	}
 
-	// Background commands remain owned by Serf. A live pipe writer after the
+	// Background commands remain owned by Evener. A live pipe writer after the
 	// leader exits is a managed descendant; only DetachCommand disowns one.
 	c.Terminate()
 	pipeClosed, _, pipeErr = waitForStreamPipeClose(c.outputReader, c.terminationGrace)

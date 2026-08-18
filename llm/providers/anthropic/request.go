@@ -150,7 +150,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		thinking := map[string]any{"type": "adaptive"}
 		if claude5 {
 			// Claude 5 defaults thinking display to "omitted" (empty thinking
-			// text); serf's UI shows live thinking, so request summaries.
+			// text); evener's UI shows live thinking, so request summaries.
 			// Older adaptive models must stay byte-identical: no display field.
 			thinking["display"] = "summarized"
 		}

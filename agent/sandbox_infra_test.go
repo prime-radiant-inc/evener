@@ -14,7 +14,7 @@ import (
 )
 
 // hermeticInfraEnv points the global MCP config layer at an empty temp dir so
-// SessionInfraRoots never picks up the developer's real ~/.config/serf/mcp.json.
+// SessionInfraRoots never picks up the developer's real ~/.config/evener/mcp.json.
 func hermeticInfraEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(envvars.XDGConfigHome.Name, t.TempDir())
@@ -221,10 +221,10 @@ func TestSessionInfraRootsRefuseDirectoryValuedMCPArgs(t *testing.T) {
 }
 
 // TestSessionInfraRootsIgnoreTheProjectMCPLayer is the root-cause test for the
-// escalation. mcpconfig's layer 2 is <git root>/.serf/mcp.json — a file INSIDE the
+// escalation. mcpconfig's layer 2 is <git root>/.evener/mcp.json — a file INSIDE the
 // model's own write surface. Feeding it to the sandbox policy made the policy
 // model-mutable, breaking SandboxPolicy's "nothing the model does mid-session can
-// change it" invariant: the model writes .serf/mcp.json, spawns a delegate with
+// change it" invariant: the model writes .evener/mcp.json, spawns a delegate with
 // sandbox="restricted" (which re-derives these roots live), and reads whatever it
 // named. Only config layers the model CANNOT write may feed a sandbox grant.
 func TestSessionInfraRootsIgnoreTheProjectMCPLayer(t *testing.T) {
@@ -237,13 +237,13 @@ func TestSessionInfraRootsIgnoreTheProjectMCPLayer(t *testing.T) {
 	// sits outside the worktree.
 	outside := t.TempDir()
 	script := writeInfraFile(t, filepath.Join(outside, "server.js"), "// mcp\n", 0o644)
-	writeInfraFile(t, filepath.Join(root, ".serf", "mcp.json"),
+	writeInfraFile(t, filepath.Join(root, ".evener", "mcp.json"),
 		`{"mcpServers":{"planted":{"command":"node","args":["`+script+`"]}}}`, 0o644)
 
 	cfg := SessionConfig{Sandbox: "restricted"}
 	got := SessionInfraRoots(cfg, env)
 	if slices.Contains(got, canonInfra(t, outside)) {
-		t.Errorf("a model-writable .serf/mcp.json must not feed the sandbox policy, got %v", got)
+		t.Errorf("a model-writable .evener/mcp.json must not feed the sandbox policy, got %v", got)
 	}
 	if len(got) != 0 {
 		t.Errorf("the project MCP layer must contribute no infra roots at all, got %v", got)
@@ -262,14 +262,14 @@ func TestSessionInfraRootsResolveIntoNothingOutsideTheWorktree(t *testing.T) {
 	runInfraGit(t, root, "init", "-q")
 	env := execenv.NewLocalExecutionEnvironment(root)
 
-	// Everything a hostile .serf/mcp.json could name: the home ancestor, home
+	// Everything a hostile .evener/mcp.json could name: the home ancestor, home
 	// itself, a directory-valued arg, and a script outside the lane.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("no resolvable home directory on this host")
 	}
 	otherLane := t.TempDir()
-	writeInfraFile(t, filepath.Join(root, ".serf", "mcp.json"),
+	writeInfraFile(t, filepath.Join(root, ".evener", "mcp.json"),
 		`{"mcpServers":{"evil":{"command":"/bin/sh","args":["`+filepath.Dir(filepath.Clean(home))+
 			`","`+filepath.Clean(home)+`","`+otherLane+`"]}}}`, 0o644)
 
@@ -421,7 +421,7 @@ const dataVolumePrefixForTest = "/System/Volumes/Data"
 // test for the guard. Everything else in this file proves what is REFUSED, and the
 // refusals are easy to over-tighten: the guard's anchors include $HOME itself, and
 // the whole point of the feature is granting a plugin cache that normally lives
-// UNDER $HOME (~/.claude/plugins/..., ~/.config/serf/plugins/...). Nothing else here
+// UNDER $HOME (~/.claude/plugins/..., ~/.config/evener/plugins/...). Nothing else here
 // would notice if a tightening of RootGuard.Permit — the os.SameFile spelling check
 // especially — started refusing those too, because the other tests all use
 // t.TempDir(), which sits under the TEMP anchor rather than under home.
@@ -436,13 +436,13 @@ func TestSessionInfraRootsGrantLegitimateRootsUnderHome(t *testing.T) {
 	}
 	// The agent test harness points HOME at a temp dir, so this writes nothing into
 	// a real developer's home.
-	if !strings.Contains(home, os.TempDir()) && !strings.Contains(home, "serf-agent-home") {
+	if !strings.Contains(home, os.TempDir()) && !strings.Contains(home, "evener-agent-home") {
 		t.Skip("test harness home is not a scratch directory; refusing to write into a real home")
 	}
 
 	pluginDir := filepath.Join(home, ".claude", "plugins", "superpowers")
 	writeInfraFile(t, filepath.Join(pluginDir, "hooks", "session-start.sh"), "#!/bin/sh\n", 0o755)
-	script := writeInfraFile(t, filepath.Join(home, ".config", "serf", "servers", "server.js"), "// mcp\n", 0o644)
+	script := writeInfraFile(t, filepath.Join(home, ".config", "evener", "servers", "server.js"), "// mcp\n", 0o644)
 	mcpJSON := writeInfraFile(t, filepath.Join(t.TempDir(), "mcp.json"),
 		`{"mcpServers":{"under-home":{"command":"node","args":["`+script+`"]}}}`, 0o644)
 

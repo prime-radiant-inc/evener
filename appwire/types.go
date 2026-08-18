@@ -17,7 +17,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "serf-appwire-v3"
+const ProtocolVersion = "evener-appwire-v3"
 
 const (
 	MethodInitialize                = "initialize"
@@ -43,61 +43,61 @@ const (
 	MethodTurnPromoteQueuedAsSteer  = "turn/promoteQueuedAsSteer"
 	MethodTurnCancelQueued          = "turn/cancelQueued"
 	MethodGoalSet                   = "goal/set"
-	MethodSerfTasksList             = "serf/tasks/list"
-	MethodSerfJobsList              = "serf/jobs/list"
-	MethodSerfJobsOutput            = "serf/jobs/output"
-	MethodSerfThreadNameSet         = "serf/thread/name/set"
-	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
-	MethodSerfSubagentPreview       = "serf/subagentPreview"
-	MethodSerfPathsComplete         = "serf/paths/complete"
-	MethodSerfProjectsRecent        = "serf/projects/recent"
-	MethodSerfPathValidate          = "serf/path/validate"
-	MethodSerfHarnessesList         = "serf/harnesses/list"
-	MethodSerfUpgrade               = "serf/upgrade"
-	MethodSerfAuthStatus            = "serf/auth/status"
-	MethodSerfAuthTest              = "serf/auth/test"
-	MethodSerfAuthLoginStart        = "serf/auth/login/start"
-	MethodSerfAuthLoginComplete     = "serf/auth/login/complete"
-	MethodSerfAuthLogout            = "serf/auth/logout"
-	MethodSerfAuthList              = "serf/auth/list"
-	MethodSerfAuthApiKeySet         = "serf/auth/apiKey/set"
-	MethodSerfAuthDeviceStart       = "serf/auth/device/start"
-	MethodSerfAuthDevicePoll        = "serf/auth/device/poll"
-	MethodSerfLaunchResolve         = "serf/launch/resolve"
-	MethodSerfLaunchSchema          = "serf/launch/schema"
-	MethodSerfLaunchGetLayer        = "serf/launch/getLayer"
-	MethodSerfLaunchSetLayer        = "serf/launch/setLayer"
-	MethodSerfLaunchTrustRepo       = "serf/launch/trustRepo"
+	MethodEvenerTasksList             = "evener/tasks/list"
+	MethodEvenerJobsList              = "evener/jobs/list"
+	MethodEvenerJobsOutput            = "evener/jobs/output"
+	MethodEvenerThreadNameSet         = "evener/thread/name/set"
+	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
+	MethodEvenerSubagentPreview       = "evener/subagentPreview"
+	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerProjectsRecent        = "evener/projects/recent"
+	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerHarnessesList         = "evener/harnesses/list"
+	MethodEvenerUpgrade               = "evener/upgrade"
+	MethodEvenerAuthStatus            = "evener/auth/status"
+	MethodEvenerAuthTest              = "evener/auth/test"
+	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
+	MethodEvenerAuthLoginComplete     = "evener/auth/login/complete"
+	MethodEvenerAuthLogout            = "evener/auth/logout"
+	MethodEvenerAuthList              = "evener/auth/list"
+	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
+	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
+	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
+	MethodEvenerLaunchResolve         = "evener/launch/resolve"
+	MethodEvenerLaunchSchema          = "evener/launch/schema"
+	MethodEvenerLaunchGetLayer        = "evener/launch/getLayer"
+	MethodEvenerLaunchSetLayer        = "evener/launch/setLayer"
+	MethodEvenerLaunchTrustRepo       = "evener/launch/trustRepo"
 	MethodModelList                 = "model/list"
-	MethodSerfInstanceList          = "serf/instance/list"
-	MethodSerfInstanceCreate        = "serf/instance/create"
-	MethodSerfInstanceEdit          = "serf/instance/edit"
-	MethodSerfInstanceRemove        = "serf/instance/remove"
-	MethodSerfInstanceSetDefault    = "serf/instance/setDefault"
-	MethodSerfPluginCheckNow        = "serf/plugin/checkNow"
-	MethodSerfMarketplaceList       = "serf/marketplace/list"
-	MethodSerfMarketplaceAdd        = "serf/marketplace/add"
-	MethodSerfMarketplaceRemove     = "serf/marketplace/remove"
-	MethodSerfMarketplaceRefresh    = "serf/marketplace/refresh"
-	MethodSerfMarketplaceBrowse     = "serf/marketplace/browse"
-	MethodSerfPluginList            = "serf/plugin/list"
-	MethodSerfPluginInstall         = "serf/plugin/install"
-	MethodSerfPluginUpgrade         = "serf/plugin/upgrade"
-	MethodSerfPluginRemove          = "serf/plugin/remove"
-	MethodSerfPluginEnable          = "serf/plugin/enable"
-	MethodSerfPluginDisable         = "serf/plugin/disable"
-	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
-	MethodSerfCommandList           = "serf/command/list"
-	// MethodSerfSettingsOverview returns the field bag behind six settings
+	MethodEvenerInstanceList          = "evener/instance/list"
+	MethodEvenerInstanceCreate        = "evener/instance/create"
+	MethodEvenerInstanceEdit          = "evener/instance/edit"
+	MethodEvenerInstanceRemove        = "evener/instance/remove"
+	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
+	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
+	MethodEvenerMarketplaceList       = "evener/marketplace/list"
+	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
+	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
+	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
+	MethodEvenerPluginList            = "evener/plugin/list"
+	MethodEvenerPluginInstall         = "evener/plugin/install"
+	MethodEvenerPluginUpgrade         = "evener/plugin/upgrade"
+	MethodEvenerPluginRemove          = "evener/plugin/remove"
+	MethodEvenerPluginEnable          = "evener/plugin/enable"
+	MethodEvenerPluginDisable         = "evener/plugin/disable"
+	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
+	MethodEvenerCommandList           = "evener/command/list"
+	// MethodEvenerSettingsOverview returns the field bag behind six settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
 	// servers. See SettingsOverviewResponse's doc comment.
-	MethodSerfSettingsOverview = "serf/settings/overview"
-	// MethodSerfSandboxEscalationResolve delivers a human's approve/deny decision
+	MethodEvenerSettingsOverview = "evener/settings/overview"
+	// MethodEvenerSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
-	MethodSerfSandboxEscalationResolve = "serf/sandbox/escalation/resolve"
+	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
 )
 
 const (
@@ -105,7 +105,7 @@ const (
 	NotifyThreadClosed        = "thread/closed"
 	NotifyThreadStatusChanged = "thread/status/changed"
 	NotifyThreadQueueChanged  = "thread/queueChanged"
-	NotifyThreadNameChanged   = "serf/thread/name/changed"
+	NotifyThreadNameChanged   = "evener/thread/name/changed"
 	// NotifyThreadModelChanged pushes a mid-session model/provider switch so
 	// clients converge without re-reading the thread. See ThreadModelChangedParams.
 	NotifyThreadModelChanged = "thread/model/changed"
@@ -121,36 +121,36 @@ const (
 	NotifyReasoningSummaryDelta        = "item/reasoning/summaryTextDelta"
 	NotifyToolOutputDelta              = "item/toolOutput/delta"
 	NotifyWarning                      = "warning"
-	NotifySerfContextPressure          = "serf/thread/contextPressure/updated"
-	NotifySerfThreadModelRetry         = "serf/thread/modelRetry"
-	NotifySerfThreadResync             = "serf/thread/resync"
-	NotifySerfTaskUpdated              = "serf/task/updated"
-	NotifySerfSteeringInjected         = "serf/steering/injected"
-	NotifySerfJobStarted               = "serf/job/started"
-	NotifySerfJobFinished              = "serf/job/finished"
-	NotifySerfDelegateUpdated          = "serf/delegate/updated"
-	NotifySerfJobsTreeUpdated          = "serf/jobs/treeUpdated"
-	NotifySerfAuthUpdated              = "serf/auth/updated"
-	NotifySerfLaunchUpdated            = "serf/launch/updated"
-	NotifySerfAttentionChanged         = "serf/attention/changed"
-	NotifySerfMarketplaceUpdated       = "serf/marketplace/updated"
-	NotifySerfPluginUpdated            = "serf/plugin/updated"
-	// NotifySerfSandboxEscalationRequested pushes a harness-raised, human-gated
+	NotifyEvenerContextPressure          = "evener/thread/contextPressure/updated"
+	NotifyEvenerThreadModelRetry         = "evener/thread/modelRetry"
+	NotifyEvenerThreadResync             = "evener/thread/resync"
+	NotifyEvenerTaskUpdated              = "evener/task/updated"
+	NotifyEvenerSteeringInjected         = "evener/steering/injected"
+	NotifyEvenerJobStarted               = "evener/job/started"
+	NotifyEvenerJobFinished              = "evener/job/finished"
+	NotifyEvenerDelegateUpdated          = "evener/delegate/updated"
+	NotifyEvenerJobsTreeUpdated          = "evener/jobs/treeUpdated"
+	NotifyEvenerAuthUpdated              = "evener/auth/updated"
+	NotifyEvenerLaunchUpdated            = "evener/launch/updated"
+	NotifyEvenerAttentionChanged         = "evener/attention/changed"
+	NotifyEvenerMarketplaceUpdated       = "evener/marketplace/updated"
+	NotifyEvenerPluginUpdated            = "evener/plugin/updated"
+	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
-	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
-	NotifySerfSandboxEscalationRequested = "serf/sandbox/escalation/requested"
-	// NotifySerfSandboxEscalationResolved pushes notice that a previously-raised
+	// blocks until the client answers with MethodEvenerSandboxEscalationResolve.
+	NotifyEvenerSandboxEscalationRequested = "evener/sandbox/escalation/requested"
+	// NotifyEvenerSandboxEscalationResolved pushes notice that a previously-raised
 	// escalation left the pending set (M7, wire-honesty spec Part B): resolved
 	// explicitly, cleared by turn-interrupt, or cleared by session close. Every
 	// OTHER subscribed client uses it to clear its own now-stale copy of the
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
-	NotifySerfSandboxEscalationResolved = "serf/sandbox/escalation/resolved"
-	// NotifySerfTreeChanged pushes a hint that tree-relevant state changed
+	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
+	// NotifyEvenerTreeChanged pushes a hint that tree-relevant state changed
 	// (roster delta, past-index change, or an archive/favorite/rename/
 	// project-delete mutation) so the web sidebar can refetch /api/tree
 	// instead of polling. Hub-originated; never sent by daemons.
-	NotifySerfTreeChanged = "serf/tree/changed"
+	NotifyEvenerTreeChanged = "evener/tree/changed"
 )
 
 const (
@@ -241,7 +241,7 @@ type Thread struct {
 	GitInfo       *GitInfo     `json:"gitInfo,omitempty"`
 	Name          string       `json:"name,omitempty"`
 	Turns         []Turn       `json:"turns,omitempty"`
-	Serf          SerfThread   `json:"serf"`
+	Evener        EvenerThread   `json:"evener"`
 }
 
 type GitInfo struct {
@@ -256,14 +256,14 @@ type ThreadStatus struct {
 }
 
 // TaskAggregate carries the authoritative task-list progress for a thread
-// snapshot. A nil *TaskAggregate on SerfThread means the source cannot know
+// snapshot. A nil *TaskAggregate on EvenerThread means the source cannot know
 // the session's task state; a present zero is an authoritative empty list.
 type TaskAggregate struct {
 	Total int `json:"total"`
 	Done  int `json:"done"`
 }
 
-type SerfThread struct {
+type EvenerThread struct {
 	Ref              string             `json:"ref"`
 	ParentRef        string             `json:"parentRef,omitempty"`
 	Kind             string             `json:"kind,omitempty"`
@@ -274,7 +274,7 @@ type SerfThread struct {
 	ContextWindow    int                `json:"contextWindow,omitempty"`
 	ContextRemaining int                `json:"contextRemaining,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
-	Diagnostics      *SerfDiagnostics   `json:"diagnostics,omitempty"`
+	Diagnostics      *EvenerDiagnostics   `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue (kata r80p). Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
@@ -295,13 +295,13 @@ type SerfThread struct {
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
 	// them. Usage is a pointer
-	// (unlike the other two scalars) because SerfUsage is a value struct whose
+	// (unlike the other two scalars) because EvenerUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
 	// signals "no token data" rather than rendering ↑0 ↓0.
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
 	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
 	// Emitting seconds here would mix units with the consumer's ms clock.
-	Usage               *SerfUsage `json:"usage,omitempty"`
+	Usage               *EvenerUsage `json:"usage,omitempty"`
 	WorkMillis          int64      `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64      `json:"activeTurnStartedAt,omitempty"`
 	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
@@ -313,7 +313,7 @@ type SerfThread struct {
 	// sub-cent priced session. Derived from the authoritative full-session
 	// cumulative Usage (the same total the token cluster trusts), never a
 	// page of client-loaded turns, so it is pagination-proof by construction.
-	// Stamped beside Usage at each SerfThread producer (the server's live
+	// Stamped beside Usage at each EvenerThread producer (the server's live
 	// appThread and the hub's past-entry hydrate), so it stays current across
 	// snapshots exactly as WorkMillis/Usage do. The whole cumulative Usage is
 	// priced at the thread's CURRENT model: after a mid-session model switch,
@@ -370,18 +370,18 @@ type SerfThread struct {
 
 // GoalState is the wire representation of a session's /goal. Status is the
 // lifecycle status ("active", "complete", "blocked"); Iterations is the number
-// of continuation turns taken. A nil *GoalState on SerfThread means no goal is
+// of continuation turns taken. A nil *GoalState on EvenerThread means no goal is
 // set.
 type GoalState struct {
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
 }
 
-// SerfUsage carries a serf session's cumulative self-only token totals for
-// the status row. A nil *SerfUsage on SerfThread means no token data (old
+// EvenerUsage carries a evener session's cumulative self-only token totals for
+// the status row. A nil *EvenerUsage on EvenerThread means no token data (old
 // daemon, Codex thread, or a session with zero usage) — the clusters hide
 // rather than render ↑0 ↓0.
-type SerfUsage struct {
+type EvenerUsage struct {
 	InputTokens     int64 `json:"inputTokens,omitempty"`
 	OutputTokens    int64 `json:"outputTokens,omitempty"`
 	CacheReadTokens int64 `json:"cacheReadTokens,omitempty"`
@@ -412,7 +412,7 @@ type QueueState struct {
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
-// (kata r80p). It mirrors the queue field on SerfThread so consumers can
+// (kata r80p). It mirrors the queue field on EvenerThread so consumers can
 // store it verbatim on the cached thread state.
 type ThreadQueueChangedParams struct {
 	ThreadID string     `json:"threadId"`
@@ -420,9 +420,9 @@ type ThreadQueueChangedParams struct {
 	Queue    QueueState `json:"queue"`
 }
 
-// TaskUpdatedParams is the params shape for serf/task/updated: the session's
+// TaskUpdatedParams is the params shape for evener/task/updated: the session's
 // task-list progress after a change, so a client refreshes the status row
-// event-driven instead of polling serf/tasks/list.
+// event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
@@ -440,7 +440,7 @@ type TurnCompletedParams struct {
 }
 
 // SandboxEscalationRequested is the payload of a
-// serf/sandbox/escalation/requested notification (M7): a harness-raised approval
+// evener/sandbox/escalation/requested notification (M7): a harness-raised approval
 // card for a single sandbox denial. It carries only what the human needs to decide
 // — never file contents. DeniedPath is the FULL literal path for informed consent
 // (only non-sensitive containment denials escalate, so the full path is safe; a
@@ -466,7 +466,7 @@ type SandboxEscalationRequested struct {
 	PartiallyRan bool   `json:"partiallyRan,omitempty"`
 }
 
-// SandboxEscalationResolved is the payload of a serf/sandbox/escalation/resolved
+// SandboxEscalationResolved is the payload of a evener/sandbox/escalation/resolved
 // notification (M7, wire-honesty spec Part B): a previously-raised escalation
 // left the pending set. It intentionally carries no reason or approved decision
 // — the sole consumer clears its card by id identically regardless of outcome,
@@ -482,7 +482,7 @@ type SandboxEscalationResolved struct {
 }
 
 // SandboxEscalationResolveParams is the request shape for
-// serf/sandbox/escalation/resolve (M7): the human's approve/deny decision for a
+// evener/sandbox/escalation/resolve (M7): the human's approve/deny decision for a
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
@@ -506,45 +506,45 @@ type ThreadCapabilities struct {
 	// messages for processing after the active turn completes.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
-	// for a serf session that can accept a goal; false for sources without the
+	// for a evener session that can accept a goal; false for sources without the
 	// engine (e.g. codex), so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
-	// Rename advertises support for serf/thread/name/set. True for a live serf
+	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for Codex-bridged threads.
 	Rename bool `json:"rename"`
 }
 
-type SerfDiagnostics struct {
-	Tools     []SerfToolInfo      `json:"tools,omitempty"`
-	MCP       []SerfMCPServerInfo `json:"mcp,omitempty"`
-	Skills    []SerfSkillInfo     `json:"skills,omitempty"`
-	Plugins   []SerfPluginInfo    `json:"plugins,omitempty"`
+type EvenerDiagnostics struct {
+	Tools     []EvenerToolInfo      `json:"tools,omitempty"`
+	MCP       []EvenerMCPServerInfo `json:"mcp,omitempty"`
+	Skills    []EvenerSkillInfo     `json:"skills,omitempty"`
+	Plugins   []EvenerPluginInfo    `json:"plugins,omitempty"`
 	Hooks     map[string]int      `json:"hooks,omitempty"`
-	Jobs      []SerfJobInfo       `json:"jobs,omitempty"`
-	Delegates []SerfDelegateInfo  `json:"delegates,omitempty"`
-	TurnSlots *SerfTurnSlots      `json:"turnSlots,omitempty"`
+	Jobs      []EvenerJobInfo       `json:"jobs,omitempty"`
+	Delegates []EvenerDelegateInfo  `json:"delegates,omitempty"`
+	TurnSlots *EvenerTurnSlots      `json:"turnSlots,omitempty"`
 	Agents    []string            `json:"agents,omitempty"`
 }
 
-type SerfToolInfo struct {
+type EvenerToolInfo struct {
 	Name   string `json:"name"`
 	Source string `json:"source"`
 }
 
-type SerfMCPServerInfo struct {
+type EvenerMCPServerInfo struct {
 	Name   string   `json:"name"`
 	Tools  []string `json:"tools"`
 	Status string   `json:"status,omitempty"`
 	Error  string   `json:"error,omitempty"`
 }
 
-type SerfSkillInfo struct {
+type EvenerSkillInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 }
 
-type SerfPluginInfo struct {
+type EvenerPluginInfo struct {
 	Name       string `json:"name"`
 	Version    string `json:"version,omitempty"`
 	SkillCount int    `json:"skillCount"`
@@ -553,7 +553,7 @@ type SerfPluginInfo struct {
 	MCPCount   int    `json:"mcpCount"`
 }
 
-type SerfJobInfo struct {
+type EvenerJobInfo struct {
 	JobID            string `json:"jobId"`
 	JobType          string `json:"jobType"`
 	Status           string `json:"status"`
@@ -575,10 +575,10 @@ type SerfJobInfo struct {
 	OriginItemID     string `json:"originItemId,omitempty"`
 }
 
-// SerfDelegateInfo is the turn-free stable delegate projection shared by live
+// EvenerDelegateInfo is the turn-free stable delegate projection shared by live
 // notifications and thread diagnostics. It contains no activation job fields
 // and no call-scoped wait result.
-type SerfDelegateInfo struct {
+type EvenerDelegateInfo struct {
 	DelegateID          string               `json:"delegateId"`
 	OwnerSessionID      string               `json:"ownerSessionId"`
 	RootSessionID       string               `json:"rootSessionId"`
@@ -624,17 +624,17 @@ type SerfDelegateInfo struct {
 	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
 	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
 	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
-	Usage               *SerfUsage           `json:"usage,omitempty"`
+	Usage               *EvenerUsage           `json:"usage,omitempty"`
 	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
-type SerfDelegateParams struct {
+type EvenerDelegateParams struct {
 	ThreadID string           `json:"threadId"`
 	Ref      string           `json:"ref"`
-	Delegate SerfDelegateInfo `json:"delegate"`
+	Delegate EvenerDelegateInfo `json:"delegate"`
 }
 
-type SerfTurnSlots struct {
+type EvenerTurnSlots struct {
 	InUse  int64 `json:"inUse"`
 	Cap    int64 `json:"cap"`
 	Jobs   int64 `json:"jobs"`
@@ -659,7 +659,7 @@ type Turn struct {
 	// summing EventAssistantTextEnd's per-round usage across the turn
 	// (internal/appprojector), and for ended sessions by reading the
 	// persisted per-round schema.Turn.Usage (internal/apptranscript).
-	Usage *SerfUsage `json:"usage,omitempty"`
+	Usage *EvenerUsage `json:"usage,omitempty"`
 	Cost  string     `json:"cost,omitempty"`
 }
 
@@ -946,12 +946,12 @@ type ThreadTranscriptListResponse struct {
 	Data []ThreadTranscriptTarget `json:"data"`
 }
 
-type SerfSubagentPreviewParams struct {
+type EvenerSubagentPreviewParams struct {
 	Ref   string `json:"ref"`
 	Limit int    `json:"limit,omitempty"`
 }
 
-type SerfSubagentPreviewResponse struct {
+type EvenerSubagentPreviewResponse struct {
 	Ref       string       `json:"ref"`
 	Items     []ThreadItem `json:"items"`
 	Truncated bool         `json:"truncated"`
@@ -1005,11 +1005,11 @@ type ThreadForkParams struct {
 	// fork never auto-runs the message). Mutually exclusive with EditedInput
 	// and Aside.
 	DeferInput bool `json:"deferInput,omitempty"`
-	// Aside forks a local serf thread at its tip instead of at a source turn:
+	// Aside forks a local evener thread at its tip instead of at a source turn:
 	// the child is a complete copy of the parent session (same permissions and
 	// config via the inherited session meta) and opens as a side thread. Aside
 	// is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
-	// Label, and is only supported for local serf threads.
+	// Label, and is only supported for local evener threads.
 	Aside bool `json:"aside,omitempty"`
 }
 
@@ -1377,7 +1377,7 @@ type JobActivityDelegate struct {
 	Branch              JobActivityBranchState `json:"branch"`
 	// Usage is the child session's cumulative self-only token totals. Nil when
 	// the child has no token data (fresh session, old daemon, shell-only work).
-	Usage *SerfUsage `json:"usage,omitempty"`
+	Usage *EvenerUsage `json:"usage,omitempty"`
 }
 
 type JobActivityWorktree struct {
@@ -1413,7 +1413,7 @@ type JobActivityTree struct {
 // AllJobActivityTypes is the explicit reachability root for the replacement
 // jobs activity-tree contract. The AppWire generators walk this list in
 // addition to Methods and Notifications so the JobActivity* wire types stay
-// emitted even though serf/jobs/list itself keeps JobsListResponse.Data as any.
+// emitted even though evener/jobs/list itself keeps JobsListResponse.Data as any.
 var AllJobActivityTypes = []any{
 	JobActivityTree{},
 	JobActivitySession{},
@@ -1425,7 +1425,7 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the serf/jobs/output payload: one window of a job's
+// JobOutputTail is the evener/jobs/output payload: one window of a job's
 // durable output plus the bookkeeping a client needs to say "showing last N
 // of M bytes" and to page backwards through the log.
 type JobOutputTail struct {
@@ -1628,7 +1628,7 @@ type ThreadStatusChangedParams struct {
 	Ref      string       `json:"ref"`
 	Status   ThreadStatus `json:"status"`
 	// FailedToolCalls carries the session's running failure count (see
-	// SerfThread.FailedToolCalls) so a client WATCHING a session sees it move.
+	// EvenerThread.FailedToolCalls) so a client WATCHING a session sees it move.
 	// The figure is otherwise snapshot-only, refreshed by thread/read — which
 	// means a session that was clean when the client attached and failed later
 	// would keep saying nothing, which is precisely the reader the count was
@@ -1641,7 +1641,7 @@ type ThreadStatusChangedParams struct {
 	// counted" is expressed.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
-	// announced (see SerfThread.Capabilities), for the same reason the failure
+	// announced (see EvenerThread.Capabilities), for the same reason the failure
 	// count rides along above: it is otherwise snapshot-only, and three of its
 	// entries — Send, Steer, Queue — are defined by whether a turn is in
 	// flight. A client that read the thread while it was idle therefore holds
@@ -1698,7 +1698,7 @@ type AgentMessageResetParams struct {
 	ItemID   string `json:"itemId"`
 }
 
-// ThreadModelRetryParams is the params shape for the serf/thread/modelRetry
+// ThreadModelRetryParams is the params shape for the evener/thread/modelRetry
 // notification: the session's model call failed with a retryable error and will
 // be tried again after DelayMS.
 //
@@ -1825,12 +1825,12 @@ type WarningParams struct {
 	Cause    *DiagnosticCause `json:"cause,omitempty"`
 }
 
-// SerfSteeringInjectedParams is the params shape for the
-// serf/steering/injected notification. Text is pre-substituted server-side
+// EvenerSteeringInjectedParams is the params shape for the
+// evener/steering/injected notification. Text is pre-substituted server-side
 // with an image placeholder when a steer carries only images. Source is
 // "user" for human-sent steering (rendered as a user message) and omitted
 // entirely for daemon-originated steering (issue #24).
-type SerfSteeringInjectedParams struct {
+type EvenerSteeringInjectedParams struct {
 	ThreadID         string      `json:"threadId"`
 	Ref              string      `json:"ref"`
 	Text             string      `json:"text,omitempty"`
@@ -1840,30 +1840,30 @@ type SerfSteeringInjectedParams struct {
 	ClientMutationID string      `json:"clientMutationId,omitempty"`
 }
 
-// SerfJobParams is the params shape shared by the serf/job/started and
-// serf/job/finished notifications. Both carry the same envelope around a
-// SerfJobInfo; which of its fields are populated is what differs (a finished
+// EvenerJobParams is the params shape shared by the evener/job/started and
+// evener/job/finished notifications. Both carry the same envelope around a
+// EvenerJobInfo; which of its fields are populated is what differs (a finished
 // job adds status/reason/exitCode/output), so one type describes both.
-type SerfJobParams struct {
+type EvenerJobParams struct {
 	ThreadID string      `json:"threadId"`
 	Ref      string      `json:"ref"`
-	Job      SerfJobInfo `json:"job"`
+	Job      EvenerJobInfo `json:"job"`
 }
 
-// SerfAuthUpdatedParams is the params shape for the serf/auth/updated
+// EvenerAuthUpdatedParams is the params shape for the evener/auth/updated
 // notification. Both fields are absent when the broadcast follows a
 // provider-instance mutation, which no single provider/activeSource pair
 // honestly summarizes; clients treat this notification as payload-agnostic
 // ("credentials or instances changed, refetch") either way.
-type SerfAuthUpdatedParams struct {
+type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
 }
 
-// SerfLaunchUpdatedParams is the params shape for the serf/launch/updated
+// EvenerLaunchUpdatedParams is the params shape for the evener/launch/updated
 // notification: which working directory's launch config changed, and at
 // which layer.
-type SerfLaunchUpdatedParams struct {
+type EvenerLaunchUpdatedParams struct {
 	CWD   string `json:"cwd"`
 	Layer string `json:"layer"`
 }
@@ -1913,18 +1913,18 @@ type LaunchOptionSchemaResponse struct {
 	Excluded map[string]string `json:"excluded,omitempty"`
 }
 
-// AuthListResponse is the result of serf/auth/list.
+// AuthListResponse is the result of evener/auth/list.
 type AuthListResponse struct {
 	Providers []AuthStatusResponse `json:"providers"`
 }
 
-// AuthApiKeySetParams is the params for serf/auth/apiKey/set.
+// AuthApiKeySetParams is the params for evener/auth/apiKey/set.
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
 }
 
-// AuthDeviceStartParams is the params for serf/auth/device/start.
+// AuthDeviceStartParams is the params for evener/auth/device/start.
 type AuthDeviceStartParams struct {
 	Provider string `json:"provider"`
 }
@@ -1941,7 +1941,7 @@ type AuthDeviceStartResponse struct {
 	Fallback        bool   `json:"fallback,omitempty"`
 }
 
-// AuthDevicePollParams is the params for serf/auth/device/poll.
+// AuthDevicePollParams is the params for evener/auth/device/poll.
 type AuthDevicePollParams struct {
 	Provider string `json:"provider"`
 	FlowID   string `json:"flowId"`
@@ -1979,13 +1979,13 @@ type InstanceEntry struct {
 	CredentialRequired bool `json:"credentialRequired"`
 }
 
-// InstanceListResponse is the result of serf/instance/list.
+// InstanceListResponse is the result of evener/instance/list.
 type InstanceListResponse struct {
 	Instances      []InstanceEntry `json:"instances"`
 	AvailableTypes []string        `json:"availableTypes"`
 }
 
-// InstanceCreateParams is the params for serf/instance/create.
+// InstanceCreateParams is the params for evener/instance/create.
 type InstanceCreateParams struct {
 	Type     string `json:"type"`
 	Name     string `json:"name"`
@@ -1993,25 +1993,25 @@ type InstanceCreateParams struct {
 	BaseURL  string `json:"baseUrl"`
 }
 
-// InstanceEditParams is the params for serf/instance/edit.
+// InstanceEditParams is the params for evener/instance/edit.
 type InstanceEditParams struct {
 	Name     string `json:"name"`
 	APIStyle string `json:"apiStyle"`
 	BaseURL  string `json:"baseUrl"`
 }
 
-// InstanceRemoveParams is the params for serf/instance/remove.
+// InstanceRemoveParams is the params for evener/instance/remove.
 type InstanceRemoveParams struct {
 	Name string `json:"name"`
 }
 
-// InstanceSetDefaultParams is the params for serf/instance/setDefault.
+// InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
 }
 
 // CommandDescriptor describes one slash command — plugin-provided or
-// serf-wide — for catalog/autocomplete display. Name is unqualified;
+// evener-wide — for catalog/autocomplete display. Name is unqualified;
 // PluginName disambiguates when more than one plugin defines the same command
 // name.
 type CommandDescriptor struct {
@@ -2025,7 +2025,7 @@ type CommandDescriptor struct {
 	Source string `json:"source,omitempty"`
 }
 
-// CommandListResponse is the result of serf/command/list.
+// CommandListResponse is the result of evener/command/list.
 type CommandListResponse struct {
 	Commands []CommandDescriptor `json:"commands"`
 }
@@ -2148,7 +2148,7 @@ type LaunchConfigTrustRepoParams struct {
 	Hash string `json:"hash"`
 }
 
-// PluginCheckNowResponse is the result of serf/plugin/checkNow: it runs one
+// PluginCheckNowResponse is the result of evener/plugin/checkNow: it runs one
 // auto-upgrade daemon pass (refresh every marketplace, then upgrade every
 // autoUpgrade-enabled plugin) on demand and reports what happened. Updated
 // holds "<plugin>@<marketplace>" refs actually upgraded (no-ops omitted);
@@ -2181,14 +2181,14 @@ type MarketplaceEntry struct {
 	LastUpdated     int64                  `json:"lastUpdated"`
 }
 
-// MarketplaceListResponse is the result of serf/marketplace/list. Every
+// MarketplaceListResponse is the result of evener/marketplace/list. Every
 // marketplace mutation (add/remove/refresh) also returns this, so a client
 // can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
 
-// MarketplaceAddParams is the params for serf/marketplace/add. Name is
+// MarketplaceAddParams is the params for evener/marketplace/add. Name is
 // optional; when empty, the marketplace manifest's own name is used.
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
@@ -2196,14 +2196,14 @@ type MarketplaceAddParams struct {
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the
-// params shape for serf/marketplace/remove and serf/marketplace/refresh.
+// params shape for evener/marketplace/remove and evener/marketplace/refresh.
 type MarketplaceNameParams struct {
 	Name string `json:"name"`
 }
 
 // MarketplaceCatalogPlugin is one plugin entry parsed from a marketplace's
 // catalog (.claude-plugin/marketplace.json), as returned by
-// serf/marketplace/browse.
+// evener/marketplace/browse.
 type MarketplaceCatalogPlugin struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -2212,12 +2212,12 @@ type MarketplaceCatalogPlugin struct {
 	Author      string `json:"author,omitempty"`
 }
 
-// MarketplaceBrowseParams is the params for serf/marketplace/browse.
+// MarketplaceBrowseParams is the params for evener/marketplace/browse.
 type MarketplaceBrowseParams struct {
 	Name string `json:"name"`
 }
 
-// MarketplaceBrowseResponse is the result of serf/marketplace/browse: the
+// MarketplaceBrowseResponse is the result of evener/marketplace/browse: the
 // marketplace's catalog metadata plus its plugin list.
 type MarketplaceBrowseResponse struct {
 	Name        string                     `json:"name"`
@@ -2239,7 +2239,7 @@ type PluginEntry struct {
 	LastUpdated  int64  `json:"lastUpdated"`
 }
 
-// PluginListResponse is the result of serf/plugin/list. Every plugin
+// PluginListResponse is the result of evener/plugin/list. Every plugin
 // mutation (install/upgrade/remove/enable/disable/setAutoUpgrade) also
 // returns this, so a client can re-render from the response without a
 // separate list round-trip.
@@ -2248,22 +2248,22 @@ type PluginListResponse struct {
 }
 
 // PluginRefParams identifies one plugin by its registry key (plugin name +
-// marketplace name) — the params shape for serf/plugin/install (naming the
-// catalog entry to install), and serf/plugin/{upgrade,remove,enable,disable}
+// marketplace name) — the params shape for evener/plugin/install (naming the
+// catalog entry to install), and evener/plugin/{upgrade,remove,enable,disable}
 // (naming the already-installed entry to act on).
 type PluginRefParams struct {
 	Plugin      string `json:"plugin"`
 	Marketplace string `json:"marketplace"`
 }
 
-// PluginSetAutoUpgradeParams is the params for serf/plugin/setAutoUpgrade.
+// PluginSetAutoUpgradeParams is the params for evener/plugin/setAutoUpgrade.
 type PluginSetAutoUpgradeParams struct {
 	Plugin      string `json:"plugin"`
 	Marketplace string `json:"marketplace"`
 	AutoUpgrade bool   `json:"autoUpgrade"`
 }
 
-// SettingsOverviewResponse is the result of serf/settings/overview: the field
+// SettingsOverviewResponse is the result of evener/settings/overview: the field
 // bag behind six settings sections whose only data path today is Go-template
 // variables rendered server-side — General, Hub, Storage, Agents, Codex
 // launch, and the probed half of MCP servers (cmd/evener-hub/templates/
@@ -2275,7 +2275,7 @@ type PluginSetAutoUpgradeParams struct {
 // citation. A field the legacy template never rendered is left off rather
 // than invented — also noted on the sub-type that would otherwise carry it.
 //
-// The other ten settings sections (providers/credentials, serf launch,
+// The other ten settings sections (providers/credentials, evener launch,
 // in-repo trust, per-project override, marketplaces/plugins, plugin/skill
 // dirs, the MCP config editable half, theme, transcript, display,
 // notifications) are out of scope: they already have their own wire methods
@@ -2407,7 +2407,7 @@ type SettingsCodexLaunchEntry struct {
 // servers' "Discovered servers" list (cmd/evener-hub/templates/partials/
 // settings/mcp.html) — the probed/read-only half; the editable half (MCP
 // config file list, inline server CRUD) rides the existing launch-config
-// wire (serf/launch/getLayer + serf/launch/setLayer), not this method.
+// wire (evener/launch/getLayer + evener/launch/setLayer), not this method.
 // Source: web_settings.go discoverMCPsForSettings's mcpDisplay, itself
 // sourced from agent/mcpprobe.Result. Command, Args, Tools, Agents, and
 // EditPath exist on mcpDisplay but are never rendered by mcp.html's

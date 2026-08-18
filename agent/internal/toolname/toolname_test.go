@@ -28,8 +28,8 @@ func TestSerfToClaude(t *testing.T) {
 		"unknown":       "unknown",
 	}
 	for input, want := range tests {
-		if got := SerfToClaude(input); got != want {
-			t.Errorf("SerfToClaude(%q) = %q, want %q", input, got, want)
+		if got := EvenerToClaude(input); got != want {
+			t.Errorf("EvenerToClaude(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

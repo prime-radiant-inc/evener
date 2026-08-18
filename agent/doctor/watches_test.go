@@ -10,7 +10,7 @@ import (
 )
 
 // writeJobsEvents appends events to a session's jobs.jsonl via the real Store,
-// so the on-disk bytes are exactly what serf writes.
+// so the on-disk bytes are exactly what evener writes.
 func writeJobsEvents(t *testing.T, jobsPath string, events []jobstore.Event) {
 	t.Helper()
 	st, err := jobstore.OpenNoSync(jobsPath)

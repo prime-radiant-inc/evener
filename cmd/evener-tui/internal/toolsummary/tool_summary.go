@@ -1,5 +1,5 @@
 // Package toolsummary renders compact one-line descriptions and optional
-// detail bodies for tool calls in the serf-tui transcript.
+// detail bodies for tool calls in the evener-tui transcript.
 package toolsummary
 
 import (

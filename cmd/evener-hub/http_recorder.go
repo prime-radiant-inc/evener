@@ -23,7 +23,7 @@ var (
 )
 
 // recordedHTTPRequest is one JSONL line in hub-http.jsonl. It is the raw,
-// unscrubbed inbound request; sanitization happens later in serf-fuzz-harvest,
+// unscrubbed inbound request; sanitization happens later in evener-fuzz-harvest,
 // which for the http fuzz surface reverse-maps only Method+Path (headers and
 // body never reach a committed seed). The file is never committed.
 type recordedHTTPRequest struct {

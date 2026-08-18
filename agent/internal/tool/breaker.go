@@ -75,7 +75,7 @@ const breakerThreshold = 2
 // breakerThreshold, so record() can never observe a failure streak above
 // that threshold and the nudge only ever fires at exactly two failures.
 const (
-	parkPrefix       = "serf did not execute this call: "
+	parkPrefix       = "evener did not execute this call: "
 	failureNudgeText = "You just ran the same tool twice with the same arguments and got the same failure. Consider an alternate approach"
 )
 

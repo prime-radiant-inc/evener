@@ -21,10 +21,10 @@ func clampSubagentPreviewLimit(limit int) int {
 	return limit
 }
 
-func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) appwire.SerfSubagentPreviewResponse {
+func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) appwire.EvenerSubagentPreviewResponse {
 	limit = clampSubagentPreviewLimit(limit)
 	if strings.TrimSpace(ref) == "" {
-		ref = thread.Serf.Ref
+		ref = thread.Evener.Ref
 	}
 	var all []appwire.ThreadItem
 	for _, turn := range thread.Turns {
@@ -34,7 +34,7 @@ func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) app
 	}
 	start := max(len(all)-limit, 0)
 	items := append([]appwire.ThreadItem(nil), all[start:]...)
-	return appwire.SerfSubagentPreviewResponse{
+	return appwire.EvenerSubagentPreviewResponse{
 		Ref:       ref,
 		Items:     items,
 		Truncated: start > 0,

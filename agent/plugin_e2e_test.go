@@ -124,7 +124,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	if agent.Model != "inherit" {
 		t.Errorf("agent model = %q, want %q", agent.Model, "inherit")
 	}
-	// Tools should be mapped to serf canonical names
+	// Tools should be mapped to evener canonical names
 	if len(agent.Tools) != 2 {
 		t.Fatalf("agent tools count = %d, want 2", len(agent.Tools))
 	}
@@ -174,8 +174,8 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	if toolname.ClaudeToSerf("Read") != "read_file" {
 		t.Errorf("ClaudeToSerf(Read) = %q, want read_file", toolname.ClaudeToSerf("Read"))
 	}
-	if toolname.SerfToClaude("read_file") != "Read" {
-		t.Errorf("SerfToClaude(read_file) = %q, want Read", toolname.SerfToClaude("read_file"))
+	if toolname.EvenerToClaude("read_file") != "Read" {
+		t.Errorf("EvenerToClaude(read_file) = %q, want Read", toolname.EvenerToClaude("read_file"))
 	}
 
 	// 8. Plugin agent prompt formatting

@@ -236,7 +236,7 @@ type worktreeGuard struct {
 	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// enterWorktree swaps the session env into path, saving the prior env the
 	// first time (spec §7 enterWorktree()). managed records whether path is a
-	// serf-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
+	// evener-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
 	// "Persistence and resume"). It returns an error when the sandbox policy
 	// cannot be re-anchored to path, in which case the session stays in its prior
 	// (confined) env rather than running unconfined in the new worktree.
@@ -411,7 +411,7 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 					"branch":   res.Branch,
 					"base_sha": res.BaseSHA,
 					"message": fmt.Sprintf(
-						"Adopted the worktree at %s as managed worktree %q (branch %s). It is now switchable by name and subject to remove and prune like any worktree serf created.",
+						"Adopted the worktree at %s as managed worktree %q (branch %s). It is now switchable by name and subject to remove and prune like any worktree evener created.",
 						res.Path, res.Name, res.Branch),
 				}, nil
 			case "exit":
@@ -710,7 +710,7 @@ func projectIsGitCheckout(project identifier.Project) bool {
 // enterWorktree implements worktreeGuard.enterWorktree() (spec §7): swap s.env
 // to WithWorkingDirectory(path), saving the prior env the first time (single
 // saved env, not a stack — spec §7 "env-restore model") and recording the
-// occupied worktree path and whether it is serf-managed. The swap always uses
+// occupied worktree path and whether it is evener-managed. The swap always uses
 // WithWorkingDirectory so PID/fs sharing survives (spec §7 "WithWorkingDirectory
 // correctness"). The env swap + refresh runs outside s.mu (swapEnvAndRefresh
 // forks git for the snapshot); manage_worktree is serialized in the tool
@@ -1001,7 +1001,7 @@ type worktreeCreateCoreResult struct {
 // ordering), and atomically add+lock the worktree with lockReason. It is
 // reused by worktreeCreate (a session's own managed worktree, EvCreate +
 // session marker) and createDelegateWorktree (a parent-side isolation lane,
-// EvDelegateCreate + serf:dlg: marker — spec §9 lifecycle step 1: "reuse the
+// EvDelegateCreate + evener:dlg: marker — spec §9 lifecycle step 1: "reuse the
 // create plumbing"). ev selects the Decide row gating the atomic add: Decide
 // is total and both EvCreate and EvDelegateCreate map Unlocked to
 // ActAtomicAddLock, so a mismatch is an internal-error guard, never
@@ -1178,7 +1178,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 // createDelegateWorktree performs the parent-side git-level portion of the
 // native worktree tools spec §9 lifecycle step 1: create the delegate's
 // isolation lane as a managed worktree named for the delegate id, branched
-// from the parent's active HEAD, locked with the delegate's serf:dlg: marker.
+// from the parent's active HEAD, locked with the delegate's evener:dlg: marker.
 // It does not touch the parent's own env at all — the caller (createDelegate)
 // roots the CHILD env at the returned path via prepareSubagentRun's
 // workingDir override. Only valid for a local execution environment; errors
@@ -1561,7 +1561,7 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 // "By path"): canonicalize rawPath, require it to be registered to this
 // repository, reroute through the managed choreography if it resolves inside
 // the managed directory, and otherwise swap the env with no lock mutation at
-// all (serf does not manage locks on worktrees it did not create).
+// all (evener does not manage locks on worktrees it did not create).
 func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (WorktreeSwitchResult, error) {
 	st := s.worktreeStateSnapshot()
 	if err := st.resolutionError("switch"); err != nil {
@@ -1615,7 +1615,7 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 
 	// Step 3: a genuinely non-managed registered worktree — same env swap, NO
 	// lock choreography on the target (spec §4 by-path step 3: "no lock
-	// choreography — serf does not mutate lock state on worktrees it does
+	// choreography — evener does not mutate lock state on worktrees it does
 	// not manage"). There is no lock decision on this site at all, so a
 	// redundant switch back to the worktree already occupied is a plain
 	// path-compare no-op rather than a run through Decide(EvEnterCurrent,
@@ -1696,7 +1696,7 @@ func (s *Session) worktreeAdopt(ctx context.Context, rawPath string) (WorktreeAd
 	}
 
 	// Only worktrees under the managed root can be adopted. A registered
-	// worktree elsewhere stays switchable and exitable but never serf's to
+	// worktree elsewhere stays switchable and exitable but never evener's to
 	// remove or prune (spec §4 switch by-path step 4, "remove stays
 	// managed-only"), and adoption is precisely what would change that.
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
@@ -1727,7 +1727,7 @@ func (s *Session) worktreeAdopt(ctx context.Context, rawPath string) (WorktreeAd
 
 	// Lock state: unlocked or our own crash residue is ours to claim; anything
 	// else is another owner's occupancy (spec §5 "A lock with no reason or a
-	// reason that doesn't parse as a serf marker is foreign"; a delegate marker
+	// reason that doesn't parse as a evener marker is foreign"; a delegate marker
 	// is a live lane and foreign to a session-level operation).
 	if entry.Locked {
 		if lockSt := worktree.ClassifyReason(entry.LockReason, s.id, ""); lockSt != worktree.OwnSession {
@@ -2202,7 +2202,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 
 	result := WorktreeRemoveResult{Path: target, Branch: name, Warning: removeWarning}
 
-	// Step 9: delete_branch, gated by serf's own merge check — never git's
+	// Step 9: delete_branch, gated by evener's own merge check — never git's
 	// `branch -d`, which is HEAD-relative (spec §5 remove step 9: rev-6 review
 	// demonstrated `-d` deleting a never-merged branch under a detached HEAD
 	// review of that same tip in the main checkout). force bypasses the gate
@@ -2279,7 +2279,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	return result, nil
 }
 
-// partitionWorktreeListEntries splits list's entries into the ones serf
+// partitionWorktreeListEntries splits list's entries into the ones evener
 // manages and the ones it merely found sitting under the managed root. The
 // sidecar is the whole test (spec §6 "Metadata sidecar": a worktree without
 // one is provenance-unknown). They are reported in separate sections because
@@ -2297,7 +2297,7 @@ func partitionWorktreeListEntries(entries []WorktreeListEntry) (managed, unmanag
 }
 
 // worktreeUnmanagedEntryToMap renders an unmanaged worktree found under the
-// managed root: deliberately id-less (no "name"), because serf has no claim
+// managed root: deliberately id-less (no "name"), because evener has no claim
 // on it and no operation takes it by name until it is adopted. Path is what
 // adopt and switch accept; the lock/prunable state is what tells a reader
 // whether someone else is living in it.
@@ -2314,7 +2314,7 @@ func worktreeUnmanagedEntryToMap(e WorktreeListEntry) map[string]any {
 }
 
 // worktreeUnmanagedSummary renders the unmanaged section's digest, naming the
-// operation that converts one and stating exactly how far serf's hands-off
+// operation that converts one and stating exactly how far evener's hands-off
 // treatment goes meanwhile — the two facts a reader needs to act. The digest
 // promises only what remove step 5 delivers: an unmanaged worktree is never
 // pruned, and never removed unless the caller passes force.
@@ -2331,7 +2331,7 @@ func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 		parts[i] = fmt.Sprintf("%s (%s)", e.Path, branch)
 	}
 	return fmt.Sprintf(
-		" %d unmanaged worktree(s) under the managed root, which serf never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
+		" %d unmanaged worktree(s) under the managed root, which evener never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
 		len(unmanaged), strings.Join(parts, "; "))
 }
 
@@ -2347,7 +2347,7 @@ func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 //
 // Unmanaged worktrees found under the managed root are appended as their own
 // labeled clause rather than folded into the count, so a reader never mistakes
-// one for a lane serf will clean up.
+// one for a lane evener will clean up.
 func worktreeListSummary(entries, unmanaged []WorktreeListEntry) string {
 	if len(entries) == 0 {
 		return "0 managed worktree(s)." + worktreeUnmanagedSummary(unmanaged)
@@ -2444,7 +2444,7 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 		return nil, fmt.Errorf("manage_worktree list: listing worktrees: %w", err)
 	}
 
-	// Step 2: filter to serf-managed worktrees, canonicalized comparison.
+	// Step 2: filter to evener-managed worktrees, canonicalized comparison.
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
@@ -2863,7 +2863,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 
 		// Adopted: the branch survived a prior branch-kept removal and the
 		// user has since built on it (tip is neither the recorded base nor
-		// the tip serf recorded at removal time) — serf's claim expires.
+		// the tip evener recorded at removal time) — evener's claim expires.
 		if sc.WorktreeRemoved && worktree.Adopted(tip, sc.BaseSHA, sc.TipSHAAtRemoval) {
 			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 				if policy.abortOnError {

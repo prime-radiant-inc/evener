@@ -31,7 +31,7 @@ in a long identical-error tool-call loop?
 
 ## INSPECT
 ` + "```" + `
-serf-doctor transcript <selector> --health --json
+evener-doctor transcript <selector> --health --json
 ` + "```" + `
 
 ## CLASSIFY
@@ -114,12 +114,12 @@ func TestParseRunbook_WrappedBulletJoinsContinuationLines(t *testing.T) {
 
 ## INSPECT
 ` + "```" + `
-serf-doctor transcript <selector> --health --json
+evener-doctor transcript <selector> --health --json
 ` + "```" + `
 
 ## CLASSIFY
 - Read the flagged session's transcript around the identical run
-  (` + "`serf-doctor transcript <sel> --format outline`" + `) to confirm the
+  (` + "`evener-doctor transcript <sel> --format outline`" + `) to confirm the
   calls really are identical retries, not a legitimate scripted retry.
 - A run below the threshold is not a Finding.
 `
@@ -130,7 +130,7 @@ serf-doctor transcript <selector> --health --json
 	if len(rb.ManualSteps) != 2 {
 		t.Fatalf("ManualSteps = %v, want exactly 2", rb.ManualSteps)
 	}
-	want := "Read the flagged session's transcript around the identical run (`serf-doctor transcript <sel> --format outline`) to confirm the calls really are identical retries, not a legitimate scripted retry."
+	want := "Read the flagged session's transcript around the identical run (`evener-doctor transcript <sel> --format outline`) to confirm the calls really are identical retries, not a legitimate scripted retry."
 	if rb.ManualSteps[0] != want {
 		t.Errorf("ManualSteps[0] = %q, want %q", rb.ManualSteps[0], want)
 	}
@@ -487,7 +487,7 @@ recorded-empty, or permanent-error strain?
 
 ## INSPECT
 ` + "```" + `
-serf-doctor apilog <selector> --health --json
+evener-doctor apilog <selector> --health --json
 ` + "```" + `
 
 ## CLASSIFY

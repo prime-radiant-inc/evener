@@ -340,7 +340,7 @@ func TestPluginAutoUpgrade_RequiresRef(t *testing.T) {
 
 // TestPluginCheckNow_FreshStoreReportsNothing covers the missing "manual
 // check now" surface (design spec §9.1): the hub daemon and its
-// serf/plugin/checkNow RPC exist, but nothing reachable from the CLI
+// evener/plugin/checkNow RPC exist, but nothing reachable from the CLI
 // triggered it.
 func TestPluginCheckNow_FreshStoreReportsNothing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -428,7 +428,7 @@ func TestPluginDoctor_Human(t *testing.T) {
 }
 
 // TestPluginDoctor_DoesNotSeedMarketplaces guards against Doctor being a
-// diagnostic-that-mutates: `serf plugin doctor` must never seed the default
+// diagnostic-that-mutates: `evener plugin doctor` must never seed the default
 // marketplaces (or otherwise write to the store), unlike every other plugin
 // verb. Reproduces the Important finding where runPlugin unconditionally
 // seeded before dispatching, so "doctor" wrote known_marketplaces.json + a

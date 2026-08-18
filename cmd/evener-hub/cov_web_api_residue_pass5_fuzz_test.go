@@ -85,7 +85,7 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		)
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, PokeAttention: func() {}})
 		caps := appwire.ThreadCapabilities{Clear: true, ChangeModel: true, Rename: true}
-		src := &residueSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "live", SessionID: "live", Source: "remote", Name: "Live", CWD: wd, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Serf: appwire.SerfThread{Ref: "remote:live", Capabilities: caps}}}, fail: variant&1 != 0}
+		src := &residueSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "live", SessionID: "live", Source: "remote", Name: "Live", CWD: wd, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "remote:live", Capabilities: caps}}}, fail: variant&1 != 0}
 		web.sources.Add(src)
 		call := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) {
 			r := httptest.NewRequest(method, target, strings.NewReader(body))
@@ -116,8 +116,8 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		_ = canonicalRouteID("local:x")
 
 		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
-		_ = serfErrorInfoFromData(nil)
-		_ = serfErrorInfoFromData(map[string]any{"serfErrorInfo": 1})
+		_ = evenerErrorInfoFromData(nil)
+		_ = evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": 1})
 		webNil := NewWebServer(hubcore.WebConfig{})
 		_ = webNil.apiStateGlob()
 		_ = warningMessage([]byte(`{"warning":{}}`))

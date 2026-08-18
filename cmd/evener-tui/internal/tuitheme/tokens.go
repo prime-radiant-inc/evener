@@ -1,4 +1,4 @@
-// tokens.go — central theme registry for serf-tui.
+// tokens.go — central theme registry for evener-tui.
 //
 // Established in the TUI deep UX pass (2026-05-24). The Theme struct
 // holds every color and layout token; the `themes` registry binds names

@@ -45,12 +45,12 @@ type LocalDaemonEntry struct {
 	ReadOnlyAlias bool
 	// OwnerSessionID is the owning root session's ID, set only when
 	// ReadOnlyAlias is true. threadFromEntry uses it to populate
-	// Serf.ParentRef so hub views can trace a subagent back to its root
+	// Evener.ParentRef so hub views can trace a subagent back to its root
 	// (ledger #112).
 	OwnerSessionID string
 	// PendingAsk mirrors hubcore.LiveEntry.PendingAsk — true while the daemon
 	// reports an unanswered ask_user question. threadFromEntry carries it into
-	// appwire.SerfThread.AskPending so the TUI's per-row ask marker (Task 29)
+	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
 }
@@ -127,7 +127,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams)
 					observe(epoch, message, err)
 				})
 				client.Start(ctx)
-				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); initializeErr != nil {
+				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); initializeErr != nil {
 					_ = transport.Close()
 					if callerErr := ctx.Err(); callerErr != nil {
 						return nil, nil, callerErr
@@ -177,7 +177,7 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 			lease.Close()
 			return appwire.ThreadReadResponse{}, err
 		}
-		key := result.Response.Thread.Serf.Ref
+		key := result.Response.Thread.Evener.Ref
 		if key == "" {
 			key = relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
 		}
@@ -278,7 +278,7 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 		return err
 	}
 	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodSerfSandboxEscalationResolve, params, nil)
+		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
 }
 
@@ -608,7 +608,7 @@ func (s *LocalDaemonSource) withClientCallMapper(
 	defer transport.Close() //nolint:errcheck // transport cleanup; error is not actionable
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
@@ -710,14 +710,14 @@ func localDaemonMutationCallError(clientMutationID string, err error) error {
 		return mapped
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		return mapped
 	}
 	return appwire.WireError{
 		Code:    appwire.CodeInternalError,
 		Message: "mutation outcome is unknown after local daemon response loss",
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			EvenerErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
 			RetryDisposition: appwire.RetryDispositionAutomatic,
@@ -826,7 +826,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		CWD:           entry.WorkingDir,
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref: ref,
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
@@ -846,10 +846,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Status: appwire.ThreadStatus{Type: status},
 	}
 	if item.ReadOnlyAlias {
-		thread.Serf.Capabilities = appwire.ThreadCapabilities{}
-		thread.Serf.Kind = "subagent"
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		thread.Evener.Kind = "subagent"
 		if item.OwnerSessionID != "" {
-			thread.Serf.ParentRef = appwire.Ref{SourceID: s.sourceID, ThreadID: item.OwnerSessionID}.String()
+			thread.Evener.ParentRef = appwire.Ref{SourceID: s.sourceID, ThreadID: item.OwnerSessionID}.String()
 		}
 	}
 	return thread

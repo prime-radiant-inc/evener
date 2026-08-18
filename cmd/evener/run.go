@@ -116,7 +116,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
 	}
-	// --no-default-marketplaces opts out of seeding on this bare-serf path only;
+	// --no-default-marketplaces opts out of seeding on this bare-evener path only;
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
 		if err := runSeedMarketplaces(); err != nil {

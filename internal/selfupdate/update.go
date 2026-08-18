@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const defaultRepoURL = "https://github.com/prime-radiant-inc/serf"
+const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
 
 var installBinaries = []string{"evener", "evener-hub", "evener-tui", "evener-doctor"}
 

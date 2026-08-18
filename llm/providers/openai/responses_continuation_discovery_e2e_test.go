@@ -73,10 +73,10 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 	store := requestStore
 	anchor, err := a.Complete(ctx, llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Reply exactly: serf continuation discovery anchor")},
+		Messages: []llm.Message{llm.User("Reply exactly: evener continuation discovery anchor")},
 		Store:    &store,
 		Metadata: map[string]string{
-			"serf_discovery_id": id,
+			"evener_discovery_id": id,
 		},
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	delta, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery delta")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery delta")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -101,7 +101,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	branch, err := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery branch")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery branch")},
 		PreviousResponseID: anchor.ID,
 		Store:              &store,
 	})
@@ -114,7 +114,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 
 	copresent, copresentErr := a.Complete(ctx, llm.Request{
 		Model:              model,
-		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery co-present")},
+		Messages:           []llm.Message{llm.User("Reply exactly: evener continuation discovery co-present")},
 		PreviousResponseID: anchor.ID,
 		ConversationID:     "conv_serf_discovery_" + id,
 		Store:              &store,

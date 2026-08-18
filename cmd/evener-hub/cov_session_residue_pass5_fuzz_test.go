@@ -64,7 +64,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			CWD: "/work/project", ModelProvider: "provider/model",
 			CreatedAt: now.Add(-time.Minute).Unix(), UpdatedAt: now.Unix(),
 			Status: appwire.ThreadStatus{Type: "active"},
-			Serf: appwire.SerfThread{Ref: "remote:thread-5", Capabilities: appwire.ThreadCapabilities{
+			Evener: appwire.EvenerThread{Ref: "remote:thread-5", Capabilities: appwire.ThreadCapabilities{
 				Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
 				ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true,
 			}},
@@ -138,7 +138,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 
 		case 4:
 			// Missing/disabled action sources and API wire error metadata.
-			thread.Serf.Capabilities = appwire.ThreadCapabilities{}
+			thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 			web := pass5Web(thread, nil, nil, 0)
 			_ = web.ensureSessionActionAvailable(ref, "steer")
 			_ = web.ensureSessionActionAvailable("remote:missing", "steer")

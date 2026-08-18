@@ -32,8 +32,8 @@ type ContinuationHasher struct {
 // subkeys are HMAC-derived from secret.
 func NewContinuationHasher(secret []byte) *ContinuationHasher {
 	return &ContinuationHasher{
-		redactionKey: deriveContinuationSubkey(secret, "serf-continuation-redaction-v1"),
-		scopeKey:     deriveContinuationSubkey(secret, "serf-continuation-scope-v1"),
+		redactionKey: deriveContinuationSubkey(secret, "evener-continuation-redaction-v1"),
+		scopeKey:     deriveContinuationSubkey(secret, "evener-continuation-scope-v1"),
 	}
 }
 

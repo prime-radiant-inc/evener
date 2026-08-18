@@ -21,7 +21,7 @@ const (
 
 func localJobProjectBucket(t *testing.T, stateHome, projectID string) string {
 	t.Helper()
-	bucket := filepath.Join(stateHome, "serf", "projects", projectID)
+	bucket := filepath.Join(stateHome, "evener", "projects", projectID)
 	if err := os.MkdirAll(bucket, 0o755); err != nil {
 		t.Fatalf("create project bucket: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestLocateLocalJobReturnsLimitExceededEvenAfterPartialMatch(t *testing.T) {
 	reader := &localJobDirReader{entries: entries}
 	oldOpen := openLocalJobProjectDirectory
 	openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, error) {
-		want := filepath.Join(stateHome, "serf", "projects")
+		want := filepath.Join(stateHome, "evener", "projects")
 		if path != want {
 			t.Fatalf("projects path = %q, want %q", path, want)
 		}

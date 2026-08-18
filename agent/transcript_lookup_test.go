@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	cleanBreakProjectID = "Users-jesse-serf-0123456789"
+	cleanBreakProjectID = "Users-jesse-evener-0123456789"
 	cleanBreakSessionID = "02wMz5TxvEMoJEDTDGOTil"
 )
 
@@ -21,13 +21,13 @@ func newStateHome(t *testing.T) string {
 }
 
 // newBucketUnder creates a new project state dir under the given stateHome.
-// Returns the bucket state dir (i.e. <stateHome>/serf/projects/<projectID>).
+// Returns the bucket state dir (i.e. <stateHome>/evener/projects/<projectID>).
 func newBucketUnder(t *testing.T, stateHome string) string {
 	t.Helper()
 	// Use a unique name based on a random temp dir suffix to avoid collisions.
 	tmp := t.TempDir()
 	projectID := "test-" + hexHash(tmp)[:10]
-	dir := filepath.Join(stateHome, "serf", "projects", projectID)
+	dir := filepath.Join(stateHome, "evener", "projects", projectID)
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
 		t.Fatalf("newBucketUnder: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestResolveTranscript_ExplicitProjRef(t *testing.T) {
 
 func TestResolveTranscript_ProjRefFlatStateDir(t *testing.T) {
 	t.Parallel()
-	// A flat state dir (not under serf/projects/<hash>) has no project root,
+	// A flat state dir (not under evener/projects/<hash>) has no project root,
 	// so a proj:<hash>:<id> ref must return the "no project root" error.
 	flat := filepath.Join(t.TempDir(), "flatstate")
 	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
@@ -290,7 +290,7 @@ func TestResolveTranscript_ProjRefFlatStateDir(t *testing.T) {
 
 func TestResolveTranscript_FlatStateDirBareIDOnly(t *testing.T) {
 	t.Parallel()
-	// A flat dir (not under serf/projects/<hash>) means stateHomeFor returns "".
+	// A flat dir (not under evener/projects/<hash>) means stateHomeFor returns "".
 	// Bare ID search should only look in the current bucket.
 	flat := filepath.Join(t.TempDir(), "flatstate")
 	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
@@ -312,8 +312,8 @@ func TestResolveTranscript_FlatStateDirBareIDOnly(t *testing.T) {
 func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
 	t.Parallel()
 	stateHome := t.TempDir()
-	legacyBucket := filepath.Join(stateHome, "serf", "projects", "0123456789abcdef")
-	newBucket := filepath.Join(stateHome, "serf", "projects", cleanBreakProjectID)
+	legacyBucket := filepath.Join(stateHome, "evener", "projects", "0123456789abcdef")
+	newBucket := filepath.Join(stateHome, "evener", "projects", cleanBreakProjectID)
 	if err := os.MkdirAll(filepath.Join(legacyBucket, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestEnumerateBuckets_CleanBreakSkipsLegacyProjectBucket(t *testing.T) {
 	t.Parallel()
 	stateHome := t.TempDir()
 	for _, projectID := range []string{"0123456789abcdef", cleanBreakProjectID} {
-		if err := os.MkdirAll(filepath.Join(stateHome, "serf", "projects", projectID, "sessions"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(stateHome, "evener", "projects", projectID, "sessions"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

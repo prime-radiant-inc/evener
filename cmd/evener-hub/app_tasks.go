@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// hubTasksList answers serf/tasks/list. A running daemon's in-memory task
+// hubTasksList answers evener/tasks/list. A running daemon's in-memory task
 // store is authoritative, so it is always tried first. Only the specific
 // dead-session condition — entryForRef finding no live rendezvous entry for
 // the thread (cmd/evener-hub/internal/appsource/local_daemon.go:551, the sole
@@ -21,7 +21,7 @@ import (
 //
 // The SessionUnavailable wire shape alone is NOT a safe gate for this:
 // localDaemonDialError/localDaemonCallError (local_daemon.go:428-504) raise
-// the identical Code+SerfErrorInfo for a transient dial/call failure against
+// the identical Code+EvenerErrorInfo for a transient dial/call failure against
 // a LIVE entry — i.e. a daemon that has NOT exited (ECONNREFUSED, ECONNRESET,
 // EPIPE, EOF, timeouts, websocket-close) — so isSessionUnavailableError alone
 // would also match those and silently mask a real, retryable connectivity
@@ -61,7 +61,7 @@ const threadNotFoundMessagePrefix = "thread not found: "
 
 // isDeadSessionError reports the precise no-live-rendezvous-entry condition,
 // as opposed to another SessionUnavailable-shaped error. The wire code and
-// SerfErrorInfo are shared with transient failures against a selected live
+// EvenerErrorInfo are shared with transient failures against a selected live
 // daemon, so the message prefix is required before a passive persisted-state
 // fallback can safely hide the live-source error.
 func isDeadSessionError(err error) bool {

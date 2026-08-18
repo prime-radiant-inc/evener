@@ -74,8 +74,8 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		_ = behaviorTagFor(providerCfg, "plain")
 		_ = behaviorTagFor(providerCfg, "custom")
 		_ = behaviorTagFor(providerCfg, "absent")
-		_ = serfUsageFromCumulative(schema.CumulativeUsage{})
-		_ = serfUsageFromCumulative(schema.CumulativeUsage{InputTokens: 1})
+		_ = evenerUsageFromCumulative(schema.CumulativeUsage{})
+		_ = evenerUsageFromCumulative(schema.CumulativeUsage{InputTokens: 1})
 
 		for _, tc := range []struct{ method, target, body string }{
 			{http.MethodGet, "/api/spawn", ""},

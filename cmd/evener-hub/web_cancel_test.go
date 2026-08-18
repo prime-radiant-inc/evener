@@ -53,7 +53,7 @@ func newCancelThread() appwire.Thread {
 		CWD: "/work/project", ModelProvider: "provider/model",
 		Status: appwire.ThreadStatus{Type: "active"},
 		Turns:  []appwire.Turn{{ID: "turn-1", Status: appwire.TurnStatusCompleted}},
-		Serf: appwire.SerfThread{Ref: "remote:thread-1", ActiveTurnID: "turn-2",
+		Evener: appwire.EvenerThread{Ref: "remote:thread-1", ActiveTurnID: "turn-2",
 			Capabilities: appwire.ThreadCapabilities{Send: false, Steer: true, Queue: true}},
 	}
 }

@@ -26,7 +26,7 @@ func (s *coreAPIPass4Source) ClearThread(context.Context, appwire.ThreadClearPar
 	if s.fail {
 		return appwire.ThreadClearResponse{}, appwire.Conflict("clear conflict")
 	}
-	return appwire.ThreadClearResponse{Thread: appwire.Thread{ID: "cleared", Serf: appwire.SerfThread{Ref: "remote:cleared"}}}, nil
+	return appwire.ThreadClearResponse{Thread: appwire.Thread{ID: "cleared", Evener: appwire.EvenerThread{Ref: "remote:cleared"}}}, nil
 }
 
 func (s *coreAPIPass4Source) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
@@ -83,7 +83,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		base := &scriptedAppSource{id: "remote", thread: appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote", Name: "Live Name", CWD: workingDir,
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:   appwire.SerfThread{Ref: "remote:thread", Capabilities: caps},
+			Evener:   appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps},
 		}}
 		source := &coreAPIPass4Source{scriptedAppSource: base, fail: variant&1 != 0}
 		poke := 0
@@ -190,8 +190,8 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		_ = warningPayload([]byte(`{"message":"plain"}`))
 		_ = warningMessage([]byte(`{"warning":"warning text"}`))
 		_ = warningMessage([]byte(`not-json`))
-		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInvalidParams, Message: "bad", Data: appwire.ErrorData{SerfErrorInfo: "detail"}})
-		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInternalError, Message: "bad", Data: map[string]any{"serfErrorInfo": "detail"}})
+		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInvalidParams, Message: "bad", Data: appwire.ErrorData{EvenerErrorInfo: "detail"}})
+		writeAPIWireError(httptest.NewRecorder(), http.StatusBadGateway, appwire.WireError{Code: appwire.CodeInternalError, Message: "bad", Data: map[string]any{"evenerErrorInfo": "detail"}})
 		for _, code := range []int{appwire.CodeInvalidRequest, appwire.CodeMethodNotFound, appwire.CodeConflict, appwire.CodeUnavailable, -999} {
 			_ = statusForWireError(appwire.WireError{Code: code}, http.StatusTeapot)
 		}

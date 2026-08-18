@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// This platform has no flock primitive wired up, and serf-hub never ships
+// This platform has no flock primitive wired up, and evener-hub never ships
 // here. AcquireLock's caller treats a lock failure as fatal at startup, so
 // failing closed (rather than pretending to hold an exclusive lock we can't
 // actually enforce) is the safe direction.

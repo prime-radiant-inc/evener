@@ -243,14 +243,14 @@ func TestProjectIDRendering(t *testing.T) {
 		})
 	}
 
-	long := filepath.Join(t.TempDir(), strings.Repeat("x", 100), "prime-radiant-serf", "tail")
+	long := filepath.Join(t.TempDir(), strings.Repeat("x", 100), "prime-radiant-evener", "tail")
 	mustMkdir(t, long)
 	got, err := ResolveProjectWith(long, &pipelineResolver{eval: []string{long}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.ID, "prime-radiant-serf") {
-		t.Fatalf("long ID = %q, want preserved prime-radiant-serf readable segment", got.ID)
+	if !strings.Contains(got.ID, "prime-radiant-evener") {
+		t.Fatalf("long ID = %q, want preserved prime-radiant-evener readable segment", got.ID)
 	}
 	if len(got.ID) > 80 {
 		t.Fatalf("long ID length = %d, want <= 80", len(got.ID))
@@ -289,7 +289,7 @@ func expectedProjectIDForTest(path string) string {
 }
 
 func TestValidateProjectID(t *testing.T) {
-	valid := "prime-radiant-serf-0123456789"
+	valid := "prime-radiant-evener-0123456789"
 	for _, value := range []string{valid, "a-0000000000", "project-zzzzzzzzzz"} {
 		if err := ValidateProjectID(value); err != nil {
 			t.Errorf("ValidateProjectID(%q) = %v", value, err)

@@ -415,7 +415,7 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 // active-turn answers agree on "none" the moment an identity is installed.
 //
 // They answer different questions and can legitimately hold different values at
-// once: thread.serf.activeTurnId reports a turn in flight OR RESERVED and gates
+// once: thread.evener.activeTurnId reports a turn in flight OR RESERVED and gates
 // capabilities, while the reducer's activeTurnID names the turn steering ITEMS
 // append to. The setup below drives them apart on purpose -- an in-flight turn
 // for the reducer, a later reserved turn for the daemon -- so that the
@@ -435,8 +435,8 @@ func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserveAppTurnIDForStart: %v", err)
 	}
-	if srv.appThread().Serf.ActiveTurnID != reserved {
-		t.Fatalf("thread.serf.activeTurnId = %q, want the reserved %q", srv.appThread().Serf.ActiveTurnID, reserved)
+	if srv.appThread().Evener.ActiveTurnID != reserved {
+		t.Fatalf("thread.evener.activeTurnId = %q, want the reserved %q", srv.appThread().Evener.ActiveTurnID, reserved)
 	}
 	if reserved == inFlight {
 		t.Fatalf("reserved turn %q equals the in-flight turn; the two answers are not being driven apart", reserved)
@@ -446,8 +446,8 @@ func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	}
 
 	srv.SetAppIdentity("local", "th_2")
-	if got := srv.appThread().Serf.ActiveTurnID; got != "" {
-		t.Fatalf("thread.serf.activeTurnId = %q after replacement, want none", got)
+	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
+		t.Fatalf("thread.evener.activeTurnId = %q after replacement, want none", got)
 	}
 	srv.mu.RLock()
 	reservedAfter := srv.appReservedTurnID
@@ -475,7 +475,7 @@ func TestAppTurnSnapshotIsDeepDefensiveCopy(t *testing.T) {
 	retained := appwire.Turn{
 		ID: "turn_1", ItemsView: "full", Status: appwire.TurnStatusCompleted,
 		StartedAt: &started, CompletedAt: &completed, DurationMS: &duration,
-		Usage: &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		Usage: &appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 		Error: &appwire.TurnError{
 			Message: "boom", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai"},
 			CodexErrorInfo: map[string]any{"nested": map[string]any{"code": "original"}, "items": []any{"first"}},

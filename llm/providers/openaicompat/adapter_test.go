@@ -2667,7 +2667,7 @@ func TestRescueClaudeXMLArgs(t *testing.T) {
 // openrouterWireEffort extracts the effort from OpenRouter's canonical
 // reasoning object ({"reasoning": {"effort": ...}}), the preset's
 // thinking_format="openrouter" wire shape (live-verified 2026-07-02:
-// the full serf vocabulary incl. xhigh/minimal is accepted).
+// the full evener vocabulary incl. xhigh/minimal is accepted).
 func openrouterWireEffort(t *testing.T, body map[string]any) string {
 	t.Helper()
 	if _, ok := body["reasoning_effort"]; ok {

@@ -761,7 +761,7 @@ func TestWorktreePrune_Sweep1_SkipsProtectedMatrix(t *testing.T) {
 					t.Fatalf("mkdir unmanaged parent: %v", err)
 				}
 				// A worktree placed directly under the managed dir by hand (no sidecar) —
-				// provenance unknown, not serf's to judge.
+				// provenance unknown, not evener's to judge.
 				wtGit(t, r.mainRoot, "worktree", "add", "-b", "unmanaged-lane", path, r.head)
 				return path
 			},

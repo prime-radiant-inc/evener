@@ -253,7 +253,7 @@ func TestTypeExprThreadItemEventKind(t *testing.T) {
 func TestDeriveName(t *testing.T) {
 	cases := []struct{ wire, suffix, want string }{
 		{"thread/started", "Payload", "ThreadStartedPayload"},
-		{"serf/steering/injected", "Payload", "SerfSteeringInjectedPayload"},
+		{"evener/steering/injected", "Payload", "EvenerSteeringInjectedPayload"},
 		{"warning", "Payload", "WarningPayload"},
 		{"ping", "Params", "PingParams"},
 		{"/leading/slash", "Payload", "LeadingSlashPayload"},

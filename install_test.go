@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"archive/tar"
@@ -35,7 +35,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	fixtureRoot := t.TempDir()
-	frontendDir := filepath.Join(fixtureRoot, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixtureRoot, "cmd", "evener-hub", "frontend")
 	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	}
 
 	fixtureRoot := copyTrackedWorkingTree(t, repoRoot)
-	sourceNodeModulesPath := filepath.Join(repoRoot, "cmd", "serf-hub", "frontend", "node_modules")
+	sourceNodeModulesPath := filepath.Join(repoRoot, "cmd", "evener-hub", "frontend", "node_modules")
 	sourceNodeModulesBefore := fingerprintInstallTree(t, sourceNodeModulesPath)
 	home := t.TempDir()
 	configHome := filepath.Join(home, ".config")
@@ -127,8 +127,8 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
-	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -155,42 +155,42 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		}
 	}
 
-	if exists(filepath.Join(configHome, "serf")) {
-		t.Fatalf("install created %s; Serf should create config dirs on first run", filepath.Join(configHome, "serf"))
+	if exists(filepath.Join(configHome, "evener")) {
+		t.Fatalf("install created %s; Evener should create config dirs on first run", filepath.Join(configHome, "evener"))
 	}
-	if exists(filepath.Join(home, ".serf")) {
-		t.Fatalf("install created %s; Serf should create runtime dirs on first run", filepath.Join(home, ".serf"))
+	if exists(filepath.Join(home, ".evener")) {
+		t.Fatalf("install created %s; Evener should create runtime dirs on first run", filepath.Join(home, ".evener"))
 	}
 
-	serfBin := filepath.Join(binDir, "serf")
-	runCommand(t, fixtureRoot, env, serfBin, "--version")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-hub"), "--help")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-tui"), "--help")
-	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-doctor"), "--help")
-	runCommand(t, fixtureRoot, env, serfBin, "--list-sessions")
+	evenerBin := filepath.Join(binDir, "evener")
+	runCommand(t, fixtureRoot, env, evenerBin, "--version")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-hub"), "--help")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-tui"), "--help")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "evener-doctor"), "--help")
+	runCommand(t, fixtureRoot, env, evenerBin, "--list-sessions")
 
 	for _, dir := range []string{
-		filepath.Join(configHome, "serf", "skills"),
-		filepath.Join(configHome, "serf", "plugins"),
+		filepath.Join(configHome, "evener", "skills"),
+		filepath.Join(configHome, "evener", "plugins"),
 	} {
 		info, err := os.Stat(dir)
 		if err != nil {
-			t.Fatalf("first Serf run did not create %s: %v", dir, err)
+			t.Fatalf("first Evener run did not create %s: %v", dir, err)
 		}
 		if !info.IsDir() {
 			t.Fatalf("%s is not a directory", dir)
 		}
 	}
-	if exists(filepath.Join(home, ".serf")) {
-		t.Fatalf("serf --list-sessions created %s; no hub runtime state should be needed", filepath.Join(home, ".serf"))
+	if exists(filepath.Join(home, ".evener")) {
+		t.Fatalf("evener --list-sessions created %s; no hub runtime state should be needed", filepath.Join(home, ".evener"))
 	}
 
 	expectedAgents := expectedBundledAgents(t, repoRoot)
 	expectedSkills := expectedBundledSkills(t, repoRoot)
-	status := installedServeStatus(t, fixtureRoot, env, serfBin)
+	status := installedServeStatus(t, fixtureRoot, env, evenerBin)
 
 	if status.Detailed == nil {
-		t.Fatal("installed serf serve /status omitted detailed status")
+		t.Fatal("installed evener serve /status omitted detailed status")
 	}
 	installedSkillNames := status.Detailed.SkillNames()
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
@@ -266,13 +266,13 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 			name:     "linux amd64",
 			osName:   "Linux",
 			archName: "x86_64",
-			asset:    "serf_linux_amd64.tar.gz",
+			asset:    "evener_linux_amd64.tar.gz",
 		},
 		{
 			name:     "darwin arm64",
 			osName:   "Darwin",
 			archName: "arm64",
-			asset:    "serf_darwin_arm64.tar.gz",
+			asset:    "evener_darwin_arm64.tar.gz",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -321,7 +321,7 @@ cp "$SERF_FAKE_CURL_ARCHIVE" "$out"
 			})
 			runCommand(t, repoRoot, env, "sh", script)
 
-			expectedURL := "https://github.com/prime-radiant-inc/serf/releases/download/v1.2.3/" + tc.asset
+			expectedURL := "https://github.com/prime-radiant-inc/evener/releases/download/v1.2.3/" + tc.asset
 			data, err := os.ReadFile(urlFile)
 			if err != nil {
 				t.Fatalf("read fake curl URL: %v", err)
@@ -331,8 +331,8 @@ cp "$SERF_FAKE_CURL_ARCHIVE" "$out"
 			}
 
 			binDir := filepath.Join(home, ".local", "bin")
-			shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
-			for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+			shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
+			for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 				installed := filepath.Join(shareBinDir, bin)
 				info, err := os.Stat(installed)
 				if err != nil {
@@ -355,7 +355,7 @@ cp "$SERF_FAKE_CURL_ARCHIVE" "$out"
 	}
 }
 
-func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, serfBin string) installedStatus {
+func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, evenerBin string) installedStatus {
 	t.Helper()
 
 	runDir := t.TempDir()
@@ -380,7 +380,7 @@ api_key = "sk-install-test"
 	})
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(serfBin,
+	cmd := exec.Command(evenerBin,
 		"serve",
 		"--model", "work/gpt-5.2",
 		"--addr", "127.0.0.1:0",
@@ -394,7 +394,7 @@ api_key = "sk-install-test"
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start installed serf serve: %v", err)
+		t.Fatalf("start installed evener serve: %v", err)
 	}
 
 	done := make(chan error, 1)
@@ -408,7 +408,7 @@ api_key = "sk-install-test"
 	for time.Now().Before(deadline) {
 		select {
 		case err := <-done:
-			t.Fatalf("installed serf serve exited before rendezvous entry: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+			t.Fatalf("installed evener serve exited before rendezvous entry: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 		default:
 		}
 
@@ -426,7 +426,7 @@ api_key = "sk-install-test"
 	if !started {
 		_ = cmd.Process.Kill()
 		<-done
-		t.Fatalf("installed serf serve did not start\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+		t.Fatalf("installed evener serve did not start\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 
 	t.Cleanup(func() {
@@ -450,7 +450,7 @@ api_key = "sk-install-test"
 	client := http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get("http://" + entry.Address + "/status")
 	if err != nil {
-		t.Fatalf("get installed serf serve /status: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		t.Fatalf("get installed evener serve /status: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -795,7 +795,7 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),

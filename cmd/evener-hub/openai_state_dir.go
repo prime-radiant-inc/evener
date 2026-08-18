@@ -29,17 +29,17 @@ func openAIStateDirFromLookup(goos string, lookup func(string) (string, bool)) s
 	}
 	if goos == "windows" {
 		if userProfile, ok := lookup(envvars.UserProfile.Name); ok && strings.TrimSpace(userProfile) != "" {
-			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "serf")
+			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "evener")
 		}
 		drive, hasDrive := lookup(envvars.HomeDrive.Name)
 		path, hasPath := lookup(envvars.HomePath.Name)
 		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
-			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "serf")
+			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "evener")
 		}
-		return filepath.Join(os.TempDir(), ".local", "state", "serf")
+		return filepath.Join(os.TempDir(), ".local", "state", "evener")
 	}
 	if home, ok := lookup(envvars.Home.Name); ok && strings.TrimSpace(home) != "" {
-		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
+		return filepath.Join(strings.TrimSpace(home), ".local", "state", "evener")
 	}
-	return filepath.Join(os.TempDir(), ".local", "state", "serf")
+	return filepath.Join(os.TempDir(), ".local", "state", "evener")
 }

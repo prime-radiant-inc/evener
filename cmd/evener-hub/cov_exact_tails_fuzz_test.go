@@ -42,7 +42,7 @@ func (s *exactListSource) ListThreads(context.Context, appwire.ThreadListParams)
 	return appwire.ThreadListResponse{Data: []appwire.Thread{
 		s.thread,
 		{ID: "id2", Source: "local"},
-		{Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "local:root"}},
+		{Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "local:root"}},
 	}}, nil
 }
 
@@ -155,7 +155,7 @@ func FuzzExactTails(f *testing.F) {
 		_ = stampThreadImageURLs(appwire.Thread{})
 		_ = stampThreadImageURLs(appwire.Thread{ID: "s", Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: "abc"}}}}}}})
 
-		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Serf: appwire.SerfThread{Ref: "local:id"}}
+		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Evener: appwire.EvenerThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)
 		web := NewWebServer(hubcore.WebConfig{})
 		_ = NewWebServer(hubcore.WebConfig{CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex"}}})
@@ -235,12 +235,12 @@ func FuzzExactTails(f *testing.F) {
 		duplicateRegistry := appsource.NewRegistry()
 		duplicateRegistry.Add(&exactListSource{scriptedAppSource: &scriptedAppSource{
 			id: "local",
-			thread: appwire.Thread{ID: "root", Source: "local", Serf: appwire.SerfThread{
+			thread: appwire.Thread{ID: "root", Source: "local", Evener: appwire.EvenerThread{
 				Ref: "local:root", Kind: "subagent", ParentRef: "local:root",
 			}},
 		}})
 		hubTranscriptRootForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, string) (appwire.Thread, error) {
-			return appwire.Thread{ID: "root", Source: "local", Serf: appwire.SerfThread{Ref: "local:root"}}, nil
+			return appwire.Thread{ID: "root", Source: "local", Evener: appwire.EvenerThread{Ref: "local:root"}}, nil
 		}
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, duplicateRegistry, appwire.ThreadTranscriptListParams{Ref: "local:root"})
 		hubTranscriptRootForList = oldTranscriptRoot

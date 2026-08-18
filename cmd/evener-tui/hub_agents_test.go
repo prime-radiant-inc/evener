@@ -15,7 +15,7 @@ import (
 func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T) {
 	var readRefs []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "local:01SEND" {
 				t.Errorf("transcript list ref=%q, want local:01SEND", params.Ref)
 				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
@@ -38,7 +38,7 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 				ModelProvider: "gpt-5",
 				Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 				Source:        "local",
-				Serf:          appwire.SerfThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01SEND"},
+				Evener:          appwire.EvenerThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01SEND"},
 				Turns: []appwire.Turn{{
 					ID:     "turn_1",
 					Status: appwire.TurnStatusCompleted,
@@ -92,7 +92,7 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 
 func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "local:01SEND" {
 				t.Errorf("transcript list ref=%q, want local:01SEND", params.Ref)
 				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
@@ -139,7 +139,7 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	items := hubTranscriptPickerItems([]appwire.ThreadTranscriptTarget{
 		{Ref: "codex:01MAIN", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "codex"},
-		{Ref: "local:01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "serf", TurnsUsed: 2},
+		{Ref: "local:01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "evener", TurnsUsed: 2},
 	})
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)
@@ -153,7 +153,7 @@ func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	if items[1].ID != "local:01SUB" {
 		t.Fatalf("subagent transcript ID=%q", items[1].ID)
 	}
-	if items[1].Display != "subagent inspect (serf, active, 2 turns)" {
+	if items[1].Display != "subagent inspect (evener, active, 2 turns)" {
 		t.Fatalf("subagent transcript display=%q", items[1].Display)
 	}
 }
@@ -161,7 +161,7 @@ func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 	var readRefs []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "codex:01CODEX" {
 				t.Errorf("transcript list ref=%q, want codex:01CODEX", params.Ref)
 				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
@@ -184,7 +184,7 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 				ModelProvider: "gpt-5",
 				Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 				Source:        "codex",
-				Serf:          appwire.SerfThread{Ref: "codex:01LIVE", Kind: "subagent", ParentRef: "codex:01CODEX"},
+				Evener:          appwire.EvenerThread{Ref: "codex:01LIVE", Kind: "subagent", ParentRef: "codex:01CODEX"},
 				Turns: []appwire.Turn{{
 					ID:     "turn_live",
 					Status: appwire.TurnStatusInProgress,

@@ -171,7 +171,7 @@ func (d *stopParkDaemon) queueDepth(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	return response.Thread.Serf.Queue.Depth
+	return response.Thread.Evener.Queue.Depth
 }
 
 // stopParkObservationWindow bounds the "nothing auto-started" check. The wake it

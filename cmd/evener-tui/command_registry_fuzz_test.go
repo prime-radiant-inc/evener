@@ -126,7 +126,7 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 				fetchHubTree(client), fetchHubSession(frames, client, ref),
 				subscribeChildActivity(client, ref.String()), fetchHubStatus(client, ref),
 				fetchHubTranscriptTargets(client, ref),
-				fetchHubModelsForHarness(client, "serf", "/tmp"),
+				fetchHubModelsForHarness(client, "evener", "/tmp"),
 				fetchHubSessionModels(client, "/tmp"), fetchHubSpawnOptions(client, "/tmp"),
 				fetchHubTasks(client, ref), sendHubInput(client, ref, "x", "", nil),
 			}
@@ -175,7 +175,7 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 func commandRegistryOptionsClient(t *testing.T) (*appwire.Client, func()) {
 	t.Helper()
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test", SourceID: "local"})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{}, {ID: "blank-kind", EmptyTaskUnsupportedReason: "reason", EmptyTaskUnsupportedNextAction: "next"}}}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {

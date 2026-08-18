@@ -3,7 +3,7 @@ package appwire
 import "testing"
 
 // TestWireErrorConstructors asserts each constructor's code (against the literal
-// JSON-RPC number, so a mutated CodeX constant is caught), serfErrorInfo tag, and
+// JSON-RPC number, so a mutated CodeX constant is caught), evenerErrorInfo tag, and
 // message. errors.go's constructors had no in-package unit coverage.
 func TestWireErrorConstructors(t *testing.T) {
 	for _, c := range []struct {
@@ -37,8 +37,8 @@ func TestWireErrorConstructors(t *testing.T) {
 			if !ok {
 				t.Fatalf("Data = %T, want ErrorData", c.err.Data)
 			}
-			if data.SerfErrorInfo != c.wantInfo {
-				t.Errorf("SerfErrorInfo = %q, want %q", data.SerfErrorInfo, c.wantInfo)
+			if data.EvenerErrorInfo != c.wantInfo {
+				t.Errorf("EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, c.wantInfo)
 			}
 		})
 	}

@@ -513,7 +513,7 @@ func TestNoSerfImport(t *testing.T) {
 				path := strings.Trim(imp.Path.Value, `"`)
 				if strings.HasPrefix(path, "primeradiant.com/evener/") &&
 					!strings.HasPrefix(path, "primeradiant.com/evener/fuzz/") {
-					t.Errorf("%s imports forbidden serf package %q", name, path)
+					t.Errorf("%s imports forbidden evener package %q", name, path)
 				}
 			}
 		}

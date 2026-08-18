@@ -1,5 +1,5 @@
 // Package worktree holds the dependency-light decision cores and metadata
-// codec for serf's native git-worktree management (name validation,
+// codec for evener's native git-worktree management (name validation,
 // metadata-sidecar filename encoding, and the sidecar file format itself).
 // Nothing in this package touches git or a git worktree's working tree; the
 // sidecar codec (sidecar.go) does plain os file I/O against the metadata
@@ -17,7 +17,7 @@ import (
 
 // nameRe is the character-and-first-byte filter from the native worktree
 // tools design (spec §2 "name validation"): underscore is a legal git-ref
-// character and appears in serf's own generated ids (dlg_…, job_…), which §9
+// character and appears in evener's own generated ids (dlg_…, job_…), which §9
 // uses as worktree names — a regex without it would reject the feature's own
 // names.
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_./-]*$`)
@@ -34,7 +34,7 @@ const maxNameBytes = 100
 // --branch mode accepts (consecutive/empty path components, a component
 // leading with "." or ending in ".lock", and a trailing "." are all rejected
 // here too) so callers never have to explain a confusing git error for a
-// name serf itself blessed. ValidateName never touches git, the filesystem,
+// name evener itself blessed. ValidateName never touches git, the filesystem,
 // or any other I/O.
 func ValidateName(name string) error {
 	if len(name) == 0 {
@@ -96,7 +96,7 @@ func EncodeSidecarName(name string) string {
 
 // DecodeSidecarName reverses EncodeSidecarName. It returns ok=false for any
 // input that could not have come from EncodeSidecarName — in particular any
-// "%" not part of a literal "%2F" triple — which flags sidecar files serf
+// "%" not part of a literal "%2F" triple — which flags sidecar files evener
 // did not write (spec §6 "unmanaged_meta").
 func DecodeSidecarName(encoded string) (string, bool) {
 	var b strings.Builder

@@ -271,7 +271,7 @@ func touchSidecar(metaDir, delegateID string) {
 type downgradePolicy int
 
 const (
-	// downgradeRelockKeep re-locks the disposer's own serf:dlg marker on the
+	// downgradeRelockKeep re-locks the disposer's own evener:dlg marker on the
 	// kept lane (live dispose: the owner is still around to hold the lock).
 	downgradeRelockKeep downgradePolicy = iota
 	// downgradeUnlockKeep leaves the kept lane unlocked (close path: a dead
@@ -377,7 +377,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 
 // unlockLaneIfOwn routes a changed-lane / unverifiable-lane unlock through the
 // pure lock decision core (never hand-rolled reason parsing): it releases the
-// lane's serf:dlg: lock when the observed state is the disposer's own marker,
+// lane's evener:dlg: lock when the observed state is the disposer's own marker,
 // is a no-op for an already-unlocked (crash-residue) lane, and returns false
 // when the state is foreign or a plain session marker (someone switched in) so
 // the caller declines to touch it. Only ActUnlock and ActNone keep the lane.

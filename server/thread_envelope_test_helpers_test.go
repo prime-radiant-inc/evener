@@ -23,7 +23,7 @@ type stubThreadEnvelopeSource struct {
 	goalIterations   int
 	goalSet          bool
 	workMillis       int64
-	usage            *appwire.SerfUsage
+	usage            *appwire.EvenerUsage
 	turnStartedAt    int64
 	failedToolCalls  int
 	failuresMeasured bool
@@ -59,7 +59,7 @@ func (s *stubThreadEnvelopeSource) GoalStatus() (string, int, bool) {
 	return s.goalStatus, s.goalIterations, s.goalSet
 }
 
-func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return s.workMillis, s.usage, s.turnStartedAt
 }
 

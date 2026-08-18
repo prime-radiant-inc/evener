@@ -1,4 +1,4 @@
-// Package atif converts a serf session transcript into an Agent Trajectory
+// Package atif converts a evener session transcript into an Agent Trajectory
 // Interchange Format (ATIF v1.7) document.
 package atif
 
@@ -103,7 +103,7 @@ func NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error) {
 	}
 }
 
-// Convert converts a serf transcript (header + entries) into an ATIF v1.7 trajectory.
+// Convert converts a evener transcript (header + entries) into an ATIF v1.7 trajectory.
 func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 	return ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
 }
@@ -123,7 +123,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		SchemaVersion: "ATIF-v1.7",
 		SessionID:     header.SessionID,
 		Agent: Agent{
-			Name:      "serf",
+			Name:      "evener",
 			Version:   version,
 			ModelName: header.Model,
 			Extra:     map[string]any{"profile_id": header.ProfileID},
@@ -198,7 +198,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				Source:    "system",
 				Message:   turn.Message.Text(),
 				Timestamp: formatTimestamp(turn),
-				Extra:     map[string]any{"serf_kind": "checkpoint"},
+				Extra:     map[string]any{"evener_kind": "checkpoint"},
 			}
 			steps = append(steps, step)
 			stepID++
@@ -209,7 +209,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				Source:    "system",
 				Message:   turn.Message.Text(),
 				Timestamp: formatTimestamp(turn),
-				Extra:     map[string]any{"serf_kind": "summary"},
+				Extra:     map[string]any{"evener_kind": "summary"},
 			}
 			steps = append(steps, step)
 			stepID++
@@ -220,7 +220,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				Source:    "system",
 				Message:   turn.Message.Text(),
 				Timestamp: formatTimestamp(turn),
-				Extra:     map[string]any{"serf_kind": "model_switch"},
+				Extra:     map[string]any{"evener_kind": "model_switch"},
 			}
 			steps = append(steps, step)
 			stepID++
@@ -233,7 +233,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// them on an agent step with the source_call_id nulled and preserve
 			// the original ids in extra for traceability.
 			obs, errMap, durMap := convertToolResults(turn)
-			extra := map[string]any{"serf_kind": "orphaned_tool_results"}
+			extra := map[string]any{"evener_kind": "orphaned_tool_results"}
 			if obs != nil {
 				var origIDs []string
 				for i := range obs.Results {
@@ -281,19 +281,19 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// reason: unknown kinds are labeled, never silently dropped.
 			//
 			// The encoding is the one CHECKPOINT, SUMMARY and MODEL_SWITCH
-			// already use: a system step tagged with extra.serf_kind. ATIF's
+			// already use: a system step tagged with extra.evener_kind. ATIF's
 			// own vocabulary is not ours to extend — Step.Source is the
 			// format's enum — whereas extra is the extension point the format
 			// provides and this exporter's stated fidelity rule ("Lossless
 			// Preservation via extra", docs/superpowers/plans/
 			// 2026-03-02-native-atif-export-design.md) already spends on
-			// every other serf-specific kind.
+			// every other evener-specific kind.
 			step := Step{
 				StepID:    stepID,
 				Source:    "system",
 				Message:   turn.Message.Text(),
 				Timestamp: formatTimestamp(turn),
-				Extra:     map[string]any{"serf_kind": strings.ToLower(string(turn.Kind))},
+				Extra:     map[string]any{"evener_kind": strings.ToLower(string(turn.Kind))},
 			}
 			// Whatever structured payload the turn carries travels with it.
 			// Exporting a TURN_FAILURE step while dropping the diagnostic on

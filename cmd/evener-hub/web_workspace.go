@@ -53,7 +53,7 @@ func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request)
 // sessions it proxies the daemon's GET /tasks; for ended sessions it reads
 // the persisted <StateDir>/tasks/<id>.json through loadPersistedTasks
 // (app_tasks.go) — the same task.TaskStore.Load()+View() reader the
-// serf/tasks/list RPC's past fallback uses — rather than a second, hand-
+// evener/tasks/list RPC's past fallback uses — rather than a second, hand-
 // rolled parser, so this path inherits TaskStore.Load's not-exist-is-empty
 // semantics and decode-error handling directly instead of a hand-copied
 // sibling of it. A missing file or absent session returns an empty array
@@ -108,7 +108,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			state := hubcore.NormalizeState(le.Status)
 			data := WorkspaceData{
 				ID:           id,
-				SourceLabel:  "serf",
+				SourceLabel:  "evener",
 				Title:        liveTitle(id, le, s.cfg.Past),
 				State:        state,
 				StateLabel:   stateLabel(state, false),
@@ -179,7 +179,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			}
 			data := WorkspaceData{
 				ID:           id,
-				SourceLabel:  "serf",
+				SourceLabel:  "evener",
 				Title:        pastTitle(pe),
 				State:        state,
 				StateLabel:   stateLabel(state, false),
@@ -193,7 +193,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				// expose the current turn's start time, even when the parent roster
 				// projects this child as active.
 				WorkMillis: pe.Meta.WorkMillis,
-				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
+				Usage:      evenerUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
 			// One session's own workspace, so this path can afford the same
 			// full-transcript recovery the single-thread read does: a fork child's
@@ -211,17 +211,17 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	return WorkspaceData{}
 }
 
-// serfUsageFromCumulative maps a persisted SessionMeta.CumulativeUsage
-// (an ended session's WS2 token totals) to the wire appwire.SerfUsage shown
+// evenerUsageFromCumulative maps a persisted SessionMeta.CumulativeUsage
+// (an ended session's WS2 token totals) to the wire appwire.EvenerUsage shown
 // in its workspace data. Returns nil when every total (including
 // CacheReadTokens) is zero — a session that never accumulated usage, or a
 // meta written before WS2 — so the usage cluster hides rather than rendering
-// ↑0 ↓0 (mirrors serfUsageFromLLM in cmd/evener/serve.go).
-func serfUsageFromCumulative(u schema.CumulativeUsage) *appwire.SerfUsage {
+// ↑0 ↓0 (mirrors evenerUsageFromLLM in cmd/evener/serve.go).
+func evenerUsageFromCumulative(u schema.CumulativeUsage) *appwire.EvenerUsage {
 	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.TotalTokens == 0 {
 		return nil
 	}
-	return &appwire.SerfUsage{
+	return &appwire.EvenerUsage{
 		InputTokens:     u.InputTokens,
 		OutputTokens:    u.OutputTokens,
 		CacheReadTokens: u.CacheReadTokens,
@@ -246,7 +246,7 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 	if err != nil {
 		return fallback, ""
 	}
-	caps := hubCapabilitiesFromAppwire(resp.Thread.Serf.Capabilities)
+	caps := hubCapabilitiesFromAppwire(resp.Thread.Evener.Capabilities)
 	caps.Resume = fallback.Resume
 	return caps, activeTurnIDFromAppwireThread(resp.Thread)
 }

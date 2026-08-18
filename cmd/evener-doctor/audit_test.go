@@ -39,7 +39,7 @@ func withFixtureRunbook(t *testing.T, name, content string) {
 	prev := bundledSkills
 	bundledSkills = func() fs.FS {
 		return fstest.MapFS{
-			"doctoring-serf/runbooks/" + name + ".md": &fstest.MapFile{Data: []byte(content)},
+			"doctoring-evener/runbooks/" + name + ".md": &fstest.MapFile{Data: []byte(content)},
 		}
 	}
 	t.Cleanup(func() { bundledSkills = prev })
@@ -53,7 +53,7 @@ func auditSessionFixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW40"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)

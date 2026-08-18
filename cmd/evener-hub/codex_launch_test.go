@@ -29,7 +29,7 @@ func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	if resp.Thread.Serf.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
@@ -253,9 +253,9 @@ func assertHubLaunchError(t *testing.T, err error) {
 func wireErrorInfoIs(data any, want appwire.ErrorInfo) bool {
 	switch v := data.(type) {
 	case appwire.ErrorData:
-		return v.SerfErrorInfo == want
+		return v.EvenerErrorInfo == want
 	case map[string]any:
-		return v["serfErrorInfo"] == string(want)
+		return v["evenerErrorInfo"] == string(want)
 	default:
 		return false
 	}

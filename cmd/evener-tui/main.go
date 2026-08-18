@@ -62,11 +62,11 @@ func run() int {
 			// Usage has already been printed by the flag package via fs.Usage.
 			return 0
 		}
-		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
 		return 2
 	}
 	if err := ensureUserConfigDirs(); err != nil {
-		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
 		return 1
 	}
 
@@ -133,7 +133,7 @@ func run() int {
 	}
 	finalModel, err := program.Run()
 	if err != nil {
-		_, _ = fmt.Fprintf(standardError, "serf-tui: %v\n", err)
+		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
 		return 1
 	}
 	if message := postQuitMessageFromModel(finalModel); message != "" {
@@ -150,12 +150,12 @@ func postQuitMessageFromModel(model tea.Model) string {
 	return strings.TrimSpace(m.postQuitMessage)
 }
 
-// currentExecutable returns the absolute path of the running serf-tui
+// currentExecutable returns the absolute path of the running evener-tui
 // binary. It prefers os.Executable() (always absolute on supported
 // platforms) and falls back to os.Args[0] when the OS cannot report a
 // path. Returning the absolute path lets binresolve.Resolve locate a
-// sibling serf-hub even when serf-tui was launched via a relative path
-// like "./serf-tui" — which would otherwise be rejected by exec.ErrDot.
+// sibling evener-hub even when evener-tui was launched via a relative path
+// like "./evener-tui" — which would otherwise be rejected by exec.ErrDot.
 func currentExecutable() string {
 	if exe, err := processExecutable(); err == nil && exe != "" {
 		return exe

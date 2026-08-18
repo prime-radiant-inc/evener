@@ -85,9 +85,9 @@ func TestInitPlugins_UnknownHookEventWarnsLoudly(t *testing.T) {
 }
 
 // TestInitPlugins_UnsupportedHookEventWarns asserts that a plugin declaring a
-// hook for a recognized-but-unsupported Claude event (one serf does not fire
+// hook for a recognized-but-unsupported Claude event (one evener does not fire
 // yet, e.g. PostToolUseFailure) produces a visible WARNING that the hook is
-// declared for a reserved event serf does not yet fire, so it will not run.
+// declared for a reserved event evener does not yet fire, so it will not run.
 func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	t.Parallel()
 	dir := writePluginHooks(t, "reserved-plugin", `{
@@ -115,7 +115,7 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	}
 	msg := strings.ToLower(found.Message)
 	if !strings.Contains(msg, "not") || !strings.Contains(msg, "fire") {
-		t.Errorf("warning %q should say the event is not fired by serf", found.Message)
+		t.Errorf("warning %q should say the event is not fired by evener", found.Message)
 	}
 }
 

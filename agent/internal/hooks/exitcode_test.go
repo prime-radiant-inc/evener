@@ -11,7 +11,7 @@ import (
 // TestExitBehavior_PerEvent verifies the central exit-code table classifies exit
 // 2 as blocking only for events whose RUNNER actually enforces the block.
 // PreToolUse/Stop/SubagentStop block and are enforced. UserPromptSubmit and
-// PreCompact block in the Claude contract, but serf does not yet enforce the
+// PreCompact block in the Claude contract, but evener does not yet enforce the
 // block at their dispatch sites (a deferred parity item), so the table must not
 // claim a block nothing consumes (Fix 3).
 func TestExitBehavior_PerEvent(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 )
 
 // TestHookCommandEnvScrubsSecrets covers reconciliation #5: hook commands built
-// their env straight from os.Environ(), so they saw serf's provider API key that
+// their env straight from os.Environ(), so they saw evener's provider API key that
 // every other spawned command already scrubs. The scrub now applies to hook env
 // regardless of sandboxing.
 func TestHookCommandEnvScrubsSecrets(t *testing.T) {

@@ -289,9 +289,9 @@ func tempName() string {
 	if _, err := secureRandRead(b[:]); err != nil {
 		// crypto/rand should never fail; fall back to a pid-tagged name rather than
 		// panicking. Still O_EXCL-guarded at the create site.
-		return fmt.Sprintf(".serf-sbtmp-%d", os.Getpid())
+		return fmt.Sprintf(".evener-sbtmp-%d", os.Getpid())
 	}
-	return ".serf-sbtmp-" + hex.EncodeToString(b[:])
+	return ".evener-sbtmp-" + hex.EncodeToString(b[:])
 }
 
 // containingRoot returns the first root that contains abs, the slash-relative

@@ -11,17 +11,17 @@ import "testing"
 // contain ':'.
 func FuzzParseMarker(f *testing.F) {
 	seeds := []string{
-		"serf:01HXYZABCD0123456789ABCDEF",
-		"serf:dlg:dlg_01JXYZABCD0123456789ABCDEF:01HXYZABCD0123456789ABCDEF",
+		"evener:01HXYZABCD0123456789ABCDEF",
+		"evener:dlg:dlg_01JXYZABCD0123456789ABCDEF:01HXYZABCD0123456789ABCDEF",
 		"",
-		"serf:",
-		"serf",
-		"serf:dlg:x",
-		"serf:dlg::",
-		"serf:dlg:a:b:c",
+		"evener:",
+		"evener",
+		"evener:dlg:x",
+		"evener:dlg::",
+		"evener:dlg:a:b:c",
 		"random text",
-		"serf:a:b",
-		" serf:01HXYZABCD0123456789ABCDEF",
+		"evener:a:b",
+		" evener:01HXYZABCD0123456789ABCDEF",
 	}
 	for _, s := range seeds {
 		f.Add(s)

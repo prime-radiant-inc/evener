@@ -68,7 +68,7 @@ func fuzzScenarioBuildTree_MarksNeverRunSessionDormant(t *testing.T) {
 			meta.ID = "01DORMANCY"
 			meta.CreatedAt = now
 			meta.UpdatedAt = now
-			meta.EnvInfo = schema.EnvironmentInfo{WorkingDir: "/projects/serf"}
+			meta.EnvInfo = schema.EnvironmentInfo{WorkingDir: "/projects/evener"}
 			live := []LiveEntry{{
 				Entry:     rendezvous.Entry{PID: 1},
 				SessionID: "01DORMANCY",
@@ -106,7 +106,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnDormancy(t *testing.T) {
 		ID:        "01NEVERRAN",
 		CreatedAt: now,
 		UpdatedAt: now,
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 	}}
 	live := []LiveEntry{{
 		Entry:     rendezvous.Entry{PID: 1},

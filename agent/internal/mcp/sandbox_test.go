@@ -77,7 +77,7 @@ func TestMCPStdioServerConfined(t *testing.T) {
 	}
 }
 
-// A confined stdio MCP server must not inherit serf's own ambient credentials
+// A confined stdio MCP server must not inherit evener's own ambient credentials
 // (its provider API key et al.) from the parent environment, but a secret the
 // server config sets explicitly is deliberate configuration and must survive.
 func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {

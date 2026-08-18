@@ -110,7 +110,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	<-sess.Events()
 
 	ctx := context.Background()
-	_, err = sess.ProcessInput(ctx, "Create a file called hello.txt in the working directory "+tmpDir+" containing exactly the text 'Hello from serf'. Use the write_file tool. Do not explain, just create the file.", nil)
+	_, err = sess.ProcessInput(ctx, "Create a file called hello.txt in the working directory "+tmpDir+" containing exactly the text 'Hello from evener'. Use the write_file tool. Do not explain, just create the file.", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -119,8 +119,8 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(content), "Hello from serf") {
-		t.Fatalf("expected file to contain 'Hello from serf', got: %q", string(content))
+	if !strings.Contains(string(content), "Hello from evener") {
+		t.Fatalf("expected file to contain 'Hello from evener', got: %q", string(content))
 	}
 }
 
@@ -145,8 +145,8 @@ func TestOpenAIDispatchesFromTopLevel(t *testing.T) {
 	if !handled {
 		t.Fatal("dispatchCLICommand() handled = false, want true")
 	}
-	if label != "serf openai" {
-		t.Fatalf("dispatchCLICommand() label = %q, want %q", label, "serf openai")
+	if label != "evener openai" {
+		t.Fatalf("dispatchCLICommand() label = %q, want %q", label, "evener openai")
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "state=signed-in source=env" {
 		t.Fatalf("stdout = %q, want %q", got, "state=signed-in source=env")
@@ -161,7 +161,7 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 	}
 
 	usage := stderr.String()
-	if !strings.Contains(usage, "Usage: serf openai <command>") {
+	if !strings.Contains(usage, "Usage: evener openai <command>") {
 		t.Fatalf("usage = %q, want openai usage header", usage)
 	}
 	if !strings.Contains(usage, "login") || !strings.Contains(usage, "logout") || !strings.Contains(usage, "status") {
@@ -204,9 +204,9 @@ func TestOpenAISubcommandHelpReturnsErrHelp(t *testing.T) {
 		args        []string
 		usagePrefix string
 	}{
-		{name: "login", args: []string{"login", "--help"}, usagePrefix: "Usage: serf openai login"},
-		{name: "logout", args: []string{"logout", "--help"}, usagePrefix: "Usage: serf openai logout"},
-		{name: "status", args: []string{"status", "--help"}, usagePrefix: "Usage: serf openai status"},
+		{name: "login", args: []string{"login", "--help"}, usagePrefix: "Usage: evener openai login"},
+		{name: "logout", args: []string{"logout", "--help"}, usagePrefix: "Usage: evener openai logout"},
+		{name: "status", args: []string{"status", "--help"}, usagePrefix: "Usage: evener openai status"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,7 +228,7 @@ func TestTopLevelHelpShowsReasoningEffort(t *testing.T) {
 	fs.Usage()
 	usage := stderr.String()
 	if !strings.Contains(usage, "--reasoning-effort") {
-		t.Fatalf("serf --help missing --reasoning-effort:\n%s", usage)
+		t.Fatalf("evener --help missing --reasoning-effort:\n%s", usage)
 	}
 }
 
@@ -285,7 +285,7 @@ func TestOpenAIStateDirDefaultIsUserScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveOpenAIStateDir() error = %v", err)
 	}
-	want := filepath.Join(xdgStateHome, "serf")
+	want := filepath.Join(xdgStateHome, "evener")
 	if gotA != want || gotB != want {
 		t.Fatalf("state dirs = %q, %q; want both %q", gotA, gotB, want)
 	}
@@ -679,7 +679,7 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runOpenAI(help) error = %v", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: serf openai") {
+		if !strings.Contains(stderr.String(), "Usage: evener openai") {
 			t.Fatalf("stderr = %q, want usage header", stderr.String())
 		}
 	})
@@ -693,7 +693,7 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if !strings.Contains(err.Error(), "unknown openai command") {
 			t.Fatalf("error = %v, want 'unknown openai command'", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: serf openai") {
+		if !strings.Contains(stderr.String(), "Usage: evener openai") {
 			t.Fatalf("stderr = %q, want usage header", stderr.String())
 		}
 	})
@@ -720,7 +720,7 @@ func TestRunOpenAILogout_Errors(t *testing.T) {
 		if !strings.Contains(err.Error(), "flag provided but not defined") {
 			t.Fatalf("error = %v, want flag-parse error", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: serf openai logout") {
+		if !strings.Contains(stderr.String(), "Usage: evener openai logout") {
 			t.Fatalf("stderr = %q, want usage header", stderr.String())
 		}
 	})
@@ -759,8 +759,8 @@ func TestDispatchCLICommand_ServeError(t *testing.T) {
 	if !handled {
 		t.Fatal("dispatchCLICommand(serve) handled = false, want true")
 	}
-	if label != "serf serve" {
-		t.Fatalf("label = %q, want 'serf serve'", label)
+	if label != "evener serve" {
+		t.Fatalf("label = %q, want 'evener serve'", label)
 	}
 }
 
@@ -846,7 +846,7 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 		if !strings.Contains(err.Error(), "flag provided but not defined") {
 			t.Fatalf("error = %v, want flag-parse error", err)
 		}
-		if !strings.Contains(stderr.String(), "Usage: serf openai login") {
+		if !strings.Contains(stderr.String(), "Usage: evener openai login") {
 			t.Fatalf("stderr = %q, want usage header", stderr.String())
 		}
 	})

@@ -1,4 +1,4 @@
-// serf-namingcheck enforces the project's wire-format naming convention:
+// evener-namingcheck enforces the project's wire-format naming convention:
 //
 //	JSON tags  -> snake_case
 //	TOML tags  -> snake_case
@@ -18,7 +18,7 @@
 //	llm/providers/*/         — JSON tags are exempt entirely.
 //
 // Plus one narrow, (file, tag-name)-scoped carve-out for the doctor's
-// Finding wire contract — see internal/bundled/skills/doctoring-serf/
+// Finding wire contract — see internal/bundled/skills/doctoring-evener/
 // references/finding-contract.md and doctorFindingContractExemptions below.
 // The same tag spelling is still a violation anywhere outside that
 // allowlist.
@@ -30,8 +30,8 @@
 // Run it via `make lint-naming` (or directly: `go run ./cmd/evener-namingcheck`).
 // CI also runs it as a separate step.
 //
-// A single field/key can opt out with a `// serf:naming-ignore` (Go) or
-// `# serf:naming-ignore` (TOML) marker on the immediately preceding line. Use
+// A single field/key can opt out with a `// evener:naming-ignore` (Go) or
+// `# evener:naming-ignore` (TOML) marker on the immediately preceding line. Use
 // sparingly — every opt-out should also carry a comment explaining why.
 package main
 
@@ -151,7 +151,7 @@ func runNaming(args []string, stdout, stderr io.Writer) int {
 		root    string
 		verbose bool
 	)
-	fs := flag.NewFlagSet("serf-namingcheck", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-namingcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&root, "root", ".", "repo root to scan")
 	fs.BoolVar(&verbose, "v", false, "print scanned files")
@@ -260,7 +260,7 @@ func isExcluded(rel string) bool {
 
 // --- Go struct tags --------------------------------------------------------
 
-const ignoreMarker = "serf:naming-ignore"
+const ignoreMarker = "evener:naming-ignore"
 
 func checkGoFile(path, rel string) ([]Violation, error) {
 	fset := token.NewFileSet()
@@ -384,10 +384,10 @@ func checkJSONTag(v, rel string) string {
 }
 
 // isUpstreamCamelKey reports whether key is a fixed camelCase key from an
-// upstream Claude config format (.mcp.json / settings.json) that serf parses
+// upstream Claude config format (.mcp.json / settings.json) that evener parses
 // verbatim. The names are dictated by upstream, so they are exempt from the
 // snake_case rule wherever they appear (this is what previously required
-// per-field serf:naming-ignore markers on those structs).
+// per-field evener:naming-ignore markers on those structs).
 func isUpstreamCamelKey(key string) bool {
 	switch key {
 	case "mcpServers", "enabledPlugins":
@@ -398,10 +398,10 @@ func isUpstreamCamelKey(key string) bool {
 
 // doctorFindingContractExemptions maps each file that implements or decodes
 // the doctor's Finding wire contract to the exact JSON tag names that
-// internal/bundled/skills/doctoring-serf/references/finding-contract.md
+// internal/bundled/skills/doctoring-evener/references/finding-contract.md
 // specifies as camelCase for the Finding envelope and its evidence/
 // suggestedFix sub-objects. The contract is a cross-tool wire format shared
-// between serf-doctor's Go-emitted `audit --json` output
+// between evener-doctor's Go-emitted `audit --json` output
 // (agent/doctor/audit.go) and the doctor LLM agent's own hand-authored
 // Findings (internal/bundled/agents/doctor.md reads the same contract doc),
 // so it deliberately keeps finding-contract.md's camelCase spelling instead

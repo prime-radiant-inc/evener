@@ -47,8 +47,8 @@ func TestPastThreadReadProjectsPersistedTaskAggregate(t *testing.T) {
 		t.Fatalf("pastThreadForRead: thread=%+v found=%v err=%v", thread, ok, err)
 	}
 	want := &appwire.TaskAggregate{Total: 2, Done: 1}
-	if thread.Serf.Tasks == nil || *thread.Serf.Tasks != *want {
-		t.Fatalf("persisted task aggregate=%+v, want %+v", thread.Serf.Tasks, want)
+	if thread.Evener.Tasks == nil || *thread.Evener.Tasks != *want {
+		t.Fatalf("persisted task aggregate=%+v, want %+v", thread.Evener.Tasks, want)
 	}
 }
 
@@ -59,8 +59,8 @@ func TestPastThreadReadTaskAggregatePreservesAbsentAndZero(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
 		}
-		if thread.Serf.Tasks != nil {
-			t.Fatalf("missing task aggregate=%+v, want nil", thread.Serf.Tasks)
+		if thread.Evener.Tasks != nil {
+			t.Fatalf("missing task aggregate=%+v, want nil", thread.Evener.Tasks)
 		}
 	})
 
@@ -70,8 +70,8 @@ func TestPastThreadReadTaskAggregatePreservesAbsentAndZero(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
 		}
-		if thread.Serf.Tasks == nil || thread.Serf.Tasks.Total != 0 || thread.Serf.Tasks.Done != 0 {
-			t.Fatalf("empty-file task aggregate=%+v, want present zero", thread.Serf.Tasks)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 0 || thread.Evener.Tasks.Done != 0 {
+			t.Fatalf("empty-file task aggregate=%+v, want present zero", thread.Evener.Tasks)
 		}
 	})
 }
@@ -126,11 +126,11 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	if err != nil || !found {
 		t.Fatalf("cold thread/read: found=%v err=%v", found, err)
 	}
-	if liveRead.Thread.Serf.Tasks != nil {
-		t.Fatalf("live malformed task aggregate=%+v, want unknown", liveRead.Thread.Serf.Tasks)
+	if liveRead.Thread.Evener.Tasks != nil {
+		t.Fatalf("live malformed task aggregate=%+v, want unknown", liveRead.Thread.Evener.Tasks)
 	}
-	if coldRead.Serf.Tasks != nil {
-		t.Fatalf("cold malformed task aggregate=%+v, want unknown", coldRead.Serf.Tasks)
+	if coldRead.Evener.Tasks != nil {
+		t.Fatalf("cold malformed task aggregate=%+v, want unknown", coldRead.Evener.Tasks)
 	}
 }
 
@@ -151,7 +151,7 @@ func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { re
 func (s sessionTaskEnvelopeSource) GoalStatus() (string, int, bool)         { return "", 0, false }
 func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
 func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
-func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }
 func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {

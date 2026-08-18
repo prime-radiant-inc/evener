@@ -9,7 +9,7 @@ import (
 )
 
 // floorExactDrops are environment variables removed from every spawned process in
-// a sandboxed session, in addition to serf's existing *KEY*/*SECRET*/*TOKEN*/…
+// a sandboxed session, in addition to evener's existing *KEY*/*SECRET*/*TOKEN*/…
 // scrub. A live ssh-agent socket is sign-anything/exfil even with ~/.ssh masked,
 // so its handle must not survive into a spawned command.
 var floorExactDrops = []string{
@@ -32,7 +32,7 @@ var floorPrefixDrops = []string{
 }
 
 // ApplyEnvFloor raises the sandbox environment floor on top of an already-scrubbed
-// env slice (the output of serf's EnvPolicy filtering). It:
+// env slice (the output of evener's EnvPolicy filtering). It:
 //   - drops the ssh-agent handle and cloud credential vars (floorExactDrops /
 //     floorPrefixDrops),
 //   - drops a worktree-external KUBECONFIG (an absolute path outside every granted

@@ -8,7 +8,7 @@ import (
 
 // TestSandboxEscalationWireKeys pins the camelCase wire spelling of the M7
 // escalation pair (the appwire tree speaks the codex/appwire camelCase protocol,
-// enforced by serf-namingcheck) and that the resolve params round-trip.
+// enforced by evener-namingcheck) and that the resolve params round-trip.
 func TestSandboxEscalationWireKeys(t *testing.T) {
 	req := SandboxEscalationRequested{
 		ThreadID: "t1", Ref: "local:t1",
@@ -45,7 +45,7 @@ func TestSandboxEscalationWireKeys(t *testing.T) {
 }
 
 // TestSandboxEscalationResolvedWireKeys (wire-honesty spec Part B) pins the
-// camelCase wire spelling of the serf/sandbox/escalation/resolved
+// camelCase wire spelling of the evener/sandbox/escalation/resolved
 // notification, and — the spec's binding design decision — that it carries
 // NO reason or approved: the sole consumer clears its card by id identically
 // regardless of outcome, and the producer cannot reliably distinguish

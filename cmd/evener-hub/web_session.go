@@ -299,8 +299,8 @@ func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) 
 	status := http.StatusBadGateway
 	if wire, ok := wireErrorFromError(err); ok {
 		status = statusForWireError(wire, status)
-		if info := serfErrorInfoFromData(wire.Data); info != "" {
-			w.Header().Set("X-Serf-Error-Info", info)
+		if info := evenerErrorInfoFromData(wire.Data); info != "" {
+			w.Header().Set("X-Evener-Error-Info", info)
 		}
 	}
 	http.Error(w, err.Error(), status)
@@ -308,7 +308,7 @@ func writeSessionActionError(w http.ResponseWriter, r *http.Request, err error) 
 
 func isActionUnavailable(err error) bool {
 	wire, ok := wireErrorFromError(err)
-	return ok && wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
+	return ok && wire.Code == appwire.CodeUnavailable && evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
 }
 
 // validateForkRequest enforces the same defer_input + edited_message

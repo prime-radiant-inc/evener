@@ -34,7 +34,7 @@ func TestRunNamingResultsAndMain(t *testing.T) {
 	if got := runNaming(nil, &out, &errOut); got != 0 {
 		t.Fatalf("clean = %d", got)
 	}
-	os.Args = []string{"serf-namingcheck"}
+	os.Args = []string{"evener-namingcheck"}
 	exit := -1
 	osExit = func(code int) { exit = code }
 	main()

@@ -336,7 +336,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 
 	got, err := a.CountInputTokens(ctx, llm.Request{
 		Model:    model,
-		Messages: []llm.Message{llm.User("Count these input tokens for serf.")},
+		Messages: []llm.Message{llm.User("Count these input tokens for evener.")},
 		Tools: []llm.ToolDefinition{{
 			Name:        "lookup",
 			Description: "Looks up a short value.",

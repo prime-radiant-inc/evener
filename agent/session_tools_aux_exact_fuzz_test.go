@@ -246,7 +246,7 @@ func auxFindExact(t *testing.T) {
 	// enforced by validLocalBucketDir since the identifier refactor): a readable
 	// portion plus a 10-character base62 suffix. A bare stand-in like "current"
 	// is rejected by design and would degrade the scope probe to nil buckets.
-	nested := filepath.Join(root, "home", "serf", "projects", "current-abcdefghij")
+	nested := filepath.Join(root, "home", "evener", "projects", "current-abcdefghij")
 	if buckets, scope := findBucketsWithEnumerate(nested, scopeAllProjects, func(string) ([]string, error) { return nil, errors.New("enumerate") }); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("failed enumeration = %#v %q", buckets, scope)
 	}

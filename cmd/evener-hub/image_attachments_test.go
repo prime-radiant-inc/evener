@@ -1,6 +1,6 @@
 package main
 
-// Tests for image-attachment round-trip across the serf wire surface (kata
+// Tests for image-attachment round-trip across the evener wire surface (kata
 // t5j6). Each test exercises one of the five inbound paths a client uses to
 // submit an image-bearing user message, and asserts that the daemon's session
 // either receives the bytes on the wire (for routed paths) or builds a
@@ -176,7 +176,7 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 			SessionID: "01SENDIMG",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01SENDIMG",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
 			},
@@ -280,7 +280,7 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 			SessionID: "01SENDITEMS",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01SENDITEMS",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
 			},

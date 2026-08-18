@@ -1,13 +1,13 @@
 package main
 
 // Whether an instance needs a credential at all is a fact the hub already
-// derives: credentialRequired is the gate serf/auth/test asks before it decides
+// derives: credentialRequired is the gate evener/auth/test asks before it decides
 // an instance is unconfigured, and it answers false for a gateway — an
 // openai-compatible instance carrying a base_url — because such an instance
 // inherits no type-level key (providercfg.CredentialTag returns the empty tag
 // for it) and many gateways, llama.cpp among them, accept requests with no key.
 //
-// serf/instance/list did not carry that bit, so the credentials pane saw only
+// evener/instance/list did not carry that bit, so the credentials pane saw only
 // activeSource "absent" and rendered a working local gateway as "Not
 // configured" (credentialLabels.ts, unconfiguredLabel). The pane cannot rederive
 // the rule: its baseUrl is the sanitized copy, empty whenever the authored URL
@@ -99,20 +99,20 @@ func TestInstanceList_CredentialRequiredFollowsTheProbeGate(t *testing.T) {
 			row := instanceListRow(t, instances, tt.name)
 
 			if row.CredentialRequired != tt.wantRequired {
-				t.Errorf("serf/instance/list %q credentialRequired = %v, want %v: %s",
+				t.Errorf("evener/instance/list %q credentialRequired = %v, want %v: %s",
 					tt.name, row.CredentialRequired, tt.wantRequired, tt.why)
 			}
-			// The gate serf/auth/test asks owns this answer; the wire must
+			// The gate evener/auth/test asks owns this answer; the wire must
 			// report it rather than a second derivation of its own.
 			if got := credentialRequired(inst); row.CredentialRequired != got {
-				t.Errorf("serf/instance/list %q credentialRequired = %v, but the serf/auth/test gate says %v — one instance, two answers",
+				t.Errorf("evener/instance/list %q credentialRequired = %v, but the evener/auth/test gate says %v — one instance, two answers",
 					tt.name, row.CredentialRequired, got)
 			}
 			// activeSource is what the pane pairs the bit with: "absent" plus
 			// required=false is the optional-gateway label, and the auth-none
 			// case must keep reaching its own "none" answer instead.
 			if row.ActiveSource != tt.wantActiveSource {
-				t.Errorf("serf/instance/list %q activeSource = %q, want %q",
+				t.Errorf("evener/instance/list %q activeSource = %q, want %q",
 					tt.name, row.ActiveSource, tt.wantActiveSource)
 			}
 		})

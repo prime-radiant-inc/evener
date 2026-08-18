@@ -185,7 +185,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 
 // sessionQueuePreview returns the wire-sourced queue snapshot
 // (head-first) for the current session. The TUI no longer mirrors local
-// enqueues; entries are populated from thread.Serf.Queue on ReadThread
+// enqueues; entries are populated from thread.Evener.Queue on ReadThread
 // and from thread/queueChanged notifications (kata r80p). Each entry has
 // already been collapsed to its first line by the daemon.
 func (m hubModel) sessionQueuePreview() []string {

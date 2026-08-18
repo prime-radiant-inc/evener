@@ -38,7 +38,7 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 
 	if len(req.Tools) > 0 {
 		tools := openaichat.ToChatTools(req.Tools)
-		// Only emit strict when the instance explicitly opts in. Serf diverges
+		// Only emit strict when the instance explicitly opts in. Evener diverges
 		// from Pi (whose default always sends strict:false); see
 		// providercfg.CompatConfig.SupportsStrictMode.
 		if quirks.SupportsStrictMode != nil && *quirks.SupportsStrictMode {
@@ -198,7 +198,7 @@ func isReasoningControlKey(k string) bool {
 }
 
 // promptCacheKey returns the prompt cache key to send: the request's explicit
-// PromptCacheKey when set, else the session-derived "serf-session-"+SessionID
+// PromptCacheKey when set, else the session-derived "evener-session-"+SessionID
 // (mirroring agent.Session's openai-path convention so the two agree), else ""
 // when there is no key material to cache on.
 func promptCacheKey(req llm.Request) string {
@@ -206,14 +206,14 @@ func promptCacheKey(req llm.Request) string {
 		return k
 	}
 	if sid := strings.TrimSpace(req.SessionID); sid != "" {
-		return "serf-session-" + sid
+		return "evener-session-" + sid
 	}
 	return ""
 }
 
 // applyThinkingFormat emits the reasoning controls in the wire dialect the
 // provider speaks. No effort on the request means "send nothing" for every
-// format — serf's "none" clears the setting to the provider default rather
+// format — evener's "none" clears the setting to the provider default rather
 // than forcing an explicit disable. A model declared reasoning=false
 // (mc.ReasoningOff) emits nothing regardless of the request's effort: the
 // adapter enforces its own declared non-reasoning models rather than relying
@@ -237,7 +237,7 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		}
 	case "zai":
 		// clear_thinking:false keeps z.ai from pruning prior-turn reasoning
-		// server-side; serf manages thinking replay itself.
+		// server-side; evener manages thinking replay itself.
 		body["thinking"] = map[string]any{"type": "enabled", "clear_thinking": false}
 		if quirks.supportsEffort(false) {
 			body["reasoning_effort"] = wire
@@ -258,7 +258,7 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		body["enable_thinking"] = true
 	case "qwen-chat-template":
 		// Divergence from Pi: Pi always emits enable_thinking (false when off).
-		// serf's none-clears convention means we only reach here with an effort
+		// evener's none-clears convention means we only reach here with an effort
 		// set (wire != "" above), so enable_thinking is always true.
 		body["chat_template_kwargs"] = map[string]any{
 			"enable_thinking":   true,

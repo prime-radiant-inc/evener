@@ -83,7 +83,7 @@ func FuzzFinalWebspawn(f *testing.F) {
 		}
 		_ = server.fetchLiveModels(context.Background())
 
-		// The non-Serf source path covers successful and failed model listing.
+		// The non-Evener source path covers successful and failed model listing.
 		registry := appsource.NewRegistry()
 		source := &finalWebspawnSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, resp: appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{{Provider: "custom", Model: "plain"}},

@@ -437,7 +437,7 @@ func TestRuntimeCredentialsRefreshFailureRequiresRelogin(t *testing.T) {
 	if !errors.Is(err, ErrLoginRequired) {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v, want ErrLoginRequired", err)
 	}
-	if !strings.Contains(err.Error(), "serf openai login") {
+	if !strings.Contains(err.Error(), "evener openai login") {
 		t.Fatalf("ResolveRuntimeCredentials() error = %q, want re-login guidance", err)
 	}
 }

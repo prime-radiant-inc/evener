@@ -19,7 +19,7 @@ func testSidecar() Sidecar {
 		Branch:          "feature/foo",
 		BaseSHA:         "abc123",
 		MergeTarget:     "main",
-		OriginalRoot:    "/home/jesse/git/prime-radiant/serf",
+		OriginalRoot:    "/home/jesse/git/prime-radiant/evener",
 		CreatorSession:  "01HXYZ",
 		DelegateID:      "dlg_01HXYZ",
 		WorktreeRemoved: true,

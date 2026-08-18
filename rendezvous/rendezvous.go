@@ -1,5 +1,5 @@
-// Package rendezvous defines the on-disk protocol that lets the serf-hub
-// orchestrator discover live serf serve daemons on the local host.
+// Package rendezvous defines the on-disk protocol that lets the evener-hub
+// orchestrator discover live evener serve daemons on the local host.
 //
 // Each daemon writes a small JSON file at <dir>/<pid>.json on startup and
 // removes it on graceful shutdown. The hub watches the directory.
@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/afero"
 )
 
-// Entry describes one live serf serve daemon.
+// Entry describes one live evener serve daemon.
 type Entry struct {
 	PID        int       `json:"pid"`
 	Address    string    `json:"address"`
@@ -36,7 +36,7 @@ type Entry struct {
 	SpawnedBy  string    `json:"spawned_by,omitempty"`
 }
 
-// DefaultDir returns the canonical rendezvous directory ($HOME/.serf/run).
+// DefaultDir returns the canonical rendezvous directory ($HOME/.evener/run).
 func DefaultDir() string {
 	return defaultDir(os.UserHomeDir)
 }
@@ -46,7 +46,7 @@ func defaultDir(userHomeDir func() (string, error)) string {
 	if err != nil || home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".serf", "run")
+	return filepath.Join(home, ".evener", "run")
 }
 
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.

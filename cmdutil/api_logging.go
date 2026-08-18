@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// AttachAPILogger installs the standard Serf API logger on client. Entries
+// AttachAPILogger installs the standard Evener API logger on client. Entries
 // route per session to <stateDir>/sessions/<session_id>.api.jsonl, sibling to
 // the session transcript. The returned function must be called during shutdown.
 func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, resumedSessionID ...string) (func() error, error) {
@@ -29,7 +29,7 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 	return closeLog, nil
 }
 
-// AttachSessionAPILogger installs the standard Serf API logger and returns the
+// AttachSessionAPILogger installs the standard Evener API logger and returns the
 // ownership boundary that fresh-session creation must call as soon as it mints
 // an ID. Reserving before session persistence prevents a concurrent resume
 // from acquiring the same session while its original process is still idle.

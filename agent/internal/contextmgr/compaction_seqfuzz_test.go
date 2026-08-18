@@ -77,7 +77,7 @@ import (
 // cannot be asserted at the unit level without mocking the very logic under
 // test. The deterministic checkpoint layer IS the state-preserving surface and
 // is exercised through its real ForceCompact entry point.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestCompactionSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestCompactionSeqFuzz -count=1 -v")

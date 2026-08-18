@@ -31,10 +31,10 @@ var reconnectKeywordRE = regexp.MustCompile(`"([^"]*)"`)
 //
 // They had drifted, in both directions, and the TS-only half was doing visible
 // damage: "local daemon unavailable" (cmd/evener-hub/internal/appsource's dial
-// failure, seven sites) matched no Go keyword, so Go titled it "Serf error" and
-// hinted "Check the Serf session log and daemon state" — while the web client
+// failure, seven sites) matched no Go keyword, so Go titled it "Evener error" and
+// hinted "Check the Evener session log and daemon state" — while the web client
 // matched it, chipped it "connection" and offered "Reconnect & retry". One card
-// carried both, and the hint was the wrong advice: the Serf daemon may never
+// carried both, and the hint was the wrong advice: the Evener daemon may never
 // have started, which is why the dial failed.
 func TestHubFailureKeywordsMatchWebClient(t *testing.T) {
 	web := readReconnectKeywords(t)

@@ -301,7 +301,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	}
 }
 
-// TestSession_EmitsReasoningSummaryDelta verifies the serf harness no longer
+// TestSession_EmitsReasoningSummaryDelta verifies the evener harness no longer
 // discards the model's reasoning: a REASONING_DELTA stream event is surfaced as
 // an EventReasoningSummaryDelta so the web UI can render thinking live.
 func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
@@ -2133,7 +2133,7 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 }
 
 // kata 4zn8: a rate limit rejected at stream open produces no partial output,
-// so the only retry-triggered event serf had (EventAssistantTextReset, gated on
+// so the only retry-triggered event evener had (EventAssistantTextReset, gated on
 // partial) never fires. The session went silent for the whole retry chain and a
 // 429 storm was indistinguishable from a hang. Each retry must announce itself
 // on the event bus with the attempt number, the wait, and why.

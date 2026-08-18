@@ -51,7 +51,7 @@ import (
 // Under -tags serffuzz the reducer's own invariant.Hold assertions are live too,
 // so a generated sequence that tripped the in-reducer monotonicity guard would
 // surface as a panic.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestJobstoreSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/jobstore -run TestJobstoreSeqFuzz -count=1 -v")

@@ -17,7 +17,7 @@ import (
 const refreshSkew = 5 * time.Minute
 
 // defaultConcurrentLoginWatchInterval is how often LoginWithDevice polls the
-// on-disk auth file to detect that a parallel `serf openai login` succeeded.
+// on-disk auth file to detect that a parallel `evener openai login` succeeded.
 // One second is well below the 5-second device-code poll interval and still
 // imperceptible to a user waiting on the device flow.
 const defaultConcurrentLoginWatchInterval = time.Second
@@ -39,7 +39,7 @@ const (
 // ErrLoginRequired is returned (wrapped) by ResolveRuntimeCredentials when no
 // usable credential is available: there is no stored auth and no
 // OPENAI_API_KEY, or the stored auth cannot be refreshed. The wrapped message
-// directs the user to run `serf openai login`.
+// directs the user to run `evener openai login`.
 var ErrLoginRequired = errors.New("openai login required")
 
 // AuthStatus is a read-only snapshot of an instance's authentication state, as
@@ -150,7 +150,7 @@ func NewService(cfg Config, client *http.Client) *Service {
 }
 
 // WithConcurrentLoginNotifier registers a callback that LoginWithDevice
-// invokes once if it exits early because a parallel `serf openai login`
+// invokes once if it exits early because a parallel `evener openai login`
 // wrote fresh OAuth state to disk. Callers typically use this to print a
 // "Detected concurrent login; using existing OAuth state." line so the user
 // understands why the CLI exited without authorizing the device code.
@@ -365,7 +365,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instanceName st
 
 // watchForConcurrentLogin polls the auth state file every
 // concurrentLoginWatchInterval and invokes onDetected exactly when a parallel
-// `serf openai login` has written a fresh OAuth record — that is, the record
+// `evener openai login` has written a fresh OAuth record — that is, the record
 // is parseable, was sourced from OAuth (not the env fallback), and was
 // obtained at or after the device-code flow began. Pre-existing records are
 // intentionally ignored: the user explicitly invoked the command and likely
@@ -411,7 +411,7 @@ func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir, instanc
 // AuthSourceSignedOut.
 func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
-	// signs in via `serf openai login`, that intent should win over an env
+	// signs in via `evener openai login`, that intent should win over an env
 	// fallback that may have been set globally.
 	record, err := LoadAuth(stateDir, instanceName)
 	switch {
@@ -571,7 +571,7 @@ func needsRefresh(now, expiry time.Time) bool {
 }
 
 func loginRequiredError(err error) error {
-	return fmt.Errorf("%w: run `serf openai login`: %w", ErrLoginRequired, err)
+	return fmt.Errorf("%w: run `evener openai login`: %w", ErrLoginRequired, err)
 }
 
 func isPermanentRefreshError(err error) bool {

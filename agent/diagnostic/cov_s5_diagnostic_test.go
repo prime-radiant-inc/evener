@@ -12,7 +12,7 @@ func TestCov_Classify(t *testing.T) {
 		msg  string
 		want Source
 	}{
-		{"unknown provider: foo", SourceSerf},   // serf configuration
+		{"unknown provider: foo", SourceSerf},   // evener configuration
 		{"rendezvous timed out", SourceHub},     // hub failure
 		{"rate limit exceeded", SourceProvider}, // provider failure
 		{"something unexpected blew up", SourceSerf},
@@ -26,10 +26,10 @@ func TestCov_Classify(t *testing.T) {
 
 func TestCov_FromError(t *testing.T) {
 	if got := FromError(nil).Source; got != SourceSerf {
-		t.Errorf("nil error → %q, want serf", got)
+		t.Errorf("nil error → %q, want evener", got)
 	}
 	cfg := &llm.ConfigurationError{Message: "unknown provider: x"}
-	if got := FromError(cfg).Title; got != "Serf configuration error" {
+	if got := FromError(cfg).Title; got != "Evener configuration error" {
 		t.Errorf("ConfigurationError → %q", got)
 	}
 	provErr := llm.ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
@@ -42,7 +42,7 @@ func TestCov_FromError(t *testing.T) {
 }
 
 func TestCov_NormalizeSource(t *testing.T) {
-	for _, s := range []string{"provider", "serf", "hub", "ui", "hook"} {
+	for _, s := range []string{"provider", "evener", "hub", "ui", "hook"} {
 		if normalizeSource(s) == "" {
 			t.Errorf("normalizeSource(%q) should be recognized", s)
 		}
@@ -68,12 +68,12 @@ func TestCov_DefaultForSource(t *testing.T) {
 	if defaultForSource(SourceHook, "").Title != "Hook message" {
 		t.Error("hook default")
 	}
-	// Serf with a configuration message → configuration; otherwise plain failure.
-	if defaultForSource(SourceSerf, "unknown provider: x").Title != "Serf configuration error" {
-		t.Error("serf config default")
+	// Evener with a configuration message → configuration; otherwise plain failure.
+	if defaultForSource(SourceSerf, "unknown provider: x").Title != "Evener configuration error" {
+		t.Error("evener config default")
 	}
-	if defaultForSource(SourceSerf, "boom").Title != "Serf error" {
-		t.Error("serf plain default")
+	if defaultForSource(SourceSerf, "boom").Title != "Evener error" {
+		t.Error("evener plain default")
 	}
 	if defaultForSource(Source("weird"), "rate limit").Source != SourceProvider {
 		t.Error("unknown source should fall back to Classify")
@@ -82,7 +82,7 @@ func TestCov_DefaultForSource(t *testing.T) {
 
 func TestCov_FromFields(t *testing.T) {
 	// Source override wins over message classification.
-	info := FromFields("provider", "", "", "some serf-looking message")
+	info := FromFields("provider", "", "", "some evener-looking message")
 	if info.Source != SourceProvider {
 		t.Errorf("source override → %q, want provider", info.Source)
 	}

@@ -40,7 +40,7 @@ func TestHubRPCThreadForkAsideCreatesSideThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadFork(aside): %v", err)
 	}
-	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Serf.Ref != "local:"+resp.Thread.ID {
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Evener.Ref != "local:"+resp.Thread.ID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 
@@ -96,7 +96,7 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 }
 
 // TestHubRPCThreadForkAsideUnavailableForNonLocal pins that aside is a
-// local-serf-session feature: remote sources are never invoked with it.
+// local-evener-session feature: remote sources are never invoked with it.
 func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 	source := &forkingRelaySource{
 		relayBroadcastSource: relayBroadcastSource{
@@ -105,7 +105,7 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 				ID:        "th_aside",
 				SessionID: "th_aside",
 				Source:    "codex",
-				Serf:      appwire.SerfThread{Ref: "codex:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+				Evener:      appwire.EvenerThread{Ref: "codex:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
 			},
 			notifications: make(chan appwire.Notification, 1),
 			canceled:      make(chan struct{}, 1),

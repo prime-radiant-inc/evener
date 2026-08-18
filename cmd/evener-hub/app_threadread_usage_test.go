@@ -85,7 +85,7 @@ func readSeededThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEnt
 }
 
 // THE KATA. A fork child's meta carries no CumulativeUsage (writeForkChild does
-// not stamp it), so serf.usage and serf.cost arrived empty and the client could
+// not stamp it), so evener.usage and evener.cost arrived empty and the client could
 // only sum the turns it happened to hold. The read path now sums the session's
 // own span of the full transcript.
 func TestPastThreadRead_DerivesSessionUsageFromFullTranscriptWhenMetaHasNone(t *testing.T) {
@@ -97,15 +97,15 @@ func TestPastThreadRead_DerivesSessionUsageFromFullTranscriptWhenMetaHasNone(t *
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage == nil {
-		t.Fatalf("thread.Serf.Usage = nil; want the full-transcript sum, not an empty total")
+	if thread.Evener.Usage == nil {
+		t.Fatalf("thread.Evener.Usage = nil; want the full-transcript sum, not an empty total")
 	}
-	want := appwire.SerfUsage{InputTokens: 6000, OutputTokens: 600, TotalTokens: 6600}
-	if got := *thread.Serf.Usage; got != want {
-		t.Fatalf("thread.Serf.Usage = %+v, want %+v", got, want)
+	want := appwire.EvenerUsage{InputTokens: 6000, OutputTokens: 600, TotalTokens: 6600}
+	if got := *thread.Evener.Usage; got != want {
+		t.Fatalf("thread.Evener.Usage = %+v, want %+v", got, want)
 	}
-	if !strings.HasPrefix(thread.Serf.Cost, "~$") {
-		t.Fatalf("thread.Serf.Cost = %q, want a ~$ estimate derived from the recovered total", thread.Serf.Cost)
+	if !strings.HasPrefix(thread.Evener.Cost, "~$") {
+		t.Fatalf("thread.Evener.Cost = %q, want a ~$ estimate derived from the recovered total", thread.Evener.Cost)
 	}
 }
 
@@ -122,12 +122,12 @@ func TestPastThreadRead_ForkUsageExcludesTheInheritedParentPrefix(t *testing.T) 
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage == nil {
-		t.Fatalf("thread.Serf.Usage = nil, want the child's own post-divergence total")
+	if thread.Evener.Usage == nil {
+		t.Fatalf("thread.Evener.Usage = nil, want the child's own post-divergence total")
 	}
-	want := appwire.SerfUsage{InputTokens: 9000, OutputTokens: 900, TotalTokens: 9900}
-	if got := *thread.Serf.Usage; got != want {
-		t.Fatalf("thread.Serf.Usage = %+v, want %+v (the parent's 3000/300 prefix must not be counted)", got, want)
+	want := appwire.EvenerUsage{InputTokens: 9000, OutputTokens: 900, TotalTokens: 9900}
+	if got := *thread.Evener.Usage; got != want {
+		t.Fatalf("thread.Evener.Usage = %+v, want %+v (the parent's 3000/300 prefix must not be counted)", got, want)
 	}
 }
 
@@ -148,8 +148,8 @@ func TestPastThreadRead_PersistedCumulativeUsageWinsOverTheDerivedSum(t *testing
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage == nil || thread.Serf.Usage.InputTokens != 7777 {
-		t.Fatalf("thread.Serf.Usage = %+v, want the persisted 7777 total, not the derived 1000", thread.Serf.Usage)
+	if thread.Evener.Usage == nil || thread.Evener.Usage.InputTokens != 7777 {
+		t.Fatalf("thread.Evener.Usage = %+v, want the persisted 7777 total, not the derived 1000", thread.Evener.Usage)
 	}
 }
 
@@ -164,11 +164,11 @@ func TestPastThreadRead_UnopenedForkReportsAbsentUsageNotZero(t *testing.T) {
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage != nil {
-		t.Fatalf("thread.Serf.Usage = %+v, want nil (an unopened fork has spent nothing)", thread.Serf.Usage)
+	if thread.Evener.Usage != nil {
+		t.Fatalf("thread.Evener.Usage = %+v, want nil (an unopened fork has spent nothing)", thread.Evener.Usage)
 	}
-	if thread.Serf.Cost != "" {
-		t.Fatalf("thread.Serf.Cost = %q, want \"\" (no total means no cost, never ~$0.00)", thread.Serf.Cost)
+	if thread.Evener.Cost != "" {
+		t.Fatalf("thread.Evener.Cost = %q, want \"\" (no total means no cost, never ~$0.00)", thread.Evener.Cost)
 	}
 }
 
@@ -188,8 +188,8 @@ func TestPastThreadRead_LegacyTranscriptLeavesUsageAbsentWithoutFailing(t *testi
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage != nil || thread.Serf.Cost != "" {
-		t.Fatalf("legacy-transcript thread usage=%+v cost=%q, want both absent", thread.Serf.Usage, thread.Serf.Cost)
+	if thread.Evener.Usage != nil || thread.Evener.Cost != "" {
+		t.Fatalf("legacy-transcript thread usage=%+v cost=%q, want both absent", thread.Evener.Usage, thread.Evener.Cost)
 	}
 	if thread.ID != entry.Meta.ID {
 		t.Fatalf("thread.ID = %q, want the rest of the projection intact", thread.ID)
@@ -208,8 +208,8 @@ func TestPastThreadRead_MissingTranscriptLeavesUsageAbsentWithoutFailing(t *test
 
 	thread := readSeededThread(t, cfg, entry)
 
-	if thread.Serf.Usage != nil || thread.Serf.Cost != "" {
-		t.Fatalf("no-transcript thread usage=%+v cost=%q, want both absent", thread.Serf.Usage, thread.Serf.Cost)
+	if thread.Evener.Usage != nil || thread.Evener.Cost != "" {
+		t.Fatalf("no-transcript thread usage=%+v cost=%q, want both absent", thread.Evener.Usage, thread.Evener.Cost)
 	}
 }
 
@@ -233,11 +233,11 @@ func TestPastThreadRead_DerivedUsageIsIndependentOfTheTurnWindow(t *testing.T) {
 	if windowed.OlderCursor == "" {
 		t.Fatalf("expected a truncated window (OlderCursor set) over 60 turns; got %d turns uncut", len(windowed.Thread.Turns))
 	}
-	if windowed.Thread.Serf.Usage == nil {
-		t.Fatalf("windowed read thread.Serf.Usage = nil, want the full-transcript total")
+	if windowed.Thread.Evener.Usage == nil {
+		t.Fatalf("windowed read thread.Evener.Usage = nil, want the full-transcript total")
 	}
-	want := appwire.SerfUsage{InputTokens: 6000, OutputTokens: 600, TotalTokens: 6600}
-	if got := *windowed.Thread.Serf.Usage; got != want {
+	want := appwire.EvenerUsage{InputTokens: 6000, OutputTokens: 600, TotalTokens: 6600}
+	if got := *windowed.Thread.Evener.Usage; got != want {
 		t.Fatalf("windowed read usage = %+v, want the full %+v (a window must not shrink the session total)", got, want)
 	}
 }
@@ -253,7 +253,7 @@ func TestPastEntryThread_DoesNotDeriveUsageOnTheListSweepPath(t *testing.T) {
 
 	thread := requirePastEntryThread(t, cfg, entry, false)
 
-	if thread.Serf.Usage != nil {
-		t.Fatalf("pastEntryThread usage = %+v, want nil; the sweep projector must not scan transcripts", thread.Serf.Usage)
+	if thread.Evener.Usage != nil {
+		t.Fatalf("pastEntryThread usage = %+v, want nil; the sweep projector must not scan transcripts", thread.Evener.Usage)
 	}
 }

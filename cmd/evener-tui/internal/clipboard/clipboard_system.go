@@ -163,7 +163,7 @@ func readImageBytesMacOS() ([]byte, string, error) {
 	if _, err := clipboardLookPath("osascript"); err != nil {
 		return nil, "", ErrClipboardUnavailable
 	}
-	tmp, err := clipboardCreateTemp("", "serf-clip-mac-*.png")
+	tmp, err := clipboardCreateTemp("", "evener-clip-mac-*.png")
 	if err != nil {
 		return nil, "", fmt.Errorf("temp file: %w", err)
 	}

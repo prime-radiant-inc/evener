@@ -18,7 +18,7 @@ import (
 // session_tools_worktree_create_test.go.
 //
 // This file is MIXED across the two lane harnesses; see docs/testing.md for the
-// rule. A test whose subject is serf's own decision-making — which refusal rung
+// rule. A test whose subject is evener's own decision-making — which refusal rung
 // fires, its error text, the env-swap and restore-state bookkeeping, argument
 // validation — runs on the scripted git boundary (scriptedLaneRepo, driven
 // through wtRepo's shared operation helpers). These stay on real git because
@@ -506,7 +506,7 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 	if got := r.s.currentEnv().WorkingDirectory(); got != siblingPath {
 		t.Errorf("currentEnv WorkingDirectory = %q, want %q", got, siblingPath)
 	}
-	// No lock mutation: serf never locks worktrees it doesn't manage.
+	// No lock mutation: evener never locks worktrees it doesn't manage.
 	e := r.porcelainEntry(t, siblingPath)
 	if e.Locked {
 		t.Errorf("sibling worktree got locked; by-path switch to a non-managed worktree must not mutate locks")
@@ -518,7 +518,7 @@ func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	// A manually created worktree OUTSIDE the managed directory, never locked
-	// by serf (spec §4 switch by-path step 3: "no lock choreography — serf
+	// by evener (spec §4 switch by-path step 3: "no lock choreography — evener
 	// does not mutate lock state on worktrees it does not manage"). There is
 	// no lock decision to adjudicate on this site at all, so a redundant
 	// switch back to it is a plain path-compare no-op, not a run through the

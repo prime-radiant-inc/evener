@@ -114,8 +114,8 @@ func localPastThreadID(params appwire.ThreadReadParams) (string, bool) {
 }
 
 func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
-	if live.Serf.Ref != "" {
-		ref, err := appwire.ParseRef(live.Serf.Ref)
+	if live.Evener.Ref != "" {
+		ref, err := appwire.ParseRef(live.Evener.Ref)
 		return err == nil && ref.SourceID == "local"
 	}
 	if live.Source != "" {
@@ -130,8 +130,8 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	}
 	if params.ThreadID == "" && params.Ref == "" {
 		switch {
-		case live.Serf.Ref != "":
-			params.Ref = live.Serf.Ref
+		case live.Evener.Ref != "":
+			params.Ref = live.Evener.Ref
 		case live.ID != "":
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.ID}.String()
 		case live.SessionID != "":
@@ -175,14 +175,14 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if live.Source == "" {
 		live.Source = past.Source
 	}
-	if live.Serf.Ref == "" {
-		live.Serf.Ref = past.Serf.Ref
+	if live.Evener.Ref == "" {
+		live.Evener.Ref = past.Evener.Ref
 	}
-	if live.Serf.Profile == "" {
-		live.Serf.Profile = past.Serf.Profile
+	if live.Evener.Profile == "" {
+		live.Evener.Profile = past.Evener.Profile
 	}
-	if live.Serf.Tasks == nil {
-		live.Serf.Tasks = past.Serf.Tasks
+	if live.Evener.Tasks == nil {
+		live.Evener.Tasks = past.Evener.Tasks
 	}
 	if params.IncludeTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
@@ -267,7 +267,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	// runs once per entry on the list and transcript-target sweeps. The
 	// single-thread read paths recover the figure from the transcript instead —
 	// see stampDerivedSessionUsage.
-	cumulativeUsage := serfUsageFromCumulative(entry.Meta.CumulativeUsage)
+	cumulativeUsage := evenerUsageFromCumulative(entry.Meta.CumulativeUsage)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -280,7 +280,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
 		Source:        "local",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:          ref,
 			ParentRef:    parentRef,
 			Kind:         kind,
@@ -299,13 +299,13 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		return appwire.Thread{}, err
 	}
 	if len(delegates) != 0 {
-		if thread.Serf.Diagnostics == nil {
-			thread.Serf.Diagnostics = &appwire.SerfDiagnostics{}
+		if thread.Evener.Diagnostics == nil {
+			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 		}
 		for _, delegate := range delegates {
 			projected := appwireDelegateFromAgentStatus(delegate)
 			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
-			thread.Serf.Diagnostics.Delegates = append(thread.Serf.Diagnostics.Delegates, projected)
+			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 		}
 	}
 	if includeTurns {
@@ -342,8 +342,8 @@ func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInf
 	return agent.LoadSessionDelegateStatus(entry.StateDir, sessionID)
 }
 
-func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.SerfDelegateInfo {
-	out := appwire.SerfDelegateInfo{
+func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {
+	out := appwire.EvenerDelegateInfo{
 		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,
@@ -391,7 +391,7 @@ func cloneHubInt64(value *int64) *int64 {
 
 // persistedTaskAggregate returns a task count only when the session has a
 // persisted task file. TaskStore.Load treats a missing file as an empty store,
-// which is correct for serf/tasks/list but would turn an unsupported or old
+// which is correct for evener/tasks/list but would turn an unsupported or old
 // session into a false authoritative zero in a thread snapshot. Check presence
 // first, then reuse TaskStore.Load and View for the actual data semantics.
 func persistedTaskAggregate(stateDir, sessionID string) *appwire.TaskAggregate {
@@ -433,7 +433,7 @@ var pastTranscriptCache = apptranscript.NewTurnCache()
 //
 // The gap is the common case, not an edge: agent/fork.go's writeForkChild builds
 // the child SessionMeta field by field and stamps no CumulativeUsage at all, so
-// every fork child arrives with the field unset, and serf.usage and serf.cost
+// every fork child arrives with the field unset, and evener.usage and evener.cost
 // both empty. The client can then only sum the turns it happens to hold, which
 // it must honestly label "tokens (loaded turns)". The transcript records
 // per-turn usage regardless, so summing it recovers the full-session figure —
@@ -457,22 +457,22 @@ var pastTranscriptCache = apptranscript.NewTurnCache()
 // absent total as nothing rather than "↑0 ↓0", and a missing token figure is no
 // reason to fail the whole thread projection.
 func stampDerivedSessionUsage(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	if thread.Serf.Usage != nil {
+	if thread.Evener.Usage != nil {
 		return thread
 	}
 	total := derivedSessionUsage(entry)
 	if total == nil {
 		return thread
 	}
-	thread.Serf.Usage = total
-	thread.Serf.Cost = appwire.EstimateCost(entry.Meta.Model, total)
+	thread.Evener.Usage = total
+	thread.Evener.Cost = appwire.EstimateCost(entry.Meta.Model, total)
 	return thread
 }
 
 // derivedSessionUsage is stampDerivedSessionUsage's sum, for the legacy web
 // surface that assembles its own WorkspaceData rather than an appwire.Thread.
 // Returns nil for an absent total, on the same terms.
-func derivedSessionUsage(entry hubcore.PastEntry) *appwire.SerfUsage {
+func derivedSessionUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
 	total, err := pastTranscriptCache.UsageTotalFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return nil
@@ -510,7 +510,7 @@ func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) ap
 	if err != nil {
 		return thread
 	}
-	thread.Serf.FailedToolCalls = &count
+	thread.Evener.FailedToolCalls = &count
 	return thread
 }
 

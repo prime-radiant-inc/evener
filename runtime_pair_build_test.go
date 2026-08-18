@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"bytes"
@@ -22,8 +22,8 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 		t.Fatalf("build runtime pair: %v\n%s", err, output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
-	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
 	logData, err := os.ReadFile(fixture.logPath)
 	if err != nil {
 		t.Fatalf("read fake go log: %v", err)
@@ -110,15 +110,15 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 
 func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 	fixture := newRuntimeBuildFixture(t)
-	writeTestFile(t, filepath.Join(fixture.root, "serf"), []byte("old-serf\n"), 0o755)
-	writeTestFile(t, filepath.Join(fixture.root, "serf-hub"), []byte("old-serf-hub\n"), 0o755)
+	writeTestFile(t, filepath.Join(fixture.root, "evener"), []byte("old-evener\n"), 0o755)
+	writeTestFile(t, filepath.Join(fixture.root, "evener-hub"), []byte("old-evener-hub\n"), 0o755)
 
 	if output, err := runRuntimePairBuild(fixture, "./cmd/evener-hub/"); err == nil {
 		t.Fatalf("build runtime pair succeeded, want hub compiler failure; output = %q", output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "old-serf\n")
-	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "old-serf-hub\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "old-evener\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "old-evener-hub\n")
 }
 
 func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
@@ -133,8 +133,8 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 				t.Fatalf("make %s: %v\n%s", target, err, output)
 			}
 
-			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
-			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "evener-hub"), "./cmd/evener-hub/\n")
 
 			// build must build the web too: build-runtime depends on
 			// build-web (Makefile), so both aliases order the same way.
@@ -156,7 +156,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 		// flake, not a fixture quirk (Jesse: root-cause flakes, never rely
 		// on timing). Backdating removes the race: node_modules is
 		// unambiguously newer the instant it's created.
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 		writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 		backdated := time.Now().Add(-1 * time.Hour)
@@ -218,7 +218,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	// green under the old unguarded recipe.
 	t.Run("build-web/refuses-npm-ci-through-a-symlink", func(t *testing.T) {
 		fixture := newBuildWebFixture(t)
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 
 		// A shared install standing in for another worktree's node_modules,
@@ -259,7 +259,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	// toolchain that isn't there.
 	t.Run("build-web/refuses-an-install-with-no-real-tsc", func(t *testing.T) {
 		fixture := newBuildWebFixture(t)
-		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 		if err := os.MkdirAll(filepath.Join(frontendDir, "node_modules"), 0o755); err != nil {
 			t.Fatalf("mkdir empty node_modules: %v", err)
@@ -304,7 +304,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 
 func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
@@ -390,7 +390,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	const hangWatchdog = 30 * time.Second
 
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	heldCommand := "scripts/layoutguard/run.mjs"
@@ -570,7 +570,7 @@ func TestHeldBrowserFixtureLifecycleWithoutNode(t *testing.T) {
 
 func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
@@ -599,7 +599,7 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	failedCommand := "scripts/overflowguard/run.mjs"
@@ -633,7 +633,7 @@ func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 
 func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 
@@ -661,7 +661,7 @@ func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 
 func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	readyPath := filepath.Join(fixture.root, "held-npm.ready")
@@ -719,7 +719,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 
 func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	heldReady := filepath.Join(fixture.root, "held-npm.ready")
@@ -746,7 +746,7 @@ if [ "${1:-}" = "-c" ]; then
       command kill "$@"
     }
     eval "$1"
-  ' serf-recording-shell "$2"
+  ' evener-recording-shell "$2"
 fi
 exec /bin/sh "$@"
 `), 0o755)
@@ -799,14 +799,14 @@ func TestMakeBuildMetadataPreservesIndexAndTracksDirtyWorktree(t *testing.T) {
 	if err := os.Remove(filepath.Join(fixture.fakeBin, "git")); err != nil {
 		t.Fatalf("remove fake git: %v", err)
 	}
-	frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
 	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
 	marker := filepath.Join(fixture.root, "tracked-marker.txt")
 	writeTestFile(t, marker, []byte("clean\n"), 0o644)
 	runGit(t, fixture.root, "init", "-q")
 	runGit(t, fixture.root, "add", ".")
-	runGit(t, fixture.root, "-c", "user.name=Serf Test", "-c", "user.email=serf-test@example.invalid", "commit", "-qm", "fixture")
+	runGit(t, fixture.root, "-c", "user.name=Evener Test", "-c", "user.email=evener-test@example.invalid", "commit", "-qm", "fixture")
 
 	indexPath := filepath.Join(fixture.root, ".git", "index")
 	indexBefore, err := os.ReadFile(indexPath)
@@ -919,7 +919,7 @@ printf '%s\n' "$package" > "$output"
 // checkout's actual git state.
 func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "serf-hub", "frontend"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "evener-hub", "frontend"), 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
 	}
 	// The fake npm ci lays down the one thing web-preflight inspects to prove
@@ -1274,7 +1274,7 @@ func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCoun
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:23-29: build-web must run before build-runtime so the serf-hub
+// Makefile:23-29: build-web must run before build-runtime so the evener-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -1294,7 +1294,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("fake go/npm log has no serf-hub go build; log = %q", logData)
+		t.Fatalf("fake go/npm log has no evener-hub go build; log = %q", logData)
 	}
 
 	sawNpm := false
@@ -1304,7 +1304,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the evener-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
@@ -1314,7 +1314,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 // assertNpmBuildPrecedesHubGoBuild pins the dist/install prerequisite graph:
 // both now depend on build-web, so a `make -n` dry run must print the vite
-// build before the serf-hub go build. make -n also forces the Makefile's
+// build before the evener-hub go build. make -n also forces the Makefile's
 // parse-time `$(shell go env GOOS)`/GOARCH assignments (SERF_DIST_NAME's
 // immediate `:=`) against the fake go shim, which doesn't understand the
 // `env` subcommand; the resulting noise log lines and stderr complaints are
@@ -1340,7 +1340,7 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		t.Fatalf("make -n %s has no ./cmd/evener-hub/ go build line; output = %s", target, output)
 	}
 	if npmBuildLine > hubBuildLine {
-		t.Fatalf("make -n %s: npm run build (line %d) printed after the serf-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
+		t.Fatalf("make -n %s: npm run build (line %d) printed after the evener-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
 	}
 }
 

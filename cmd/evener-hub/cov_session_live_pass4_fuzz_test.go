@@ -75,9 +75,9 @@ func FuzzSessionLivePass4(f *testing.F) {
 			CWD: "/work/project", ModelProvider: "provider/model", CreatedAt: stamp - 10,
 			UpdatedAt: stamp, Status: appwire.ThreadStatus{Type: "active"},
 			Turns: []appwire.Turn{{ID: "turn-1", Status: appwire.TurnStatusCompleted}},
-			Serf: appwire.SerfThread{Ref: "remote:thread-1", ActiveTurnID: "turn-2",
+			Evener: appwire.EvenerThread{Ref: "remote:thread-1", ActiveTurnID: "turn-2",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Clear: true, Shutdown: true, Queue: true},
-				Usage:        &appwire.SerfUsage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}},
+				Usage:        &appwire.EvenerUsage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}},
 		}
 		web := pass4RemoteWeb(thread, nil)
 		ref := "remote:thread-1"
@@ -112,11 +112,11 @@ func FuzzSessionLivePass4(f *testing.F) {
 			_ = web.apiTreeSources()
 		case 7:
 			threads := web.refreshRemoteThreads(context.Background())
-			if len(threads) != 1 || threads[0].Serf.Ref == "" {
+			if len(threads) != 1 || threads[0].Evener.Ref == "" {
 				t.Fatalf("remote threads=%+v", threads)
 			}
 		case 8:
-			thread.Serf.Ref = ""
+			thread.Evener.Ref = ""
 			thread.Status.Type = appwire.ThreadStatusClosed
 			web = pass4RemoteWeb(thread, nil)
 			_ = record(http.MethodGet, "/api/tree", "")

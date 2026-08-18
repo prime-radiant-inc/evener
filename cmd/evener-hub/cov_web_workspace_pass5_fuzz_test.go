@@ -30,8 +30,8 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 			Preview: "preview", CWD: "/tmp/work", ModelProvider: "openai/gpt-4o",
 			Status: appwire.ThreadStatus{Type: "active"},
 			Turns:  []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}, {ID: "active", Status: appwire.TurnStatusInProgress, StartedAt: &started}},
-			Serf: appwire.SerfThread{Ref: "remote:thread", ActiveTurnID: "active", ContextUsed: 12, ContextWindow: 100,
-				ContextRemaining: 88, WorkMillis: 61_000, Usage: &appwire.SerfUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+			Evener: appwire.EvenerThread{Ref: "remote:thread", ActiveTurnID: "active", ContextUsed: 12, ContextWindow: 100,
+				ContextRemaining: 88, WorkMillis: 61_000, Usage: &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Compact: true, Queue: true}},
 		}
 		source := &scriptedAppSource{id: "remote", thread: thread}
@@ -53,7 +53,7 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		switch mode % 12 {
 		case 0:
 			_ = workspaceDataFromAppThread(thread)
-			thread.Name, thread.Preview, thread.SessionID, thread.Serf.Ref, thread.Status.Type = "", "", "", "", ""
+			thread.Name, thread.Preview, thread.SessionID, thread.Evener.Ref, thread.Status.Type = "", "", "", "", ""
 			_ = workspaceDataFromAppThread(thread)
 		case 1:
 			for _, d := range []time.Duration{-time.Second, 0, 30 * time.Second, 2 * time.Minute, 2*time.Hour + 4*time.Minute} {
@@ -63,7 +63,7 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 			thread.Turns[1].StartedAt = nil
 			_ = activeTurnRunningFor(thread)
 			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Serf.ActiveTurnID = ""
+			thread.Evener.ActiveTurnID = ""
 			_ = activeTurnIDFromAppwireThread(thread)
 			thread.Turns = nil
 			_ = activeTurnIDFromAppwireThread(thread)

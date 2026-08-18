@@ -13,7 +13,7 @@ import (
 // the output of `git rev-parse --git-common-dir`.
 //
 // Both are untrusted in the sense that matters here — they come off disk and out
-// of a subprocess, and serf derives a project identity from them, so a wrong
+// of a subprocess, and evener derives a project identity from them, so a wrong
 // answer silently attributes a session to the wrong project. The filesystem
 // validators next to these functions are deliberately NOT driven: they Stat a
 // path the fuzzer controls, and the toolkit's safety bound keeps a fuzzer on the

@@ -108,7 +108,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 		}
 
 		var stderr bytes.Buffer
-		err := runMain([]string{"-addr", cfg.Addr, "-config", filepath.Join(root, "hub.toml"), "-serf", "/bin/serf"}, &stderr, deps)
+		err := runMain([]string{"-addr", cfg.Addr, "-config", filepath.Join(root, "hub.toml"), "-evener", "/bin/evener"}, &stderr, deps)
 		if mode <= 3 || mode == 9 {
 			if !errors.Is(err, stop) {
 				t.Fatalf("mode %d: error = %v, output=%s", mode, err, stderr.String())

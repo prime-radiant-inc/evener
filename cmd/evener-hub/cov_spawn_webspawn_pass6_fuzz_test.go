@@ -16,7 +16,7 @@ import (
 
 func pass6Executable(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "serf")
+	path := filepath.Join(t.TempDir(), "evener")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ mkdir -p "$rd"
 printf '{"pid":%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}' "$$" > "$rd/$$.json"
 sleep 1`)
 
-		h := HubSpawner{SerfBinary: valid, RunDir: root, Cfg: Config{SpawnTimeout: time.Second}}
+		h := HubSpawner{EvenerBinary: valid, RunDir: root, Cfg: Config{SpawnTimeout: time.Second}}
 		_, _ = h.ListLaunchModels(ctx)
 		_, _ = h.ListLaunchModelContract(ctx)
 		_, _ = h.ListLaunchModelContractForWorkingDir(ctx, root)
@@ -85,7 +85,7 @@ sleep 1`)
 		_, _ = h.Resume(ctx, hubcore.ResumeRequest{SessionID: "old", StateDir: blocked, Provider: "unknown", Resolved: inline})
 
 		// Cover start failure, timeout, and both process-exit error forms.
-		missing := filepath.Join(root, "missing-serf")
+		missing := filepath.Join(root, "missing-evener")
 		_, _ = SpawnDaemon(ctx, missing, root, hubcore.SpawnRequest{}, time.Millisecond)
 		_, _ = ResumeDaemon(ctx, missing, root, hubcore.ResumeRequest{}, time.Millisecond)
 		for _, body := range []string{"exit 0", "echo detail >&2; exit 7", "sleep 2"} {

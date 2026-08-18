@@ -480,7 +480,7 @@ func (m hubModel) restoreInstructionMessage() string {
 	if ref == "" {
 		return ""
 	}
-	return fmt.Sprintf("Restore this session: serf-tui --hub-addr %s, then open %s", hubURL, ref)
+	return fmt.Sprintf("Restore this session: evener-tui --hub-addr %s, then open %s", hubURL, ref)
 }
 
 // handleSessionForceSteer routes the Ctrl+S force-steer keybind: drain
@@ -533,9 +533,9 @@ func isQueuedDrainPartial(err error) bool {
 	}
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
-		return data.SerfErrorInfo == appwire.ErrorQueuedDrainPartial
+		return data.EvenerErrorInfo == appwire.ErrorQueuedDrainPartial
 	case map[string]any:
-		return data["serfErrorInfo"] == string(appwire.ErrorQueuedDrainPartial)
+		return data["evenerErrorInfo"] == string(appwire.ErrorQueuedDrainPartial)
 	default:
 		return false
 	}

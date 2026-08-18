@@ -37,7 +37,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
 		ctx := context.Background()
-		remote := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "r", Source: "remote", Serf: appwire.SerfThread{Ref: "remote:r"}}}}
+		remote := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "r", Source: "remote", Evener: appwire.EvenerThread{Ref: "remote:r"}}}}
 		reg := appsource.NewRegistry()
 		reg.Add(remote)
 
@@ -180,7 +180,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		detailPast := hubcore.NewPastIndex("")
 		detailPast.SeedForTest([]schema.SessionMeta{{ID: "r", Name: "past title", TurnCount: 3, CreatedAt: now, UpdatedAt: now}})
 		detailRoster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "r"}, SessionID: "r", Status: "idle"})
-		detailThread := appwire.Thread{ID: "r", Source: "local", Serf: appwire.SerfThread{Ref: "local:r"}}
+		detailThread := appwire.Thread{ID: "r", Source: "local", Evener: appwire.EvenerThread{Ref: "local:r"}}
 		detailWeb := finalSessionWeb(hubcore.WebConfig{Past: detailPast, Roster: detailRoster}, detailThread)
 		hubLiveTreeTitle = func(string, hubcore.LiveEntry, *hubcore.PastIndex) string { return "" }
 		hubIsSessionLive = func(*WebServer, string) bool { return true }

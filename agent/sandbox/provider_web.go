@@ -4,9 +4,9 @@ import "strings"
 
 // providerWebEgressCapable records, per LLM provider, whether the provider runs
 // SERVER-SIDE web egress for the model (its own web-search / fetch tooling that
-// reaches the internet on the model's behalf). This is orthogonal to serf's own
+// reaches the internet on the model's behalf). This is orthogonal to evener's own
 // web_fetch/web_search tools and to LLM inference traffic: net=off governs the
-// tool plane (spawned procs, serf tool egress, provider-native web), never the
+// tool plane (spawned procs, evener tool egress, provider-native web), never the
 // model connection itself.
 //
 // The map is intentionally small and explicit. Everything NOT listed is unknown

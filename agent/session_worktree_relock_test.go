@@ -17,7 +17,7 @@ import (
 // they are not exposed to another session's P3 residue sweep (which collects
 // unlocked delegate lanes).
 //
-// The subject throughout is serf's lock DECISION — re-lock, adopt, skip, leave
+// The subject throughout is evener's lock DECISION — re-lock, adopt, skip, leave
 // foreign alone, warn, retry — not git's behavior, so these run on the scripted
 // git boundary (scriptedLaneRepo). See docs/testing.md for the rule.
 
@@ -94,12 +94,12 @@ func TestResumeReLock_ForeignLockedUntouched(t *testing.T) {
 	r := newScriptedLaneRepo(t)
 	id, path := r.seedIsolationLane(t)
 	r.unlockLane(t, path)
-	r.setLaneLock(t, path, "serf:another-session")
+	r.setLaneLock(t, path, "evener:another-session")
 
 	r.s.resumeReLockOwnLanes()
 
 	_, locked, reason := r.laneLocked(t, path)
-	if !locked || reason != "serf:another-session" {
+	if !locked || reason != "evener:another-session" {
 		t.Errorf("resume disturbed a foreign lock (locked=%t reason=%q)", locked, reason)
 	}
 	for _, w := range drainBufferedWarnings(r.s) {

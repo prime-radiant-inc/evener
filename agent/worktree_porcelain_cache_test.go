@@ -20,7 +20,7 @@ func recordingRunner(calls *[]string, porcelain string) worktree.GitRunner {
 }
 
 const twoLanePorcelain = "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n\n" +
-	"worktree /repo/wt/lane-a\nHEAD bbb\nbranch refs/heads/lane-a\nlocked serf:dlg:s1:d1\n\n" +
+	"worktree /repo/wt/lane-a\nHEAD bbb\nbranch refs/heads/lane-a\nlocked evener:dlg:s1:d1\n\n" +
 	"worktree /repo/wt/lane-b\nHEAD ccc\nbranch refs/heads/lane-b\n\n"
 
 // Repeated reads with no intervening mutation must shell out once. This is the
@@ -50,7 +50,7 @@ func TestPorcelainCacheInvalidatesOnMutation(t *testing.T) {
 		{"worktree", "remove", "--", "/repo/wt/lane-a"},
 		{"worktree", "add", "/repo/wt/lane-c"},
 		{"worktree", "unlock", "/repo/wt/lane-a"},
-		{"worktree", "lock", "--reason", "serf:dlg:s1:d1", "/repo/wt/lane-b"},
+		{"worktree", "lock", "--reason", "evener:dlg:s1:d1", "/repo/wt/lane-b"},
 		{"worktree", "prune"},
 	} {
 		t.Run(strings.Join(mutation, "_"), func(t *testing.T) {

@@ -455,10 +455,10 @@ func assertWorktreeDecisionAndVersionPrograms(t *testing.T, target string) {
 		want   LockState
 	}{
 		{"", Foreign},
-		{"serf:session", OwnSession},
-		{"serf:dlg:delegate:session", OwnDelegate},
-		{"serf:other-session", Foreign},
-		{"serf:dlg:other-delegate:session", Foreign},
+		{"evener:session", OwnSession},
+		{"evener:dlg:delegate:session", OwnDelegate},
+		{"evener:other-session", Foreign},
+		{"evener:dlg:other-delegate:session", Foreign},
 		{"held by another tool", Foreign},
 	} {
 		if got := ClassifyReason(tc.reason, "session", "delegate"); got != tc.want {

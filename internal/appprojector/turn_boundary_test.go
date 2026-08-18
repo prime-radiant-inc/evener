@@ -187,7 +187,7 @@ func TestTurnBoundaryCompletesThePreviousTurn(t *testing.T) {
 // between it and the turn before. Its content must carry its own turn id.
 //
 // Asserted on the assistant item, not the steering notification —
-// serf/steering/injected's params carry no turn id at all.
+// evener/steering/injected's params carry no turn id at all.
 func TestNotificationTurnDoesNotJoinThePreviousTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 

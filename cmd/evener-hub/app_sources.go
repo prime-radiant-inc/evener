@@ -77,7 +77,7 @@ func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID s
 		Code:    appwire.CodeUnavailable,
 		Message: "target has been deleted: " + ref,
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorActionUnavailable,
+			EvenerErrorInfo:    appwire.ErrorActionUnavailable,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
 			RetryDisposition: appwire.RetryDispositionNone,

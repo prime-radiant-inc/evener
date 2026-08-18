@@ -1,7 +1,7 @@
 // Package binresolve locates sibling executables that ship alongside a
 // running Go program.
 //
-// Many of the evener binaries (serf, serf-hub, serf-tui) ship together in
+// Many of the evener binaries (evener, evener-hub, evener-tui) ship together in
 // the same directory and call out to each other. Without help from
 // $PATH, exec.Command("evener", ...) inside evener-hub will fail when the
 // operator runs the hub from a directory where it lives next to evener

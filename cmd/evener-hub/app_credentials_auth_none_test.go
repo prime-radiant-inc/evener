@@ -5,7 +5,7 @@ package main
 // is the predicate kata nrv4 named for the "none" case — the one the launch
 // preflight (validateProviderCredentials), credentials.Store.List and
 // hubAuthController.instanceStatus all ask. credentialRequired, the other half of
-// serf/auth/test's gate, answered the same question from the literal provider name
+// evener/auth/test's gate, answered the same question from the literal provider name
 // "ollama", so the hub and the registry agreed only for as long as ollama stayed the
 // only auth-none row. Kata 5hmq; the same duplicate-fact failure mode as kata f1zs,
 // in a fourth place.
@@ -29,7 +29,7 @@ import (
 
 // TestAuthNoneProvider_EveryCredentialGateFollowsTheRegistry holds the four sites
 // that decide whether an instance has a credential to a single answer for every
-// auth-none provider in the registry. serf/auth/test is the one that used to answer
+// auth-none provider in the registry. evener/auth/test is the one that used to answer
 // from a name: with the other three exempting the instance and it alone demanding a
 // key the provider cannot have, the credentials pane reported a provider the hub
 // launches happily as unconfigured, and never issued the probe it exists to issue.
@@ -83,7 +83,7 @@ func TestAuthNoneProvider_EveryCredentialGateFollowsTheRegistry(t *testing.T) {
 				t.Fatalf("Status(%q) for a %q instance: %v", instanceName, p.Name, err)
 			}
 			if status.ActiveSource != string(credentials.SourceNone) {
-				t.Fatalf("serf/auth/status %q activeSource = %q, want %q", instanceName, status.ActiveSource, credentials.SourceNone)
+				t.Fatalf("evener/auth/status %q activeSource = %q, want %q", instanceName, status.ActiveSource, credentials.SourceNone)
 			}
 
 			// And the gate this kata is about. The launch path starts this
@@ -93,11 +93,11 @@ func TestAuthNoneProvider_EveryCredentialGateFollowsTheRegistry(t *testing.T) {
 				t.Fatalf("TestCredentials(%q): %v", instanceName, err)
 			}
 			if resp.Status != appwire.AuthTestStatusSuccess {
-				t.Errorf("serf/auth/test %q = %q (%q), want %q: the launch preflight, credentials.Store.List and serf/auth/status all report that this %q instance needs no credential, so serf/auth/test must not call it unconfigured",
+				t.Errorf("evener/auth/test %q = %q (%q), want %q: the launch preflight, credentials.Store.List and evener/auth/status all report that this %q instance needs no credential, so evener/auth/test must not call it unconfigured",
 					instanceName, resp.Status, resp.Message, appwire.AuthTestStatusSuccess, p.Name)
 			}
 			if got := client.callCount(); got != 1 {
-				t.Errorf("probe calls = %d, want 1: %q authenticates nothing, so this instance has no credential to be missing and serf/auth/test must actually probe it", got, p.Name)
+				t.Errorf("probe calls = %d, want 1: %q authenticates nothing, so this instance has no credential to be missing and evener/auth/test must actually probe it", got, p.Name)
 			}
 		})
 
@@ -118,7 +118,7 @@ func TestAuthNoneProvider_EveryCredentialGateFollowsTheRegistry(t *testing.T) {
 				t.Fatalf("TestCredentials(%q): %v", p.Name, err)
 			}
 			if resp.Status != appwire.AuthTestStatusMissing {
-				t.Errorf("serf/auth/test %q = %q (%q), want %q: this instance is type %q, which authenticates with a key, and it has none",
+				t.Errorf("evener/auth/test %q = %q (%q), want %q: this instance is type %q, which authenticates with a key, and it has none",
 					p.Name, resp.Status, resp.Message, appwire.AuthTestStatusMissing, inst.Type)
 			}
 			if got := client.callCount(); got != 0 {

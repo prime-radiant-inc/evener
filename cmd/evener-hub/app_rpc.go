@@ -102,7 +102,7 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 		Code:    appwire.CodeInternalError,
 		Message: err.Error(),
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			EvenerErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
 			RetryDisposition: appwire.RetryDispositionBlocked,
@@ -124,7 +124,7 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName: "serf-hub",
+		ServerName: "evener-hub",
 		Version:    Version,
 		SourceID:   "local",
 		Logf: func(format string, args ...any) {
@@ -148,9 +148,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	hubStateRoot := cfg.HubStateRoot
 	if hubStateRoot == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			hubStateRoot = filepath.Join(home, ".serf")
+			hubStateRoot = filepath.Join(home, ".evener")
 		} else {
-			hubStateRoot = ".serf"
+			hubStateRoot = ".evener"
 		}
 	}
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
@@ -288,35 +288,35 @@ func registerThreadHandlers(
 		}
 		return live, liveErr
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfSubagentPreview, func(ctx context.Context, params appwire.SerfSubagentPreviewParams) (appwire.SerfSubagentPreviewResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSubagentPreview, func(ctx context.Context, params appwire.EvenerSubagentPreviewParams) (appwire.EvenerSubagentPreviewResponse, error) {
 		ref := strings.TrimSpace(params.Ref)
 		if ref == "" {
-			return appwire.SerfSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
+			return appwire.EvenerSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
 		if err != nil {
 			if isTargetDeletedError(err) {
-				return appwire.SerfSubagentPreviewResponse{}, err
+				return appwire.EvenerSubagentPreviewResponse{}, err
 			}
 			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 			if pastErr != nil {
-				return appwire.SerfSubagentPreviewResponse{}, pastErr
+				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
 				return subagentPreviewFromThread(thread, ref, params.Limit), nil
 			}
-			return appwire.SerfSubagentPreviewResponse{}, err
+			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
 			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 			if pastErr != nil {
-				return appwire.SerfSubagentPreviewResponse{}, pastErr
+				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
 				return subagentPreviewFromThread(thread, ref, params.Limit), nil
 			}
-			return appwire.SerfSubagentPreviewResponse{}, err
+			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
@@ -328,7 +328,7 @@ func registerThreadHandlers(
 		if err := relays.startRelayForThread(ctx, resp.Thread); err != nil {
 			appserver.Notify(ctx, appwire.NotifyWarning, appwire.WarningParams{
 				ThreadID: resp.Thread.ID,
-				Ref:      resp.Thread.Serf.Ref,
+				Ref:      resp.Thread.Evener.Ref,
 				Source:   "hub",
 				Title:    "Live updates unavailable",
 				Message:  "thread started, but Hub could not attach live updates: " + err.Error(),
@@ -420,7 +420,7 @@ func registerThreadHandlers(
 			return source.InterruptTurn(ctx, params)
 		})
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
 			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
 			if err != nil {
@@ -507,7 +507,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, setThreadModelWithResume(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 		return setThreadNameWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
@@ -518,7 +518,7 @@ func registerThreadHandlers(
 			}
 			// No capability gate: there is no reasoning-effort thread capability, and
 			// the daemon/source already reject the call when it is unsupported (a
-			// non-serf source, or a daemon without the effort hook).
+			// non-evener source, or a daemon without the effort hook).
 			return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
 		})
 	})
@@ -527,46 +527,46 @@ func registerThreadHandlers(
 	})
 }
 
-// registerAuthHandlers registers the serf/auth/* RPC handlers, routed to the
-// auth controller. Successful mutations broadcast serf/auth/updated.
+// registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
+// auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthTest, func(ctx context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthTest, func(ctx context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
 		return authController.TestCredentials(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
 		return authController.LoginStart(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
 		if err == nil {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
 		if err == nil {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 		return authController.List(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeySet(params)
 		if err == nil {
 			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authDevicePoll(authController, ctx, params)
 		if err == nil && resp.State == "authorized" {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
@@ -575,40 +575,40 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 }
 
-// registerInstanceHandlers registers the serf/instance/* CRUD handlers. When no
+// registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
-// broadcast serf/auth/updated (see notifyInstanceUpdated) so every other
+// broadcast evener/auth/updated (see notifyInstanceUpdated) so every other
 // connected client refetches its now-stale instance list.
 func registerInstanceHandlers(server *appserver.Server, instancesController *hubInstancesController) {
 	if instancesController == nil {
 		return
 	}
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Create(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Edit(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.SetDefault(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
@@ -617,26 +617,26 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 }
 
-// registerLaunchHandlers registers the serf/launch/* RPC handlers, routed to the
-// launch controller. Successful layer/trust mutations broadcast serf/launch/updated.
+// registerLaunchHandlers registers the evener/launch/* RPC handlers, routed to the
+// launch controller. Successful layer/trust mutations broadcast evener/launch/updated.
 func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunchController) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSchema, func(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSchema, func(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
 		return launchController.Schema(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
 		return launchController.GetLayer(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.SetLayer(ctx, params)
 		if err == nil {
 			notifyLaunchUpdated(server, params.CWD, params.Layer)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchTrustRepo(launchController, ctx, params)
 		if err == nil {
 			notifyLaunchUpdated(server, params.CWD, "repo")
@@ -645,76 +645,76 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 	})
 }
 
-// registerPluginHandlers registers the serf/marketplace/* and serf/plugin/*
+// registerPluginHandlers registers the evener/marketplace/* and evener/plugin/*
 // RPC handlers, routed to the plugins controller. Mutations broadcast
-// serf/marketplace/updated or serf/plugin/updated.
+// evener/marketplace/updated or evener/plugin/updated.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 		return pluginsController.ListMarketplaces()
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.AddMarketplace(ctx, params)
 		if err == nil {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRemove, func(_ context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(_ context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.RemoveMarketplace(params)
 		if err == nil {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.RefreshMarketplace(ctx, params)
 		if err == nil {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins()
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Install(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Upgrade(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Remove(params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Enable(params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Disable(params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPluginSetAutoUpgrade, func(_ context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(_ context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.SetAutoUpgrade(params)
 		if err == nil {
 			notifyPluginUpdated(server)
@@ -723,16 +723,16 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 }
 
-// notifyMarketplaceUpdated broadcasts a serf/marketplace/updated notification
+// notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
 // to all connected clients.
 func notifyMarketplaceUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifySerfMarketplaceUpdated, map[string]string{})
+	server.BroadcastAll(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{})
 }
 
-// notifyPluginUpdated broadcasts a serf/plugin/updated notification to all
+// notifyPluginUpdated broadcasts a evener/plugin/updated notification to all
 // connected clients.
 func notifyPluginUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifySerfPluginUpdated, map[string]string{})
+	server.BroadcastAll(appwire.NotifyEvenerPluginUpdated, map[string]string{})
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option
@@ -743,26 +743,26 @@ const recentProjectDirsLimit = 15
 // task list, transcript list, directory completion, path validation, and the
 // harness descriptor list.
 func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfUpgrade, hubUpgrade)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfTasksList, func(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerTasksList, func(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
 		return hubTasksList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 		return hubJobsList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return hubJobsOutput(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
 		return fspaths.CompletePaths(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfProjectsRecent, func(_ context.Context, params appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerProjectsRecent, func(_ context.Context, params appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
 		limit := params.Limit
 		if limit <= 0 {
 			limit = recentProjectDirsLimit
@@ -776,21 +776,21 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return appwire.ProjectsRecentResponse{Data: dirs}, nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
 		return fspaths.ValidateLaunchPath(params), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
 		return hubCommandList(cfg)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
 		return hubSettingsOverview(ctx, cfg)
 	})
 }
 
-// hubCommandList answers serf/command/list by loading every plugin a real
+// hubCommandList answers evener/command/list by loading every plugin a real
 // session would load — internal/plugins.Manager.EnabledPluginDirs (explicit
 // --plugin-dir-equivalent PluginDirs first, then every installed+enabled
 // registry entry) — and flattening their discovered slash commands into a
@@ -800,16 +800,16 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // marketplace/registry system (living at cache/<marketplace>/<plugin>/<sha>,
 // not a direct child of the plugins root) — so a registry-installed plugin's
 // commands never appeared here even though a spawned session loaded them.
-// The hub catalog combines enabled plugin commands with serf-wide commands.
-// Serf-wide discovery receives a nil environment because the hub is
+// The hub catalog combines enabled plugin commands with evener-wide commands.
+// Evener-wide discovery receives a nil environment because the hub is
 // multi-project: project commands are per-session and must never appear here.
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
 	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
 	loaded, _ := plugin.LoadAllFailSoft(dirs)
-	serfwide, _ := plugin.DiscoverSerfWideCommands(nil)
-	merged := plugin.MergeCommands(loaded, serfwide)
+	evenerwide, _ := plugin.DiscoverSerfWideCommands(nil)
+	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor
 	for _, cmd := range merged {
 		commands = append(commands, appwire.CommandDescriptor{
@@ -832,24 +832,24 @@ func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) 
 	return appwire.CommandListResponse{Commands: commands}, nil
 }
 
-// notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.
+// notifyAuthUpdated broadcasts a evener/auth/updated notification to all connected clients.
 func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) {
-	// Still map[string]string, not appwire.SerfAuthUpdatedParams (kcb5):
+	// Still map[string]string, not appwire.EvenerAuthUpdatedParams (kcb5):
 	// provider/activeSource (from AuthStatus) are legitimately empty when no
 	// provider is active, but this map always emits both keys anyway; both
 	// fields are tagged `omitempty` on the struct, so a typed literal would
 	// drop them whenever blank. Not provably byte-identical; left as a map.
-	server.BroadcastAll(appwire.NotifySerfAuthUpdated, map[string]string{
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
 	})
 }
 
-// notifyInstanceUpdated broadcasts a serf/auth/updated notification to all
+// notifyInstanceUpdated broadcasts a evener/auth/updated notification to all
 // connected clients after a provider-instance CRUD mutation (create, edit,
 // remove, setDefault). It deliberately reuses the auth/updated channel rather
 // than minting a new notification type: the client-side handler
-// (notifications.js) already treats serf/auth/updated as payload-agnostic —
+// (notifications.js) already treats evener/auth/updated as payload-agnostic —
 // "credentials or instances changed, refetch" — reloading both the instances
 // panel and the providers settings tab on receipt, regardless of payload
 // content. An empty payload mirrors notifyMarketplaceUpdated/
@@ -857,12 +857,12 @@ func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) 
 // reason: there is no single provider/activeSource pair that honestly
 // summarizes "the instance list changed."
 func notifyInstanceUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifySerfAuthUpdated, appwire.SerfAuthUpdatedParams{})
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
 }
 
-// notifyLaunchUpdated broadcasts a serf/launch/updated notification to all connected clients.
+// notifyLaunchUpdated broadcasts a evener/launch/updated notification to all connected clients.
 func notifyLaunchUpdated(server *appserver.Server, cwd, layer string) {
-	server.BroadcastAll(appwire.NotifySerfLaunchUpdated, appwire.SerfLaunchUpdatedParams{
+	server.BroadcastAll(appwire.NotifyEvenerLaunchUpdated, appwire.EvenerLaunchUpdatedParams{
 		CWD:   cwd,
 		Layer: layer,
 	})

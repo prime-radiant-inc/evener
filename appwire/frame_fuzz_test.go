@@ -103,7 +103,7 @@ var frameErrorCodes = []int{
 	CodeInternalError, CodeConflict, CodeUnavailable, 0, 1, 65535,
 }
 
-// frameErrorInfos are the serfErrorInfo discriminants a generated error data
+// frameErrorInfos are the evenerErrorInfo discriminants a generated error data
 // blob draws from.
 var frameErrorInfos = []ErrorInfo{
 	ErrorInvalidParams, ErrorMethodNotFound, ErrorProviderUnavailable,
@@ -125,7 +125,7 @@ func generateError(s schemagen.Source, mode schemagen.Mode) any {
 			e["data"] = schemagen.Value(s, nil, mode)
 		} else {
 			info := frameErrorInfos[s.Intn(len(frameErrorInfos), "err_info")]
-			e["data"] = map[string]any{"serfErrorInfo": string(info)}
+			e["data"] = map[string]any{"evenerErrorInfo": string(info)}
 		}
 	}
 	return e

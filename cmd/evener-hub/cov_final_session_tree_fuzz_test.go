@@ -62,7 +62,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op uint8) {
 		now := time.Now().UTC()
 		caps := appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true, ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true}
-		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "title", CWD: "/work/project", ModelProvider: "p/m", CreatedAt: now.Add(-time.Minute).Unix(), UpdatedAt: now.Unix(), Status: appwire.ThreadStatus{Type: "active"}, Serf: appwire.SerfThread{Ref: "remote:thread", Capabilities: caps}}
+		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "title", CWD: "/work/project", ModelProvider: "p/m", CreatedAt: now.Add(-time.Minute).Unix(), UpdatedAt: now.Unix(), Status: appwire.ThreadStatus{Type: "active"}, Evener: appwire.EvenerThread{Ref: "remote:thread", Capabilities: caps}}
 		call := func(fn func(http.ResponseWriter, *http.Request), body string) {
 			fn(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)))
 		}
@@ -128,7 +128,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 			_, _, _ = appThreadTreeEntries(appwire.Thread{ID: "x", Source: "remote", GitInfo: &appwire.GitInfo{Branch: "b", OriginURL: "u"}})
 		case 10:
 			thread.Name, thread.Preview, thread.SessionID, thread.CWD, thread.Status.Type = "", "", "", "", ""
-			thread.Serf.Goal = &appwire.GoalState{Status: "active", Iterations: 2}
+			thread.Evener.Goal = &appwire.GoalState{Status: "active", Iterations: 2}
 			_ = hubDetailFromAppThread(thread)
 		case 11:
 			past := hubcore.NewPastIndex("")
@@ -138,7 +138,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 			_, _ = web.apiSessionState("local")
 		case 12:
 			local := thread
-			local.ID, local.SessionID, local.Source, local.Serf.Ref, local.Name, local.CWD, local.ModelProvider = "local", "local", "local", "local:local", "", "", ""
+			local.ID, local.SessionID, local.Source, local.Evener.Ref, local.Name, local.CWD, local.ModelProvider = "local", "local", "local", "local:local", "", "", ""
 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "local"}, SessionID: "local"})
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "local", Name: "resolved", Model: "fallback", TurnCount: 2, CreatedAt: now, UpdatedAt: now}})

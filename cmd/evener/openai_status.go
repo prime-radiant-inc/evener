@@ -21,7 +21,7 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
 	instance := fs.String("instance", "openai", "instance name (default: openai)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: serf openai status [flags]\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: evener openai status [flags]\n\n")
 		_, _ = fmt.Fprintf(stderr, "Show the current OpenAI auth status.\n\n")
 		_, _ = fmt.Fprintf(stderr, "Flags:\n")
 		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")

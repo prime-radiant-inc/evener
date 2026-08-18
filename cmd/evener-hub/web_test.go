@@ -73,7 +73,7 @@ func TestLocalRouteID_CleanBreakAndExternalRefs(t *testing.T) {
 		id: "codex",
 		thread: appwire.Thread{
 			ID: "thread_abc", SessionID: "thread_abc", Name: "opaque external thread", Source: "codex",
-			Serf: appwire.SerfThread{Ref: "codex:thread_abc"},
+			Evener: appwire.EvenerThread{Ref: "codex:thread_abc"},
 		},
 	}
 	web.sources.Add(source)
@@ -135,10 +135,10 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 		return selfupdate.Result{
 			Release:        "snapshot",
 			Channel:        "snapshot",
-			Archive:        "serf_linux_amd64.tar.gz",
-			ShareBinDir:    "/tmp/share/serf/bin",
+			Archive:        "evener_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/evener/bin",
 			BinDir:         "/tmp/bin",
-			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+			RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
 		}, nil
 	}
 	t.Cleanup(func() { runHubSelfUpgrade = previous })
@@ -155,7 +155,7 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Channel != "snapshot" || resp.Archive != "serf_linux_amd64.tar.gz" {
+	if resp.Channel != "snapshot" || resp.Archive != "evener_linux_amd64.tar.gz" {
 		t.Fatalf("response=%+v", resp)
 	}
 	if got.Requested != "snapshot" {
@@ -166,15 +166,15 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	}
 }
 
-func TestWriteSessionActionErrorSetsSerfErrorInfoHeader(t *testing.T) {
+func TestWriteSessionActionErrorSetsEvenerErrorInfoHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/s/01TEST/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
 	writeSessionActionError(rec, req, appwire.QueuedDrainPartial("queued but drain failed"))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Serf-Error-Info"); got != string(appwire.ErrorQueuedDrainPartial) {
-		t.Fatalf("X-Serf-Error-Info=%q", got)
+	if got := rec.Header().Get("X-Evener-Error-Info"); got != string(appwire.ErrorQueuedDrainPartial) {
+		t.Fatalf("X-Evener-Error-Info=%q", got)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 		SessionID: "th_closed",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:th_closed"},
+		Evener:      appwire.EvenerThread{Ref: "local:th_closed"},
 	})
 	if detail.Live {
 		t.Fatalf("closed detail marked live: %+v", detail)
@@ -193,7 +193,7 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 
 func TestActiveTurnIDFromAppwireThreadPrefersSerfActiveTurn(t *testing.T) {
 	got := activeTurnIDFromAppwireThread(appwire.Thread{
-		Serf: appwire.SerfThread{ActiveTurnID: "turn_live"},
+		Evener: appwire.EvenerThread{ActiveTurnID: "turn_live"},
 		Turns: []appwire.Turn{
 			{ID: "turn_transcript", Status: appwire.TurnStatusCompleted},
 		},
@@ -203,7 +203,7 @@ func TestActiveTurnIDFromAppwireThreadPrefersSerfActiveTurn(t *testing.T) {
 	}
 }
 
-// TestHubDetailFromAppThreadCarriesFailedToolCalls asserts thread.Serf.
+// TestHubDetailFromAppThreadCarriesFailedToolCalls asserts thread.Evener.
 // FailedToolCalls flows through to hubapi.SessionDetail verbatim, including
 // the pointer's absent/zero distinction (kata md4g) — the legacy
 // /api/sessions/<ref> surface carried work_millis and usage but no failure
@@ -215,7 +215,7 @@ func TestHubDetailFromAppThreadCarriesFailedToolCalls(t *testing.T) {
 		SessionID: "th_failed",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:             "local:th_failed",
 			FailedToolCalls: &count,
 		},
@@ -232,14 +232,14 @@ func TestHubDetailFromAppThreadCarriesFailedToolCalls(t *testing.T) {
 		SessionID: "th_nocount",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:th_nocount"},
+		Evener:      appwire.EvenerThread{Ref: "local:th_nocount"},
 	})
 	if noCount.FailedToolCalls != nil {
 		t.Fatalf("FailedToolCalls = %+v, want nil when the source never counted", noCount.FailedToolCalls)
 	}
 }
 
-// TestHubDetailFromAppThreadCarriesGoal asserts the thread's Serf.Goal status
+// TestHubDetailFromAppThreadCarriesGoal asserts the thread's Evener.Goal status
 // and turn count flow into SessionDetail's flattened goal fields, which feed
 // the live input-strip goal pill.
 func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
@@ -248,7 +248,7 @@ func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
 		SessionID: "th_goal",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:  "local:th_goal",
 			Goal: &appwire.GoalState{Status: "active", Iterations: 2},
 		},
@@ -262,7 +262,7 @@ func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
 		SessionID: "th_nogoal",
 		Status:    appwire.ThreadStatus{Type: "idle"},
 		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: "local:th_nogoal"},
+		Evener:      appwire.EvenerThread{Ref: "local:th_nogoal"},
 	})
 	if noGoal.GoalStatus != "" || noGoal.GoalIterations != 0 {
 		t.Fatalf("expected empty goal when none set: status=%q iterations=%d", noGoal.GoalStatus, noGoal.GoalIterations)
@@ -274,7 +274,7 @@ func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
 		ID:     "th_goal",
 		Source: "local",
 		Status: appwire.ThreadStatus{Type: "idle"},
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:           "local:th_goal",
 			Goal:          &appwire.GoalState{Status: "active", Iterations: 2},
 			ContextUsed:   42000,
@@ -296,7 +296,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "th_tasks", SessionID: "th_tasks", Source: "codex",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:   appwire.SerfThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:   appwire.EvenerThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_tasks")+"/workspace", nil)
@@ -590,7 +590,7 @@ func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
 	}
-	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) {
+	if out.EvenerErrorInfo != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("error=%+v", out)
 	}
 }
@@ -606,7 +606,7 @@ func TestAPI_CodexModelChangeReturnsStructuredUnavailable(t *testing.T) {
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			CWD:           "/work/project",
 			ModelProvider: "openai",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "codex:th_codex",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Compact: true},
 			},
@@ -631,7 +631,7 @@ func TestAPI_CodexModelChangeReturnsStructuredUnavailable(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
 	}
-	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) {
+	if out.EvenerErrorInfo != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("error=%+v", out)
 	}
 }
@@ -648,7 +648,7 @@ func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			CWD:           "/work/project",
 			ModelProvider: "openai",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "codex:th_no_send",
 				Capabilities: appwire.ThreadCapabilities{Compact: true},
 			},
@@ -680,7 +680,7 @@ func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
 	}
-	if out.SerfErrorInfo != string(appwire.ErrorActionUnavailable) || !strings.Contains(out.Error, "send is not available") {
+	if out.EvenerErrorInfo != string(appwire.ErrorActionUnavailable) || !strings.Contains(out.Error, "send is not available") {
 		t.Fatalf("error=%+v", out)
 	}
 }
@@ -730,7 +730,7 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 			Preview:   "Local read-only task",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			CWD:       "/work/project",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:th_no_send",
 				Capabilities: appwire.ThreadCapabilities{Compact: true},
 			},
@@ -1275,7 +1275,7 @@ func TestWeb_ApiSpawn_AccessModeSetsSandboxOverride(t *testing.T) {
 				Spawner: spawner,
 			})
 			body := strings.NewReader(fmt.Sprintf(
-				`{"harness":"serf","model":"openai/gpt-5","working_dir":%q,"access_mode":%q}`,
+				`{"harness":"evener","model":"openai/gpt-5","working_dir":%q,"access_mode":%q}`,
 				workDir,
 				tc.accessMode,
 			))
@@ -1617,7 +1617,7 @@ func TestWeb_ApiSpawn_RejectsOversizeItem(t *testing.T) {
 func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T) {
 	cfg := codexlaunch.CodexLaunchConfig{
 		ID:     "codex-broken",
-		Binary: "/tmp/serf-no-such-codex-binary",
+		Binary: "/tmp/evener-no-such-codex-binary",
 		Listen: "ws://127.0.0.1:0",
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -1640,7 +1640,7 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%q", err, rec.Body.String())
 	}
-	if out.Code != appwire.CodeUnavailable || out.SerfErrorInfo != string(appwire.ErrorHubLaunch) || !strings.Contains(out.Error, "start codex app-server") {
+	if out.Code != appwire.CodeUnavailable || out.EvenerErrorInfo != string(appwire.ErrorHubLaunch) || !strings.Contains(out.Error, "start codex app-server") {
 		t.Fatalf("error response=%+v", out)
 	}
 }
@@ -1690,7 +1690,7 @@ func TestFormatCompactContextNumbersShowsOnlyUsedAndWindow(t *testing.T) {
 }
 
 func TestWorktreeLabelUsesLeafAndIgnoresEmpty(t *testing.T) {
-	if got := worktreeLabel("/state/worktrees/serf/dlg_01H"); got != "dlg_01H" {
+	if got := worktreeLabel("/state/worktrees/evener/dlg_01H"); got != "dlg_01H" {
 		t.Fatalf("worktreeLabel() = %q, want dlg_01H", got)
 	}
 	if got := worktreeLabel(""); got != "" {
@@ -1707,9 +1707,9 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	const sessionID = "02wMz5TxvEMoJEDTDGOTil"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:           sessionID,
-		WorktreePath: "/state/worktrees/serf/dlg_01H",
+		WorktreePath: "/state/worktrees/evener/dlg_01H",
 		EnvInfo: schema.EnvironmentInfo{
-			WorkingDir: "/state/worktrees/serf/dlg_01H",
+			WorkingDir: "/state/worktrees/evener/dlg_01H",
 			GitBranch:  "feature/compact-rail",
 		},
 	}); err != nil {
@@ -1725,7 +1725,7 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	if data.Worktree != "dlg_01H" {
 		t.Errorf("Worktree = %q, want dlg_01H", data.Worktree)
 	}
-	if data.WorkingDir != "/state/worktrees/serf/dlg_01H" {
+	if data.WorkingDir != "/state/worktrees/evener/dlg_01H" {
 		t.Errorf("WorkingDir = %q, want full worktree path", data.WorkingDir)
 	}
 	if data.Branch != "feature/compact-rail" {
@@ -1995,7 +1995,7 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Serf:      appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:      appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -2170,7 +2170,7 @@ func TestWeb_SendResumeFailureNamesLiveIncompatibleDaemon(t *testing.T) {
 	sessionID := hubtest.SessionID(t)
 	// Verbatim shape of the failure a real replacement daemon dies with.
 	spawnFailure := "resume failed: process exited before rendezvous: exit status 1: " +
-		"serf serve: session " + sessionID + " is already running; send work to the live session or fork it: " +
+		"evener serve: session " + sessionID + " is already running; send work to the live session or fork it: " +
 		"API log target is already running: /state/sessions/" + sessionID + ".api.jsonl"
 
 	tests := []struct {
@@ -2183,7 +2183,7 @@ func TestWeb_SendResumeFailureNamesLiveIncompatibleDaemon(t *testing.T) {
 			name: "live incompatible daemon still owns the session",
 			rosterEntry: &rendezvous.Entry{
 				PID:       blockerPID,
-				Protocol:  "serf-appwire-v1",
+				Protocol:  "evener-appwire-v1",
 				Address:   blockerHTTP,
 				Endpoint:  "ws://" + blockerHTTP + "/rpc",
 				SourceID:  "local",
@@ -2194,7 +2194,7 @@ func TestWeb_SendResumeFailureNamesLiveIncompatibleDaemon(t *testing.T) {
 				// the holder
 				"pid 104",
 				// why the hub will not just talk to it
-				"serf-appwire-v1",
+				"evener-appwire-v1",
 				appwire.ProtocolVersion,
 				// the remedy the operator can actually run
 				"http://" + blockerHTTP + "/shutdown",
@@ -2446,22 +2446,22 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	)
 	r := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/serf"},
+			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/evener"},
 			SessionID: olderID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/serf"},
+			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/evener"},
 			SessionID: newestID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
+			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener"},
 			SessionID: tieBID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
+			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener"},
 			SessionID: tieAID,
 			Status:    appwire.ThreadStatusIdle,
 		},
@@ -2819,7 +2819,7 @@ func TestWeb_ApiModels_ReturnsLaunchErrorWhenLaunchModelListerFails(t *testing.T
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
-			err: errors.New("serf launch-check returned invalid response"),
+			err: errors.New("evener launch-check returned invalid response"),
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
@@ -2929,7 +2929,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 
 // TestWeb_ApiModels_LiveFallbackAppliesInstanceModelOverride pins that the
 // live-model-listing fallback in fetchLiveModels overlays a providers.toml
-// instance's ModelConfig onto the entry, same as the serf-launch-contract
+// instance's ModelConfig onto the entry, same as the evener-launch-contract
 // path (modelDescriptorsToAPIModels) already does. Before the fix, an
 // override configured for a live-listed model (here: a custom context_window
 // on openrouter/deepseek/deepseek-chat) was silently ignored.
@@ -3109,7 +3109,7 @@ func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			ModelProvider: "gpt-5",
 			CWD:           "/tmp",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref: ref,
 				Capabilities: appwire.ThreadCapabilities{
 					Send:        true,
@@ -3424,7 +3424,7 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 			ID:        sessionID,
 			SessionID: sessionID,
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          params.Ref,
 				Capabilities: appwire.ThreadCapabilities{Compact: true},
 			},
@@ -3554,7 +3554,7 @@ func (p perAddrProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
 func TestWeb_APIHealth(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		RunDir:  "/tmp/serf-run",
+		RunDir:  "/tmp/evener-run",
 		Past:    hubcore.NewPastIndex("/tmp/state/projects/*"),
 		Spawner: &fakeSpawner{},
 	})
@@ -3710,7 +3710,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 }
 
 func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "serf")
+	workingDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3739,25 +3739,25 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	var serfProjects []hubapi.TreeProject
+	var evenerProjects []hubapi.TreeProject
 	for _, p := range got.Projects {
-		if p.Name == "serf" {
-			serfProjects = append(serfProjects, p)
+		if p.Name == "evener" {
+			evenerProjects = append(evenerProjects, p)
 		}
 	}
-	if len(serfProjects) != 1 {
-		t.Fatalf("serf projects=%d: %+v", len(serfProjects), got.Projects)
+	if len(evenerProjects) != 1 {
+		t.Fatalf("evener projects=%d: %+v", len(evenerProjects), got.Projects)
 	}
-	if len(serfProjects[0].Sessions) != 2 || serfProjects[0].RollupState != "awaiting" {
-		t.Fatalf("unexpected serf project: %+v", serfProjects[0])
+	if len(evenerProjects[0].Sessions) != 2 || evenerProjects[0].RollupState != "awaiting" {
+		t.Fatalf("unexpected evener project: %+v", evenerProjects[0])
 	}
-	if serfProjects[0].WorkingDir != project.CanonicalPath {
-		t.Fatalf("working_dir=%q, want %q", serfProjects[0].WorkingDir, project.CanonicalPath)
+	if evenerProjects[0].WorkingDir != project.CanonicalPath {
+		t.Fatalf("working_dir=%q, want %q", evenerProjects[0].WorkingDir, project.CanonicalPath)
 	}
 }
 
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "serf")
+	workingDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3795,7 +3795,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener", GitBranch: "evener-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3804,7 +3804,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/evener", Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
@@ -3820,7 +3820,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" || !got.Live || got.Title != "details task" || got.WorkingDir != "/projects/serf" {
+	if got.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" || !got.Live || got.Title != "details task" || got.WorkingDir != "/projects/evener" {
 		t.Fatalf("unexpected detail: %+v", got)
 	}
 	if !got.Capabilities.Resume {
@@ -3839,7 +3839,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener", GitBranch: "evener-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3848,7 +3848,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/evener", Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
@@ -3874,7 +3874,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 
 func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 64, Address: "127.0.0.1:6464", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 64, Address: "127.0.0.1:6464", WorkingDir: "/projects/evener", Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01CAPS", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
@@ -3886,11 +3886,11 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			ModelProvider: "gpt-5",
-			CWD:           "/projects/serf",
+			CWD:           "/projects/evener",
 			Turns: []appwire.Turn{
 				{ID: "turn_live", Status: appwire.TurnStatusInProgress},
 			},
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01CAPS",
 				Capabilities: appwire.ThreadCapabilities{Steer: true, Interrupt: true, Compact: true},
 			},
@@ -3919,7 +3919,7 @@ func TestLiveWorkspaceSnapshotSkipsTurns(t *testing.T) {
 			ID:        "01METADATA",
 			SessionID: "01METADATA",
 			Source:    "local",
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01METADATA",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 				ActiveTurnID: "turn_active",
@@ -3943,7 +3943,7 @@ func TestLiveWorkspaceSnapshotSkipsTurns(t *testing.T) {
 
 func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/evener", Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
@@ -3954,8 +3954,8 @@ func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 			SessionID: "01FORKCAP",
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			CWD:       "/projects/serf",
-			Serf: appwire.SerfThread{
+			CWD:       "/projects/evener",
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01FORKCAP",
 				Capabilities: appwire.ThreadCapabilities{Send: true, ForkFromTurn: true},
 			},
@@ -3991,7 +3991,7 @@ func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 // scripted thread's five completed turns.
 func TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread(t *testing.T) {
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 71, Address: "127.0.0.1:4571", WorkingDir: "/projects/serf", Model: "gpt-5"})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 71, Address: "127.0.0.1:4571", WorkingDir: "/projects/evener", Model: "gpt-5"})
 	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01FULLTURNS", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
@@ -4002,7 +4002,7 @@ func TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread(t *testing.T) {
 			SessionID: "01FULLTURNS",
 			Source:    "local",
 			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			CWD:       "/projects/serf",
+			CWD:       "/projects/evener",
 			Turns: []appwire.Turn{
 				{ID: "t1", Status: appwire.TurnStatusCompleted},
 				{ID: "t2", Status: appwire.TurnStatusCompleted},
@@ -4010,7 +4010,7 @@ func TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread(t *testing.T) {
 				{ID: "t4", Status: appwire.TurnStatusCompleted},
 				{ID: "t5", Status: appwire.TurnStatusCompleted},
 			},
-			Serf: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "local:01FULLTURNS",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
@@ -4085,7 +4085,7 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 			harnessValues = f.Values
 		}
 	}
-	if len(harnessValues) != 3 || harnessValues[0] != "serf" || harnessValues[1] != "codex-local" || harnessValues[2] != "codex-managed" {
+	if len(harnessValues) != 3 || harnessValues[0] != "evener" || harnessValues[1] != "codex-local" || harnessValues[2] != "codex-managed" {
 		t.Fatalf("harness values=%+v", harnessValues)
 	}
 	effortValues := map[string]bool{}
@@ -4120,7 +4120,7 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 					ID:        "02wMz5Txv1C3Hut0M8GCeB",
 					SessionID: "02wMz5Txv1C3Hut0M8GCeB",
 					Source:    "local",
-					Serf:      appwire.SerfThread{Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
+					Evener:      appwire.EvenerThread{Ref: "local:02wMz5Txv1C3Hut0M8GCeB"},
 				},
 			}, nil
 		})

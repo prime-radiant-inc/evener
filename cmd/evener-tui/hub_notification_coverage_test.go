@@ -14,23 +14,23 @@ import (
 var notifyMethodsDeliberatelyIgnored = []string{
 	// Tree/dashboard shape and attention state are re-fetched wholesale by the
 	// dashboard's own poll rather than folded from a push.
-	appwire.NotifySerfTreeChanged,
-	appwire.NotifySerfAttentionChanged,
+	appwire.NotifyEvenerTreeChanged,
+	appwire.NotifyEvenerAttentionChanged,
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
 	appwire.NotifyThreadNameChanged,
 	// The TUI has no Activity-tree surface. Its existing job rows consume the
 	// concrete job-started/job-finished pushes, so the Web UI's root-tree cache
 	// invalidation notification has no TUI state to update.
-	appwire.NotifySerfJobsTreeUpdated,
+	appwire.NotifyEvenerJobsTreeUpdated,
 	// Tasks render from fetchHubTasks, not from the push.
-	appwire.NotifySerfTaskUpdated,
+	appwire.NotifyEvenerTaskUpdated,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
 	// prompt it already cleared locally when the user answered.
-	appwire.NotifySerfSandboxEscalationResolved,
+	appwire.NotifyEvenerSandboxEscalationResolved,
 }
 
-// kata e79v: serf/thread/modelRetry was added to the catalog and the TUI ignored
+// kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored
 // it silently, so a rate-limited session kept looking wedged in one client after
 // being fixed in the other. Nothing failed, because notifyMethods reads like an
 // inventory of wire notifications but is really a hand-maintained list of what

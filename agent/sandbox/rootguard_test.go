@@ -250,7 +250,7 @@ func TestPermitStripsFirmlinkAliasBeforeGuard(t *testing.T) {
 	// A fabricated anchor that need not exist on disk: NewRootGuard cleans (does
 	// not drop) an unresolvable anchor, so it still participates in the textual
 	// at-or-above check.
-	anchor := "/Users/serf-rootguard-test-anchor-does-not-exist"
+	anchor := "/Users/evener-rootguard-test-anchor-does-not-exist"
 	guard := NewRootGuard(anchor)
 
 	alias := dataVolumePrefix + anchor
@@ -319,7 +319,7 @@ func TestPermitDegradesWithoutHomeAnchor(t *testing.T) {
 // cannot be resolved (does not exist) is cleaned and KEPT, not silently
 // dropped — a dropped anchor would leave that path ungoverned.
 func TestNewRootGuardCleansUnresolvableAnchorsRatherThanDropping(t *testing.T) {
-	const anchor = "/nonexistent-serf-rootguard-test-anchor/child"
+	const anchor = "/nonexistent-evener-rootguard-test-anchor/child"
 	guard := NewRootGuard("", anchor) // the empty string must be dropped without effect
 
 	if got := guard.Permit(anchor); got != "" {

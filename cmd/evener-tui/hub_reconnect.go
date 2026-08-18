@@ -51,7 +51,7 @@ func (m *hubModel) hubConnectionLost() tea.Cmd {
 	m.connectionLost = true
 	m.reconnectAttempt = 1
 	if m.dialHub == nil {
-		m.addNotice(m.connectionNotice("nothing on this model can dial the hub again", "Restart serf-tui to reconnect."))
+		m.addNotice(m.connectionNotice("nothing on this model can dial the hub again", "Restart evener-tui to reconnect."))
 		return nil
 	}
 	m.addNotice(m.connectionNotice("the hub's notification stream ended", "Reconnecting…"))

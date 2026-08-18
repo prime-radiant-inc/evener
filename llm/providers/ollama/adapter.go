@@ -14,7 +14,7 @@
 // llm.NonDefaultEligible, which prevents it from becoming the silent
 // default provider in environments where the user didn't intend it —
 // the original concern that motivated the previous env-gate. Explicit
-// addressing by name still works, so `serf --provider ollama` succeeds
+// addressing by name still works, so `evener --provider ollama` succeeds
 // regardless of whether any OLLAMA_* env var is set.
 package ollama
 

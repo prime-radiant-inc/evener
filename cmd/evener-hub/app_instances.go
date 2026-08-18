@@ -69,7 +69,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			StoredEmail:    status.StoredEmail,
 			// The pane distinguishes a credential that is missing from one
 			// that was never needed, and that distinction is the same gate
-			// serf/auth/test asks — asked here so it is derived once, from the
+			// evener/auth/test asks — asked here so it is derived once, from the
 			// authored instance rather than from the sanitized wire copy.
 			CredentialRequired: credentialRequired(inst),
 		}

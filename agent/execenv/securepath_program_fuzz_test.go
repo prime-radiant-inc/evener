@@ -825,7 +825,7 @@ func pfsAssertNoAtomicTemps(t *testing.T, root string) {
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(entry.Name(), ".serf-sbtmp-") {
+		if strings.HasPrefix(entry.Name(), ".evener-sbtmp-") {
 			return fmt.Errorf("stray atomic temp %q", path)
 		}
 		return nil

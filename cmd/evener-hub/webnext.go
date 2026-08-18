@@ -26,7 +26,7 @@ func serveSPAIndex(w http.ResponseWriter, _ *http.Request, dist fs.FS) {
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("serf-hub web app not built: run `make build-web` and rebuild\n"))
+		_, _ = w.Write([]byte("evener-hub web app not built: run `make build-web` and rebuild\n"))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -42,7 +42,7 @@ func serveSPAIndex(w http.ResponseWriter, _ *http.Request, dist fs.FS) {
 // identity. A bare SPA fallback here would instead return index.html and boot
 // a second full app in the popout window, which is the failure this route
 // exists to prevent.
-const popoutShellHTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>serf</title></head><body></body></html>`
+const popoutShellHTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>evener</title></head><body></body></html>`
 
 // servePopoutShell serves popoutShellHTML at dockview's default /popout.html.
 // It is auth-gated like every other route (NOT in hubedge.isAuthExempt): a

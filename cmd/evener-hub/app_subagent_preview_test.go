@@ -8,7 +8,7 @@ import (
 
 func TestSubagentPreviewBoundsLatestDirectItems(t *testing.T) {
 	resp := subagentPreviewFromThread(appwire.Thread{
-		Serf: appwire.SerfThread{Ref: "local:child-preview"},
+		Evener: appwire.EvenerThread{Ref: "local:child-preview"},
 		Turns: []appwire.Turn{
 			{ID: "turn_1", Items: []appwire.ThreadItem{
 				{Type: "agentMessage", Text: "older item"},

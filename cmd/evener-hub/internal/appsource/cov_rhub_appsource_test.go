@@ -141,11 +141,11 @@ func fuzzScenarioMapThread(t *testing.T) {
 	if out.SessionID != "th_1" {
 		t.Fatalf("SessionID should fall back to ID: %q", out.SessionID)
 	}
-	if out.Serf.Ref != "codex:th_1" {
-		t.Fatalf("Serf.Ref=%q, want codex:th_1", out.Serf.Ref)
+	if out.Evener.Ref != "codex:th_1" {
+		t.Fatalf("Evener.Ref=%q, want codex:th_1", out.Evener.Ref)
 	}
-	if out.Serf.Capabilities.Send || out.Serf.Capabilities.Steer || out.Serf.Capabilities.Interrupt {
-		t.Fatalf("codex thread advertises mutations: %+v", out.Serf.Capabilities)
+	if out.Evener.Capabilities.Send || out.Evener.Capabilities.Steer || out.Evener.Capabilities.Interrupt {
+		t.Fatalf("codex thread advertises mutations: %+v", out.Evener.Capabilities)
 	}
 	if len(out.Turns) != 1 || out.Turns[0].ID != "tn_1" {
 		t.Fatalf("turns not mapped: %+v", out.Turns)
@@ -153,8 +153,8 @@ func fuzzScenarioMapThread(t *testing.T) {
 
 	// A notLoaded thread must NOT advertise steer/interrupt.
 	cold := s.mapThread(codexThread{ID: "th_2", Status: codexThreadStatus{Type: "notLoaded"}})
-	if cold.Serf.Capabilities.Steer || cold.Serf.Capabilities.Interrupt {
-		t.Fatalf("cold thread must not advertise steer/interrupt: %+v", cold.Serf.Capabilities)
+	if cold.Evener.Capabilities.Steer || cold.Evener.Capabilities.Interrupt {
+		t.Fatalf("cold thread must not advertise steer/interrupt: %+v", cold.Evener.Capabilities)
 	}
 }
 
@@ -375,7 +375,7 @@ func fuzzScenarioCodexSourceMetadata(t *testing.T) {
 	}
 }
 
-// The codex source deliberately does not support several serf-only actions;
+// The codex source deliberately does not support several evener-only actions;
 // each must fail with an Unavailable error rather than connecting.
 func fuzzScenarioCodexSourceUnavailableMethods(t *testing.T) {
 	s := newTestCodexSource()

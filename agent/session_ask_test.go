@@ -686,7 +686,7 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	sess := newSession(t, withAdapter(f))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
-		// Matcher scoped to ask_user's Claude-visible name (toolname.SerfToClaude)
+		// Matcher scoped to ask_user's Claude-visible name (toolname.EvenerToClaude)
 		// so the deny does not also swallow round 2's communicate call.
 		Matcher: "AskUserQuestion",
 		Type:    "command",

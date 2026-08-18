@@ -43,7 +43,7 @@ const (
 	// ChatGPT Codex /models requires semver, and 0.0.0 is the Codex
 	// workspace development version without claiming a Codex release.
 	codexClientVersion = "0.0.0"
-	defaultOriginator  = "serf"
+	defaultOriginator  = "evener"
 	encryptedReasoning = "reasoning.encrypted_content"
 )
 
@@ -117,7 +117,7 @@ type OpenAIInstanceParams struct {
 // same defaults as the env path.
 func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 	// Prefer stored OAuth over APIKey: once a user has signed in via
-	// `serf openai login`, route through the ChatGPT/Codex backend instead of
+	// `evener openai login`, route through the ChatGPT/Codex backend instead of
 	// the key-based API. This mirrors the preference order in NewFromEnv.
 	authStateDir := authopenai.DefaultStateDirWithStateHome(params.StateHome)
 	instanceName := params.Name
@@ -506,7 +506,7 @@ func (a *Adapter) setRequestHeaders(httpReq *http.Request, req llm.Request) {
 
 // ClientVersion is reported in the User-Agent the OpenAI Codex backend expects.
 // It defaults to "dev"; an embedding application may set it to its own version
-// (the serf binaries set it to the build version at startup).
+// (the evener binaries set it to the build version at startup).
 var ClientVersion = "dev"
 
 func defaultUserAgent() string {

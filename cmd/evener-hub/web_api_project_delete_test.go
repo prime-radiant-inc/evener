@@ -461,7 +461,7 @@ func initProjectDeleteRepo(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	runProjectDeleteGit(t, filepath.Dir(dir), "init", "-q", filepath.Base(dir))
-	runProjectDeleteGit(t, dir, "-c", "user.name=serf-test", "-c", "user.email=serf-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+	runProjectDeleteGit(t, dir, "-c", "user.name=evener-test", "-c", "user.email=evener-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
 }
 
 func runProjectDeleteGit(t *testing.T, dir string, args ...string) {
@@ -1556,7 +1556,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	if !strings.Contains(failure.Error, "favorite store error: favorite delete setup failure") {
 		t.Fatalf("favorite store failure was not reported: %s", failure.Error)
 	}
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 	if pokes != 1 {
 		t.Fatalf("PokeAttention calls=%d, want exactly one after physical deletion", pokes)
 	}
@@ -1713,7 +1713,7 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestProjectDeleteDoesNotBroadcastWhenNothingRemoved covers the no-op path:
@@ -1774,5 +1774,5 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
 	}
 
-	assertNoNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertNoNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

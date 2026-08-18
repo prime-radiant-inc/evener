@@ -19,8 +19,8 @@ func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
 		if info.Source != SourceSerf {
 			t.Errorf("%s: Source=%q, want %q", tc.name, info.Source, SourceSerf)
 		}
-		if info.Title != "Serf configuration error" {
-			t.Errorf("%s: Title=%q, want Serf configuration error", tc.name, info.Title)
+		if info.Title != "Evener configuration error" {
+			t.Errorf("%s: Title=%q, want Evener configuration error", tc.name, info.Title)
 		}
 		if info.Hint == "" {
 			t.Errorf("%s: expected launch/config hint", tc.name)
@@ -46,7 +46,7 @@ func TestDefaultForEverySource(t *testing.T) {
 
 func TestDefaultForSerfConfiguration(t *testing.T) {
 	got := defaultForSource(SourceSerf, "unknown provider supplied")
-	if got.Title != "Serf configuration error" {
+	if got.Title != "Evener configuration error" {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestClassifySpawnFailureAsHub(t *testing.T) {
 		"stream failed to connect",
 		"source not found: xyz",
 		// The hub's own dial failure (cmd/evener-hub/internal/appsource) and the
-		// wire error it raises. Both were classified "Serf error" until 3qb2 —
+		// wire error it raises. Both were classified "Evener error" until 3qb2 —
 		// telling the user to read the log of a daemon that may never have
 		// started, while the web client already called the same message a
 		// connection failure.
@@ -167,8 +167,8 @@ func TestFromError_Nil_IsSerfFailure(t *testing.T) {
 	if info.Source != SourceSerf {
 		t.Fatalf("FromError(nil): Source=%q, want %q", info.Source, SourceSerf)
 	}
-	if info.Title != "Serf error" {
-		t.Fatalf("FromError(nil): Title=%q, want Serf error", info.Title)
+	if info.Title != "Evener error" {
+		t.Fatalf("FromError(nil): Title=%q, want Evener error", info.Title)
 	}
 }
 
@@ -178,8 +178,8 @@ func TestFromError_ConfigurationError_IsSerfConfiguration(t *testing.T) {
 	if info.Source != SourceSerf {
 		t.Fatalf("FromError(ConfigurationError): Source=%q, want %q", info.Source, SourceSerf)
 	}
-	if info.Title != "Serf configuration error" {
-		t.Fatalf("FromError(ConfigurationError): Title=%q, want Serf configuration error", info.Title)
+	if info.Title != "Evener configuration error" {
+		t.Fatalf("FromError(ConfigurationError): Title=%q, want Evener configuration error", info.Title)
 	}
 }
 
@@ -223,7 +223,7 @@ func TestFromFields_SourceOverridesClassify(t *testing.T) {
 		{"provider", SourceProvider},
 		{"hub", SourceHub},
 		{"ui", SourceUI},
-		{"serf", SourceSerf},
+		{"evener", SourceSerf},
 		{"hook", SourceHook},
 		{"mcp", SourceMCP},
 	}
@@ -261,7 +261,7 @@ func TestFromFields_TitleAndHintOverride(t *testing.T) {
 }
 
 // TestFromFields_SourceUI_DefaultTitle verifies the SourceUI branch of
-// defaultForSource, which returns a distinct Info struct (not serfFailure).
+// defaultForSource, which returns a distinct Info struct (not evenerFailure).
 func TestFromFields_SourceUI_DefaultTitle(t *testing.T) {
 	info := FromFields("ui", "", "", "")
 	if info.Source != SourceUI {
@@ -286,7 +286,7 @@ func TestFromFields_HookSourcePreserved(t *testing.T) {
 }
 
 func TestFromFields_MCPSource_GetsMCPHints(t *testing.T) {
-	// A connection-refused MCP failure classifies as MCP, not the generic serf hint.
+	// A connection-refused MCP failure classifies as MCP, not the generic evener hint.
 	got := FromFields("mcp", "", "", "MCP server \"linear\" failed to connect: connection refused")
 	if got.Source != SourceMCP {
 		t.Fatalf("Source=%q, want %q", got.Source, SourceMCP)

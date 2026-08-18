@@ -72,9 +72,9 @@ func ThinkingFormatNames() []string {
 	return names
 }
 
-// validThinkingLevelKeys are the serf effort levels a thinking_levels map may
+// validThinkingLevelKeys are the evener effort levels a thinking_levels map may
 // name. "xhigh" and "max" are distinct ascending tiers (max ranks above
-// xhigh). "off" is deliberately absent: serf's "none" clears the effort
+// xhigh). "off" is deliberately absent: evener's "none" clears the effort
 // setting to the provider default rather than forcing an explicit disable.
 var validThinkingLevelKeys = map[string]bool{
 	"minimal": true,
@@ -166,11 +166,11 @@ func validateAndNormalizeModels(errs []string, instName string, models map[strin
 					continue
 				}
 				if key == "off" {
-					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key \"off\" is not supported (serf's \"none\" effort clears to the provider default)", instName, id))
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key \"off\" is not supported (evener's \"none\" effort clears to the provider default)", instName, id))
 					continue
 				}
 				if !validThinkingLevelKeys[key] {
-					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key %q is not a serf effort level (minimal, low, medium, high, xhigh, max)", instName, id, k))
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key %q is not a evener effort level (minimal, low, medium, high, xhigh, max)", instName, id, k))
 					continue
 				}
 				if strings.TrimSpace(v) == "" {

@@ -106,7 +106,7 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for _, call := range calls {
 		content := fmt.Sprintf(
-			"Tool result unavailable: Serf was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
+			"Tool result unavailable: Evener was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
 			call.ID,
 			call.Name,
 		)

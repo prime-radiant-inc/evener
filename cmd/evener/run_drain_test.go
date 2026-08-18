@@ -153,7 +153,7 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 }
 
 // TestRunDrainsDelegatedJobTreeBeforeExit is the PRI-2441 B1 regression: a
-// one-shot `serf run` whose coordinator fires a fire-and-return delegate must
+// one-shot `evener run` whose coordinator fires a fire-and-return delegate must
 // keep re-driving until the delegated work completes, instead of SIGKILLing the
 // child at Close(). The coordinator's real final answer (BUILD-COMPLETE) is only
 // produced on the post-completion <delegate-notification> turn, so its presence on

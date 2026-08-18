@@ -82,7 +82,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 	f.Fuzz(func(t *testing.T, variant uint8) {
 		ctx := context.Background()
 		past := pass6Past(t)
-		thread := appwire.Thread{ID: "past", SessionID: "past", Source: "local", Preview: "past", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Serf: appwire.SerfThread{Ref: "local:past"}}
+		thread := appwire.Thread{ID: "past", SessionID: "past", Source: "local", Preview: "past", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:past"}}
 		source := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: thread}, listed: []appwire.Thread{thread}}
 		registry := appsource.NewRegistry()
 		registry.Add(source)
@@ -97,7 +97,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
 		cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, Spawner: okSpawner}
 
-		_ = launchSourceID(appwire.ThreadStartParams{Harness: "serf"})
+		_ = launchSourceID(appwire.ThreadStartParams{Harness: "evener"})
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{}, registry, appwire.ThreadStartParams{})
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{Spawner: okSpawner, HubStateRoot: t.TempDir()}, registry, appwire.ThreadStartParams{})
 		_, _ = hubThreadStart(ctx, cfg, registry, appwire.ThreadStartParams{Input: []appwire.InputItem{{Type: "bogus"}}})
@@ -126,7 +126,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		emptyReg := appsource.NewRegistry()
 		_, _ = hubThreadStart(ctx, cfg, emptyReg, appwire.ThreadStartParams{Model: "openai/gpt-5"})
 
-		remote := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "r", Source: "remote", Serf: appwire.SerfThread{Ref: "remote:r"}}}}
+		remote := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: appwire.Thread{ID: "r", Source: "remote", Evener: appwire.EvenerThread{Ref: "remote:r"}}}}
 		remoteReg := appsource.NewRegistry()
 		remoteReg.Add(remote)
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{}, remoteReg, appwire.ThreadStartParams{Harness: "remote"})
@@ -167,7 +167,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "1", EditedInput: "edit"})
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir()}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "1", EditedInput: "edit"})
 
-		extra := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, listed: []appwire.Thread{{ID: "remote-id", Name: "Needle", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{Ref: "remote:remote-id"}}, {SessionID: "sid", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}}}}
+		extra := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, listed: []appwire.Thread{{ID: "remote-id", Name: "Needle", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Ref: "remote:remote-id"}}, {SessionID: "sid", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}}}}
 		registry.Add(extra)
 		_, _ = hubThreadList(ctx, cfg, registry, appwire.ThreadListParams{})
 		_, _ = hubThreadList(ctx, cfg, registry, appwire.ThreadListParams{SourceIDs: []string{"remote"}, Statuses: []string{"active"}, SearchTerm: "needle", Limit: 1})
@@ -180,7 +180,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		_ = ensureManagedCodexSources(ctx, badManaged, remoteReg, appwire.ThreadListParams{})
 		_ = ensureManagedCodexSources(ctx, badManaged, remoteReg, appwire.ThreadListParams{SourceIDs: []string{"bad"}})
 
-		for _, th := range []appwire.Thread{{}, {Source: "remote"}, {Serf: appwire.SerfThread{Ref: "remote:x"}}, {ID: "past", Preview: "past", Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}} {
+		for _, th := range []appwire.Thread{{}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "remote:x"}}, {ID: "past", Preview: "past", Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}} {
 			_ = threadListSourceID("local", th)
 			_ = mergePastMetadataForList(cfg, "local", th)
 		}

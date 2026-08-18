@@ -98,7 +98,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		thread := appwire.Thread{
 			ID: "live", SessionID: "live", Source: "remote",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-			Serf:   appwire.SerfThread{Ref: "remote:live", Capabilities: caps},
+			Evener:   appwire.EvenerThread{Ref: "remote:live", Capabilities: caps},
 		}
 		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 11, Address: "unused"}, SessionID: "live", Status: "active"})
 		src := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, err: errors.New("scripted action failure")}
@@ -110,7 +110,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 			fn(httptest.NewRecorder(), req)
 		}
 		remoteDenied := NewWebServer(hubcore.WebConfig{})
-		remoteDenied.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "denied-remote", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "denied-remote", Serf: appwire.SerfThread{Ref: "denied-remote:thread"}}}})
+		remoteDenied.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "denied-remote", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "denied-remote", Evener: appwire.EvenerThread{Ref: "denied-remote:thread"}}}})
 		call(func(w http.ResponseWriter, r *http.Request) { remoteDenied.handleSend(w, r, "denied-remote:thread") }, http.MethodPost, "/s/denied-remote:thread/send", `{"text":"hi"}`)
 
 		missingSource := func(*appsource.Registry, string, string) (appsource.Source, error) {
@@ -118,7 +118,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		}
 		webSourceForThread = missingSource
 		remoteMissing := NewWebServer(hubcore.WebConfig{})
-		remoteMissing.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote-missing", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote-missing", Serf: appwire.SerfThread{Ref: "remote-missing:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}}})
+		remoteMissing.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote-missing", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote-missing", Evener: appwire.EvenerThread{Ref: "remote-missing:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}}})
 		call(func(w http.ResponseWriter, r *http.Request) { remoteMissing.handleSend(w, r, "remote-missing:thread") }, http.MethodPost, "/s/remote-missing:thread/send", `{"text":"hi"}`)
 		noRosterSend := NewWebServer(hubcore.WebConfig{})
 		call(func(w http.ResponseWriter, r *http.Request) { noRosterSend.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
@@ -149,7 +149,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 
 		managedThread := thread
 		managedThread.ID, managedThread.SessionID, managedThread.Source = "thread", "thread", "managed"
-		managedThread.Serf.Ref = "managed:thread"
+		managedThread.Evener.Ref = "managed:thread"
 		managedSource := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "managed", thread: managedThread, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return appwire.TurnStartResponse{}, nil
 		}}}
@@ -203,7 +203,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		runDir := filepath.Join(root, "run")
 		localRoster := hubcore.NewRoster(runDir, fakeProber{sessionID: localID, status: "idle"})
 		var localWeb *WebServer
-		localThread := appwire.Thread{ID: localID, SessionID: localID, Source: "local", Serf: appwire.SerfThread{Ref: "local:" + localID, Capabilities: appwire.ThreadCapabilities{Send: true}}}
+		localThread := appwire.Thread{ID: localID, SessionID: localID, Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + localID, Capabilities: appwire.ThreadCapabilities{Send: true}}}
 		localSource := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: localThread, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn"}}, nil
 		}}}
@@ -234,10 +234,10 @@ func FuzzCovExactWebSession(f *testing.F) {
 		rosterOnly := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 33, Address: "127.0.0.1:1"}, SessionID: "roster-only"})})
 		call(func(w http.ResponseWriter, r *http.Request) { rosterOnly.handleSend(w, r, "roster-only") }, http.MethodPost, "/s/roster-only/send", `{"text":"hi"}`)
 		deniedLocal := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"}, SessionID: "denied"})})
-		deniedLocal.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: "denied", SessionID: "denied", Source: "local", Serf: appwire.SerfThread{Ref: "local:denied"}}}})
+		deniedLocal.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: "denied", SessionID: "denied", Source: "local", Evener: appwire.EvenerThread{Ref: "local:denied"}}}})
 		call(func(w http.ResponseWriter, r *http.Request) { deniedLocal.handleSend(w, r, "denied") }, http.MethodPost, "/s/denied/send", `{"text":"hi"}`)
 		remoteRetry := NewWebServer(hubcore.WebConfig{})
-		remoteRetry.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "retry", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "retry", Serf: appwire.SerfThread{Ref: "retry:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		remoteRetry.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "retry", thread: appwire.Thread{ID: "thread", SessionID: "thread", Source: "retry", Evener: appwire.EvenerThread{Ref: "retry:thread", Capabilities: appwire.ThreadCapabilities{Send: true}}}, startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return appwire.TurnStartResponse{}, appwire.SessionUnavailable("gone")
 		}}})
 		call(func(w http.ResponseWriter, r *http.Request) { remoteRetry.handleSend(w, r, "retry:thread") }, http.MethodPost, "/s/retry:thread/send", `{"text":"hi"}`)

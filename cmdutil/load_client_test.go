@@ -200,7 +200,7 @@ func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	if !hasConfig {
 		t.Fatal("expected hasConfig=true after in-memory seed at default path")
 	}
-	if _, statErr := os.Stat(filepath.Join(dir, ".serf", "providers.toml")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(dir, ".evener", "providers.toml")); !os.IsNotExist(statErr) {
 		t.Fatalf("LoadClient must not write to the default state root (stat err=%v)", statErr)
 	}
 }

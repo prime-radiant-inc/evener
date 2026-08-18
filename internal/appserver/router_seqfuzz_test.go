@@ -55,7 +55,7 @@ import (
 // A discovered failure is routed through fuzz/promoter so a deterministic
 // reproduction becomes a flake-guarded regression test (emitted to a temp dir;
 // promotion into the tree is the human/opt-in step), mirroring Phase 1.
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestRouterSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./internal/appserver -run TestRouterSeqFuzz -count=1 -v")
@@ -102,7 +102,7 @@ func TestRouterSeqFuzz(t *testing.T) {
 // test, record its bucket, and dedup on the second sighting. This proves the four
 // hooks wire up without depending on the live fuzzer finding a real bug. The
 // panicking handler is a test fixture (it locks in that Dispatch propagates handler
-// panics to the caller), not a claim about serf production code.
+// panics to the caller), not a claim about evener production code.
 func TestSeqAdapter_PromotesDeterministicFailure(t *testing.T) {
 	const opBoom = opCode(100)
 	boomTable := opTableT{
@@ -300,7 +300,7 @@ type seqArtifact struct {
 // adapter's Replay classify identically. table+registrar fully determine the
 // reproduction environment.
 func seqOracleRun(ops []opCode, table opTableT, registrar func(*Router)) *promoter.Failure {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	registrar(server.Router())
 	conn := server.NewConnection("conn-seq")
 
@@ -494,8 +494,8 @@ func captureStack() []string {
 	for {
 		fr, more := frames.Next()
 		fn := fr.Function
-		if i := strings.LastIndex(fn, "serf/"); i >= 0 {
-			fn = fn[i+len("serf/"):]
+		if i := strings.LastIndex(fn, "evener/"); i >= 0 {
+			fn = fn[i+len("evener/"):]
 		}
 		out = append(out, fmt.Sprintf("%s:%d", fn, fr.Line))
 		if !more || len(out) >= 8 {

@@ -1,4 +1,4 @@
-// Package main implements serf-gate-probe: a one-shot, bounded classifier for
+// Package main implements evener-gate-probe: a one-shot, bounded classifier for
 // the sandbox-sensitive host capabilities the merge-approval gate's live/e2e
 // test components depend on (loopback binds, a Chrome/Chromium binary for
 // CDP-driven checks, process inspection via `ps`, and a writable external git
@@ -64,7 +64,7 @@ var chromeCandidates = []string{
 // gitCacheDir is the path probeGitCache checks. SERF_GATE_GIT_CACHE_DIR
 // overrides the kata's literal /tmp/git-cache default for a host or fixture
 // that uses a different location; it is gate-tooling-only, not a supported
-// runtime variable for the serf/serf-hub product (docs/testing.md's env-var
+// runtime variable for the evener/evener-hub product (docs/testing.md's env-var
 // rule governs product-facing vars, not this gate's own internal plumbing -
 // ROOT_FULL and WEB are the same kind of tooling-only variable already).
 func gitCacheDir() string {

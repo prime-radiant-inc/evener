@@ -23,7 +23,7 @@ const daemonLogDirName = "logs"
 // line its daemon ever wrote, with only deleting the session to end it (kata
 // rcxy).
 //
-// 1 MiB, because `serf serve` writes startup banners and errors to these
+// 1 MiB, because `evener serve` writes startup banners and errors to these
 // streams rather than a per-request log: a run costs on the order of a
 // kilobyte, so this holds hundreds of runs of history and only bites on a
 // daemon that is actually spewing. It is also 16x daemonLaunchOutputLimit, so

@@ -25,7 +25,7 @@ func isSessionUnavailableError(err error) bool {
 	if !errors.As(err, &wire) {
 		return false
 	}
-	return wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
+	return wire.Code == appwire.CodeUnavailable && evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
 }
 
 func compactThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
@@ -64,7 +64,7 @@ func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, r
 	if err != nil {
 		return err
 	}
-	if threadActionAvailable(resp.Thread.Serf.Capabilities, action) {
+	if threadActionAvailable(resp.Thread.Evener.Capabilities, action) {
 		return nil
 	}
 	return appwire.Unavailable(action + " is not available for this session")

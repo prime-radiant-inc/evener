@@ -86,7 +86,7 @@ func (fixture fuzzResolveFixture) homeFor(homeHint string) string {
 //  3. A successfully-resolved policy NEVER lists a masked (denylisted/pseudo-fs)
 //     path as a readable or writable root — the containment floor can't be
 //     resolved away. And any enforced (non-off) policy always masks the pseudo-fs
-//     set (at minimum /proc), so serf's own /proc/<pid>/environ stays unreadable.
+//     set (at minimum /proc), so evener's own /proc/<pid>/environ stays unreadable.
 func FuzzResolve(f *testing.F) {
 	// Seeds spanning the floor matrix: each host tier × representative modes. The
 	// trailing string is a fuzzed DenylistRemove entry; cwd is a safe path hint.

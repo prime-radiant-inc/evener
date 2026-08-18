@@ -77,9 +77,9 @@ func mustDenied(t *testing.T, err error, whatf string, args ...any) {
 	}
 }
 
-// TestReadFileRefusesProcEnviron is the named containment hole: reading serf's own
+// TestReadFileRefusesProcEnviron is the named containment hole: reading evener's own
 // /proc/<pid>/environ must be denied in every sandboxed mode (it would otherwise
-// leak serf's provider API key).
+// leak evener's provider API key).
 func TestReadFileRefusesProcEnviron(t *testing.T) {
 	t.Parallel()
 	for _, mode := range sandboxedModes {

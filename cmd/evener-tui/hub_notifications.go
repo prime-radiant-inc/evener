@@ -17,22 +17,22 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	m.clearModelRetryOnProgress(notification)
 	// Panel-refresh notifications fire regardless of current mode.
 	switch notification.Method {
-	case appwire.NotifySerfAuthUpdated:
+	case appwire.NotifyEvenerAuthUpdated:
 		if m.credentialsPanel != nil && m.client != nil {
 			return launchconfig.CmdInstanceList(m.client)
 		}
 		return nil
-	case appwire.NotifySerfLaunchUpdated:
+	case appwire.NotifyEvenerLaunchUpdated:
 		if m.launchSettingsPanel != nil {
 			return m.launchSettingsPanel.InitialCmd()
 		}
 		return nil
-	case appwire.NotifySerfMarketplaceUpdated, appwire.NotifySerfPluginUpdated:
+	case appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated:
 		if m.pluginsPanel != nil && m.client != nil {
 			return m.refreshPluginsPanel()
 		}
 		return nil
-	case appwire.NotifySerfSandboxEscalationRequested:
+	case appwire.NotifyEvenerSandboxEscalationRequested:
 		// Handled ABOVE the mode/session filters so an escalation for a NON-viewed
 		// session (or one that arrives while on the dashboard) is enqueued by its own
 		// ref, never silently dropped; it is surfaced when the user enters that
@@ -113,7 +113,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
 			m.applySessionTranscriptReducer(reducer)
 		}
-	case appwire.NotifySerfThreadResync:
+	case appwire.NotifyEvenerThreadResync:
 		// The hub is saying the model this session holds belongs to a daemon
 		// that has been replaced. A relaunched daemon seeds its live "turn_%d"
 		// counter from the transcript, which can sit BELOW the dead
@@ -128,7 +128,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				cmd = resyncHubSession(m.frames, m.client, ref)
 			}
 		}
-	case appwire.NotifySerfThreadModelRetry:
+	case appwire.NotifyEvenerThreadModelRetry:
 		var params appwire.ThreadModelRetryParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.modelRetry = &params
@@ -142,8 +142,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// own doc comment).
 			cmd = scheduleModelRetryTick()
 		}
-	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
-		var params appwire.SerfJobParams
+	case appwire.NotifyEvenerJobStarted, appwire.NotifyEvenerJobFinished:
+		var params appwire.EvenerJobParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
 			reducer.ApplySerfJob(params.Job)
@@ -151,8 +151,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// Subscribe to any newly-running child so its activity pushes live.
 			cmd = m.subscribeNewChildren()
 		}
-	case appwire.NotifySerfDelegateUpdated:
-		var params appwire.SerfDelegateParams
+	case appwire.NotifyEvenerDelegateUpdated:
+		var params appwire.EvenerDelegateParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
 			reducer.ApplySerfDelegate(params.Delegate)
@@ -224,8 +224,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			}
 			m.applyQueueState(ref, params.Queue)
 		}
-	case appwire.NotifySerfSteeringInjected:
-		var params appwire.SerfSteeringInjectedParams
+	case appwire.NotifyEvenerSteeringInjected:
+		var params appwire.EvenerSteeringInjectedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			text := strings.TrimSpace(params.Text)
 			if text == "" {
@@ -296,7 +296,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 
 // refreshPluginsPanel re-fetches the plugins panel's marketplace and plugin
 // lists — and, if a catalog is open, that marketplace's browse results — after
-// a serf/marketplace/updated or serf/plugin/updated notification. Either list
+// a evener/marketplace/updated or evener/plugin/updated notification. Either list
 // can affect the other's rendering (Browse's install badge only reflects
 // reality when the Installed list is current, and an auto-upgrade daemon pass
 // or another client's mutation can change either at any time).
@@ -311,7 +311,7 @@ func (m *hubModel) refreshPluginsPanel() tea.Cmd {
 // reconcilePendingFromNotification translates an inbound daemon
 // notification into the wire-method name(s) the pending coordinator
 // registered under, then calls TryReconcile. Some notifications
-// match multiple methods (serf/steering/injected reconciles both
+// match multiple methods (evener/steering/injected reconciles both
 // turn/steer with matching text AND any in-flight turn/drainAsSteer).
 //
 // Drain-special: turn/drainAsSteer matches first-come-first-served
@@ -320,8 +320,8 @@ func (m *hubModel) refreshPluginsPanel() tea.Cmd {
 func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n appwire.Notification) {
 	ref := notificationPendingRef(n)
 	switch n.Method {
-	case appwire.NotifySerfSteeringInjected:
-		var p appwire.SerfSteeringInjectedParams
+	case appwire.NotifyEvenerSteeringInjected:
+		var p appwire.EvenerSteeringInjectedParams
 		_ = json.Unmarshal(n.Params, &p)
 		pending.TryReconcile(appwire.MethodTurnSteer, p.Text, ref)
 		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)

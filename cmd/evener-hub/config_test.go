@@ -23,7 +23,7 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if cfg.PastResultsPerPage != 50 {
 		t.Errorf("PastResultsPerPage default: got %d", cfg.PastResultsPerPage)
 	}
-	wantHubStateRoot := filepath.Join(dir, "home", ".serf")
+	wantHubStateRoot := filepath.Join(dir, "home", ".evener")
 	if cfg.HubStateRoot != wantHubStateRoot {
 		t.Errorf("HubStateRoot default: got %q, want %q", cfg.HubStateRoot, wantHubStateRoot)
 	}
@@ -123,7 +123,7 @@ func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	want := filepath.Join(dir, "home", ".serf")
+	want := filepath.Join(dir, "home", ".evener")
 	if cfg.HubStateRoot != want {
 		t.Fatalf("HubStateRoot = %q, want %q", cfg.HubStateRoot, want)
 	}
@@ -150,7 +150,7 @@ func TestLoadConfig_ParsesFile(t *testing.T) {
 	path := filepath.Join(dir, "hub.toml")
 	body := `
 addr = "127.0.0.1:9180"
-past_index_db = "/tmp/serf-index.db"
+past_index_db = "/tmp/evener-index.db"
 spawn_timeout = "10s"
 past_results_per_page = 25
 
@@ -191,7 +191,7 @@ CODEX_HOME = "/tmp/codex-home"
 	if cfg.PastResultsPerPage != 25 {
 		t.Errorf("PastResultsPerPage: got %d", cfg.PastResultsPerPage)
 	}
-	if cfg.PastIndexDB != "/tmp/serf-index.db" {
+	if cfg.PastIndexDB != "/tmp/evener-index.db" {
 		t.Errorf("PastIndexDB: got %q", cfg.PastIndexDB)
 	}
 	if len(cfg.Providers) != 2 {
@@ -227,7 +227,7 @@ CODEX_HOME = "/tmp/codex-home"
 func TestDefaultConfigPath_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	got := DefaultConfigPath()
-	want := "/tmp/fakehome/.serf/hub.toml"
+	want := "/tmp/fakehome/.evener/hub.toml"
 	if got != want {
 		t.Fatalf("DefaultConfigPath: got %q, want %q", got, want)
 	}
@@ -235,9 +235,9 @@ func TestDefaultConfigPath_RespectsHome(t *testing.T) {
 
 func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
-	t.Setenv("XDG_STATE_HOME", "/srv/serf-state")
+	t.Setenv("XDG_STATE_HOME", "/srv/evener-state")
 	got := DefaultStateGlob()
-	want := "/srv/serf-state/serf/projects/*"
+	want := "/srv/evener-state/evener/projects/*"
 	if got != want {
 		t.Fatalf("DefaultStateGlob: got %q, want %q", got, want)
 	}
@@ -246,7 +246,7 @@ func TestDefaultStateGlob_RespectsXDGStateHome(t *testing.T) {
 func TestDefaultPastIndexDBPath_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	got := DefaultPastIndexDBPath()
-	want := "/tmp/fakehome/.serf/index.db"
+	want := "/tmp/fakehome/.evener/index.db"
 	if got != want {
 		t.Fatalf("DefaultPastIndexDBPath: got %q, want %q", got, want)
 	}

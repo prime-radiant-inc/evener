@@ -83,7 +83,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 // using-superpowers re-read on resume (session 01KVYB5S...). The superpowers
 // plugin ships BOTH a .claude-plugin manifest (hooks.json, SessionStart matcher
 // startup|clear|compact — resume excluded) and a .codex-plugin manifest
-// (hooks-codex.json, matcher startup|resume|clear — resume INCLUDED). serf must
+// (hooks-codex.json, matcher startup|resume|clear — resume INCLUDED). evener must
 // load the Claude flavor, so resuming an existing session does NOT re-fire the
 // SessionStart hook. With the old .codex-plugin-first precedence this delivered
 // the bootstrap again on every resume.
@@ -99,7 +99,7 @@ func TestResume_DualFlavorPlugin_DoesNotReinject(t *testing.T) {
 		[]byte(`{"hooks":{"SessionStart":[{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"echo claude-bootstrap"}]}]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Codex flavor: resume included (the trap). serf must not pick this.
+	// Codex flavor: resume included (the trap). evener must not pick this.
 	codexDir := filepath.Join(dir, ".codex-plugin")
 	if err := os.MkdirAll(codexDir, 0755); err != nil {
 		t.Fatal(err)

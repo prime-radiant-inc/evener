@@ -96,9 +96,9 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	device := fs.Bool("device", false, "force device-code flow")
 	noDevice := fs.Bool("no-device", false, "force browser flow")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: evener openai login [flags]\n\n")
 		_, _ = fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
-		_, _ = fmt.Fprintf(stderr, "By default, serf picks between the browser flow and the device-code flow\n")
+		_, _ = fmt.Fprintf(stderr, "By default, evener picks between the browser flow and the device-code flow\n")
 		_, _ = fmt.Fprintf(stderr, "automatically. It uses device-code when it looks like there is no graphical\n")
 		_, _ = fmt.Fprintf(stderr, "session: when $%s or $%s is set, or on Linux/BSD when\n", envvars.SSHConnection.Name, envvars.SSHTTY.Name)
 		_, _ = fmt.Fprintf(stderr, "neither $%s nor $%s is set. macOS and Windows default to\n", envvars.Display.Name, envvars.WaylandDisplay.Name)
@@ -269,8 +269,8 @@ func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Conte
 }
 
 func printOpenAIUsage(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "Usage: serf openai <command> [flags]\n\n")
-	_, _ = fmt.Fprintf(w, "Manage Serf's OpenAI OAuth state.\n\n")
+	_, _ = fmt.Fprintf(w, "Usage: evener openai <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "Manage Evener's OpenAI OAuth state.\n\n")
 	_, _ = fmt.Fprintf(w, "Commands:\n")
 	_, _ = fmt.Fprintf(w, "  login    Sign in with OpenAI OAuth\n")
 	_, _ = fmt.Fprintf(w, "  logout   Delete locally stored OpenAI OAuth state\n")

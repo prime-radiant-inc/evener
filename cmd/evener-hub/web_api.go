@@ -95,7 +95,7 @@ func writeAPIWireError(w http.ResponseWriter, fallbackStatus int, err error) {
 	writeAPIJSON(w, statusForWireError(wire, fallbackStatus), hubapi.ErrorResponse{
 		Error:         wire.Message,
 		Code:          wire.Code,
-		SerfErrorInfo: serfErrorInfoFromData(wire.Data),
+		EvenerErrorInfo: evenerErrorInfoFromData(wire.Data),
 	})
 }
 
@@ -124,12 +124,12 @@ func statusForWireError(wire appwire.WireError, fallback int) int {
 	}
 }
 
-func serfErrorInfoFromData(data any) string {
+func evenerErrorInfoFromData(data any) string {
 	switch v := data.(type) {
 	case appwire.ErrorData:
-		return string(v.SerfErrorInfo)
+		return string(v.EvenerErrorInfo)
 	case map[string]any:
-		if info, ok := v["serfErrorInfo"].(string); ok {
+		if info, ok := v["evenerErrorInfo"].(string); ok {
 			return info
 		}
 	}
@@ -290,7 +290,7 @@ func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id st
 	}
 	outRefText := resp.Ref
 	if outRefText == "" {
-		outRefText = resp.Thread.Serf.Ref
+		outRefText = resp.Thread.Evener.Ref
 	}
 	ref, err := hubapi.ParseRef(outRefText)
 	if err != nil {

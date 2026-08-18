@@ -61,7 +61,7 @@ type ProviderQuirks struct {
 	// SupportsLongCacheRetention emits prompt_cache_key +
 	// prompt_cache_retention:"24h" (and, with CacheControlFormat "anthropic",
 	// ttl:"1h" on the ephemeral markers). The cache key derives from
-	// req.PromptCacheKey, else "serf-session-"+req.SessionID — the same
+	// req.PromptCacheKey, else "evener-session-"+req.SessionID — the same
 	// convention agent.Session uses on the openai path, so both agree.
 	SupportsLongCacheRetention bool
 	// SendSessionAffinityHeaders sends per-request session-affinity headers
@@ -120,7 +120,7 @@ func QuirksPreset(name string) ProviderQuirks {
 			// {"reasoning":{"effort":...}} object. Live-verified 2026-07-02:
 			// behaves identically to top-level reasoning_effort on OpenAI AND
 			// Anthropic routed models (effort→budget translation happens
-			// either way), and accepts the full serf vocabulary incl.
+			// either way), and accepts the full evener vocabulary incl.
 			// xhigh/minimal — the canonical form also carries future knobs
 			// (exclude, max_tokens) top-level reasoning_effort cannot.
 			ThinkingFormat: "openrouter",

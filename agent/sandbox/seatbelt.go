@@ -215,7 +215,7 @@ func writeRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string 
 //   - Every masked path (secrets + pseudo-fs denylist) is denied for read AND
 //     write, so no allow — the "/" read grant, a granted read root, or the
 //     platform-defaults' broad system reads — can re-expose it. /dev/fd is the one
-//     exception: it is process-local on macOS (the child's own fd table; serf's
+//     exception: it is process-local on macOS (the child's own fd table; evener's
 //     fds never leak in) and is needed for shell process substitution, so the base
 //     grants it and it is NOT re-denied here — the same treatment bwrap gives it
 //     via its minimal --dev. The resolver still lists /dev/fd in MaskedPaths; the

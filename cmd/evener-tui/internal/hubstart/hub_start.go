@@ -79,25 +79,25 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 		AuthToken:    envvars.SERFHubAuthToken.From(getenv),
 		AutoStartHub: true,
 	}
-	fs := flag.NewFlagSet("serf-tui", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener-tui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "serf hub address")
-	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to serf-hub binary")
+	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "evener hub address")
+	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to evener-hub binary")
 	noAutoStartHub := false
 	fs.BoolVar(&noAutoStartHub, "no-auto-start-hub", false, "do not start a local hub when unreachable")
-	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Serf state directory")
+	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Evener state directory")
 	fs.StringVar(&opts.LogFile, "log-file", opts.LogFile, "write startup diagnostics to this file")
 	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, fmt.Sprintf("hub capability token (overrides %s and token file)", envvars.SERFHubAuthToken.Name))
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	fs.Usage = func() {
 		// Write failures to the flag usage writer are unactionable.
-		_, _ = fmt.Fprintf(fs.Output(), "Usage: serf-tui [flags]\n\n"+
-			"Serf TUI — interactive terminal UI for serf-hub.\n\n"+
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: evener-tui [flags]\n\n"+
+			"Evener TUI — interactive terminal UI for evener-hub.\n\n"+
 			"Flags:\n"+
-			"  --hub-addr <addr>        serf hub address (default: %s)\n"+
-			"  --hub-bin <path>         path to serf-hub binary\n"+
+			"  --hub-addr <addr>        evener hub address (default: %s)\n"+
+			"  --hub-bin <path>         path to evener-hub binary\n"+
 			"  --no-auto-start-hub      do not start a local hub when unreachable\n"+
-			"  --state-dir <path>       override Serf state directory\n"+
+			"  --state-dir <path>       override Evener state directory\n"+
 			"  --log-file <path>        write startup diagnostics to this file\n"+
 			"  --auth-token <token>     hub capability token (overrides %s and token file)\n"+
 			"  --debug                  disable alternate screen\n\n"+
@@ -124,7 +124,7 @@ func ResolveAuthToken(explicit, stateDir string) string {
 	if token != "" {
 		return token
 	}
-	fmt.Fprintf(os.Stderr, "serf-tui: warning: no hub auth token found (checked %s); proceeding without auth\n", tokenFile)
+	fmt.Fprintf(os.Stderr, "evener-tui: warning: no hub auth token found (checked %s); proceeding without auth\n", tokenFile)
 	return ""
 }
 
@@ -146,9 +146,9 @@ func resolveAuthToken(explicit, stateDir string) (string, string) {
 func AuthTokenFilePath(_ string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".serf", "auth-token")
+		return filepath.Join(".evener", "auth-token")
 	}
-	return filepath.Join(home, ".serf", "auth-token")
+	return filepath.Join(home, ".evener", "auth-token")
 }
 
 // bearerTransport is an http.RoundTripper that injects an Authorization header.
@@ -222,7 +222,7 @@ func (e StartupError) Error() string {
 	}
 	switch e.Kind {
 	case StartupErrorMissingHubBinary:
-		return "cannot find serf-hub binary: " + detail
+		return "cannot find evener-hub binary: " + detail
 	case StartupErrorBindFailure:
 		return "hub failed to bind: " + detail
 	case StartupErrorUnhealthyHub:
@@ -333,7 +333,7 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if cfg.LookPath == nil {
 		cfg.LookPath = exec.LookPath
 	}
-	bin, err := binresolve.Resolve("serf-hub", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
+	bin, err := binresolve.Resolve("evener-hub", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
 	if err != nil {
 		return fail(StartupError{Kind: StartupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
 	}
@@ -409,7 +409,7 @@ func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client, o
 	}
 	client.Start(context.WithoutCancel(ctx))
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
-		ClientInfo: appwire.ClientInfo{Name: "serf-tui", Version: "tui"},
+		ClientInfo: appwire.ClientInfo{Name: "evener-tui", Version: "tui"},
 	}); err != nil {
 		_ = client.Close()
 		var mismatch appwire.ProtocolVersionMismatchError
@@ -472,7 +472,7 @@ func StartLocalHub(req HubStartRequest) error {
 	cmd.Stdout = cmdOut
 	cmd.Stderr = cmdOut
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start serf-hub: %w", err)
+		return fmt.Errorf("start evener-hub: %w", err)
 	}
 	exited := make(chan error, 1)
 	go func() {
@@ -482,9 +482,9 @@ func StartLocalHub(req HubStartRequest) error {
 	case err := <-exited:
 		output := strings.TrimSpace(startupOutput.String())
 		if output != "" {
-			return fmt.Errorf("serf-hub exited during startup: %w: %s", err, output)
+			return fmt.Errorf("evener-hub exited during startup: %w: %s", err, output)
 		}
-		return fmt.Errorf("serf-hub exited during startup: %w", err)
+		return fmt.Errorf("evener-hub exited during startup: %w", err)
 	case <-time.After(LocalHubImmediateExitWindow):
 	}
 	// The hub survived the window: it's healthy and stays running detached
@@ -560,7 +560,7 @@ func isTerminalStartupError(err error) bool {
 func StartupErrorScreen(err error) string {
 	var startupErr StartupError
 	if !errors.As(err, &startupErr) {
-		return fmt.Sprintf("Serf TUI startup failed\n\n%s\n", err)
+		return fmt.Sprintf("Evener TUI startup failed\n\n%s\n", err)
 	}
 	detail := startupErr.Detail
 	if detail == "" && startupErr.Err != nil {
@@ -568,19 +568,19 @@ func StartupErrorScreen(err error) string {
 	}
 	switch startupErr.Kind {
 	case StartupErrorMissingHubBinary:
-		return fmt.Sprintf("Serf TUI startup failed\n\nCannot find serf-hub binary.\n%s\n", detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nCannot find evener-hub binary.\n%s\n", detail)
 	case StartupErrorBindFailure:
-		return fmt.Sprintf("Serf TUI startup failed\n\nHub failed to bind %s.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nHub failed to bind %s.\n%s\n", startupErr.Addr, detail)
 	case StartupErrorUnhealthyHub:
-		return fmt.Sprintf("Serf TUI startup failed\n\nHub started but did not become healthy at %s.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nHub started but did not become healthy at %s.\n%s\n", startupErr.Addr, detail)
 	case StartupErrorIncompatibleAPI:
-		return fmt.Sprintf("Serf TUI startup failed\n\nHub API is incompatible at %s.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nHub API is incompatible at %s.\n%s\n", startupErr.Addr, detail)
 	case StartupErrorStaleEnvironment:
-		return fmt.Sprintf("Serf TUI startup failed\n\nHub is running with a different state/auth environment at %s.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nHub is running with a different state/auth environment at %s.\n%s\n", startupErr.Addr, detail)
 	case StartupErrorRemoteNoAutoStart:
-		return fmt.Sprintf("Serf TUI startup failed\n\nRemote Hub is not reachable at %s, and serf-tui only auto-starts local Hubs.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nRemote Hub is not reachable at %s, and evener-tui only auto-starts local Hubs.\n%s\n", startupErr.Addr, detail)
 	default:
-		return fmt.Sprintf("Serf TUI startup failed\n\nHub is not reachable at %s.\n%s\n", startupErr.Addr, detail)
+		return fmt.Sprintf("Evener TUI startup failed\n\nHub is not reachable at %s.\n%s\n", startupErr.Addr, detail)
 	}
 }
 
@@ -603,5 +603,5 @@ func WriteStartupDiagnostic(logFile string, err error) {
 		kind = startupErr.Kind
 	}
 	// Best-effort diagnostic; a write failure here is unactionable.
-	_, _ = fmt.Fprintf(f, "serf-tui startup failed kind=%s error=%s\n", kind, err)
+	_, _ = fmt.Fprintf(f, "evener-tui startup failed kind=%s error=%s\n", kind, err)
 }

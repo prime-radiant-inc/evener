@@ -14,7 +14,7 @@ import (
 // builtinAgentNames are the agents compiled into the binary (defaultPersona.txt
 // etc.) and shown on Settings → Agents. They have no on-disk file to open, so
 // every row's EditPath stays empty. Consumed by hubSettingsOverview
-// (serf/settings/overview), the appwire data path behind Settings → Agents.
+// (evener/settings/overview), the appwire data path behind Settings → Agents.
 var builtinAgentNames = []string{"default", "explorer", "subagent"}
 
 // settingsSpawnTimeoutDisplay is the Settings → General/Hub "Spawn timeout"
@@ -86,7 +86,7 @@ func fileSizeHuman(path string) string {
 }
 
 // defaultMCPConfigPath is the conventional XDG location for the global
-// MCP config (~/.config/serf/mcp.json), matching agent.globalMCPConfigPath.
+// MCP config (~/.config/evener/mcp.json), matching agent.globalMCPConfigPath.
 func defaultMCPConfigPath() string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
@@ -96,5 +96,5 @@ func defaultMCPConfigPath() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "mcp.json")
+	return filepath.Join(dir, "evener", "mcp.json")
 }

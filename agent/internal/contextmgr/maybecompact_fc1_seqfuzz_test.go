@@ -43,7 +43,7 @@ import (
 //	   into the checkpoint (which re-extracts them on re-compaction).
 //	I6 (pressure bound): the estimated post-op pressure is finite and non-negative.
 //
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestFc1MaybeCompactSeqFuzz(t *testing.T) {
 	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent/internal/contextmgr -run TestFc1MaybeCompactSeqFuzz -count=1 -v")

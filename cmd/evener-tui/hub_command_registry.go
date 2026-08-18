@@ -64,9 +64,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "upgrade",
-		Summary:       "Upgrade installed Serf",
+		Summary:       "Upgrade installed Evener",
 		PaletteLabel:  "/upgrade",
-		PaletteDetail: "upgrade installed Serf",
+		PaletteDetail: "upgrade installed Evener",
 		Scopes:        hubCommandDashboard | hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			if m.client == nil {
@@ -450,9 +450,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "quit",
-		Summary:       "Exit serf-tui",
+		Summary:       "Exit evener-tui",
 		PaletteLabel:  "/quit",
-		PaletteDetail: "exit serf-tui",
+		PaletteDetail: "exit evener-tui",
 		Scopes:        hubCommandDashboard | hubCommandSession,
 		Run: func(_ *hubModel, _ string) tea.Cmd {
 			return tea.Quit

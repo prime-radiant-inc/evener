@@ -63,7 +63,7 @@ type hubSessionDetail struct {
 	State       string
 	AskPending  bool
 	// PendingEscalations is the M7 surface-on-entry snapshot from
-	// thread.Serf.PendingEscalations — the redacted approval cards for escalations
+	// thread.Evener.PendingEscalations — the redacted approval cards for escalations
 	// blocked on this session. Merged into hubModel.escalationsByRef (de-duped by
 	// id) on entry so a fresh/other/reconnecting client surfaces the card.
 	PendingEscalations []appwire.SandboxEscalationRequested
@@ -79,34 +79,34 @@ type hubSessionDetail struct {
 	ContextRemaining   int
 	ActiveTurnID       string
 	RecentErrors       []string
-	Diagnostics        *appwire.SerfDiagnostics
+	Diagnostics        *appwire.EvenerDiagnostics
 	Live               bool
 	Capabilities       hubSessionCapabilities
 	// Queue carries the authoritative queue snapshot from
-	// thread.Serf.Queue (kata r80p). hubModel mirrors this into
+	// thread.Evener.Queue (kata r80p). hubModel mirrors this into
 	// sessionQueue when entering/refreshing a session so the composer
 	// preview lines up with the daemon truth without local mirroring.
 	Queue appwire.QueueState
-	// Goal mirrors thread.Serf.Goal so `/goal status` can read the cached
+	// Goal mirrors thread.Evener.Goal so `/goal status` can read the cached
 	// snapshot without a fresh round-trip. Nil when no goal is set.
 	Goal *appwire.GoalState
-	// Usage, WorkMillis, and ActiveTurnStartedAt mirror thread.Serf's WS2
+	// Usage, WorkMillis, and ActiveTurnStartedAt mirror thread.Evener's WS2
 	// working-state/token metrics so the session header chip strip and the
 	// /status details drawer can render them without a fresh round-trip.
 	// Usage is nil when the source reports no token data (old daemon, Codex
 	// thread, or zero usage).
-	Usage               *appwire.SerfUsage
+	Usage               *appwire.EvenerUsage
 	WorkMillis          int64
 	ActiveTurnStartedAt int64
 	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning mirror
-	// thread.Serf's live reasoning-effort settings (Task 4) so the /effort
+	// thread.Evener's live reasoning-effort settings (Task 4) so the /effort
 	// command and session header render without a fresh round-trip, and
 	// thread/model/changed / thread/reasoning-effort/changed keep them
 	// current mid-session.
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
 	SupportsReasoning     bool
-	// FailedToolCalls mirrors thread.Serf.FailedToolCalls (kata md4g): nil
+	// FailedToolCalls mirrors thread.Evener.FailedToolCalls (kata md4g): nil
 	// means nobody counted (an unreadable transcript, or a source that never
 	// derives the figure), and must render as nothing, not a fabricated zero.
 	FailedToolCalls *int
@@ -192,7 +192,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 }
 
 func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
-	ref := thread.Serf.Ref
+	ref := thread.Evener.Ref
 	if ref == "" {
 		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
 	}
@@ -211,7 +211,7 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		Title:       title,
 		Project:     project,
 		State:       thread.Status.Type,
-		AskPending:  thread.Serf.AskPending,
+		AskPending:  thread.Evener.AskPending,
 		Model:       hubThreadModelLabel(thread),
 		RowID:       "project:" + ref,
 		CreatedAt:   thread.CreatedAt,
@@ -224,7 +224,7 @@ func hubThreadModelLabel(thread appwire.Thread) string {
 	if model := strings.TrimSpace(thread.ModelProvider); model != "" {
 		return model
 	}
-	if provider := strings.TrimSpace(thread.Serf.Profile); provider != "" {
+	if provider := strings.TrimSpace(thread.Evener.Profile); provider != "" {
 		return "provider: " + provider
 	}
 	return ""
@@ -232,7 +232,7 @@ func hubThreadModelLabel(thread appwire.Thread) string {
 
 func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	node := hubNodeFromThread(thread)
-	caps := thread.Serf.Capabilities
+	caps := thread.Evener.Capabilities
 	capabilities := hubSessionCapabilities{
 		Send:        caps.Send,
 		Steer:       caps.Steer,
@@ -261,32 +261,32 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		SourceLabel:           node.SourceLabel,
 		Title:                 node.Title,
 		State:                 node.State,
-		AskPending:            thread.Serf.AskPending,
-		PendingEscalations:    thread.Serf.PendingEscalations,
+		AskPending:            thread.Evener.AskPending,
+		PendingEscalations:    thread.Evener.PendingEscalations,
 		Model:                 thread.ModelProvider,
-		Profile:               thread.Serf.Profile,
+		Profile:               thread.Evener.Profile,
 		WorkingDir:            thread.CWD,
 		Project:               node.Project,
 		Branch:                gitBranchFromThread(thread),
 		TurnCount:             len(thread.Turns),
 		ActiveTurnID:          activeTurnIDFromThread(thread),
-		ContextPressure:       thread.Serf.ContextPressure,
-		ContextUsed:           thread.Serf.ContextUsed,
-		ContextWindow:         thread.Serf.ContextWindow,
-		ContextRemaining:      thread.Serf.ContextRemaining,
+		ContextPressure:       thread.Evener.ContextPressure,
+		ContextUsed:           thread.Evener.ContextUsed,
+		ContextWindow:         thread.Evener.ContextWindow,
+		ContextRemaining:      thread.Evener.ContextRemaining,
 		RecentErrors:          recentTurnErrors(thread),
-		Diagnostics:           thread.Serf.Diagnostics,
+		Diagnostics:           thread.Evener.Diagnostics,
 		Live:                  node.Live,
 		Capabilities:          capabilities,
-		Queue:                 thread.Serf.Queue,
-		Goal:                  thread.Serf.Goal,
-		Usage:                 thread.Serf.Usage,
-		WorkMillis:            thread.Serf.WorkMillis,
-		ActiveTurnStartedAt:   thread.Serf.ActiveTurnStartedAt,
-		ReasoningEffort:       thread.Serf.ReasoningEffort,
-		ReasoningEffortLevels: thread.Serf.ReasoningEffortLevels,
-		SupportsReasoning:     thread.Serf.SupportsReasoning,
-		FailedToolCalls:       thread.Serf.FailedToolCalls,
+		Queue:                 thread.Evener.Queue,
+		Goal:                  thread.Evener.Goal,
+		Usage:                 thread.Evener.Usage,
+		WorkMillis:            thread.Evener.WorkMillis,
+		ActiveTurnStartedAt:   thread.Evener.ActiveTurnStartedAt,
+		ReasoningEffort:       thread.Evener.ReasoningEffort,
+		ReasoningEffortLevels: thread.Evener.ReasoningEffortLevels,
+		SupportsReasoning:     thread.Evener.SupportsReasoning,
+		FailedToolCalls:       thread.Evener.FailedToolCalls,
 	}
 }
 
@@ -329,14 +329,14 @@ func activeTurnIDFromThread(thread appwire.Thread) string {
 func sourceLabelFromRefText(refText string) string {
 	ref, err := appwire.ParseRef(refText)
 	if err != nil {
-		return "serf"
+		return "evener"
 	}
 	return sourceLabelFromRef(ref)
 }
 
 func sourceLabelFromRef(ref appwire.Ref) string {
 	if ref.SourceID == "" || ref.SourceID == "local" {
-		return "serf"
+		return "evener"
 	}
 	return ref.SourceID
 }

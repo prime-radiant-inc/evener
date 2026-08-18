@@ -162,8 +162,8 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agenttest.DenyEnv, string, string, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	currentDir := filepath.Join(root, "serf", "projects", trenderCurrentProject)
-	siblingDir := filepath.Join(root, "serf", "projects", trenderOtherProject)
+	currentDir := filepath.Join(root, "evener", "projects", trenderCurrentProject)
+	siblingDir := filepath.Join(root, "evener", "projects", trenderOtherProject)
 	for _, dir := range []string{currentDir, siblingDir} {
 		if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
 			t.Fatalf("make transcript bucket %q: %v", dir, err)
@@ -253,7 +253,7 @@ func tdrpWriteSession(t *testing.T, bucket string, spec tdrpSessionSpec) {
 		UpdatedAt:       tdrpTime,
 		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir:   "/fixture/project",
-			GitOriginURL: "git@example.test:fixture/serf.git",
+			GitOriginURL: "git@example.test:fixture/evener.git",
 		},
 	}
 	if err := schema.SaveSessionMeta(bucket, meta); err != nil {

@@ -129,7 +129,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
 				t.Fatal(got)
 			}
-			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "serf") {
+			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "evener") {
 				t.Fatalf("valid project state dir = %q, %v", got, err)
 			}
 		case 5:
@@ -141,10 +141,10 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if got := resolveSerfBinaryPath("/explicit", "/hub", nil); got != "/explicit" {
 				t.Fatal(got)
 			}
-			if got := resolveSerfBinaryPath("", "/x/serf-hub", func(string) (string, error) { return "/path/serf", nil }); got == "" {
+			if got := resolveSerfBinaryPath("", "/x/evener-hub", func(string) (string, error) { return "/path/evener", nil }); got == "" {
 				t.Fatal("binary path unresolved")
 			}
-			_ = resolveSerfBinaryPath("", "serf-hub", func(string) (string, error) { return "", errors.New("missing") })
+			_ = resolveSerfBinaryPath("", "evener-hub", func(string) (string, error) { return "", errors.New("missing") })
 			if envToMap([]string{"A=1", "bad", "A=2"})["A"] != "2" {
 				t.Fatal("environment map did not keep last value")
 			}

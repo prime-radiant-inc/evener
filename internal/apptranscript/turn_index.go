@@ -909,7 +909,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
 		}
-		turn.Usage = appwire.SerfUsageFromLLM(entry.Turn.Usage)
+		turn.Usage = appwire.EvenerUsageFromLLM(entry.Turn.Usage)
 		turns = append(turns, turn)
 	}
 	return turns, projected, nil
@@ -1208,7 +1208,7 @@ func writeTurnIndex(path string, index turnIndexDisk, stats *ReadStats) error {
 }
 
 func initialPrefixStamp() string {
-	sum := sha256.Sum256([]byte("serf-apptranscript-prefix-v1"))
+	sum := sha256.Sum256([]byte("evener-apptranscript-prefix-v1"))
 	return hex.EncodeToString(sum[:])
 }
 

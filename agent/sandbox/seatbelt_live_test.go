@@ -98,8 +98,8 @@ func TestSeatbeltLiveModesRun(t *testing.T) {
 	requireLiveSeatbelt(t)
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		rp, cwd := liveResolve(t, mode, true)
-		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/echo", "serf-live-ok")
-		if exit != 0 || !strings.Contains(out, "serf-live-ok") {
+		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/echo", "evener-live-ok")
+		if exit != 0 || !strings.Contains(out, "evener-live-ok") {
 			t.Errorf("%v: a confined /bin/echo must run (exit=%d out=%q)", mode, exit, out)
 		}
 	}
@@ -203,12 +203,12 @@ func TestSeatbeltLiveGitConfigProtected(t *testing.T) {
 	requireLiveSeatbelt(t)
 	rp, cwd := liveResolve(t, ModeWorkspaceWrite, true)
 	// config write denied.
-	if _, exit := runUnderSeatbelt(t, rp, cwd, "git", "config", "--local", "serf.escape", "1"); exit == 0 {
+	if _, exit := runUnderSeatbelt(t, rp, cwd, "git", "config", "--local", "evener.escape", "1"); exit == 0 {
 		t.Error("workspace-write must deny a .git/config write (git config --local)")
 	}
 	// object write allowed (staging + commit touches objects/refs/index/logs).
 	if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
-		"git -c user.email=t@e -c user.name=t commit --allow-empty -m serf-live 2>&1"); exit != 0 {
+		"git -c user.email=t@e -c user.name=t commit --allow-empty -m evener-live 2>&1"); exit != 0 {
 		t.Errorf("workspace-write must allow git object writes (commit) (exit=%d):\n%s", exit, out)
 	}
 }
@@ -233,7 +233,7 @@ func TestSeatbeltLivePackedRefsMaintenance(t *testing.T) {
 			// is left alone — whatever rerere setting the developer carries applies,
 			// as it does in a real session.
 			out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
-				"git -c user.email=t@e -c user.name=t commit -q --allow-empty -m serf-packed-refs && git pack-refs --all")
+				"git -c user.email=t@e -c user.name=t commit -q --allow-empty -m evener-packed-refs && git pack-refs --all")
 			if exit != 0 {
 				t.Errorf("workspace-write must allow git packed-refs maintenance (exit=%d):\n%s", exit, out)
 			}
@@ -260,7 +260,7 @@ func TestSeatbeltLiveCommitWithRerereEnabled(t *testing.T) {
 			rp, cwd := liveResolveKind(t, kind, ModeWorkspaceWrite, true)
 			stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "git",
 				"-c", "rerere.enabled=true", "-c", "user.email=t@e", "-c", "user.name=t",
-				"commit", "-q", "--allow-empty", "-m", "serf-rerere")
+				"commit", "-q", "--allow-empty", "-m", "evener-rerere")
 			if exit != 0 {
 				t.Errorf("workspace-write must allow a commit with rerere enabled (exit=%d)\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
 			}
@@ -298,7 +298,7 @@ func TestSeatbeltLiveGitConfigAndHooksStillDenied(t *testing.T) {
 					target = filepath.Join(p, "post-commit")
 				}
 				out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c",
-					"echo serf-escape >>"+target+" 2>&1")
+					"echo evener-escape >>"+target+" 2>&1")
 				if exit == 0 {
 					t.Errorf("write to protected git surface %q must be denied, but it succeeded:\n%s", target, out)
 				}
@@ -320,7 +320,7 @@ func liveInfraDir(t *testing.T) (dir, script string) {
 	t.Helper()
 	dir = t.TempDir()
 	script = filepath.Join(dir, "session-start.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho serf-hook-ran\n"), 0o755); err != nil { //nolint:gosec // an executable test fixture
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho evener-hook-ran\n"), 0o755); err != nil { //nolint:gosec // an executable test fixture
 		t.Fatal(err)
 	}
 	return dir, script
@@ -355,7 +355,7 @@ func TestSeatbeltLiveInfraPathExecutableInEveryMode(t *testing.T) {
 			p.InfraReadRoots = []string{infra}
 		})
 		out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", script)
-		if exit != 0 || !strings.Contains(out, "serf-hook-ran") {
+		if exit != 0 || !strings.Contains(out, "evener-hook-ran") {
 			t.Errorf("%v: a configured hook/MCP path must be executable (exit=%d out=%q)", mode, exit, out)
 		}
 	}
@@ -470,7 +470,7 @@ func TestSeatbeltLiveGoTestTelemetryDenialIsTheOnlyStderr(t *testing.T) {
 	// A trivial module with no external dependencies: it exercises the build/test
 	// path (and GOCACHE) without needing GOMODCACHE writes, keeping this test
 	// focused on the telemetry denial.
-	writeFile(t, filepath.Join(cwd, "go.mod"), "module serf-live-telemetry-probe\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(cwd, "go.mod"), "module evener-live-telemetry-probe\n\ngo 1.21\n")
 	writeFile(t, filepath.Join(cwd, "probe_test.go"), "package probe\n\nimport \"testing\"\n\nfunc TestProbe(t *testing.T) {}\n")
 
 	sessionTmp := t.TempDir()
@@ -610,16 +610,16 @@ func TestSeatbeltLiveGitCommitInRestrictedMode(t *testing.T) {
 	if len(RealProber{}.Probe().DeveloperToolRoots) == 0 {
 		t.Skip("live seatbelt test: no developer toolchain installed on this host")
 	}
-	writeFile(t, filepath.Join(cwd, "committed.txt"), "serf restricted commit\n")
+	writeFile(t, filepath.Join(cwd, "committed.txt"), "evener restricted commit\n")
 
 	script := realConfigGit + "add committed.txt && " +
-		realConfigGit + "commit -q -m serf-restricted-commit && " +
+		realConfigGit + "commit -q -m evener-restricted-commit && " +
 		realConfigGit + "log -1 --format=%s"
 	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", script)
 	if exit != 0 {
 		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "serf-restricted-commit") {
+	if !strings.Contains(stdout, "evener-restricted-commit") {
 		t.Errorf("the commit did not land; git log said %q", stdout)
 	}
 	if extra := unexpectedStderr(stderr); len(extra) > 0 {
@@ -666,7 +666,7 @@ func TestSeatbeltLiveGlobalGitConfigReadableInRestrictedMode(t *testing.T) {
 	// The grant is the FILE, not the tree around it. Listing the home directory
 	// and reading a sibling of the config must both stay denied.
 	home := RealProber{}.Probe().Home
-	sibling := filepath.Join(filepath.Dir(paths[len(paths)-1]), "serf-should-not-be-readable")
+	sibling := filepath.Join(filepath.Dir(paths[len(paths)-1]), "evener-should-not-be-readable")
 	for _, denied := range []string{"ls " + home, "cat " + sibling} {
 		if _, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", denied+" >/dev/null 2>&1"); exit == 0 {
 			t.Errorf("the global-config grant must not widen into a home read, but %q succeeded", denied)
@@ -820,7 +820,7 @@ func TestSeatbeltLiveRestrictedGitWritesStillDenied(t *testing.T) {
 		if filepath.Base(p) == "hooks" {
 			target = filepath.Join(p, "post-commit")
 		}
-		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo serf-escape >>"+target+" 2>&1"); exit == 0 {
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo evener-escape >>"+target+" 2>&1"); exit == 0 {
 			t.Errorf("write to protected git surface %q must be denied, but it succeeded:\n%s", target, out)
 		}
 	}
@@ -830,7 +830,7 @@ func TestSeatbeltLiveRestrictedGitWritesStillDenied(t *testing.T) {
 	// The new grant is READ-only: the global config it makes readable must not
 	// have become writable, by raw append or by porcelain.
 	for _, p := range paths {
-		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo serf-escape >>"+p+" 2>&1"); exit == 0 {
+		if out, exit := runUnderSeatbelt(t, rp, cwd, "/bin/sh", "-c", "echo evener-escape >>"+p+" 2>&1"); exit == 0 {
 			t.Errorf("the global config %q must stay write-denied, but the append succeeded:\n%s", p, out)
 		}
 	}

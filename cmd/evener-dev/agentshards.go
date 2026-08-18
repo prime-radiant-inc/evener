@@ -21,7 +21,7 @@ package main
 //	                       TestAgentShardsSkipOnlyReachesTheSurvey.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
-//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/serf-agent-shards)
+//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-agent-shards)
 //
 // plus pass-through `go test` flags. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
@@ -417,7 +417,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
 		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 			return ""
 		}
-		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "serf-agent-shards")
+		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "evener-agent-shards")
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""

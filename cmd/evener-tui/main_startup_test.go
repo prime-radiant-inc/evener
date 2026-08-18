@@ -31,9 +31,9 @@ func TestParseTUIStartupOptionsDefaults(t *testing.T) {
 func TestParseTUIStartupOptionsUsesEnvironmentDefaults(t *testing.T) {
 	env := map[string]string{
 		"SERF_HUB_ADDR":     "http://env-hub:9180",
-		"SERF_HUB_BIN":      "/env/serf-hub",
-		"SERF_STATE_DIR":    "/env/state/serf",
-		"SERF_TUI_LOG_FILE": "/env/serf-tui.log",
+		"SERF_HUB_BIN":      "/env/evener-hub",
+		"SERF_STATE_DIR":    "/env/state/evener",
+		"SERF_TUI_LOG_FILE": "/env/evener-tui.log",
 	}
 	opts, err := hubstart.ParseTUIStartupOptions(nil, func(key string) string { return env[key] })
 	if err != nil {
@@ -47,22 +47,22 @@ func TestParseTUIStartupOptionsUsesEnvironmentDefaults(t *testing.T) {
 func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 	env := map[string]string{
 		"SERF_HUB_ADDR":     "http://env-hub:9180",
-		"SERF_HUB_BIN":      "/env/serf-hub",
-		"SERF_STATE_DIR":    "/env/state/serf",
-		"SERF_TUI_LOG_FILE": "/env/serf-tui.log",
+		"SERF_HUB_BIN":      "/env/evener-hub",
+		"SERF_STATE_DIR":    "/env/state/evener",
+		"SERF_TUI_LOG_FILE": "/env/evener-tui.log",
 	}
 	opts, err := hubstart.ParseTUIStartupOptions([]string{
 		"--hub-addr", "http://flag-hub:9180",
-		"--hub-bin", "/flag/serf-hub",
-		"--state-dir", "/flag/state/serf",
-		"--log-file", "/flag/serf-tui.log",
+		"--hub-bin", "/flag/evener-hub",
+		"--state-dir", "/flag/state/evener",
+		"--log-file", "/flag/evener-tui.log",
 		"--no-auto-start-hub",
 		"--debug",
 	}, func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("hubstart.ParseTUIStartupOptions: %v", err)
 	}
-	if opts.HubAddr != "http://flag-hub:9180" || opts.HubBin != "/flag/serf-hub" || opts.StateDir != "/flag/state/serf" || opts.LogFile != "/flag/serf-tui.log" {
+	if opts.HubAddr != "http://flag-hub:9180" || opts.HubBin != "/flag/evener-hub" || opts.StateDir != "/flag/state/evener" || opts.LogFile != "/flag/evener-tui.log" {
 		t.Fatalf("options=%+v", opts)
 	}
 	if opts.AutoStartHub {
@@ -110,7 +110,7 @@ func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
 
 func TestPostQuitMessageFromHubModel(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.postQuitMessage = "Restore this session: serf-tui --hub-addr http://hub.test, then open local:01SEND"
+	m.postQuitMessage = "Restore this session: evener-tui --hub-addr http://hub.test, then open local:01SEND"
 
 	got := postQuitMessageFromModel(m)
 	if got != m.postQuitMessage {

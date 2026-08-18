@@ -75,7 +75,7 @@ func scenarioRegistryMainAndReaderWriterErrors(t *testing.T) {
 	}
 	oldExit, oldArgs := osExit, os.Args
 	t.Cleanup(func() { osExit, os.Args = oldExit, oldArgs })
-	os.Args = []string{"serf-fuzzregistry"}
+	os.Args = []string{"evener-fuzzregistry"}
 	got := -1
 	osExit = func(code int) { got = code }
 	main()
@@ -148,7 +148,7 @@ import r "pgregory.net/rapid"
 import _ "pgregory.net/rapid"
 import . "pgregory.net/rapid"
 // unrelated
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestMarked(t *T) { other(); x.Check(); r.Check(t, func(t *r.T) {}) }
 func TestNoBody(t *T)
 `
@@ -338,7 +338,7 @@ func scenarioDiscoverWorkspaceMalformedFilesAndRapidIssues(t *testing.T) {
 	badMarker := `package p
 import "testing"
 import "pgregory.net/rapid"
-// serf:fuzz rapid
+// evener:fuzz rapid
 func Bad(t *testing.T) {}
 func TestUnmarked(t *testing.T) { rapid.Check(t, func(t *rapid.T){}) }
 `

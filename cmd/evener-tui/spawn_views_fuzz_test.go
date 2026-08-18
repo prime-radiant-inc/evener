@@ -191,7 +191,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = openOverrides()
 		m.spawnHarnesses = nil
 		m.cycleSpawnHarness()
-		m.spawnHarnesses = []string{"serf", "codex"}
+		m.spawnHarnesses = []string{"evener", "codex"}
 		m.spawnHarness = "missing"
 		m.cycleSpawnHarness()
 		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
@@ -199,14 +199,14 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = m.spawnHarnessKind()
 		m.spawnModel = "provider/model"
 		m.syncSpawnModelWithHarness()
-		m.spawnHarness = "serf"
+		m.spawnHarness = "evener"
 		m.spawnModels = []tuipick.ModelPickerItem{{ID: "disabled", DisabledReason: "no"}, {ID: "ok"}}
 		m.spawnModel = ""
 		m.syncSpawnModelWithHarness()
 		_, _ = firstEnabledModel([]tuipick.ModelPickerItem{{DisabledReason: "no"}})
 		_ = m.spawnModelDisabledReason("missing")
-		m.spawnEmptyTaskReasons = map[string]string{"serf": "reason"}
-		m.spawnEmptyTaskNext = map[string]string{"serf": "next"}
+		m.spawnEmptyTaskReasons = map[string]string{"evener": "reason"}
+		m.spawnEmptyTaskNext = map[string]string{"evener": "next"}
 		_ = m.spawnEmptyTaskUnsupportedReason()
 		_ = m.spawnEmptyTaskUnsupportedNextAction()
 		m.spawnEmptyTaskReasons, m.spawnEmptyTaskNext = nil, nil
@@ -257,8 +257,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.session.input.SetValue("")
 		_, _ = m.submitSpawnForm()
 		m.spawnEmptyTaskReasons = nil
-		m.spawnHarness = "serf"
-		m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		m.spawnHarness = "evener"
+		m.spawnHarnessKinds = map[string]string{"evener": "evener"}
 		m.client = nil
 		m.spawnModels = nil
 		_, _ = m.activateSpawnModelField()
@@ -275,8 +275,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
 		m.spawnHarnessModels = nil
 		_ = m.spawnFieldHint()
-		m.spawnHarness = "serf"
-		m.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		m.spawnHarness = "evener"
+		m.spawnHarnessKinds = map[string]string{"evener": "evener"}
 		m.spawnModel, m.spawnModels = "", []tuipick.ModelPickerItem{{ID: "ok"}}
 		_ = m.spawnView()
 		m.selected = -1
@@ -299,8 +299,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 
 		// Validation errors return before the inert client can issue RPC.
 		submit := newHubModel(&appwire.Client{}, "hub")
-		submit.spawnHarness = "serf"
-		submit.spawnHarnessKinds = map[string]string{"serf": "serf"}
+		submit.spawnHarness = "evener"
+		submit.spawnHarnessKinds = map[string]string{"evener": "evener"}
 		submit.spawnModel = ""
 		_, _ = submit.submitSpawnForm()
 		submit.spawnModels = []tuipick.ModelPickerItem{{ID: "bad", DisabledReason: "disabled"}}

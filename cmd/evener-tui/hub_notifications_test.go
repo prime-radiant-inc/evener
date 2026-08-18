@@ -18,7 +18,7 @@ func TestRunStillRunning_Exhausted(t *testing.T) {
 
 func TestTUIStableDelegateNotificationHasNoDelegateJobIdentity(t *testing.T) {
 	m := newTUIStableDelegateModel()
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_resource",
 		ProjectionRevision: 1,
 		Status:             "running",
@@ -37,7 +37,7 @@ func TestTUIStableDelegateNotificationHasNoDelegateJobIdentity(t *testing.T) {
 
 func TestTUIStableDelegateReducerRejectsStaleRevision(t *testing.T) {
 	m := newTUIStableDelegateModel()
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_revision",
 		ProjectionRevision: 2,
 		Lifecycle:          "idle",
@@ -47,7 +47,7 @@ func TestTUIStableDelegateReducerRejectsStaleRevision(t *testing.T) {
 		Task:               "finish once",
 		LatestActivityAt:   "2026-08-15T10:00:00Z",
 	})
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_revision",
 		ProjectionRevision: 1,
 		Status:             "running",
@@ -67,7 +67,7 @@ func TestTUIStableDelegateTerminalLifecycleDoesNotSubscribeChild(t *testing.T) {
 
 	m := newTUIStableDelegateModel()
 	m.client = client
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_terminal",
 		Lifecycle:          "idle",
 		Status:             "idle",
@@ -89,20 +89,20 @@ func TestTUIStableDelegateRendersTimingUsageQuietWorktreeAndWarnings(t *testing.
 	m := newTUIStableDelegateModel()
 	durationMS := int64(2500)
 	quietForMS := int64(750)
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_fidelity",
 		ProjectionRevision: 3,
 		Status:             "running",
 		Task:               "verify projection fidelity",
 		DurationMS:         &durationMS,
 		QuietForMS:         &quietForMS,
-		Usage: &appwire.SerfUsage{
+		Usage: &appwire.EvenerUsage{
 			InputTokens:  120,
 			OutputTokens: 45,
 			TotalTokens:  165,
 		},
 		Worktree: &appwire.JobActivityWorktree{
-			Path:    "/tmp/serf-worktree",
+			Path:    "/tmp/evener-worktree",
 			Branch:  "feature/resource",
 			HeadSHA: "1234567890abcdef",
 			Ahead:   2,
@@ -121,9 +121,9 @@ func TestTUIStableDelegateRendersTimingUsageQuietWorktreeAndWarnings(t *testing.
 
 func TestTUIStableDelegateShellRemainsJobAddressed(t *testing.T) {
 	m := newTUIStableDelegateModel()
-	sendTUINotification(t, &m, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+	sendTUINotification(t, &m, appwire.NotifyEvenerJobStarted, appwire.EvenerJobParams{
 		Ref: "local:root",
-		Job: appwire.SerfJobInfo{
+		Job: appwire.EvenerJobInfo{
 			JobID:            "job_shell",
 			JobType:          "shell",
 			Status:           "running",
@@ -148,13 +148,13 @@ func TestTUIStableDelegateShellRemainsJobAddressed(t *testing.T) {
 // body would otherwise swallow the rest under a greedy match).
 func TestTUISteeringInjectedTiesEveryJobNotificationBlock(t *testing.T) {
 	m := newTUIStableDelegateModel()
-	sendTUINotification(t, &m, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+	sendTUINotification(t, &m, appwire.NotifyEvenerJobStarted, appwire.EvenerJobParams{
 		Ref: "local:root",
-		Job: appwire.SerfJobInfo{JobID: "job_A", JobType: "shell", Status: "running", Background: true},
+		Job: appwire.EvenerJobInfo{JobID: "job_A", JobType: "shell", Status: "running", Background: true},
 	})
-	sendTUINotification(t, &m, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+	sendTUINotification(t, &m, appwire.NotifyEvenerJobStarted, appwire.EvenerJobParams{
 		Ref: "local:root",
-		Job: appwire.SerfJobInfo{JobID: "job_B", JobType: "shell", Status: "running", Background: true},
+		Job: appwire.EvenerJobInfo{JobID: "job_B", JobType: "shell", Status: "running", Background: true},
 	})
 
 	blockA := `<job-notification job_id="job_A" job_type="delegate" status="completed" exit_code="0">` +
@@ -163,7 +163,7 @@ func TestTUISteeringInjectedTiesEveryJobNotificationBlock(t *testing.T) {
 	blockB := `<job-notification job_id="job_B" job_type="delegate" status="completed" exit_code="0">` +
 		`excerpt: {"data":{"test_summary":"3 passed","commit_hashes":["1234567890abcdef"]}}` +
 		`</job-notification>`
-	sendTUINotification(t, &m, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+	sendTUINotification(t, &m, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
 		Ref:  "local:root",
 		Text: blockA + "\n" + blockB,
 	})
@@ -180,7 +180,7 @@ func TestTUISteeringInjectedTiesEveryJobNotificationBlock(t *testing.T) {
 
 func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T) {
 	m := newTUIStableDelegateModel()
-	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
+	sendTUIStableDelegateNotification(t, &m, appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_observer",
 		ProjectionRevision: 1,
 		Status:             "running",
@@ -191,7 +191,7 @@ func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T) {
 	watchNotice := `<delegate-notification delegate_id="dlg_observer">watch fired for parent shell</delegate-notification>`
 	observerNotice := `<delegate-notification delegate_id="dlg_observer">observer callback remains active</delegate-notification>`
 	for _, notice := range []string{watchNotice, observerNotice} {
-		sendTUINotification(t, &m, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{Ref: "local:root", Text: notice})
+		sendTUINotification(t, &m, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{Ref: "local:root", Text: notice})
 	}
 
 	seen := map[string]bool{}
@@ -212,9 +212,9 @@ func newTUIStableDelegateModel() hubModel {
 	return m
 }
 
-func sendTUIStableDelegateNotification(t testing.TB, m *hubModel, delegate appwire.SerfDelegateInfo) {
+func sendTUIStableDelegateNotification(t testing.TB, m *hubModel, delegate appwire.EvenerDelegateInfo) {
 	t.Helper()
-	sendTUINotification(t, m, appwire.NotifySerfDelegateUpdated, appwire.SerfDelegateParams{
+	sendTUINotification(t, m, appwire.NotifyEvenerDelegateUpdated, appwire.EvenerDelegateParams{
 		Ref:      "local:root",
 		Delegate: delegate,
 	})

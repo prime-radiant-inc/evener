@@ -94,7 +94,7 @@ func checkToArgs_SkipsUnset(t *testing.T) {
 }
 
 // TestToArgs_Sandbox: a launch-config sandbox choice must reach the spawned
-// `serf serve`. An explicit mode emits `--sandbox <mode>` (including off, so a
+// `evener serve`. An explicit mode emits `--sandbox <mode>` (including off, so a
 // launch layer can override a global default back to off); an unset mode emits
 // nothing. sandbox_net is a tri-state: true/false emit `--sandbox-net on|off`,
 // nil emits nothing.
@@ -107,7 +107,7 @@ func checkToArgs_Sandbox(t *testing.T) {
 		{"unset", Layer{}, nil},
 		{"restricted", Layer{Sandbox: "restricted"}, []string{"--sandbox", "restricted"}},
 		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off"}},
-		// sandbox_net without a non-off mode is suppressed: serf ignores the flag
+		// sandbox_net without a non-off mode is suppressed: evener ignores the flag
 		// without a sandbox, so passing it alone would be a silent no-op.
 		{"net on, no mode", Layer{SandboxNet: ptrBool(true)}, nil},
 		{"net off, no mode", Layer{SandboxNet: ptrBool(false)}, nil},

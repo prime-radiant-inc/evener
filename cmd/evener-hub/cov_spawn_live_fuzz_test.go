@@ -17,7 +17,7 @@ import (
 
 func fuzzExecutable(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "serf")
+	p := filepath.Join(t.TempDir(), "evener")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ mkdir -p "$rd"
 printf '{"pid":%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}' "$$" > "$rd/$$.json"
 sleep 1
 `)
-		h := HubSpawner{SerfBinary: live, RunDir: liveDir}
+		h := HubSpawner{EvenerBinary: live, RunDir: liveDir}
 		_, _ = h.ListLaunchModels(ctx)
 		_, _ = h.ListLaunchModelContract(ctx)
 		_, _ = h.ListLaunchModelContractForWorkingDir(ctx, dir)

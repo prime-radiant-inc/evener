@@ -53,7 +53,7 @@ func JSON() [][]byte {
 }
 
 // TOML returns generic stressors for a TOML decoder (the BurntSushi/toml
-// library serf uses): duplicate keys and tables, dotted/quoted keys, datetime
+// library evener uses): duplicate keys and tables, dotted/quoted keys, datetime
 // and number extremes, multiline strings, inline tables, arrays of tables, and
 // a BOM prefix.
 func TOML() [][]byte {

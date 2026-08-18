@@ -1,9 +1,9 @@
 // Package fakellm serves a scriptable OpenAI chat-completions-compatible
-// provider so a live stack — a real serf-hub, a real serf daemon child, a
+// provider so a live stack — a real evener-hub, a real evener daemon child, a
 // real session loop — can be driven one model round at a time with no
 // provider credential, no network, and no wall-clock guessing about when a
 // turn is "still busy". It is the deterministic half of the boundary
-// AGENTS.md draws: serf plumbing (appwire RPC, daemon queues, session loops)
+// AGENTS.md draws: evener plumbing (appwire RPC, daemon queues, session loops)
 // gets a scripted provider; only model behaviour itself stays live.
 //
 // A test holds a turn open simply by not answering. Example (in
@@ -70,7 +70,7 @@ func (c *Call) Cancelled() <-chan struct{} { return c.cancelled }
 
 // AffinityHeader is the session-affinity header value from the request, if present.
 // It may be one of session_id, x-client-request-id, or x-session-affinity headers
-// sent by serf when send_session_affinity_headers is configured. Empty if absent.
+// sent by evener when send_session_affinity_headers is configured. Empty if absent.
 func (c *Call) AffinityHeader() string { return c.affinityHeader }
 
 type reply struct {

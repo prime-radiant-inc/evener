@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const embeddedDoctoringSkill = "doctoring-serf"
+const embeddedDoctoringSkill = "doctoring-evener"
 
 func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	t.Parallel()
@@ -47,8 +47,8 @@ func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected embedded %q skill, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
 	}
-	if !strings.Contains(meta.Description, "serf") {
-		t.Fatalf("embedded %q description = %q, want serf-specific description", embeddedDoctoringSkill, meta.Description)
+	if !strings.Contains(meta.Description, "evener") {
+		t.Fatalf("embedded %q description = %q, want evener-specific description", embeddedDoctoringSkill, meta.Description)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, embeddedDoctoringSkill,
-		"---\nname: doctoring-serf\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
+		"---\nname: doctoring-evener\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := make(map[string]skill.SkillMeta)
@@ -132,8 +132,8 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Fatal("system prompt should contain <skill-catalog> for embedded skills")
 	}
-	if !strings.Contains(capturedSystem, "- doctoring-serf:") {
-		t.Fatal("system prompt should list embedded doctoring-serf skill")
+	if !strings.Contains(capturedSystem, "- doctoring-evener:") {
+		t.Fatal("system prompt should list embedded doctoring-evener skill")
 	}
 }
 
@@ -191,7 +191,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 
 	// Project has a custom doctoring skill that should shadow the embedded one.
 	writeSkillMD(t, root, embeddedDoctoringSkill,
-		"---\nname: doctoring-serf\ndescription: \"Custom project doctoring\"\n---\nCustom doctoring body.\n")
+		"---\nname: doctoring-evener\ndescription: \"Custom project doctoring\"\n---\nCustom doctoring body.\n")
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")

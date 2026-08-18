@@ -22,7 +22,7 @@ import (
 // clientMutationId everywhere, expectedQueueRevision on drain, expectedEntryId
 // on promote and cancel. Stop's precondition is the session's wire state.
 //
-// Everything here runs against a real serf-hub process, the real serf daemon it
+// Everything here runs against a real evener-hub process, the real evener daemon it
 // spawns, and the real AppWire socket, because that is the only place the rule
 // exists as one piece. The rule spans a Go type, a hand-written validator list,
 // three wire layers and a TypeScript client, and neither compiler can see
@@ -30,7 +30,7 @@ import (
 // on both sides and fails only on the wire.
 //
 // The provider is fakellm -- a scripted HTTP provider, not a stub of anything
-// serf owns -- so a turn stays in flight for exactly as long as a test declines
+// evener owns -- so a turn stays in flight for exactly as long as a test declines
 // to answer the model call. No credential, no network, no pacing prompt.
 
 // TestE2E_StopCancelsWhateverIsRunningAndNamesIt is the first half of the rule:
@@ -84,7 +84,7 @@ func TestE2E_StopCancelsWhateverIsRunningAndNamesIt(t *testing.T) {
 	}
 
 	awaitThread(ctx, t, client, ref, "the session to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
 	})
 	awaitTurnStatus(ctx, t, client, ref, running, "interrupted")
 }
@@ -148,7 +148,7 @@ func TestE2E_ASendThatRacedAStopStillRuns(t *testing.T) {
 		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
 	}
 	awaitThread(ctx, t, client, ref, "the interrupted session to settle", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
 	})
 
 	// The Send that was already in flight when the user pressed Stop. The
@@ -297,7 +297,7 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	endedTurn := awaitActiveTurn(ctx, t, client, ref, "")
 	round1.RespondToolCall("communicate", communicateArgs("opening turn done"))
 	awaitThread(ctx, t, client, ref, "the opening turn to end", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
 	})
 
 	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
@@ -522,7 +522,7 @@ type = %q
 		t.Fatalf("the receipt names turn %q, but the session was running %q", receipt.Receipt.TurnID, running)
 	}
 	awaitThread(ctx, t, client, ref, "the live session to stop", func(thread appwire.Thread) bool {
-		return thread.Serf.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
 	})
 	awaitTurnStatus(ctx, t, client, ref, running, "interrupted")
 
@@ -551,13 +551,13 @@ type = %q
 	t.Logf("live steer landed in turn %s and came back from the model", landedIn)
 }
 
-// startLiveThread opens a serf thread on the stack and registers the shutdown
+// startLiveThread opens a evener thread on the stack and registers the shutdown
 // that keeps the daemon -- a grandchild the hub deliberately outlives -- from
 // leaking. t.Cleanup is LIFO, so this runs before startHubStack's hub kill.
 func startLiveThread(ctx context.Context, t *testing.T, client *appwire.Client, stack hubStack, opening string) string {
 	t.Helper()
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: opening}},
 		Model:           stack.model,
@@ -566,9 +566,9 @@ func startLiveThread(ctx context.Context, t *testing.T, client *appwire.Client, 
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}
-	ref := started.Thread.Serf.Ref
+	ref := started.Thread.Evener.Ref
 	if ref == "" {
-		t.Fatalf("thread/start returned no serf ref: %+v", started.Thread)
+		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
 	}
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
@@ -587,10 +587,10 @@ func awaitQueueDepth(ctx context.Context, t *testing.T, client *appwire.Client, 
 	t.Helper()
 	var queue appwire.QueueState
 	awaitThread(ctx, t, client, ref, "queue depth "+strconv.Itoa(depth), func(thread appwire.Thread) bool {
-		if thread.Serf.Queue.Depth != depth {
+		if thread.Evener.Queue.Depth != depth {
 			return false
 		}
-		queue = thread.Serf.Queue
+		queue = thread.Evener.Queue
 		return true
 	})
 	return queue

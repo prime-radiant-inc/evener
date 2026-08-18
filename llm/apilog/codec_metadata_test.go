@@ -97,7 +97,7 @@ func TestMetadataOnlyDecodeStillEnforcesStructuralFields(t *testing.T) {
 
 // benchmarkAPILogFixture builds a many-record synthetic API log with
 // realistic (non-trivial) request/response bodies, approximating the
-// multi-hundred-MB logs serf-doctor summarization runs against.
+// multi-hundred-MB logs evener-doctor summarization runs against.
 func benchmarkAPILogFixture(b *testing.B, recordCount int) []byte {
 	b.Helper()
 	requestBody := strings.Repeat("request payload byte content. ", 200)   // ~6.4KB

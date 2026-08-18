@@ -181,7 +181,7 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 	m.detail = hubSessionDetail{
 		Ref:             "local:01SEND",
 		SessionID:       "01SEND",
-		SourceLabel:     "serf",
+		SourceLabel:     "evener",
 		Model:           "gpt-5",
 		Profile:         "openai",
 		WorkingDir:      "/tmp/project",
@@ -189,16 +189,16 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 		TurnCount:       3,
 		ContextPressure: 0.37,
 		RecentErrors:    []string{"turn_2: provider quota exceeded"},
-		Diagnostics: &appwire.SerfDiagnostics{
-			Tools: []appwire.SerfToolInfo{
+		Diagnostics: &appwire.EvenerDiagnostics{
+			Tools: []appwire.EvenerToolInfo{
 				{Name: "shell", Source: "core"},
 				{Name: "linear__search", Source: "mcp:linear"},
 			},
-			MCP:     []appwire.SerfMCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
-			Skills:  []appwire.SerfSkillInfo{{Name: "superpowers:systematic-debugging"}},
-			Plugins: []appwire.SerfPluginInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			MCP:     []appwire.EvenerMCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
+			Skills:  []appwire.EvenerSkillInfo{{Name: "superpowers:systematic-debugging"}},
+			Plugins: []appwire.EvenerPluginInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
 			Hooks:   map[string]int{"PreToolUse": 3},
-			Jobs:    []appwire.SerfJobInfo{{JobID: "job-1", JobType: "delegate", Status: "completed"}},
+			Jobs:    []appwire.EvenerJobInfo{{JobID: "job-1", JobType: "delegate", Status: "completed"}},
 			Agents:  []string{"explorer"},
 		},
 	}

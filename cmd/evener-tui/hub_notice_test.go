@@ -31,9 +31,9 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 		Title:      "AppWire error",
 		Category:   "appwire",
 		Summary:    "Hub request failed.",
-		Source:     "serf",
+		Source:     "evener",
 		Reason:     "method not found",
-		NextAction: "Restart the matching serf-hub binary.",
+		NextAction: "Restart the matching evener-hub binary.",
 	})
 
 	first := m.sessionView()
@@ -61,14 +61,14 @@ func TestHubModelDashboardRendersNotices(t *testing.T) {
 	m.addNotice(noticePanel{
 		Title:      "Upgrade complete",
 		Category:   "upgrade",
-		Summary:    "Serf upgraded to snapshot.",
+		Summary:    "Evener upgraded to snapshot.",
 		Source:     "hub",
-		Reason:     "serf_linux_amd64.tar.gz",
-		NextAction: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		Reason:     "evener_linux_amd64.tar.gz",
+		NextAction: "Restart evener-tui and evener-hub to use the upgraded binaries.",
 	})
 
 	got := m.dashboardView()
-	for _, want := range []string{"Serf upgraded to snapshot.", "serf_linux_amd64.tar.gz", "Restart serf-tui and serf-hub"} {
+	for _, want := range []string{"Evener upgraded to snapshot.", "evener_linux_amd64.tar.gz", "Restart evener-tui and evener-hub"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard notice missing %q:\n%s", want, got)
 		}
@@ -105,8 +105,8 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 		detail: hubSessionDetail{
 			Ref:         "local:01SERF",
 			SessionID:   "01SERF",
-			SourceLabel: "serf",
-			Title:       "Serf replay",
+			SourceLabel: "evener",
+			Title:       "Evener replay",
 			State:       "ended",
 		},
 	})
@@ -119,13 +119,13 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 
 func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "serf"
+	m.detail.SourceLabel = "evener"
 
 	updated, _ := m.Update(hubAuthStatusMsg{err: appwire.Unavailable("auth endpoint unavailable")})
 	m = updated.(hubModel)
 	got := m.sessionView()
 	// View() format: summary line contains the notice summary/title, source·cause on second line.
-	for _, want := range []string{"auth endpoint unavailable", "serf", "Retry /auth openai or check Hub auth configuration."} {
+	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth openai or check Hub auth configuration."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
@@ -171,12 +171,12 @@ func TestNoticePanel_NoCauseFallsBackToMessageMatch(t *testing.T) {
 }
 
 // TestNoticePanel_NoCauseNonProviderMessage (kata 5q3p) regression-locks
-// the non-provider branch of the substring fallback path: a "serf error:"
-// message with no Cause must classify as serf, never as provider.
+// the non-provider branch of the substring fallback path: a "evener error:"
+// message with no Cause must classify as evener, never as provider.
 func TestNoticePanel_NoCauseNonProviderMessage(t *testing.T) {
-	got := classifyWarningCategory("serf error: configuration", nil)
-	if got != "serf" {
-		t.Fatalf("classifyWarningCategory serf-message fallback: got %q, want %q", got, "serf")
+	got := classifyWarningCategory("evener error: configuration", nil)
+	if got != "evener" {
+		t.Fatalf("classifyWarningCategory evener-message fallback: got %q, want %q", got, "evener")
 	}
 }
 
@@ -199,7 +199,7 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 		},
 		{
 			name: "provider",
-			msg:  hubSessionModelsMsg{err: appwire.WireError{Code: appwire.CodeUnavailable, Message: "OpenAI login required", Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorProviderUnavailable}}},
+			msg:  hubSessionModelsMsg{err: appwire.WireError{Code: appwire.CodeUnavailable, Message: "OpenAI login required", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorProviderUnavailable}}},
 			want: []string{"OpenAI login required", "Check provider auth and model availability."},
 		},
 	}

@@ -79,8 +79,8 @@ func TestNBCFSeededConfigPathProbeLoadsAndValidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "configpath", "resolve_test.go"), []byte("package configpath\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	const buggyReturn = `return filepath.Join(os.Getenv("HOME"), ".serf", "providers.toml")`
-	const fixedReturn = `return filepath.Join(homeDir, ".serf", "providers.toml")`
+	const buggyReturn = `return filepath.Join(os.Getenv("HOME"), ".evener", "providers.toml")`
+	const fixedReturn = `return filepath.Join(homeDir, ".evener", "providers.toml")`
 	fixedSrc := strings.Replace(string(src), buggyReturn, fixedReturn, 1)
 	if fixedSrc == string(src) {
 		t.Fatal("test setup did not actually rewrite the fallback branch — fixture text drifted from this test")

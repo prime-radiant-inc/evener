@@ -9,7 +9,7 @@ func TestDefaultRoot_UsesXDGConfigHome(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	got := DefaultRoot()
-	want := filepath.Join(xdg, "serf", "plugins")
+	want := filepath.Join(xdg, "evener", "plugins")
 	if got != want {
 		t.Fatalf("DefaultRoot() = %q, want %q", got, want)
 	}

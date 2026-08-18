@@ -11,7 +11,7 @@ import (
 // name, and a function that resolves the base URL for a given type tag. It never
 // sets APIKey. Instances are sorted by Name for determinism.
 //
-// The serf-specific roster (the openai/openai-compatible API-style defaults)
+// The evener-specific roster (the openai/openai-compatible API-style defaults)
 // lives here in cmdutil rather than in the providercfg schema package, which
 // stays provider-agnostic.
 func Seed(providerNames []string, defaultName string, getBaseURL func(typ string) string) providercfg.Config {

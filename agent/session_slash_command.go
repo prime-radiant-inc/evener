@@ -31,7 +31,7 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) (string,
 		return input, false
 	}
 	if cmd.Source != "plugin" {
-		// Serf-wide commands expand inert: arguments substitute as text,
+		// Evener-wide commands expand inert: arguments substitute as text,
 		// nothing executes or reads (docs/skills.md).
 		return command.ExpandArgs(cmd.Body, strings.TrimSpace(args)), true
 	}

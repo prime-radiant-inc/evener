@@ -1,5 +1,5 @@
 // Package globpattern provides the small, bounded pattern expansion shared by
-// Serf's file-search tools. It deliberately implements brace alternatives only;
+// Evener's file-search tools. It deliberately implements brace alternatives only;
 // shell evaluation is outside this package's contract.
 package globpattern
 

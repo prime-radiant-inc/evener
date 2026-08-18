@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"errors"
@@ -60,7 +60,7 @@ import (
 //  4. 26 of the 135 files read yield ZERO needles, so they are entirely
 //     unchecked —
 //     including hooks-claude-compat-matcher.md, whose whole subject is
-//     PreToolUse / "Bash" / SerfToClaude, and state-stuck-processing-display.md,
+//     PreToolUse / "Bash" / EvenerToClaude, and state-stuck-processing-display.md,
 //     whose headline assertion is `state: "idle"`. The shapes the extractor does
 //     not read, all of which the corpus uses: quoted values inside a span, JSON
 //     fragments, a token with a trailing period, two tokens in one span,
@@ -80,7 +80,7 @@ var scenarioNeedleSourceExtensions = map[string]bool{
 // handed to models verbatim, so a Finding category or a signature prefix that a
 // runbook prescribes is as much production vocabulary as a Go string constant —
 // the doctor agent emits `watch_runaway` because
-// skills/doctoring-serf/references/finding-contract.md tells it to, and no Go
+// skills/doctoring-evener/references/finding-contract.md tells it to, and no Go
 // file names it at all.
 const scenarioNeedleBundledRoot = "internal/bundled"
 
@@ -112,8 +112,8 @@ var scenarioNeedleSkipDirNames = map[string]bool{
 // genuinely absent from production source, to the one-line reason it may stay.
 // Three reasons recur, and each is a case where absence is the point:
 //
-//   - the token belongs to a tool serf does not ship (the shared Chrome MCP
-//     server, a pip package). Serf cannot rename it, so it cannot rot;
+//   - the token belongs to a tool evener does not ship (the shared Chrome MCP
+//     server, a pip package). Evener cannot rename it, so it cannot rot;
 //   - the card asserts the token's ABSENCE — "there is no `self_loop` field",
 //     "a model that hallucinates a `create_file` tool". Requoting these from
 //     production is impossible by construction;
@@ -134,28 +134,28 @@ var scenarioNeedleSkipDirNames = map[string]bool{
 // `create_file`, `auto_ssh` are allowlisted BECAUSE a card asserts they do not
 // exist, which is the sentence a future author is most likely to copy.
 var scenarioNeedleAllowed = map[scenarioNeedleException]string{
-	{"docs/agentic-testing.md", "use_browser"}: "superpowers-chrome MCP tool, not serf's surface",
-	{"docs/agentic-testing.md", "set_profile"}: "superpowers-chrome MCP tool, not serf's surface",
-	{"docs/agentic-testing.md", "new_tab"}:     "superpowers-chrome MCP tool, not serf's surface",
-	{"docs/agentic-testing.md", "switch_tab"}:  "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskCrossSessionNotify, "use_browser"}: "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskTwoClients, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskTwoClients, "new_tab"}:             "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskTwoClients, "switch_tab"}:          "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskTwoClients, "list_tabs"}:           "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskTwoClients, "await_element"}:       "superpowers-chrome MCP tool, not serf's surface",
-	{cardAskWebAnswer, "use_browser"}:          "superpowers-chrome MCP tool, not serf's surface",
-	{cardAttentionNeedsYou, "use_browser"}:     "superpowers-chrome MCP tool, not serf's surface",
-	{cardSpawnKeyboard, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
-	{cardWebDragDrop, "use_browser"}:           "superpowers-chrome MCP tool, not serf's surface",
-	{cardWebDragDrop, "set_profile"}:           "superpowers-chrome MCP tool, not serf's surface",
-	{cardWebFilePicker, "use_browser"}:         "superpowers-chrome MCP tool, not serf's surface",
-	{cardFontSizePresets, "set_profile"}:       "superpowers-chrome MCP tool, not serf's surface",
-	{cardWebModelSwitch, "new_tab"}:            "superpowers-chrome MCP tool, not serf's surface",
-	{cardWebFilePicker, "file_upload"}:         "a use_browser action driving CDP Input.setFileInputFiles, not serf's surface",
-	{cardIndex, "file_upload"}:                 "a use_browser action driving CDP Input.setFileInputFiles, not serf's surface",
-	{cardCostEstimate, "tabs_context_mcp"}:     "claude-in-chrome extension tool, not serf's surface",
-	{cardTurnMetaBadge, "tabs_context_mcp"}:    "claude-in-chrome extension tool, not serf's surface",
+	{"docs/agentic-testing.md", "use_browser"}: "superpowers-chrome MCP tool, not evener's surface",
+	{"docs/agentic-testing.md", "set_profile"}: "superpowers-chrome MCP tool, not evener's surface",
+	{"docs/agentic-testing.md", "new_tab"}:     "superpowers-chrome MCP tool, not evener's surface",
+	{"docs/agentic-testing.md", "switch_tab"}:  "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskCrossSessionNotify, "use_browser"}: "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskTwoClients, "use_browser"}:         "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskTwoClients, "new_tab"}:             "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskTwoClients, "switch_tab"}:          "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskTwoClients, "list_tabs"}:           "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskTwoClients, "await_element"}:       "superpowers-chrome MCP tool, not evener's surface",
+	{cardAskWebAnswer, "use_browser"}:          "superpowers-chrome MCP tool, not evener's surface",
+	{cardAttentionNeedsYou, "use_browser"}:     "superpowers-chrome MCP tool, not evener's surface",
+	{cardSpawnKeyboard, "use_browser"}:         "superpowers-chrome MCP tool, not evener's surface",
+	{cardWebDragDrop, "use_browser"}:           "superpowers-chrome MCP tool, not evener's surface",
+	{cardWebDragDrop, "set_profile"}:           "superpowers-chrome MCP tool, not evener's surface",
+	{cardWebFilePicker, "use_browser"}:         "superpowers-chrome MCP tool, not evener's surface",
+	{cardFontSizePresets, "set_profile"}:       "superpowers-chrome MCP tool, not evener's surface",
+	{cardWebModelSwitch, "new_tab"}:            "superpowers-chrome MCP tool, not evener's surface",
+	{cardWebFilePicker, "file_upload"}:         "a use_browser action driving CDP Input.setFileInputFiles, not evener's surface",
+	{cardIndex, "file_upload"}:                 "a use_browser action driving CDP Input.setFileInputFiles, not evener's surface",
+	{cardCostEstimate, "tabs_context_mcp"}:     "claude-in-chrome extension tool, not evener's surface",
+	{cardTurnMetaBadge, "tabs_context_mcp"}:    "claude-in-chrome extension tool, not evener's surface",
 	{cardCredentialsPage, "tomli_w"}:           "the pip package this card's TOML-editing one-liner imports",
 
 	{cardDoctorForensics, "self_loop"}:       "this card asserts the report carries NO such field",
@@ -167,7 +167,7 @@ var scenarioNeedleAllowed = map[scenarioNeedleException]string{
 	{cardWorkspaceTitleBar, "queue_cap"}:     "the label this card's own python one-liner prints",
 	{cardAttentionNeedsYou, "seen_awaiting"}: "the shell variable this card polls into",
 	{cardAuthDevicePollConcurrent, "elapsed_ms"}: "the shell variable this card computes at :108 and asserts at :126; " +
-		"it is not serf vocabulary and only ever resolved by riding inside group_elapsed_ms",
+		"it is not evener vocabulary and only ever resolved by riding inside group_elapsed_ms",
 }
 
 // scenarioNeedleException is one card's exemption for one needle.
@@ -708,7 +708,7 @@ func TestJobControlReasonCodesEmittedAreDocumented(t *testing.T) {
 // rather than because any code path can put it on the wire -- which is
 // exactly how the general needle audit above already misses
 // `supervision_lost`'s absent Go emitter (it lives in
-// internal/bundled/skills/doctoring-serf/references/failure-modes.md).
+// internal/bundled/skills/doctoring-evener/references/failure-modes.md).
 func jobControlReasonGoSource(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder

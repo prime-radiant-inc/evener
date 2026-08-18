@@ -21,7 +21,7 @@ func RuntimeDir(workDir, overrideDir string) (identifier.Project, string, error)
 // RuntimeDirWithStateHome computes the project state directory like RuntimeDir,
 // but uses stateHome as the base when it is non-empty instead of xdgStateHome().
 // If overrideDir is non-empty, it is returned directly without resolving the
-// project. Otherwise the result is <base>/serf/projects/<Project.ID>.
+// project. Otherwise the result is <base>/evener/projects/<Project.ID>.
 func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier.Project, string, error) {
 	if overrideDir != "" {
 		return identifier.Project{}, overrideDir, nil
@@ -34,7 +34,7 @@ func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier
 	if base == "" {
 		base = xdgStateHome()
 	}
-	return project, filepath.Join(base, "serf", "projects", project.ID), nil
+	return project, filepath.Join(base, "evener", "projects", project.ID), nil
 }
 
 // RuntimeDirForProjectWithStateHome returns the state directory for an
@@ -46,12 +46,12 @@ func RuntimeDirForProjectWithStateHome(project identifier.Project, stateHome str
 	if base == "" {
 		base = xdgStateHome()
 	}
-	return filepath.Join(base, "serf", "projects", project.ID)
+	return filepath.Join(base, "evener", "projects", project.ID)
 }
 
-// CacheDir returns the global cache directory: $XDG_CACHE_HOME/serf/
+// CacheDir returns the global cache directory: $XDG_CACHE_HOME/evener/
 func CacheDir() string {
-	return filepath.Join(xdgCacheHome(), "serf")
+	return filepath.Join(xdgCacheHome(), "evener")
 }
 
 // shortHash returns SHA256(b)[:8] as hex, used for compact tool-call

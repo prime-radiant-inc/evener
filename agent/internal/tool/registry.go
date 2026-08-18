@@ -985,7 +985,7 @@ func compileSchemaWith(params map[string]any, addResource func(*jsonschema.Compi
 	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
 	// A relative URL like "schema.json" triggers os.Getwd() which can panic
 	// in transient environments (e.g. deleted git worktrees).
-	const schemaURI = "urn:serf:tool-schema"
+	const schemaURI = "urn:evener:tool-schema"
 	if err := addResource(c, schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}

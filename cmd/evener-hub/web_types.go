@@ -81,11 +81,11 @@ type WorkspaceData struct {
 	Cost                  string
 	ActiveTurnID          string
 	RunningFor            string
-	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.SerfThread's
+	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.EvenerThread's
 	// working-state/token metrics (WS2). Usage is nil when no token data is
 	// available (fresh session, old daemon, or a Codex thread).
 	WorkMillis          int64
-	Usage               *appwire.SerfUsage
+	Usage               *appwire.EvenerUsage
 	ActiveTurnStartedAt int64
 	ShowSidebarToggle   bool
 	ThreadDocumentMode  bool
@@ -157,6 +157,6 @@ type daemonStatus struct {
 	// Usage, WorkMillis, and ActiveTurnStartedAt mirror server.StatusInfo's
 	// WS2 working-state/token metrics fields.
 	WorkMillis          int64              `json:"work_millis,omitempty"`
-	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
 	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
 }

@@ -110,7 +110,7 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
-	// NoProjectPrompts suppresses loading .serf/prompts/ from the project directory.
+	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
 

@@ -67,7 +67,7 @@ func (w *Wrapper) SessionTmp() string { return w.sessionTmp }
 // the backend invocation to cmd.Args (updating cmd.Path via Wrap) and, for the
 // Seatbelt backend, sets cmd.Dir to dir. sandbox-exec has no chdir flag (unlike
 // bwrap's --chdir, which Wrap encodes in the argv), so without this the confined
-// child would inherit serf's process cwd instead of the worktree. It is the single
+// child would inherit evener's process cwd instead of the worktree. It is the single
 // spawn-site helper every kernel-wrapped command routes through (execenv, hooks,
 // mcp) so the Seatbelt cwd handling lives in one place rather than being duplicated
 // at each site. A nil wrapper leaves cmd unchanged (byte-identical to an

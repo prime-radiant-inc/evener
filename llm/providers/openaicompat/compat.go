@@ -15,7 +15,7 @@ import (
 // request via compatFor.
 type ModelCompat struct {
 	Quirks ProviderQuirks
-	// ThinkingLevels maps serf effort levels (canonical lowercase keys,
+	// ThinkingLevels maps evener effort levels (canonical lowercase keys,
 	// minimal → max) to the wire string the provider wants. Empty means no
 	// translation — levels pass through by name.
 	ThinkingLevels map[string]string
@@ -31,17 +31,17 @@ type ModelCompat struct {
 	ReasoningOff bool
 }
 
-// wireEffort translates a serf effort level to the provider's wire value.
+// wireEffort translates a evener effort level to the provider's wire value.
 // A model-level map wins; without one, the TranslateMaxToXHigh quirk still
 // applies (OpenRouter vocabulary).
 //
-// When a map is present, it is the authority for serf's effort vocabulary:
+// When a map is present, it is the authority for evener's effort vocabulary:
 // the requested effort is first clamped to the map's own keys via
 // llm.ClampReasoningEffort (the same guard the session-side profile clamp
-// uses), then translated through the map — a serf level the map doesn't
+// uses), then translated through the map — a evener level the map doesn't
 // carry is clamped to the nearest declared level before translation. Values
-// OUTSIDE serf's vocabulary (e.g. "turbo" from a direct llm.Client caller)
-// pass through unchanged, matching ClampReasoningEffort's serf-wide
+// OUTSIDE evener's vocabulary (e.g. "turbo" from a direct llm.Client caller)
+// pass through unchanged, matching ClampReasoningEffort's evener-wide
 // permissive contract for unknown vocabulary. Without a map, effort passes
 // through by name unchanged (aside from the TranslateMaxToXHigh quirk).
 func (mc ModelCompat) wireEffort(effort string) string {

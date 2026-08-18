@@ -15,10 +15,10 @@ func TestMergeCommands(t *testing.T) {
 			"p:review": {Name: "review", PluginName: "p", Source: "plugin"},
 		}},
 	}
-	serfwide := map[string]Command{
+	evenerwide := map[string]Command{
 		"review": {Name: "review", Source: "user"},
 	}
-	got := MergeCommands(instances, serfwide)
+	got := MergeCommands(instances, evenerwide)
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2: %v", len(got), maps.Keys(got))
 	}
@@ -180,7 +180,7 @@ func TestParseCommand_NoFrontmatter(t *testing.T) {
 
 // TestParseCommand_FrontmatterNameFieldIsIgnored covers a real-world pattern
 // (seen in installed marketplace plugins) where a command's frontmatter
-// includes a "name" field anyway. serf must not read it — the filename (via
+// includes a "name" field anyway. evener must not read it — the filename (via
 // discoverPluginCommands, or the name argument here) is authoritative — so a
 // frontmatter name that disagrees with the actual command name is silently
 // ignored, not an override and not an error.

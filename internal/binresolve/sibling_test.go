@@ -190,7 +190,7 @@ func writeExecutable(t *testing.T, path string) {
 
 func TestIsExecutable_NonExistent(t *testing.T) {
 	// Use the exported function indirectly by testing Resolve with explicit path.
-	const explicit = "/nonexistent/path/serf-hub"
+	const explicit = "/nonexistent/path/evener-hub"
 	_, err := Resolve("evener-hub", explicit, "", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent explicit path")
@@ -294,7 +294,7 @@ func TestInjectedPlatformAndAbsFailures(t *testing.T) {
 }
 
 func FuzzSiblingDir(f *testing.F) {
-	for _, seed := range []string{"", " ", "evener", "./bin/serf", "/tmp/serf"} {
+	for _, seed := range []string{"", " ", "evener", "./bin/evener", "/tmp/evener"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, executable string) {
@@ -310,8 +310,8 @@ func FuzzSiblingDir(f *testing.F) {
 
 func TestResolveWithNilLookPath(t *testing.T) {
 	// Passing nil lookPath triggers the default exec.LookPath branch.
-	// Since serf-hub is unlikely to be on the real PATH, this should error.
-	const name = "serf-hub-definitely-not-on-path"
+	// Since evener-hub is unlikely to be on the real PATH, this should error.
+	const name = "evener-hub-definitely-not-on-path"
 	_, err := Resolve(name, "", filepath.Join(t.TempDir(), "evener-tui"), nil)
 	if err == nil {
 		t.Fatal("expected error when lookPath is nil and no candidate exists")

@@ -1270,8 +1270,8 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 
 // TestFormatShellResultRunTimeoutFooter pins the wording for a genuine
 // stopped/run_timeout terminal result (job-control.md:212, :214): the process
-// was stopped by serf's own runtime limit, not by failing on its own. The
-// footer must attribute the stop to serf's runtime limit and must not present
+// was stopped by evener's own runtime limit, not by failing on its own. The
+// footer must attribute the stop to evener's runtime limit and must not present
 // it as an ordinary exit/failure.
 func TestFormatShellResultRunTimeoutFooter(t *testing.T) {
 	t.Parallel()
@@ -1287,7 +1287,7 @@ func TestFormatShellResultRunTimeoutFooter(t *testing.T) {
 		ExitCode: &exitCode,
 		Output:   &output,
 	})
-	for _, want := range []string{"serf", "runtime limit"} {
+	for _, want := range []string{"evener", "runtime limit"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("run_timeout footer = %q, want it to contain %q", got, want)
 		}
@@ -1315,7 +1315,7 @@ func TestFormatShellResultRunTimeoutZeroOutputFooter(t *testing.T) {
 		TimedOut: false,
 		ExitCode: &exitCode,
 	})
-	for _, want := range []string{"serf", "runtime limit", "no output"} {
+	for _, want := range []string{"evener", "runtime limit", "no output"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("zero-output run_timeout footer = %q, want it to contain %q", got, want)
 		}

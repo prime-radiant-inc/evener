@@ -84,7 +84,7 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 
 	// 1. Spawn: the request reaches the recording Spawner, never a subprocess.
 	rec := do(http.MethodPost, "/api/spawn", map[string]any{
-		"harness":     "serf",
+		"harness":     "evener",
 		"working_dir": s.CWD,
 		"model":       "openai/gpt-5.5",
 	})
@@ -148,9 +148,9 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	}
 }
 
-// TestSandboxContainsInstanceRemove proves the serf/instance/* methods are both
+// TestSandboxContainsInstanceRemove proves the evener/instance/* methods are both
 // reachable (registered, because the sandbox seeds a providers.toml) AND
-// contained: a path-traversal instance name must not let serf/instance/remove
+// contained: a path-traversal instance name must not let evener/instance/remove
 // delete a file outside the auth state dir. Before the controller validated the
 // name, Remove forwarded it straight to authopenai.DeleteAuth, whose
 // stateDir/auth/<name>.json join lets "../../canary" escape — arbitrary .json
@@ -167,7 +167,7 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal remove params: %v", err)
 		}
-		req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodSerfInstanceRemove, Params: raw}
+		req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodEvenerInstanceRemove, Params: raw}
 		// The call may succeed or return a structured error; either is acceptable
 		// so long as nothing escapes the sandbox.
 		_, _ = router.Dispatch(context.Background(), req)
@@ -179,7 +179,7 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 	// The traversal name must not delete the out-of-state canary.
 	dispatch("../../canary")
 	if _, err := os.Stat(canary); err != nil {
-		t.Fatalf("path escape: serf/instance/remove deleted the out-of-state canary (%v)", err)
+		t.Fatalf("path escape: evener/instance/remove deleted the out-of-state canary (%v)", err)
 	}
 
 	// Every providers.toml mutation stays in the sandbox temp file.
@@ -191,9 +191,9 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 // TestSandboxContainsPluginStore proves the plugin/marketplace store
 // (internal/plugins.Manager, reached via hubPluginsController and the
 // auto-upgrade checkNow handler) is contained inside the sandbox root instead
-// of resolving to plugins.DefaultRoot() (~/.config/serf/plugins). Before the
+// of resolving to plugins.DefaultRoot() (~/.config/evener/plugins). Before the
 // fix, newHubAppServer hardcoded plugins.NewManager("") for both, so a
-// dispatched serf/marketplace/* or serf/plugin/* call mutated the real,
+// dispatched evener/marketplace/* or evener/plugin/* call mutated the real,
 // developer-machine plugin store — invisible to the fuzz harness's
 // network-only deny-transport oracle, since a directory-source add never
 // dials out at all (a git-backed one shells out to `git`, which the oracle
@@ -201,7 +201,7 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 //
 // XDG_CONFIG_HOME is pinned to a throwaway temp dir (never s.Root) so that
 // even a still-broken newHubAppServer can only escape into a harmless stand-in
-// "real" root here, never the developer's actual ~/.config/serf/plugins.
+// "real" root here, never the developer's actual ~/.config/evener/plugins.
 func TestSandboxContainsPluginStore(t *testing.T) {
 	fakeRealHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", fakeRealHome)
@@ -227,16 +227,16 @@ func TestSandboxContainsPluginStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal add params: %v", err)
 	}
-	req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodSerfMarketplaceAdd, Params: params}
+	req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodEvenerMarketplaceAdd, Params: params}
 	if _, err := router.Dispatch(context.Background(), req); err != nil {
-		t.Fatalf("serf/marketplace/add: %v", err)
+		t.Fatalf("evener/marketplace/add: %v", err)
 	}
 
 	wantRegistry := filepath.Join(s.Root, "plugins", "known_marketplaces.json")
 	if _, err := os.Stat(wantRegistry); err != nil {
 		t.Fatalf("plugin store escaped the sandbox: %s not written (%v)", wantRegistry, err)
 	}
-	escapedRegistry := filepath.Join(fakeRealHome, "serf", "plugins", "known_marketplaces.json")
+	escapedRegistry := filepath.Join(fakeRealHome, "evener", "plugins", "known_marketplaces.json")
 	if _, err := os.Stat(escapedRegistry); err == nil {
 		t.Fatalf("plugin store escaped the sandbox: wrote to the default root %s instead", escapedRegistry)
 	}

@@ -20,8 +20,8 @@ func TestCmdAuthTestUsesSharedMethodAndInstanceName(t *testing.T) {
 	go func() { result <- CmdAuthTest(client, "custom / team-east", 7)() }()
 
 	request := <-transport.Sent()
-	if request.Request.Method != appwire.MethodSerfAuthTest {
-		t.Fatalf("method=%q, want %q", request.Request.Method, appwire.MethodSerfAuthTest)
+	if request.Request.Method != appwire.MethodEvenerAuthTest {
+		t.Fatalf("method=%q, want %q", request.Request.Method, appwire.MethodEvenerAuthTest)
 	}
 	var params appwire.AuthTestParams
 	if err := json.Unmarshal(request.Request.Params, &params); err != nil {

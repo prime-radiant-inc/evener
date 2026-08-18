@@ -76,7 +76,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
 		root := t.TempDir()
-		thread := appwire.Thread{ID: "01TAIL", SessionID: "01TAIL", Source: "local", Name: "tail", Serf: appwire.SerfThread{Ref: "local:01TAIL", Capabilities: appwire.ThreadCapabilities{Clear: true, ChangeModel: true, Compact: true}}}
+		thread := appwire.Thread{ID: "01TAIL", SessionID: "01TAIL", Source: "local", Name: "tail", Evener: appwire.EvenerThread{Ref: "local:01TAIL", Capabilities: appwire.ThreadCapabilities{Clear: true, ChangeModel: true, Compact: true}}}
 		source := &pass6TailSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: thread}}
 		registry := appsource.NewRegistry()
 		registry.Add(source)
@@ -117,7 +117,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")
 
 		// Both unavailable compact retries and the known-ref early exits.
-		source.actionErr = appwire.WireError{Code: appwire.CodeUnavailable, Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorSessionUnavailable}}
+		source.actionErr = appwire.WireError{Code: appwire.CodeUnavailable, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorSessionUnavailable}}
 		_ = compactThreadWithResume(context.Background(), web.cfg, registry, appwire.ThreadCompactStartParams{Ref: "local:01TAIL"})
 		source.compactCalls = 0
 		source.actionErr = errors.New("plain")
@@ -129,7 +129,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		source.listErr = errors.New("list")
 		_, _ = hubThreadTranscriptList(context.Background(), web.cfg, registry, appwire.ThreadTranscriptListParams{Ref: "local:01TAIL"})
 		source.listErr = nil
-		source.thread = appwire.Thread{ID: "child", Name: "child", Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "local:01TAIL"}}
+		source.thread = appwire.Thread{ID: "child", Name: "child", Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "local:01TAIL"}}
 		_, _ = hubThreadTranscriptList(context.Background(), web.cfg, registry, appwire.ThreadTranscriptListParams{Ref: "local:01TAIL"})
 
 		// Replay projection tails: malformed records, empty image bytes and nil tool results.

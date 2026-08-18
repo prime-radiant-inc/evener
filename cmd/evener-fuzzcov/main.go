@@ -1,4 +1,4 @@
-// Command serf-fuzzcov is the fuzz coverage reporter: it turns the per-target
+// Command evener-fuzzcov is the fuzz coverage reporter: it turns the per-target
 // coverage profiles produced by replaying each fuzz target's COMMITTED corpus
 // into an honest, drivable-to-100% coverage map.
 //
@@ -79,14 +79,14 @@ type result struct {
 func main() {
 	code, err := runCLI(os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: %v\n", err)
 		code = 2
 	}
 	exitProcess(code)
 }
 
 func runCLI(args []string, stdout, stderr *os.File) (int, error) {
-	flags := flag.NewFlagSet("serf-fuzzcov", flag.ContinueOnError)
+	flags := flag.NewFlagSet("evener-fuzzcov", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	manifest := flags.String("manifest", "", "path to the target manifest written by fuzz-coverage.sh (required)")
 	floorsPath := flags.String("floors", "scripts/fuzzcov-floors.txt", "ratchet floors file")
@@ -204,7 +204,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 		if err := writeFloors(*floorsPath, results, floors); err != nil {
 			return 2, fmt.Errorf("bless floors: %w", err)
 		}
-		_, _ = fmt.Fprintf(stdout, "serf-fuzzcov: raised floors in %s\n", *floorsPath)
+		_, _ = fmt.Fprintf(stdout, "evener-fuzzcov: raised floors in %s\n", *floorsPath)
 	}
 
 	printReportTo(stdout, results, gaps)
@@ -259,7 +259,7 @@ func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath str
 	for _, g := range gaps {
 		_, _ = fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
+	_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
 	return 1, nil
 }
 
@@ -533,13 +533,13 @@ func checkExitTo(w *os.File, results []result, gaps [][2]string, tolerance float
 	code := 0
 	for _, r := range results {
 		if r.focusPct+tolerance+1e-9 < r.floor {
-			_, _ = fmt.Fprintf(w, "serf-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
+			_, _ = fmt.Fprintf(w, "evener-fuzzcov: REGRESSION %s: focus %.1f%% < floor %.1f%% (tolerance %.1f)\n",
 				r.name, r.focusPct, r.floor, tolerance)
 			code = 1
 		}
 	}
 	if len(gaps) > 0 {
-		_, _ = fmt.Fprintf(w, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
+		_, _ = fmt.Fprintf(w, "evener-fuzzcov: GAP BREACH: %d decode/parse package(s) have zero fuzz coverage and are not ignored\n", len(gaps))
 		code = 1
 	}
 	return code
@@ -814,7 +814,7 @@ func writeFloors(p string, results []result, old map[string]float64) error {
 	sort.Strings(names)
 	var sb strings.Builder
 	sb.WriteString("# fuzzcov focus-set ratchet floors — one line per fuzz target: \"FuzzName PCT\".\n")
-	sb.WriteString("# A target's focus-set coverage may never drop below its floor (serf-fuzzcov --check).\n")
+	sb.WriteString("# A target's focus-set coverage may never drop below its floor (evener-fuzzcov --check).\n")
 	sb.WriteString("# Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.\n")
 	for _, n := range names {
 		_, _ = fmt.Fprintf(&sb, "%s %.1f\n", n, raised[n])
@@ -884,6 +884,6 @@ func truncate(s string, n int) string {
 }
 
 func fatal(format string, args ...any) {
-	_, _ = fmt.Fprintf(os.Stderr, "serf-fuzzcov: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: "+format+"\n", args...)
 	exitProcess(2)
 }

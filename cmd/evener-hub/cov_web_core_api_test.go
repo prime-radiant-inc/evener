@@ -62,16 +62,16 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 			t.Fatalf("statusForWireError(%q)=%d, want %d", tc.code, got, tc.want)
 		}
 	}
-	if got := serfErrorInfoFromData(map[string]any{"serfErrorInfo": "map"}); got != "map" {
+	if got := evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": "map"}); got != "map" {
 		t.Fatal(got)
 	}
-	if got := serfErrorInfoFromData(map[string]any{"serfErrorInfo": 2}); got != "" {
+	if got := evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": 2}); got != "" {
 		t.Fatal(got)
 	}
-	if got := serfErrorInfoFromData(nil); got != "" {
+	if got := evenerErrorInfoFromData(nil); got != "" {
 		t.Fatal(got)
 	}
-	if got := serfErrorInfoFromData(appwire.ErrorData{SerfErrorInfo: appwire.ErrorInfo("typed")}); got != "typed" {
+	if got := evenerErrorInfoFromData(appwire.ErrorData{EvenerErrorInfo: appwire.ErrorInfo("typed")}); got != "typed" {
 		t.Fatal(got)
 	}
 	writeAPIWireError(httptest.NewRecorder(), 502, errors.New("plain"))

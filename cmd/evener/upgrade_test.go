@@ -14,7 +14,7 @@ import (
 )
 
 func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
-	archive := testReleaseArchive(t, "serf_linux_amd64")
+	archive := testReleaseArchive(t, "evener_linux_amd64")
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -39,30 +39,30 @@ func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
 	if !handled {
 		t.Fatal("dispatchCLICommand handled=false, want true")
 	}
-	if label != "serf upgrade" {
-		t.Fatalf("label=%q, want serf upgrade", label)
+	if label != "evener upgrade" {
+		t.Fatalf("label=%q, want evener upgrade", label)
 	}
-	if want := "/releases/download/snapshot/serf_linux_amd64.tar.gz"; gotPath != want {
+	if want := "/releases/download/snapshot/evener_linux_amd64.tar.gz"; gotPath != want {
 		t.Fatalf("download path = %q, want %q", gotPath, want)
 	}
 
 	out := stdout.String()
-	for _, want := range []string{"upgraded serf to snapshot", "Restart serf-tui and serf-hub"} {
+	for _, want := range []string{"upgraded evener to snapshot", "Restart evener-tui and evener-hub"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout = %q, want %q", out, want)
 		}
 	}
 
-	installed := filepath.Join(prefix, "share", "serf", "bin", "serf")
+	installed := filepath.Join(prefix, "share", "evener", "bin", "evener")
 	data, err := os.ReadFile(installed)
 	if err != nil {
-		t.Fatalf("read installed serf binary: %v", err)
+		t.Fatalf("read installed evener binary: %v", err)
 	}
-	if !strings.Contains(string(data), "archive serf") {
-		t.Fatalf("installed serf content = %q, want archive serf", string(data))
+	if !strings.Contains(string(data), "archive evener") {
+		t.Fatalf("installed evener content = %q, want archive evener", string(data))
 	}
 
-	link := filepath.Join(prefix, "bin", "serf")
+	link := filepath.Join(prefix, "bin", "evener")
 	target, err := os.Readlink(link)
 	if err != nil {
 		t.Fatalf("readlink %s: %v", link, err)
@@ -78,7 +78,7 @@ func testReleaseArchive(t *testing.T, root string) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		body := fmt.Sprintf("#!/bin/sh\necho archive %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),
@@ -121,8 +121,8 @@ func TestRunUpgrade_InvalidFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "not defined") || !strings.Contains(err.Error(), "-invalid-flag") {
 		t.Fatalf("error = %v, want flag-parse error mentioning 'not defined' and '-invalid-flag'", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "Usage: serf upgrade") {
-		t.Fatalf("stderr = %q, want usage banner 'Usage: serf upgrade'", got)
+	if got := stderr.String(); !strings.Contains(got, "Usage: evener upgrade") {
+		t.Fatalf("stderr = %q, want usage banner 'Usage: evener upgrade'", got)
 	}
 	if got := stdout.String(); got != "" {
 		t.Fatalf("stdout = %q, want empty", got)

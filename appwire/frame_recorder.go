@@ -16,7 +16,7 @@ var (
 
 // FrameRecorder appends every AppWire WebSocket frame that crosses a transport
 // to a JSONL file, one frame per line. It exists solely to harvest real wire
-// traffic into fuzz seed corpora (serf-fuzz-harvest); it is opt-in via
+// traffic into fuzz seed corpora (evener-fuzz-harvest); it is opt-in via
 // SERF_RECORD_APPWIRE and default-off, so normal operation never touches it.
 //
 // It is side-effect-only: a failed write is swallowed, never propagated, so the
@@ -88,14 +88,14 @@ func newEnvFrameRecorder() *FrameRecorder {
 }
 
 // recorderStateRoot mirrors cmdutil.DefaultStateRoot (SERF_STATE_DIR, else
-// ~/.serf, else ./.serf). It is duplicated here only to keep appwire — a
+// ~/.evener, else ./.evener). It is duplicated here only to keep appwire — a
 // low-level wire-codec package — free of a dependency on the cmd helper layer.
 func recorderStateRoot() string {
 	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
 		return dir
 	}
 	if home, err := frameRecorderHomeDir(); err == nil {
-		return filepath.Join(home, ".serf")
+		return filepath.Join(home, ".evener")
 	}
-	return ".serf"
+	return ".evener"
 }

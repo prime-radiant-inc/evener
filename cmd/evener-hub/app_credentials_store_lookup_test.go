@@ -1,6 +1,6 @@
 package main
 
-// serf/auth/test decides whether to probe at all by asking whether the instance
+// evener/auth/test decides whether to probe at all by asking whether the instance
 // has an effective credential. There is exactly one right answer to that
 // question — the credential the launch path acts on, which is
 // credentials.Store.ResolveKey keyed by the instance's behavior tag
@@ -33,7 +33,7 @@ func newStoreBackedProbeController(t *testing.T, client credentialProbeClient, c
 }
 
 // TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves holds
-// serf/auth/test to the launch path's answer. Each case seeds a credential in a
+// evener/auth/test to the launch path's answer. Each case seeds a credential in a
 // layer ResolveKey resolves, checks ResolveKey does resolve it, and then
 // requires the RPC to probe rather than report the instance unconfigured.
 //
@@ -111,7 +111,7 @@ func TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves(t *testing
 					tt.inst.Name, resp.Status, resp.Message, appwire.AuthTestStatusSuccess, tt.inst.Name, tag, src)
 			}
 			if got := client.callCount(); got != 1 {
-				t.Errorf("probe calls = %d, want 1: this instance has a resolvable credential, so serf/auth/test must actually test it", got)
+				t.Errorf("probe calls = %d, want 1: this instance has a resolvable credential, so evener/auth/test must actually test it", got)
 			}
 		})
 	}

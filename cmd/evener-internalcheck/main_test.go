@@ -8,7 +8,7 @@ import (
 )
 
 // TestLibrariesHaveNoInternalLeaks is the regression guard: the agent, llm, and
-// llm/providercfg libraries must not name any serf-internal type in their
+// llm/providercfg libraries must not name any evener-internal type in their
 // exported surface, so they remain externally importable. (The walk itself is
 // exercised continuously by CI running the binary on the real code.)
 func TestLibrariesHaveNoInternalLeaks(t *testing.T) {
@@ -17,7 +17,7 @@ func TestLibrariesHaveNoInternalLeaks(t *testing.T) {
 		t.Fatalf("findLeaks: %v", err)
 	}
 	if len(leaks) != 0 {
-		t.Fatalf("exported library API leaks %d serf-internal type(s):\n  %s",
+		t.Fatalf("exported library API leaks %d evener-internal type(s):\n  %s",
 			len(leaks), strings.Join(leaks, "\n  "))
 	}
 }
@@ -28,16 +28,16 @@ func TestIsSerfInternal(t *testing.T) {
 		path string
 		want bool
 	}{
-		// Serf-internal paths — must be flagged.
+		// Evener-internal paths — must be flagged.
 		{"primeradiant.com/evener/agent/internal/types", true},
 		{"primeradiant.com/evener/foo/internal/bar", true},
 		{"primeradiant.com/evener/llm/internal/x", true},
-		// Public serf paths — must not be flagged.
+		// Public evener paths — must not be flagged.
 		{"primeradiant.com/evener/agent", false},
 		{"primeradiant.com/evener/llm", false},
 		{"primeradiant.com/evener", false},
 		// Wrong module entirely.
-		{"other.com/serf/foo/internal/bar", false},
+		{"other.com/evener/foo/internal/bar", false},
 		{"", false},
 	}
 	for _, tc := range cases {
@@ -48,7 +48,7 @@ func TestIsSerfInternal(t *testing.T) {
 	}
 }
 
-// syntheticInternal builds a *types.Named whose package path is a serf-internal path,
+// syntheticInternal builds a *types.Named whose package path is a evener-internal path,
 // allowing in-process tests of walkType and checkObject without any file I/O.
 func syntheticInternal(pkgPath, typeName string) *types.Named {
 	pkgName := pkgPath[strings.LastIndex(pkgPath, "/")+1:]
@@ -58,7 +58,7 @@ func syntheticInternal(pkgPath, typeName string) *types.Named {
 }
 
 // TestWalkTypeDetectsInternalNamed confirms that walkType records a *types.Named
-// whose package is a serf-internal path.
+// whose package is a evener-internal path.
 func TestWalkTypeDetectsInternalNamed(t *testing.T) {
 	internal := syntheticInternal("primeradiant.com/evener/foo/internal/bar", "Secret")
 	into := map[string]bool{}
@@ -75,7 +75,7 @@ func TestWalkTypeDetectsInternalNamed(t *testing.T) {
 }
 
 // TestWalkTypeIgnoresNonInternalNamed confirms that walkType does not flag a
-// *types.Named from a public (non-internal) serf package.
+// *types.Named from a public (non-internal) evener package.
 func TestWalkTypeIgnoresNonInternalNamed(t *testing.T) {
 	pkg := types.NewPackage("primeradiant.com/evener/agent", "agent")
 	obj := types.NewTypeName(token.NoPos, pkg, "Session", nil)
@@ -90,7 +90,7 @@ func TestWalkTypeIgnoresNonInternalNamed(t *testing.T) {
 }
 
 // TestCheckObjectStructFieldExposesInternal verifies that checkObject reports an
-// exported struct field whose type is a serf-internal named type.  This is the
+// exported struct field whose type is a evener-internal named type.  This is the
 // central detection path that the existing regression guard cannot exercise.
 func TestCheckObjectStructFieldExposesInternal(t *testing.T) {
 	internal := syntheticInternal("primeradiant.com/evener/agent/internal/cfg", "Config")

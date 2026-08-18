@@ -94,7 +94,7 @@ import (
 	"pgregory.net/rapid"
 )
 
-// serf:fuzz rapid
+// evener:fuzz rapid
 func TestStateful(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {})
 }
@@ -364,7 +364,7 @@ func TestStateful(t *testing.T) {
 	})
 
 	_, err := DiscoverWorkspace(root)
-	assertErrorContains(t, err, "TestStateful calls rapid.Check without // serf:fuzz rapid marker")
+	assertErrorContains(t, err, "TestStateful calls rapid.Check without // evener:fuzz rapid marker")
 }
 
 func scenarioEmitPlanSortsCoverageTargetsAndExcludesSupportTests(t *testing.T) {

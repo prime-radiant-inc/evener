@@ -43,7 +43,7 @@ func FuzzProviderRenderPass4(f *testing.F) {
 		_ = defaultMCPConfigPath()
 
 		web := NewWebServer(hubcore.WebConfig{AuthToken: raw})
-		_ = serfUsageFromCumulative(structToCumulative(mode))
+		_ = evenerUsageFromCumulative(structToCumulative(mode))
 
 		for _, id := range []string{raw, "local/" + raw, "remote/" + raw} {
 			_ = localAppRef(id)

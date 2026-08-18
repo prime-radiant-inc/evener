@@ -99,5 +99,5 @@ func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

@@ -11,8 +11,8 @@ import (
 )
 
 // The package doc comment's Usage block is the canonical listing of every
-// serf-doctor subcommand and flag: it is what `go doc` renders, what
-// cmd/evener-doctor/README.md and the bundled doctoring-serf skill were written
+// evener-doctor subcommand and flag: it is what `go doc` renders, what
+// cmd/evener-doctor/README.md and the bundled doctoring-evener skill were written
 // from, and the first thing anyone reads before reaching for a flag. Nothing
 // tied it to the flags the subcommands actually register, so it drifted:
 // kata 6tr1 found `locate [--all-buckets]` advertised there (and copied onward
@@ -29,7 +29,7 @@ import (
 // code block. Prose lines in the same comment (the "Common flags:" sentence)
 // are deliberately not matched: they name flags shared by every subcommand
 // rather than flags of one, and have no subcommand to test them against.
-var usageCommentLineRE = regexp.MustCompile(`^//\t(?:serf-doctor) ([a-z][a-z-]*) +(.*)$`)
+var usageCommentLineRE = regexp.MustCompile(`^//\t(?:evener-doctor) ([a-z][a-z-]*) +(.*)$`)
 
 // usageCommentFlagRE pulls the `--flag` tokens out of one such line.
 var usageCommentFlagRE = regexp.MustCompile(`--([a-z][a-z0-9-]*)`)
@@ -60,7 +60,7 @@ func TestUsageCommentAdvertisesOnlyRegisteredFlags(t *testing.T) {
 			var stderr bytes.Buffer
 			run([]string{sub, "local:no-such-session", "--" + name + "=x", "--state-dir", stateDir}, io.Discard, &stderr)
 			if strings.Contains(stderr.String(), "flag provided but not defined") {
-				offenders = append(offenders, fmt.Sprintf("main.go:%d: `serf-doctor %s --%s` — %s registers no such flag",
+				offenders = append(offenders, fmt.Sprintf("main.go:%d: `evener-doctor %s --%s` — %s registers no such flag",
 					i+1, sub, name, sub))
 			}
 		}
@@ -74,7 +74,7 @@ func TestUsageCommentAdvertisesOnlyRegisteredFlags(t *testing.T) {
 		t.Fatalf("main.go's doc comment advertises %d flag(s) that no subcommand registers, "+
 			"so the documented invocation exits 2 at parse time. Either register the flag or "+
 			"stop advertising it — and check cmd/evener-doctor/README.md and "+
-			"internal/bundled/skills/doctoring-serf/SKILL.md, which are written from this block:\n%s",
+			"internal/bundled/skills/doctoring-evener/SKILL.md, which are written from this block:\n%s",
 			len(offenders), strings.Join(offenders, "\n"))
 	}
 }

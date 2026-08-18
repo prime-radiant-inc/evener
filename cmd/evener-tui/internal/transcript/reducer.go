@@ -322,7 +322,7 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 	}
 }
 
-func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
+func (r *TranscriptReducer) ApplySerfJob(job appwire.EvenerJobInfo) {
 	run := subagentRunFromJob(job)
 	if run.JobID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
 		return
@@ -360,7 +360,7 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 // ApplySerfDelegate folds one immutable stable delegate snapshot into the
 // transcript rail. The delegate id is the control identity; activation job ids
 // never enter this path.
-func (r *TranscriptReducer) ApplySerfDelegate(delegate appwire.SerfDelegateInfo) {
+func (r *TranscriptReducer) ApplySerfDelegate(delegate appwire.EvenerDelegateInfo) {
 	run := subagentRunFromDelegate(delegate)
 	if run.DelegateID == "" {
 		return
@@ -525,7 +525,7 @@ func isDelegateToolName(name string) bool {
 	}
 }
 
-func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
+func subagentRunFromJob(job appwire.EvenerJobInfo) SubagentRunInfo {
 	return SubagentRunInfo{
 		DelegateID:       strings.TrimSpace(job.DelegateID),
 		JobID:            strings.TrimSpace(job.JobID),
@@ -544,7 +544,7 @@ func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
 	}
 }
 
-func subagentRunFromDelegate(delegate appwire.SerfDelegateInfo) SubagentRunInfo {
+func subagentRunFromDelegate(delegate appwire.EvenerDelegateInfo) SubagentRunInfo {
 	return SubagentRunInfo{
 		DelegateID:          strings.TrimSpace(delegate.DelegateID),
 		ParentDelegateID:    strings.TrimSpace(delegate.ParentDelegateID),
@@ -612,7 +612,7 @@ func cloneBool(value *bool) *bool {
 	return &cloned
 }
 
-func cloneUsage(value *appwire.SerfUsage) *appwire.SerfUsage {
+func cloneUsage(value *appwire.EvenerUsage) *appwire.EvenerUsage {
 	if value == nil {
 		return nil
 	}

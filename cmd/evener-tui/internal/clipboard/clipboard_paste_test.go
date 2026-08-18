@@ -285,8 +285,8 @@ func TestPasteClipboardImage_DefaultsMediaTypeWhenEmpty(t *testing.T) {
 
 func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
 	const (
-		fakeWinPath = `T:\serf-wsl-clip\clip.png`
-		wslClipPath = "/mnt/t/serf-wsl-clip/clip.png"
+		fakeWinPath = `T:\evener-wsl-clip\clip.png`
+		wslClipPath = "/mnt/t/evener-wsl-clip/clip.png"
 	)
 	payload := []byte("wsl image payload")
 	stagedPath := filepath.Join(t.TempDir(), "clip.png")
@@ -331,7 +331,7 @@ func TestPasteClipboardImage_WSLErrorWhenConvertedPathMissing(t *testing.T) {
 	src := &fakeClipboard{
 		filesErr:    errors.New("no file list"),
 		imageErr:    ErrNoClipboardImage,
-		winPath:     `C:\definitely-missing-serf-clipboard\clip.png`,
+		winPath:     `C:\definitely-missing-evener-clipboard\clip.png`,
 		procVersion: "Linux version 5.15-microsoft-standard-WSL2",
 	}
 

@@ -75,7 +75,7 @@ func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 				ID:        sessionID,
 				SessionID: sessionID,
 				Source:    "local",
-				Serf: appwire.SerfThread{
+				Evener: appwire.EvenerThread{
 					Ref:          params.Ref,
 					Capabilities: appwire.ThreadCapabilities{Clear: true},
 				},
@@ -120,13 +120,13 @@ func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
 				ID:        sessionID,
 				SessionID: sessionID,
 				Source:    "local",
-				Serf: appwire.SerfThread{
+				Evener: appwire.EvenerThread{
 					Ref:          params.Ref,
 					Capabilities: appwire.ThreadCapabilities{Rename: true},
 				},
 			}}, nil
 		})
-		appserver.HandleTyped(daemon.Router(), appwire.MethodSerfThreadNameSet, func(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerThreadNameSet, func(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 			if params.Ref != "local:"+sessionID {
 				t.Fatalf("rename ref=%q", params.Ref)
 			}
@@ -167,7 +167,7 @@ func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
 				ID:        sessionID,
 				SessionID: sessionID,
 				Source:    "local",
-				Serf: appwire.SerfThread{
+				Evener: appwire.EvenerThread{
 					Ref:          params.Ref,
 					Capabilities: appwire.ThreadCapabilities{Goal: true},
 				},
@@ -382,7 +382,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local",
-			Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Compact: true}},
+			Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Compact: true}},
 		}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {

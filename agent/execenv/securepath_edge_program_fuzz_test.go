@@ -378,7 +378,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 		t.Fatalf("read atomic fixture: %v", err)
 	}
 	for _, ent := range atomicEntries {
-		if strings.HasPrefix(ent.Name(), ".serf-sbtmp-") {
+		if strings.HasPrefix(ent.Name(), ".evener-sbtmp-") {
 			t.Fatalf("atomicWriteAt leaked temporary entry %q", ent.Name())
 		}
 	}

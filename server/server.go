@@ -136,7 +136,7 @@ type DelegateStatusInfo struct {
 	ExhaustionResumable *bool                        `json:"exhaustion_resumable,omitempty"`
 	DelegationAllowance int                          `json:"delegation_allowance,omitempty"`
 	ParentWatchGranted  bool                         `json:"parent_watch_granted,omitempty"`
-	Usage               *appwire.SerfUsage           `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage           `json:"usage,omitempty"`
 	Worktree            *appwire.JobActivityWorktree `json:"worktree,omitempty"`
 }
 
@@ -189,12 +189,12 @@ type StatusInfo struct {
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2 A7), served from the materialized thread
 	// envelope. Usage is a pointer (unlike the other
-	// two scalars) because appwire.SerfUsage is a value struct whose
+	// two scalars) because appwire.EvenerUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/unwired daemon signals
 	// "no token data" rather than rendering ↑0 ↓0.
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (like WorkMillis's scale
 	// and the web reducer's epoch-ms read), 0 when no turn is running.
-	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
+	Usage               *appwire.EvenerUsage `json:"usage,omitempty"`
 	WorkMillis          int64              `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
 	// FailedToolCalls is how many of the session's tool calls have failed, over
@@ -373,7 +373,7 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		mux: http.NewServeMux(),
 		appServer: appserver.NewServer(appserver.ServerConfig{
-			ServerName: "serf-serve",
+			ServerName: "evener-serve",
 			SourceID:   "local",
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
@@ -499,7 +499,7 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 
 // SetSandboxEscalationResolveFunc sets the callback that delivers a human's
 // approve/deny decision for a pending sandbox-exemption escalation (M7) to the
-// session. It is invoked by the serf/sandbox/escalation/resolve daemon handler.
+// session. It is invoked by the evener/sandbox/escalation/resolve daemon handler.
 func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, approve bool) error) {
 	s.mu.Lock()
 	s.sandboxEscalationResolveFunc = fn
@@ -672,7 +672,7 @@ func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Unlock()
 }
 
-// SetJobsFunc sets the function backing serf/jobs/list. The function should
+// SetJobsFunc sets the function backing evener/jobs/list. The function should
 // return a JSON-serializable payload (typically appwire.JobActivityTree), or
 // an error if it cannot read one: an unreadable durable root must reach the
 // caller as a failure, never as the empty success a job-less session answers
@@ -683,7 +683,7 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 	s.mu.Unlock()
 }
 
-// SetJobOutputFunc sets the function backing serf/jobs/output. found=false
+// SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
 func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)) {

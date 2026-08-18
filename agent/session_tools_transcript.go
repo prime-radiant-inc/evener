@@ -287,7 +287,7 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	for _, name := range readTranscriptPublicRejectedParams {
 		if _, present := args[name]; present {
 			if name == "source" || name == "attempt_id" || name == "body" {
-				return nil, fmt.Errorf("invalid_request: %s is not supported by read_transcript; API-log inspection is available through serf-doctor apilog", name)
+				return nil, fmt.Errorf("invalid_request: %s is not supported by read_transcript; API-log inspection is available through evener-doctor apilog", name)
 			}
 			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
 		}

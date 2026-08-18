@@ -103,7 +103,7 @@ func midStreamDeath() error {
 }
 
 // transcriptOutline renders the session's transcript the way
-// `serf-doctor transcript --format outline` does — through the doctor package
+// `evener-doctor transcript --format outline` does — through the doctor package
 // itself, so what these tests assert is what an operator actually reads.
 func transcriptOutline(t *testing.T, s *Session) string {
 	t.Helper()

@@ -269,7 +269,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Serf:      appwire.SerfThread{Ref: ref, Kind: "subagent"},
+					Evener:      appwire.EvenerThread{Ref: ref, Kind: "subagent"},
 				},
 			}
 			// Seed from the descendant's own transcript BEFORE this first event is
@@ -293,15 +293,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
 				projection.thread = params.Thread
-				projection.thread.Serf.Kind = "subagent"
+				projection.thread.Evener.Kind = "subagent"
 			case appwire.ThreadStatusChangedParams:
 				projection.thread.Status = params.Status
 			}
 		}
-		ref := projection.thread.Serf.Ref
+		ref := projection.thread.Evener.Ref
 		if ref == "" {
 			ref = appwire.Ref{SourceID: projection.thread.Source, ThreadID: threadID}.String()
-			projection.thread.Serf.Ref = ref
+			projection.thread.Evener.Ref = ref
 		}
 		snapshot := projection.turns
 		s.mu.Unlock()
@@ -517,7 +517,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
-	appserver.HandleTyped(router, appwire.MethodSerfSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
+	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
@@ -528,11 +528,11 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
-	appserver.HandleTyped(router, appwire.MethodSerfThreadNameSet, s.handleAppThreadNameSet)
+	appserver.HandleTyped(router, appwire.MethodEvenerThreadNameSet, s.handleAppThreadNameSet)
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
-	appserver.HandleTyped(router, appwire.MethodSerfTasksList, s.handleAppTasksList)
-	appserver.HandleTyped(router, appwire.MethodSerfJobsList, s.handleAppJobsList)
-	appserver.HandleTyped(router, appwire.MethodSerfJobsOutput, s.handleAppJobsOutput)
+	appserver.HandleTyped(router, appwire.MethodEvenerTasksList, s.handleAppTasksList)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsList, s.handleAppJobsList)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
 	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
@@ -548,7 +548,7 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 	for _, id := range ids {
 		projection := s.appDescendants[id]
 		thread := projection.thread
-		thread.Serf.ActiveTurnID = projection.activeTurnID
+		thread.Evener.ActiveTurnID = projection.activeTurnID
 		data = append(data, thread)
 	}
 	s.mu.RUnlock()
@@ -649,7 +649,7 @@ func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 		return appwire.Thread{}, false
 	}
 	thread := projection.thread
-	thread.Serf.ActiveTurnID = projection.activeTurnID
+	thread.Evener.ActiveTurnID = projection.activeTurnID
 	s.mu.RUnlock()
 	return thread, true
 }
@@ -997,7 +997,7 @@ func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.Threa
 	return appwire.EmptyResponse{}, nil
 }
 
-// handleAppThreadClear is unwired on purpose: v2 disabled the Serf clear
+// handleAppThreadClear is unwired on purpose: v2 disabled the Evener clear
 // capability pending a retry-safe mutation shape for it. Whatever reinstates it
 // has to take the same single-in-flight gate handleClear holds, because two
 // clears running at once each replace the SAME live session and only one of the
@@ -1193,7 +1193,7 @@ func (s *Server) appThread() appwire.Thread {
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	pressure := envelope.ContextPressure
 	metrics := envelope.ContextMetrics
-	var diagnostics *appwire.SerfDiagnostics
+	var diagnostics *appwire.EvenerDiagnostics
 	if envelope.Detailed != nil {
 		diagnostics = appDiagnosticsFromDetailedStatus(*envelope.Detailed)
 	}
@@ -1225,7 +1225,7 @@ func (s *Server) appThread() appwire.Thread {
 		CWD:           status.WorkingDir,
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:                   ref,
 			Profile:               status.Profile,
 			ActiveTurnID:          activeTurnID,
@@ -1253,21 +1253,21 @@ func (s *Server) appThread() appwire.Thread {
 	}
 }
 
-func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostics {
-	out := &appwire.SerfDiagnostics{
+func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
+	out := &appwire.EvenerDiagnostics{
 		Hooks: make(map[string]int, len(ds.Hooks)),
 	}
 	for _, tool := range ds.Tools {
-		out.Tools = append(out.Tools, appwire.SerfToolInfo{Name: tool.Name, Source: tool.Source})
+		out.Tools = append(out.Tools, appwire.EvenerToolInfo{Name: tool.Name, Source: tool.Source})
 	}
 	for _, srv := range ds.MCP {
-		out.MCP = append(out.MCP, appwire.SerfMCPServerInfo{Name: srv.Name, Tools: append([]string(nil), srv.Tools...), Status: srv.Status, Error: srv.Error})
+		out.MCP = append(out.MCP, appwire.EvenerMCPServerInfo{Name: srv.Name, Tools: append([]string(nil), srv.Tools...), Status: srv.Status, Error: srv.Error})
 	}
 	for _, skill := range ds.Skills {
-		out.Skills = append(out.Skills, appwire.SerfSkillInfo{Name: skill.Name, Description: skill.Description})
+		out.Skills = append(out.Skills, appwire.EvenerSkillInfo{Name: skill.Name, Description: skill.Description})
 	}
 	for _, plugin := range ds.Plugins {
-		out.Plugins = append(out.Plugins, appwire.SerfPluginInfo{
+		out.Plugins = append(out.Plugins, appwire.EvenerPluginInfo{
 			Name:       plugin.Name,
 			Version:    plugin.Version,
 			SkillCount: plugin.SkillCount,
@@ -1278,7 +1278,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 	}
 	maps.Copy(out.Hooks, ds.Hooks)
 	for _, job := range ds.Jobs {
-		out.Jobs = append(out.Jobs, appwire.SerfJobInfo{
+		out.Jobs = append(out.Jobs, appwire.EvenerJobInfo{
 			JobID:            job.JobID,
 			JobType:          job.JobType,
 			Status:           job.Status,
@@ -1295,7 +1295,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
 	}
 	if ds.TurnSlots != nil {
-		out.TurnSlots = &appwire.SerfTurnSlots{
+		out.TurnSlots = &appwire.EvenerTurnSlots{
 			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
 		}
 	}
@@ -1303,8 +1303,8 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 	return out
 }
 
-func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.SerfDelegateInfo {
-	out := appwire.SerfDelegateInfo{
+func appDelegateFromDetailedStatus(delegate DelegateStatusInfo) appwire.EvenerDelegateInfo {
+	out := appwire.EvenerDelegateInfo{
 		DelegateID: delegate.DelegateID, OwnerSessionID: delegate.OwnerSessionID, RootSessionID: delegate.RootSessionID,
 		ChildSessionID: delegate.ChildSessionID, TranscriptRef: delegate.TranscriptRef, ParentDelegateID: delegate.ParentDelegateID,
 		Type: delegate.Type, Lifecycle: delegate.Lifecycle, Phase: delegate.Phase, Status: delegate.Status,

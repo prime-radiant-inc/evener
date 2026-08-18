@@ -21,26 +21,26 @@ var notifyMethods = []string{
 	appwire.NotifyReasoningSummaryDelta,
 	appwire.NotifyToolOutputDelta,
 	appwire.NotifyThreadQueueChanged,
-	appwire.NotifySerfJobStarted,
-	appwire.NotifySerfJobFinished,
-	appwire.NotifySerfDelegateUpdated,
-	appwire.NotifySerfSteeringInjected,
-	appwire.NotifySerfThreadModelRetry,
+	appwire.NotifyEvenerJobStarted,
+	appwire.NotifyEvenerJobFinished,
+	appwire.NotifyEvenerDelegateUpdated,
+	appwire.NotifyEvenerSteeringInjected,
+	appwire.NotifyEvenerThreadModelRetry,
 	appwire.NotifyWarning,
-	appwire.NotifySerfAuthUpdated,
-	appwire.NotifySerfLaunchUpdated,
+	appwire.NotifyEvenerAuthUpdated,
+	appwire.NotifyEvenerLaunchUpdated,
 	// These five are dispatched by applyHubNotification but were missing here,
 	// so the fuzzer's "reaches every json.Unmarshal branch" was false for them.
 	// Surfaced by TestEveryWireNotificationIsHandledOrExplicitlyIgnored.
 	appwire.NotifyThreadModelChanged,
 	appwire.NotifyThreadReasoningEffortChanged,
-	appwire.NotifySerfMarketplaceUpdated,
-	appwire.NotifySerfPluginUpdated,
-	appwire.NotifySerfSandboxEscalationRequested,
-	appwire.NotifySerfThreadResync,
+	appwire.NotifyEvenerMarketplaceUpdated,
+	appwire.NotifyEvenerPluginUpdated,
+	appwire.NotifyEvenerSandboxEscalationRequested,
+	appwire.NotifyEvenerThreadResync,
 }
 
-// FuzzApplyHubNotification drives the serf-tui hub's real notification-decode
+// FuzzApplyHubNotification drives the evener-tui hub's real notification-decode
 // dispatcher. applyHubNotification switches on the wire method and json.Unmarshals
 // the untrusted notification.Params into per-method param structs, then folds the
 // result through the session transcript reducer. The model is built via the

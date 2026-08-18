@@ -74,7 +74,7 @@ func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
 }
 
 // TestHubModelList_AttachesRecentFromPastIndex verifies every ModelList
-// response (the path both the TUI's appwire RPC and the web's non-serf-harness
+// response (the path both the TUI's appwire RPC and the web's non-evener-harness
 // REST branch use) carries Recent, filtered to models actually present in
 // resp.Data — a recent ref no longer offered isn't rendered as unselectable.
 func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
@@ -85,7 +85,7 @@ func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
 	})
 	cfg := hubcore.WebConfig{Past: past}
 	sources := appsource.NewRegistry()
-	// No Spawner/live source configured: hubModelList's serf/local branch
+	// No Spawner/live source configured: hubModelList's evener/local branch
 	// returns an empty ModelListResponse (its early-return path), which is
 	// enough to exercise attachRecentModels' filtering against resp.Data.
 	resp, err := hubModelList(context.Background(), cfg, sources, appwire.ModelListParams{})

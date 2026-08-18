@@ -78,7 +78,7 @@ type SubagentRunInfo struct {
 	ExhaustionResumable *bool
 	DelegationAllowance int
 	ParentWatchGranted  bool
-	Usage               *appwire.SerfUsage
+	Usage               *appwire.EvenerUsage
 	Worktree            *appwire.JobActivityWorktree
 	OutputBytes         int64
 }

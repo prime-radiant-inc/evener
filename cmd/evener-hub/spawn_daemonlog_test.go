@@ -43,7 +43,7 @@ func TestSpawnedDaemonOutputStaysOutOfTheHubLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "daemon says this on stdout", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
@@ -74,7 +74,7 @@ func TestSpawnBannerNamesTheDaemonLogFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "err"))
 
 	var hubLog bytes.Buffer
@@ -99,7 +99,7 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 	logPath := filepath.Join(runDir, "logs", "daemon-01JRESUME.log")
 
 	for _, said := range []string{"first run", "second run"} {
-		bin := filepath.Join(dir, "fake-serf-"+strings.ReplaceAll(said, " ", "-"))
+		bin := filepath.Join(dir, "fake-evener-"+strings.ReplaceAll(said, " ", "-"))
 		writeFakeSerf(t, bin, registeringFakeSerf(runDir, "01JRESUME", said, said+" on stderr"))
 		var hubLog bytes.Buffer
 		entry, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: "01JRESUME"}, 60*time.Second, &hubLog)
@@ -138,7 +138,7 @@ func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
 		t.Fatalf("seed earlier log: %v", err)
 	}
 
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, "#!/bin/sh\nprintf '%s\\n' '"+currentStdout+"'\nprintf '%s\\n' '"+currentStderr+"' >&2\nexit 42\n")
 
 	var hubLog bytes.Buffer
@@ -229,7 +229,7 @@ func TestFailedReplacementResumeLeavesLiveDaemonLogNamed(t *testing.T) {
 	defer func() { _ = existingWriter.Close() }()
 
 	const replacementDiagnostic = "FAILED_REPLACEMENT_DIAGNOSTIC"
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nprintf '%%s\\n' '%s' >&2\nexit 42\n", replacementDiagnostic, replacementDiagnostic))
 
 	var hubLog bytes.Buffer
@@ -311,7 +311,7 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 		t.Fatalf("write logs blocker: %v", err)
 	}
 	ran := filepath.Join(dir, "ran")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, "#!/bin/sh\ntouch "+ran+"\n")
 
 	var hubLog bytes.Buffer
@@ -344,12 +344,12 @@ func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		script string
-		start  bool // the fake serf is written at all
+		start  bool // the fake evener is written at all
 		quotes string
 	}{
 		{
 			name:   "daemon exits before rendezvous",
-			script: "#!/bin/sh\necho 'serf serve: session creation: no such model' >&2\nexit 42\n",
+			script: "#!/bin/sh\necho 'evener serve: session creation: no such model' >&2\nexit 42\n",
 			start:  true,
 			quotes: "no such model",
 		},
@@ -362,7 +362,7 @@ func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			runDir := filepath.Join(dir, "run")
-			bin := filepath.Join(dir, "fake-serf")
+			bin := filepath.Join(dir, "fake-evener")
 			if tc.start {
 				writeFakeSerf(t, bin, tc.script)
 			}
@@ -396,7 +396,7 @@ func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer

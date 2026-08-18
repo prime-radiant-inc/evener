@@ -1,4 +1,4 @@
-package serf_test
+package evener_test
 
 import (
 	"os"
@@ -16,7 +16,7 @@ import (
 // entry (transcript.ValidateHeader), so a fixture header without
 // `format_version` fails the step that reads it with `unsupported transcript
 // format` and exit 1 — no counting, no assertion, nothing to interpret.
-// Kata 09ft: serf-doctor-forensics.md's step 4 could not run at all for
+// Kata 09ft: evener-doctor-forensics.md's step 4 could not run at all for
 // exactly this reason, and the card looked fine because the fixture parses as
 // JSON and every other step reads jobs.jsonl instead.
 func TestScenarioTranscriptFixturesCarryTheFormatVersion(t *testing.T) {
@@ -50,7 +50,7 @@ func TestScenarioTranscriptFixturesCarryTheFormatVersion(t *testing.T) {
 	if len(findings) > 0 {
 		sort.Strings(findings)
 		t.Fatalf("a scenario card's transcript-header fixture must carry %s — "+
-			"serf's readers validate the v2 boundary before any entry, so a "+
+			"evener's readers validate the v2 boundary before any entry, so a "+
 			"header without it fails every transcript-reading step with "+
 			"`unsupported transcript format` and the card's assertion never "+
 			"runs (kata 09ft):\n%s", want, strings.Join(findings, "\n"))

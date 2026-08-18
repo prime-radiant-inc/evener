@@ -14,7 +14,7 @@ import (
 func TestHubModelCredentialTestActionUsesAppWire(t *testing.T) {
 	var testedProvider string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthTest, func(_ context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthTest, func(_ context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
 			testedProvider = params.Provider
 			return appwire.AuthTestResponse{
 				Provider: params.Provider,
@@ -60,21 +60,21 @@ func TestHubModelAuthCommandsUseAppWire(t *testing.T) {
 	var methods []string
 	var completed appwire.AuthLoginCompleteParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
-			methods = append(methods, appwire.MethodSerfAuthStatus+":"+params.Provider)
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			methods = append(methods, appwire.MethodEvenerAuthStatus+":"+params.Provider)
 			return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
-			methods = append(methods, appwire.MethodSerfAuthLoginStart+":"+params.Provider)
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+			methods = append(methods, appwire.MethodEvenerAuthLoginStart+":"+params.Provider)
 			return appwire.AuthLoginStartResponse{Provider: "openai", FlowID: "flow-1", URL: "https://auth.example/authorize"}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, func(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
-			methods = append(methods, appwire.MethodSerfAuthLoginComplete+":"+params.Provider)
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, func(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+			methods = append(methods, appwire.MethodEvenerAuthLoginComplete+":"+params.Provider)
 			completed = params
 			return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth", Email: "j@example.com"}}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
-			methods = append(methods, appwire.MethodSerfAuthLogout+":"+params.Provider)
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+			methods = append(methods, appwire.MethodEvenerAuthLogout+":"+params.Provider)
 			return appwire.AuthLogoutResponse{Removed: true, Status: appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}}, nil
 		})
 	})
@@ -128,10 +128,10 @@ func TestHubModelAuthCommandsUseAppWire(t *testing.T) {
 	}
 
 	want := strings.Join([]string{
-		appwire.MethodSerfAuthStatus + ":openai",
-		appwire.MethodSerfAuthLoginStart + ":openai",
-		appwire.MethodSerfAuthLoginComplete + ":openai",
-		appwire.MethodSerfAuthLogout + ":openai",
+		appwire.MethodEvenerAuthStatus + ":openai",
+		appwire.MethodEvenerAuthLoginStart + ":openai",
+		appwire.MethodEvenerAuthLoginComplete + ":openai",
+		appwire.MethodEvenerAuthLogout + ":openai",
 	}, ",")
 	if strings.Join(methods, ",") != want {
 		t.Fatalf("methods=%v, want %s", methods, want)

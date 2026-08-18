@@ -26,7 +26,7 @@ func fixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestRun_TranscriptHealthJSON(t *testing.T) {
 }
 
 // Flags must parse when they follow the selector — the documented
-// `serf-doctor <cmd> <selector> [flags]` form. Go's flag package stops at the
+// `evener-doctor <cmd> <selector> [flags]` form. Go's flag package stops at the
 // first non-flag arg, so without the leading-selector peel these are dropped.
 func TestRun_FlagsAfterSelector(t *testing.T) {
 	base, sid := fixture(t)
@@ -227,7 +227,7 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	childSID := "02wLIRxqmq3AUo6vl2OW39"
 	grandchildSID := treeGrandchildSID
 	observerSID := "02wLIRxqmq3AUo6vl2OW3A"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -566,7 +566,7 @@ func fixtureWithCorruptAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW38"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -678,7 +678,7 @@ func TestRun_APILogHealthJSON(t *testing.T) {
 }
 
 // TestRun_APILogValidateReportsProblemsAndNonzeroExit is the load-bearing CLI
-// test: --validate is the first serf-doctor subcommand whose exit code
+// test: --validate is the first evener-doctor subcommand whose exit code
 // signals "findings", not just "the tool ran" (recorded in kata 7x84's
 // exit-code decision).
 func TestRun_APILogValidateReportsProblemsAndNonzeroExit(t *testing.T) {
@@ -717,7 +717,7 @@ func fixtureWithJobsData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -1036,7 +1036,7 @@ func TestRun_PluginsUnwritableStoreRoot(t *testing.T) {
 // turn/start and one rejected turn/steer, plus an input still queued.
 func mutationStore(t *testing.T, base, sid string) {
 	t.Helper()
-	dir := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations")
+	dir := filepath.Join(base, "evener", "projects", "project-test-0123456789", "mutations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1048,7 @@ func mutationStore(t *testing.T, base, sid string) {
 	    "cm-steer":{"client_mutation_id":"cm-steer","method":"turn/steer","payload_hash":"h2",
 	      "operation_state":"rejected","execution_state":"rejected","projection_state":"removed",
 	      "attempt_generation":1,
-	      "rejection":{"code":-32013,"message":"turn is not running","data":{"serf_error_info":"conflict"}}}},
+	      "rejection":{"code":-32013,"message":"turn is not running","data":{"evener_error_info":"conflict"}}}},
 	  "input_queue":[{"id":"q1","client_mutation_id":"cm-queued","input":[{"type":"text","text":"queued reply"}]}],
 	  "queue_revision":2,"budget_reservations":{},"pending_executions":{}}`)
 }
@@ -1111,7 +1111,7 @@ func TestRun_MutationsMissingStoreExitsClean(t *testing.T) {
 
 func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
 	base, sid := fixture(t)
-	path := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations", sid+".json")
+	path := filepath.Join(base, "evener", "projects", "project-test-0123456789", "mutations", sid+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1121,7 +1121,7 @@ func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
 	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 1 {
 		t.Fatalf("exit %d, want 1; stdout=%s stderr=%s", code, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "serf-doctor mutations:") || !strings.Contains(errb.String(), path) {
+	if !strings.Contains(errb.String(), "evener-doctor mutations:") || !strings.Contains(errb.String(), path) {
 		t.Errorf("error does not name the subcommand and the file: %s", errb.String())
 	}
 }
@@ -1136,7 +1136,7 @@ func fixtureWithSalvagedLoop(t *testing.T) (base, sid, turnText string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")
+	sess := filepath.Join(base, "evener", "projects", "project-test-0123456789", "sessions")
 	if err := os.MkdirAll(sess, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1160,7 +1160,7 @@ func fixtureWithSalvagedLoop(t *testing.T) (base, sid, turnText string) {
 
 // The kata's stop condition is about the binary, not the library: an operator
 // investigating a repetition loop must be able to get the untruncated turn text
-// out of serf-doctor, and the default output must stay as it is today.
+// out of evener-doctor, and the default output must stay as it is today.
 func TestRun_TranscriptFullTextAndDefaultCap(t *testing.T) {
 	base, sid, turnText := fixtureWithSalvagedLoop(t)
 

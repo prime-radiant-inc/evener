@@ -63,7 +63,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 // user's main provider.
 func TestMaterializeDetectsOpenAIOAuth(t *testing.T) {
 	// Isolate auth: clears OPENAI_API_KEY, points XDG_STATE_HOME at a temp dir,
-	// and returns the serf state dir to store the record in.
+	// and returns the evener state dir to store the record in.
 	stateDir := oaitest.IsolateOpenAIAuth(t)
 	for _, k := range []string{
 		"ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",

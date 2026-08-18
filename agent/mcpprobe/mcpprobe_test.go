@@ -185,7 +185,7 @@ func TestProbe_Stdio_CommandOnPath_Available(t *testing.T) {
 func TestProbe_Stdio_CommandMissing_Missing(t *testing.T) {
 	t.Parallel()
 	results := mcpprobe.Probe(context.Background(), []mcpconfig.ServerConfig{
-		{Name: "ghost", Type: "stdio", Command: "serf-mcpprobe-definitely-missing-cmd"},
+		{Name: "ghost", Type: "stdio", Command: "evener-mcpprobe-definitely-missing-cmd"},
 	})
 
 	if len(results) != 1 {

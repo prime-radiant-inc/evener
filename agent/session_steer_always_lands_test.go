@@ -27,7 +27,7 @@ import (
 // The crash is real, not simulated: the steer is committed through the
 // production durable path, the session is closed, and a fresh one is rebuilt
 // from the same state dir through RestoreSessionFromMetaWithConfig -- the same
-// function `serf serve --resume` calls.
+// function `evener serve --resume` calls.
 func TestRestoredSteeringWakesWhenTheDaemonAttaches(t *testing.T) {
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)

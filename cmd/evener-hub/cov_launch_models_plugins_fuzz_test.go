@@ -67,19 +67,19 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _ = broken.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
 
 		corruptProject := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(corruptProject, ".serf"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(corruptProject, ".evener"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(corruptProject, ".serf", "launch.local.toml"), []byte("="), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(corruptProject, ".evener", "launch.local.toml"), []byte("="), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		_, _ = ctl.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: corruptProject, Layer: "project"})
 
 		trustRoot, trustCWD := t.TempDir(), t.TempDir()
-		if err := os.MkdirAll(filepath.Join(trustCWD, ".serf"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(trustCWD, ".evener"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(trustCWD, ".serf", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(trustCWD, ".evener", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		trustCtl := newHubLaunchController(trustRoot)
@@ -132,7 +132,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 
 		_ = sanitizeModelDescriptors([]appwire.ModelDescriptor{{Provider: " ", Model: "x"}, {Provider: "p", Model: " "}, {Provider: " p ", Model: " m "}})
 		_ = sanitizeModelDiagnostics([]appwire.ModelListDiagnostic{{Message: " "}, {Provider: " p ", Source: " s ", Title: " t ", Message: " m ", Hint: " h "}})
-		_ = launchHarnessDescriptors(hubcore.WebConfig{CodexSources: []appsource.CodexSourceConfig{{}, {ID: "serf"}, {ID: "extra"}}, CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "extra"}, {ID: "launched"}}})
+		_ = launchHarnessDescriptors(hubcore.WebConfig{CodexSources: []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "extra"}}, CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "extra"}, {ID: "launched"}}})
 		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{}, appsource.NewRegistry(), "missing")
 		launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed", Binary: filepath.Join(t.TempDir(), "missing")}})
 		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{CodexLauncher: launcher}, appsource.NewRegistry(), "managed")
@@ -140,11 +140,11 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		errorSources.Add(&scriptedAppSource{id: "remote"})
 		_, _ = hubModelListInner(ctx, hubcore.WebConfig{}, errorSources, appwire.ModelListParams{Harness: "remote"})
 		_, _ = hubModelListInner(ctx, hubcore.WebConfig{Spawner: &fakeRPCModelContractSpawner{err: errors.New("contract")}}, appsource.NewRegistry(), appwire.ModelListParams{})
-		_, _ = serfLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCWorkingDirModelContractSpawner{contractForWorkingDir: func(context.Context, string) (appwire.ModelListResponse, error) {
+		_, _ = evenerLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCWorkingDirModelContractSpawner{contractForWorkingDir: func(context.Context, string) (appwire.ModelListResponse, error) {
 			return appwire.ModelListResponse{}, errors.New("working-dir")
 		}}}, cwd)
-		_, _ = serfLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCModelContractSpawner{err: errors.New("contract")}}, "")
-		_, _ = serfLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCSpawner{launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) { return nil, errors.New("models") }}}, "")
+		_, _ = evenerLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCModelContractSpawner{err: errors.New("contract")}}, "")
+		_, _ = evenerLaunchModelList(ctx, hubcore.WebConfig{Spawner: &fakeRPCSpawner{launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) { return nil, errors.New("models") }}}, "")
 
 		pluginRoot := filepath.Join(t.TempDir(), "plugin-root-file")
 		if err := os.WriteFile(pluginRoot, []byte("x"), 0o600); err != nil {

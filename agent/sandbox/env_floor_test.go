@@ -44,7 +44,7 @@ func TestEnvFloorDropsAgentAndCloudVars(t *testing.T) {
 }
 
 func TestEnvFloorRedirectsCacheWhenSessionPrivate(t *testing.T) {
-	tmp := "/tmp/serf-session-xyz"
+	tmp := "/tmp/evener-session-xyz"
 	in := []string{"GOCACHE=/home/u/.cache/go-build", "CARGO_HOME=/home/u/.cargo", "npm_config_cache=/home/u/.npm"}
 	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate}, tmp)
 
@@ -68,7 +68,7 @@ func TestEnvFloorRedirectsCacheWhenSessionPrivate(t *testing.T) {
 // denied. GOMODCACHE must redirect into the session tmp exactly like GOCACHE,
 // regardless of GOPATH.
 func TestEnvFloorRedirectsGoModCacheWhenSessionPrivate(t *testing.T) {
-	tmp := "/tmp/serf-session-xyz"
+	tmp := "/tmp/evener-session-xyz"
 	in := []string{"GOPATH=/custom/gopath", "GOMODCACHE=/custom/gopath/pkg/mod"}
 	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, CacheStrategy: CacheSessionPrivate}, tmp)
 
@@ -136,15 +136,15 @@ func TestEnvFloorReturnsFreshSlice(t *testing.T) {
 func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
 	in := []string{
 		"TMPDIR=/ambient/tmp",
-		"SERF_SCRATCH_DIR=/ambient/serf",
+		"SERF_SCRATCH_DIR=/ambient/evener",
 		"HOME=/home/jesse",
 		"GOCACHE=/cache/go",
 		"npm_config_cache=/cache/npm",
 		"CARGO_HOME=/cache/cargo",
 	}
-	out := ApplySessionScratchEnv(in, "/tmp/serf-sandbox-owned")
+	out := ApplySessionScratchEnv(in, "/tmp/evener-sandbox-owned")
 	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
-		if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
+		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
 			t.Fatalf("%s = %q, want session scratch", name, got)
 		}
 	}
@@ -167,7 +167,7 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 		"VAULT_TOKEN=secret",
 		"KUBECONFIG=/outside/kubeconfig",
 		"TMPDIR=/ambient/tmp",
-		"SERF_SCRATCH_DIR=/ambient/serf",
+		"SERF_SCRATCH_DIR=/ambient/evener",
 		"HOME=/home/jesse",
 		"GOCACHE=/cache/go",
 		"npm_config_cache=/cache/npm",
@@ -177,7 +177,7 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 		Mode: ModeWorkspaceWrite, CacheStrategy: CacheNone,
 		Git: GitLayout{WorktreeRoot: "/workspace"},
 	}
-	out := ApplyEnvFloor(in, policy, "/tmp/serf-sandbox-owned")
+	out := ApplyEnvFloor(in, policy, "/tmp/evener-sandbox-owned")
 	for _, name := range []string{
 		"SSH_AUTH_SOCK", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
 		"GCLOUD_PROJECT", "VAULT_TOKEN", "KUBECONFIG",
@@ -187,7 +187,7 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
-		if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
+		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
 			t.Errorf("%s = %q, want session scratch", name, got)
 		}
 	}

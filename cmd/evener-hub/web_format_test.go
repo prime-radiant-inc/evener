@@ -30,16 +30,16 @@ func TestActiveTurnRunningForReadsStartedAtAsMillis(t *testing.T) {
 }
 
 // TestWorkspaceDataFromAppThreadCarriesWorkMetrics asserts that
-// thread.Serf.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) flow onto
+// thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) flow onto
 // WorkspaceData, the same way Goal already does (TestHubDetailFromAppThreadCarriesGoal
 // in web_test.go covers the analogous hubapi.SessionDetail mapping).
 func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
-	usage := &appwire.SerfUsage{InputTokens: 12, OutputTokens: 34, CacheReadTokens: 5, TotalTokens: 46}
+	usage := &appwire.EvenerUsage{InputTokens: 12, OutputTokens: 34, CacheReadTokens: 5, TotalTokens: 46}
 	wd := workspaceDataFromAppThread(appwire.Thread{
 		ID:     "th_metrics",
 		Source: "local",
 		Status: appwire.ThreadStatus{Type: "idle"},
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:                 "local:th_metrics",
 			Usage:               usage,
 			WorkMillis:          9000,
@@ -62,16 +62,16 @@ func TestWorkspaceDataFromAppThreadCarriesWorkMetrics(t *testing.T) {
 
 // TestWorkspaceDataFromAppThread_CarriesCostEstimate verifies the
 // remote/appwire workspace path computes Cost from thread.ModelProvider and
-// thread.Serf.Usage via appwire.EstimateCost.
+// thread.Evener.Usage via appwire.EstimateCost.
 func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
 	wd := workspaceDataFromAppThread(appwire.Thread{
 		ID:            "th_cost",
 		Source:        "local",
 		Status:        appwire.ThreadStatus{Type: "idle"},
 		ModelProvider: "claude-opus-4-5",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:   "local:th_cost",
-			Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000},
+			Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000},
 		},
 	})
 	if wd.Cost != "~$1.00" {
@@ -80,35 +80,35 @@ func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
 }
 
 // TestSerfUsageFromCumulative pins the nil-when-zero convention (mirrors
-// serfUsageFromLLM in cmd/evener/serve.go): an all-zero CumulativeUsage — a
+// evenerUsageFromLLM in cmd/evener/serve.go): an all-zero CumulativeUsage — a
 // fresh session or a meta written before WS2 — must map to a nil
-// *appwire.SerfUsage so the usage cluster hides rather than rendering ↑0 ↓0.
+// *appwire.EvenerUsage so the usage cluster hides rather than rendering ↑0 ↓0.
 func TestSerfUsageFromCumulative(t *testing.T) {
-	if got := serfUsageFromCumulative(schema.CumulativeUsage{}); got != nil {
-		t.Fatalf("serfUsageFromCumulative(zero) = %+v, want nil", got)
+	if got := evenerUsageFromCumulative(schema.CumulativeUsage{}); got != nil {
+		t.Fatalf("evenerUsageFromCumulative(zero) = %+v, want nil", got)
 	}
 
-	got := serfUsageFromCumulative(schema.CumulativeUsage{
+	got := evenerUsageFromCumulative(schema.CumulativeUsage{
 		InputTokens:     100,
 		OutputTokens:    50,
 		CacheReadTokens: 10,
 		TotalTokens:     150,
 	})
-	want := &appwire.SerfUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
+	want := &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
 	if got == nil || *got != *want {
-		t.Fatalf("serfUsageFromCumulative = %+v, want %+v", got, want)
+		t.Fatalf("evenerUsageFromCumulative = %+v, want %+v", got, want)
 	}
 }
 
 // TestHubUsageFromAppwire pins hubUsageFromAppwire's nil-safety (a thread with
-// no token data carries a nil *appwire.SerfUsage) and its field-for-field
+// no token data carries a nil *appwire.EvenerUsage) and its field-for-field
 // mapping into hubapi's flattened Usage type.
 func TestHubUsageFromAppwire(t *testing.T) {
 	if got := hubUsageFromAppwire(nil); got != nil {
 		t.Fatalf("hubUsageFromAppwire(nil) = %+v, want nil", got)
 	}
 
-	got := hubUsageFromAppwire(&appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
+	got := hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 	want := &hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
 	if got == nil || *got != *want {
 		t.Fatalf("hubUsageFromAppwire = %+v, want %+v", got, want)

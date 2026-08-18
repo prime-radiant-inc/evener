@@ -17,7 +17,7 @@ import (
 // makes the daemon's feed lossless, at the one place that decides it.
 //
 // serve.go's bridge is the single caller of ConsumeEventsLossless in the
-// repository. Everything else -- every subagent, every delegate, `serf run`,
+// repository. Everything else -- every subagent, every delegate, `evener run`,
 // the dev tools -- gets best-effort delivery, which is what keeps an unread
 // channel from wedging its emitters. So this dep is the whole of the daemon's
 // side of the contract, and if it silently reverted to ranging Events() the

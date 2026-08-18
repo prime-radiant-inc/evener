@@ -44,7 +44,7 @@ var exitProcess = os.Exit
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "serf-fluency:", err)
+		fmt.Fprintln(os.Stderr, "evener-fluency:", err)
 		exitProcess(1)
 	}
 }
@@ -69,11 +69,11 @@ func run(args []string) error {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `serf-fluency measures model-facing Serf tool fluency.
+	fmt.Fprint(os.Stderr, `evener-fluency measures model-facing Evener tool fluency.
 
 USAGE
-  serf-fluency catalog [--model provider/model] [--json]
-  serf-fluency run [--model provider/model] [--probe id] [--build]
+  evener-fluency catalog [--model provider/model] [--json]
+  evener-fluency run [--model provider/model] [--probe id] [--build]
 
 `)
 }
@@ -117,7 +117,7 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmp, err := os.MkdirTemp("", "serf-fluency-catalog-*")
+	tmp, err := os.MkdirTemp("", "evener-fluency-catalog-*")
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ type runConfig struct {
 	probesDir          string
 	probeFilter        string
 	outDir             string
-	serfBin            string
+	evenerBin            string
 	systemPromptAppend []string
 	build              bool
 	repetitions        int
@@ -205,15 +205,15 @@ func runSuite(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfg := runConfig{}
 	fs.StringVar(&cfg.model, "model", defaultModel(), "provider/model")
-	fs.StringVar(&cfg.fastCheapModel, "fast-cheap-model", "", "provider/model or bare model for Serf auxiliary side calls")
+	fs.StringVar(&cfg.fastCheapModel, "fast-cheap-model", "", "provider/model or bare model for Evener auxiliary side calls")
 	fs.StringVar(&cfg.harness, "harness", "cli", "execution harness: cli or live")
 	fs.StringVar(&cfg.probesDir, "probes-dir", "tools/tool-fluency/probes", "probe manifest directory")
 	fs.StringVar(&cfg.probeFilter, "probe", "all", "probe id or all")
 	fs.StringVar(&cfg.outDir, "out", "", "result directory")
-	fs.StringVar(&cfg.serfBin, "serf-bin", "", "serf binary to run")
+	fs.StringVar(&cfg.evenerBin, "evener-bin", "", "evener binary to run")
 	var systemPromptAppend cmdutil.StringSliceFlag
 	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
-	fs.BoolVar(&cfg.build, "build", false, "build a fresh serf binary before running")
+	fs.BoolVar(&cfg.build, "build", false, "build a fresh evener binary before running")
 	fs.IntVar(&cfg.repetitions, "repetitions", 1, "repetitions per probe")
 	fs.DurationVar(&cfg.timeout, "timeout", 8*time.Minute, "timeout per probe repetition")
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
@@ -235,12 +235,12 @@ func runSuite(args []string) error {
 	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
 		return err
 	}
-	if cfg.harness == "cli" && (cfg.build || cfg.serfBin == "") {
+	if cfg.harness == "cli" && (cfg.build || cfg.evenerBin == "") {
 		bin, err := buildSerf(cfg.outDir)
 		if err != nil {
 			return err
 		}
-		cfg.serfBin = bin
+		cfg.evenerBin = bin
 	}
 	probes, err := loadProbes(cfg.probesDir, cfg.probeFilter)
 	if err != nil {
@@ -293,12 +293,12 @@ func buildSerf(outDir string) (string, error) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err
 	}
-	bin := filepath.Join(binDir, "serf")
+	bin := filepath.Join(binDir, "evener")
 	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "./cmd/evener")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("build serf: %w", err)
+		return "", fmt.Errorf("build evener: %w", err)
 	}
 	return bin, nil
 }
@@ -346,7 +346,7 @@ func selectionSummary(cfg runConfig, probes []probeFile) string {
 		ids = append(ids, p.ID)
 	}
 	sort.Strings(ids)
-	return fmt.Sprintf("[serf-fluency] model=%s probe-filter=%q probes-dir=%s selected=%d out=%s\n  probes: %s\n",
+	return fmt.Sprintf("[evener-fluency] model=%s probe-filter=%q probes-dir=%s selected=%d out=%s\n  probes: %s\n",
 		cfg.model, cfg.probeFilter, cfg.probesDir, len(ids), cfg.outDir, strings.Join(ids, ", "))
 }
 
@@ -462,7 +462,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	cmd := exec.CommandContext(ctx, cfg.serfBin, cliProbeArgs(cfg, probe, res)...)
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, cliProbeArgs(cfg, probe, res)...)
 	cmd.Env = os.Environ()
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))

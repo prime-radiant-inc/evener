@@ -251,7 +251,7 @@ func TestEmbeddedModelCatalog_ClaudeAliases(t *testing.T) {
 }
 
 // The new-model entries: Anthropic claude-sonnet-5 / claude-fable-5 (base
-// LiteLLM entries + serf overlay) and the materialized gpt-5.6 family.
+// LiteLLM entries + evener overlay) and the materialized gpt-5.6 family.
 func TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	if cat == nil {
@@ -374,7 +374,7 @@ func TestEmbeddedModelCatalog_Claude5FlagCoversEveryClaude5CatalogKey(t *testing
 	var matched []string
 	for _, file := range []string{
 		"data/litellm_model_catalog.json",
-		"data/serf_model_catalog_overrides.json",
+		"data/evener_model_catalog_overrides.json",
 	} {
 		data, err := embeddedCatalogFS.ReadFile(file)
 		if err != nil {
@@ -398,7 +398,7 @@ func TestEmbeddedModelCatalog_Claude5FlagCoversEveryClaude5CatalogKey(t *testing
 			}
 			if !mi.Claude5RequestShape {
 				t.Errorf("%s (in %s) reads as Claude 5+ by generation but carries no claude5_request_shape; "+
-					"add it to serf_model_catalog_overrides.json or the Anthropic request builder "+
+					"add it to evener_model_catalog_overrides.json or the Anthropic request builder "+
 					"will send it the pre-5 wire shape", id, file)
 			}
 		}
@@ -465,7 +465,7 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 // asks: strip the Anthropic "[1m]" 1M-context suffix, then the provider
 // namespace ("anthropic/…" from an openrouter-anthropic instance), and resolve
 // dated snapshots via the family override. Every ref below names the opus-4-5
-// family, whose serf override lists [low, medium, high].
+// family, whose evener override lists [low, medium, high].
 func TestLookupModelInfo_CanonicalizesRefs(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	if cat == nil {
@@ -836,7 +836,7 @@ func TestParseLiteLLMCatalog_WebSearchPresence(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_MergesWebSearch verifies that the serf override
+// TestApplyOverrides_MergesWebSearch verifies that the evener override
 // layer can flip supports_web_search on a base catalog entry. Before
 // this, only effort_levels and a couple of effort flags were merged,
 // so an override saying supports_web_search:false was silently lost.
@@ -860,7 +860,7 @@ func TestApplyOverrides_MergesWebSearch(t *testing.T) {
 }
 
 // Dated Anthropic snapshots (claude-opus-4-5-20251101, ...-v1) carry no override
-// of their own — Serf overrides are keyed on the bare family ID. They must
+// of their own — Evener overrides are keyed on the bare family ID. They must
 // inherit the family's effort metadata so the effort clamp resolves real levels
 // for a dated fallback instead of leaking the primary model's levels.
 func TestApplyOverrides_DatedVariantInheritsFamily(t *testing.T) {
@@ -952,8 +952,8 @@ func TestFamilyModelID(t *testing.T) {
 	}
 }
 
-// A Serf override entry that carries base metadata (a context window) and matches
-// no LiteLLM model materializes a Serf-only catalog entry — how Serf ships models
+// A Evener override entry that carries base metadata (a context window) and matches
+// no LiteLLM model materializes a Evener-only catalog entry — how Evener ships models
 // LiteLLM doesn't cover (kimi-for-coding). Overlay-only entries stay no-ops.
 func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
 	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x"}}`))
@@ -961,13 +961,13 @@ func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	applyOverrides(cat, []byte(`{
-		"serf-only":    {"provider": "kimi", "context_window": 262144, "supports_reasoning": true, "reasoning_effort_levels": ["minimal","low","medium","high"]},
+		"evener-only":    {"provider": "kimi", "context_window": 262144, "supports_reasoning": true, "reasoning_effort_levels": ["minimal","low","medium","high"]},
 		"overlay-only": {"reasoning_effort_levels": ["low"]}
 	}`))
 
-	mi := cat.GetModelInfo("serf-only")
+	mi := cat.GetModelInfo("evener-only")
 	if mi == nil {
-		t.Fatal("serf-only model was not materialized")
+		t.Fatal("evener-only model was not materialized")
 	}
 	if mi.ContextWindow != 262144 {
 		t.Errorf("ContextWindow = %d, want 262144", mi.ContextWindow)
@@ -1002,7 +1002,7 @@ func TestApplyOverrides_ThinkingAlwaysOn(t *testing.T) {
 	}
 }
 
-// Materialized Serf-only entries can carry vision support, per-million pricing
+// Materialized Evener-only entries can carry vision support, per-million pricing
 // (including cache reads), and aliases — everything a first-party model that
 // LiteLLM lacks needs (e.g. the gpt-5.6 family).
 func TestApplyOverrides_MaterializesVisionPricingAndAliases(t *testing.T) {
@@ -1011,19 +1011,19 @@ func TestApplyOverrides_MaterializesVisionPricingAndAliases(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	applyOverrides(cat, []byte(`{
-		"serf-only": {
+		"evener-only": {
 			"provider": "openai", "context_window": 1050000,
 			"supports_vision": true,
 			"input_cost_per_million": 5.0,
 			"output_cost_per_million": 30.0,
 			"cache_read_input_cost_per_million": 0.5,
-			"aliases": ["serf-only-alias"]
+			"aliases": ["evener-only-alias"]
 		}
 	}`))
 
-	mi := cat.GetModelInfo("serf-only")
+	mi := cat.GetModelInfo("evener-only")
 	if mi == nil {
-		t.Fatal("serf-only model was not materialized")
+		t.Fatal("evener-only model was not materialized")
 	}
 	if !mi.SupportsVision {
 		t.Error("SupportsVision = false, want true")
@@ -1038,13 +1038,13 @@ func TestApplyOverrides_MaterializesVisionPricingAndAliases(t *testing.T) {
 		t.Errorf("CacheReadInputCostPerMillion = %v, want 0.5", mi.CacheReadInputCostPerMillion)
 	}
 	// The alias must resolve through the lazily-built index.
-	if got := cat.GetModelInfo("serf-only-alias"); got == nil || got.ID != "serf-only" {
-		t.Errorf("GetModelInfo(serf-only-alias) = %+v, want serf-only", got)
+	if got := cat.GetModelInfo("evener-only-alias"); got == nil || got.ID != "evener-only" {
+		t.Errorf("GetModelInfo(evener-only-alias) = %+v, want evener-only", got)
 	}
 }
 
 // TestApplyOverrides_MaxOutputTokens verifies the overrides schema carries
-// max_output_tokens onto both a materialized Serf-only entry and an overlay of
+// max_output_tokens onto both a materialized Evener-only entry and an overlay of
 // an existing catalog model.
 func TestApplyOverrides_MaxOutputTokens(t *testing.T) {
 	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x", "max_input_tokens": 4096}}`))
@@ -1052,16 +1052,16 @@ func TestApplyOverrides_MaxOutputTokens(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	applyOverrides(cat, []byte(`{
-		"serf-only":      {"provider": "zai", "context_window": 1000000, "max_output_tokens": 131072},
+		"evener-only":      {"provider": "zai", "context_window": 1000000, "max_output_tokens": 131072},
 		"existing-model": {"max_output_tokens": 8192}
 	}`))
 
-	serfOnly := cat.GetModelInfo("serf-only")
-	if serfOnly == nil {
-		t.Fatal("serf-only model was not materialized")
+	evenerOnly := cat.GetModelInfo("evener-only")
+	if evenerOnly == nil {
+		t.Fatal("evener-only model was not materialized")
 	}
-	if serfOnly.MaxOutputTokens == nil || *serfOnly.MaxOutputTokens != 131072 {
-		t.Errorf("serf-only MaxOutputTokens = %v, want 131072", serfOnly.MaxOutputTokens)
+	if evenerOnly.MaxOutputTokens == nil || *evenerOnly.MaxOutputTokens != 131072 {
+		t.Errorf("evener-only MaxOutputTokens = %v, want 131072", evenerOnly.MaxOutputTokens)
 	}
 
 	existing := cat.GetModelInfo("existing-model")
@@ -1189,7 +1189,7 @@ func TestEmbeddedCatalog_KimiCodeModels(t *testing.T) {
 }
 
 // A context_window override must also win for models the upstream catalog
-// already defines (not just materialized serf-only entries) — the overrides
+// already defines (not just materialized evener-only entries) — the overrides
 // layer is authoritative, so upstream later adding one of our curated models
 // can't regress its shape.
 func TestApplyOverrides_ContextWindowOverlaysMatchedModel(t *testing.T) {

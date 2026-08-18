@@ -12,9 +12,9 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 	corpus := newHubTUISampleCorpus()
 
 	if len(corpus.DashboardTree.Projects) < 2 {
-		t.Fatalf("dashboard projects=%d, want at least serf and external project samples", len(corpus.DashboardTree.Projects))
+		t.Fatalf("dashboard projects=%d, want at least evener and external project samples", len(corpus.DashboardTree.Projects))
 	}
-	requireSampleSources(t, corpus.DashboardTree.Live, "serf", "codex-local")
+	requireSampleSources(t, corpus.DashboardTree.Live, "evener", "codex-local")
 
 	project := corpus.ProjectHistory
 	if project.Name == "" || len(project.Sessions) < 2 {
@@ -24,7 +24,7 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 		t.Fatalf("project history must include live and ended sessions: %+v", project.Sessions)
 	}
 
-	for _, name := range []string{"serf-idle", "codex-readonly", "busy-steer", "busy-readonly", "ended"} {
+	for _, name := range []string{"evener-idle", "codex-readonly", "busy-steer", "busy-readonly", "ended"} {
 		if _, ok := corpus.Sessions[name]; !ok {
 			t.Fatalf("missing session detail sample %q", name)
 		}
@@ -62,7 +62,7 @@ func TestHubTUISampleCorpusHasGoldenRendersForCoreSurfaces(t *testing.T) {
 		"ask-chip-waiting",
 		"ask-overlay-single",
 		"ask-overlay-multi-review",
-		"spawn-serf",
+		"spawn-evener",
 		"spawn-codex",
 		"spawn-auth-required",
 		"model-picker",

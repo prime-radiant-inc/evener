@@ -69,14 +69,14 @@ func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "Ready for shell work."}}
 
 	got := m.View()
-	requireOrderedText(t, got, "serf / session / send task", "Ready for shell work.", "> ")
+	requireOrderedText(t, got, "evener / session / send task", "Ready for shell work.", "> ")
 }
 
 func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
 	withTestColorProfile(t)
 	got := tuiprim.AppShell{
-		TopBar: "serf live",
-		Body:   "Live now\n> idle serf session",
+		TopBar: "evener live",
+		Body:   "Live now\n> idle evener session",
 		Footer: "enter open",
 	}.View()
 
@@ -87,7 +87,7 @@ func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
 
 func TestHubModelAppShellAnchorsFooterToKnownHeight(t *testing.T) {
 	got := tuiprim.AppShell{
-		TopBar: "serf live",
+		TopBar: "evener live",
 		Body:   "one live session",
 		Footer: "up/down select  enter open",
 		Height: 8,

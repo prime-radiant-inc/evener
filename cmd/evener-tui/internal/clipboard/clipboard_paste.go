@@ -1,4 +1,4 @@
-// Clipboard paste primitives for the serf TUI composer.
+// Clipboard paste primitives for the evener TUI composer.
 //
 // This file provides pure-function primitives plus an injectable
 // [ClipboardSource] interface so the system clipboard can be stubbed in
@@ -8,7 +8,7 @@
 // Cross-platform clipboard image access is intentionally implemented by
 // shelling out to the platform's native clipboard tool (xclip / wl-paste /
 // pbpaste+osascript / PowerShell). This trades a small amount of latency
-// per paste for keeping serf free of CGo dependencies — every clipboard
+// per paste for keeping evener free of CGo dependencies — every clipboard
 // library that reads image data on Linux drags in libx11-dev or
 // libwayland-client, which would block cross-compilation. The shell-out
 // approach also makes the WSL fallback fit naturally: WSL is just one more
@@ -357,10 +357,10 @@ func MediaTypeForPath(path string) string {
 }
 
 // WriteTempPNG persists the given bytes under os.TempDir() with the
-// "serf-clipboard-" prefix and ".png" suffix, returning the absolute
+// "evener-clipboard-" prefix and ".png" suffix, returning the absolute
 // path. The caller owns cleanup.
 func WriteTempPNG(data []byte) (string, error) {
-	f, err := clipboardCreateTemp("", "serf-clipboard-*.png")
+	f, err := clipboardCreateTemp("", "evener-clipboard-*.png")
 	if err != nil {
 		return "", err
 	}

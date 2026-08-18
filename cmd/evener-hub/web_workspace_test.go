@@ -17,7 +17,7 @@ import (
 // renderSessionTasks's persisted-tasks fallback for an exited session (no
 // live daemon): the JSON it serves must match exactly what a fresh
 // task.TaskStore.Load()+View() over the same file produces — the schema-
-// sourced reader the serf/tasks/list RPC fallback already uses
+// sourced reader the evener/tasks/list RPC fallback already uses
 // (hubTasksList/loadPersistedTasks, app_tasks.go). Pins the shared behavior
 // so the jx9e consolidation (routing this handler through the same reader)
 // cannot silently change what's rendered for a normal, well-formed fixture.

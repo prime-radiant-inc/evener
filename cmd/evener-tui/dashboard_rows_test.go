@@ -11,7 +11,7 @@ import (
 
 func TestSessionRowAwaitingHasStateColor(t *testing.T) {
 	withTestColorProfile(t)
-	row := hubRow{kind: hubRowSession, project: "serf", title: "X", state: "awaiting"}
+	row := hubRow{kind: hubRowSession, project: "evener", title: "X", state: "awaiting"}
 	got := renderDashboardSessionRow(row, false, 80, false, "")
 
 	// Plain text must contain the state label.
@@ -35,9 +35,9 @@ func TestSessionRowAwaitingHasStateColor(t *testing.T) {
 
 func TestSessionRowsHaveNoTreeConnectors(t *testing.T) {
 	rows := []hubRow{
-		{kind: hubRowProject, project: "serf", state: "active"},
-		{kind: hubRowSession, project: "serf", title: "Test session", state: "active", projectKey: "serf"},
-		{kind: hubRowSession, project: "serf", title: "Second session", state: "idle", projectKey: "serf"},
+		{kind: hubRowProject, project: "evener", state: "active"},
+		{kind: hubRowSession, project: "evener", title: "Test session", state: "active", projectKey: "evener"},
+		{kind: hubRowSession, project: "evener", title: "Second session", state: "idle", projectKey: "evener"},
 	}
 	got := renderDashboardRowsWindow(rows, 1, 80, false, 0)
 	for _, bad := range []string{"├─", "└─"} {

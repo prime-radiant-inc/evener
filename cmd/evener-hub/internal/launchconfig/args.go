@@ -6,8 +6,8 @@ import (
 )
 
 // ToArgs renders the Effective layer of Resolved into the argv slice
-// `serf serve` understands. Order is deterministic and matches the order
-// serf's flag parser sees them: scalars first, then list fields in the
+// `evener serve` understands. Order is deterministic and matches the order
+// evener's flag parser sees them: scalars first, then list fields in the
 // order they appear in the Layer struct.
 func ToArgs(r Resolved) []string {
 	var out []string
@@ -76,11 +76,11 @@ func ToArgs(r Resolved) []string {
 		add("--export-atif-provider-handles", e.ExportATIFProviderHandles)
 	}
 	// An explicit off mode is emitted so a launch layer can override a global
-	// default back to off; an unset mode emits nothing (serf's own default).
+	// default back to off; an unset mode emits nothing (evener's own default).
 	if e.Sandbox != "" {
 		add("--sandbox", e.Sandbox)
 	}
-	// Emit --sandbox-net only alongside a non-off mode: serf ignores the flag without
+	// Emit --sandbox-net only alongside a non-off mode: evener ignores the flag without
 	// a sandbox, so passing it alone would be a silent no-op.
 	if e.SandboxNet != nil && !sandboxModeIsOff(e.Sandbox) {
 		add("--sandbox-net", onOff(*e.SandboxNet))
@@ -112,7 +112,7 @@ func ToArgs(r Resolved) []string {
 	return out
 }
 
-// onOff renders a boolean as the on|off token serf's --sandbox-net flag accepts.
+// onOff renders a boolean as the on|off token evener's --sandbox-net flag accepts.
 func onOff(v bool) string {
 	if v {
 		return "on"

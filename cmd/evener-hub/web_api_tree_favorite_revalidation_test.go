@@ -350,8 +350,8 @@ func TestAPITreeFavoriteRevalidation_MalformedParentRefIsDormant(t *testing.T) {
 	source := &revalidationRemoteSource{
 		scriptedAppSource: scriptedAppSource{id: "remote"},
 		response: appwire.ThreadListResponse{Data: []appwire.Thread{
-			{ID: parentID, Source: "remote", Serf: appwire.SerfThread{Ref: parentRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
-			{ID: childID, Source: "remote", Serf: appwire.SerfThread{Ref: childRef, ParentRef: parentID}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+			{ID: parentID, Source: "remote", Evener: appwire.EvenerThread{Ref: parentRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+			{ID: childID, Source: "remote", Evener: appwire.EvenerThread{Ref: childRef, ParentRef: parentID}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
 		}},
 	}
 	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
@@ -414,7 +414,7 @@ func TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProject
 	thread := appwire.Thread{
 		ID: threadID, Source: "remote", CWD: filepath.Join(projectDir, "ended-worktree"),
 		ProjectID: project.ID, ProjectPath: project.CanonicalPath,
-		Serf:      appwire.SerfThread{Ref: "remote:" + threadID},
+		Evener:      appwire.EvenerThread{Ref: "remote:" + threadID},
 		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
 		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 	}
@@ -816,7 +816,7 @@ func (s *paginatedRevalidationSource) ListThreads(_ context.Context, params appw
 
 func revalidationClosedThread(sourceID, id string, at time.Time) appwire.Thread {
 	return appwire.Thread{
-		ID: id, Source: sourceID, Serf: appwire.SerfThread{Ref: sourceID + ":" + id},
+		ID: id, Source: sourceID, Evener: appwire.EvenerThread{Ref: sourceID + ":" + id},
 		CreatedAt: at.Unix(), UpdatedAt: at.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
 	}
 }

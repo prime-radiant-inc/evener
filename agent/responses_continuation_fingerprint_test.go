@@ -34,7 +34,7 @@ func TestOpenAIResponsesContinuationFingerprint_ProductionPromptChangesWithToday
 
 func openAIContinuationPromptDataForTest(today string) promptData {
 	return promptData{
-		WorkingDir:      "/tmp/serf-continuation",
+		WorkingDir:      "/tmp/evener-continuation",
 		Platform:        "darwin",
 		OSVersion:       "15.5",
 		Today:           today,

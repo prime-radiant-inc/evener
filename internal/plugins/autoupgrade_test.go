@@ -161,7 +161,7 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 
 	// No upstream change: sha is unchanged, so Upgrade is a no-op and must not
 	// be reported as an update (the daemon uses this list to decide whether to
-	// broadcast serf/plugin/updated).
+	// broadcast evener/plugin/updated).
 	updated, err := m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade: %v", err)
@@ -253,7 +253,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 
 // TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport reproduces the
 // TOCTOU two overlapping sweeps can hit (the periodic tick racing a manual
-// serf/plugin/checkNow, or checkNow from two clients): sweep A completes the
+// evener/plugin/checkNow, or checkNow from two clients): sweep A completes the
 // real upgrade while sweep B is still holding a pre-upgrade view of the
 // plugin. B must not ALSO report the plugin as updated — its change
 // detection has to be computed fresh, at the moment it actually acts, not

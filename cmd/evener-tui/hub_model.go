@@ -181,7 +181,7 @@ type hubModel struct {
 	postQuitMessage string
 
 	// sessionQueue is the wire-sourced queue preview for the current
-	// session — populated from thread.Serf.Queue on ReadThread and from
+	// session — populated from thread.Evener.Queue on ReadThread and from
 	// thread/queueChanged notifications (kata r80p). The TUI no longer
 	// mirrors local enqueues; it renders straight from this authoritative
 	// snapshot, so two clients viewing the same session agree on state.
@@ -192,7 +192,7 @@ type hubModel struct {
 	sessionQueueRef string
 
 	// modelRetry holds the in-flight model-call retry the daemon reported on
-	// serf/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral
+	// evener/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral
 	// chip-strip state, never a transcript line: one rate-limited session logged
 	// 91 retries in four hours, and the reader's question ("is this alive, and
 	// when does it come back?") is about now, not history. Cleared as soon as

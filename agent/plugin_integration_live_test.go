@@ -25,7 +25,7 @@ import (
 
 // buildLiveTestPlugin creates a fully-featured plugin in a temp directory.
 // Includes: manifest, skills, agents (with/without tools), command hooks,
-// prompt hook, MCP server, and a command (ignored by serf).
+// prompt hook, MCP server, and a command (ignored by evener).
 func buildLiveTestPlugin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -211,7 +211,7 @@ func TestLive_PluginLoad_AllComponents(t *testing.T) {
 	if analyzer.Color != "green" {
 		t.Errorf("analyzer Color = %q", analyzer.Color)
 	}
-	// Tools mapped to serf names
+	// Tools mapped to evener names
 	wantTools := map[string]bool{"read_file": true, "grep": true, "glob": true}
 	gotTools := map[string]bool{}
 	for _, tool := range analyzer.Tools {
@@ -328,12 +328,12 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	result := reg.ExecuteCall(ctx, nil, llm.ToolCallData{
 		ID:        "call_1",
 		Name:      echoDef.Name,
-		Arguments: json.RawMessage(`{"message":"hello from serf"}`),
+		Arguments: json.RawMessage(`{"message":"hello from evener"}`),
 	})
 	if result.IsError {
 		t.Fatalf("tool call error: %s", result.Output)
 	}
-	if !strings.Contains(result.Output, "echo: hello from serf") {
+	if !strings.Contains(result.Output, "echo: hello from evener") {
 		t.Errorf("unexpected output: %s", result.Output)
 	}
 }

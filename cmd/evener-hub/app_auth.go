@@ -617,7 +617,7 @@ func (c *hubAuthController) instanceStatus(name, behaviorTag, credentialTag stri
 	// A provider that authenticates nothing has no key to resolve, so nothing
 	// resolving is not a credential gone missing. credentials.Store.List states
 	// that as SourceNone for its own rows; the instance-keyed path must state it
-	// too, or serf/auth/list and serf/instance/list describe one provider two
+	// too, or evener/auth/list and evener/instance/list describe one provider two
 	// ways and the credentials pane renders a working provider as unconfigured.
 	if envvars.RequiresNoCredential(behaviorTag) {
 		src = credentials.SourceNone

@@ -178,7 +178,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 		Model:          "gpt-5",
 		ProfileID:      "openai",
 		TurnCount:      2,
-		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 		WorkMillis:     7000,
 		CumulativeUsage: schema.CumulativeUsage{
 			InputTokens:     100,
@@ -269,7 +269,7 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 	meta, _, ok := appThreadTreeEntries(appwire.Thread{
 		ID:     "child",
 		Source: "remote",
-		Serf: appwire.SerfThread{
+		Evener: appwire.EvenerThread{
 			Ref:       "remote:child",
 			ParentRef: "remote:parent",
 			Kind:      "subagent",
@@ -286,7 +286,7 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 		ID:           "fork",
 		Source:       "remote",
 		ForkedFromID: "parent",
-		Serf:         appwire.SerfThread{Ref: "remote:fork"},
+		Evener:         appwire.EvenerThread{Ref: "remote:fork"},
 	})
 	if !ok {
 		t.Fatal("appThreadTreeEntries rejected remote fork")
@@ -1027,7 +1027,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 		thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Serf: appwire.SerfThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	detail, ok := web.apiSessionDetail(sessionID)
@@ -1080,7 +1080,7 @@ func assertNoNotification(t *testing.T, client *appwire.Client, server *appserve
 }
 
 func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer hubHTTP.Close()
 	client := dialHubRPC(t, hubHTTP)
@@ -1095,14 +1095,14 @@ func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	roster.SetOnChange(func() { notifyTreeChanged(server) })
 
 	roster.Refresh() // seed: a daemon appears in the roster — a delta
-	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, server, appwire.NotifyEvenerTreeChanged)
 
 	roster.Refresh() // identical snapshot: no delta, must not broadcast again
-	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
+	assertNoNotification(t, client, server, appwire.NotifyEvenerTreeChanged)
 }
 
 func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer hubHTTP.Close()
 	client := dialHubRPC(t, hubHTTP)
@@ -1123,12 +1123,12 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
 		t.Fatal(err)
 	}
-	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, server, appwire.NotifyEvenerTreeChanged)
 
 	if _, err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
 		t.Fatal(err)
 	}
-	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
+	assertNoNotification(t, client, server, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestWeb_APITreeLiveRowsCarryTierPinSectionRename covers a wire gap: the Live
@@ -1137,7 +1137,7 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	root := t.TempDir()
-	workingDir := filepath.Join(root, "serf")
+	workingDir := filepath.Join(root, "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1187,7 +1187,7 @@ func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 func TestWeb_APITreeOrphanLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	root := t.TempDir()
-	workingDir := filepath.Join(root, "serf")
+	workingDir := filepath.Join(root, "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ import (
 var fuzzCoverageUnion = func(*testing.T) {}
 
 // FuzzParseStartup drives hubstart's two real parsers: ParseTUIStartupOptions
-// (the serf-tui flag parser, with a stubbed getenv so it is env-independent) and
+// (the evener-tui flag parser, with a stubbed getenv so it is env-independent) and
 // NormalizeHubAddress (the hub URL parser). The flag selector bit picks which.
 // Oracle: no-panic floor plus, for NormalizeHubAddress, an idempotence
 // invariant — re-normalizing a successfully-normalized BaseURL is a fixed point.
@@ -30,7 +30,7 @@ func FuzzParseStartup(f *testing.F) {
 	}{
 		{0, "--hub-addr=127.0.0.1:9180 --debug"},
 		{0, "--no-auto-start-hub --state-dir=/tmp/s"},
-		{0, "--auth-token tok --log-file=/tmp/l --hub-bin=/x/serf-hub"},
+		{0, "--auth-token tok --log-file=/tmp/l --hub-bin=/x/evener-hub"},
 		{0, "--unknown-flag"},
 		{0, "--hub-addr"},
 		{0, ""},
@@ -290,7 +290,7 @@ func fuzzStartLocalHub(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := StartLocalHub(HubStartRequest{Binary: bin, BindAddr: "127.0.0.1:0", StateDir: filepath.Join(dir, "state", "serf")}); err != nil {
+	if err := StartLocalHub(HubStartRequest{Binary: bin, BindAddr: "127.0.0.1:0", StateDir: filepath.Join(dir, "state", "evener")}); err != nil {
 		t.Fatal(err)
 	}
 	if err := StartLocalHub(HubStartRequest{Binary: filepath.Join(dir, "missing"), BindAddr: "127.0.0.1:0"}); err == nil {

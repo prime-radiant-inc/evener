@@ -1,4 +1,4 @@
-// Package envvars defines Serf's supported environment variables.
+// Package envvars defines Evener's supported environment variables.
 package envvars
 
 import (
@@ -60,12 +60,12 @@ func (v Var) Assignment(value string) string {
 var (
 	SERFAllowedDecisions            = Var{Name: "SERF_ALLOWED_DECISIONS", Summary: "Restricts tool-decision modes allowed by the active profile.", Visibility: Public}
 	SERFFluencyModel                = Var{Name: "SERF_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
-	SERFHubAddr                     = Var{Name: "SERF_HUB_ADDR", Summary: "Default hub address for serf-tui.", Visibility: Public}
-	SERFHubAuthToken                = Var{Name: "SERF_HUB_AUTH_TOKEN", Summary: "Hub capability token for serf-tui.", Secret: true, Visibility: Public}
-	SERFHubBin                      = Var{Name: "SERF_HUB_BIN", Summary: "Path to the serf-hub binary used by serf-tui autostart.", Visibility: Public}
-	SERFHubSpawned                  = Var{Name: "SERF_HUB_SPAWNED", Summary: "Set by serf-hub for spawned serf serve daemons.", Visibility: Internal}
-	SERFHubSpawnedCodex             = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by serf-hub for spawned Codex app-server processes.", Visibility: Internal}
-	SERFHubToken                    = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned serf serve daemons.", Secret: true, Visibility: Internal}
+	SERFHubAddr                     = Var{Name: "SERF_HUB_ADDR", Summary: "Default hub address for evener-tui.", Visibility: Public}
+	SERFHubAuthToken                = Var{Name: "SERF_HUB_AUTH_TOKEN", Summary: "Hub capability token for evener-tui.", Secret: true, Visibility: Public}
+	SERFHubBin                      = Var{Name: "SERF_HUB_BIN", Summary: "Path to the evener-hub binary used by evener-tui autostart.", Visibility: Public}
+	SERFHubSpawned                  = Var{Name: "SERF_HUB_SPAWNED", Summary: "Set by evener-hub for spawned evener serve daemons.", Visibility: Internal}
+	SERFHubSpawnedCodex             = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by evener-hub for spawned Codex app-server processes.", Visibility: Internal}
+	SERFHubToken                    = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}
 	SERFLoginHeadless               = Var{Name: "SERF_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	SERFModel                       = Var{Name: "SERF_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
 	SERFOpenAIResponsesContinuation = Var{Name: "SERF_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
@@ -75,12 +75,12 @@ var (
 	SERFRecordAppwire               = Var{Name: "SERF_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
 	SERFRecordHTTP                  = Var{Name: "SERF_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
 	SERFFuzzRecord                  = Var{Name: "SERF_FUZZ_RECORD", Summary: "Master switch: enables the AppWire and HTTP fuzz-corpus recorders by default when set to 1/true/yes/on. A per-recorder var (SERF_RECORD_APPWIRE/SERF_RECORD_HTTP) overrides it. Intended for local dev; unset everywhere else.", Visibility: Tooling}
-	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so serf-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
-	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
+	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so evener-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
+	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by evener-hub to spawned daemons.", Visibility: Internal}
 	SERFScratchDir                  = Var{Name: "SERF_SCRATCH_DIR", Summary: "Session-scoped private scratch directory provided to agent subprocesses.", Visibility: Internal}
 	SERFSessionOrigin               = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
-	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
-	SERFTUILogFile                  = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes serf-tui startup diagnostics to this file.", Visibility: Public}
+	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Evener state root.", Visibility: Public}
+	SERFTUILogFile                  = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes evener-tui startup diagnostics to this file.", Visibility: Public}
 
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before SERF_MODEL.", Visibility: Public}
 	LLMProvider = Var{Name: "LLM_PROVIDER", Summary: "Provider for llmcall when --provider is unset; checked before SERF_PROVIDER.", Visibility: Public}
@@ -113,9 +113,9 @@ var (
 	OpenRouterAPIKey               = Var{Name: "OPENROUTER_API_KEY", Summary: "OpenRouter API key.", Secret: true, Visibility: Public}
 	OpenRouterBaseURL              = Var{Name: "OPENROUTER_BASE_URL", Summary: "OpenRouter API base URL.", Visibility: Public}
 
-	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Serf cache data.", Visibility: Inherited}
-	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Serf config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
-	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for Serf state when SERF_STATE_DIR is unset.", Visibility: Inherited}
+	XDGCacheHome   = Var{Name: "XDG_CACHE_HOME", Summary: "Base for Evener cache data.", Visibility: Inherited}
+	XDGConfigHome  = Var{Name: "XDG_CONFIG_HOME", Summary: "Base for Evener config, skills, plugins, and MCP config discovery.", Visibility: Inherited}
+	XDGStateHome   = Var{Name: "XDG_STATE_HOME", Summary: "Base for Evener state when SERF_STATE_DIR is unset.", Visibility: Inherited}
 	CargoHome      = Var{Name: "CARGO_HOME", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}

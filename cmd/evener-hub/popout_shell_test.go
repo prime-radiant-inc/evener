@@ -38,8 +38,8 @@ func TestWeb_PopoutShell_ServesMinimalSameOriginDocument(t *testing.T) {
 	if !strings.Contains(body, `<meta charset="utf-8">`) {
 		t.Fatalf("shell must declare charset utf-8: %q", body)
 	}
-	if !strings.Contains(body, "<title>serf</title>") {
-		t.Fatalf("shell must title itself serf: %q", body)
+	if !strings.Contains(body, "<title>evener</title>") {
+		t.Fatalf("shell must title itself evener: %q", body)
 	}
 	// It must NOT boot the SPA: dockview clones the opener's stylesheets into
 	// the popout, so the shell needs no CSS or JS of its own, and booting a

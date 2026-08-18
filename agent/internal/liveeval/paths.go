@@ -21,8 +21,8 @@ func Enabled(value string) bool {
 // A configured state home wins; otherwise it follows the user's home rather
 // than naming one developer's machine. Provider configuration follows the
 // runtime precedence: SERF_PROVIDERS_CONFIG, SERF_STATE_DIR/providers.toml,
-// then ~/.serf/providers.toml. The returned state path is the XDG base, not
-// the child "serf" directory that the auth layer appends.
+// then ~/.evener/providers.toml. The returned state path is the XDG base, not
+// the child "evener" directory that the auth layer appends.
 func Paths(stateHome, userHome string) (string, string) {
 	stateHome = strings.TrimSpace(stateHome)
 	userHome = strings.TrimSpace(userHome)
@@ -34,7 +34,7 @@ func Paths(stateHome, userHome string) (string, string) {
 	if providerPath == "" {
 		stateRoot := envvars.SERFStateDir.Trimmed()
 		if stateRoot == "" {
-			stateRoot = filepath.Join(userHome, ".serf")
+			stateRoot = filepath.Join(userHome, ".evener")
 		}
 		providerPath = filepath.Join(stateRoot, "providers.toml")
 	}

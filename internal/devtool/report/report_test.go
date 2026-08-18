@@ -88,8 +88,8 @@ func TestReplayFencesUnitLog(t *testing.T) {
 
 func TestRetainedPointerShape(t *testing.T) {
 	var out strings.Builder
-	RetainedPointer(&out, "/tmp/serf-module-lint.abc123")
-	if got, want := out.String(), "full logs: /tmp/serf-module-lint.abc123\n"; got != want {
+	RetainedPointer(&out, "/tmp/evener-module-lint.abc123")
+	if got, want := out.String(), "full logs: /tmp/evener-module-lint.abc123\n"; got != want {
 		t.Errorf("RetainedPointer wrote %q, want %q", got, want)
 	}
 }

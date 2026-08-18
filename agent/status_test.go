@@ -502,7 +502,7 @@ func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
 func TestDetailedStatus_HookEvents(t *testing.T) {
 	t.Parallel()
 	// Build a plugin dir with PreToolUse (supported) and "Setup" (recognized but
-	// not fired by serf — reserved-placeholder).
+	// not fired by evener — reserved-placeholder).
 	pluginDir := t.TempDir()
 	metaDir := filepath.Join(pluginDir, ".claude-plugin")
 	os.MkdirAll(metaDir, 0o755)

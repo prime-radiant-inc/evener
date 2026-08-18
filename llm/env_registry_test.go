@@ -34,7 +34,7 @@ func TestNewFromEnv_PassesStateDirOptionToFactories(t *testing.T) {
 		envFactoriesMu.Unlock()
 	})
 
-	const wantStateDir = "/tmp/serf-state"
+	const wantStateDir = "/tmp/evener-state"
 	var gotStateDir string
 
 	RegisterEnvAdapterFactory(func(cfg EnvConfig) (ProviderAdapter, bool, error) {
@@ -62,7 +62,7 @@ func TestNewFromEnv_UsesSERFStateDirEnvByDefault(t *testing.T) {
 		envFactoriesMu.Unlock()
 	})
 
-	const wantStateDir = "/tmp/serf-state-from-env"
+	const wantStateDir = "/tmp/evener-state-from-env"
 	var gotStateDir string
 	t.Setenv("SERF_STATE_DIR", wantStateDir)
 
@@ -91,7 +91,7 @@ func TestNewFromEnv_PassesXDGStateHomeToFactories(t *testing.T) {
 		envFactoriesMu.Unlock()
 	})
 
-	const wantStateHome = "/tmp/serf-state-home"
+	const wantStateHome = "/tmp/evener-state-home"
 	var gotStateHome string
 	t.Setenv("XDG_STATE_HOME", wantStateHome)
 

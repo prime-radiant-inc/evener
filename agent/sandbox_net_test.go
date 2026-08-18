@@ -107,7 +107,7 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 
 // A mid-session cross-provider switch to a google-tag profile dynamically
 // re-registers the web_search function tool. That executor must still honor
-// net=off egress denial — otherwise a SetModel makes serf's Gemini web search
+// net=off egress denial — otherwise a SetModel makes evener's Gemini web search
 // reachable in a session whose network egress the user turned off.
 func TestReapplyProviderTools_GoogleWebSearchEgressDeniedUnderNetOff(t *testing.T) {
 	s := &Session{env: netEnv(t, false), reg: tool.NewRegistry()}

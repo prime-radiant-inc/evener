@@ -125,7 +125,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 		"b.txt exist with the correct contents."
 
 	// Release the gate exactly when the daemon's continuation loop has run: poll
-	// the same SerfThread.Goal projection the TUI reads, and the moment Iterations
+	// the same EvenerThread.Goal projection the TUI reads, and the moment Iterations
 	// crosses 1 (a continuation turn happened, fed via SubmitContinuation →
 	// inputCh → ProcessInputKind), write gate.txt so the continuation can finish
 	// step 2. This ties b.txt's existence to a real cross-turn continuation.
@@ -145,7 +145,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				if g := readResp.Thread.Serf.Goal; g != nil && g.Iterations >= 1 {
+				if g := readResp.Thread.Evener.Goal; g != nil && g.Iterations >= 1 {
 					gateOnce.Do(func() {
 						_ = os.WriteFile(gatePath, []byte(gateToken), 0o644)
 						close(gateReleased)
@@ -168,7 +168,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 	}
 
 	// Poll the thread read for the goal reaching a terminal status. This is the
-	// same SerfThread.Goal projection the TUI reads to render /goal status.
+	// same EvenerThread.Goal projection the TUI reads to render /goal status.
 	goalState := waitForTerminalGoal(ctx, t, client, ref, 130*time.Second)
 	gateCancel()
 
@@ -223,7 +223,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 		t.Fatalf("transcript %s not written: %v", transcriptPath, err)
 	}
 
-	t.Logf("TUI PATH PROOF: GoalSet.Started=%v; SerfThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
+	t.Logf("TUI PATH PROOF: GoalSet.Started=%v; EvenerThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
 		resp.Started, goalState.Status, goalState.Iterations, string(aData), string(bData))
 
 	// Shut the daemon down and assert a clean exit.
@@ -248,7 +248,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 	}
 }
 
-// waitForTerminalGoal polls thread/read until SerfThread.Goal reaches a terminal
+// waitForTerminalGoal polls thread/read until EvenerThread.Goal reaches a terminal
 // status (anything other than "active") or the deadline elapses. It returns the
 // terminal GoalState. The read targets the session by its ("local", sessionID)
 // ref, the same projection the TUI consumes.
@@ -261,7 +261,7 @@ func waitForTerminalGoal(ctx context.Context, t *testing.T, client *appwire.Clie
 		if err != nil {
 			t.Fatalf("ThreadRead: %v", err)
 		}
-		if g := readResp.Thread.Serf.Goal; g != nil {
+		if g := readResp.Thread.Evener.Goal; g != nil {
 			last = g
 			if g.Status != "active" {
 				return *g
@@ -276,6 +276,6 @@ func waitForTerminalGoal(ctx context.Context, t *testing.T, client *appwire.Clie
 	if last != nil {
 		t.Fatalf("goal did not reach terminal status within %s; last status=%q iterations=%d", timeout, last.Status, last.Iterations)
 	}
-	t.Fatalf("goal did not reach terminal status within %s; SerfThread.Goal was never populated", timeout)
+	t.Fatalf("goal did not reach terminal status within %s; EvenerThread.Goal was never populated", timeout)
 	return appwire.GoalState{}
 }

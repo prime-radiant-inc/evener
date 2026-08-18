@@ -31,7 +31,7 @@ func TestNewWrapperRejectsRelativeBinaryPath(t *testing.T) {
 
 func TestWrapPrependsBwrapAndSeparatesCommand(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
-	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/serf-session")
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestWrapNilIsIdentity(t *testing.T) {
 // as-is. (The Seatbelt cmd.Dir path is exercised on darwin by TestConfineSetsSeatbeltDir.)
 func TestConfineWrapsBwrapAndLeavesDir(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, true)
-	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/serf-session")
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestConfineNilIsIdentity(t *testing.T) {
 // flags and the worktree bind survive either path).
 func TestConfineTrustedInfraKeepsNetworkUnderNetOff(t *testing.T) {
 	rp, cwd, _ := resolveFixture(t, ModeWorkspaceWrite, false)
-	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/serf-session")
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", "/tmp/evener-session")
 	if err != nil {
 		t.Fatalf("NewWrapper: %v", err)
 	}

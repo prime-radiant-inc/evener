@@ -1969,7 +1969,7 @@ func shellCommand(command string) *exec.Cmd {
 func (e *LocalExecutionEnvironment) KernelWrapper() *sandbox.Wrapper { return e.Wrapper }
 
 // wrapForSandbox applies kernel confinement to cmd when this environment is
-// sandboxed and always empties ExtraFiles so a spawned process inherits no serf
+// sandboxed and always empties ExtraFiles so a spawned process inherits no evener
 // fds beyond stdio — not the live LLM-API connection, not a credential fd, not an
 // agent socket. dir is the resolved working directory, used as the sandbox chdir.
 // When Wrapper is nil it does nothing beyond the (already-default) fd hygiene, so

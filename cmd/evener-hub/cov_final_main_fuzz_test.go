@@ -50,9 +50,9 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		}
 		if mode == 6 {
 			oldExecutable := hubExecutable
-			hubExecutable = func() (string, error) { return filepath.Join(root, "serf-hub"), nil }
+			hubExecutable = func() (string, error) { return filepath.Join(root, "evener-hub"), nil }
 			t.Cleanup(func() { hubExecutable = oldExecutable })
-			if err := os.WriteFile(filepath.Join(root, "serf"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "evener"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -101,7 +101,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 			},
 		}
 
-		args := []string{"-config", filepath.Join(root, "hub.toml"), "-serf", "/bin/serf"}
+		args := []string{"-config", filepath.Join(root, "hub.toml"), "-evener", "/bin/evener"}
 		if mode == 6 {
 			args = []string{"-config", filepath.Join(root, "hub.toml")}
 		}
@@ -150,10 +150,10 @@ func FuzzFinalMainExecutableFallbacks(f *testing.F) {
 		t.Cleanup(func() { hubExecutable, hubProcessArgs = oldExecutable, oldArgs })
 		switch mode {
 		case 0:
-			hubExecutable = func() (string, error) { return "/tmp/serf-hub", nil }
+			hubExecutable = func() (string, error) { return "/tmp/evener-hub", nil }
 		case 1:
 			hubExecutable = func() (string, error) { return "", errors.New("missing") }
-			hubProcessArgs = func() []string { return []string{"./serf-hub"} }
+			hubProcessArgs = func() []string { return []string{"./evener-hub"} }
 		case 2:
 			hubExecutable = func() (string, error) { return "", errors.New("missing") }
 			hubProcessArgs = func() []string { return nil }

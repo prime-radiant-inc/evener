@@ -12,7 +12,7 @@ import (
 // established mechanism: transcript.DecodeEntry runs DisallowUnknownFields on
 // every record in a session's transcript before any of it is projected. So
 // one record this binary doesn't fully understand — the shape an older
-// serf-hub sees once a newer serf CLI has added a schema.Turn field — takes
+// evener-hub sees once a newer evener CLI has added a schema.Turn field — takes
 // the whole session down, not just the turn carrying the new field. The other
 // 199 turns in this fixture decode perfectly and are still not visible.
 //
@@ -48,7 +48,7 @@ func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
 
 // appendUnknownTurnField appends one more, otherwise well-formed, transcript
 // entry whose nested turn object carries a field no schema.Turn in this
-// build declares — the exact shape a transcript written by a newer serf
+// build declares — the exact shape a transcript written by a newer evener
 // binary presents to an older one.
 func appendUnknownTurnField(t *testing.T, path string) {
 	t.Helper()

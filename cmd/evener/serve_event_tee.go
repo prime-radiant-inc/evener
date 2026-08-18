@@ -18,7 +18,7 @@ const verboseEventTeeBuffer = 1024
 // verboseEventTee writes session events to a writer as NDJSON from its own
 // goroutine.
 //
-// It exists because `serf serve --verbose` installs its observer on the BRIDGE,
+// It exists because `evener serve --verbose` installs its observer on the BRIDGE,
 // and the bridge is the daemon's authoritative consumer: it is the one thing
 // draining the session's event channel and updating the projection every
 // thread/read is served from. A synchronous write there means the daemon's
@@ -67,7 +67,7 @@ func (t *verboseEventTee) flushDropped(w io.Writer) {
 	t.dropped = 0
 	t.mu.Unlock()
 	if n > 0 {
-		fmt.Fprintf(w, "{\"serfVerboseDropped\":%d}\n", n) //nolint:errcheck
+		fmt.Fprintf(w, "{\"evenerVerboseDropped\":%d}\n", n) //nolint:errcheck
 	}
 }
 

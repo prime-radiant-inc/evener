@@ -76,12 +76,12 @@ func exerciseDetailsAndNotices() {
 	_ = modelAndProfile("", "profile")
 	var b strings.Builder
 	writeModelOrProviderLine(&b, "", "profile")
-	diag := &appwire.SerfDiagnostics{
-		Tools:   []appwire.SerfToolInfo{{Name: "core", Source: "core"}, {Name: "mcp", Source: "mcp:server"}, {Name: "custom", Source: "plugin"}},
-		MCP:     []appwire.SerfMCPServerInfo{{Name: "server", Tools: []string{"mcp"}, Status: "ready", Error: "old"}},
-		Skills:  []appwire.SerfSkillInfo{{Name: "skill"}},
-		Plugins: []appwire.SerfPluginInfo{{Name: "plugin"}},
-		Hooks:   map[string]int{"turn": 1}, Jobs: []appwire.SerfJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
+	diag := &appwire.EvenerDiagnostics{
+		Tools:   []appwire.EvenerToolInfo{{Name: "core", Source: "core"}, {Name: "mcp", Source: "mcp:server"}, {Name: "custom", Source: "plugin"}},
+		MCP:     []appwire.EvenerMCPServerInfo{{Name: "server", Tools: []string{"mcp"}, Status: "ready", Error: "old"}},
+		Skills:  []appwire.EvenerSkillInfo{{Name: "skill"}},
+		Plugins: []appwire.EvenerPluginInfo{{Name: "plugin"}},
+		Hooks:   map[string]int{"turn": 1}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
 	}
 	writeSerfDiagnostics(&b, diag)
 	_ = detailsDrawer{Detail: hubSessionDetail{Diagnostics: diag}}.View()
@@ -100,7 +100,7 @@ func exerciseDetailsAndNotices() {
 	m.clearNoticesByCategory("drop")
 	_ = classifyWarningCategory("other", nil)
 	_ = noticeCategoryForError(errors.New("plain"), "")
-	_ = noticeCategoryForError(appwire.WireError{Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorHubLaunch}}, "")
+	_ = noticeCategoryForError(appwire.WireError{Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorHubLaunch}}, "")
 	_ = noticeSummaryForError(errors.New("plain"), "")
 	m.addActionUnavailableNotice("send", "summary", "")
 }

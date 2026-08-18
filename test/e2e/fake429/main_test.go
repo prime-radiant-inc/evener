@@ -15,7 +15,7 @@ import (
 // answers 429 with the CONFIGURED Retry-After header — not just any 429.
 //
 // It binds "127.0.0.1:0" and reads the real port back from ln.Addr(); it
-// never dials a fixed port (kata 68fm is the same lesson for serf-hub — see
+// never dials a fixed port (kata 68fm is the same lesson for evener-hub — see
 // cmd/evener-hub/main_ephemeral_port_test.go and docs/agentic-testing.md).
 func TestFake429Smoke(t *testing.T) {
 	const retryAfter = "3" // deliberately not defaultRetryAfterSeconds ("8"),

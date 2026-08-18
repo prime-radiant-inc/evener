@@ -24,7 +24,7 @@ func deadGenerationThread() appwire.Thread {
 		ModelProvider: "gpt-5",
 		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 		Source:        "local",
-		Serf:          appwire.SerfThread{Ref: "local:01SEND"},
+		Evener:          appwire.EvenerThread{Ref: "local:01SEND"},
 		Turns: []appwire.Turn{{
 			ID:     "turn_4",
 			Status: appwire.TurnStatusCompleted,
@@ -49,7 +49,7 @@ func preRelaunchMessages() []transcript.ChatMessage {
 	}
 }
 
-// serf/thread/resync is the hub's only "the model you hold belongs to a daemon
+// evener/thread/resync is the hub's only "the model you hold belongs to a daemon
 // that is gone" signal. The TUI must answer it the way the web client does — a
 // targeted re-read of that ref — rather than folding the replacement daemon's
 // frames into state whose turn ids the replacement is about to reuse.
@@ -66,12 +66,12 @@ func TestHubModelThreadResyncRereadsInsteadOfKeepingDeadGenerationState(t *testi
 	m := newSessionHubModel(client)
 	m.session.messages = preRelaunchMessages()
 
-	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
 	}).Notification)
 	if cmd == nil {
-		t.Fatal("serf/thread/resync issued no command; the TUI kept the dead daemon's model")
+		t.Fatal("evener/thread/resync issued no command; the TUI kept the dead daemon's model")
 	}
 	updated, _ := m.Update(cmd())
 	m = updated.(hubModel)
@@ -132,7 +132,7 @@ func TestHubModelThreadResyncForAnotherSessionIssuesNoRead(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.session.messages = preRelaunchMessages()
 
-	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+	cmd := m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: "01OTHER",
 		Ref:      "local:01OTHER",
 	}).Notification)

@@ -12,11 +12,11 @@ func TestAppThreadCarriesTheLiveFailureCount(t *testing.T) {
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 6; e.failuresMeasured = true })
 
 	thread := srv.appThread()
-	if thread.Serf.FailedToolCalls == nil {
-		t.Fatal("appThread().Serf.FailedToolCalls = nil, want the running session's count")
+	if thread.Evener.FailedToolCalls == nil {
+		t.Fatal("appThread().Evener.FailedToolCalls = nil, want the running session's count")
 	}
-	if got := *thread.Serf.FailedToolCalls; got != 6 {
-		t.Fatalf("appThread().Serf.FailedToolCalls = %d, want 6", got)
+	if got := *thread.Evener.FailedToolCalls; got != 6 {
+		t.Fatalf("appThread().Evener.FailedToolCalls = %d, want 6", got)
 	}
 }
 
@@ -29,11 +29,11 @@ func TestAppThreadCarriesAMeasuredZero(t *testing.T) {
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = true })
 
 	thread := srv.appThread()
-	if thread.Serf.FailedToolCalls == nil {
-		t.Fatal("appThread().Serf.FailedToolCalls = nil, want a measured 0")
+	if thread.Evener.FailedToolCalls == nil {
+		t.Fatal("appThread().Evener.FailedToolCalls = nil, want a measured 0")
 	}
-	if got := *thread.Serf.FailedToolCalls; got != 0 {
-		t.Fatalf("appThread().Serf.FailedToolCalls = %d, want 0", got)
+	if got := *thread.Evener.FailedToolCalls; got != 0 {
+		t.Fatalf("appThread().Evener.FailedToolCalls = %d, want 0", got)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestAppThreadOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	thread := srv.appThread()
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("appThread().Serf.FailedToolCalls = %d, want absent when nobody counted", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("appThread().Evener.FailedToolCalls = %d, want absent when nobody counted", *thread.Evener.FailedToolCalls)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestAppThreadOmitsTheFailureCountOnADaemonThatNeverWiredIt(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
 
 	thread := srv.appThread()
-	if thread.Serf.FailedToolCalls != nil {
-		t.Fatalf("appThread().Serf.FailedToolCalls = %d, want absent with no callback", *thread.Serf.FailedToolCalls)
+	if thread.Evener.FailedToolCalls != nil {
+		t.Fatalf("appThread().Evener.FailedToolCalls = %d, want absent with no callback", *thread.Evener.FailedToolCalls)
 	}
 }

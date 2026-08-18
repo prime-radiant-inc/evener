@@ -10,7 +10,7 @@ import (
 // DecideResponsesContinuationForRequest, ResponsesContinuationSupportFor, and the
 // ApplyResponsesContinuationStoreOverride/ClearResponsesContinuationStoreOverride
 // round-trip — over an arbitrary mode, support entry, request, and policy. These
-// gate whether serf uses server-side responses continuation; only fixed unit
+// gate whether evener uses server-side responses continuation; only fixed unit
 // cases reached them (0% fuzz).
 //
 // Oracles:

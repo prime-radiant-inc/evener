@@ -11,7 +11,7 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	reg := &Registration{}
 	if err := reg.Register(runDir, rendezvous.Entry{
 		PID:       4242,
-		Protocol:  "serf-appwire-v1",
+		Protocol:  "evener-appwire-v1",
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
 		ThreadID:  "01OLD",
@@ -35,8 +35,8 @@ func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 		t.Fatalf("entry identity=%+v", entries[0])
 	}
 	// RV-02: non-identity fields must survive an UpdateSessionID call.
-	if entries[0].Protocol != "serf-appwire-v1" {
-		t.Errorf("Protocol=%q, want serf-appwire-v1", entries[0].Protocol)
+	if entries[0].Protocol != "evener-appwire-v1" {
+		t.Errorf("Protocol=%q, want evener-appwire-v1", entries[0].Protocol)
 	}
 	if entries[0].Endpoint != "ws://127.0.0.1:1/rpc" {
 		t.Errorf("Endpoint=%q, want ws://127.0.0.1:1/rpc", entries[0].Endpoint)
@@ -53,7 +53,7 @@ func TestRegistrationRemoveClearsEntry(t *testing.T) {
 	reg := &Registration{}
 	if err := reg.Register(runDir, rendezvous.Entry{
 		PID:       9999,
-		Protocol:  "serf-appwire-v1",
+		Protocol:  "evener-appwire-v1",
 		Endpoint:  "ws://127.0.0.1:2/rpc",
 		SourceID:  "local",
 		ThreadID:  "01ABC",

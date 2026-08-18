@@ -10,13 +10,13 @@ func TestUserConfigDirsUseXDGConfigHome(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
 
-	if got, want := DefaultConfigRoot(), filepath.Join(root, "serf"); got != want {
+	if got, want := DefaultConfigRoot(), filepath.Join(root, "evener"); got != want {
 		t.Fatalf("DefaultConfigRoot = %q, want %q", got, want)
 	}
-	if got, want := DefaultSkillsDir(), filepath.Join(root, "serf", "skills"); got != want {
+	if got, want := DefaultSkillsDir(), filepath.Join(root, "evener", "skills"); got != want {
 		t.Fatalf("DefaultSkillsDir = %q, want %q", got, want)
 	}
-	if got, want := DefaultPluginsRoot(), filepath.Join(root, "serf", "plugins"); got != want {
+	if got, want := DefaultPluginsRoot(), filepath.Join(root, "evener", "plugins"); got != want {
 		t.Fatalf("DefaultPluginsRoot = %q, want %q", got, want)
 	}
 }
@@ -30,9 +30,9 @@ func TestEnsureUserConfigDirsCreatesExtensionRoots(t *testing.T) {
 	}
 
 	for _, dir := range []string{
-		filepath.Join(root, "serf"),
-		filepath.Join(root, "serf", "skills"),
-		filepath.Join(root, "serf", "plugins"),
+		filepath.Join(root, "evener"),
+		filepath.Join(root, "evener", "skills"),
+		filepath.Join(root, "evener", "plugins"),
 	} {
 		info, err := os.Stat(dir)
 		if err != nil {

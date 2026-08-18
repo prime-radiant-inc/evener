@@ -105,10 +105,10 @@ type Instance struct {
 	MCPConfigWarnings []string
 
 	// UnsupportedHooks is the set of Claude-recognized events declared by this
-	// plugin that serf does not currently fire (tier: reserved-placeholder).
+	// plugin that evener does not currently fire (tier: reserved-placeholder).
 	// Populated by Load; empty when no such events are declared.
 	UnsupportedHooks map[HookEvent]bool
-	// UnknownHooks is the set of event names declared by this plugin that serf
+	// UnknownHooks is the set of event names declared by this plugin that evener
 	// does not recognize as Claude events at all.
 	UnknownHooks map[string]bool
 }
@@ -208,10 +208,10 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 // Load reads a plugin manifest from <dir>/.claude-plugin/plugin.json, falling
 // back to <dir>/.codex-plugin/plugin.json only when no Claude manifest exists,
 // parses it, and returns an Instance with Dir set to the resolved absolute path.
-// Claude is preferred because serf preserves conversation context across resume
+// Claude is preferred because evener preserves conversation context across resume
 // (it replays the transcript), matching Claude Code's resume semantics; the
 // codex flavor's SessionStart hooks re-inject on resume, which double-injects
-// under serf. The chosen flavor is recorded in Instance.ManifestFlavor.
+// under evener. The chosen flavor is recorded in Instance.ManifestFlavor.
 func Load(dir string) (Instance, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -341,18 +341,18 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 }
 
 // MergeCommands flattens plugin instances' commands (namespaced keys) and
-// overlays serf-wide commands (bare keys), returning the unified command
+// overlays evener-wide commands (bare keys), returning the unified command
 // map a session or the hub catalog resolves against. Bare keys can never
-// collide with "plugin:name" keys (serf-wide discovery rejects colons), so
+// collide with "plugin:name" keys (evener-wide discovery rejects colons), so
 // the overlay cannot shadow a plugin's qualified key; precedence between a
-// bare serf-wide command and a plugin's bare-name fallback is decided by
+// bare evener-wide command and a plugin's bare-name fallback is decided by
 // ResolveCommand's exact-match-first rule.
-func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command {
-	out := make(map[string]Command, len(serfwide))
+func MergeCommands(instances []Instance, evenerwide map[string]Command) map[string]Command {
+	out := make(map[string]Command, len(evenerwide))
 	for _, inst := range instances {
 		maps.Copy(out, inst.Commands)
 	}
-	maps.Copy(out, serfwide)
+	maps.Copy(out, evenerwide)
 	return out
 }
 

@@ -69,10 +69,10 @@ func FuzzThreadDataPass5(f *testing.F) {
 		case 0:
 			live := appwire.Thread{ID: id, Preview: id, Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
 			got := mergePastMetadataForList(cfg, "local", live)
-			if got.Name != "Past title" || got.CWD == "" || got.Serf.Ref != "local:"+id {
+			if got.Name != "Past title" || got.CWD == "" || got.Evener.Ref != "local:"+id {
 				t.Fatalf("merged metadata = %+v", got)
 			}
-			full := appwire.Thread{ID: id, SessionID: "keep", Preview: "keep", Name: "keep", ModelProvider: "keep", Path: "keep", CWD: "keep", Source: "local", Serf: appwire.SerfThread{Ref: "local:" + id, Profile: "keep"}}
+			full := appwire.Thread{ID: id, SessionID: "keep", Preview: "keep", Name: "keep", ModelProvider: "keep", Path: "keep", CWD: "keep", Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + id, Profile: "keep"}}
 			if got := mergePastMetadataForList(cfg, "local", full); got.Name != "keep" {
 				t.Fatalf("live metadata overwritten: %+v", got)
 			}
@@ -112,13 +112,13 @@ func FuzzThreadDataPass5(f *testing.F) {
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
 				_, _, _ = pastThreadForRead(cfg, params)
 			}
-			for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Serf: appwire.SerfThread{Ref: "local:x"}}, {Serf: appwire.SerfThread{Ref: "bad"}}} {
+			for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "local:x"}}, {Evener: appwire.EvenerThread{Ref: "bad"}}} {
 				_ = liveThreadCanMergeLocalPast(thread)
 			}
 
 		case 3:
 			root := appwire.Thread{ID: id, Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
-			child := appwire.Thread{ID: "child", Source: "remote", Name: "worker", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "remote:" + id}}
+			child := appwire.Thread{ID: "child", Source: "remote", Name: "worker", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "remote:" + id}}
 			source := &pass5ThreadSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: root}, threads: []appwire.Thread{root, child, child}}
 			registry := appsource.NewRegistry()
 			registry.Add(source)

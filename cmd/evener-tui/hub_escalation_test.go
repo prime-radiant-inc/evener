@@ -11,7 +11,7 @@ import (
 func escalationNotif(ref, id, tool, path string) hubNotificationMsg {
 	return hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifySerfSandboxEscalationRequested, map[string]any{
+		notification: *appwire.NotificationMessage(appwire.NotifyEvenerSandboxEscalationRequested, map[string]any{
 			"ref":          ref,
 			"threadId":     strings.TrimPrefix(ref, "local:"),
 			"escalationId": id,
@@ -35,7 +35,7 @@ func TestHubModelSandboxEscalation_NotificationSurfacesPromptForViewed(t *testin
 	}
 	found := false
 	for _, msg := range got.session.messages {
-		if strings.Contains(msg.Text, "/etc/hosts") && strings.Contains(msg.Text, "requested by serf") &&
+		if strings.Contains(msg.Text, "/etc/hosts") && strings.Contains(msg.Text, "requested by evener") &&
 			strings.Contains(msg.Text, "ctrl+y") && strings.Contains(msg.Text, "ctrl+g") {
 			found = true
 		}
@@ -151,7 +151,7 @@ func TestHubModelSandboxEscalation_SameSessionResyncReSurfaces(t *testing.T) {
 	// escalation must be re-surfaced so it stays visible.
 	updated, _ := m.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1", State: appwire.ThreadStatusActive}, ref: "local:th_1"})
 	got := updated.(hubModel)
-	if !containsMsg(got, "/x") || !containsMsg(got, "requested by serf") {
+	if !containsMsg(got, "/x") || !containsMsg(got, "requested by evener") {
 		t.Fatalf("a same-session resync must re-surface the pending escalation prompt: %+v", got.session.messages)
 	}
 }
@@ -175,7 +175,7 @@ func TestHubModelSandboxEscalation_NonViewedEnqueuedAndSurfacedOnEntry(t *testin
 	// Entering that session surfaces it and makes it answerable.
 	updated2, _ := m1.Update(hubSessionMsg{detail: hubSessionDetail{Ref: "local:th_2", SessionID: "sess_2", State: appwire.ThreadStatusIdle}, ref: "local:th_2"})
 	m2 := updated2.(hubModel)
-	if !containsMsg(m2, "/b") || !containsMsg(m2, "requested by serf") {
+	if !containsMsg(m2, "/b") || !containsMsg(m2, "requested by evener") {
 		t.Fatalf("entering the session must surface its queued escalation: %+v", m2.session.messages)
 	}
 	if m2.headEscalation() == nil {
@@ -236,7 +236,7 @@ func TestHubModelSandboxEscalation_SnapshotSurfacesOnEntry(t *testing.T) {
 	m.mode = hubModeSession
 	// A fresh entry to a session whose thread/read snapshot carries a pending
 	// escalation (raised while not viewed, or by another client, or before connect).
-	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{
+	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{
 		Ref:                "local:th_1",
 		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}},
 	}}
@@ -245,7 +245,7 @@ func TestHubModelSandboxEscalation_SnapshotSurfacesOnEntry(t *testing.T) {
 	if len(got.escalationsByRef["local:th_1"]) != 1 {
 		t.Fatalf("entering a session must surface its snapshot escalation, got %+v", got.escalationsByRef)
 	}
-	if !containsMsg(got, "/x") || !containsMsg(got, "requested by serf") {
+	if !containsMsg(got, "/x") || !containsMsg(got, "requested by evener") {
 		t.Fatalf("the snapshot escalation must surface as a card: %+v", got.session.messages)
 	}
 }
@@ -257,7 +257,7 @@ func TestHubModelSandboxEscalation_SnapshotDeDupesLive(t *testing.T) {
 	// Already tracking esc_1 live.
 	m.escalationsByRef = map[string][]*hubEscalation{"local:th_1": {{id: "esc_1", ref: "local:th_1"}}}
 	// A same-session resync snapshot includes esc_1 (already live) + esc_2 (new).
-	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{
+	thread := appwire.Thread{ID: "th_1", SessionID: "sess_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{
 		Ref: "local:th_1",
 		PendingEscalations: []appwire.SandboxEscalationRequested{
 			{EscalationID: "esc_1"},

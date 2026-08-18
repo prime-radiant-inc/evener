@@ -57,14 +57,14 @@ type suiteResult struct {
 // every running suite's process group (KILL after cfg.KillGrace), the wave
 // waits for every suite to be reaped, and the exit code is 128+signal.
 func runWave(cfg waveConfig) int {
-	runDir, err := os.MkdirTemp("", "serf-test-dev-tooling.")
+	runDir, err := os.MkdirTemp("", "evener-test-dev-tooling.")
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.Out, "evener-test-dev-tooling: %v\n", err)
 		return 1
 	}
 	defer func() { _ = os.RemoveAll(runDir) }()
 	if err := writeMktempShim(runDir); err != nil {
-		_, _ = fmt.Fprintf(cfg.Out, "serf-test-dev-tooling: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.Out, "evener-test-dev-tooling: %v\n", err)
 		return 1
 	}
 
@@ -151,11 +151,11 @@ func checkLeaks(dir string) []string {
 func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) suiteResult {
 	tmp := filepath.Join(runDir, name, "tmp")
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("evener-test-dev-tooling: %s: %v", name, err)}
 	}
 	logFile, err := os.Create(filepath.Join(runDir, name+".log"))
 	if err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("evener-test-dev-tooling: %s: %v", name, err)}
 	}
 	defer func() { _ = logFile.Close() }()
 
@@ -168,7 +168,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	cmd.SysProcAttr = suiteSysProcAttr()
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return suiteResult{exitCode: 1, failure: fmt.Sprintf("serf-test-dev-tooling: %s: %v", name, err)}
+		return suiteResult{exitCode: 1, failure: fmt.Sprintf("evener-test-dev-tooling: %s: %v", name, err)}
 	}
 
 	var mu sync.Mutex
@@ -239,7 +239,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	case leftovers := <-leakCheckDone:
 		if len(leftovers) > 0 {
 			return suiteResult{
-				failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leaked temp files: %s",
+				failure: fmt.Sprintf("evener-test-dev-tooling: %s passed but leaked temp files: %s",
 					name, strings.Join(leftovers, ", ")),
 				seconds: seconds,
 			}
@@ -247,7 +247,7 @@ func runSuite(cfg waveConfig, runDir, name string, shutdown <-chan struct{}) sui
 	case <-time.After(timeout):
 		// Leak check timed out (e.g., wedged filesystem). Report as failure.
 		return suiteResult{
-			failure: fmt.Sprintf("serf-test-dev-tooling: %s passed but leak check timed out (possible wedged filesystem)",
+			failure: fmt.Sprintf("evener-test-dev-tooling: %s passed but leak check timed out (possible wedged filesystem)",
 				name),
 			seconds: seconds,
 		}

@@ -23,7 +23,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// writeFakeSerf writes an executable fake-serf stub that the test then runs
+// writeFakeSerf writes an executable fake-evener stub that the test then runs
 // through the hub spawner / launch-check.
 //
 // A freshly written executable can fail execve with ETXTBSY ("text file busy"):
@@ -40,7 +40,7 @@ func writeFakeSerf(t *testing.T, path, script string) {
 	syscall.ForkLock.RLock()
 	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake-serf: %v", err)
+		t.Fatalf("write fake-evener: %v", err)
 	}
 }
 
@@ -55,8 +55,8 @@ func TestBuildSpawnArgs(t *testing.T) {
 			AppReplaySize:   &ssering,
 		}},
 		WorkingDir: "/Users/jesse/git/foo",
-		StateDir:   "/Users/jesse/.local/state/serf/projects/foo",
-		RunDir:     "/Users/jesse/.cache/serf/run",
+		StateDir:   "/Users/jesse/.local/state/evener/projects/foo",
+		RunDir:     "/Users/jesse/.cache/evener/run",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
@@ -66,8 +66,8 @@ func TestBuildSpawnArgs(t *testing.T) {
 		"--reasoning-effort": "medium",
 		"--app-replay-size":  "4096",
 		"--dir":              "/Users/jesse/git/foo",
-		"--state-dir":        "/Users/jesse/.local/state/serf/projects/foo",
-		"--run-dir":          "/Users/jesse/.cache/serf/run",
+		"--state-dir":        "/Users/jesse/.local/state/evener/projects/foo",
+		"--run-dir":          "/Users/jesse/.cache/evener/run",
 		"--addr":             "127.0.0.1:0",
 	}
 	got := pairsToMap(args)
@@ -149,11 +149,11 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	runDir := filepath.Join(dir, "run")
 	argsOut := filepath.Join(dir, "launch-check-args.txt")
 	t.Setenv("ARGS_OUT", argsOut)
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-  printf '{"protocol":"serf-appwire-v3"}\n'
+  printf '{"protocol":"evener-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -170,7 +170,7 @@ exit 2
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
-	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
 		SessionID: "01JRESUME",
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
@@ -438,9 +438,9 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
-echo 'serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory' >&2
+echo 'evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory' >&2
 exit 42
 `
 	writeFakeSerf(t, bin, script)
@@ -474,7 +474,7 @@ exit 42
 func TestDaemonLaunchFailureNamesWhatActuallyHappened(t *testing.T) {
 	t.Parallel()
 	const exitsImmediately = `#!/bin/sh
-echo 'serf serve: session sess_old is already running; send work to the live session or fork it' >&2
+echo 'evener serve: session sess_old is already running; send work to the live session or fork it' >&2
 exit 1
 `
 	const neverRegisters = `#!/bin/sh
@@ -485,21 +485,21 @@ sleep 30
 		// The action every one of its failures must open by naming, so an
 		// operator reading a bare message knows which launch it came from.
 		action string
-		call   func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error
+		call   func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error
 	}{
 		{
 			name:   "spawn",
 			action: "daemon spawn",
-			call: func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error {
-				_, err := SpawnDaemon(ctx, serfBinary, runDir, hubcore.SpawnRequest{}, timeout)
+			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
+				_, err := SpawnDaemon(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout)
 				return err
 			},
 		},
 		{
 			name:   "resume",
 			action: "resume",
-			call: func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error {
-				_, err := ResumeDaemon(ctx, serfBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
+			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
+				_, err := ResumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
 				return err
 			},
 		},
@@ -566,14 +566,14 @@ sleep 30
 			t.Run(launch.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 				dir := t.TempDir()
-				serfBinary := filepath.Join(dir, "fake-serf")
-				writeFakeSerf(t, serfBinary, tc.script)
+				evenerBinary := filepath.Join(dir, "fake-evener")
+				writeFakeSerf(t, evenerBinary, tc.script)
 
 				ctx := context.Background()
 				if tc.callerCtx != nil {
 					ctx = tc.callerCtx()
 				}
-				err := launch.call(ctx, serfBinary, filepath.Join(dir, "run"), tc.timeout)
+				err := launch.call(ctx, evenerBinary, filepath.Join(dir, "run"), tc.timeout)
 				if err == nil {
 					t.Fatal("launch succeeded, want a failure")
 				}
@@ -658,10 +658,10 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	runDir := filepath.Join(dir, "run")
 	tokenOut := filepath.Join(dir, "token.txt")
 	t.Setenv("TOKEN_OUT", tokenOut)
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v3"}\n'
+  printf '{"protocol":"evener-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -679,7 +679,7 @@ exit 2
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
-	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	entry, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
 		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
@@ -713,10 +713,10 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	envOut := filepath.Join(dir, "env.txt")
 	t.Setenv("ARGS_OUT", argsOut)
 	t.Setenv("ENV_OUT", envOut)
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v3"}\n'
+  printf '{"protocol":"evener-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -735,8 +735,8 @@ exit 2
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
-	cfg.StateGlob = filepath.Join(stateHome, "serf", "projects", "*")
-	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	cfg.StateGlob = filepath.Join(stateHome, "evener", "projects", "*")
+	spawner := HubSpawner{Cfg: cfg, EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	if _, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
@@ -753,7 +753,7 @@ exit 2
 		t.Fatalf("read args: %v", err)
 	}
 	stateDir := argValue(strings.Fields(string(argsData)), "--state-dir")
-	wantPrefix := filepath.Join(stateHome, "serf", "projects") + string(os.PathSeparator)
+	wantPrefix := filepath.Join(stateHome, "evener", "projects") + string(os.PathSeparator)
 	if !strings.HasPrefix(stateDir, wantPrefix) {
 		t.Fatalf("--state-dir=%q, want under %q\nargs:\n%s", stateDir, wantPrefix, argsData)
 	}
@@ -783,17 +783,17 @@ func TestHubSpawnerListsModelsFromSerfLaunchContract(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v3","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
 `
 	writeFakeSerf(t, bin, script)
 
-	spawner := HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	spawner := HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	models, err := spawner.ListLaunchModels(context.Background())
 	if err != nil {
@@ -883,7 +883,7 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	home := t.TempDir()
-	stateDir := filepath.Join(home, ".local", "state", "serf")
+	stateDir := filepath.Join(home, ".local", "state", "evener")
 	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
@@ -948,10 +948,10 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 }
 
 // A launch-check that never produced a verdict was stopped for one of two
-// unrelated reasons — the serfLaunchCheckTimeout budget ran out, or the caller
+// unrelated reasons — the evenerLaunchCheckTimeout budget ran out, or the caller
 // that asked for the answer went away — and checkCtx.Err() is non-nil for both.
 // Calling the second one a timeout sends an operator triaging it after a slow
-// machine or a hung `serf launch-check`, when nothing was slow and nobody is
+// machine or a hung `evener launch-check`, when nothing was slow and nobody is
 // waiting for the answer any more (kata zg02).
 //
 // This is the FIRST place a mid-launch cancellation lands. The launch-check runs
@@ -960,7 +960,7 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 //
 // Every outcome stays an appwire.HubLaunchError. That is the discriminator each
 // surface keys off — the web client's isHubLaunchError (protocol/errors.ts) and
-// the TUI notice panel both read serfErrorInfo "hubLaunch" to headline the
+// the TUI notice panel both read evenerErrorInfo "hubLaunch" to headline the
 // failure "Couldn't start this session" — so the label is what changes and the
 // family of failure is not. Unlike the daemon launch failures of 42ck and 0c3g,
 // these strings are never keyword-classified: no surface runs
@@ -977,18 +977,18 @@ exit 2
 `
 	checks := []struct {
 		name string
-		call func(ctx context.Context, serfBinary string) error
+		call func(ctx context.Context, evenerBinary string) error
 	}{
 		{
 			name: "validate",
-			call: func(ctx context.Context, serfBinary string) error {
-				return validateSerfLaunchContract(ctx, serfBinary, "openrouter/free", nil)
+			call: func(ctx context.Context, evenerBinary string) error {
+				return validateSerfLaunchContract(ctx, evenerBinary, "openrouter/free", nil)
 			},
 		},
 		{
 			name: "models",
-			call: func(ctx context.Context, serfBinary string) error {
-				_, err := listSerfLaunchModelContract(ctx, serfBinary, nil)
+			call: func(ctx context.Context, evenerBinary string) error {
+				_, err := listSerfLaunchModelContract(ctx, evenerBinary, nil)
 				return err
 			},
 		},
@@ -1015,7 +1015,7 @@ exit 2
 				t.Cleanup(cancel)
 				return ctx
 			},
-			wantContain: "serf launch-check canceled",
+			wantContain: "evener launch-check canceled",
 			wantAbsent:  []string{"timed out", "timeout"},
 		},
 		{
@@ -1023,7 +1023,7 @@ exit 2
 			// must keep saying so. A deadline the caller brought with it is the
 			// same thing as the hub's own budget — time genuinely ran out —
 			// which is why this drives the branch through the caller's context
-			// rather than waiting out serfLaunchCheckTimeout.
+			// rather than waiting out evenerLaunchCheckTimeout.
 			name:   "the check never answers",
 			script: neverAnswers,
 			callerCtx: func(t *testing.T) context.Context {
@@ -1031,7 +1031,7 @@ exit 2
 				t.Cleanup(cancel)
 				return ctx
 			},
-			wantContain: "serf launch-check timed out",
+			wantContain: "evener launch-check timed out",
 			wantAbsent:  []string{"canceled"},
 		},
 		{
@@ -1040,7 +1040,7 @@ exit 2
 			// label.
 			name:        "the check refuses the launch",
 			script:      rejectsTheLaunch,
-			wantContain: "serf launch-check failed",
+			wantContain: "evener launch-check failed",
 			wantAbsent:  []string{"timed out", "timeout", "canceled"},
 		},
 	}
@@ -1049,14 +1049,14 @@ exit 2
 		for _, tc := range outcomes {
 			t.Run(check.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
-				serfBinary := filepath.Join(t.TempDir(), "fake-serf")
-				writeFakeSerf(t, serfBinary, tc.script)
+				evenerBinary := filepath.Join(t.TempDir(), "fake-evener")
+				writeFakeSerf(t, evenerBinary, tc.script)
 
 				ctx := context.Background()
 				if tc.callerCtx != nil {
 					ctx = tc.callerCtx(t)
 				}
-				err := check.call(ctx, serfBinary)
+				err := check.call(ctx, evenerBinary)
 				assertHubLaunchError(t, err)
 				if !strings.Contains(err.Error(), tc.wantContain) {
 					t.Fatalf("failure is missing %q:\n%v", tc.wantContain, err)
@@ -1074,19 +1074,19 @@ exit 2
 func TestValidateSerfLaunchContractRejectsUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, "#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n")
 	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "serf launch-check") {
+	if !strings.Contains(err.Error(), "evener launch-check") {
 		t.Fatalf("error=%v", err)
 	}
 }
 
 func TestValidateSerfLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
-	err := validateSerfLaunchContract(context.Background(), filepath.Join(t.TempDir(), "missing-serf"), "openai/gpt-5", envFromMap(map[string]string{}))
+	err := validateSerfLaunchContract(context.Background(), filepath.Join(t.TempDir(), "missing-evener"), "openai/gpt-5", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "serf launch-check failed") {
+	if !strings.Contains(err.Error(), "evener launch-check failed") {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -1094,7 +1094,7 @@ func TestValidateSerfLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *t
 func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	writeFakeSerf(t, bin, "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n")
 	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{
 		"OPENROUTER_API_KEY": "super-secret-key",
@@ -1109,10 +1109,10 @@ func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
 }
 
 func TestRedactEnvSecretsKeepsShortSensitiveValues(t *testing.T) {
-	got := redactEnvSecrets("serf launch-check exited with code 1", envFromMap(map[string]string{
+	got := redactEnvSecrets("evener launch-check exited with code 1", envFromMap(map[string]string{
 		"SERF_HUB_TOKEN": "1",
 	}))
-	if got != "serf launch-check exited with code 1" {
+	if got != "evener launch-check exited with code 1" {
 		t.Fatalf("diagnostic=%q", got)
 	}
 }
@@ -1123,7 +1123,7 @@ func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "serf", "projects")
+	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "evener", "projects")
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("state dir=%q, want prefix %q", got, wantPrefix)
 	}
@@ -1168,11 +1168,11 @@ func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
 // described in
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
 // ("Runtime state keying at launch"): resolveSerfStateDirWithStateHome (the
-// path that computes req.StateDir for every hub-spawned serf session) used
+// path that computes req.StateDir for every hub-spawned evener session) used
 // to key off the raw workDir, so for an origin-less repo, spawning from a
 // linked worktree computed a different session state dir than spawning from
 // the main checkout — the same class of bug Task 3 already fixed in
-// cmdutil.DefaultProjectStateDir for `serf run`/`serf serve`.
+// cmdutil.DefaultProjectStateDir for `evener run`/`evener serve`.
 func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
 	main, wt := newLinkedWorktreeForSpawn(t)
 
@@ -1208,7 +1208,7 @@ func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	if project.ID == "" {
 		t.Fatalf("resolveSerfStateDir(%q) resolved no project id for a non-repo dir", workDir)
 	}
-	if want := filepath.Join(stateHome, "serf", "projects", project.ID); got != want {
+	if want := filepath.Join(stateHome, "evener", "projects", project.ID); got != want {
 		t.Errorf("state dir = %q, want %q", got, want)
 	}
 	otherDir, err := resolveSerfStateDirWithStateHome(other, "", stateHome)
@@ -1232,7 +1232,7 @@ func writeProvidersConfig(t *testing.T, dir string, cfg providercfg.Config) stri
 
 // TestValidateProviderCredentials_ConfigInstanceOAuthPass verifies that
 // validateProviderCredentials accepts an openai-type instance named "work"
-// when a valid OAuth record exists at auth/work.json in the serf state dir.
+// when a valid OAuth record exists at auth/work.json in the evener state dir.
 func TestValidateProviderCredentials_ConfigInstanceOAuthPass(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := t.TempDir()
@@ -1593,10 +1593,10 @@ func TestHubSpawnerResumeAcceptsMaterializedOllamaConfig(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
-	bin := filepath.Join(dir, "fake-serf")
+	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v3"}\n'
+  printf '{"protocol":"evener-appwire-v3"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -1624,7 +1624,7 @@ exit 2
 
 	spawner := HubSpawner{
 		Cfg:                 DefaultConfig(),
-		SerfBinary:          bin,
+		EvenerBinary:          bin,
 		RunDir:              runDir,
 		HubToken:            "generated-token",
 		Creds:               store,

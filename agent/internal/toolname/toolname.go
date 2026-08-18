@@ -1,11 +1,11 @@
-// Package toolname translates tool names between serf's canonical vocabulary
-// and Claude Code's. The two conventions meet when serf loads Claude-style
+// Package toolname translates tool names between evener's canonical vocabulary
+// and Claude Code's. The two conventions meet when evener loads Claude-style
 // plugins: plugin manifests and hook matchers name tools the Claude Code way
-// ("Read", "Bash"), while serf's engine uses canonical names ("read_file",
+// ("Read", "Bash"), while evener's engine uses canonical names ("read_file",
 // "shell").
 package toolname
 
-// claudeToSerf maps Claude Code tool names to serf canonical names.
+// claudeToSerf maps Claude Code tool names to evener canonical names.
 var claudeToSerf = map[string]string{
 	"Read":            "read_file",
 	"Write":           "write_file",
@@ -20,17 +20,17 @@ var claudeToSerf = map[string]string{
 	"AskUserQuestion": "ask_user",
 }
 
-// serfToClaude is the reverse mapping (built at init time).
-var serfToClaude map[string]string
+// evenerToClaude is the reverse mapping (built at init time).
+var evenerToClaude map[string]string
 
 func init() {
-	serfToClaude = make(map[string]string, len(claudeToSerf))
-	for claude, serf := range claudeToSerf {
-		serfToClaude[serf] = claude
+	evenerToClaude = make(map[string]string, len(claudeToSerf))
+	for claude, evener := range claudeToSerf {
+		evenerToClaude[evener] = claude
 	}
 }
 
-// ClaudeToSerf converts a Claude Code tool name to serf's canonical name.
+// ClaudeToSerf converts a Claude Code tool name to evener's canonical name.
 // Unknown names pass through unchanged.
 func ClaudeToSerf(name string) string {
 	if mapped, ok := claudeToSerf[name]; ok {
@@ -39,10 +39,10 @@ func ClaudeToSerf(name string) string {
 	return name
 }
 
-// SerfToClaude converts a serf canonical tool name to Claude Code's name.
+// EvenerToClaude converts a evener canonical tool name to Claude Code's name.
 // Unknown names pass through unchanged.
-func SerfToClaude(name string) string {
-	if mapped, ok := serfToClaude[name]; ok {
+func EvenerToClaude(name string) string {
+	if mapped, ok := evenerToClaude[name]; ok {
 		return mapped
 	}
 	return name

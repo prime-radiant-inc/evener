@@ -52,7 +52,7 @@ func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
 func TestAdapter_Quirks(t *testing.T) {
 	// OpenRouter translates max→xhigh and speaks its canonical reasoning
 	// object ({"reasoning":{"effort":...}}, live-verified 2026-07-02 to
-	// accept the full serf vocabulary incl. xhigh/minimal).
+	// accept the full evener vocabulary incl. xhigh/minimal).
 	quirks := openaicompat.QuirksPreset("openrouter")
 	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true, ToolChoiceAutoUnderReasoning: true, ThinkingFormat: "openrouter"}
 	if !reflect.DeepEqual(quirks, want) {

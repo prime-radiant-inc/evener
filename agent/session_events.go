@@ -429,7 +429,7 @@ func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
 	if effort != "" {
 		input.Effort = effort
 	}
-	// PermissionMode is intentionally left unset: serf has no permission-mode field
+	// PermissionMode is intentionally left unset: evener has no permission-mode field
 	// on Session today. Do NOT fabricate a value the hook would act on.
 	return input
 }

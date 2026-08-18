@@ -56,7 +56,7 @@ type remoteThreadFetch struct {
 	generation uint64
 }
 
-// notifyTreeChanged broadcasts serf/tree/changed to every connected client so
+// notifyTreeChanged broadcasts evener/tree/changed to every connected client so
 // the sidebar refetches /api/tree (spec §7.3, debounced client-side). It is
 // wired as (part of) the onChange hook for Roster and PastIndex — both
 // already gate their callback on an actual content-fingerprint delta (a
@@ -78,11 +78,11 @@ type remoteThreadFetch struct {
 // handleAPIProjectDelete) — never unconditionally, which would double-fire
 // on top of the hook.
 func notifyTreeChanged(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifySerfTreeChanged, map[string]string{})
+	server.BroadcastAll(appwire.NotifyEvenerTreeChanged, map[string]string{})
 }
 
 // notifyMutation nudges the attention watcher (if configured) and
-// unconditionally broadcasts serf/tree/changed. It exists for mutations
+// unconditionally broadcasts evener/tree/changed. It exists for mutations
 // whose store never routes through Roster/PastIndex's own composed onChange
 // hook — archive and favorite decisions live in ArchiveStore/FavoriteStore —
 // so they need an explicit, unconditional broadcast every time. Rename and
@@ -122,7 +122,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		_, attentionSummary := s.memoTree(r.Context())
 		writeAPIJSON(w, http.StatusOK, struct {
 			GeneratedAt time.Time `json:"generated_at"`
-			// serf:naming-ignore
+			// evener:naming-ignore
 			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` // camelCase: see hubapi.AttentionSummary's doc
 		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
@@ -716,7 +716,7 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 // refreshRemoteThreads performs the synchronous walk across every configured
 // remote source: it lists each source's threads (via listThreadsWithFallback,
 // which retains the last-known-good result across transient errors) and
-// backfills each thread's Source and Serf.Ref. This used to run inline on
+// backfills each thread's Source and Evener.Ref. This used to run inline on
 // every /api/tree request (as remoteTreeThreads); it now runs on a background
 // ~30s ticker + poke (main.go), Storing its result into a RemoteThreadCache
 // for remoteTreeThreads to read.
@@ -751,22 +751,22 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			if rowRefOK && rowRef.SourceID != source.ID() {
 				incompleteIDs[rowRef.String()] = struct{}{}
 			}
-			if thread.Serf.Ref != "" {
-				if _, err := appwire.ParseRef(thread.Serf.Ref); err != nil && rowRefOK {
+			if thread.Evener.Ref != "" {
+				if _, err := appwire.ParseRef(thread.Evener.Ref); err != nil && rowRefOK {
 					incompleteIDs[rowRef.String()] = struct{}{}
 				}
 			}
 			thread.Source = source.ID()
-			if thread.Serf.Ref == "" {
+			if thread.Evener.Ref == "" {
 				threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 				if threadID != "" {
-					thread.Serf.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
+					thread.Evener.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 					if sourceConflict {
-						incompleteIDs[thread.Serf.Ref] = struct{}{}
+						incompleteIDs[thread.Evener.Ref] = struct{}{}
 					}
 				}
 			}
-			if rawParent := strings.TrimSpace(thread.Serf.ParentRef); rawParent != "" {
+			if rawParent := strings.TrimSpace(thread.Evener.ParentRef); rawParent != "" {
 				parent, err := appwire.ParseRef(rawParent)
 				if err != nil || parent.SourceID != source.ID() {
 					if ref, ok := appThreadTreeRef(thread); ok {
@@ -892,7 +892,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 			WorkingDir: thread.CWD,
 		},
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
-		IsSubagent:      thread.Serf.Kind == "subagent",
+		IsSubagent:      thread.Evener.Kind == "subagent",
 	}
 	if thread.GitInfo != nil {
 		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
@@ -916,9 +916,9 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the
 // same ref-valued metadata used by the local tree. ParentRef is authoritative
-// for Serf children; ForkedFromID is the Codex fork lineage fallback.
+// for Evener children; ForkedFromID is the Codex fork lineage fallback.
 func appThreadTreeParentSessionID(thread appwire.Thread, childRef appwire.Ref) string {
-	raw := strings.TrimSpace(thread.Serf.ParentRef)
+	raw := strings.TrimSpace(thread.Evener.ParentRef)
 	if raw == "" {
 		raw = strings.TrimSpace(thread.ForkedFromID)
 	}
@@ -932,8 +932,8 @@ func appThreadTreeParentSessionID(thread appwire.Thread, childRef appwire.Ref) s
 }
 
 func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
-	if thread.Serf.Ref != "" {
-		if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
+	if thread.Evener.Ref != "" {
+		if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil {
 			return ref, true
 		}
 	}
@@ -985,7 +985,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 }
 
 func hubRefFromAppThread(thread appwire.Thread) hubapi.Ref {
-	refText := thread.Serf.Ref
+	refText := thread.Evener.Ref
 	if refText == "" {
 		refText = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
 	}
@@ -1010,10 +1010,10 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 	}
 }
 
-// hubUsageFromAppwire maps appwire.SerfUsage to hubapi's flattened Usage type
+// hubUsageFromAppwire maps appwire.EvenerUsage to hubapi's flattened Usage type
 // so hubapi need not depend on appwire (mirrors the GoalStatus flattening
 // precedent on hubapi.SessionDetail). Returns nil when u is nil.
-func hubUsageFromAppwire(u *appwire.SerfUsage) *hubapi.Usage {
+func hubUsageFromAppwire(u *appwire.EvenerUsage) *hubapi.Usage {
 	if u == nil {
 		return nil
 	}
@@ -1053,23 +1053,23 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 		Project:             project,
 		WorkingDir:          thread.CWD,
 		Model:               thread.ModelProvider,
-		Profile:             thread.Serf.Profile,
+		Profile:             thread.Evener.Profile,
 		TurnCount:           completedTurnCount(thread.Turns),
 		ActiveTurnID:        activeTurnIDFromAppwireThread(thread),
-		ContextPressure:     thread.Serf.ContextPressure,
-		ContextUsed:         thread.Serf.ContextUsed,
-		ContextWindow:       thread.Serf.ContextWindow,
-		ContextRemaining:    thread.Serf.ContextRemaining,
-		Capabilities:        hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
-		WorkMillis:          thread.Serf.WorkMillis,
-		Usage:               hubUsageFromAppwire(thread.Serf.Usage),
-		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
-		FailedToolCalls:     thread.Serf.FailedToolCalls,
+		ContextPressure:     thread.Evener.ContextPressure,
+		ContextUsed:         thread.Evener.ContextUsed,
+		ContextWindow:       thread.Evener.ContextWindow,
+		ContextRemaining:    thread.Evener.ContextRemaining,
+		Capabilities:        hubCapabilitiesFromAppwire(thread.Evener.Capabilities),
+		WorkMillis:          thread.Evener.WorkMillis,
+		Usage:               hubUsageFromAppwire(thread.Evener.Usage),
+		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
+		FailedToolCalls:     thread.Evener.FailedToolCalls,
 	}
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
 	}
-	if goal := thread.Serf.Goal; goal != nil {
+	if goal := thread.Evener.Goal; goal != nil {
 		detail.GoalStatus = goal.Status
 		detail.GoalIterations = goal.Iterations
 	}
@@ -1294,7 +1294,7 @@ func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemot
 			sourceID = ref.SourceID
 		}
 		complete := sourceID == ref.SourceID
-		if rawRef := strings.TrimSpace(thread.Serf.Ref); rawRef != "" {
+		if rawRef := strings.TrimSpace(thread.Evener.Ref); rawRef != "" {
 			parsed, err := appwire.ParseRef(rawRef)
 			if err != nil || parsed != ref {
 				complete = false
@@ -1314,8 +1314,8 @@ func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemot
 }
 
 func favoriteRemoteThreadRef(thread appwire.Thread) (appwire.Ref, bool) {
-	if strings.TrimSpace(thread.Serf.Ref) != "" {
-		ref, err := appwire.ParseRef(thread.Serf.Ref)
+	if strings.TrimSpace(thread.Evener.Ref) != "" {
+		ref, err := appwire.ParseRef(thread.Evener.Ref)
 		if err != nil {
 			return appwire.Ref{}, false
 		}
@@ -1651,7 +1651,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		Capabilities:   s.apiSessionCapabilities(id, live),
 		// Seeded from wd here so the ended path (no live source to override
 		// them below) still carries these; the live branch's hubDetailFromAppThread
-		// replacement keeps its own values from thread.Serf — no clobber.
+		// replacement keeps its own values from thread.Evener — no clobber.
 		WorkMillis:          wd.WorkMillis,
 		Usage:               hubUsageFromAppwire(wd.Usage),
 		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,
@@ -1717,7 +1717,7 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 // previously called workspaceData directly AND again transitively through
 // apiSessionDetail — and, for a live session, refreshes context/goal/usage/
 // work-time fields via a ReadThread that skips the turns array (IncludeTurns:
-// false): the input strip never needs the transcript, only the SerfThread
+// false): the input strip never needs the transcript, only the EvenerThread
 // status fields that ride alongside it regardless of IncludeTurns.
 // completedTurnCount(thread.Turns) is always 0 without turns, so TurnCount is
 // always taken from wd (which the roster path sets from daemonStatus.Turns,
@@ -1756,7 +1756,7 @@ func (s *WebServer) apiSessionState(id string) (hubapi.SessionDetail, bool) {
 		// Seeded from wd here so the ended path (no live source to override
 		// them below) still carries these; the live branch's
 		// hubDetailFromAppThread replacement keeps its own values from
-		// thread.Serf — no clobber.
+		// thread.Evener — no clobber.
 		WorkMillis:          wd.WorkMillis,
 		Usage:               hubUsageFromAppwire(wd.Usage),
 		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,

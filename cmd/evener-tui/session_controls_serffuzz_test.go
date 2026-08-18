@@ -222,8 +222,8 @@ func testSessionHelpers(t *testing.T) {
 	m.session.sessionID = " "
 	_ = m.restoreInstructionMessage()
 	_ = isQueuedDrainPartial(errors.New("x"))
-	_ = isQueuedDrainPartial(appwire.WireError{Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorQueuedDrainPartial}})
-	_ = isQueuedDrainPartial(appwire.WireError{Data: map[string]any{"serfErrorInfo": string(appwire.ErrorQueuedDrainPartial)}})
+	_ = isQueuedDrainPartial(appwire.WireError{Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}})
+	_ = isQueuedDrainPartial(appwire.WireError{Data: map[string]any{"evenerErrorInfo": string(appwire.ErrorQueuedDrainPartial)}})
 	_ = isQueuedDrainPartial(appwire.WireError{Data: "x"})
 	for _, key := range []tea.KeyMsg{{Alt: true}, {Alt: true, Type: tea.KeyEnter}, {Alt: true, Type: tea.KeyRunes}, {Alt: true, Type: tea.KeyRunes, Runes: []rune("vv")}, {Alt: true, Type: tea.KeyRunes, Runes: []rune("V")}} {
 		_ = isAltVKey(key)

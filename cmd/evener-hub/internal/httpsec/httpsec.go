@@ -1,4 +1,4 @@
-// Package httpsec provides HTTP security middleware for the serf-hub web
+// Package httpsec provides HTTP security middleware for the evener-hub web
 // server.
 package httpsec
 

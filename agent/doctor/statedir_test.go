@@ -3,13 +3,13 @@ package doctor
 import "testing"
 
 func TestResolveStateBase_Precedence(t *testing.T) {
-	t.Setenv("SERF_STATE_DIR", "/env/serfstate")
+	t.Setenv("SERF_STATE_DIR", "/env/evenerstate")
 	t.Setenv("XDG_STATE_HOME", "/env/xdg")
 
 	if got := ResolveStateBase("/flag/dir"); got != "/flag/dir" {
 		t.Errorf("flag should win: got %q", got)
 	}
-	if got := ResolveStateBase(""); got != "/env/serfstate" {
+	if got := ResolveStateBase(""); got != "/env/evenerstate" {
 		t.Errorf("SERF_STATE_DIR should win over XDG: got %q", got)
 	}
 

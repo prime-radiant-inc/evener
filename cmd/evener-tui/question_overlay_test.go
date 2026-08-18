@@ -399,7 +399,7 @@ func countUserMessages(messages []transcript.ChatMessage) int {
 // unrelated keypress (up — unhandled at the review step) must NOT
 // re-trigger a second send just because a stale readyToSubmit lingered.
 func TestUpdateQuestionOverlayKey_StaleReadyToSubmitDoesNotResendAfterRollback(t *testing.T) {
-	m := sampleSessionModel(80, sampleSessionDetails()["serf-idle"])
+	m := sampleSessionModel(80, sampleSessionDetails()["evener-idle"])
 	m.session.messages = []transcript.ChatMessage{askUserToolMsg("call_1", oneQuestionArgsJSON, true, "")}
 	overlay := newQuestionOverlay(m.detail.Ref, pendingAskQuestions(m.session.messages), 80)
 	overlay.idx = len(overlay.questions) // at the review step
@@ -443,7 +443,7 @@ func TestUpdateQuestionOverlayKey_StaleReadyToSubmitDoesNotResendAfterRollback(t
 // SAME still-awaiting session (mode flips back to hubModeSession with no
 // fresh ctrl+q) resurrects it: a live focus trap with no way to reach it.
 func TestReturnToDashboard_DefersLiveQuestionOverlay(t *testing.T) {
-	m := sampleSessionModel(80, sampleSessionDetails()["serf-idle"])
+	m := sampleSessionModel(80, sampleSessionDetails()["evener-idle"])
 	m.session.messages = []transcript.ChatMessage{askUserToolMsg("call_1", oneQuestionArgsJSON, true, "")}
 	overlay := newQuestionOverlay(m.detail.Ref, pendingAskQuestions(m.session.messages), 80)
 	overlay.questions[0].Resolution = &askResolution{Kind: askResolutionOption, Labels: []string{"Postgres"}}
@@ -507,7 +507,7 @@ func TestReturnToDashboard_DefersLiveQuestionOverlay(t *testing.T) {
 // haunting whatever session is entered next, so this is really the same
 // invariant as the same-session case, just checked from the other side.
 func TestReturnToDashboard_DeferredOverlayDoesNotHauntADifferentSession(t *testing.T) {
-	m := sampleSessionModel(80, sampleSessionDetails()["serf-idle"])
+	m := sampleSessionModel(80, sampleSessionDetails()["evener-idle"])
 	m.session.messages = []transcript.ChatMessage{askUserToolMsg("call_1", oneQuestionArgsJSON, true, "")}
 	m.questionOverlay = newQuestionOverlay(m.detail.Ref, pendingAskQuestions(m.session.messages), 80)
 

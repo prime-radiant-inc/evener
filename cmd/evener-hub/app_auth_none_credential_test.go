@@ -5,8 +5,8 @@ package main
 // that rule since kata nrv4 gave it a name — envvars.RequiresNoCredential — and
 // reports SourceNone rather than SourceAbsent. The instance-keyed status path
 // had no equivalent, so the hub answered one question about one provider two
-// ways: serf/auth/list said "none" for ollama while serf/auth/status and
-// serf/instance/list said "absent", and the credentials pane renders that
+// ways: evener/auth/list said "none" for ollama while evener/auth/status and
+// evener/instance/list said "absent", and the credentials pane renders that
 // difference as "Not configured" instead of "No credentials required"
 // (credentialLabels.ts, unconfiguredLabel). Kata ps28.
 //
@@ -46,7 +46,7 @@ func newAuthNoneControllers(t *testing.T) (*hubAuthController, *hubInstancesCont
 	return auth, &hubInstancesController{providersConfigPath: tomlPath, auth: auth}
 }
 
-// authListRow returns the serf/auth/list entry for provider.
+// authListRow returns the evener/auth/list entry for provider.
 func authListRow(t *testing.T, c *hubAuthController, provider string) appwire.AuthStatusResponse {
 	t.Helper()
 	resp, err := c.List(appwire.EmptyParams{})
@@ -58,11 +58,11 @@ func authListRow(t *testing.T, c *hubAuthController, provider string) appwire.Au
 			return p
 		}
 	}
-	t.Fatalf("serf/auth/list has no %q entry: %+v", provider, resp.Providers)
+	t.Fatalf("evener/auth/list has no %q entry: %+v", provider, resp.Providers)
 	return appwire.AuthStatusResponse{}
 }
 
-// instanceListRow returns the serf/instance/list entry for name.
+// instanceListRow returns the evener/instance/list entry for name.
 func instanceListRow(t *testing.T, c *hubInstancesController, name string) appwire.InstanceEntry {
 	t.Helper()
 	resp := c.List()
@@ -71,12 +71,12 @@ func instanceListRow(t *testing.T, c *hubInstancesController, name string) appwi
 			return inst
 		}
 	}
-	t.Fatalf("serf/instance/list has no %q entry: %+v", name, resp.Instances)
+	t.Fatalf("evener/instance/list has no %q entry: %+v", name, resp.Instances)
 	return appwire.InstanceEntry{}
 }
 
-// TestAuthNoneInstance_EveryCredentialSurfaceAgrees holds serf/auth/list,
-// serf/auth/status and serf/instance/list to one answer for an auth-none
+// TestAuthNoneInstance_EveryCredentialSurfaceAgrees holds evener/auth/list,
+// evener/auth/status and evener/instance/list to one answer for an auth-none
 // instance, and holds that answer to the credentials store's own rule. The
 // OLLAMA_API_KEY subtest matters because the store's rule is unconditional: it
 // reports SourceNone whether or not a key happens to resolve, so a status path
@@ -118,45 +118,45 @@ func TestAuthNoneInstance_EveryCredentialSurfaceAgrees(t *testing.T) {
 			}
 			instRow := instanceListRow(t, instances, "ollama")
 
-			// serf/auth/status is the per-instance RPC the credentials pane
-			// calls; serf/auth/list is the provider-keyed one. Same provider.
+			// evener/auth/status is the per-instance RPC the credentials pane
+			// calls; evener/auth/list is the provider-keyed one. Same provider.
 			if status.ActiveSource != listRow.ActiveSource {
-				t.Errorf("serf/auth/status ollama activeSource = %q, but serf/auth/list says %q — one provider, two answers",
+				t.Errorf("evener/auth/status ollama activeSource = %q, but evener/auth/list says %q — one provider, two answers",
 					status.ActiveSource, listRow.ActiveSource)
 			}
 			if status.SignedIn != listRow.SignedIn {
-				t.Errorf("serf/auth/status ollama signedIn = %v, but serf/auth/list says %v",
+				t.Errorf("evener/auth/status ollama signedIn = %v, but evener/auth/list says %v",
 					status.SignedIn, listRow.SignedIn)
 			}
 			if !reflect.DeepEqual(status.AuthModes, listRow.AuthModes) {
-				t.Errorf("serf/auth/status ollama authModes = %v, but serf/auth/list says %v",
+				t.Errorf("evener/auth/status ollama authModes = %v, but evener/auth/list says %v",
 					status.AuthModes, listRow.AuthModes)
 			}
 			if status.EnvVar != listRow.EnvVar {
-				t.Errorf("serf/auth/status ollama envVar = %q, but serf/auth/list says %q",
+				t.Errorf("evener/auth/status ollama envVar = %q, but evener/auth/list says %q",
 					status.EnvVar, listRow.EnvVar)
 			}
 			if status.HasStoredFile != listRow.HasStoredFile {
-				t.Errorf("serf/auth/status ollama hasStoredFile = %v, but serf/auth/list says %v",
+				t.Errorf("evener/auth/status ollama hasStoredFile = %v, but evener/auth/list says %v",
 					status.HasStoredFile, listRow.HasStoredFile)
 			}
 
-			// serf/instance/list is what the settings pane renders. It carries
+			// evener/instance/list is what the settings pane renders. It carries
 			// no signedIn field, so agreement there is over the rest.
 			if instRow.ActiveSource != listRow.ActiveSource {
-				t.Errorf("serf/instance/list ollama activeSource = %q, but serf/auth/list says %q — the settings pane renders %q as \"Not configured\"",
+				t.Errorf("evener/instance/list ollama activeSource = %q, but evener/auth/list says %q — the settings pane renders %q as \"Not configured\"",
 					instRow.ActiveSource, listRow.ActiveSource, instRow.ActiveSource)
 			}
 			if !reflect.DeepEqual(instRow.AuthModes, listRow.AuthModes) {
-				t.Errorf("serf/instance/list ollama authModes = %v, but serf/auth/list says %v",
+				t.Errorf("evener/instance/list ollama authModes = %v, but evener/auth/list says %v",
 					instRow.AuthModes, listRow.AuthModes)
 			}
 			if instRow.EnvVar != listRow.EnvVar {
-				t.Errorf("serf/instance/list ollama envVar = %q, but serf/auth/list says %q",
+				t.Errorf("evener/instance/list ollama envVar = %q, but evener/auth/list says %q",
 					instRow.EnvVar, listRow.EnvVar)
 			}
 			if instRow.HasStoredFile != listRow.HasStoredFile {
-				t.Errorf("serf/instance/list ollama hasStoredFile = %v, but serf/auth/list says %v",
+				t.Errorf("evener/instance/list ollama hasStoredFile = %v, but evener/auth/list says %v",
 					instRow.HasStoredFile, listRow.HasStoredFile)
 			}
 

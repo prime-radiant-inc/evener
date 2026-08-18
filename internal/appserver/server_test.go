@@ -16,7 +16,7 @@ import (
 
 func TestConnectionRequiresInitialize(t *testing.T) {
 	server := NewServer(ServerConfig{
-		ServerName: "serf-hub",
+		ServerName: "evener-hub",
 		Version:    "test",
 		SourceID:   "local",
 	})
@@ -34,7 +34,7 @@ func TestConnectionRequiresInitialize(t *testing.T) {
 }
 
 func TestConnectionPingAnsweredWithoutInitialize(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	// The browser heartbeat must succeed regardless of initialize state and
 	// without touching the router, so a hung daemon can't make the keepalive
@@ -46,7 +46,7 @@ func TestConnectionPingAnsweredWithoutInitialize(t *testing.T) {
 }
 
 func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return appwire.ThreadListResponse{}, nil
 	})
@@ -67,10 +67,10 @@ func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testin
 		params map[string]any
 	}{
 		{name: "missing", params: map[string]any{}},
-		{name: "mismatched", params: map[string]any{"protocolVersion": "serf-appwire-v1"}},
+		{name: "mismatched", params: map[string]any{"protocolVersion": "evener-appwire-v1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 			conn := server.NewConnection("conn-1")
 
 			resp := conn.HandleMessage(
@@ -101,7 +101,7 @@ func TestConnectionValidatesExpectedQueueRevisionBeforeDispatch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 			called := false
 			HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 				called = true
@@ -138,7 +138,7 @@ func TestConnectionValidatesExpectedQueueRevisionBeforeDispatch(t *testing.T) {
 }
 
 func TestConnectionAcceptsInitializedNotification(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return appwire.ThreadListResponse{}, nil
 	})
@@ -158,7 +158,7 @@ func TestConnectionAcceptsInitializedNotification(t *testing.T) {
 }
 
 func TestConnectionRejectsRepeatedInitialize(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	first := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if first.Kind() != appwire.MessageResponse {
@@ -171,7 +171,7 @@ func TestConnectionRejectsRepeatedInitialize(t *testing.T) {
 }
 
 func TestInitializeIsConnectionScoped(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn1 := server.NewConnection("conn-1")
 	conn2 := server.NewConnection("conn-2")
 
@@ -186,7 +186,7 @@ func TestInitializeIsConnectionScoped(t *testing.T) {
 }
 
 func TestConnectionResponseEnqueueWaitsForCapacity(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	for i := 0; i < cap(conn.send); i++ {
 		conn.enqueue(appwire.NotificationMessage("notice", map[string]any{"i": i}))
@@ -221,7 +221,7 @@ func TestConnectionResponseEnqueueWaitsForCapacity(t *testing.T) {
 }
 
 func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	server.registerConnection(conn)
 	server.unregisterConnection(conn)
@@ -235,7 +235,7 @@ func TestConnectionEnqueueAfterUnregisterDoesNotPanic(t *testing.T) {
 }
 
 func TestStaleConnectionTeardownPreservesSameIDReplacement(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	stale := server.NewConnection("conn-shared")
 	replacement := server.NewConnection("conn-shared")
 	replacementCanceled := make(chan struct{})
@@ -266,7 +266,7 @@ func TestStaleConnectionTeardownPreservesSameIDReplacement(t *testing.T) {
 }
 
 func TestStaleBroadcastFailurePreservesSameIDReplacement(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	stale := server.NewConnection("conn-shared")
 	replacement := server.NewConnection("conn-shared")
 	replacementCanceled := make(chan struct{})
@@ -320,7 +320,7 @@ func TestStaleBroadcastFailurePreservesSameIDReplacement(t *testing.T) {
 }
 
 func TestServer_BroadcastAll(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn1 := server.NewConnection("conn-1")
 	conn2 := server.NewConnection("conn-2")
 	server.registerConnection(conn1)
@@ -357,7 +357,7 @@ func TestServer_BroadcastAll(t *testing.T) {
 }
 
 func TestBroadcastDisconnectsSlowSubscriberInsteadOfDroppingNotification(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	server.registerConnection(conn)
 	conn.Subscribe("th_1")
@@ -379,7 +379,7 @@ func TestBroadcastDisconnectsSlowSubscriberInsteadOfDroppingNotification(t *test
 }
 
 func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-1")
 	server.registerConnection(conn)
 	conn.Subscribe("th_old")
@@ -1192,7 +1192,7 @@ func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
 }
 
 // TestSnapshotCutReleasesBroadcastToBufferingSubscriber pins the sequence
-// Broadcast allocates for itself. A relay frame, a serf/thread/resync, or the
+// Broadcast allocates for itself. A relay frame, a evener/thread/resync, or the
 // synthesized failed turn/completed that replaces a dead spinner all reach a
 // subscriber through Broadcast, and each is silent when lost. With no sequence
 // of its own the record carries Seq 0, which never clears a non-zero cut, so
@@ -1233,7 +1233,7 @@ func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
 		appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}),
 	)
 
-	server.Broadcast("th_1", appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{ThreadID: "th_1"})
+	server.Broadcast("th_1", appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: "th_1"})
 
 	if err := conn.enqueueResponse(context.Background(), response); err != nil {
 		t.Fatalf("enqueue response: %v", err)
@@ -1246,8 +1246,8 @@ func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
 			methods = append(methods, msg.Notification.Method)
 		}
 	}
-	if len(methods) != 1 || methods[0] != appwire.NotifySerfThreadResync {
-		t.Fatalf("released notifications = %v, want one %s", methods, appwire.NotifySerfThreadResync)
+	if len(methods) != 1 || methods[0] != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("released notifications = %v, want one %s", methods, appwire.NotifyEvenerThreadResync)
 	}
 }
 
@@ -1423,7 +1423,7 @@ func TestContextSubscriptionRegistrationRejectsRemovedConnection(t *testing.T) {
 		{name: "replace", register: ReplaceSubscriptions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 			conn := server.NewConnection("conn-removed")
 			server.registerConnection(conn)
 			ctx := context.WithValue(context.Background(), connectionContextKey{}, conn)
@@ -1457,7 +1457,7 @@ func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *test
 		{name: "replace", register: ReplaceSubscriptions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 			conn := server.NewConnection("conn-race")
 			server.registerConnection(conn)
 			conn.Subscribe("th_old")
@@ -1538,7 +1538,7 @@ func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *test
 // test's Stop then failed with "use of closed network connection" — twice in
 // one day, on diffs that touched neither the hub nor the test.
 func TestBurstWithinClientBufferBoundDoesNotEvict(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
 	conn := server.NewConnection("napping")
 	server.registerConnection(conn)
 	conn.Subscribe("thread")
@@ -1576,7 +1576,7 @@ func TestSlowConsumerEvictionIsReported(t *testing.T) {
 	var logMu sync.Mutex
 	var logged []string
 	server := NewServer(ServerConfig{
-		ServerName: "serf-hub", Version: "test", SourceID: "local",
+		ServerName: "evener-hub", Version: "test", SourceID: "local",
 		Logf: func(format string, args ...any) {
 			logMu.Lock()
 			logged = append(logged, fmt.Sprintf(format, args...))

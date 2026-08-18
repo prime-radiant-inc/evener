@@ -52,10 +52,10 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	if !found {
 		t.Fatal("past thread not found")
 	}
-	if thread.Serf.Diagnostics == nil || len(thread.Serf.Diagnostics.Delegates) != 1 {
-		t.Fatalf("cold thread delegates = %+v", thread.Serf.Diagnostics)
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 {
+		t.Fatalf("cold thread delegates = %+v", thread.Evener.Diagnostics)
 	}
-	got := thread.Serf.Diagnostics.Delegates[0]
+	got := thread.Evener.Diagnostics.Delegates[0]
 	if got.DelegateID != "dlg_cold" || got.ChildSessionID != "child-cold" || got.TranscriptRef != "local:child-cold" ||
 		got.OwnerSessionID != sessionID || got.Type != "delegate" || got.Lifecycle != "idle" || got.Phase != "idle" || got.ProjectionRevision != 1 ||
 		got.Task != "cold task" || got.Description != "cold description" || got.DelegationAllowance != 2 || !got.ParentWatchGranted {
@@ -487,22 +487,22 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 
 	thread := requirePastEntryThread(t, hubcore.WebConfig{}, entry, false)
 
-	if thread.Serf.WorkMillis != 5000 {
-		t.Fatalf("thread.Serf.WorkMillis = %d, want 5000", thread.Serf.WorkMillis)
+	if thread.Evener.WorkMillis != 5000 {
+		t.Fatalf("thread.Evener.WorkMillis = %d, want 5000", thread.Evener.WorkMillis)
 	}
-	if thread.Serf.Usage == nil {
-		t.Fatalf("thread.Serf.Usage = nil, want non-nil")
+	if thread.Evener.Usage == nil {
+		t.Fatalf("thread.Evener.Usage = nil, want non-nil")
 	}
-	if thread.Serf.Usage.InputTokens != 100 || thread.Serf.Usage.OutputTokens != 50 || thread.Serf.Usage.TotalTokens != 150 {
-		t.Fatalf("thread.Serf.Usage = %+v, want InputTokens=100 OutputTokens=50 TotalTokens=150", thread.Serf.Usage)
+	if thread.Evener.Usage.InputTokens != 100 || thread.Evener.Usage.OutputTokens != 50 || thread.Evener.Usage.TotalTokens != 150 {
+		t.Fatalf("thread.Evener.Usage = %+v, want InputTokens=100 OutputTokens=50 TotalTokens=150", thread.Evener.Usage)
 	}
-	if thread.Serf.ActiveTurnStartedAt != 0 {
-		t.Fatalf("thread.Serf.ActiveTurnStartedAt = %d, want 0 (ended session)", thread.Serf.ActiveTurnStartedAt)
+	if thread.Evener.ActiveTurnStartedAt != 0 {
+		t.Fatalf("thread.Evener.ActiveTurnStartedAt = %d, want 0 (ended session)", thread.Evener.ActiveTurnStartedAt)
 	}
 }
 
 // TestPastEntryThread_CarriesCostTotal proves the past-entry hydrate stamps
-// the session-level dollar total on SerfThread from the cumulative usage at
+// the session-level dollar total on EvenerThread from the cumulative usage at
 // the session model's price — the honest full-session figure, never a page
 // of loaded turns — and honestly omits it when there is no usage or the model
 // is uncataloged (the absent-vs-zero distinction).
@@ -514,16 +514,16 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 		},
 	}
 	thread := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false)
-	if want := appwire.EstimateCost("claude-opus-4-5", thread.Serf.Usage); thread.Serf.Cost != want || want == "" {
-		t.Fatalf("thread.Serf.Cost = %q, want non-empty %q", thread.Serf.Cost, want)
+	if want := appwire.EstimateCost("claude-opus-4-5", thread.Evener.Usage); thread.Evener.Cost != want || want == "" {
+		t.Fatalf("thread.Evener.Cost = %q, want non-empty %q", thread.Evener.Cost, want)
 	}
-	if !strings.HasPrefix(thread.Serf.Cost, "~$") {
-		t.Fatalf("thread.Serf.Cost = %q, want ~$ prefix", thread.Serf.Cost)
+	if !strings.HasPrefix(thread.Evener.Cost, "~$") {
+		t.Fatalf("thread.Evener.Cost = %q, want ~$ prefix", thread.Evener.Cost)
 	}
 
 	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Serf.Cost != "" {
-		t.Fatalf("no-usage thread.Serf.Cost = %q, want \"\" (absent)", got.Serf.Cost)
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Evener.Cost != "" {
+		t.Fatalf("no-usage thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 
 	uncataloged := hubcore.PastEntry{
@@ -532,8 +532,8 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
 		},
 	}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Serf.Cost != "" {
-		t.Fatalf("uncataloged-model thread.Serf.Cost = %q, want \"\" (absent, not ~$0.00)", got.Serf.Cost)
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Evener.Cost != "" {
+		t.Fatalf("uncataloged-model thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
 	}
 }
 
@@ -597,8 +597,8 @@ func runningSubagentProjectionConfigWithState(t *testing.T, childState string) (
 	parentID := "02wMz5Txv1C3Hut0M8GCeB"
 	childID := "02wMz5Txv2enqVTitaig6F"
 	for _, meta := range []schema.SessionMeta{
-		{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	} {
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatal(err)
@@ -727,7 +727,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		t.Fatal("past entry not found")
 	}
 	thread := requirePastEntryThread(t, hubcore.WebConfig{Past: idx}, entry, false)
-	caps := thread.Serf.Capabilities
+	caps := thread.Evener.Capabilities
 
 	want := appwire.ThreadCapabilities{
 		Send:         true,

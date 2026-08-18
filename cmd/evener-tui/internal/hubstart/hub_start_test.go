@@ -145,9 +145,9 @@ func TestStartHubClientHonorsNoAutoStartForLocalHub(t *testing.T) {
 }
 
 func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "state", "serf")
-	logFile := filepath.Join(t.TempDir(), "serf-tui.log")
-	hubBin := filepath.Join(t.TempDir(), "serf-hub")
+	stateDir := filepath.Join(t.TempDir(), "state", "evener")
+	logFile := filepath.Join(t.TempDir(), "evener-tui.log")
+	hubBin := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, hubBin)
 	var got HubStartRequest
 	started := false
@@ -187,7 +187,7 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	hubBin := filepath.Join(t.TempDir(), "serf-hub")
+	hubBin := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, hubBin)
 
 	started := false
@@ -301,7 +301,7 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 		{
 			name: "stale environment",
 			cfg: HubStartConfig{
-				StateDir: filepath.Join(t.TempDir(), "state", "serf"),
+				StateDir: filepath.Join(t.TempDir(), "state", "evener"),
 				DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 					return appwire.NewClient(noopAppWireTransport{}), nil
 				},
@@ -342,7 +342,7 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 // (kata zedg: this path went dead when v2 tightened Initialize but the
 // downstream StartupErrorIncompatibleAPI check was never wired to it).
 func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
-	srv := fakeHubServer(t, "serf-appwire-v1")
+	srv := fakeHubServer(t, "evener-appwire-v1")
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 
@@ -358,7 +358,7 @@ func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
 		t.Fatal("incompatible-api startup error must be terminal, not retryable")
 	}
 	screen := StartupErrorScreen(err)
-	for _, want := range []string{"Hub API is incompatible at " + addr.BaseURL, "serf-appwire-v1", appwire.ProtocolVersion} {
+	for _, want := range []string{"Hub API is incompatible at " + addr.BaseURL, "evener-appwire-v1", appwire.ProtocolVersion} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("screen missing %q:\n%s", want, screen)
 		}
@@ -371,7 +371,7 @@ func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 		err  StartupError
 		want string
 	}{
-		{name: "missing binary", err: StartupError{Kind: StartupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find serf-hub binary"},
+		{name: "missing binary", err: StartupError{Kind: StartupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find evener-hub binary"},
 		{name: "bind failure", err: StartupError{Kind: StartupErrorBindFailure, Addr: "http://127.0.0.1:9180", Detail: "address already in use"}, want: "Hub failed to bind"},
 		{name: "unhealthy", err: StartupError{Kind: StartupErrorUnhealthyHub, Addr: "http://127.0.0.1:9180", Detail: "timeout"}, want: "did not become healthy"},
 		{name: "incompatible", err: StartupError{Kind: StartupErrorIncompatibleAPI, Addr: "http://127.0.0.1:9180", Detail: "old protocol"}, want: "Hub API is incompatible"},
@@ -381,7 +381,7 @@ func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			screen := StartupErrorScreen(tt.err)
-			for _, want := range []string{"Serf TUI startup failed", tt.want, tt.err.Detail} {
+			for _, want := range []string{"Evener TUI startup failed", tt.want, tt.err.Detail} {
 				if !strings.Contains(screen, want) {
 					t.Fatalf("screen missing %q:\n%s", want, screen)
 				}
@@ -448,7 +448,7 @@ func writeExecutable(t *testing.T, path string) {
 
 func writeTempExecutable(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "serf-hub")
+	path := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, path)
 	return path
 }

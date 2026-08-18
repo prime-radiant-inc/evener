@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// gitSurfaceInertContent returns the content serf writes when it must materialize
+// gitSurfaceInertContent returns the content evener writes when it must materialize
 // an absent protected git surface BEFORE bubblewrap pins it, and false for a
 // surface that needs no such preparation.
 //
@@ -36,7 +36,7 @@ import (
 //     back-pointer only from .git/worktrees/<id>/gitdir, and status, worktree
 //     list/prune and fsck are unaffected by the file's presence in a main .git.
 //   - config → not pre-created. `git init` always creates it, so it is not absent
-//     in any repo serf can classify; were it absent, an empty file is a valid
+//     in any repo evener can classify; were it absent, an empty file is a valid
 //     (empty) git config.
 //   - config.worktree → not pre-created. It is usually absent, and its residue is
 //     an empty file, which is a valid git config carrying no directive. git reads
@@ -62,7 +62,7 @@ func gitSurfaceInertContent(path string) (string, bool) {
 // otherwise pin into existence. A read-only session, or a surface under a
 // read-only parent, is never touched at all.
 //
-// It fails CLOSED. A surface serf cannot prepare is one bwrap would materialize
+// It fails CLOSED. A surface evener cannot prepare is one bwrap would materialize
 // empty, so the caller refuses to build the wrapper rather than start a sandbox
 // that corrupts the repo it is confining.
 func prepareGitSurfaces(rp ResolvedPolicy) error {
@@ -95,7 +95,7 @@ func prepareGitSurfaces(rp ResolvedPolicy) error {
 // deleting it would race every concurrent session that has it bind-mounted.
 func createFileIfAbsent(path, content string) error {
 	dir := filepath.Dir(path)
-	staged, err := os.CreateTemp(dir, ".serf-sandbox-*")
+	staged, err := os.CreateTemp(dir, ".evener-sandbox-*")
 	if err != nil {
 		return err
 	}

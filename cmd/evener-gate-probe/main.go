@@ -25,7 +25,7 @@ func main() {
 		printed++
 	}
 	if *only != "" && printed == 0 {
-		fmt.Fprintf(os.Stderr, "serf-gate-probe: unknown capability %q\n", *only)
+		fmt.Fprintf(os.Stderr, "evener-gate-probe: unknown capability %q\n", *only)
 		os.Exit(2)
 	}
 }

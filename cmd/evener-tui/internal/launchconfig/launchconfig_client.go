@@ -60,7 +60,7 @@ func CmdResolveLaunch(client *appwire.Client, cwd string, overrides *appwire.Lau
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchResolve, appwire.LaunchConfigResolveParams{CWD: cwd, LaunchOverrides: overrides}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchResolve, appwire.LaunchConfigResolveParams{CWD: cwd, LaunchOverrides: overrides}, &resp)
 		return LaunchResolveResultMsg{Resolved: resp, Err: err}
 	}
 }
@@ -70,7 +70,7 @@ func CmdGetLayer(client *appwire.Client, cwd, layer string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigLayer
-		err := client.Request(ctx, appwire.MethodSerfLaunchGetLayer, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: layer}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchGetLayer, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: layer}, &resp)
 		return LaunchLayerResultMsg{Layer: layer, CWD: cwd, Data: resp, Err: err}
 	}
 }
@@ -80,7 +80,7 @@ func CmdSetLayer(client *appwire.Client, cwd, layer string, config appwire.Launc
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: layer, Config: config}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: layer, Config: config}, &resp)
 		return LaunchSetLayerResultMsg{Layer: layer, CWD: cwd, Resolved: resp, Err: err}
 	}
 }
@@ -90,7 +90,7 @@ func CmdTrustRepo(client *appwire.Client, cwd, hash string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}, &resp)
 		return LaunchTrustResultMsg{CWD: cwd, Resolved: resp, Err: err}
 	}
 }
@@ -100,7 +100,7 @@ func CmdLaunchSchema(client *appwire.Client) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchOptionSchemaResponse
-		err := client.Request(ctx, appwire.MethodSerfLaunchSchema, appwire.EmptyParams{}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchSchema, appwire.EmptyParams{}, &resp)
 		return LaunchSchemaResultMsg{Schema: resp, Err: err}
 	}
 }
@@ -110,7 +110,7 @@ func CmdAuthApiKeySet(client *appwire.Client, provider, value string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthStatusResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: provider, Value: value}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: provider, Value: value}, &resp)
 		return AuthApiKeySetResultMsg{Status: resp, Err: err}
 	}
 }
@@ -120,7 +120,7 @@ func CmdAuthLogout(client *appwire.Client, provider string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthLogoutResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{Provider: provider}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthLogout, appwire.AuthLogoutParams{Provider: provider}, &resp)
 		return AuthApiKeySetResultMsg{Status: resp.Status, Err: err}
 	}
 }
@@ -130,7 +130,7 @@ func CmdAuthLoginStart(client *appwire.Client, provider string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthLoginStartResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthLoginStart, appwire.AuthLoginStartParams{Provider: provider}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthLoginStart, appwire.AuthLoginStartParams{Provider: provider}, &resp)
 		return AuthLoginStartResultMsg{Provider: provider, URL: resp.URL, FlowID: resp.FlowID, Err: err}
 	}
 }
@@ -140,7 +140,7 @@ func CmdAuthTest(client *appwire.Client, provider string, generation uint64) tea
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		var resp appwire.AuthTestResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthTest, appwire.AuthTestParams{Provider: provider}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthTest, appwire.AuthTestParams{Provider: provider}, &resp)
 		return AuthTestResultMsg{Provider: provider, Generation: generation, Response: resp, Err: err}
 	}
 }
@@ -174,7 +174,7 @@ func CmdInstanceList(client *appwire.Client) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodSerfInstanceList, appwire.EmptyParams{}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp)
 		return InstanceListResultMsg{List: resp, Err: err}
 	}
 }
@@ -184,7 +184,7 @@ func CmdInstanceCreate(client *appwire.Client, params appwire.InstanceCreatePara
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodSerfInstanceCreate, params, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceCreate, params, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }
@@ -194,7 +194,7 @@ func CmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodSerfInstanceEdit, params, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceEdit, params, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }
@@ -204,7 +204,7 @@ func CmdInstanceRemove(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }
@@ -214,7 +214,7 @@ func CmdInstanceSetDefault(client *appwire.Client, name string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		err := client.Request(ctx, appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: name}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: name}, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }
@@ -224,7 +224,7 @@ func CmdAuthLoginComplete(client *appwire.Client, provider, flowID, redirectURL 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		var resp appwire.AuthLoginCompleteResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthLoginComplete, appwire.AuthLoginCompleteParams{Provider: provider, FlowID: flowID, RedirectURL: redirectURL}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthLoginComplete, appwire.AuthLoginCompleteParams{Provider: provider, FlowID: flowID, RedirectURL: redirectURL}, &resp)
 		return AuthLoginCompleteResultMsg{Provider: provider, Status: resp.Status, Err: err}
 	}
 }

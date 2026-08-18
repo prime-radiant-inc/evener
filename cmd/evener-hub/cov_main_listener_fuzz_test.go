@@ -104,7 +104,7 @@ func FuzzMainListenerLifecycle(f *testing.F) {
 func FuzzMainOptions(f *testing.F) {
 	f.Add(byte(0), "")
 	f.Add(byte(1), "127.0.0.1:1")
-	f.Add(byte(2), "/tmp/serf")
+	f.Add(byte(2), "/tmp/evener")
 	f.Add(byte(3), "extra")
 	f.Add(byte(4), "")
 	f.Add(byte(5), "")
@@ -118,7 +118,7 @@ func FuzzMainOptions(f *testing.F) {
 		case 1:
 			args = []string{"-addr", value, "-config", "/config"}
 		case 2:
-			args = []string{"-serf=" + value}
+			args = []string{"-evener=" + value}
 		case 3:
 			args, wantErr = []string{value}, true
 		case 4:
@@ -134,8 +134,8 @@ func FuzzMainOptions(f *testing.F) {
 		if mode%6 == 1 && err == nil && (opts.addr != value || opts.configPath != "/config") {
 			t.Fatalf("options = %+v", opts)
 		}
-		if mode%6 == 2 && err == nil && opts.serfBinary != value {
-			t.Fatalf("serf binary = %q", opts.serfBinary)
+		if mode%6 == 2 && err == nil && opts.evenerBinary != value {
+			t.Fatalf("evener binary = %q", opts.evenerBinary)
 		}
 		if mode%6 == 5 && stderr.Len() == 0 {
 			t.Fatal("help output is empty")

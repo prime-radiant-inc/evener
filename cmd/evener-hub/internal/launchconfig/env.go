@@ -28,12 +28,12 @@ type EnvInputs struct {
 	ProvidersConfigPath string // if set, passed as SERF_PROVIDERS_CONFIG to spawned children
 }
 
-// ToEnv produces the env slice for the spawned `serf serve`. Order of
+// ToEnv produces the env slice for the spawned `evener serve`. Order of
 // precedence per the spec §4.5:
 //  1. Per-launch env from Resolved.Effective.Env (last-write-wins).
 //  2. The matching credential env var (from Creds).
 //  3. Parent process env (typically os.Environ()).
-//  4. Provider-specific on-disk OAuth state — handled by serf itself.
+//  4. Provider-specific on-disk OAuth state — handled by evener itself.
 //
 // Items earlier in the priority list are applied later in setEnv so they
 // overwrite earlier writes.

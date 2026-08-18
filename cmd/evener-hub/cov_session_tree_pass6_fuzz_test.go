@@ -74,7 +74,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			CreatedAt: now.Add(-time.Minute).Unix(), UpdatedAt: now.Unix(),
 			Status: appwire.ThreadStatus{Type: "active"},
 			Turns:  []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}},
-			Serf: appwire.SerfThread{Ref: "remote:thread-6", Profile: "profile", Goal: &appwire.GoalState{Status: "active", Iterations: 2}, Capabilities: appwire.ThreadCapabilities{
+			Evener: appwire.EvenerThread{Ref: "remote:thread-6", Profile: "profile", Goal: &appwire.GoalState{Status: "active", Iterations: 2}, Capabilities: appwire.ThreadCapabilities{
 				Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true,
 				ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true,
 			}},
@@ -106,7 +106,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			for _, action := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "shutdown", "model", "queue", "other"} {
 				_ = sessionCapabilityAvailable(hubapiCapsAll(), action)
 			}
-			thread.Serf.Capabilities = appwire.ThreadCapabilities{}
+			thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 			web = pass6SessionWeb(thread, nil)
 			_ = web.ensureSessionActionAvailable(ref, "send")
 			_ = web.ensureSessionActionAvailable("remote:absent", "send")
@@ -117,16 +117,16 @@ func FuzzSessionTreePass6(f *testing.F) {
 			_, _ = web.apiSessionState(ref)
 			thread.Name, thread.Preview, thread.SessionID, thread.CWD = "", "", "", ""
 			thread.Status.Type = ""
-			thread.Serf.Ref = "broken ref"
-			thread.Serf.Goal = nil
-			thread.Serf.Usage = nil
+			thread.Evener.Ref = "broken ref"
+			thread.Evener.Goal = nil
+			thread.Evener.Usage = nil
 			_ = hubDetailFromAppThread(thread)
 			_ = hubRefFromAppThread(thread)
 			_, _, _ = appThreadTreeEntries(thread)
 
 		case 4:
 			// Remote list normalization, local-source skip, and last-good retention.
-			thread.Serf.Ref = ""
+			thread.Evener.Ref = ""
 			thread.Source = ""
 			web = pass6SessionWeb(thread, nil)
 			_ = web.refreshRemoteThreads(context.Background())
@@ -185,7 +185,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}})
 			_ = appThreadTreeLive(thread)
-			_ = hubUsageFromAppwire(&appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
+			_ = hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 			_ = hubRefFromTreeNodeID("remote:thread-6")
 			_ = hubRefFromTreeNodeID("local-id")
 			node := hubcore.TreeNode{ID: "parent", State: "active", Children: []hubcore.TreeNode{{ID: "child", State: "ended"}}}

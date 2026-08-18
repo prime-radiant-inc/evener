@@ -50,7 +50,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				}
 			}
 		case 3:
-			thread := appwire.Thread{ID: "id", SessionID: "session", Source: "fallback", Serf: appwire.SerfThread{Ref: appwire.Ref{SourceID: "refsource", ThreadID: "id"}.String()}}
+			thread := appwire.Thread{ID: "id", SessionID: "session", Source: "fallback", Evener: appwire.EvenerThread{Ref: appwire.Ref{SourceID: "refsource", ThreadID: "id"}.String()}}
 			if got := threadListSourceID("default", thread); got != "fallback" {
 				t.Fatalf("source=%q", got)
 			}
@@ -58,7 +58,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 			if got := threadListSourceID("default", thread); got != "refsource" {
 				t.Fatalf("ref source=%q", got)
 			}
-			thread.Serf.Ref = "bad"
+			thread.Evener.Ref = "bad"
 			if got := threadListSourceID("default", thread); got != "default" {
 				t.Fatalf("default source=%q", got)
 			}
@@ -74,7 +74,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				t.Fatal("source key invariant")
 			}
 		case 5:
-			thread := appwire.Thread{ID: "id", SessionID: "sid", Name: "Name", Preview: "Preview", CWD: "/work", Path: "/path", ModelProvider: "Provider", Source: "local", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Serf: appwire.SerfThread{Profile: "Profile"}}
+			thread := appwire.Thread{ID: "id", SessionID: "sid", Name: "Name", Preview: "Preview", CWD: "/work", Path: "/path", ModelProvider: "Provider", Source: "local", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Profile: "Profile"}}
 			if !appThreadMatches(thread, appwire.ThreadListParams{SearchTerm: "preview", SourceIDs: []string{"local"}, Statuses: []string{"ACTIVE"}}) {
 				t.Fatal("expected match")
 			}
@@ -89,7 +89,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 			}
 		case 6:
 			items := []appwire.ThreadItem{{Type: "message", Text: "one"}, {Type: "message", Text: "two"}, {Type: "message", Text: "three"}, {Type: "message", Text: "four"}}
-			got := subagentPreviewFromThread(appwire.Thread{Serf: appwire.SerfThread{Ref: "fallback"}, Turns: []appwire.Turn{{Items: items}}}, "", 2)
+			got := subagentPreviewFromThread(appwire.Thread{Evener: appwire.EvenerThread{Ref: "fallback"}, Turns: []appwire.Turn{{Items: items}}}, "", 2)
 			if !got.Truncated || got.Ref != "fallback" || len(got.Items) != 2 {
 				t.Fatalf("preview=%+v", got)
 			}
@@ -102,7 +102,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				t.Fatal("limit clamp")
 			}
 		case 8:
-			if got := threadRef(appwire.Thread{Serf: appwire.SerfThread{Ref: " direct "}}); got != " direct " {
+			if got := threadRef(appwire.Thread{Evener: appwire.EvenerThread{Ref: " direct "}}); got != " direct " {
 				t.Fatalf("direct ref=%q", got)
 			}
 			if got := threadRef(appwire.Thread{Source: "src", ID: "id"}); got == "" {
@@ -123,7 +123,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				t.Fatalf("fallback=%q", got)
 			}
 		case 10:
-			for _, tc := range []struct{ harness, want string }{{"", ""}, {"serf", "local"}, {" codex ", "codex"}} {
+			for _, tc := range []struct{ harness, want string }{{"", ""}, {"evener", "local"}, {" codex ", "codex"}} {
 				if got := launchSourceID(appwire.ThreadStartParams{Harness: tc.harness}); got != tc.want {
 					t.Fatalf("launchSourceID=%q want %q", got, tc.want)
 				}
@@ -183,11 +183,11 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 		ctx := context.Background()
 		switch selector % 11 {
 		case 5:
-			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Serf: appwire.SerfThread{Capabilities: appwire.ThreadCapabilities{}}}}
+			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Evener: appwire.EvenerThread{Capabilities: appwire.ThreadCapabilities{}}}}
 			if err := ensureThreadActionAvailable(ctx, source, "local:id", "", "compact"); err == nil {
 				t.Fatal("compact accepted without capability")
 			}
-			source.thread.Serf.Capabilities.Compact = true
+			source.thread.Evener.Capabilities.Compact = true
 			if err := ensureThreadActionAvailable(ctx, source, "local:id", "", "compact"); err != nil {
 				t.Fatalf("compact capability rejected: %v", err)
 			}
@@ -196,7 +196,7 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 			if err := compactThreadOnce(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: "missing:id"}); err == nil {
 				t.Fatal("compact resolved missing source")
 			}
-			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Serf: appwire.SerfThread{Capabilities: appwire.ThreadCapabilities{Compact: true}}}}
+			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Evener: appwire.EvenerThread{Capabilities: appwire.ThreadCapabilities{Compact: true}}}}
 			registry.Add(source)
 			err := compactThreadOnce(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: appwire.Ref{SourceID: "local", ThreadID: "id"}.String()})
 			if err == nil {

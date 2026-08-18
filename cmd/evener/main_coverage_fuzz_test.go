@@ -48,7 +48,7 @@ func testMainEntrypoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Args, os.Stdout = []string{"serf", "--version"}, w
+	os.Args, os.Stdout = []string{"evener", "--version"}, w
 	t.Cleanup(func() { os.Args, os.Stdout = oldArgs, oldStdout })
 	main()
 	_ = w.Close()
@@ -56,7 +56,7 @@ func testMainEntrypoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(got), "serf ") {
+	if !strings.HasPrefix(string(got), "evener ") {
 		t.Fatalf("version output = %q", got)
 	}
 
@@ -170,7 +170,7 @@ func testDispatchCLICommandWith(t *testing.T) {
 	}
 	for _, command := range []string{"serve", "launch-check", "openai", "upgrade", "plugin"} {
 		handled, label, err := dispatchCLICommandWith([]string{command, "arg"}, strings.NewReader(""), io.Discard, io.Discard, runners)
-		if err != nil || !handled || label != "serf "+command || called != command+":arg" {
+		if err != nil || !handled || label != "evener "+command || called != command+":arg" {
 			t.Fatalf("%s: handled=%v label=%q err=%v called=%q", command, handled, label, err, called)
 		}
 	}

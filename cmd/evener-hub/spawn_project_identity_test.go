@@ -18,7 +18,7 @@ func TestResolveStateDirForProjectUsesCarriedProjectWithoutResolvingWorkingDir(t
 	if err != nil {
 		t.Fatalf("resolve carried project: %v", err)
 	}
-	want := filepath.Join(stateHome, "serf", "projects", project.ID)
+	want := filepath.Join(stateHome, "evener", "projects", project.ID)
 	if got != want {
 		t.Fatalf("state dir = %q, want %q", got, want)
 	}

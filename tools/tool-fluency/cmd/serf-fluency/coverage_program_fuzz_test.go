@@ -84,11 +84,11 @@ func FuzzFluencyCoverage(f *testing.F) {
 			runnerOpenResultAppend = oldOpenAppend
 			runnerMarshalSummary = oldMarshalSummary
 		})
-		os.Args = []string{"serf-fluency", "help"}
+		os.Args = []string{"evener-fluency", "help"}
 		main()
 		os.Args = oldArgs
 		exitProcess = func(int) {}
-		os.Args = []string{"serf-fluency", "bogus"}
+		os.Args = []string{"evener-fluency", "bogus"}
 		main()
 		os.Args = oldArgs
 		exitProcess = oldExit
@@ -109,7 +109,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		file := filepath.Join(t.TempDir(), "file")
 		mustWrite(t, file, "x")
 		_ = run([]string{"run", "--out", filepath.Join(file, "child")})
-		_ = run([]string{"run", "--probes-dir", filepath.Join(t.TempDir(), "missing"), "--out", t.TempDir(), "--serf-bin", file})
+		_ = run([]string{"run", "--probes-dir", filepath.Join(t.TempDir(), "missing"), "--out", t.TempDir(), "--evener-bin", file})
 
 		_, _ = buildSerf(filepath.Join(file, "child"))
 		_, _ = catalogTools("unknown/model")
@@ -232,38 +232,38 @@ func FuzzFluencyCoverage(f *testing.F) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		var stdout, stderr bytes.Buffer
-		_ = runCLIProbe(ctx, runConfig{serfBin: file, model: "p/m"}, probeFile{}, probeResult{}, &stdout, &stderr)
-		bin := filepath.Join(t.TempDir(), "fake-serf")
+		_ = runCLIProbe(ctx, runConfig{evenerBin: file, model: "p/m"}, probeFile{}, probeResult{}, &stdout, &stderr)
+		bin := filepath.Join(t.TempDir(), "fake-evener")
 		mustWrite(t, bin, "#!/bin/sh\nprintf 'ok final\\n'\nprintf '%s\\n' '{\"kind\":\""+string(events.EventToolCallStart)+"\",\"data\":{\"tool_name\":\"read\"}}' >&2\n")
 		if err := os.Chmod(bin, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		stdout.Reset()
 		stderr.Reset()
-		cliCfg := runConfig{serfBin: bin, model: "openai/m", fastCheapModel: "openai/cheap", systemPromptAppend: []string{"a", " ", "b"}, reasoningEffort: "low", clearOpenAIAPIKey: true}
+		cliCfg := runConfig{evenerBin: bin, model: "openai/m", fastCheapModel: "openai/cheap", systemPromptAppend: []string{"a", " ", "b"}, reasoningEffort: "low", clearOpenAIAPIKey: true}
 		_ = runCLIProbe(context.Background(), cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: t.TempDir(), StateDir: t.TempDir()}, &stdout, &stderr)
 		_ = cliProbeArgs(cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "w", StateDir: "s"})
 
-		cfg := runConfig{model: "p/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), serfBin: file, timeout: time.Second}
+		cfg := runConfig{model: "p/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), evenerBin: file, timeout: time.Second}
 		_ = runProbe(cfg, probeFile{ID: "runtime"}, 1, nil)
-		cfg = runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), serfBin: bin, timeout: time.Second, reasoningEffort: "low"}
+		cfg = runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), evenerBin: bin, timeout: time.Second, reasoningEffort: "low"}
 		passProbe := probeFile{ID: "pass", Prompt: "hello", Fixture: fixtureSpec{Files: map[string]string{"a.txt": "a"}}, Expect: expectSpec{Calls: []expectedCall{{Tool: "read"}}, FinalContains: []string{"ok"}}}
 		_ = runProbe(cfg, passProbe, 1, map[string]bool{})
 		_ = runProbe(cfg, probeFile{ID: "skip", Skip: map[string]string{"if_unavailable": "missing"}}, 1, nil)
 		_ = runProbe(cfg, probeFile{ID: "fixture", Fixture: fixtureSpec{Files: map[string]string{"../bad": "x"}}}, 1, nil)
-		failBin := filepath.Join(t.TempDir(), "fail-serf")
+		failBin := filepath.Join(t.TempDir(), "fail-evener")
 		mustWrite(t, failBin, "#!/bin/sh\nprintf 'rate limit' >&2\nexit 1\n")
 		if err := os.Chmod(failBin, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		cfg.serfBin = failBin
+		cfg.evenerBin = failBin
 		_ = runProbe(cfg, probeFile{ID: "infra"}, 1, nil)
-		plainFailBin := filepath.Join(t.TempDir(), "plain-fail-serf")
+		plainFailBin := filepath.Join(t.TempDir(), "plain-fail-evener")
 		mustWrite(t, plainFailBin, "#!/bin/sh\nexit 1\n")
 		if err := os.Chmod(plainFailBin, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		cfg.serfBin = plainFailBin
+		cfg.evenerBin = plainFailBin
 		_ = runProbe(cfg, probeFile{ID: "runtime-failure"}, 1, nil)
 		cancelCfg := cfg
 		cancelCfg.timeout = 0
@@ -335,14 +335,14 @@ func FuzzFluencyCoverage(f *testing.F) {
 		suiteProbes := filepath.Join(suiteDir, "probes")
 		mustWrite(t, filepath.Join(suiteProbes, "probe.yaml"), "schema: 1\nid: local\nprompt: hello\nexpect:\n  final_contains: [ok]\n")
 		suiteOut := filepath.Join(suiteDir, "out")
-		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", suiteOut, "--serf-bin", bin, "--repetitions", "2"})
-		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--probe", "missing", "--out", filepath.Join(suiteDir, "none"), "--serf-bin", bin})
-		_ = runSuite([]string{"--model", "bad", "--probes-dir", suiteProbes, "--out", filepath.Join(suiteDir, "bad-model"), "--serf-bin", bin})
+		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", suiteOut, "--evener-bin", bin, "--repetitions", "2"})
+		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--probe", "missing", "--out", filepath.Join(suiteDir, "none"), "--evener-bin", bin})
+		_ = runSuite([]string{"--model", "bad", "--probes-dir", suiteProbes, "--out", filepath.Join(suiteDir, "bad-model"), "--evener-bin", bin})
 		resultErrorOut := filepath.Join(suiteDir, "result-error")
 		if err := os.MkdirAll(filepath.Join(resultErrorOut, "local", "rep-01", "result.json"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", resultErrorOut, "--serf-bin", bin})
+		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", resultErrorOut, "--evener-bin", bin})
 		cwd, err := os.Getwd()
 		if err != nil {
 			t.Fatal(err)
@@ -351,7 +351,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		if err := os.Chdir(chdir); err != nil {
 			t.Fatal(err)
 		}
-		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--serf-bin", bin})
+		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--evener-bin", bin})
 		if err := os.Chdir(cwd); err != nil {
 			t.Fatal(err)
 		}

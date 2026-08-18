@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// This file is serf's first DIFFERENTIAL fuzz oracle: a golden/snapshot of what
+// This file is evener's first DIFFERENTIAL fuzz oracle: a golden/snapshot of what
 // each decode target produces for its committed seed corpus. The fuzz targets
 // (FuzzMessageDecode et al.) catch inputs that PANIC or break the round-trip
 // fixed point; they say nothing about a refactor that silently changes a clean

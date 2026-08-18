@@ -134,7 +134,7 @@ func (m *hubModel) promptHeadEscalation() {
 		more = fmt.Sprintf(" (%d more queued)", n)
 	}
 	m.addSessionSystem(fmt.Sprintf(
-		"Sandbox approval (requested by serf, not the agent): %s wants to access %s [--sandbox %s]. Press ctrl+y to Allow once, ctrl+g to Deny.%s",
+		"Sandbox approval (requested by evener, not the agent): %s wants to access %s [--sandbox %s]. Press ctrl+y to Allow once, ctrl+g to Deny.%s",
 		e.tool, e.path, e.mode, more))
 }
 
@@ -232,7 +232,7 @@ func (m *hubModel) removeEscalationAt(ref string, idx int) {
 
 func sendHubEscalationResolve(client *appwire.Client, ref, escalationID string, approve bool) tea.Cmd {
 	return func() tea.Msg {
-		err := client.Request(context.Background(), appwire.MethodSerfSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{
+		err := client.Request(context.Background(), appwire.MethodEvenerSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{
 			Ref:          ref,
 			EscalationID: escalationID,
 			Approve:      approve,

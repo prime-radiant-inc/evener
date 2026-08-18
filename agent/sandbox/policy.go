@@ -1,4 +1,4 @@
-// Package sandbox owns serf's backend-independent sandbox policy model: the
+// Package sandbox owns evener's backend-independent sandbox policy model: the
 // mode enum and its flag/config parsing, the default secrets+pseudo-filesystem
 // denylist, host-capability facts (probed behind an injectable interface),
 // git-surface resolution, and the resolver that turns a (mode, network, host,
@@ -133,8 +133,8 @@ func ParseMode(name string) (Mode, error) {
 // defaultPseudoFSPaths are the host pseudo-filesystems masked in every sandboxed
 // mode, in BOTH the spawned-process and in-process file-tool layers. The
 // file-tool masks matter independently: file-tool reads are "anywhere minus
-// denylist", so without these a read_file("/proc/<serf-pid>/environ") would read
-// serf's own environment — including the provider API key. "/run/user" masks the
+// denylist", so without these a read_file("/proc/<evener-pid>/environ") would read
+// evener's own environment — including the provider API key. "/run/user" masks the
 // per-user runtime dir (agent sockets) and its subtree.
 var defaultPseudoFSPaths = []string{
 	"/proc",
@@ -166,7 +166,7 @@ var defaultSecretHomePaths = []string{
 	".aws",
 	".config/gcloud",
 	".netrc",
-	".config/serf",
+	".config/evener",
 	".gnupg",
 	".docker/config.json",
 	".kube",
@@ -263,7 +263,7 @@ func resolveHomePath(entry, home string) string {
 //
 // The pseudo-fs floor (/proc, /sys, …) is NON-REMOVABLE: DenylistRemove applies
 // only to the credential/user-added set. Masking /proc is load-bearing — it stops
-// a read of /proc/<serf-pid>/environ from leaking serf's own provider API key —
+// a read of /proc/<evener-pid>/environ from leaking evener's own provider API key —
 // so a stray or malicious DenylistRemove of /proc can never re-open that path.
 // Only the credential dirs (and user additions) are user-removable.
 func (p SandboxPolicy) EffectiveDenylist(home string) []string {

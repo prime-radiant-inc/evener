@@ -27,19 +27,19 @@ func FuzzSessionTreePass3(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op uint8, text string, number int64) {
 		now := time.Now().UnixMilli()
 		started := now - 90000
-		usage := &appwire.SerfUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18}
+		usage := &appwire.EvenerUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18}
 		thread := appwire.Thread{
 			ID: "thread-1", SessionID: "session-1", Source: "remote", Name: text,
 			Preview: "preview", CWD: "/work/project", ModelProvider: "openai/gpt",
 			CreatedAt: now - 100, UpdatedAt: now, Status: appwire.ThreadStatus{Type: "active"},
 			Turns: []appwire.Turn{{ID: "done", Status: appwire.TurnStatusCompleted}, {ID: "run", Status: appwire.TurnStatusInProgress, StartedAt: &started}},
-			Serf:  appwire.SerfThread{Ref: "remote:thread-1", ActiveTurnID: "run-explicit", ContextUsed: 10, ContextWindow: 20, ContextRemaining: 10, WorkMillis: number, Usage: usage, Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
+			Evener:  appwire.EvenerThread{Ref: "remote:thread-1", ActiveTurnID: "run-explicit", ContextUsed: 10, ContextWindow: 20, ContextRemaining: 10, WorkMillis: number, Usage: usage, Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
 		}
 
 		switch op % 16 {
 		case 0:
 			_ = workspaceDataFromAppThread(thread)
-			thread.Name, thread.Preview, thread.Serf.Ref = "", "", ""
+			thread.Name, thread.Preview, thread.Evener.Ref = "", "", ""
 			thread.Status.Type = ""
 			_ = workspaceDataFromAppThread(thread)
 		case 1:
@@ -52,7 +52,7 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = compactDuration(2*time.Hour + 5*time.Minute)
 		case 2:
 			_ = activeTurnIDFromAppwireThread(thread)
-			thread.Serf.ActiveTurnID = ""
+			thread.Evener.ActiveTurnID = ""
 			_ = activeTurnIDFromAppwireThread(thread)
 			thread.Turns = nil
 			_ = activeTurnIDFromAppwireThread(thread)
@@ -82,13 +82,13 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = hubDetailFromAppThread(thread)
 			thread.Name, thread.Preview, thread.SessionID, thread.CWD = "", "", "", ""
 			thread.Status.Type = appwire.ThreadStatusClosed
-			thread.Serf.Ref = "malformed"
-			thread.Serf.Usage = nil
+			thread.Evener.Ref = "malformed"
+			thread.Evener.Usage = nil
 			_ = hubDetailFromAppThread(thread)
 			_ = hubUsageFromAppwire(nil)
 		case 6:
 			_, _, _ = appThreadTreeEntries(thread)
-			thread.Serf.Ref = "bad"
+			thread.Evener.Ref = "bad"
 			thread.Source = ""
 			_, _, _ = appThreadTreeEntries(thread)
 			thread.Source = "remote"
@@ -99,9 +99,9 @@ func FuzzSessionTreePass3(f *testing.F) {
 				_ = appThreadTreeLive(thread)
 			}
 		case 7:
-			_ = hubCapabilitiesFromAppwire(thread.Serf.Capabilities)
+			_ = hubCapabilitiesFromAppwire(thread.Evener.Capabilities)
 			_ = hubRefFromAppThread(thread)
-			thread.Serf.Ref = "bad"
+			thread.Evener.Ref = "bad"
 			_ = hubRefFromAppThread(thread)
 			_ = hubRefFromTreeNodeID("bad")
 		case 8:

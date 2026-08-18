@@ -86,14 +86,14 @@ func TestHubTranscriptReducerRendersSystemMessage(t *testing.T) {
 		ID:          "item_system_prompt",
 		TurnID:      "turn_system",
 		Description: "System prompt",
-		Text:        "You are Serf.",
+		Text:        "You are Evener.",
 	}, 0, true)
 
 	if len(reducer.messages) != 1 {
 		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
 	}
 	msg := reducer.messages[0]
-	if msg.Kind != MsgSystem || msg.Text != "System prompt\nYou are Serf." || msg.ItemID != "item_system_prompt" {
+	if msg.Kind != MsgSystem || msg.Text != "System prompt\nYou are Evener." || msg.ItemID != "item_system_prompt" {
 		t.Fatalf("system message = %+v", msg)
 	}
 }
@@ -437,8 +437,8 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 
 	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:          "commandExecution",
-		ID:            "serf_tool",
-		CallID:        "serf_call",
+		ID:            "evener_tool",
+		CallID:        "evener_call",
 		TurnID:        "turn_1",
 		ToolName:      "read_file",
 		ArgumentsJSON: `{"file_path":"/tmp/missing.go"}`,
@@ -461,7 +461,7 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 		t.Fatalf("tools=%+v messages=%+v", tools, reducer.messages)
 	}
 	if tools[0].Name != "read_file" || tools[0].Error == "" || !tools[0].Done {
-		t.Fatalf("serf tool not preserved: %+v", tools[0])
+		t.Fatalf("evener tool not preserved: %+v", tools[0])
 	}
 	if tools[1].Name != "mcp.read" || tools[1].Output != `{"ok":true}` || !tools[1].Done {
 		t.Fatalf("codex tool not preserved: %+v", tools[1])
@@ -534,7 +534,7 @@ func TestTranscriptReducerAppliesStableDelegateNotificationsToDelegateTool(t *te
 		Status:        appwire.TurnStatusCompleted,
 	}, 1, true)
 
-	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
+	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_A",
 		Lifecycle:          "idle",
 		Status:             "idle",
@@ -584,7 +584,7 @@ func TestDelegateToolItemDoesNotExposeActivationJobIdentity(t *testing.T) {
 
 func TestMessagesFromThreadFoldsStableDelegateDiagnosticsAfterTranscript(t *testing.T) {
 	thread := appwire.Thread{
-		Serf: appwire.SerfThread{Diagnostics: &appwire.SerfDiagnostics{Delegates: []appwire.SerfDelegateInfo{{
+		Evener: appwire.EvenerThread{Diagnostics: &appwire.EvenerDiagnostics{Delegates: []appwire.EvenerDelegateInfo{{
 			DelegateID:         "dlg_stable",
 			Lifecycle:          "idle",
 			Status:             "idle",
@@ -628,7 +628,7 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	}
 
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{
+	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_exhausted",
 		Lifecycle:          "idle",
 		Status:             "idle",
@@ -649,7 +649,7 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 
 func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	first := appwire.SerfDelegateInfo{
+	first := appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_same",
 		Status:             "running",
 		ProjectionRevision: 1,
@@ -682,7 +682,7 @@ func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T)
 func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.ApplySerfJob(appwire.SerfJobInfo{
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{
 		JobID:       "job_shell",
 		JobType:     "shell",
 		Status:      "completed",
@@ -697,12 +697,12 @@ func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
 func TestTranscriptReducerTracksBackgroundShellJob(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	// A foreground shell is still ignored.
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_fg", JobType: "shell", Status: "running", Command: "ls"})
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_fg", JobType: "shell", Status: "running", Command: "ls"})
 	if len(reducer.messages) != 0 {
 		t.Fatalf("a foreground shell must not be tracked: %+v", reducer.messages)
 	}
 	// A long-lived (background) shell IS tracked, named by its command.
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"})
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"})
 	tools := transcriptTools(reducer.messages)
 	if len(tools) != 1 || tools[0].Subagent == nil || !tools[0].Subagent.Background || tools[0].Subagent.JobID != "job_bg" {
 		t.Fatalf("background shell run not captured: %+v", reducer.messages)
@@ -711,7 +711,7 @@ func TestTranscriptReducerTracksBackgroundShellJob(t *testing.T) {
 		t.Fatalf("background shell should be named by its command and still running: %+v", tools[0])
 	}
 	// Finishing it reconciles the SAME entry (no duplicate) and marks it done.
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "completed", OutputBytes: 42})
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "completed", OutputBytes: 42})
 	tools = transcriptTools(reducer.messages)
 	if len(tools) != 1 {
 		t.Fatalf("finishing a background shell must reconcile, not duplicate: %+v", reducer.messages)
@@ -734,7 +734,7 @@ func TestTranscriptReducerDoesNotAttachNonDelegateJobToOriginTool(t *testing.T) 
 		Status:        appwire.TurnStatusCompleted,
 	}, 1, true)
 
-	reducer.ApplySerfJob(appwire.SerfJobInfo{
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{
 		JobID:            "job_shell",
 		JobType:          "shell",
 		Status:           "completed",
@@ -808,7 +808,7 @@ func transcriptTools(messages []ChatMessage) []ToolCallInfo {
 
 func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Status: "running", ProjectionRevision: 1, TranscriptRef: "local:c1", Task: "port webhook"})
+	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Status: "running", ProjectionRevision: 1, TranscriptRef: "local:c1", Task: "port webhook"})
 
 	if !reducer.ApplyChildActivity("local:c1", "shell: go test ./...") {
 		t.Fatalf("activity for a watched running child should apply")
@@ -832,7 +832,7 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity for an unknown ref must not apply")
 	}
 	// Once terminal, activity no longer applies.
-	reducer.ApplySerfDelegate(appwire.SerfDelegateInfo{DelegateID: "dlg_a", Lifecycle: "idle", Status: "idle", Outcome: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
+	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Lifecycle: "idle", Status: "idle", Outcome: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
 	if reducer.ApplyChildActivity("local:c1", "late frame") {
 		t.Fatalf("activity must not apply to a finished run")
 	}
@@ -863,7 +863,7 @@ func TestParseJobNotificationHeadlineAndTie(t *testing.T) {
 
 	// The headline ties onto the matching rail run.
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
+	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
 	if !reducer.ApplyTieHeadline(jobID, headline, isError) {
 		t.Fatalf("headline should tie to the run with the matching job id")
 	}

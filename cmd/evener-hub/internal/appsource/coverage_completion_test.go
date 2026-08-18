@@ -25,7 +25,7 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 		return appwire.TurnStartResponse{}, nil
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, emptyHandler[appwire.TurnSteerParams])
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfSandboxEscalationResolve, emptyHandler[appwire.SandboxEscalationResolveParams])
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerSandboxEscalationResolve, emptyHandler[appwire.SandboxEscalationResolveParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, emptyHandler[appwire.TurnInterruptParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, emptyHandler[appwire.TurnQueueParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, emptyHandler[appwire.TurnDrainAsSteerParams])
@@ -33,7 +33,7 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadShutdown, emptyHandler[appwire.ThreadShutdownParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, emptyHandler[appwire.ThreadModelSetParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadReasoningEffortSet, emptyHandler[appwire.ThreadReasoningEffortSetParams])
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadNameSet, emptyHandler[appwire.ThreadNameSetParams])
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadNameSet, emptyHandler[appwire.ThreadNameSetParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodGoalSet, func(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return appwire.GoalSetResponse{}, nil
 	})
@@ -43,13 +43,13 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{}, nil
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 		return appwire.TaskListResponse{}, nil
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsList, func(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
 		return appwire.JobsListResponse{}, nil
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsOutput, func(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerJobsOutput, func(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return appwire.JobsOutputResponse{}, nil
 	})
 	server := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))

@@ -61,7 +61,7 @@ func initHubTestRepo(t *testing.T, dir string) {
 	}
 	runHubTestGit(t, filepath.Dir(dir), "init", "-q", filepath.Base(dir))
 	runHubTestGit(t, dir, "add", ".")
-	runHubTestGit(t, dir, "-c", "user.name=serf-test", "-c", "user.email=serf-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+	runHubTestGit(t, dir, "-c", "user.name=evener-test", "-c", "user.email=evener-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
 }
 
 func runHubTestGit(t *testing.T, dir string, args ...string) {
@@ -78,20 +78,20 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	metas := []schema.SessionMeta{
 		// Active branch — newer, holds the original session's name. Top-level.
 		{ID: "01ACTIVE", UpdatedAt: now, OriginalPrompt: "fix replay bug",
-			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/evener-hub"},
 			ParentSessionID: "01OLDORIG", DivergenceTurn: 7},
 		// Subagent of the active branch.
 		{ID: "01SUB1", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "verify",
-			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/evener-hub"},
 			ParentSessionID: "01ACTIVE", IsSubagent: true},
 		// Snapshotted original — older transcript preserved. Has ForkLabel.
 		// Becomes a dim child of 01ACTIVE (the active branch references it).
 		{ID: "01OLDORIG", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "fix replay bug",
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-hub"},
 			ForkLabel: "before TDD"},
 		// Unrelated session in same project.
 		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalPrompt: "rename column",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-hub"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ACTIVE", Status: appwire.ThreadStatusActive},
@@ -105,7 +105,7 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Fatalf("projects: %d", len(tree.Projects))
 	}
 	proj := tree.Projects[0]
-	if proj.Name != "serf-hub" {
+	if proj.Name != "evener-hub" {
 		t.Errorf("name: %q", proj.Name)
 	}
 
@@ -157,8 +157,8 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{{
 		Entry:              rendezvous.Entry{PID: 1},
@@ -203,10 +203,10 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01IDLE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01BUSY", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01NOSTATE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01IDLE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01BUSY", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01NOSTATE", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{{
 		Entry:                 rendezvous.Entry{PID: 1},
@@ -500,8 +500,8 @@ func fuzzScenarioBuildTree_NoProjectFallback(t *testing.T) {
 func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 	now := time.Now()
 	root := t.TempDir()
-	restoreRoot := filepath.Join(root, "serf-hub")
-	worktree := filepath.Join(root, "state", "worktrees", "serf-hub", "dlg_01H")
+	restoreRoot := filepath.Join(root, "evener-hub")
+	worktree := filepath.Join(root, "state", "worktrees", "evener-hub", "dlg_01H")
 	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -523,8 +523,8 @@ func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 		t.Fatalf("projects: %d", len(tree.Projects))
 	}
 	proj := tree.Projects[0]
-	if proj.Name != "serf-hub" {
-		t.Errorf("name: %q, want restore-root basename %q", proj.Name, "serf-hub")
+	if proj.Name != "evener-hub" {
+		t.Errorf("name: %q, want restore-root basename %q", proj.Name, "evener-hub")
 	}
 	if proj.WorkingDir != canonicalRestoreRoot.CanonicalPath {
 		t.Errorf("workingDir: %q, want canonical restore root %q", proj.WorkingDir, canonicalRestoreRoot.CanonicalPath)
@@ -537,7 +537,7 @@ func fuzzScenarioBuildTree_GroupsByRestoreRootWhenWorktreeActive(t *testing.T) {
 func fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(t *testing.T) {
 	now := time.Now()
 	root := t.TempDir()
-	restoreRoot := filepath.Join(root, "serf-hub")
+	restoreRoot := filepath.Join(root, "evener-hub")
 	worktree := filepath.Join(root, "other-checkout")
 	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -555,8 +555,8 @@ func fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects: %d", len(tree.Projects))
 	}
-	if tree.Projects[0].Name != "serf-hub" {
-		t.Errorf("name: %q, want restore-root basename %q", tree.Projects[0].Name, "serf-hub")
+	if tree.Projects[0].Name != "evener-hub" {
+		t.Errorf("name: %q, want restore-root basename %q", tree.Projects[0].Name, "evener-hub")
 	}
 }
 
@@ -672,7 +672,7 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id string, updatedAgo time.Duration) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}}
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}
 	}
 	metas := []schema.SessionMeta{
 		mk("fresh", 1*time.Hour),     // current by age
@@ -683,7 +683,7 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 		{Kind: "session", ID: "fresh"}: true,
 		{Kind: "session", ID: "stale"}: false,
 	}
-	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "serf")
+	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "evener")
 	if len(proj.Archived) != 1 || proj.Archived[0].ID != "fresh" {
 		t.Fatalf("manual-archived fresh session should be Archived; archived=%v", proj.Archived)
 	}
@@ -694,7 +694,7 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 }
 
 func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
-	// The serf-e2e-* prefix bucket is gone: a fresh e2e project flows through the
+	// The evener-e2e-* prefix bucket is gone: a fresh e2e project flows through the
 	// normal model (active, ordered by recency), and a stale one auto-archives.
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
@@ -702,14 +702,14 @@ func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/" + proj}}
 	}
 	metas := []schema.SessionMeta{
-		mk("e-fresh", "serf-e2e-fresh", 1*time.Hour),
-		mk("e-stale", "serf-e2e-stale", 30*24*time.Hour),
+		mk("e-fresh", "evener-e2e-fresh", 1*time.Hour),
+		mk("e-stale", "evener-e2e-stale", 30*24*time.Hour),
 	}
 	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
-	if got := projectNames(tree.Projects); len(got) != 1 || got[0] != "serf-e2e-fresh" {
+	if got := projectNames(tree.Projects); len(got) != 1 || got[0] != "evener-e2e-fresh" {
 		t.Fatalf("fresh e2e project should be active, got %v", got)
 	}
-	if got := projectNames(tree.ArchivedProjects); len(got) != 1 || got[0] != "serf-e2e-stale" {
+	if got := projectNames(tree.ArchivedProjects); len(got) != 1 || got[0] != "evener-e2e-stale" {
 		t.Fatalf("stale e2e project should be archived, got %v", got)
 	}
 }
@@ -720,15 +720,15 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01WORK1", UpdatedAt: now, OriginalPrompt: "work a",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01WORK2", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "work b",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01ASK", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "blocked",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01WARN", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "has a warning",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01ZZZ", UpdatedAt: now.Add(-4 * time.Minute), OriginalPrompt: "idle one",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
@@ -737,7 +737,7 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
 		{Entry: rendezvous.Entry{PID: 5}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	// 2 working (active) sessions. Idle does not count toward either magnitude.
 	if proj.RollupLive != 2 {
 		t.Errorf("RollupLive = %d, want 2", proj.RollupLive)
@@ -755,11 +755,11 @@ func fuzzScenarioBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01A_NEW", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "newer ask",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01A_OLD", UpdatedAt: now.Add(-5 * time.Minute), OriginalPrompt: "older ask",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/prime-radiant"}},
 		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "just working",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting},
@@ -790,7 +790,7 @@ func fuzzScenarioBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "working",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
@@ -811,15 +811,15 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 			ID:        "01IMG" + string(rune('A'+i)),
 			Name:      "describe this image",
 			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
 		})
 	}
 	// A distinct singleton in the same project must not be swept into a cluster.
 	metas = append(metas, schema.SessionMeta{
 		ID: "01HAIKU", Name: "write a haiku", UpdatedAt: now.Add(-30 * time.Minute),
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"}})
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"}})
 
-	proj := projectByName(t, buildTree(metas, nil), "serf-docs")
+	proj := projectByName(t, buildTree(metas, nil), "evener-docs")
 	var clusters, singles int
 	for _, s := range allSessions(proj) {
 		if s.Kind == "cluster" {
@@ -855,13 +855,13 @@ func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 			ID:        "01DUP" + string(rune('A'+i)),
 			Name:      "describe this image",
 			UpdatedAt: now.Add(-time.Duration(i) * time.Minute),
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-docs"},
 		})
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf-docs")
+	proj := projectByName(t, buildTree(metas, live), "evener-docs")
 	sessions := allSessions(proj)
 	for _, s := range sessions {
 		if s.Kind == "cluster" {
@@ -880,16 +880,16 @@ func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01STALESUB", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
 			IsSubagent: true, ParentSessionID: "01DEADP",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	// Parent is NOT live (ended); the subagent lingers as "active" in the map.
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 9}, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	sessions := allSessions(proj)
 	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
 		t.Fatalf("unexpected shape: %#v", sessions)
@@ -903,16 +903,16 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01LIVEP", UpdatedAt: now, OriginalPrompt: "parent",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01RUNSUB", UpdatedAt: now, OriginalPrompt: "sub",
 			IsSubagent: true, ParentSessionID: "01LIVEP",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	if got := allSessions(proj)[0].Children[0].State; got != "active" {
 		t.Errorf("live subagent state = %q, want active (parent is live)", got)
 	}
@@ -921,8 +921,8 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 func TestBuildTree_ExcludesNestedForkFromNeedsYou(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
@@ -945,12 +945,12 @@ func TestBuildTree_ExcludesNestedForkFromNeedsYou(t *testing.T) {
 func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "root-a", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "root-b", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "root-a", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "root-b", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		// The newer duplicate is canonically retained, so dup remains a direct
 		// child of root-a and is not emitted again under root-b or top-level.
-		{ID: "dup", ParentSessionID: "root-a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "dup", ParentSessionID: "root-b", UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "dup", ParentSessionID: "root-a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "dup", ParentSessionID: "root-b", UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 
 	tree := BuildTreeAt(metas, nil, nil, now)
@@ -980,14 +980,14 @@ func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
 func TestBuildTree_GuardsMalformedSubagentLineage(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
-		{ID: "root", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "a", ParentSessionID: "root", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "b", ParentSessionID: "a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "root", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "a", ParentSessionID: "root", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "b", ParentSessionID: "a", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		// Duplicate a closes a malformed a -> b -> a cycle if the builder
 		// follows lineage blindly. It must not emit a twice.
-		{ID: "a", ParentSessionID: "b", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "a", ParentSessionID: "b", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		// An orphan remains absent rather than being hoisted to the project root.
-		{ID: "orphan", ParentSessionID: "missing", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "orphan", ParentSessionID: "missing", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 
 	tree := BuildTreeAt(metas, nil, nil, now)
@@ -1522,7 +1522,7 @@ func fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding(t *testing.
 		ID:        id,
 		CreatedAt: now,
 		UpdatedAt: now,
-		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 	}}, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(afterTree, id)
 	if !inLive || !inProject {
@@ -1954,10 +1954,10 @@ func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *tes
 	metas := []schema.SessionMeta{
 		// "branch" is the active continuation: it forked from "fork" (edited a
 		// message), so it carries ParentSessionID but no ForkLabel of its own.
-		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		// "fork" is the snapshotted original — superseded, renders nested under
 		// "branch" — but it's still live and awaiting.
-		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},

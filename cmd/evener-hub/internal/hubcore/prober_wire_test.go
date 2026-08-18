@@ -33,7 +33,7 @@ func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState,
 }
 func (s wireProbeEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return nil }
 func (s wireProbeEnvelopeSource) GoalStatus() (string, int, bool)       { return "", 0, false }
-func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }
 func (s wireProbeEnvelopeSource) FailedToolCalls() (int, bool) { return 0, false }

@@ -69,7 +69,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	r.Refresh() // session reads as live, keyed by the bare session id in the roster
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// scriptedAppSource.SetThreadName returns Unavailable — the daemon rename fails.
-	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: renameRaceSessionID, SessionID: renameRaceSessionID, Source: "local", CWD: proj, Serf: appwire.SerfThread{Ref: "local:" + renameRaceSessionID}}})
+	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: renameRaceSessionID, SessionID: renameRaceSessionID, Source: "local", CWD: proj, Evener: appwire.EvenerThread{Ref: "local:" + renameRaceSessionID}}})
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+renameRaceSessionID+"/rename", strings.NewReader(`{"name":"new"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "127.0.0.1:9180"
@@ -131,7 +131,7 @@ func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce covers the
@@ -177,7 +177,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 
 	web.refreshRenamedMeta(renameSessionID, "new title")
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
@@ -209,7 +209,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
 
 	web.refreshRenamedMeta(renameSessionID, "new title") // renameSessionID was never written to disk or indexed
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestRenameNotFoundBroadcastsNothing pins the invariant's other half: a
@@ -246,5 +246,5 @@ func TestRenameNotFoundBroadcastsNothing(t *testing.T) {
 		t.Fatalf("status=%d, want 404", resp.StatusCode)
 	}
 
-	assertNoNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertNoNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

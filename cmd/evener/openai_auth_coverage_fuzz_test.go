@@ -199,7 +199,7 @@ func fuzzOpenAIBrowserOpener(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("calls = %v", calls)
 	}
-	openAIExecCommand = func(string, ...string) *exec.Cmd { return exec.Command("definitely-not-a-real-serf-command") }
+	openAIExecCommand = func(string, ...string) *exec.Cmd { return exec.Command("definitely-not-a-real-evener-command") }
 	if err := openAIBrowserOpener("x"); err == nil {
 		t.Fatal("start error suppressed")
 	}

@@ -23,8 +23,8 @@ func TestLaunchCheckDispatchesFromTopLevel(t *testing.T) {
 	if !handled {
 		t.Fatal("dispatchCLICommand handled=false, want true")
 	}
-	if label != "serf launch-check" {
-		t.Fatalf("label=%q, want serf launch-check", label)
+	if label != "evener launch-check" {
+		t.Fatalf("label=%q, want evener launch-check", label)
 	}
 	// Verify that RunLaunchCheck actually wrote a valid launch contract to stdout.
 	// A no-op implementation returning nil without output would pass the routing

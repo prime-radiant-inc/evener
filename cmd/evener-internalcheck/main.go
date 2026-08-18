@@ -1,6 +1,6 @@
-// serf-internalcheck enforces that the public library packages stay externally
+// evener-internalcheck enforces that the public library packages stay externally
 // importable: no exported symbol in agent, llm, or llm/providercfg may name a
-// serf-internal type (a type whose package path is under primeradiant.com/evener
+// evener-internal type (a type whose package path is under primeradiant.com/evener
 // and contains "/internal/") through its public signature.
 //
 // Such a leak makes a constructor or field uncallable/unnameable from outside
@@ -9,7 +9,7 @@
 // package-level object's public type surface (func signatures; var/const types;
 // and, for each defined type, its exported struct fields, exported interface
 // methods, and exported method-set signatures) and reports any reachable
-// serf-internal named type.
+// evener-internal named type.
 //
 // Each exported named type is itself a top-level object, so the walk does not
 // expand other (non-internal) exported types — the transitive chain is covered
@@ -32,7 +32,7 @@ import (
 )
 
 // libraryPackages are the caller-facing library packages whose exported surface
-// must not name serf-internal types.
+// must not name evener-internal types.
 var libraryPackages = []string{
 	"primeradiant.com/evener/agent",
 	"primeradiant.com/evener/agent/diagnostic",
@@ -59,7 +59,7 @@ var packagesVisit = packages.Visit
 func runWith(find func() ([]string, error), stdout, stderr io.Writer) int {
 	leaks, err := find()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "serf-internalcheck:", err)
+		_, _ = fmt.Fprintln(stderr, "evener-internalcheck:", err)
 		return 2
 	}
 	for _, v := range leaks {
@@ -72,7 +72,7 @@ func runWith(find func() ([]string, error), stdout, stderr io.Writer) int {
 }
 
 // findLeaks loads the library packages and returns one sorted message per
-// exported symbol that names a serf-internal type. Empty result means clean.
+// exported symbol that names a evener-internal type. Empty result means clean.
 func findLeaks() ([]string, error) {
 	cfg := &packages.Config{
 		// NeedDeps and NeedTypesInfo are intentionally omitted: the walk only
@@ -146,7 +146,7 @@ func checkObject(obj types.Object, into map[string]bool) {
 	}
 }
 
-// walkType collects serf-internal named types reachable through t's public
+// walkType collects evener-internal named types reachable through t's public
 // surface. It flags an internal *types.Named and stops; it does not expand a
 // non-internal named type (that type is checked independently as its own
 // top-level object).

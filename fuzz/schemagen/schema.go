@@ -23,7 +23,7 @@ const (
 )
 
 // schemaTypes returns the normalized list of JSON type names a schema allows.
-// JSON Schema permits "type" as a single string or an array of strings; serf
+// JSON Schema permits "type" as a single string or an array of strings; evener
 // also writes native Go literals (string, []string, []any), so both wire and
 // in-process shapes are accepted. An absent type returns nil (any type allowed).
 func schemaTypes(schema map[string]any) []string {
