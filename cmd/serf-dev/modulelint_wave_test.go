@@ -131,7 +131,7 @@ func TestLintRunVanishedScratchIsResultsLost(t *testing.T) {
 				t.Errorf("removing runner scratch: %v", err)
 			}
 		}
-		script := fmt.Sprintf(": >%s", filepath.Join(sync, "ran."+module))
+		script := ": >" + filepath.Join(sync, "ran."+module)
 		return exec.Command("sh", "-c", script) //nolint:noctx // lifecycle managed by the runner's process-group stop
 	}
 	r, out, errOut := newTestRun(t, []string{"one", "two", "three", "four", "five"}, 1, newCmd)
