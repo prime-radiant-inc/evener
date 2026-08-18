@@ -60,7 +60,6 @@ var mktempAllowedScripts = map[string]bool{
 	"e2e-cover.sh":                true,
 	"e2e-ratelimited-provider.sh": true,
 	"fuzz-bisect.sh":              true,
-	"fuzz-continuous-selftest.sh": true,
 	"fuzz-gap-check.sh":           true,
 	"fuzz-oracle-audit.sh":        true,
 	"fuzz-registry-check.sh":      true,
@@ -145,14 +144,9 @@ func uncheckedMktempAssignment(line string) bool {
 // list is the finding rather than an exemption, and removing an entry after
 // converting its suite to scratch_dir is the intended lifecycle.
 //
-// All 21 suites now build their scratch root with scratch_dir, so what is
-// left here is not a suite root at all: fuzz-continuous-selftest.sh's remaining
-// unchecked `mktemp` is inside a stub's heredoc, minting a temp FILE that the
-// stub redirects into and then `mv`s. It never canonicalizes and nothing deletes
-// it recursively, so a failed mktemp reaches nothing.
-var scratchDirAllowedScripts = map[string]bool{
-	"fuzz-continuous-selftest.sh": true,
-}
+// Every suite now builds its scratch root with scratch_dir; the list is empty
+// and a new entry needs the same reviewed reason any allowlist growth does.
+var scratchDirAllowedScripts = map[string]bool{}
 
 // TestScratchDirCannotResolveToCWD keeps kata 5hs2's failure mode out of
 // the selftests: an unchecked `mktemp -d` whose empty result was then resolved
@@ -336,9 +330,7 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// Fixture rebuild/removal of paths built under guard-minted scratch,
 	// mid-suite, where the no-argument delete would take the suite's whole
 	// scratch with it.
-	"fuzz-triage-selftest.sh":             1,
 	"e2e-webui-turn-controls-selftest.sh": 1,
-	"fuzz-coverage-global-selftest.sh":    1,
 	// The coverage runners keep the pid-suffixed name-first/trap-first/mkdir
 	// pattern instead of scratch_dir: the trap exists before the directory
 	// can, so a signal in the window abandons nothing (measured 0/150 leaks

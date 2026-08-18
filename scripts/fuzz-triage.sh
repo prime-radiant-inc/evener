@@ -19,10 +19,11 @@
 #     target ...     restrict to one or more "module:FuzzName" entries from
 #                    run-fuzz.sh's TARGETS; default is every target.
 #
-# The flake-guard / dedup / ledger / PR logic is exercised deterministically by
-# scripts/fuzz-triage-selftest.sh (synthetic failures, stubbed go/gh — no real
-# crash and no real PR). The following env vars exist for that self-test and for
-# advanced use; defaults are the production values:
+# No selftest: the old one drove this script with a stubbed go/gh toolchain,
+# and fake-toolchain selftests are banned (docs/testing.md). This header and
+# the ledger/bucket formats are the living contract until the tool's
+# port-on-touch moment. The following env vars exist for advanced use;
+# defaults are the production values:
 #   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
 #   SERF_FUZZ_RUNNER     the search engine    (default: scripts/run-fuzz.sh)
 #   SERF_FUZZ_GH         the gh binary        (default: gh)

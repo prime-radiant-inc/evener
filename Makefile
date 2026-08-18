@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -231,7 +231,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -356,12 +356,6 @@ fuzz-nightly:
 fuzz-triage:
 	@$(MEMCAP) scripts/fuzz-triage.sh $(FUZZ_ARGS)
 
-# fuzz-triage-selftest verifies the triage flake-guard / dedup / ledger / PR
-# logic deterministically with synthetic failures and stubbed go/gh — no real
-# search, crash, or PR. Run it after editing scripts/fuzz-triage.sh.
-fuzz-triage-selftest:
-	@scripts/fuzz-triage-selftest.sh
-
 # fuzz-continuous is the LOCAL, on-demand continuous loop: it rotates over every
 # native target, giving each a bounded search turn round after round (the corpus
 # deepens across turns via $GOCACHE/fuzz), and routes any new crasher through
@@ -370,22 +364,12 @@ fuzz-triage-selftest:
 fuzz-continuous:
 	@scripts/fuzz-continuous.sh $(FUZZ_ARGS)
 
-# fuzz-continuous-selftest verifies the loop's rotation / stop-condition /
-# crasher-delta logic with stubbed runner+triage — no real fuzzing.
-fuzz-continuous-selftest:
-	@scripts/fuzz-continuous-selftest.sh
-
 # fuzz-drive generates REAL provider traffic (varied coding tasks through the
 # serf one-shot CLI, recorders on) and harvests it into the seed corpus. Makes
 # live, paid provider calls — run on demand, not in CI. Flags via FUZZ_ARGS, e.g.
 # `make fuzz-drive FUZZ_ARGS="--providers openai/gpt-5.4-mini --runs 5"`.
 fuzz-drive:
 	@scripts/fuzz-drive.sh $(FUZZ_ARGS)
-
-# fuzz-drive-selftest exercises the driver's contract (drive/retry/skip/harvest/
-# PR) against a throwaway repo with stubbed serf+harvest+gh — no real calls.
-fuzz-drive-selftest:
-	@scripts/fuzz-drive-selftest.sh
 
 # fuzz-coverage-global validates the registered target plan, requires a local
 # native/Rapid fuzz surface for every production package, then replays each target
@@ -394,11 +378,6 @@ fuzz-drive-selftest:
 # after every measured module clears that threshold.
 fuzz-coverage-global:
 	@scripts/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
-
-# fuzz-coverage-global-selftest verifies registry-gated replay/profile accounting
-# wiring with a fake go executable and no real compilation.
-fuzz-coverage-global-selftest:
-	@scripts/fuzz-coverage-global-selftest.sh
 
 # test-coverage-floor ratchets whole-module FULL-SUITE (unit+integration) coverage
 # against scripts/testcov-global-floors.txt — the companion to fuzz-coverage-global
