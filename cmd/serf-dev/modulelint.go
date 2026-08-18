@@ -364,8 +364,16 @@ func golangciCmd(module string) *exec.Cmd {
 	return cmd
 }
 
+// One signal is all this runner acts on, so the channel is one deep and
+// there is no second-signal escape hatch — deliberately unlike agent-shards,
+// whose shards can ignore TERM indefinitely and so must let an impatient
+// operator abandon them. Here the first signal already bounds the run: every
+// child group is TERMed and KILLed after the grace, so the worst case is a
+// wait of `grace` and the exit is still 128+signal. Leaving early instead
+// would strand the linter children this process no longer has anyone to kill.
 func lintMain(args []string) int {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	return moduleLint(os.Getenv, os.Stdout, os.Stderr, signals, 5*time.Second)
 }

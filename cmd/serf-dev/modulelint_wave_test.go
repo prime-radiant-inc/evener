@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -39,9 +40,22 @@ func TestLintRunBoundsConcurrencyToWaves(t *testing.T) {
 	// Real children publish a started marker and block until the release
 	// file exists. With LINT_PARALLEL=2, both wave-1 children must start
 	// together and no third child may start until wave 1 is released.
+	//
+	// The bound is proven by ordering, not by a window: each spawn records
+	// whether the release file already existed when the runner asked for
+	// its command, so a runner that spawned everything at once is caught by
+	// module three's record no matter how the machine is loaded. The live
+	// marker count below is a second, weaker look at the same moment.
 	sync := t.TempDir()
 	release := filepath.Join(sync, "release")
+	type spawn struct {
+		module     string
+		afterFirst bool
+	}
+	var spawns []spawn // written only on the runner's goroutine, read after it finishes
 	newCmd := func(module string) *exec.Cmd {
+		_, err := os.Stat(release)
+		spawns = append(spawns, spawn{module: module, afterFirst: err == nil})
 		script := fmt.Sprintf(`: >%s; while [ ! -f %s ]; do sleep 0.05; done`,
 			filepath.Join(sync, "started."+module), release)
 		return exec.Command("sh", "-c", script) //nolint:noctx // lifecycle managed by the runner's process-group stop
@@ -51,7 +65,6 @@ func TestLintRunBoundsConcurrencyToWaves(t *testing.T) {
 	go func() { code <- r.run() }()
 	started := func() int { return countGlob(t, filepath.Join(sync, "started.*")) }
 	waitFor(t, "wave 1 to start", func() bool { return started() == 2 })
-	time.Sleep(150 * time.Millisecond)
 	if got := started(); got != 2 {
 		t.Errorf("%d children started while wave 1 held, want the wave bound of 2", got)
 	}
@@ -63,6 +76,57 @@ func TestLintRunBoundsConcurrencyToWaves(t *testing.T) {
 	}
 	if got := started(); got != 5 {
 		t.Errorf("%d modules ran, want all 5", got)
+	}
+	want := []spawn{
+		{module: "one", afterFirst: false},
+		{module: "two", afterFirst: false},
+		{module: "three", afterFirst: true},
+		{module: "four", afterFirst: true},
+		{module: "five", afterFirst: true},
+	}
+	if !reflect.DeepEqual(spawns, want) {
+		t.Errorf("spawn order/timing = %+v, want %+v (a module past the wave bound spawned before wave 1 was released)", spawns, want)
+	}
+}
+
+func TestLintRunKeepsCheckingAfterAnEarlyWaveFails(t *testing.T) {
+	// The whole point of the aggregate runner is one pass that reports
+	// every module's findings: a failure in wave 1 must not stop wave 2
+	// from being checked, and the summary must name both failures in
+	// MODULES order. LINT_PARALLEL=2 over five modules puts the first
+	// failure in wave 1 and the second in wave 3.
+	modules := []string{"one", "two", "three", "four", "five"}
+	ran := t.TempDir()
+	failures := map[string]int{"one": 3, "five": 7}
+	newCmd := func(module string) *exec.Cmd {
+		script := fmt.Sprintf("echo stdout:%s; : >%s; exit %d",
+			module, filepath.Join(ran, "ran."+module), failures[module])
+		return exec.Command("sh", "-c", script) //nolint:noctx // lifecycle managed by the runner's process-group stop
+	}
+	r, out, _ := newTestRun(t, modules, 2, newCmd)
+	if code := r.run(); code != 1 {
+		t.Fatalf("run = %d, want 1 (output: %s)", code, out.String())
+	}
+	for _, module := range modules {
+		if _, err := os.Stat(filepath.Join(ran, "ran."+module)); err != nil {
+			t.Errorf("module %s was never checked after the wave-1 failure: %v", module, err)
+		}
+	}
+	text := out.String()
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "FAIL lint (findings: 2/5 modules: one five)" {
+		t.Errorf("final line = %q", last)
+	}
+	if n := summaryCount(text); n != 1 {
+		t.Errorf("summary appears %d times, want exactly once", n)
+	}
+	oneIdx := strings.Index(text, "----- one -----")
+	fiveIdx := strings.Index(text, "----- five -----")
+	if oneIdx < 0 || fiveIdx < 0 || oneIdx > fiveIdx {
+		t.Errorf("failure fences missing or out of MODULES order in %q", text)
+	}
+	if strings.Contains(text, "stdout:three") {
+		t.Errorf("a passing later-wave module's chatter leaked into the replay: %q", text)
 	}
 }
 
