@@ -148,6 +148,17 @@ func (l *lintRun) run() int {
 		}
 	}
 
+	// Waves consult the signal channel while they wait; past this point
+	// nothing else would, and Notify has replaced the default disposition,
+	// so an unread signal would be swallowed and the run would finish as if
+	// never interrupted. These checkpoints (here and between replays) give
+	// the post-wave path the same granularity the shell trap had between
+	// commands. All children are reaped by now, so honoring the signal is
+	// just cleanup and the interrupted summary.
+	if code, interrupted := l.pendingSignal(rep); interrupted {
+		return code
+	}
+
 	var failed []int
 	for i := range l.modules {
 		if statuses[i] != 0 {
@@ -169,6 +180,9 @@ func (l *lintRun) run() int {
 	}
 	names := make([]string, 0, len(failed))
 	for _, i := range failed {
+		if code, interrupted := l.pendingSignal(rep); interrupted {
+			return code
+		}
 		names = append(names, l.modules[i])
 		f, err := os.Open(lintLogPath(logdir, i))
 		if err != nil {
@@ -264,6 +278,24 @@ func (l *lintRun) runWave(logdir string, first, last int, statuses []int) waveEn
 		}
 	}
 	return end
+}
+
+// pendingSignal drains one waiting interrupt, if any, and turns it into the
+// interrupted summary and exit code. Callers return immediately on true;
+// the deferred Release removes the logs.
+func (l *lintRun) pendingSignal(rep *report.Reporter) (int, bool) {
+	select {
+	case sig := <-l.signals:
+		s, ok := sig.(syscall.Signal)
+		if !ok {
+			s = syscall.SIGTERM
+		}
+		name, code := lintSignalNameAndExit(s)
+		rep.Fail(report.Interrupted, name)
+		return code, true
+	default:
+		return 0, false
+	}
 }
 
 // vanishedExit is the results-lost exit for scratch that went away under a

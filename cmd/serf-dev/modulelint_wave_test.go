@@ -204,6 +204,32 @@ func TestLintRunUnrecordableResultIsNarrowResultsLost(t *testing.T) {
 	}
 }
 
+func TestLintRunHonorsASignalPendingAfterTheLastWave(t *testing.T) {
+	// A signal that arrives once the waves are done used to be swallowed:
+	// Notify had replaced the default disposition and nothing read the
+	// channel again, so the run finished as if never interrupted. With no
+	// modules at all the wave loop never runs, which makes this the one
+	// deterministic way to hand a pending signal to the post-wave path
+	// alone — the checkpoints it pins also run between replays.
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	r, out, _ := newTestRun(t, nil, 1, echoCmd(nil))
+	r.signals = signals
+	if code := r.run(); code != 143 {
+		t.Fatalf("run = %d, want 143 (output: %s)", code, out.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "FAIL lint (interrupted: SIGTERM)" {
+		t.Errorf("final line = %q", last)
+	}
+	if n := summaryCount(out.String()); n != 1 {
+		t.Errorf("summary appears %d times, want exactly once", n)
+	}
+	if left := scratchLeft(t); len(left) != 0 {
+		t.Errorf("post-wave interrupt left scratch behind: %v", left)
+	}
+}
+
 func TestLintRunReclaimsAbandonedScratchAtStartup(t *testing.T) {
 	// A SIGKILLed run's scratch has no trap to clean it; the NEXT run of the
 	// same tool reclaims it (dead-pid scoped, covscratch rules — the rules
