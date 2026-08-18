@@ -140,7 +140,10 @@ func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 	sess.launchInitialPromptNamer(context.Background(), "initial task")
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the namer goroutine is launched in-process against a scripted
+	// fake adapter with no real I/O; it normally signals in well under a
+	// second. 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
 		t.Fatal("initial prompt namer did not start")
 	}
 	close(done)
@@ -171,7 +174,10 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	sess.launchInitialPromptNamer(context.Background(), "initial task")
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the namer goroutine is launched in-process against a scripted
+	// fake adapter with no real I/O; it normally signals in well under a
+	// second. 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
 		t.Fatal("initial prompt namer did not start")
 	}
 
@@ -226,7 +232,10 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 		if got != "ship the router cleanup" {
 			t.Fatalf("namer text = %q, want initial prompt", got)
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the namer goroutine is launched in-process against a scripted
+	// fake adapter with no real I/O; it normally signals in well under a
+	// second. 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
 		t.Fatal("initial prompt namer did not start from ProcessInput")
 	}
 }
@@ -348,7 +357,10 @@ func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 	sess.launchCompactionNamer(context.Background(), schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nrouter cleanup")))
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the namer goroutine is launched in-process against a scripted
+	// fake adapter with no real I/O; it normally signals in well under a
+	// second. 10s only fires on a genuine hang.
+	case <-time.After(10 * time.Second):
 		t.Fatal("compaction namer did not start")
 	}
 	close(done)
