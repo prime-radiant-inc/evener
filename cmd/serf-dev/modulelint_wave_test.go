@@ -204,6 +204,37 @@ func TestLintRunUnrecordableResultIsNarrowResultsLost(t *testing.T) {
 	}
 }
 
+func TestLintRunReclaimsAbandonedScratchAtStartup(t *testing.T) {
+	// A SIGKILLed run's scratch has no trap to clean it; the NEXT run of the
+	// same tool reclaims it (dead-pid scoped, covscratch rules — the rules
+	// themselves are pinned by internal/devtool/scratch's own tests; this
+	// pins that module-lint actually goes through them).
+	r, _, errOut := newTestRun(t, []string{"one"}, 1, echoCmd(nil))
+	tmp := os.Getenv("TMPDIR")
+	deadChild := exec.Command("true") //nolint:noctx // exits immediately; reaped by Run
+	if err := deadChild.Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadPid := deadChild.Process.Pid
+	abandoned := filepath.Join(tmp, fmt.Sprintf("serf-module-lint.%d", deadPid))
+	if err := os.MkdirAll(filepath.Join(abandoned, "0.log"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keeper := filepath.Join(tmp, "serf-module-lint.notapid")
+	if err := os.Mkdir(keeper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.run(); code != 0 {
+		t.Fatalf("run = %d, want 0 (stderr: %s)", code, errOut.String())
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("dead-pid scratch %s survived the next run (stat err %v)", abandoned, err)
+	}
+	if _, err := os.Stat(keeper); err != nil {
+		t.Errorf("non-pid-suffixed sibling was wrongly reclaimed: %v", err)
+	}
+}
+
 func TestModuleLintInvalidParallelIsTwoLineSetupFailure(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	var out, errOut strings.Builder

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/devtool/procgroup"
 	"primeradiant.com/serf/internal/devtool/report"
+	"primeradiant.com/serf/internal/devtool/scratch"
 )
 
 // The defaults are the interface run-module-lint.sh shipped with; the
@@ -99,16 +100,22 @@ func (l *lintRun) run() int {
 	start := time.Now()
 	_, _ = fmt.Fprintf(l.stdout, "lint: checking %d modules\n", len(l.modules))
 
-	logdir, err := os.MkdirTemp("", "serf-module-lint.*")
+	// Acquire reclaims this tool's dead-pid leftovers (a SIGKILLed run has
+	// no trap) before minting serf-module-lint.<pid>. A findings run keeps
+	// the directory deliberately — the logs are the only record of why — so
+	// that path skips Release and the NEXT run reclaims it, the covscratch
+	// discipline the coverage runners follow.
+	scratchDir, err := scratch.Acquire("serf-module-lint", l.stderr)
 	if err != nil {
 		_, _ = fmt.Fprintf(l.stderr, "lint: %v\n", err)
 		rep.Fail(report.Setup, "unable to create temporary log directory")
 		return 1
 	}
+	logdir := scratchDir.Path()
 	keepLogs := false
 	defer func() {
 		if !keepLogs {
-			_ = os.RemoveAll(logdir)
+			scratchDir.Release()
 		}
 	}()
 
