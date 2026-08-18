@@ -60,17 +60,9 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		// point is that the string contains a `/`, and nothing creates it.
 		"a literal `/tmp/foo/AGENTS.md` containing",
 	},
-	// scripts/*.sh, added to this audit by kata qw8e. Only two rows, because a
-	// script has no prose to warn in: both of these are scripts ABOUT the debris
-	// in /tmp rather than scripts that put any there.
-	"scripts/reclaim-test-debris.sh": {
-		// The one-off GOCACHE this script exists to DELETE (kata r07s left it
-		// behind). Naming it is the whole job, no run creates it, and two
-		// concurrent reclaims of one already-absent directory collide over
-		// nothing.
-		"2) /tmp/serf-gocache-k3",
-		"gocache_debris='/tmp/serf-gocache-k3'",
-	},
+	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
+	// script has no prose to warn in: this is a script ABOUT the debris in
+	// /tmp rather than a script that puts any there.
 	"scripts/report-tmp-debris.sh": {
 		// A dated measurement in the header — what 120 `/tmp/serf*` entries
 		// weighed on 2026-07-30. This script reports and never writes.
@@ -200,11 +192,10 @@ func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 	// needle stopped reaching that corpus, and the two are the same green
 	// (scenariofixture_audit_test.go). The cards cannot go quiet — their half of
 	// the allowlist above says how many lines still name a /tmp path — but
-	// scripts/ carries only the three below, so the script half gets the floor.
+	// scripts/ carries only the one below, so the script half gets the floor.
 	if scriptMatches == 0 {
-		t.Fatalf("the fixed-/tmp needle matched nothing across %s/*.sh. Two scripts "+
-			"exist to talk about /tmp (reclaim-test-debris.sh names the one-off "+
-			"GOCACHE debris it removes, report-tmp-debris.sh sizes `/tmp/serf*`), so "+
+		t.Fatalf("the fixed-/tmp needle matched nothing across %s/*.sh. One script "+
+			"exists to talk about /tmp (report-tmp-debris.sh sizes `/tmp/serf*`), so "+
 			"zero matches means the pattern or the file set is dead and the script "+
 			"half of this audit is checking nothing", auditedShellScriptDirs)
 	}

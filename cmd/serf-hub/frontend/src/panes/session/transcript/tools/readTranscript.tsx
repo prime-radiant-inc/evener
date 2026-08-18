@@ -25,12 +25,13 @@
 // same three envelopes (agent/session_tools_transcript.go routes both through
 // execReadSessionTranscript). find_session_transcripts does NOT: it returns a
 // findSessionsEnvelope of match RECORDS (agent/session_tools_find.go), a list,
-// not a transcript - a different renderer's job, and none is registered for it,
-// so it keeps the raw-output default.
+// not a transcript - a different renderer's job. It has its own descriptor
+// (worktreeTool.tsx's findSessionsSummary registration), not this one.
 
 import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, clipJobID, parseArgs, parseJSONObject, str } from "./helpers";
@@ -131,16 +132,24 @@ function extent(item: ItemModel): string | undefined {
   return rendered >= total ? `all ${total} turns` : `${rendered} of ${total} turns`;
 }
 
-function ReadTranscriptBody({ item }: ToolRenderProps) {
+function ReadTranscriptBody(props: ToolRenderProps) {
+  const { item } = props;
   const output = item.output ?? "";
   if (output === "") return null;
   const envelope = readEnvelope(item);
   // Not parseable JSON: show what actually came back rather than an empty
   // block - the envelope shape is documented, not guaranteed by this client.
-  if (!envelope?.content) return <CodeBlock text={output} copyLabel="Copy output" />;
+  if (!envelope?.content)
+    return (
+      <>
+        <MCPToolArguments {...props} />
+        <CodeBlock text={output} copyLabel="Copy output" />
+      </>
+    );
   const elided = envelope.elidedTurns ?? 0;
   return (
     <div>
+      <MCPToolArguments {...props} />
       {elided > 0 && (
         <div className={CLASS.elision} data-testid="read-transcript-elision">
           {elided} turn{elided === 1 ? "" : "s"} elided by the read's own budget

@@ -8,12 +8,12 @@ runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
 makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
 . "$(dirname "$0")/selftest-lib.sh"
 
-# selftest_scratch canonicalizes: the runner resolves its repo root with pwd -P,
+# scratch_dir canonicalizes: the runner resolves its repo root with pwd -P,
 # so the fixture's spelling must be physical too or the fake go's exact-$PWD
 # dispatch never matches (macOS $TMPDIR lives behind the /var -> /private/var
 # symlink).
-selftest_scratch work fuzzcov-global-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work fuzzcov-global-selftest
+trap 'scratch_rm' EXIT
 
 has() {
 	local haystack="$1" needle="$2" label="$3"

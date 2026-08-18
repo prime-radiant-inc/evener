@@ -223,14 +223,15 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # DEV_TOOLING_TEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin
 # the behaviour of serf's own tooling. Each is offline, deterministic and works
 # only in throwaway fixtures, and each is the ONLY thing that pins its script's
-# contract — run-module-lint-selftest.sh alone carries 167 assertions about the
-# aggregate lint runner. The six fuzz-*-selftest suites listed here are
-# fixture-contained: their git bisect, worktree, and go-test operations stay in
-# throwaway worlds rather than touching this repository. selftest-lib is the odd
-# one out: it tests the shared harness by running eight of the other suites
-# under a failing mktemp, from a throwaway working directory, to prove none of
-# them can be made to delete the checkout (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate deploy-hub e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union selftest-lib
+# contract. A suite earns its slot by pinning outcomes of a tool the gate or CI
+# depends on; hand-run conveniences fail loudly in front of whoever ran them
+# and get no suite (docs/testing.md). scratch-lib tests the shared scratch
+# guard directly, once — that every script's scratch stays inside TMPDIR and
+# none of its recursive deletes takes a clobberable argument, whether it uses
+# the guard or the pid-suffixed covscratch pattern, is enforced statically by
+# the audits in scriptmktemp_audit_test.go, not by re-running suites under
+# sabotage (kata 5hs2).
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand

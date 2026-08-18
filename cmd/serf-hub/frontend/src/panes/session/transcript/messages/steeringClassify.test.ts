@@ -1,7 +1,17 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { type ParsedNotification, parseSteeringNotifications } from "./steeringClassify";
+import { type ParsedNotification, parseSteeringNotifications, type SteeringFragment } from "./steeringClassify";
+
+// notificationsOf flattens the ordered fragment list down to just its parsed
+// notifications, in order - most existing tests here only care about the
+// notifications themselves, not their position relative to interstitial text
+// (that positioning is covered separately below, issue #48).
+function notificationsOf(fragments: SteeringFragment[]): ParsedNotification[] {
+  return fragments
+    .filter((f): f is Extract<SteeringFragment, { kind: "notification" }> => f.kind === "notification")
+    .map((f) => f.notification);
+}
 
 // Non-undefined nth-notification accessor (noUncheckedIndexedAccess makes a
 // bare [i] possibly-undefined); throws with a clear message when absent.
@@ -42,7 +52,7 @@ done
 Job job_shell completed.
 </job-notification>`;
 
-  const { notifications } = parseSteeringNotifications(text);
+  const notifications = notificationsOf(parseSteeringNotifications(text));
   expect(notifications).toHaveLength(2);
   expect(notifications[0]).toMatchObject({
     type: "delegate",
@@ -55,7 +65,7 @@ Job job_shell completed.
 });
 
 test("a delegate-completion job-notification parses one block", () => {
-  const { notifications } = parseSteeringNotifications(oneBlock);
+  const notifications = notificationsOf(parseSteeringNotifications(oneBlock));
   expect(notifications).toHaveLength(1);
   const n = notif(notifications, 0);
   expect(n.title).toBe("Job completed");
@@ -68,7 +78,7 @@ test("prefers the job description over the generic delegate type", () => {
   const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" description="Inspect the workspace" status="completed" reason="" output_bytes="12">
 Job job_42 completed.
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.description).toBe("Inspect the workspace");
   expect(n.secondary).toBe("Inspect the workspace");
 });
@@ -77,7 +87,7 @@ test("retains failure metadata alongside a job description", () => {
   const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" description="Inspect the workspace" status="completed" reason="boom" exit_code="2">
 Job job_42 completed.
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.secondary).toBe("Inspect the workspace · exit 2 · boom");
 });
 
@@ -87,7 +97,7 @@ Job job_42 completed.
 excerpt:
 did the thing
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.jobId).toBe("job_42");
   expect(n.jobType).toBe("delegate");
   expect(n.status).toBe("completed");
@@ -101,7 +111,7 @@ test("retains qualified remote child references", () => {
   const block = `<job-notification job_id="job_remote" event="completed" status="completed" transcript_ref="remote:child">
 done
 </job-notification>`;
-  expect(notif(parseSteeringNotifications(block).notifications, 0).transcriptRef).toBe("remote:child");
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).transcriptRef).toBe("remote:child");
 });
 
 test("drops missing, empty, and malformed child references", () => {
@@ -109,7 +119,7 @@ test("drops missing, empty, and malformed child references", () => {
   for (const ref of refs) {
     const attr = ref === undefined ? "" : ` transcript_ref="${ref}"`;
     const block = `<job-notification job_id="job_bad" event="completed" status="completed"${attr}>done</job-notification>`;
-    expect(notif(parseSteeringNotifications(block).notifications, 0).transcriptRef).toBeUndefined();
+    expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).transcriptRef).toBeUndefined();
   }
 });
 
@@ -119,7 +129,7 @@ Job job_43 failed.
 excerpt:
 boom
 </job-notification>`;
-  const { notifications } = parseSteeringNotifications(two);
+  const notifications = notificationsOf(parseSteeringNotifications(two));
   expect(notifications).toHaveLength(2);
   expect(notif(notifications, 1).tone).toBe("error");
   // Each card's raw text is only its own block, never bleeding across boundaries.
@@ -131,28 +141,28 @@ test("an exhausted notification is a terminal, non-success (error) tone", () => 
   const block = `<job-notification job_id="j" event="exhausted" job_type="delegate" status="exhausted" reason="budget" output_bytes="0" budget="10" limit="10" resumable="false">
 Job j exhausted.
 </job-notification>`;
-  expect(notif(parseSteeringNotifications(block).notifications, 0).tone).toBe("error");
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
 test("a nonzero exit code forces error tone even when the status is otherwise clean", () => {
   const block = `<job-notification job_id="j" event="completed" job_type="shell" status="completed" reason="" output_bytes="0" exit_code="1">
 Job j completed.
 </job-notification>`;
-  expect(notif(parseSteeringNotifications(block).notifications, 0).tone).toBe("error");
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
 test("a job-less watch event classifies as a watch notification", () => {
   const block = `<job-notification job_id="" event="watch" job_type="" status="watch" reason="file changed" output_bytes="0">
 Watch event triggered: file changed.
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch triggered");
 });
 
 test("an Observer callback parses as a notification", () => {
-  const { notifications } = parseSteeringNotifications(
-    "Observer callback:\nmessage: something happened\noutput: details here",
+  const notifications = notificationsOf(
+    parseSteeringNotifications("Observer callback:\nmessage: something happened\noutput: details here"),
   );
   expect(notif(notifications, 0).title).toBe("Observer callback");
 });
@@ -164,19 +174,48 @@ test("an Observer callback with no output surfaces its message prose (not just t
   // The prose is then the ONLY content, so it must reach the card body (floor
   // parity-m4 §8:239 "body = observer-callback prose"), not be dropped to the
   // raw disclosure alone.
-  const { notifications } = parseSteeringNotifications(
-    "Observer callback:\nmessage: the sidecar noticed the build broke",
+  const notifications = notificationsOf(
+    parseSteeringNotifications("Observer callback:\nmessage: the sidecar noticed the build broke"),
   );
   const n = notif(notifications, 0);
   expect(n.title).toBe("Observer callback");
   expect(n.excerpt).toBe("the sidecar noticed the build broke");
 });
 
-test("leftover text around a notification block is preserved for a trailing divider", () => {
-  const { notifications, leftover } = parseSteeringNotifications(`some preface\n${oneBlock}\nsome epilogue`);
-  expect(notifications).toHaveLength(1);
-  expect(leftover).toContain("some preface");
-  expect(leftover).toContain("some epilogue");
+test("text around a notification block is kept as its own fragment before and after it, not merged into one leftover", () => {
+  const fragments = parseSteeringNotifications(`some preface\n${oneBlock}\nsome epilogue`);
+  expect(fragments.map((f) => f.kind)).toEqual(["text", "notification", "text"]);
+  expect(fragments[0]).toMatchObject({ kind: "text", text: "some preface" });
+  expect(fragments[2]).toMatchObject({ kind: "text", text: "some epilogue" });
+});
+
+// issue #48: splitNotificationBlocks used to replace every notification block
+// with "" and trim what remained into ONE leftover string, so interstitial
+// text between two cards lost its position and rendered after both cards
+// instead of between them. Fragments must stay in source order so each
+// interstitial span renders as its own divider, positioned where it was
+// written.
+test("interstitial text between two notification blocks stays positioned between them, not merged after both (issue #48)", () => {
+  const secondBlock = `<job-notification job_id="job_43" event="failed" job_type="shell" status="failed" reason="nonzero exit" output_bytes="4" exit_code="2">
+Job job_43 failed.
+excerpt:
+boom
+</job-notification>`;
+  const text = `lead-in\n${oneBlock}\n\nmiddle\n\n${secondBlock}\ntrailing`;
+
+  const fragments = parseSteeringNotifications(text);
+
+  expect(fragments.map((f) => f.kind)).toEqual(["text", "notification", "text", "notification", "text"]);
+  expect(fragments[0]).toMatchObject({ kind: "text", text: "lead-in" });
+  expect(fragments[2]).toMatchObject({ kind: "text", text: "middle" });
+  expect(fragments[4]).toMatchObject({ kind: "text", text: "trailing" });
+  const first = fragments[1];
+  const second = fragments[3];
+  if (first?.kind !== "notification" || second?.kind !== "notification") {
+    throw new Error("expected notification fragments at indices 1 and 3");
+  }
+  expect(first.notification.jobId).toBe("job_42");
+  expect(second.notification.jobId).toBe("job_43");
 });
 
 // --- kata 77sf: producer-escaped job output must not terminate or forge the
@@ -200,11 +239,13 @@ excerpt:
 ${escapeLikeProducer(dangerous)}
 </job-notification>`;
 
-  const { notifications, leftover } = parseSteeringNotifications(`preface\n${block}\nepilogue`);
+  const fragments = parseSteeringNotifications(`preface\n${block}\nepilogue`);
 
+  const notifications = notificationsOf(fragments);
   expect(notifications).toHaveLength(1);
-  expect(leftover).toContain("preface");
-  expect(leftover).toContain("epilogue");
+  expect(fragments.map((f) => f.kind)).toEqual(["text", "notification", "text"]);
+  expect(fragments[0]).toMatchObject({ kind: "text", text: "preface" });
+  expect(fragments[2]).toMatchObject({ kind: "text", text: "epilogue" });
   const n = notif(notifications, 0);
   expect(n.jobId).toBe("job_X");
   expect(n.excerpt).toBe(escapeLikeProducer(dangerous));
@@ -217,7 +258,7 @@ Job j completed.
 excerpt:
 {"message":"**done** with the work","data":{"concerns":["watch the edge case"]}}
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.message).toBe("**done** with the work");
   expect(n.concerns).toEqual(["watch the edge case"]);
 });
@@ -235,7 +276,7 @@ Job j completed.
 excerpt:
 ${escapeLikeProducer(envelopeJson)}
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.message).toBe("R & D done");
   expect(n.concerns).toEqual(["edge <case>"]);
 });
@@ -251,7 +292,7 @@ Job j completed.
 excerpt:
 {"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.message).toBeUndefined();
   expect(n.concerns).toEqual([]);
   expect(n.excerpt).toBe('{"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}');
@@ -265,7 +306,7 @@ Job j completed.
 excerpt:
 {"message":"**done**","data":{"concerns":["real concern"]}}
 </job-notification>`;
-  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.message).toBe("**done**");
   expect(n.concerns).toEqual(["real concern"]);
 });

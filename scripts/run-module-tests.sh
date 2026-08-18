@@ -31,6 +31,7 @@ set -uo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/private-go-home.sh"
+. "$script_dir/scratch-lib.sh"
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
@@ -91,7 +92,7 @@ done
 # user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time
 # doubles in scheduler churn — and at 32 a test's reported elapsed becomes mostly
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
-# cost ranking derived from it useless. See scripts/agent-test-shards.sh.
+# cost ranking derived from it useless. See cmd/serf-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
@@ -201,8 +202,8 @@ stop_children() {
 cleanup() {
 	stop_children
 	[ "$normal_completion" -eq 1 ] || keep_failed_logs=1
-	if [ -n "$logdir" ] && [ "$keep_failed_logs" -eq 0 ]; then
-		rm -rf "$logdir"
+	if [ "$keep_failed_logs" -eq 0 ]; then
+		scratch_rm
 	fi
 }
 
@@ -221,16 +222,7 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-tmp_base="${TMPDIR:-/tmp}"
-tmp_base="${tmp_base%/}"
-# Checked: cleanup deletes $logdir recursively. It guards on non-empty, so an
-# unchecked mktemp would not delete the wrong thing — it would instead run the
-# whole wave writing logs to paths under an empty prefix, and report nothing.
-if ! logdir="$(mktemp -d "$tmp_base/serf-module-tests.XXXXXX")" ||
-	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
-	echo "run-module-tests: could not create a log directory under $tmp_base" >&2
-	exit 1
-fi
+scratch_dir logdir serf-module-tests
 fail=0
 failed_modules=()
 
@@ -306,7 +298,7 @@ run_module() {
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
-		# opposite -parallel settings. agent-test-shards.sh runs those halves as
+		# opposite -parallel settings. serf-dev agent-shards runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
@@ -315,7 +307,11 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		(cd .. && ./scripts/agent-test-shards.sh $test_flags) || shardStatus=$?
+		# `go run` collapses its child's exit code to 1 and reports the real
+		# one as an "exit status N" line on stderr, so the runner's 129/130/143
+		# signal exits survive in the binary but not through this call. Only
+		# zero-vs-nonzero is read below, so nothing here depends on them.
+		(cd .. && go run ./cmd/serf-dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do

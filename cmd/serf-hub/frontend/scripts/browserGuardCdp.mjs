@@ -19,6 +19,32 @@
 // guard's OWN loopback Vite origin by assertGuardOrigin.
 
 /**
+ * Wrap a CDP operation with a timeout to prevent infinite hangs.
+ *
+ * THE TIMER MUST BE CLEARED WHEN THE RACE SETTLES. A pending timer is a live
+ * handle on Node's event loop, and the guards deliberately end by setting
+ * process.exitCode rather than calling process.exit(), so the process only
+ * leaves when the loop drains. Leaving the loser of every race armed meant a
+ * guard that had finished all its work sat there until the last 30-second timer
+ * expired: measured on spawnguard at 1.451s of work followed by a 31.102s
+ * process, and on a one-call script at 30.044s. Every green run paid it.
+ *
+ * @param {Promise} promise - The operation to timeout
+ * @param {number} ms - Timeout in milliseconds
+ * @param {string} operation - Name of the operation for error message
+ * @returns {Promise} - The operation result or a timeout error
+ */
+function withTimeout(promise, ms, operation) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timeout calling ${operation} after ${ms}ms`)), ms);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Poll a URL until it answers OK; the error names what never came up.
  *
  * launchFailed reports the LAUNCH error of the subsystem this endpoint belongs
@@ -82,19 +108,37 @@ export async function connectPage(cdpPort) {
   return { ws, send, close: () => ws.close() };
 }
 
-/** Page.enable, navigate, and await the load event - the triple every guard re-wrote. */
+/**
+ * Page.enable, navigate, and await the load event - the triple every guard
+ * re-wrote.
+ *
+ * The listener comes off in a finally, not only on the load event: on the
+ * timeout path the load never fires, and a handler left behind keeps parsing
+ * every later CDP message on a socket the guards reuse across cases.
+ */
 export async function navigateTo({ ws, send }, url) {
-  await send("Page.enable");
-  const loaded = new Promise((resolve) => {
-    const handler = (event) => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") {
-        ws.removeEventListener("message", handler);
-        resolve();
-      }
+  await withTimeout(send("Page.enable"), 30000, "Page.enable");
+  let handler;
+  let abandonLoad;
+  const loaded = withTimeout(new Promise((resolve) => {
+    abandonLoad = resolve;
+    handler = (event) => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
     };
     ws.addEventListener("message", handler);
-  });
-  await send("Page.navigate", { url });
+  }), 30000, "navigateTo").finally(() => ws.removeEventListener("message", handler));
+  try {
+    await withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
+  } catch (error) {
+    // The navigate never happened, so nothing will ever load. Settling the wait
+    // here is what takes the listener off and clears its timer: left pending it
+    // would hold the guard's event loop open for another 30 seconds and then
+    // reject with nobody awaiting it, which Node turns into a crash that buries
+    // the error being thrown right here.
+    abandonLoad();
+    await loaded.catch(() => {});
+    throw error;
+  }
   await loaded;
 }
 
@@ -104,11 +148,15 @@ export async function navigateTo({ ws, send }, url) {
  * undefined measurement.
  */
 export async function evaluate(send, expression) {
-  const response = await send("Runtime.evaluate", {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  const response = await withTimeout(
+    send("Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    }),
+    30000,
+    "Runtime.evaluate"
+  );
   if (response.result.exceptionDetails) {
     throw new Error(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
   }
@@ -205,19 +253,23 @@ export async function waitForFonts(send) {
 
 /** Pin exact browser metrics for a case that must not inherit Chrome's ambient window size. */
 export async function applyViewport(send, viewport) {
-  await send("Emulation.setDeviceMetricsOverride", {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
-    mobile: viewport.mobile ?? false,
-    screenWidth: viewport.width,
-    screenHeight: viewport.height,
-  });
+  await withTimeout(
+    send("Emulation.setDeviceMetricsOverride", {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
+      mobile: viewport.mobile ?? false,
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+    }),
+    30000,
+    "Emulation.setDeviceMetricsOverride"
+  );
 }
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
-  await send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(() => {});
 }
 
 /**
@@ -252,17 +304,17 @@ export async function realizedViewport(send) {
  */
 export async function forcePseudoStates(send, states) {
   if (states.length === 0) return;
-  await send("DOM.enable");
-  await send("CSS.enable");
-  const doc = await send("DOM.getDocument", { depth: -1 });
+  await withTimeout(send("DOM.enable"), 30000, "DOM.enable");
+  await withTimeout(send("CSS.enable"), 30000, "CSS.enable");
+  const doc = await withTimeout(send("DOM.getDocument", { depth: -1 }), 30000, "DOM.getDocument");
   const rootId = doc.result.root.nodeId;
   for (const { selector, pseudoClasses } of states) {
-    const found = await send("DOM.querySelector", { nodeId: rootId, selector });
+    const found = await withTimeout(send("DOM.querySelector", { nodeId: rootId, selector }), 30000, "DOM.querySelector");
     // DOM.querySelector answers with nodeId 0 for "no match" rather than
     // failing - forcing nothing would leave the case measuring the resting
     // state while reporting the forced one, so it stops here instead.
     if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
-    await send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses });
+    await withTimeout(send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }), 30000, "CSS.forcePseudoState");
   }
 }
 

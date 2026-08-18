@@ -26,6 +26,13 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
   vi.useRealTimers();
+  // vi.spyOn(window, "open") (DeviceCodeDialog tests below) returns the SAME
+  // spy instance - with its accumulated call history - if window.open is
+  // already spied when a later test calls spyOn again. Without restoring
+  // here, "shows the user code without auto-opening the verification URL"
+  // (which asserts NOT called) inherits the prior "Send me to OpenAI" test's
+  // one real call under any run order that puts that test first (kata ycet).
+  vi.restoreAllMocks();
 });
 
 describe("OAuthRedirectDialog", () => {

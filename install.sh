@@ -53,8 +53,16 @@ else
 fi
 
 tmpdir=$(mktemp -d)
+if [ -z "$tmpdir" ] || [ ! -d "$tmpdir" ]; then
+	echo "mktemp did not produce a usable temporary directory." >&2
+	exit 1
+fi
 cleanup() {
-	rm -rf "$tmpdir"
+	# Never hand rm an empty root: an unset or emptied tmpdir must make this
+	# a no-op, not a recursive delete of the current directory.
+	if [ -n "${tmpdir:-}" ]; then
+		rm -rf "$tmpdir"
+	fi
 }
 trap cleanup EXIT HUP INT TERM
 

@@ -269,6 +269,28 @@ test("find_session_transcripts: body head-clips the raw text output", () => {
   expect(screen.getByText("No matching sessions (scope: current_project).")).toBeTruthy();
 });
 
+test("find_session_transcripts: body shows the pretty-printed query above the output", () => {
+  const d = toolRendererFor("find_session_transcripts");
+  const Body = d.body!;
+  const args = JSON.stringify({ query: "flaky test" });
+  const { container } = render(
+    <Body
+      item={item({
+        toolName: "find_session_transcripts",
+        argumentsJSON: args,
+        output: "1 match (scope: current_project).",
+      })}
+      live={false}
+    />,
+  );
+  const section = screen.getByRole("region", { name: "Tool call arguments" });
+  expect(section.textContent).toContain('"query": "flaky test"');
+  const argsIndex = container.textContent!.indexOf('"query"');
+  const outputIndex = container.textContent!.indexOf("1 match (scope: current_project).");
+  expect(argsIndex).toBeGreaterThanOrEqual(0);
+  expect(argsIndex).toBeLessThan(outputIndex);
+});
+
 // A descriptor that is never imported by tools/index.ts is never registered in
 // the running app, however green its own tests are - this file imports the
 // module directly, so every assertion above would keep passing with the

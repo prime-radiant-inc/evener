@@ -183,6 +183,17 @@ async function main() {
     return 2;
   }
 
+  // Ensure the generated directory is removed even on signal interruption.
+  // Register handlers BEFORE creating the guard so they run first (event
+  // emitter calls listeners in registration order). The guard's own handlers
+  // (installed via createBrowserProcessCleanup) will run after ours and exit
+  // the process; by then the generated dir will already be removed.
+  const handleSignal = () => {
+    rmSync(GENERATED_ROOT, { recursive: true, force: true });
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+
   // One Vite dev server + one headless Chrome for the whole run (the old
   // file:// design launched a fresh Chrome PER CASE). Startup failures are
   // environment problems, not test case failures - say so, with the Vite
@@ -264,8 +275,18 @@ async function main() {
       page.close();
     }
   } finally {
-    await guard.cleanup();
-    rmSync(GENERATED_ROOT, { recursive: true, force: true });
+    try {
+      await guard.cleanup();
+    } finally {
+      // The generated fixtures come out on every path, including the one where
+      // cleanup rejects. The rejection itself still propagates and fails the
+      // run: cleanup only rejects when it has given up on an escaped Chrome
+      // helper, so this run left a live process and its private profile
+      // directory behind on the machine. That leak (roughly 1 run in 3) is
+      // issue #119; until it is fixed, going red is the signal that keeps it
+      // visible, and swallowing it would only make the guard quietly lossy.
+      rmSync(GENERATED_ROOT, { recursive: true, force: true });
+    }
   }
 
   if (warnings.length > 0) {
