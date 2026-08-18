@@ -448,17 +448,35 @@ func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ..
 	if live.recoveryRequired || aggregate.PendingStopSeq != 0 || !aggregate.Resumable || live.binding == nil || !live.binding.ready {
 		return nil, nil, errDelegateTargetBusy
 	}
-	for ancestorID := aggregate.Descriptor.ParentDelegateID; ancestorID != ""; {
-		ancestor := c.durable[ancestorID]
-		if ancestor == nil || ancestor.Phase == delegatestore.PhaseClosed || ancestor.PendingStopSeq != 0 || !ancestor.Resumable {
-			return nil, nil, errDelegateTargetBusy
-		}
-		ancestorID = ancestor.Descriptor.ParentDelegateID
+	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		return nil, nil, errDelegateTargetBusy
 	}
 	if slices.Contains(phases, aggregate.Phase) {
 		return aggregate, live, nil
 	}
 	return nil, nil, errDelegateTargetBusy
+}
+
+// ancestorFenceLocked walks the ancestor chain starting at parentID and
+// reports whether any ancestor refuses work under it -- the same policy
+// admitLeaseLocked applies to running leases. closedAncestorID identifies the
+// nearest ancestor whose refusal is permanent: resumability closes
+// monotonically (no event reopens it), so a missing or non-resumable ancestor
+// can never admit this subtree again. A blocked result with an empty
+// closedAncestorID is transient -- a pending subtree stop that clears when the
+// stop completes.
+func (c *delegateTreeController) ancestorFenceLocked(parentID string) (blocked bool, closedAncestorID string) {
+	for ancestorID := parentID; ancestorID != ""; {
+		ancestor := c.durable[ancestorID]
+		if ancestor == nil || !ancestor.Resumable {
+			return true, ancestorID
+		}
+		if ancestor.Phase == delegatestore.PhaseClosed || ancestor.PendingStopSeq != 0 {
+			return true, ""
+		}
+		ancestorID = ancestor.Descriptor.ParentDelegateID
+	}
+	return false, ""
 }
 
 func (c *delegateTreeController) Snapshot() delegateUpdatePlan {

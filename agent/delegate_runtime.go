@@ -443,13 +443,48 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Sessi
 	return owner, sub, nil
 }
 
+// escalateUnreachableDelegateAttention resolves pending attention wakes that a
+// permanently closed ancestor fences off forever and surfaces one notification
+// per batch to the root session. Notification before resolution: a crash in
+// between replays into an idempotent no-op append and a second resolution
+// attempt, never a silently discarded message.
+func (s *Session) escalateUnreachableDelegateAttention() bool {
+	progressed := false
+	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
+		if err := s.escalateOneUnreachableDelegateAttention(plan); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("escalate unreachable delegate attention", err))
+			s.scheduleStableDelegateAttentionRetry()
+			return progressed
+		}
+		progressed = true
+	}
+	return progressed
+}
+
+func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation) error {
+	notificationID := unreachableDelegateAttentionID(plan.delegateID, plan.attentionIDs)
+	content := unreachableDelegateAttentionContent(plan.delegateID, plan.ancestorID, len(plan.attentionIDs))
+	if _, err := s.appendDelegateNotificationDurably(notificationID, content); err != nil {
+		return err
+	}
+	if err := s.armDelegateAttention(notificationID); err != nil {
+		return err
+	}
+	if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, plan.attentionIDs, delegateAttentionDiscarded); err != nil {
+		return err
+	}
+	s.delegateController.forgetDelegateAttention(plan.delegateID, plan.attentionIDs...)
+	return nil
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
+	escalated := s.escalateUnreachableDelegateAttention()
 	delegateID, _, pending := s.delegateController.nextIdleDelegateAttention()
 	if !pending {
-		return false
+		return escalated
 	}
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
