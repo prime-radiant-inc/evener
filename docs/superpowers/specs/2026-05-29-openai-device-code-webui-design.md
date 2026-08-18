@@ -104,7 +104,7 @@ New appwire methods/types (`internal/appwire/types.go`):
 - `AuthDevicePollResponse{ State string; Status AuthStatusResponse }` — `State`
   ∈ `pending|authorized|expired`; `Status` populated on `authorized`.
 
-`hubAuthController` (`cmd/serf-hub/app_auth.go`):
+`hubAuthController` (`cmd/evener-hub/app_auth.go`):
 
 - Add a `deviceFlows map[string]deviceFlow` guarded by the existing `mu`, where
   `deviceFlow{ Provider string; Code authopenai.DeviceCode; StartedAt time.Time }`.
@@ -178,7 +178,7 @@ In `credentials.html`, the `oauth` action calls `authDeviceStart(provider)`:
   on 403/404, success decodes the bundle, other non-2xx → err. Confirm the
   existing `PollDeviceAuth` tests stay green after the refactor.
   `RequestDeviceCode` 404 → `errors.Is(err, ErrDeviceCodeNotEnabled)`.
-- **`app_auth` (`cmd/serf-hub`):** with injected device funcs —
+- **`app_auth` (`cmd/evener-hub`):** with injected device funcs —
   - `DeviceStart` returns code fields and stores a flow; the not-enabled error
     yields `{Fallback:true}`.
   - `DevicePoll` → `pending` passes through; `authorized` exchanges, saves, and

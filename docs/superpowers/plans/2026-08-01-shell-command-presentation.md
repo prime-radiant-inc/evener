@@ -27,22 +27,22 @@
 
 ### Web files
 
-- Create cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.ts for the pure display formatter and shell tokenization types/functions.
-- Create cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts for formatter and tokenizer contracts.
-- Create cmd/serf-hub/frontend/src/widgets/shellcommand/index.tsx for the framed shell command widget.
-- Create cmd/serf-hub/frontend/src/widgets/shellcommand/shellcommand.module.css for token colors and display-only continuation indentation.
-- Modify cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx to accept a plain-line renderer without changing ANSI or copy behavior.
-- Modify cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx to cover the renderer callback.
-- Modify cmd/serf-hub/frontend/src/widgets/index.ts to export ShellCommandBlock.
-- Modify cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx to render the command block above output.
-- Modify cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx to cover command ordering, exact copy, and command-only bodies.
+- Create cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.ts for the pure display formatter and shell tokenization types/functions.
+- Create cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts for formatter and tokenizer contracts.
+- Create cmd/evener-hub/frontend/src/widgets/shellcommand/index.tsx for the framed shell command widget.
+- Create cmd/evener-hub/frontend/src/widgets/shellcommand/shellcommand.module.css for token colors and display-only continuation indentation.
+- Modify cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx to accept a plain-line renderer without changing ANSI or copy behavior.
+- Modify cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx to cover the renderer callback.
+- Modify cmd/evener-hub/frontend/src/widgets/index.ts to export ShellCommandBlock.
+- Modify cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx to render the command block above output.
+- Modify cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx to cover command ordering, exact copy, and command-only bodies.
 
 ### TUI files
 
-- Create cmd/serf-tui/internal/msgrender/shell_command.go for the pure formatter.
-- Create cmd/serf-tui/internal/msgrender/shell_command_test.go for the formatter contract and the parity fixture cases.
-- Modify cmd/serf-tui/internal/msgrender/tool_bodies.go to format and highlight the raw command before output.
-- Modify cmd/serf-tui/internal/msgrender/tool_bodies_test.go to cover command layout, highlighting, raw whitespace, empty output, and fallback.
+- Create cmd/evener-tui/internal/msgrender/shell_command.go for the pure formatter.
+- Create cmd/evener-tui/internal/msgrender/shell_command_test.go for the formatter contract and the parity fixture cases.
+- Modify cmd/evener-tui/internal/msgrender/tool_bodies.go to format and highlight the raw command before output.
+- Modify cmd/evener-tui/internal/msgrender/tool_bodies_test.go to cover command layout, highlighting, raw whitespace, empty output, and fallback.
 
 ## Shared formatter contract
 
@@ -76,8 +76,8 @@ equals the raw command with only source newline bytes removed.
 
 **Files:**
 
-- Create: cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.ts
-- Create: cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
+- Create: cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.ts
+- Create: cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
 
 **Interfaces:**
 
@@ -208,7 +208,7 @@ formatter file does not exist yet.
 
 - [ ] **Step 2: Run the formatter tests and verify the failure is real**
 
-Run from cmd/serf-hub/frontend:
+Run from cmd/evener-hub/frontend:
 
 ~~~bash
 npm test -- --run src/widgets/shellcommand/shellCommand.test.ts
@@ -270,7 +270,7 @@ no-loss cases green.
 - [ ] **Step 5: Commit the formatter**
 
 ~~~bash
-git add cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.ts cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
+git add cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.ts cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
 git commit -m "feat(web): add lossless shell command formatter"
 ~~~
 
@@ -278,13 +278,13 @@ git commit -m "feat(web): add lossless shell command formatter"
 
 **Files:**
 
-- Modify: cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.ts
-- Modify: cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
-- Create: cmd/serf-hub/frontend/src/widgets/shellcommand/index.tsx
-- Create: cmd/serf-hub/frontend/src/widgets/shellcommand/shellcommand.module.css
-- Modify: cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx
-- Modify: cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx
-- Modify: cmd/serf-hub/frontend/src/widgets/index.ts
+- Modify: cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.ts
+- Modify: cmd/evener-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts
+- Create: cmd/evener-hub/frontend/src/widgets/shellcommand/index.tsx
+- Create: cmd/evener-hub/frontend/src/widgets/shellcommand/shellcommand.module.css
+- Modify: cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx
+- Modify: cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx
+- Modify: cmd/evener-hub/frontend/src/widgets/index.ts
 
 **Interfaces:**
 
@@ -364,7 +364,7 @@ export barrel is wired in the implementation step.
 
 - [ ] **Step 2: Run the focused tests and verify the failures**
 
-Run from cmd/serf-hub/frontend:
+Run from cmd/evener-hub/frontend:
 
 ~~~bash
 npm test -- --run src/widgets/shellcommand/shellCommand.test.ts src/widgets/codeblock/codeblock.test.tsx
@@ -472,7 +472,7 @@ token/copy/indent behavior covered.
 - [ ] **Step 7: Commit the reusable web command presentation**
 
 ~~~bash
-git add cmd/serf-hub/frontend/src/widgets/shellcommand cmd/serf-hub/frontend/src/widgets/codeblock/index.tsx cmd/serf-hub/frontend/src/widgets/codeblock/codeblock.test.tsx cmd/serf-hub/frontend/src/widgets/index.ts
+git add cmd/evener-hub/frontend/src/widgets/shellcommand cmd/evener-hub/frontend/src/widgets/codeblock/index.tsx cmd/evener-hub/frontend/src/widgets/codeblock/codeblock.test.tsx cmd/evener-hub/frontend/src/widgets/index.ts
 git commit -m "feat(web): render lossless highlighted shell commands"
 ~~~
 
@@ -480,8 +480,8 @@ git commit -m "feat(web): render lossless highlighted shell commands"
 
 **Files:**
 
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
 
 **Interfaces:**
 
@@ -518,7 +518,7 @@ Add a separate no-command/no-output test to preserve the null-body behavior.
 
 - [ ] **Step 2: Run the shell body tests and verify the changed expectations fail**
 
-Run from cmd/serf-hub/frontend:
+Run from cmd/evener-hub/frontend:
 
 ~~~bash
 npm test -- --run src/panes/session/transcript/tools/shellTool.test.tsx
@@ -569,7 +569,7 @@ and existing output ANSI/tail tests must remain green.
 - [ ] **Step 5: Commit the web shell integration**
 
 ~~~bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx
 git commit -m "feat(web): show formatted shell command in tool body"
 ~~~
 
@@ -577,8 +577,8 @@ git commit -m "feat(web): show formatted shell command in tool body"
 
 **Files:**
 
-- Create: cmd/serf-tui/internal/msgrender/shell_command.go
-- Create: cmd/serf-tui/internal/msgrender/shell_command_test.go
+- Create: cmd/evener-tui/internal/msgrender/shell_command.go
+- Create: cmd/evener-tui/internal/msgrender/shell_command_test.go
 
 **Interfaces:**
 
@@ -671,7 +671,7 @@ formatter file does not exist.
 Run from the new worktree:
 
 ~~~bash
-go test ./cmd/serf-tui/internal/msgrender -run 'TestFormatShellCommand' -count=1
+go test ./cmd/evener-tui/internal/msgrender -run 'TestFormatShellCommand' -count=1
 ~~~
 
 Expected: FAIL because formatShellCommand and shellCommandLine are undefined.
@@ -720,8 +720,8 @@ operators, and keep unmatched nesting opaque to the end.
 Run:
 
 ~~~bash
-gofmt -w cmd/serf-tui/internal/msgrender/shell_command.go cmd/serf-tui/internal/msgrender/shell_command_test.go
-go test ./cmd/serf-tui/internal/msgrender -run 'TestFormatShellCommand' -count=1
+gofmt -w cmd/evener-tui/internal/msgrender/shell_command.go cmd/evener-tui/internal/msgrender/shell_command_test.go
+go test ./cmd/evener-tui/internal/msgrender -run 'TestFormatShellCommand' -count=1
 ~~~
 
 Expected: PASS, including the source-preservation invariant and the same line
@@ -730,7 +730,7 @@ boundaries/indents as the TypeScript fixture corpus.
 - [ ] **Step 5: Commit the TUI formatter**
 
 ~~~bash
-git add cmd/serf-tui/internal/msgrender/shell_command.go cmd/serf-tui/internal/msgrender/shell_command_test.go
+git add cmd/evener-tui/internal/msgrender/shell_command.go cmd/evener-tui/internal/msgrender/shell_command_test.go
 git commit -m "feat(tui): add lossless shell command formatter"
 ~~~
 
@@ -738,8 +738,8 @@ git commit -m "feat(tui): add lossless shell command formatter"
 
 **Files:**
 
-- Modify: cmd/serf-tui/internal/msgrender/tool_bodies.go
-- Modify: cmd/serf-tui/internal/msgrender/tool_bodies_test.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_bodies.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_bodies_test.go
 
 **Interfaces:**
 
@@ -785,7 +785,7 @@ t.Cleanup; it must assert visible source, not a full ANSI string.
 Run:
 
 ~~~bash
-go test ./cmd/serf-tui/internal/msgrender -run 'TestShellBody' -count=1
+go test ./cmd/evener-tui/internal/msgrender -run 'TestShellBody' -count=1
 ~~~
 
 Expected: the new layout/highlighting assertions fail because the current body
@@ -840,9 +840,9 @@ formatted command as the existing output path.
 Run:
 
 ~~~bash
-gofmt -w cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go
-go test ./cmd/serf-tui/internal/msgrender -run 'Test(ShellBody|FormatShellCommand)' -count=1
-go test ./cmd/serf-tui/internal/msgrender -count=1
+gofmt -w cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go
+go test ./cmd/evener-tui/internal/msgrender -run 'Test(ShellBody|FormatShellCommand)' -count=1
+go test ./cmd/evener-tui/internal/msgrender -count=1
 ~~~
 
 Expected: PASS. Existing output-highlighting tests must remain green, command
@@ -852,7 +852,7 @@ all formatted source text.
 - [ ] **Step 5: Commit the TUI shell integration**
 
 ~~~bash
-git add cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go
+git add cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go
 git commit -m "feat(tui): show formatted highlighted shell commands"
 ~~~
 
@@ -860,7 +860,7 @@ git commit -m "feat(tui): show formatted highlighted shell commands"
 
 After every task commit has passed its task reviewer, run the complete relevant
 checks from the new worktree. Frontend commands run from
-cmd/serf-hub/frontend; Go commands run from the worktree root:
+cmd/evener-hub/frontend; Go commands run from the worktree root:
 
 ~~~bash
 # frontend
@@ -870,8 +870,8 @@ npm run lint
 npm run build
 
 # TUI
-go test ./cmd/serf-tui/internal/msgrender -count=1
-go test ./cmd/serf-tui/... -count=1
+go test ./cmd/evener-tui/internal/msgrender -count=1
+go test ./cmd/evener-tui/... -count=1
 
 # repository hygiene
 git diff --check

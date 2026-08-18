@@ -2,7 +2,7 @@
 
 > Reference for engineers and designers extending the serf-hub UI.
 > Captures the system AS BUILT after Pass 1-8 of the responsive UI overhaul (May 2026).
-> Source of truth: `cmd/serf-hub/assets/style.css` + the partials under `cmd/serf-hub/templates/`.
+> Source of truth: `cmd/evener-hub/assets/style.css` + the partials under `cmd/evener-hub/templates/`.
 
 The hub UI is **dense by default, with room to breathe at the touchpoints**. The aesthetic is *workshop log* — two type voices (Hanken Grotesk + JetBrains Mono), the Tokyo Night palette, paper-grain texture, and quiet motion. Color is functional (status, severity, accent); type carries identity. Add new surfaces by composing existing primitives; do not invent ad-hoc class names or use raw pixel values outside the token scale.
 
@@ -108,7 +108,7 @@ Inline SVG fractal noise sampled to 5% white opacity. Applied via `::after` pseu
 --font-mono: 'JetBrains Mono', ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 ```
 
-Both faces are loaded from Google Fonts; the CSP allows `fonts.googleapis.com` and `fonts.gstatic.com`. Vendoring WOFF2 files into `cmd/serf-hub/assets/fonts/` is the documented alternate path for offline operation.
+Both faces are loaded from Google Fonts; the CSP allows `fonts.googleapis.com` and `fonts.gstatic.com`. Vendoring WOFF2 files into `cmd/evener-hub/assets/fonts/` is the documented alternate path for offline operation.
 
 ### 1.2 Typography
 
@@ -806,7 +806,7 @@ Container queries handle surface-level responsiveness — used on `.conversation
 
 ### 4.1 Module list
 
-Files in `cmd/serf-hub/assets/`:
+Files in `cmd/evener-hub/assets/`:
 
 | File | Role |
 | --- | --- |
@@ -852,7 +852,7 @@ Files in `cmd/serf-hub/assets/`:
 
 BEM-ish but loose: `.btn` base + `.btn-primary` variant; `.sb-row` base + `.sb-row.sub` modifier. `data-*` attributes carry state (`data-state`, `data-active`, `data-pulse`, `data-sidebar-rail`, `data-sidebar-open`, `data-phone-density`, `data-theme`, `data-settings-pane`, `data-loading`, `data-mode`, `data-pending-id`).
 
-The naming linter (`cmd/serf-namingcheck`) enforces kebab-case classes and camelCase/snake_case `data-*` attributes.
+The naming linter (`cmd/evener-namingcheck`) enforces kebab-case classes and camelCase/snake_case `data-*` attributes.
 
 Legacy token aliases (`--pad`, `--panel`, `--panel-2`, `--border`, `--muted`, `--accent-2`, `--tool`, `--user`, `--error`) and a handful of legacy class aliases (status-pill state classes in providers) are still defined for migration safety. They reference the canonical tokens, so removing them is a delete-only operation once every reference is audited out.
 

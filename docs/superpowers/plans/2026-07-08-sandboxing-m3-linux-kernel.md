@@ -104,17 +104,17 @@ contract table is imported and re-satisfied per backend.
   exec form / `:86` `bash -c` form; `:95` builds env from **`os.Environ()`
   directly** (not `filteredEnvWithPolicy` — see discrepancy #4). Reached from
   `Runner` (`:215`) / `:534`. **No policy handle today.**
-- **Subcommand dispatch:** `cmd/serf/main.go:268` `dispatchCLICommand`, `:273`
+- **Subcommand dispatch:** `cmd/evener/main.go:268` `dispatchCLICommand`, `:273`
   the `switch args[0]` (add `case "sandbox-exec"`). `:221` `printRunCommands`
   (do **not** list `sandbox-exec` — it is an internal re-exec target, not a
   user command).
-- **Env construction (inert carrier already added by M1):** `cmd/serf/run.go:177`,
-  `cmd/serf/serve.go:203`.
+- **Env construction (inert carrier already added by M1):** `cmd/evener/run.go:177`,
+  `cmd/evener/serve.go:203`.
 - **M1 deliverables consumed:** `agent/sandbox` — `ResolvedPolicy` (writable
   roots, read roots, masked paths incl. pseudo-fs, net decision, cache-strategy,
   backend-required), `Resolve`, `HostFacts`, `Prober`/`FakeProber`, `Mode`,
   `*RefusalError`, and `ContractCase`/`AssertResolve` (the golden table).
-- **Escape suite base:** `cmd/serf-hub/sandbox_test.go` (existing containment
+- **Escape suite base:** `cmd/evener-hub/sandbox_test.go` (existing containment
   invariant + above-CWD secret tripwire) — the M3 escape subset extends it.
 
 ## Global Constraints
@@ -158,7 +158,7 @@ contract table is imported and re-satisfied per backend.
   `go-landlock` (RW worktree+tmp+gitdir-rw-subset, RO system read roots + main
   `.git/config` read; never config/hooks, never `/proc`); fail closed below the
   required ABI. Applies to the current thread, then the helper `execvp`s.
-- `cmd/serf/sandbox_exec.go` (new) — the `sandbox-exec` subcommand: deserialize
+- `cmd/evener/sandbox_exec.go` (new) — the `sandbox-exec` subcommand: deserialize
   the policy (from an inherited fd or arg), dispatch to bwrap-exec or
   landlock-apply-then-exec. `+build linux`.
 - `agent/sandbox/session_tmp.go` (new) — per-session tmp dir (writable, `TMPDIR`),
@@ -177,7 +177,7 @@ contract table is imported and re-satisfied per backend.
 - `agent/internal/mcp/manager.go`, `agent/internal/hooks/hooks.go` (modify) —
   accept and apply a `*sandbox.Wrapper` at their spawn sites (`manager.go:717`,
   `hooks.go:81/86`); route hook env through the sandbox floor.
-- `cmd/serf/main.go` (modify, small) — add `case "sandbox-exec"` to
+- `cmd/evener/main.go` (modify, small) — add `case "sandbox-exec"` to
   `dispatchCLICommand` (`:273`); **not** listed in `printRunCommands`.
 - Tests: `agent/sandbox/bwrap_test.go`, `landlock_test.go`, `backend_test.go`,
   `env_floor_test.go`, `provider_web_test.go`, `contract_backend_test.go`
@@ -188,8 +188,8 @@ contract table is imported and re-satisfied per backend.
 
 ## Task M3a — bwrap backend: FS confinement + `sandbox-exec` helper + pid-ns/`/proc`/`/dev`
 
-**Files:** `agent/sandbox/backend.go`, `bwrap.go`, `cmd/serf/sandbox_exec.go`
-(new); `bwrap_test.go`, `backend_test.go` (new); `cmd/serf/main.go` (modify).
+**Files:** `agent/sandbox/backend.go`, `bwrap.go`, `cmd/evener/sandbox_exec.go`
+(new); `bwrap_test.go`, `backend_test.go` (new); `cmd/evener/main.go` (modify).
 
 - [ ] **Failing test:** `TestBuildBwrapArgv` (pure, no exec) — from a
   `ResolvedPolicy` fixture assert the exact flag vector: one `--bind` per writable
@@ -212,7 +212,7 @@ contract table is imported and re-satisfied per backend.
 ## Task M3b — Landlock fallback backend (worktree-restricted only)
 
 **Files:** `agent/sandbox/landlock.go` (new), `landlock_test.go` (new);
-`cmd/serf/sandbox_exec.go`, `go.mod`/`go.sum` (modify — add `go-landlock`).
+`cmd/evener/sandbox_exec.go`, `go.mod`/`go.sum` (modify — add `go-landlock`).
 
 - [ ] **Failing test:** **Integration (landlock-ABI-gated)**
   `TestLandlockWorktreeRestricted`: apply the ruleset then exec; assert write
@@ -281,7 +281,7 @@ contract table is imported and re-satisfied per backend.
 
 **Files:** `agent/sandbox/provider_web.go` (new); `agent/sandbox/bwrap.go`,
 `agent/execenv/local.go` (or the web_fetch/web_search + remote-MCP tool sites),
-`cmd/serf/run.go`/`serve.go` (startup line) (modify); tests.
+`cmd/evener/run.go`/`serve.go` (startup line) (modify); tests.
 
 - [ ] **Failing test:** **Integration (bwrap-gated)** `TestNetOffBlocksEgress` — a
   spawned proc under net=off cannot open TCP and cannot resolve DNS/UDP
@@ -303,7 +303,7 @@ contract table is imported and re-satisfied per backend.
 ## Task M3f — Adversarial escape suite (M3 subset)
 
 **Files:** `agent/sandbox/escape_test.go` (new; may extend
-`cmd/serf-hub/sandbox_test.go`'s containment invariant). All run against the
+`cmd/evener-hub/sandbox_test.go`'s containment invariant). All run against the
 **real bwrap** backend (bwrap-gated), a few also under Landlock.
 
 - [ ] **proc aliasing** — from a spawned proc, `read /proc/1/root/...`,

@@ -81,23 +81,23 @@ All variants inherit:
 
 **Modified files:**
 
-- `cmd/serf-hub/assets/style.css` — add `.btn`, `.btn-*` variants; add `--btn-primary-text` token; add `.status-badge` rules + state colors; add `[data-pulse]` keyframes; add universal `:focus-visible` rule + per-component overrides. Delete legacy `.input-btn*`, `.header-action*`, `.spawn-btn`, `.spawn-attach-btn`, `.fork-confirm`, `.fork-cancel`, `.title-action`, `.panel-toggle`, `.chip`, `.status-pill*` blocks after migrations.
-- `cmd/serf-hub/templates/partials/workspace.html` — composer buttons + header actions + meta line status badge.
-- `cmd/serf-hub/templates/partials/spawn.html` — spawn chips + attach + spawn submit.
-- `cmd/serf-hub/templates/partials/sidebar.html` — `.project-new-btn`, `.project-gear-btn`, project chevron.
-- `cmd/serf-hub/templates/partials/credentials.html` — Set/OAuth/Clear action buttons, editor Save/Cancel/Finish.
-- `cmd/serf-hub/templates/partials/settings/providers.html` — `.status-pill` → `.status-badge`.
-- `cmd/serf-hub/templates/partials/settings/project.html` — Save button.
-- `cmd/serf-hub/templates/partials/settings/launch-serf.html` — Save button.
-- `cmd/serf-hub/templates/partials/settings/inrepo.html` — Trust button.
-- `cmd/serf-hub/templates/partials/settings/plugins.html` — Add/Remove (JS-rendered).
-- `cmd/serf-hub/templates/partials/settings/skills.html` — Add/Remove (JS-rendered).
-- `cmd/serf-hub/templates/partials/settings/mcp.html` — Add/Remove (JS-rendered).
-- `cmd/serf-hub/assets/renderer.js` — fork dialog `.fork-cancel`/`.fork-confirm` → `.btn`; `setPanelToggleActive` switches from `classList.toggle("active", …)` to `toggleAttribute("data-active", …)`; new `applyStatusDotPulse` helper sets `data-pulse` for `active|awaiting|errored`.
-- `cmd/serf-hub/assets/sidebar.js` — call `applyStatusDotPulse` after sidebar swap (mirroring the sb-row pass).
-- `cmd/serf-hub/assets/search.js` — set `data-pulse` on dots emitted in search results.
-- `cmd/serf-hub/web_test.go` — update three assertions referencing the legacy class strings.
-- `cmd/serf-hub/jstest/*.js` — update jsdom HTML fixtures that hard-code legacy class names.
+- `cmd/evener-hub/assets/style.css` — add `.btn`, `.btn-*` variants; add `--btn-primary-text` token; add `.status-badge` rules + state colors; add `[data-pulse]` keyframes; add universal `:focus-visible` rule + per-component overrides. Delete legacy `.input-btn*`, `.header-action*`, `.spawn-btn`, `.spawn-attach-btn`, `.fork-confirm`, `.fork-cancel`, `.title-action`, `.panel-toggle`, `.chip`, `.status-pill*` blocks after migrations.
+- `cmd/evener-hub/templates/partials/workspace.html` — composer buttons + header actions + meta line status badge.
+- `cmd/evener-hub/templates/partials/spawn.html` — spawn chips + attach + spawn submit.
+- `cmd/evener-hub/templates/partials/sidebar.html` — `.project-new-btn`, `.project-gear-btn`, project chevron.
+- `cmd/evener-hub/templates/partials/credentials.html` — Set/OAuth/Clear action buttons, editor Save/Cancel/Finish.
+- `cmd/evener-hub/templates/partials/settings/providers.html` — `.status-pill` → `.status-badge`.
+- `cmd/evener-hub/templates/partials/settings/project.html` — Save button.
+- `cmd/evener-hub/templates/partials/settings/launch-serf.html` — Save button.
+- `cmd/evener-hub/templates/partials/settings/inrepo.html` — Trust button.
+- `cmd/evener-hub/templates/partials/settings/plugins.html` — Add/Remove (JS-rendered).
+- `cmd/evener-hub/templates/partials/settings/skills.html` — Add/Remove (JS-rendered).
+- `cmd/evener-hub/templates/partials/settings/mcp.html` — Add/Remove (JS-rendered).
+- `cmd/evener-hub/assets/renderer.js` — fork dialog `.fork-cancel`/`.fork-confirm` → `.btn`; `setPanelToggleActive` switches from `classList.toggle("active", …)` to `toggleAttribute("data-active", …)`; new `applyStatusDotPulse` helper sets `data-pulse` for `active|awaiting|errored`.
+- `cmd/evener-hub/assets/sidebar.js` — call `applyStatusDotPulse` after sidebar swap (mirroring the sb-row pass).
+- `cmd/evener-hub/assets/search.js` — set `data-pulse` on dots emitted in search results.
+- `cmd/evener-hub/web_test.go` — update three assertions referencing the legacy class strings.
+- `cmd/evener-hub/jstest/*.js` — update jsdom HTML fixtures that hard-code legacy class names.
 
 **No new files.**
 
@@ -106,12 +106,12 @@ All variants inherit:
 ## Task 1: Add `.btn` base class + `.btn-primary` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (insert a new section after the legacy `.input-btn*` block ending around line 417)
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:67` (co-apply new classes to the existing send button for visual diff)
+- Modify: `cmd/evener-hub/assets/style.css` (insert a new section after the legacy `.input-btn*` block ending around line 417)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:67` (co-apply new classes to the existing send button for visual diff)
 
 - [ ] **Step 1: Add `--btn-primary-text` token to `:root` and the explicit theme overrides**
 
-Open `cmd/serf-hub/assets/style.css`. Inside the default `:root` block (the dark-default one starting at line 4), add the line below at the end of the block (right before the closing `}`):
+Open `cmd/evener-hub/assets/style.css`. Inside the default `:root` block (the dark-default one starting at line 4), add the line below at the end of the block (right before the closing `}`):
 
 ```css
   --btn-primary-text: var(--bg);
@@ -189,7 +189,7 @@ Find an unused horizontal section near the bottom of `style.css` (above the `Opt
 
 - [ ] **Step 3: Co-apply the new classes to the workspace Send button to compare**
 
-Open `cmd/serf-hub/templates/partials/workspace.html`. Find line 67:
+Open `cmd/evener-hub/templates/partials/workspace.html`. Find line 67:
 
 ```html
     <button type="submit" class="input-btn input-btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
@@ -206,7 +206,7 @@ Edit it to add `btn btn-primary` to the class list, keeping the old classes:
 Run:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && ./cmd/serf-hub/serf-hub &
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && ./cmd/evener-hub/serf-hub &
 ```
 
 Open a session in the web UI in both light and dark theme. Confirm the Send button:
@@ -218,7 +218,7 @@ Expected: no visible change vs the previous build (parity).
 
 - [ ] **Step 5: Revert the co-applied class on Send (keep only the new classes)**
 
-In `cmd/serf-hub/templates/partials/workspace.html:67`, replace `class="input-btn input-btn-primary send-btn btn btn-primary"` with the final form:
+In `cmd/evener-hub/templates/partials/workspace.html:67`, replace `class="input-btn input-btn-primary send-btn btn btn-primary"` with the final form:
 
 ```html
     <button type="submit" class="btn btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
@@ -230,7 +230,7 @@ Re-build and re-verify the button still looks correct on its own classes.
 
 - [ ] **Step 6: Update `web_test.go` send-button assertion**
 
-In `cmd/serf-hub/web_test.go`, find line 139:
+In `cmd/evener-hub/web_test.go`, find line 139:
 
 ```go
 	for _, supported := range []string{`class="input-btn input-btn-primary send-btn"`} {
@@ -245,15 +245,15 @@ Change to:
 Run the test:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go test ./cmd/serf-hub -run TestWeb_WorkspaceRendersSendControl -count=1
+cd /home/jesse/git/prime-radiant/serf && go test ./cmd/evener-hub -run TestWeb_WorkspaceRendersSendControl -count=1
 ```
 
-Expected: PASS. If a test of that name doesn't exist, search for the test containing line 139 by `grep -n 'input-btn input-btn-primary' cmd/serf-hub/web_test.go` and run that test's name.
+Expected: PASS. If a test of that name doesn't exist, search for the test containing line 139 by `grep -n 'input-btn input-btn-primary' cmd/evener-hub/web_test.go` and run that test's name.
 
 Also run the full hub tests:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS (one other web_test.go assertion about `input-btn-stop` may still pass since we haven't migrated that yet).
@@ -261,7 +261,7 @@ Expected: PASS (one other web_test.go assertion about `input-btn-stop` may still
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && git add cmd/serf-hub/assets/style.css cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/web_test.go
+cd /home/jesse/git/prime-radiant/serf && git add cmd/evener-hub/assets/style.css cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/web_test.go
 git commit -m "$(cat <<'EOF'
 ui: add .btn + .btn-primary, migrate workspace Send button
 
@@ -280,7 +280,7 @@ EOF
 ## Task 2: Add `.btn-secondary` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (append to the button-system section from Task 1)
+- Modify: `cmd/evener-hub/assets/style.css` (append to the button-system section from Task 1)
 
 - [ ] **Step 1: Append `.btn-secondary` rules**
 
@@ -304,7 +304,7 @@ Immediately after the `.btn-primary` block added in Task 1, append:
 - [ ] **Step 2: Build and confirm no parse errors**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build. No template touches yet — visual smoke verification deferred to the migration tasks (Tasks 7–11).
@@ -312,7 +312,7 @@ Expected: clean build. No template touches yet — visual smoke verification def
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .btn-secondary variant
 
@@ -329,7 +329,7 @@ EOF
 ## Task 3: Add `.btn-ghost` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (append)
+- Modify: `cmd/evener-hub/assets/style.css` (append)
 
 - [ ] **Step 1: Append `.btn-ghost` rules**
 
@@ -358,7 +358,7 @@ After the `.btn-secondary` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -366,7 +366,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .btn-ghost variant with [data-active] state
 
@@ -384,7 +384,7 @@ EOF
 ## Task 4: Add `.btn-danger` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (append)
+- Modify: `cmd/evener-hub/assets/style.css` (append)
 
 - [ ] **Step 1: Append `.btn-danger` rules**
 
@@ -415,7 +415,7 @@ After the `.btn-ghost` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -423,7 +423,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .btn-danger variant
 
@@ -441,7 +441,7 @@ EOF
 ## Task 5: Add `.btn-icon` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (append)
+- Modify: `cmd/evener-hub/assets/style.css` (append)
 
 - [ ] **Step 1: Append `.btn-icon` rules**
 
@@ -469,7 +469,7 @@ After the `.btn-danger` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -477,7 +477,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .btn-icon variant
 
@@ -494,7 +494,7 @@ EOF
 ## Task 6: Add `.btn-chip` variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (append)
+- Modify: `cmd/evener-hub/assets/style.css` (append)
 
 - [ ] **Step 1: Append `.btn-chip` rules**
 
@@ -545,7 +545,7 @@ After the `.btn-icon` block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -553,7 +553,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .btn-chip variant
 
@@ -571,14 +571,14 @@ EOF
 ## Task 7: Migrate `workspace.html` composer + header
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/web_test.go` (Stop button assertions)
-- Modify: `cmd/serf-hub/jstest/test-input-area.js`
-- Modify: `cmd/serf-hub/jstest/test-queue-and-drain.js`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/web_test.go` (Stop button assertions)
+- Modify: `cmd/evener-hub/jstest/test-input-area.js`
+- Modify: `cmd/evener-hub/jstest/test-queue-and-drain.js`
 
 - [ ] **Step 1: Replace the title-action copy button**
 
-In `cmd/serf-hub/templates/partials/workspace.html:9`, change:
+In `cmd/evener-hub/templates/partials/workspace.html:9`, change:
 
 ```html
       <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
@@ -691,7 +691,7 @@ to:
 
 - [ ] **Step 7: Update the web_test.go Stop button assertions**
 
-In `cmd/serf-hub/web_test.go` lines 209–219, change every occurrence of `class="input-btn input-btn-stop stop-btn"` to `class="btn btn-danger stop-btn"`. Specifically:
+In `cmd/evener-hub/web_test.go` lines 209–219, change every occurrence of `class="input-btn input-btn-stop stop-btn"` to `class="btn btn-danger stop-btn"`. Specifically:
 
 Line 214 — change:
 
@@ -721,7 +721,7 @@ Line 209 (the negative assertion checking that the old `header-action` class is 
 
 - [ ] **Step 8: Update jsdom HTML fixtures**
 
-In `cmd/serf-hub/jstest/test-input-area.js` lines 36–38, change:
+In `cmd/evener-hub/jstest/test-input-area.js` lines 36–38, change:
 
 ```html
       <button type="button" class="input-btn" data-attach-trigger>＋</button>
@@ -737,18 +737,18 @@ to:
       <button type="submit" class="send-btn btn btn-primary">send</button>
 ```
 
-In `cmd/serf-hub/jstest/test-queue-and-drain.js` lines 36–38, apply the same replacement.
+In `cmd/evener-hub/jstest/test-queue-and-drain.js` lines 36–38, apply the same replacement.
 
 - [ ] **Step 9: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest && node test-input-area.js && node test-queue-and-drain.js
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest && node test-input-area.js && node test-queue-and-drain.js
 ```
 
 Expected: both exit 0.
@@ -767,7 +767,7 @@ Launch the hub and open an active session. Confirm:
 - [ ] **Step 11: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/web_test.go cmd/serf-hub/jstest/test-input-area.js cmd/serf-hub/jstest/test-queue-and-drain.js
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/web_test.go cmd/evener-hub/jstest/test-input-area.js cmd/evener-hub/jstest/test-queue-and-drain.js
 git commit -m "$(cat <<'EOF'
 ui: migrate workspace composer + header to .btn variants
 
@@ -786,12 +786,12 @@ EOF
 ## Task 8: Migrate `spawn.html`
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/spawn.html`
-- Modify: `cmd/serf-hub/jstest/test-spawn.js`
+- Modify: `cmd/evener-hub/templates/partials/spawn.html`
+- Modify: `cmd/evener-hub/jstest/test-spawn.js`
 
 - [ ] **Step 1: Migrate the five spawn chips**
 
-In `cmd/serf-hub/templates/partials/spawn.html` lines 12–37, the existing block is:
+In `cmd/evener-hub/templates/partials/spawn.html` lines 12–37, the existing block is:
 
 ```html
     <div class="spawn-chips" id="spawn-chips">
@@ -903,7 +903,7 @@ to:
 
 - [ ] **Step 5: Update jstest fixtures**
 
-In `cmd/serf-hub/jstest/test-spawn.js` lines 39–46 and 163–164, replace `class="chip"` with `class="btn btn-chip"` and `class="spawn-btn"` with `class="btn btn-primary spawn-btn"` wherever they appear.
+In `cmd/evener-hub/jstest/test-spawn.js` lines 39–46 and 163–164, replace `class="chip"` with `class="btn btn-chip"` and `class="spawn-btn"` with `class="btn btn-primary spawn-btn"` wherever they appear.
 
 Concretely, lines 39, 42, 45 currently read:
 
@@ -944,8 +944,8 @@ Line 373 — `formDom.window.document.querySelector(".spawn-btn")` — leave unc
 - [ ] **Step 6: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && node test-spawn.js
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && node test-spawn.js
 ```
 
 Expected: both PASS / exit 0.
@@ -961,7 +961,7 @@ Open `/new`. Confirm:
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/spawn.html cmd/serf-hub/jstest/test-spawn.js
+git add cmd/evener-hub/templates/partials/spawn.html cmd/evener-hub/jstest/test-spawn.js
 git commit -m "$(cat <<'EOF'
 ui: migrate spawn.html to .btn variants
 
@@ -980,12 +980,12 @@ EOF
 ## Task 9: Migrate `sidebar.html` — rail toggle, project new/gear
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/sidebar.html`
-- Modify: `cmd/serf-hub/assets/style.css` (drop legacy `.project-new-btn` / `.project-gear-btn` block once template uses `.btn-icon`)
+- Modify: `cmd/evener-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/assets/style.css` (drop legacy `.project-new-btn` / `.project-gear-btn` block once template uses `.btn-icon`)
 
 - [ ] **Step 1: Migrate the project gear button**
 
-In `cmd/serf-hub/templates/partials/sidebar.html` lines 41–47:
+In `cmd/evener-hub/templates/partials/sidebar.html` lines 41–47:
 
 ```html
       <a class="project-gear-btn"
@@ -1037,7 +1037,7 @@ Change `class="project-new-btn"` to `class="btn btn-icon project-new-btn"`:
 
 - [ ] **Step 3: Drop the hover-only opacity on `.project-gear-btn`**
 
-In `cmd/serf-hub/assets/style.css` line 323, the rule `.project-gear-btn { … opacity: 0; }` is what made the gear hide until hover. Design language §4.8 says these are persistent at `--text-dim`. Edit the rule to remove the `opacity: 0` and the `:hover { opacity: 1 }` overrides:
+In `cmd/evener-hub/assets/style.css` line 323, the rule `.project-gear-btn { … opacity: 0; }` is what made the gear hide until hover. Design language §4.8 says these are persistent at `--text-dim`. Edit the rule to remove the `opacity: 0` and the `:hover { opacity: 1 }` overrides:
 
 Find the block:
 
@@ -1085,8 +1085,8 @@ If existing JS in `sidebar.js` selects `.project-chevron` and handles `click` ev
 - [ ] **Step 5: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && node test-sidebar.js
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && node test-sidebar.js
 ```
 
 Expected: PASS / exit 0.
@@ -1098,7 +1098,7 @@ Open the hub and confirm: gear and ＋ icons render at `--text-dim`, brighten on
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/sidebar.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate sidebar project + chevron buttons to .btn-icon
 
@@ -1117,12 +1117,12 @@ EOF
 ## Task 10: Migrate `credentials.html` + the fork dialog
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/credentials.html`
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/templates/partials/credentials.html`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 - [ ] **Step 1: Migrate the credentials action buttons**
 
-In `cmd/serf-hub/templates/partials/credentials.html` lines 62–64:
+In `cmd/evener-hub/templates/partials/credentials.html` lines 62–64:
 
 ```html
               ${supportsApiKey ? `<button type="button" data-action="set">${p.activeSource === "file" ? "Replace key" : "Set API key"}</button>` : ""}
@@ -1178,7 +1178,7 @@ to:
 
 - [ ] **Step 3: Migrate the fork dialog buttons in `renderer.js`**
 
-In `cmd/serf-hub/assets/renderer.js` lines 988–991:
+In `cmd/evener-hub/assets/renderer.js` lines 988–991:
 
 ```javascript
       const cancel = document.createElement("button");
@@ -1201,7 +1201,7 @@ Change to:
 - [ ] **Step 4: Build and verify**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1211,7 +1211,7 @@ Manually: open `/credentials`. Set/Replace, Sign in, Clear, and the Save/Cancel 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/credentials.html cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/templates/partials/credentials.html cmd/evener-hub/assets/renderer.js
 git commit -m "$(cat <<'EOF'
 ui: migrate credentials + fork dialog to .btn variants
 
@@ -1230,16 +1230,16 @@ EOF
 ## Task 11: Migrate settings sub-pages with buttons
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/project.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/launch-serf.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/inrepo.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/skills.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/mcp.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/project.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-serf.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/inrepo.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/skills.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/mcp.html`
 
 - [ ] **Step 1: project.html — Save button**
 
-In `cmd/serf-hub/templates/partials/settings/project.html:11`, change:
+In `cmd/evener-hub/templates/partials/settings/project.html:11`, change:
 
 ```html
       <button type="submit" id="proj-launch-save">Save launch defaults</button>
@@ -1253,7 +1253,7 @@ to:
 
 - [ ] **Step 2: launch-serf.html — Save button**
 
-In `cmd/serf-hub/templates/partials/settings/launch-serf.html:11`, change:
+In `cmd/evener-hub/templates/partials/settings/launch-serf.html:11`, change:
 
 ```html
     <button type="submit">Save launch defaults</button>
@@ -1267,7 +1267,7 @@ to:
 
 - [ ] **Step 3: inrepo.html — Trust button**
 
-In `cmd/serf-hub/templates/partials/settings/inrepo.html:44`, change:
+In `cmd/evener-hub/templates/partials/settings/inrepo.html:44`, change:
 
 ```html
         ${showApprove ? `<button type="button" id="approve">Trust this file</button>` : ""}
@@ -1281,7 +1281,7 @@ to:
 
 - [ ] **Step 4: plugins.html — JS-rendered Add + Pick + Remove**
 
-In `cmd/serf-hub/templates/partials/settings/plugins.html`, the script creates buttons via `document.createElement("button")` and sets `textContent`. Find lines 23–28:
+In `cmd/evener-hub/templates/partials/settings/plugins.html`, the script creates buttons via `document.createElement("button")` and sets `textContent`. Find lines 23–28:
 
 ```javascript
           const button = document.createElement("button");
@@ -1338,14 +1338,14 @@ For the `add` button (continue reading the file at line 44+ and inspect context 
 
 - [ ] **Step 5: skills.html — JS-rendered Add + Pick + Remove**
 
-In `cmd/serf-hub/templates/partials/settings/skills.html`, apply the same edits as plugins.html (the file mirrors plugins.html structure):
+In `cmd/evener-hub/templates/partials/settings/skills.html`, apply the same edits as plugins.html (the file mirrors plugins.html structure):
 - Line ~24 onwards: add `button.className = "btn btn-ghost";` to the `rm` remove button.
 - Line ~40 onwards: add `pick.className = "btn btn-secondary";` to the pick button.
 - Line ~44 onwards: add `add.className = "btn btn-primary";` to the add button.
 
 - [ ] **Step 6: mcp.html — JS-rendered Add + Remove (two sections: config files + inline servers)**
 
-In `cmd/serf-hub/templates/partials/settings/mcp.html`:
+In `cmd/evener-hub/templates/partials/settings/mcp.html`:
 - Line ~26 (first `rm-config` remove button): add `button.className = "btn btn-ghost";`.
 - Line ~41 (configAdd button): add `configAdd.className = "btn btn-primary";`.
 - Line ~62 (second `rm` remove button in the inline-servers section): add `button.className = "btn btn-ghost";`.
@@ -1354,7 +1354,7 @@ In `cmd/serf-hub/templates/partials/settings/mcp.html`:
 - [ ] **Step 7: Build and smoke-test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1364,7 +1364,7 @@ Visually: navigate to /settings/project, /settings/launch, /settings/inrepo, /se
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/project.html cmd/serf-hub/templates/partials/settings/launch-serf.html cmd/serf-hub/templates/partials/settings/inrepo.html cmd/serf-hub/templates/partials/settings/plugins.html cmd/serf-hub/templates/partials/settings/skills.html cmd/serf-hub/templates/partials/settings/mcp.html
+git add cmd/evener-hub/templates/partials/settings/project.html cmd/evener-hub/templates/partials/settings/launch-serf.html cmd/evener-hub/templates/partials/settings/inrepo.html cmd/evener-hub/templates/partials/settings/plugins.html cmd/evener-hub/templates/partials/settings/skills.html cmd/evener-hub/templates/partials/settings/mcp.html
 git commit -m "$(cat <<'EOF'
 ui: migrate settings sub-pages to .btn variants
 
@@ -1383,7 +1383,7 @@ EOF
 ## Task 12: Delete legacy button CSS
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (delete lines for the legacy button classes)
+- Modify: `cmd/evener-hub/assets/style.css` (delete lines for the legacy button classes)
 
 By this point no template or JS string emits the legacy button classes for visible elements, so the rules can be removed. Marker classes that remain on elements (e.g., `send-btn`, `stop-btn`, `model-chip`, `panel-toggle`, `title-action`, `spawn-btn`, `spawn-attach-btn`, `fork-cancel`, `fork-confirm`, `project-new-btn`, `project-gear-btn`) have no CSS rules of their own once these blocks are deleted — they're pure JS hooks.
 
@@ -1392,14 +1392,14 @@ By this point no template or JS string emits the legacy button classes for visib
 Run:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && grep -rn 'class="[^"]*\(input-btn\|spawn-btn\|spawn-attach-btn\|fork-confirm\|fork-cancel\|header-action\|title-action\|panel-toggle\|chip-mode\|input-chip\)' cmd/serf-hub/templates/ cmd/serf-hub/assets/ --include='*.html' --include='*.js' | grep -v "\.btn"
+cd /home/jesse/git/prime-radiant/serf && grep -rn 'class="[^"]*\(input-btn\|spawn-btn\|spawn-attach-btn\|fork-confirm\|fork-cancel\|header-action\|title-action\|panel-toggle\|chip-mode\|input-chip\)' cmd/evener-hub/templates/ cmd/evener-hub/assets/ --include='*.html' --include='*.js' | grep -v "\.btn"
 ```
 
 Expected: only marker-class uses remain (the new `class="btn btn-primary spawn-btn"` form is excluded by the grep). If any element is still styled solely by a legacy class, fix it before continuing.
 
 - [ ] **Step 2: Delete legacy button CSS rules**
 
-In `cmd/serf-hub/assets/style.css`, delete these blocks entirely:
+In `cmd/evener-hub/assets/style.css`, delete these blocks entirely:
 
 1. Lines ~339–352 (the `.panel-toggle*` + `.header-action*` rules). Specifically delete every line whose selector starts with `.panel-toggle`, `.header-action`, `.header-action-danger`.
 
@@ -1457,8 +1457,8 @@ Also delete:
 - [ ] **Step 3: Build and full regression**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && for f in *.js; do node "$f" || { echo "FAIL: $f"; break; }; done
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && for f in *.js; do node "$f" || { echo "FAIL: $f"; break; }; done
 ```
 
 Expected: PASS / exit 0 across the board.
@@ -1475,7 +1475,7 @@ Walk through: `/new` (spawn), an active session, an awaiting session, a closed s
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: delete legacy button CSS
 
@@ -1495,7 +1495,7 @@ EOF
 ## Task 13: Add `.status-badge` CSS
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (add `.status-badge` rules + state colors)
+- Modify: `cmd/evener-hub/assets/style.css` (add `.status-badge` rules + state colors)
 
 - [ ] **Step 1: Append the `.status-badge` block**
 
@@ -1554,7 +1554,7 @@ Below the button-system block, append:
 - [ ] **Step 2: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -1562,7 +1562,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add .status-badge CSS
 
@@ -1583,13 +1583,13 @@ EOF
 ## Task 14: Migrate `.status-pill` templates to `.status-badge`
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/providers.html`
-- Modify: `cmd/serf-hub/assets/style.css` (delete the legacy `.status-pill*` rules)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/providers.html`
+- Modify: `cmd/evener-hub/assets/style.css` (delete the legacy `.status-pill*` rules)
 
 - [ ] **Step 1: Migrate the workspace meta status-pill**
 
-In `cmd/serf-hub/templates/partials/workspace.html:80`, the inline `workspace_meta` template currently reads:
+In `cmd/evener-hub/templates/partials/workspace.html:80`, the inline `workspace_meta` template currently reads:
 
 ```html
 {{define "workspace_meta"}}{{if .SourceLabel}}<span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span><span class="rule-dot">·</span>{{end}}{{if .Branch}}<span class="branch">{{.Branch}}</span><span class="rule-dot">·</span>{{end}}<span class="status-pill" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span> {{.StateLabel}}</span><span class="rule-dot">·</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
@@ -1603,7 +1603,7 @@ Change the `<span class="status-pill" …>` portion to `<span class="status-badg
 
 - [ ] **Step 2: Migrate the providers settings status-pill**
 
-In `cmd/serf-hub/templates/partials/settings/providers.html:19`, change:
+In `cmd/evener-hub/templates/partials/settings/providers.html:19`, change:
 
 ```html
             <span class="status-pill status-${p.activeSource}">${p.activeSource}</span>
@@ -1619,7 +1619,7 @@ to:
 
 - [ ] **Step 3: Delete the legacy `.status-pill*` rules from style.css**
 
-In `cmd/serf-hub/assets/style.css`:
+In `cmd/evener-hub/assets/style.css`:
 
 - Line ~356 — delete `.status-pill { display: inline-flex; align-items: baseline; gap: 6px; }`.
 - Lines ~759–766 — delete the entire `.status-pill` family:
@@ -1644,7 +1644,7 @@ Add a small replacement so the badge keeps a left margin inside settings rows:
 - [ ] **Step 4: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1654,7 +1654,7 @@ Visually: open an active session — confirm the header status badge reads as mo
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/templates/partials/settings/providers.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/templates/partials/settings/providers.html cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: replace .status-pill with .status-badge in templates
 
@@ -1672,14 +1672,14 @@ EOF
 ## Task 15: Drive `[data-pulse]` from JS
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Modify: `cmd/serf-hub/assets/search.js`
-- Modify: `cmd/serf-hub/assets/style.css` (pulse keyframes + `[data-pulse]` selector)
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/search.js`
+- Modify: `cmd/evener-hub/assets/style.css` (pulse keyframes + `[data-pulse]` selector)
 
 - [ ] **Step 1: Add the keyframes + selector to style.css**
 
-Append to `cmd/serf-hub/assets/style.css`:
+Append to `cmd/evener-hub/assets/style.css`:
 
 ```css
 /* ── Status-dot pulse (Pass 5) ────────────────────────────────────────────
@@ -1697,7 +1697,7 @@ Append to `cmd/serf-hub/assets/style.css`:
 
 - [ ] **Step 2: Add the `applyStatusDotPulse` helper in renderer.js**
 
-Open `cmd/serf-hub/assets/renderer.js`. At the bottom of the file (or in the same scope as `setPanelToggleActive` around line 2843), add:
+Open `cmd/evener-hub/assets/renderer.js`. At the bottom of the file (or in the same scope as `setPanelToggleActive` around line 2843), add:
 
 ```javascript
   // applyStatusDotPulse sets [data-pulse] on every .status-dot under root
@@ -1755,7 +1755,7 @@ Also call it once at module load (in case the initial render had dots already on
 
 - [ ] **Step 4: Call `applyStatusDotPulse` from sidebar.js after its own renders**
 
-Open `cmd/serf-hub/assets/sidebar.js`. Find the function that runs after the sidebar partial is swapped in (look for `htmx:afterSwap` listener scoped to `#sidebar`, or any function that processes a fresh sidebar DOM). At the end of that function, add:
+Open `cmd/evener-hub/assets/sidebar.js`. Find the function that runs after the sidebar partial is swapped in (look for `htmx:afterSwap` listener scoped to `#sidebar`, or any function that processes a fresh sidebar DOM). At the end of that function, add:
 
 ```javascript
   if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
@@ -1776,7 +1776,7 @@ If no such hook exists, register one at the top level of sidebar.js:
 
 - [ ] **Step 5: Set `data-pulse` directly in search.js when rendering result rows**
 
-In `cmd/serf-hub/assets/search.js:821`, the rendered dot string is:
+In `cmd/evener-hub/assets/search.js:821`, the rendered dot string is:
 
 ```javascript
            '<span class="status-dot" data-state="' + escapeHtml(r.state || "ended") + '"></span>' +
@@ -1793,8 +1793,8 @@ Change to (inline the pulse logic — search rows render in a tight loop, simple
 - [ ] **Step 6: Build + test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && node test-sidebar.js && node test-search.js 2>/dev/null || true
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && node test-sidebar.js && node test-search.js 2>/dev/null || true
 ```
 
 Visually: open a session that's active. Confirm the sidebar's status dot for that row breathes (opacity oscillates over ~2s). Confirm the workspace header's status dot also breathes. Open the search palette — a live active session in the results breathes.
@@ -1806,7 +1806,7 @@ In the browser's devtools, toggle `prefers-reduced-motion: reduce`. Confirm the 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/search.js cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/search.js cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: drive [data-pulse] on status dots from JS
 
@@ -1825,7 +1825,7 @@ EOF
 ## Task 16: Universal `:focus-visible` rings + per-component overrides
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1: Add the universal `:where(:focus-visible)` rule**
 
@@ -1872,12 +1872,12 @@ For controls where the +1px offset escapes the radius (the ring would be visibly
 
 - [ ] **Step 3: Remove the now-redundant per-button `:focus-visible` rule**
 
-In `cmd/serf-hub/assets/style.css`, locate the existing `.spawn-attach-btn:focus-visible { outline: ...; outline-offset: 1px; }` rule at line 621 (or wherever it survived Task 12). It's been superseded by the universal rule. If still present, delete it. Also remove any other one-off `:focus-visible` rule that exactly matches the universal `outline: 2px solid var(--accent); outline-offset: 1px;` pattern.
+In `cmd/evener-hub/assets/style.css`, locate the existing `.spawn-attach-btn:focus-visible { outline: ...; outline-offset: 1px; }` rule at line 621 (or wherever it survived Task 12). It's been superseded by the universal rule. If still present, delete it. Also remove any other one-off `:focus-visible` rule that exactly matches the universal `outline: 2px solid var(--accent); outline-offset: 1px;` pattern.
 
 - [ ] **Step 4: Build**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 - [ ] **Step 5: Verify focus rings with the keyboard**
@@ -1898,7 +1898,7 @@ Both light and dark themes. Confirm the ring color resolves to `--accent` in bot
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add universal :where(:focus-visible) ring + per-component offsets
 
@@ -1917,13 +1917,13 @@ EOF
 ## Task 17: `[data-active]` for sub-tab pressed state
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js` (`setPanelToggleActive`)
+- Modify: `cmd/evener-hub/assets/renderer.js` (`setPanelToggleActive`)
 
 The `.btn-ghost[data-active]` rule from Task 3 already styles the pressed state. This task switches the JS that toggles `.active` to instead toggle `data-active`.
 
 - [ ] **Step 1: Edit `setPanelToggleActive`**
 
-In `cmd/serf-hub/assets/renderer.js` lines 2843–2846:
+In `cmd/evener-hub/assets/renderer.js` lines 2843–2846:
 
 ```javascript
   function setPanelToggleActive(selector, active) {
@@ -1949,14 +1949,14 @@ Change to:
 - [ ] **Step 2: Build and test**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && node test-panels.js && node test-renderer.js
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && node test-panels.js && node test-renderer.js
 ```
 
 Expected: PASS / exit 0. If a panel-toggle test specifically asserts `.active` class, update that assertion to `getAttribute("data-active")` instead. Search:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && grep -rn "panel-toggle.*\.active\|classList.contains..active.*panel" cmd/serf-hub/jstest/
+cd /home/jesse/git/prime-radiant/serf && grep -rn "panel-toggle.*\.active\|classList.contains..active.*panel" cmd/evener-hub/jstest/
 ```
 
 If any matches, fix them as part of this commit.
@@ -1968,7 +1968,7 @@ Open a session. Click the `tasks` button — confirm it gets the pressed surface
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/assets/renderer.js
 git commit -m "$(cat <<'EOF'
 ui: switch panel-toggle from .active class to [data-active]
 
@@ -1991,8 +1991,8 @@ EOF
 - [ ] **Step 1: Full build + full test pass**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./... && go test ./cmd/serf-hub -count=1
-cd cmd/serf-hub/jstest && for f in *.js; do echo "=== $f ==="; node "$f" || { echo "FAIL: $f"; exit 1; }; done
+cd /home/jesse/git/prime-radiant/serf && go build ./... && go test ./cmd/evener-hub -count=1
+cd cmd/evener-hub/jstest && for f in *.js; do echo "=== $f ==="; node "$f" || { echo "FAIL: $f"; exit 1; }; done
 ```
 
 Expected: every test PASS / exit 0.
@@ -2035,7 +2035,7 @@ In devtools, enable `prefers-reduced-motion: reduce`. Confirm status-dot pulse s
 - [ ] **Step 6: Lint check — no legacy class remnants**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && grep -rn 'class="[^"]*\(input-btn\b\|input-btn-primary\|input-btn-stop\|input-btn-ghost\|header-action\|spawn-attach-btn\|fork-confirm\|fork-cancel\|title-action\|panel-toggle\b\|chip-mode\|input-chip\|status-pill\)' cmd/serf-hub/templates/ cmd/serf-hub/assets/*.js | grep -v "// "
+cd /home/jesse/git/prime-radiant/serf && grep -rn 'class="[^"]*\(input-btn\b\|input-btn-primary\|input-btn-stop\|input-btn-ghost\|header-action\|spawn-attach-btn\|fork-confirm\|fork-cancel\|title-action\|panel-toggle\b\|chip-mode\|input-chip\|status-pill\)' cmd/evener-hub/templates/ cmd/evener-hub/assets/*.js | grep -v "// "
 ```
 
 Expected: no output. Marker classes like `send-btn`, `stop-btn`, `model-chip`, `spawn-btn`, `spawn-attach-btn`, `fork-confirm`, `fork-cancel`, `title-action`, `panel-toggle`, `project-new-btn`, `project-gear-btn` may still appear, but each must be co-applied with `btn`. Spot-check.

@@ -53,13 +53,13 @@ coverage.
 Catalog currently advertised tools:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
 ```
 
 Run all current probes:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -70,7 +70,7 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
 Run one probe with an existing binary:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --serf-bin /tmp/serf \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path
@@ -79,7 +79,7 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
 Run one probe with an experimental prompt append:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --serf-bin /tmp/serf \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path \
@@ -93,7 +93,7 @@ probe/model/harness as the failure you are trying to explain.
 Run a callback or notification probe with a live session harness:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -162,10 +162,10 @@ The runner writes `result.json`, `stdout.txt`, and `stderr.ndjson` under each
 probe repetition directory. For session/job/watch inspection, prefer:
 
 ```sh
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -format outline
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -count communicate
-go run ./cmd/serf-doctor tree "$SID" --state-dir "$STATE" --observers
-go run ./cmd/serf-doctor watches "$SID" --state-dir "$STATE"
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -format outline
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$STATE" -count communicate
+go run ./cmd/evener-doctor tree "$SID" --state-dir "$STATE" --observers
+go run ./cmd/evener-doctor watches "$SID" --state-dir "$STATE"
 ```
 
 If a live observer/callback scenario needs a session to remain open across

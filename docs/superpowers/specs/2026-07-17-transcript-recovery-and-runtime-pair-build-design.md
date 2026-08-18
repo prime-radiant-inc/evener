@@ -96,7 +96,7 @@ same honest treatment without becoming format-specific UI code.
 
 ### 2. Convert recent v1 transcripts with an operator-only command
 
-Add `cmd/serf-transcript-v2-upgrade`. The command is committed and tested so the
+Add `cmd/evener-transcript-v2-upgrade`. The command is committed and tested so the
 recovery is reproducible, but it is not added to install, distribution, release,
 or aggregate product-build binary lists.
 
@@ -168,8 +168,8 @@ staging directory:
 ```text
 current checkout
     |
-    +-- cmd/serf      --+
-    +-- cmd/serf-hub --+--> staged pair --> repository-root binaries
+    +-- cmd/evener      --+
+    +-- cmd/evener-hub --+--> staged pair --> repository-root binaries
 ```
 
 Both builds receive the same `LDFLAGS`, so embedded version, revision, and build

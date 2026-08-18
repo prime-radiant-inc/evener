@@ -22,8 +22,8 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 		t.Fatalf("build runtime pair: %v\n%s", err, output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
-	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
 	logData, err := os.ReadFile(fixture.logPath)
 	if err != nil {
 		t.Fatalf("read fake go log: %v", err)
@@ -113,7 +113,7 @@ func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 	writeTestFile(t, filepath.Join(fixture.root, "serf"), []byte("old-serf\n"), 0o755)
 	writeTestFile(t, filepath.Join(fixture.root, "serf-hub"), []byte("old-serf-hub\n"), 0o755)
 
-	if output, err := runRuntimePairBuild(fixture, "./cmd/serf-hub/"); err == nil {
+	if output, err := runRuntimePairBuild(fixture, "./cmd/evener-hub/"); err == nil {
 		t.Fatalf("build runtime pair succeeded, want hub compiler failure; output = %q", output)
 	}
 
@@ -133,8 +133,8 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 				t.Fatalf("make %s: %v\n%s", target, err, output)
 			}
 
-			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
-			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
 
 			// build must build the web too: build-runtime depends on
 			// build-web (Makefile), so both aliases order the same way.
@@ -1288,7 +1288,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 
 	hubBuildLine := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "go-env\t./cmd/serf-hub/\t") {
+		if strings.HasPrefix(line, "go-env\t./cmd/evener-hub/\t") {
 			hubBuildLine = i
 			break
 		}
@@ -1329,7 +1329,7 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		if npmBuildLine == -1 && strings.Contains(line, "npm run build") {
 			npmBuildLine = i
 		}
-		if hubBuildLine == -1 && strings.Contains(line, "./cmd/serf-hub/") {
+		if hubBuildLine == -1 && strings.Contains(line, "./cmd/evener-hub/") {
 			hubBuildLine = i
 		}
 	}
@@ -1337,7 +1337,7 @@ func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte
 		t.Fatalf("make -n %s has no npm run build line; output = %s", target, output)
 	}
 	if hubBuildLine == -1 {
-		t.Fatalf("make -n %s has no ./cmd/serf-hub/ go build line; output = %s", target, output)
+		t.Fatalf("make -n %s has no ./cmd/evener-hub/ go build line; output = %s", target, output)
 	}
 	if npmBuildLine > hubBuildLine {
 		t.Fatalf("make -n %s: npm run build (line %d) printed after the serf-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)

@@ -28,9 +28,9 @@ uses three servers:
 Build the three harness binaries from the worktree root:
 
 ```sh
-go build -o /tmp/serf ./cmd/serf
-go build -o /tmp/serf-hub ./cmd/serf-hub
-go build -o /tmp/serf-tui ./cmd/serf-tui
+go build -o /tmp/serf ./cmd/evener
+go build -o /tmp/serf-hub ./cmd/evener-hub
+go build -o /tmp/serf-tui ./cmd/evener-tui
 go build -o /tmp/intgmcpserver ./agent/testdata/intgmcpserver
 ```
 
@@ -407,7 +407,7 @@ state). `git status` on the worktree is clean before and after.
   on a `connected` server as "currently broken" without also checking
   `Status`.
 - **`serf-hub`'s host lock is unconditionally keyed on real `$HOME`**
-  (`cmd/serf-hub/main.go`'s `hostlock.AcquireLock(filepath.Join(home,
+  (`cmd/evener-hub/main.go`'s `hostlock.AcquireLock(filepath.Join(home,
   ".serf", "hub.lock"))`, `home` from `os.UserHomeDir()`), with no
   `hub.toml`/flag override. Isolating a second hub instance on one host
   requires overriding the `HOME` env var for that process, not just passing

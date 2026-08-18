@@ -358,7 +358,7 @@ STOP threshold.
 ## Verification
 
 ```
-cmd/serf-hub/frontend:
+cmd/evener-hub/frontend:
   npx tsc --noEmit  → EXIT=0
   npx vitest run    → EXIT=0  (104 files / 1509 tests — baseline 103/1504 + this task's
                                 tokenFlood.test.tsx: +1 file, +5 tests; tokenFlood.bench.ts is
@@ -368,7 +368,7 @@ cmd/serf-hub/frontend:
                                 confirmed clean via `git status`)
 
 go build ./...                  → EXIT=0  (repo root)
-go test ./cmd/serf-hub/...      → EXIT=0  (11 packages, all ok)
+go test ./cmd/evener-hub/...      → EXIT=0  (11 packages, all ok)
 ```
 
 Live proof: real hub (`SERF_HUB_WEB=new`, `serf-hub -addr 127.0.0.1:19280 -serf <fresh serf

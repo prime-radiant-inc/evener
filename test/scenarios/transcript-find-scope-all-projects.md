@@ -18,7 +18,7 @@ then from a serf run in a **different** project dir Y (sharing the same
   overwrite mid-run (kata `k2rx`):
   ```bash
   run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   ```
 - Creds exported into the child env:
   ```bash

@@ -19,14 +19,14 @@ The dormant case is a three-layer contract, each layer independently
 checkable:
 
 - **Wire**: `hubThreadStart` calls `StartTurn` only when
-  `len(params.Input) > 0` (`cmd/serf-hub/app_threadlifecycle.go#hubThreadStart`).
+  `len(params.Input) > 0` (`cmd/evener-hub/app_threadlifecycle.go#hubThreadStart`).
 - **Client**: `buildInput` pushes a text item only `if (text.trim())`,
   and sends it UNTRIMMED when it does
   (`panes/spawn/startThread.ts:39-45`). The REST shim does the same:
   `inputItemsForText` returns nil for a whitespace-only prompt
-  (`cmd/serf-hub/web_session.go#inputItemsForText`).
+  (`cmd/evener-hub/web_session.go#inputItemsForText`).
 - **Presentation**: the fact rides beside the state, not inside it —
-  `hubcore.TreeNode.Dormant` (`cmd/serf-hub/internal/hubcore/tree.go#Dormant`),
+  `hubcore.TreeNode.Dormant` (`cmd/evener-hub/internal/hubcore/tree.go#Dormant`),
   wired to `/api/tree` as `"dormant"` (`hubapi/types.go#Dormant`,
   `web_api_tree.go:1334`) and to the rail as
   `[data-testid="rail-row-not-started"]`.
@@ -35,7 +35,7 @@ checkable:
 selector map there is the single place these hooks are maintained. This
 card names only `spawn-prompt-card`, `spawn-submit`, `rail-row-not-started`
 and the session pane's empty state; anything else, grep `data-testid` in
-`cmd/serf-hub/frontend/src` rather than inventing one.
+`cmd/evener-hub/frontend/src` rather than inventing one.
 
 ## Pre-state
 
@@ -44,7 +44,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
   checklist in `docs/agentic-testing.md`. Assert `location.port` in the
   browser before trusting anything you see.
 - **`past_index_rebuild_interval = "2s"` in the hub's `hub.toml`.** The
-  default is 60s (`cmd/serf-hub/config.go:62,134-135`) and `dormant` is
+  default is 60s (`cmd/evener-hub/config.go:62,134-135`) and `dormant` is
   read out of session meta via the Past index
   (`navigationSnapshotInputs`, `web_api_tree.go#navigationSnapshotInputs`), so on the
   default a just-spawned session reports `dormant:false` for up to a
@@ -78,7 +78,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
      | jq --arg ref "local:$SID" '[.. | objects | select(.ref? == $ref)
          | {ref, state, dormant, age}] | .[0]'
    ```
-4. Read the on-disk transcript: `go run ./cmd/serf-doctor transcript
+4. Read the on-disk transcript: `go run ./cmd/evener-doctor transcript
    "$SID" --state-dir "$state" --format outline --range last:20`.
 5. Repeat step 1 with a whitespace-only prompt (`"   \n  "`). The
    outcome must be identical — that is `inputItemsForText`'s

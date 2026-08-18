@@ -90,8 +90,8 @@ glyph→icon, recolor needs-you amber→blue, split warning out, and rename `pro
 - **Rank-function consolidation (explicit task — Jesse):** `AttentionRank` (tree.go:150-165) and
   `rollupRank` are duplicated in hubcore, and the TUI has a third (`attentionRankLabel`,
   hub_dashboard_view.go:597-611). Consolidate all three into **one shared source of truth**, done
-  properly with tests. Cross-module caveat: hubcore (`cmd/serf-hub/internal/hubcore`) and the TUI
-  (`cmd/serf-tui`) are different modules, so the shared implementation lives in a small common
+  properly with tests. Cross-module caveat: hubcore (`cmd/evener-hub/internal/hubcore`) and the TUI
+  (`cmd/evener-tui`) are different modules, so the shared implementation lives in a small common
   package both import (candidate: `hubapi`, or a new `attentionrank` package) — pick the lightest
   home during the plan. The band function from §2 (errored → ask-pending → your-move) builds on
   top of the consolidated rank, so sequence consolidation **before** the §2 band work within

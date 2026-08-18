@@ -22,14 +22,14 @@
 
 ## File map
 
-- Modify `cmd/serf-hub/frontend/src/panes/session/Session.tsx`: own the selected mode, render the selector, and choose Everything versus the derived focused transcript.
-- Create `cmd/serf-hub/frontend/src/panes/session/viewModes.ts`: define mode types and pure transformation/grouping helpers.
-- Create `cmd/serf-hub/frontend/src/panes/session/viewModes.test.ts`: test labels, grouping, filtering, ordering, and missing metadata.
-- Modify `cmd/serf-hub/frontend/src/panes/session/session.module.css`: style the compact selector and focused-mode entries without changing Everything styles.
-- Modify `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx`: test selector behavior, mode rendering, accessibility, and initial selection.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts`: expose stable anchor capture/restoration and enforce initial scroll-to-end.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts`: test anchor restoration and opening at the end.
-- Modify `cmd/serf-hub/frontend/src/panes/session/Session.tsx` or add `cmd/serf-hub/frontend/src/panes/session/viewModeScroll.ts` only if the scroll hook needs a small dedicated anchor utility; keep anchor identity based on stable turn/event IDs.
+- Modify `cmd/evener-hub/frontend/src/panes/session/Session.tsx`: own the selected mode, render the selector, and choose Everything versus the derived focused transcript.
+- Create `cmd/evener-hub/frontend/src/panes/session/viewModes.ts`: define mode types and pure transformation/grouping helpers.
+- Create `cmd/evener-hub/frontend/src/panes/session/viewModes.test.ts`: test labels, grouping, filtering, ordering, and missing metadata.
+- Modify `cmd/evener-hub/frontend/src/panes/session/session.module.css`: style the compact selector and focused-mode entries without changing Everything styles.
+- Modify `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`: test selector behavior, mode rendering, accessibility, and initial selection.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts`: expose stable anchor capture/restoration and enforce initial scroll-to-end.
+- Modify `cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts`: test anchor restoration and opening at the end.
+- Modify `cmd/evener-hub/frontend/src/panes/session/Session.tsx` or add `cmd/evener-hub/frontend/src/panes/session/viewModeScroll.ts` only if the scroll hook needs a small dedicated anchor utility; keep anchor identity based on stable turn/event IDs.
 
 ## Interfaces
 
@@ -58,8 +58,8 @@ Use the repository’s concrete transcript/message types in place of `unknown` w
 ### Task 1: Define pure view-mode transformations
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/viewModes.ts`
-- Create: `cmd/serf-hub/frontend/src/panes/session/viewModes.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/viewModes.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/viewModes.test.ts`
 
 **Interfaces:**
 - Consumes: the existing turn/message/tool data types imported from the session transcript modules.
@@ -91,7 +91,7 @@ Also assert `1 tool call` and `3 tool calls` formatting data, no raw tool fields
 
 - [ ] **Step 2: Run the focused test and verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/viewModes.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/viewModes.test.ts`
 Expected: FAIL because the transformation module does not exist.
 
 - [ ] **Step 3: Implement the minimal pure transformation**
@@ -100,22 +100,22 @@ Inspect the concrete `TurnBlock`/message/tool registry types. Walk the source se
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/viewModes.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/viewModes.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/viewModes.ts cmd/serf-hub/frontend/src/panes/session/viewModes.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/viewModes.ts cmd/evener-hub/frontend/src/panes/session/viewModes.test.ts
 git commit -m "feat(web): derive focused session view entries"
 ```
 
 ### Task 2: Add the three-mode selector and focused rendering
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/session.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/session.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`
 
 **Interfaces:**
 - Consumes: `SESSION_VIEW_MODES`, `SessionViewMode`, and `focusedEntries()` from Task 1.
@@ -127,7 +127,7 @@ Render a hydrated fixture session and assert the header exposes a radio group wi
 
 - [ ] **Step 2: Run the component tests and verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/Session.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/Session.test.tsx`
 Expected: FAIL because the selector and focused renderer are not implemented.
 
 - [ ] **Step 3: Implement selector and render branches**
@@ -142,23 +142,23 @@ Use existing CSS variables and theme conventions. Keep selector compact, style t
 
 - [ ] **Step 5: Run component tests**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/Session.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/Session.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/Session.tsx cmd/serf-hub/frontend/src/panes/session/session.module.css cmd/serf-hub/frontend/src/panes/session/Session.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/Session.tsx cmd/evener-hub/frontend/src/panes/session/session.module.css cmd/evener-hub/frontend/src/panes/session/Session.test.tsx
 git commit -m "feat(web): add session view mode selector"
 ```
 
 ### Task 3: Preserve scroll anchor across mode changes and open at end
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
-- Create only if needed: `cmd/serf-hub/frontend/src/panes/session/viewModeScroll.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx`
+- Create only if needed: `cmd/evener-hub/frontend/src/panes/session/viewModeScroll.ts`
 
 **Interfaces:**
 - Consumes: stable focused-entry IDs and the existing `VirtualListHandle`/scroll state.
@@ -176,7 +176,7 @@ Add a mode-switch test where hidden tool entries change list height but the near
 
 - [ ] **Step 2: Run focused scroll tests and verify failure**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
 Expected: FAIL because the new anchor/open behavior is absent.
 
 - [ ] **Step 3: Implement anchor capture/restoration**
@@ -189,13 +189,13 @@ On first hydrated session render, scroll to the last transcript item after the l
 
 - [ ] **Step 5: Run scroll tests**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts cmd/serf-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts cmd/serf-hub/frontend/src/panes/session/Session.tsx cmd/serf-hub/frontend/src/panes/session/viewModeScroll.ts
+git add cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts cmd/evener-hub/frontend/src/panes/session/Session.tsx cmd/evener-hub/frontend/src/panes/session/viewModeScroll.ts
 git commit -m "feat(web): stabilize session scroll across views"
 ```
 
@@ -206,7 +206,7 @@ git commit -m "feat(web): stabilize session scroll across views"
 
 - [ ] **Step 1: Format touched frontend files**
 
-Run: `cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/viewModes.ts src/panes/session/viewModes.test.ts src/panes/session/Session.tsx src/panes/session/Session.test.tsx src/panes/session/session.module.css src/panes/session/transcript/flow/useTranscriptScroll.ts src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/viewModes.ts src/panes/session/viewModes.test.ts src/panes/session/Session.tsx src/panes/session/Session.test.tsx src/panes/session/session.module.css src/panes/session/transcript/flow/useTranscriptScroll.ts src/panes/session/transcript/flow/useTranscriptScroll.test.ts`
 Expected: Biome completes without errors.
 
 - [ ] **Step 2: Run canonical frontend gate**

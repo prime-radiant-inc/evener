@@ -186,7 +186,7 @@ Real hub + a real `serf serve` daemon + a real `oai-work/gpt-5.4-mini` session (
 `.superpowers/sdd/w5-close-t6-evidence/` (10 screenshots).
 
 **Environment note (coordination finding for Jesse).** serf-hub takes a **host-global flock at
-`$HOME/.serf/hub.lock`** (`cmd/serf-hub/main.go:133-135`, "single hub per host"). At run time the
+`$HOME/.serf/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). At run time the
 parallel **W7 close's own live-proof hub was already holding that flock**, so a normal hub on the
 wave-4 precedent port could not start. Rather than disturb a sibling's in-flight run, I launched a
 **fully isolated hub under a fake `HOME`** (its own `hub.lock`, `~/.serf/run` rendezvous, and state
@@ -278,7 +278,7 @@ steering/queue, blocked by the test daemon's capabilities rather than by the UI.
 
 ## Verification
 
-Gates run from `cmd/serf-hub/frontend`, AND-chained (each gates the next), `vitest` bare (exit code
+Gates run from `cmd/evener-hub/frontend`, AND-chained (each gates the next), `vitest` bare (exit code
 unmasked, output captured to a log read separately — never piped through tail/grep inside the chain):
 
 ```

@@ -3,7 +3,7 @@
 **What this covers**: spec Acceptance criteria 5 (transcript shows the
 switch marker after reload) and part of criterion 6 (both surfaces display
 the current model for a cold-attached client) via the TUI path. Exercises
-`/model` (`cmd/serf-tui/hub_command_registry.go:321-346`), the `(active)` tag fix in
+`/model` (`cmd/evener-tui/hub_command_registry.go:321-346`), the `(active)` tag fix in
 the picker (item ids `provider/model` normalized against bare
 `detail.Model`), the live header refresh from `thread/model/changed`
 (`hub_session_view.go:51`'s `model` part), and the dashboard row Model
@@ -37,7 +37,7 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
 - Step 2: exactly one row is tagged `(active)` and it is model A's — the
   fixed normalization comparing `provider/model` ids consistently
   (`modelIDMatchesActive`,
-  `cmd/serf-tui/internal/tuipick/model_picker.go:171,207-218` — the picker
+  `cmd/evener-tui/internal/tuipick/model_picker.go:171,207-218` — the picker
   moved into the `tuipick` subpackage), not the pre-fix bug where
   `activeModel` never
   matched because item ids were `provider/model` while `detail.Model` was

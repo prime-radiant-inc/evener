@@ -8,8 +8,8 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 
 ## Evidence
 
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v`
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v`
 - `GOCACHE=/tmp/serf-gocache go test . -run 'TestSupportedEnvVarsAreDocumented|TestSupportedEnvVarsUseRegistryRows' -count=1 -v`
 - `git diff --check`
 

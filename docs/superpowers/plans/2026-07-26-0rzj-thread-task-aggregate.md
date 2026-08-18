@@ -14,7 +14,7 @@
 - The aggregate must have the same `total`/`done` semantics as `serf/task/updated`.
 - Preserve absent-versus-zero exactly: unsupported or missing task data is `null`/unknown; an authoritative empty task store is `{total: 0, done: 0}`.
 - Read and follow `docs/testing.md`, including round-trip/drift guidance; default tests remain deterministic and use real task stores.
-- Regenerate `cmd/serf-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md` with `make generate`; never hand-edit generated output.
+- Regenerate `cmd/evener-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md` with `make generate`; never hand-edit generated output.
 - Do not modify unrelated work or close `0rzj`; add a substantive ready-for-controller-review comment only after complete verification.
 
 ---
@@ -25,7 +25,7 @@
 - Modify: `appwire/types.go:235-285,384-392`
 - Modify: `server/server.go:220-240,666-672`
 - Modify: `server/appwire_runtime.go:846-1030`
-- Modify: `cmd/serf/serve.go:590-605`
+- Modify: `cmd/evener/serve.go:590-605`
 - Modify: `server/appwire_server_test.go:1024-1115`
 
 **Interfaces:**
@@ -57,7 +57,7 @@
   }
   ```
 
-  Add `Tasks *TaskAggregate `json:"tasks,omitempty"`` to `SerfThread`. Add a server callback field and setter. In `Server.appThread`, call the callback if wired and assign its pointer; leave it nil when the callback is absent. In `cmd/serf/serve.go`, wire the callback to `getSession().Tasks()`, counting `TaskDone` exactly as `TaskStore.Progress` does and returning a non-nil aggregate even when the real store is empty.
+  Add `Tasks *TaskAggregate `json:"tasks,omitempty"`` to `SerfThread`. Add a server callback field and setter. In `Server.appThread`, call the callback if wired and assign its pointer; leave it nil when the callback is absent. In `cmd/evener/serve.go`, wire the callback to `getSession().Tasks()`, counting `TaskDone` exactly as `TaskStore.Progress` does and returning a non-nil aggregate even when the real store is empty.
 
 - [ ] **Step 4: Run focused server/appwire tests**
 
@@ -72,15 +72,15 @@
 - [ ] **Step 5: Commit the live wire change**
 
   ```bash
-  git add appwire/types.go server/server.go server/appwire_runtime.go cmd/serf/serve.go server/appwire_server_test.go
+  git add appwire/types.go server/server.go server/appwire_runtime.go cmd/evener/serve.go server/appwire_server_test.go
   git commit -m "feat(appwire): include task progress in thread snapshots"
   ```
 
 ### Task 2: Project persisted task aggregates for cold and past reads
 
 **Files:**
-- Modify: `cmd/serf-hub/app_threadread.go:133-290`
-- Create or modify: `cmd/serf-hub/app_threadread_tasks_test.go`
+- Modify: `cmd/evener-hub/app_threadread.go:133-290`
+- Create or modify: `cmd/evener-hub/app_threadread_tasks_test.go`
 
 **Interfaces:**
 - Consumes: `agent/task.TaskStore`, `loadPersistedTasks`, `pastEntryThread`, and `mergePastThreadForRead`.
@@ -95,7 +95,7 @@
   Run:
 
   ```bash
-  go test ./cmd/serf-hub -run 'TestPastThreadRead.*Task|TestPastEntryThread.*Task' -count=1 -v
+  go test ./cmd/evener-hub -run 'TestPastThreadRead.*Task|TestPastEntryThread.*Task' -count=1 -v
   ```
 
   Expected: all aggregate assertions fail because the past projector currently leaves `Serf.Tasks` nil.
@@ -109,7 +109,7 @@
   Run the focused command again, then:
 
   ```bash
-  go test ./cmd/serf-hub -run 'Test(PastThread|PastEntry|HubTasksList).*' -count=1
+  go test ./cmd/evener-hub -run 'Test(PastThread|PastEntry|HubTasksList).*' -count=1
   ```
 
   Expected: missing remains nil, an empty persisted store is present zero, and nonzero counts are read from real task-store JSON.
@@ -117,17 +117,17 @@
 - [ ] **Step 5: Commit the cold/past projection**
 
   ```bash
-  git add cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_tasks_test.go
+  git add cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_tasks_test.go
   git commit -m "fix(hub): project persisted task counts in thread reads"
   ```
 
 ### Task 3: Regenerate protocol types and hydrate the frontend aggregate
 
 **Files:**
-- Modify through repository generation only: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
+- Modify through repository generation only: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 - Modify through repository generation only: `docs/appwire-protocol.md`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts:245-275`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts:2400-2500`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts:245-275`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts:2400-2500`
 
 **Interfaces:**
 - Consumes: generated `SerfThread.tasks?: TaskAggregate` and existing `serf/task/updated` reducer behavior.
@@ -142,7 +142,7 @@
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/protocol/reducer.test.ts src/panes/session/chrome/TasksPanel.test.tsx
   ```
 
@@ -165,7 +165,7 @@
 - [ ] **Step 5: Commit generated and frontend changes**
 
   ```bash
-  git add appwire/types.go docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts cmd/serf-hub/frontend/src/protocol/reducer.ts cmd/serf-hub/frontend/src/protocol/reducer.test.ts
+  git add appwire/types.go docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts
   git commit -m "fix(webui): hydrate task badge from thread snapshots"
   ```
 

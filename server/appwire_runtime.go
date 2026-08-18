@@ -408,7 +408,7 @@ func (s *Server) stampCapabilitiesOnStatusChange(method string, params any) any 
 	// stop running, and what that thread can still be asked to do is the HUB's
 	// to say: it answers an exited session's read from the past index and
 	// resumes it on the next send, advertising Send there
-	// (cmd/serf-hub/app_threadread.go's pastThreadCapabilities). This daemon's
+	// (cmd/evener-hub/app_threadread.go's pastThreadCapabilities). This daemon's
 	// own all-false set would take the follow-up composer away from a session
 	// the hub would happily wake — the same wedge in the other direction. So
 	// the close frame leaves the field empty and the hub fills it in with its
@@ -1369,7 +1369,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		//
 		// That field is armed and cleared once per turn by the session loop, on
 		// a different goroutine and a different clock from the reservation the
-		// status reads, and cmd/serf/serve.go's drain path published processing
+		// status reads, and cmd/evener/serve.go's drain path published processing
 		// before arming it. Reading it here let this set say steer=true
 		// interrupt=false: a turn is running and cannot be stopped. The set is
 		// PUSHED on thread/status/changed and a client keeps it until the status

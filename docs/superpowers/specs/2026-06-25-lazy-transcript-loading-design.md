@@ -12,7 +12,7 @@ opening a large session is slow (~1–3 s) and heavy (tens of MB):
 - **Daemon** (`server/appwire_runtime.go handleAppThreadRead`): with
   `includeTurns`, builds the entire `Thread.Turns` from the notification buffer
   (`AppNotificationsAfter(0,…)`) or the whole transcript file.
-- **Hub** (`cmd/serf-hub/app_threadread.go`): merges all past + live turns into
+- **Hub** (`cmd/evener-hub/app_threadread.go`): merges all past + live turns into
   one response.
 - **Web** (`appwire.js eventsFromThread` → `renderer.js`): loops every turn ×
   every item into a flat event stream and appends each into the DOM, reflowing

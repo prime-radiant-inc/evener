@@ -3,10 +3,10 @@
 **What this covers**: the WS2 gap Track C fills — an ended (non-live) session's
 metrics were previously only inferable from raw transcript files. This
 exercises both surfaces added/extended to close that gap: the TUI
-`/details` palette command (`cmd/serf-tui/details_drawer.go`,
+`/details` palette command (`cmd/evener-tui/details_drawer.go`,
 `hub_command_registry.go:197-202`'s `fetchCurrentHubSession`) and the web
 Session-details panel's ended-session rows
-(`cmd/serf-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx:183-196`).
+(`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx:183-196`).
 
 **Surface**: see `docs/agentic-testing.md`, "The REST surface, and what is no
 longer on it" and "Driving the web UI" — the selector map there is the single
@@ -69,7 +69,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
    (`StatusRow.tsx:250-279`) — so `strip` cross-checks the panel for free.
 
 5. **[TUI]** Launch `serf-tui --hub-addr <host:port> --auth-token <token>
-   --no-auto-start-hub` (flags: `cmd/serf-tui/internal/hubstart/hub_start.go:78-85`),
+   --no-auto-start-hub` (flags: `cmd/evener-tui/internal/hubstart/hub_start.go:78-85`),
    navigate Dashboard → project → the ended session's row → Enter to open it,
    open the command palette, select `/details`, Enter.
 
@@ -119,7 +119,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
   "Your move") as distinct terminal states for a still-live session. `idle`
   is the common case: per `agent/session_tool_round.go`'s
   `deliverIfCommunicated`, a completed turn with no question/ask pending
-  lands on `SessionIdle`, and `cmd/serf-hub/internal/hubcore/tree.go`'s
+  lands on `SessionIdle`, and `cmd/evener-hub/internal/hubcore/tree.go`'s
   `NormalizeState` maps that straight through to the `"idle"` string in
   `/api/sessions/*`. `awaiting` is reserved for the less common case where a
   question/ask is actually pending. Poll for anything that isn't `active`,

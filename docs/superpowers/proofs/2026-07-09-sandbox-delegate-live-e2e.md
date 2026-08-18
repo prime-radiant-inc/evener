@@ -23,7 +23,7 @@ clause). Companion cards: `2026-07-09-sandbox-flag-live-e2e.md` (the root
 `2026-07-09-sandbox-delegate-edge-cases.md` (the unit-backed refusal matrix).
 
 ## Pre-state
-- Build serf from the branch under test: `go build -o /tmp/serf-e2e-deleg ./cmd/serf`.
+- Build serf from the branch under test: `go build -o /tmp/serf-e2e-deleg ./cmd/evener`.
 - A model that reliably tool-calls (kimi/kimi-k2.5 used here; gemma4-local CANNOT
   tool-call). Keys from the main checkout's `.env` (gitignored — never printed):
   `set -a; . /home/jesse/git/prime-radiant/serf/.env; set +a; export KIMI_API_KEY="${KIMI_API_KEY:-$MOONSHOT_API_KEY}"`.

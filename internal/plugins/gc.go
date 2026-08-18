@@ -55,7 +55,7 @@ func (m *Manager) Gc() ([]string, error) {
 		return nil, fmt.Errorf("reading %s: %w", m.cacheDir(), err)
 	}
 
-	// Non-nil even when nothing is swept: callers (cmd/serf/plugincmd.go's
+	// Non-nil even when nothing is swept: callers (cmd/evener/plugincmd.go's
 	// `gc --json`) JSON-encode this directly, and a nil slice would encode as
 	// `null` instead of `[]`.
 	removed := []string{}

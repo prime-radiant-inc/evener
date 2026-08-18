@@ -34,7 +34,7 @@ artifact, not a spec defect; rebase before implementing.
    "renamed instance behaves identically" claim. *(Reviewer B — unique.)*
 
 3. **[SERIOUS] Resume/fork breaks for custom/renamed instances.**
-   `resumeProviderFromProfileID` (`cmd/serf-hub/app_rpc.go:1735-1742`) is a
+   `resumeProviderFromProfileID` (`cmd/evener-hub/app_rpc.go:1735-1742`) is a
    hardcoded 10-name allowlist fed the persisted `Meta.ProfileID` (= instance
    name post-redesign); any custom name hits `default → ""`, leaving
    `req.Provider` empty on re-launch (`:1723-1726`). Absent from §4.2b. *(Both.)*
@@ -80,7 +80,7 @@ artifact, not a spec defect; rebase before implementing.
    **wrong** (verified post-review).
    - **Confirmed real:** standalone `serf` builds its client only from env
      (`serve.go:39`/`run.go:127` → `llm.NewFromEnv`; **no** `credentials` import
-     under `cmd/serf/`). The hub reads `~/.serf/credentials.toml` (`main.go`,
+     under `cmd/evener/`). The hub reads `~/.serf/credentials.toml` (`main.go`,
      `HubStateRoot = ~/.serf`). So API keys have two unrelated sources.
    - **Corrected:** OAuth `openai.json` is **machine-global**, not per-workspace.
      `serf openai login` writes `resolveOpenAIStateDir` which **ignores workDir**
@@ -99,10 +99,10 @@ artifact, not a spec defect; rebase before implementing.
      per-workspace specifics were wrong.)*
 
 10. **[SERIOUS] §4.9 "`NewFromEnv` is no longer a runtime path" undercounts live
-    consumers.** Callers: `cmd/serf/run.go:127` (the **standalone CLI**),
-    `cmd/serf-hub/web.go:2024` (live picker `fetchLiveModels`),
+    consumers.** Callers: `cmd/evener/run.go:127` (the **standalone CLI**),
+    `cmd/evener-hub/web.go:2024` (live picker `fetchLiveModels`),
     `launch_check.go:94,159`, `serve.go:36`, `cmd/llmcall/main.go:220`,
-    `cmd/serfeval/main.go:196`, plus `llm/generate.go:158 DefaultClient()`. Also:
+    `cmd/evenereval/main.go:196`, plus `llm/generate.go:158 DefaultClient()`. Also:
     `validateSerfLaunchContract` runs `launch-check --model` (no `--models`) on
     **every spawn** (`spawn.go:558-564`, called `:141`) → `launch_check.go:159
     NewFromEnv`; §4.3 only re-plumbs the `--models` path. If `NewFromEnv` stays
@@ -111,7 +111,7 @@ artifact, not a spec defect; rebase before implementing.
     skipped. *(Both.)*
 
 11. **[SERIOUS] No cross-process lock for first-run migration.** The only lock is
-    the hub singleton flock (`cmd/serf-hub/flock.go`, `~/.serf/hub.lock`); it
+    the hub singleton flock (`cmd/evener-hub/flock.go`, `~/.serf/hub.lock`); it
     doesn't cover `providers.toml`. Hub + standalone serf (or two serf
     invocations) can each see absence and migrate+write concurrently → clobber or
     torn read. §6 only addresses corrupt/absent, not concurrent. *(Reviewer B.)*

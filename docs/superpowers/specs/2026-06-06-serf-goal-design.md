@@ -226,7 +226,7 @@ specified only the intent):
    the session's `MaxTurns` user-input ceiling — a deliberate decision; see Open Q.)
 3. **The idle kick must carry the kind.** On an idle `/goal set`, the first continuation is
    fed through `inputCh` → serve.go → `ProcessInput`. `InputMessage` (`server/server.go:22`)
-   and the serve loop (`cmd/serf/serve.go:370`) must carry a kind so this first turn is a
+   and the serve loop (`cmd/evener/serve.go:370`) must carry a kind so this first turn is a
    continuation, not a user turn — otherwise §2a and the §7 idle kick contradict (rev 2's
    bug). (Equivalent alternative: `Session.SetGoal` appends the steering turn under the lock
    and the kick is a no-history-append sentinel; the threaded-kind approach is preferred for
@@ -378,7 +378,7 @@ a `systemMessage` in both UIs ("✓ Goal achieved", "⊘ Goal blocked: &lt;reaso
 stopped: hit limit (N turns)") — no new ThreadItem type, no footer state machine, no bespoke
 TUI rendering.
 
-**`/goal` TUI command** (`cmd/serf-tui/hub_command_registry.go`): `/goal [<objective>|clear|
+**`/goal` TUI command** (`cmd/evener-tui/hub_command_registry.go`): `/goal [<objective>|clear|
 status]`, a thin command calling a typed `sendHubGoal` helper (mirroring `sendHubQueue`; there
 is no generic RPC escape hatch — each command needs a typed `appwire.Client.GoalSet` + server
 method).
@@ -435,9 +435,9 @@ direction, not a stall).
 - `server/server.go` (`InputMessage` kind; `goalFunc` + `SetGoalFunc`),
   `server/appwire_runtime.go` (handler registration; carry kind on the idle kick),
   `appwire/types.go` (`MethodGoalSet` + params/response; typed `Goal *GoalStatus` on
-  `SerfThread`), `appwire/client.go` (`Client.GoalSet`), `cmd/serf/serve.go`
+  `SerfThread`), `appwire/client.go` (`Client.GoalSet`), `cmd/evener/serve.go`
   (`SetGoalFunc` wiring; pass the kind from `inputCh`).
-- `cmd/serf-tui/hub_command_registry.go` + a `sendHubGoal` helper — `/goal` command.
+- `cmd/evener-tui/hub_command_registry.go` + a `sendHubGoal` helper — `/goal` command.
 
 ## Testing strategy (TDD)
 

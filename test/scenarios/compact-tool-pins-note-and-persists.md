@@ -23,8 +23,8 @@ compaction runs.
   ```bash
   cd <this worktree>
   run=$(mktemp -d -t serf-e2e-compact-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/serf-hub
-  go build -o "$run/serf"     ./cmd/serf
+  go build -o "$run/serf-hub" ./cmd/evener-hub
+  go build -o "$run/serf"     ./cmd/evener
   REALSERF=~/.serf
   TH="$run/home"                               # isolated HOME
   mkdir -p "$TH/.serf/run" "$TH/.local/state/serf/projects"
@@ -48,7 +48,7 @@ compaction runs.
   HUBPID=$!
   echo "$HUBPID" >"$run/hub.pid"
   # One startup line carries BOTH facts this card needs — the port the kernel
-  # gave the hub and the run_dir it resolved (`cmd/serf-hub/main.go:451`), so
+  # gave the hub and the run_dir it resolved (`cmd/evener-hub/main.go:451`), so
   # wait for it rather than sleeping a guessed interval:
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true

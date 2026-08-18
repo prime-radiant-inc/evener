@@ -202,7 +202,7 @@ before promoting to an inline invariant.
 **Goal.** The differential oracle found both Phase-8 bugs; apply it where
 user-visible bugs keep recurring: the **two projection paths**. serf projects a
 turn two ways — live (`internal/appprojector`) and on reload
-(`internal/apptranscript` + the hub replay `cmd/serf-hub` …
+(`internal/apptranscript` + the hub replay `cmd/evener-hub` …
 `app_threadread.go#replayTurnToAgentTurn`). Divergence between them is a
 *recurring* real-bug source: thinking traces vanishing on reload, web_search not
 re-projecting, communicate-echo duplicated on reload — each shipped as its own
@@ -294,7 +294,7 @@ namer lifecycle); a mistake degrades real runtime behavior. Gate on the full
    stateful layer is already broad; highest blast radius.
 
 W1–W3 are mutually independent and could be parallel lanes (disjoint modules:
-W1 = scripts + `fuzz/`, W2 = `llm/providers/*`, W3 = `cmd/serf-hub` + `appwire`),
+W1 = scripts + `fuzz/`, W2 = `llm/providers/*`, W3 = `cmd/evener-hub` + `appwire`),
 following the established fan-out discipline. W4 is sequential and serial.
 
 Each workstream is its own gate-green `--no-ff` merge. New oracles in W2/W3/W4

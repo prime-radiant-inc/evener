@@ -19,7 +19,7 @@ import (
 // wake is guaranteed, not best-effort.
 //
 // The queued-input wake is the ONLY way ProcessPendingUserInput is ever reached:
-// cmd/serf/serve.go:1033 runs it in response to a QueuedInput message and
+// cmd/evener/serve.go:1033 runs it in response to a QueuedInput message and
 // nothing else calls it. Unlike a durable start — which processNextServeInput
 // probes for unconditionally at the top of every loop iteration — there is no
 // second path to the work. A dropped wake therefore strands a message the client
@@ -117,7 +117,7 @@ func TestSubmitPendingUserInput_DoesNotBlockItsCaller(t *testing.T) {
 // rest of the way: the re-armed wake lands, it names this session, and the work
 // it names is really there and really runs.
 //
-// The wake wiring below is the exact callback cmd/serf/serve.go:690-692
+// The wake wiring below is the exact callback cmd/evener/serve.go:690-692
 // installs, so this test exercises the production seam and not a paraphrase of
 // it. There is deliberately no consumer loop here: a hand-written reader that
 // branched on message kind would be a second implementation of the serve loop,

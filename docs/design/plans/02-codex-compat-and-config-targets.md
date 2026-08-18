@@ -16,7 +16,7 @@ Charter seams: "appwire `InputItem`/item parsing (the codex-compat path), `provi
 Config seams found (all real, all distinct decoders):
 - `providers.toml` → `providercfg.Load([]byte) (Config, error)` (`llm/providercfg/load.go:46`), TOML via `github.com/BurntSushi/toml`. File wrapper `LoadFile` (`:124`). Module: `llm`.
 - plugin manifest → `plugin.ParseManifest([]byte) (Manifest, error)` (`agent/plugin/plugin.go:55`), JSON. File-reading wrapper `Load(dir)` (`:181`) does the `.claude-plugin`→`.codex-plugin` fallback + component-dir walk. Module: `agent`.
-- session/launch config → `launchconfig.tomlDecode([]byte, *Layer)` (`cmd/serf-hub/internal/launchconfig/io.go:90`, in-package) behind `LoadLayer(path)` (`:15`) and also called by `resolver.go:107`; and `toml.Decode` into `Meta` behind `LoadMeta(path)` (`:73`). TOML. Types `Layer` (`types.go:12`), `Meta` (`:102`). Module: root (`.`).
+- session/launch config → `launchconfig.tomlDecode([]byte, *Layer)` (`cmd/evener-hub/internal/launchconfig/io.go:90`, in-package) behind `LoadLayer(path)` (`:15`) and also called by `resolver.go:107`; and `toml.Decode` into `Meta` behind `LoadMeta(path)` (`:73`). TOML. Types `Layer` (`types.go:12`), `Meta` (`:102`). Module: root (`.`).
 - credentials store → in-package `toml.Decode(string(raw), &s.data)` into the unexported `fileShape` (`internal/credentials/store.go:79`), behind `LoadStore(path)` (`:63`) which gates on `os.Stat` + a 0600-mode check (`:65-77`). TOML. Module: root (`.`).
 
 Net: **one production refactor (prerequisite) + 6 fuzz targets** — one appwire item/response decode target, four config decode targets (providers.toml, launchconfig, plugin manifest, credentials store), and one plugin `Load(dir)` filesystem-walk target.
@@ -60,17 +60,17 @@ Today the explicit-clear state survives on disk only via two duplicated string-p
 11. **`spawn.go:260-261`** — NOT in the decision list; found by grep. `resumeResolved.Effective.ModelFallbacks = nil` stays (nil pointer = unset). DELETE line 261 `resumeResolved.Effective.ModelFallbacksSet = false`.
 
 **Existing tests to migrate (must stay green; semantics unchanged — these are the TDD anchor):**
-- `cmd/serf-hub/internal/launchconfig/io_test.go` — `TestLoadLayer_TracksExplicitEmptyModelFallbacks`, `TestSaveLayer_PersistsExplicitEmptyModelFallbacks`: drop `ModelFallbacksSet` refs; `ModelFallbacks: []string{}` → `&[]string{}`; assert explicit-clear is `got.ModelFallbacks != nil && len(*got.ModelFallbacks) == 0` and unset is `== nil`.
-- `cmd/serf-hub/internal/launchconfig/wire_test.go` — `TestToWirePreservesExplicitEmptyModelFallbacks`, `TestWireOmitsUnsetModelFallbacks`, `TestLaunchConfigLayer_ConfigPlumbingRoundtrip`: same migration (these directly assert the three-state across FromWire/ToWire).
-- `cmd/serf-hub/internal/launchconfig/args_test.go:35` — `ModelFallbacks: []string{...}` → `&[]string{...}`.
-- `cmd/serf-hub/spawn_test.go:102` — `launchconfig.Layer{... ModelFallbacks: []string{"openai/gpt-fallback"} ...}` → `&[]string{...}`.
+- `cmd/evener-hub/internal/launchconfig/io_test.go` — `TestLoadLayer_TracksExplicitEmptyModelFallbacks`, `TestSaveLayer_PersistsExplicitEmptyModelFallbacks`: drop `ModelFallbacksSet` refs; `ModelFallbacks: []string{}` → `&[]string{}`; assert explicit-clear is `got.ModelFallbacks != nil && len(*got.ModelFallbacks) == 0` and unset is `== nil`.
+- `cmd/evener-hub/internal/launchconfig/wire_test.go` — `TestToWirePreservesExplicitEmptyModelFallbacks`, `TestWireOmitsUnsetModelFallbacks`, `TestLaunchConfigLayer_ConfigPlumbingRoundtrip`: same migration (these directly assert the three-state across FromWire/ToWire).
+- `cmd/evener-hub/internal/launchconfig/args_test.go:35` — `ModelFallbacks: []string{...}` → `&[]string{...}`.
+- `cmd/evener-hub/spawn_test.go:102` — `launchconfig.Layer{... ModelFallbacks: []string{"openai/gpt-fallback"} ...}` → `&[]string{...}`.
 
-TDD discipline: flip a test to the pointer shape (red — won't compile), make it compile + pass via the field change, repeat per call site; run `go test ./cmd/serf-hub/...` green before starting the 1.3 fuzz target.
+TDD discipline: flip a test to the pointer shape (red — won't compile), make it compile + pass via the field change, repeat per call site; run `go test ./cmd/evener-hub/...` green before starting the 1.3 fuzz target.
 
 **Out of scope — separate types, do NOT touch:**
-- `agent/session_config.go:132` `ModelFallbacks []string` (agent `Session` config — a different struct; `cmd/serf/serve.go:219/235`, `agent/session_*.go`, `agent/job_delegate.go`, `agent/schema/config_snapshot.go` all reference this one).
+- `agent/session_config.go:132` `ModelFallbacks []string` (agent `Session` config — a different struct; `cmd/evener/serve.go:219/235`, `agent/session_*.go`, `agent/job_delegate.go`, `agent/schema/config_snapshot.go` all reference this one).
 - `appwire/types.go:935` (the wire DTO — its `[]string` + `MarshalJSON` three-state is the *bridge* the refactor maps onto; unchanged).
-- `cmd/serf-tui/internal/launchconfig` (the TUI has its OWN `Layer`; `launch_schema.go:143`, `launch_settings_panel.go:460/473` operate on it — confirmed no import of the hub package, so leave it alone).
+- `cmd/evener-tui/internal/launchconfig` (the TUI has its OWN `Layer`; `launch_schema.go:143`, `launch_settings_panel.go:460/473` operate on it — confirmed no import of the hub package, so leave it alone).
 
 LoC: ~60–110 production + ~20–40 test migration.
 
@@ -112,7 +112,7 @@ Seeds:
 
 Oracle: floor + **structured-error/no-partial + success-invariants**. On `err == nil` assert Load's own guarantees (read off `load.go`): `cfg.Default` names some `cfg.Instances[i].Name`; every instance `Type` is in `KnownTypeNames()`; every name is lowercase and `/`-free; `api_style` set only when `Type=="openai"`. On `err != nil` assert `cfg == Config{}` (no partial). No round-trip — Load has no inverse encoder. ~80–120 LoC.
 
-### 1.3 `cmd/serf-hub/internal/launchconfig/io_fuzz_test.go` — session config decode (module `.`)
+### 1.3 `cmd/evener-hub/internal/launchconfig/io_fuzz_test.go` — session config decode (module `.`)
 
 **Prerequisite: §1.0 has landed.** Seam: `tomlDecode([]byte, *Layer)` (`io.go:90`, in-package) and `toml.Decode` into `Meta` (`io.go:82`). **Do not** call `LoadLayer`/`LoadMeta`/`SaveLayer` — they touch the filesystem; fuzz the in-memory decoder + an in-memory `toml.NewEncoder(&buf)` for the round-trip.
 
@@ -218,7 +218,7 @@ Risks:
 
 ## 4. Acceptance (per design doc §6 style)
 
-- **§1.0 refactor:** `go test ./cmd/serf-hub/...` green (all migrated launchconfig + spawn tests), `make lint` clean, gate green. The branch taken (pointer vs centralized-helper) is reported with the encoder-verification result.
+- **§1.0 refactor:** `go test ./cmd/evener-hub/...` green (all migrated launchconfig + spawn tests), `make lint` clean, gate green. The branch taken (pointer vs centralized-helper) is reported with the encoder-verification result.
 - `make fuzz` green with all six targets present (seed corpus + any saved crashers run as ordinary tests).
 - End-to-end free-loop demonstration on **one** target (per §6 Phase-0 acceptance): inject a deliberate decode bug (e.g. make `providercfg.Load` index `names[0]` before the empty-check), confirm `go test -fuzz=FuzzProvidersTOMLLoad` finds it, the crasher lands in `testdata/fuzz/`, `make fuzz` goes red, and reverting the bug makes it green.
 - Each target either surfaces ≥1 real defect or is argued clean to its stated oracle depth.
@@ -227,10 +227,10 @@ Risks:
 
 | Target | File (module) | Seam | Oracle |
 |---|---|---|---|
-| 1.0 refactor | `cmd/serf-hub/internal/launchconfig/*.go` (`.`) | `ModelFallbacks *[]string` (prereq) | existing launchconfig tests green; encoder verified |
+| 1.0 refactor | `cmd/evener-hub/internal/launchconfig/*.go` (`.`) | `ModelFallbacks *[]string` (prereq) | existing launchconfig tests green; encoder verified |
 | 1.1 codex items | `appwire/item_fuzz_test.go` (`.`) | `json.Unmarshal` → ThreadItem/Thread/Turn/InputItem | floor + round-trip fixed point |
 | 1.2 providers.toml | `llm/providercfg/load_fuzz_test.go` (`llm`) | `providercfg.Load` | floor + structured-error/no-partial + success-invariants |
-| 1.3 session config | `cmd/serf-hub/internal/launchconfig/io_fuzz_test.go` (`.`) | `tomlDecode`→Layer, `toml.Decode`→Meta | floor + structured-error + value round-trip + three-state guard |
+| 1.3 session config | `cmd/evener-hub/internal/launchconfig/io_fuzz_test.go` (`.`) | `tomlDecode`→Layer, `toml.Decode`→Meta | floor + structured-error + value round-trip + three-state guard |
 | 1.4 plugin manifest | `agent/plugin/manifest_fuzz_test.go` (`agent`) | `plugin.ParseManifest` | floor + structured-error/no-partial + kebab invariant + round-trip |
 | 1.5 credentials store | `internal/credentials/store_fuzz_test.go` (`.`) | `toml.Decode` → `fileShape` | floor + structured-error/no-partial + round-trip |
 | 1.6 plugin.Load | `agent/plugin/load_fuzz_test.go` (`agent`) | `plugin.Load(dir)` filesystem walk | floor + flavor-fallback invariant + no-partial on error |

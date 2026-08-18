@@ -166,7 +166,7 @@ No WS1 dependency. Pure additive infra.
 
 Grounded in the actual surface (surveyed 2026-07-01): **~25 prod packages call
 `os.WriteFile/MkdirAll/Rename/...` directly** (agent, internal/jobstore,
-internal/credentials, providercfg, cmd/serf-hub/internal/launchconfig+hubcore,
+internal/credentials, providercfg, cmd/evener-hub/internal/launchconfig+hubcore,
 cmdutil, selfupdate, …) — broad, which is what settles the Afero-vs-bespoke call in
 Afero's favor. **~10 provider adapters each hold an `*http.Client`** (openai,
 anthropic, google, openaicompat, kimi_anthropic, minimax, ollama) — a bounded
@@ -211,7 +211,7 @@ implementations the Plan-12 lanes already wrote, e.g. jobstore `OutputMatcher`).
   `internal/credentials`. Process → a tiny bespoke exec interface at
   `agent/internal/mcp` + subagent spawn + shell tool. Existing seams to match:
   `agent/internal/clock`, `llm.ProviderAdapter`.
-- Front doors: `agent` session loop (`FuzzLifecycleSeq`), `cmd/serf-hub`
+- Front doors: `agent` session loop (`FuzzLifecycleSeq`), `cmd/evener-hub`
   (`FuzzAppWireDispatch`/`FuzzWebHandler`), provider `Complete/Stream`.
 - Infra: `fuzz/typegen`, `fuzz/schemagen`, `FuzzWireTypes`; differentials in
   `llm/providers/difftest`.

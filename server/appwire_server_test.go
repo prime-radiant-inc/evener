@@ -67,7 +67,7 @@ func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	// Mirrors nextTurnCtx (cmd/serf/serve.go): RecordAppEvent has not yet
+	// Mirrors nextTurnCtx (cmd/evener/serve.go): RecordAppEvent has not yet
 	// populated appActiveTurnID from the next turn's SessionStart event.
 	srv.SetProcessing(true)
 

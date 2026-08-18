@@ -4468,7 +4468,7 @@ git commit -m "style: gofmt SP7 sources"
 - `LocalExecutionEnvironment` shell-tool wiring (the actual `extraEnv["PATH"]` injection at `agent/session.go:2930-2942` per spec §8.1) is intentionally left for SP8 integration. Task 28 verifies the PATH helper end-to-end via direct `exec.Command`. The hookup of `extraEnv` to the shell tool registration is one short edit and SP8's integration test exercises it; flagging here so the SP8 implementer doesn't miss it.
 - CLI / TUI / Hub prompter implementations (§4.2) live in SP4 and SP8 respectively; this plan ships the interface and `MapPrompter` only.
 - `SerfConfig.PluginConfigs` typed accessor is owned by SP1. SP7 ships `ConfigJSONStore` so it can land before SP1 is finished; SP1 may later collapse the two paths.
-- The `cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go` modifications listed in §13 are SP8's responsibility (per spec §15.3).
+- The `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go` modifications listed in §13 are SP8's responsibility (per spec §15.3).
 
 **Placeholder scan:** No "TBD" / "implement later" entries in any task. Every step shows the actual code to write.
 

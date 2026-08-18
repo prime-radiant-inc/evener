@@ -19,7 +19,7 @@
 - Bound each response to 2,000 work units, 32 newly expanded delegation levels, and 4 MiB encoded JSON; expose truncated branches through continuation on `serf/jobs/list`.
 - Unknown statuses retain their exact label, authoritative terminal bit, and neutral visual tone.
 - Green means working, red means failure, gray means terminal/idle, blue means focus/selection/link, and amber only means human input is required.
-- Generated files `docs/appwire-protocol.md` and `cmd/serf-hub/frontend/src/protocol/types.gen.ts` are regenerated with `make generate`, never hand-edited.
+- Generated files `docs/appwire-protocol.md` and `cmd/evener-hub/frontend/src/protocol/types.gen.ts` are regenerated with `make generate`, never hand-edited.
 - Do not stage or modify unrelated workspace changes, including `docs/superpowers/plans/2026-08-02-all-open-katas.md` and `docs/superpowers/specs/2026-08-03-named-pinned-session-sections-design.md` if they remain dirty.
 
 ## File Structure
@@ -30,39 +30,39 @@
 - `agent/jobs_activity_test.go` — deterministic live-tree, ordering, aggregation, error, and continuation tests.
 - `agent/jobs_activity_past.go` — exited-local-session traversal from one state directory.
 - `agent/jobs_activity_past_test.go` — durable traversal and source-boundary tests.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts` — recursive runtime parser, IDs, default expansion, and reconciliation helpers.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts` — parser and reconciliation tests.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` — fetch/refresh state and responsive master-detail shell.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx` — recursive accessible tree and keyboard navigation.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx` — root, subagent, and shell-job inspection plus lazy output.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css` — Activity sheet geometry and tree styling.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx` — panel behavior, refresh, failures, selection, and narrow-screen tests.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` — disclosure and keyboard tests.
-- `cmd/serf-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/{case.json,harness.html,assert.mjs}` — real-browser depth and narrow-master-detail guard.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts` — recursive runtime parser, IDs, default expansion, and reconciliation helpers.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts` — parser and reconciliation tests.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` — fetch/refresh state and responsive master-detail shell.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx` — recursive accessible tree and keyboard navigation.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx` — root, subagent, and shell-job inspection plus lazy output.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css` — Activity sheet geometry and tree styling.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx` — panel behavior, refresh, failures, selection, and narrow-screen tests.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` — disclosure and keyboard tests.
+- `cmd/evener-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/{case.json,harness.html,assert.mjs}` — real-browser depth and narrow-master-detail guard.
 
 **Modify**
 
 - `appwire/types.go`, `appwire/protocol.go`, `appwire/protocol_test.go` — replacement tree types, continuation parameter, and tree-update notification.
-- `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts` — generated outputs.
+- `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts` — generated outputs.
 - `agent/jobs_panel.go` and tests — retain output-tail projection; remove flat-list projection after callers move.
 - `agent/events/payloads.go`, `agent/events/eventdata.go`, and event tests — carry root tree identity/revision on job lifecycle events.
 - `agent/session.go`, `agent/session_init.go`, `agent/subagents.go` — share one monotonic tree revision and root session identity across descendants.
 - `internal/appprojector/appwire_projection.go` and tests — emit `serf/jobs/treeUpdated` beside child job lifecycle notifications.
 - `server/server.go`, `server/appwire_runtime.go`, `server/server_test.go` — pass `JobsListParams` to the new tree provider.
-- `cmd/serf/serve.go`, `cmd/serf/serve_residual_fuzz_test.go` — wire the live session tree provider.
-- `cmd/serf-hub/app_jobs.go`, `cmd/serf-hub/app_jobs_test.go` — live-first tree routing and exited-local fallback.
-- `cmd/serf-hub/internal/appsource/local_daemon.go` and tests — forward the replacement payload unchanged.
-- `cmd/serf-hub/frontend/src/protocol/model.ts`, `reducer.ts`, `reducer.test.ts` — store root tree revisions.
-- `cmd/serf-hub/frontend/src/stores/threads.ts`, `threads.test.ts` — route tree invalidation and expose list/output calls.
-- `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`, `SessionChrome.test.tsx` — replace Jobs with Activity and preserve collapsed-menu opening.
+- `cmd/evener/serve.go`, `cmd/evener/serve_residual_fuzz_test.go` — wire the live session tree provider.
+- `cmd/evener-hub/app_jobs.go`, `cmd/evener-hub/app_jobs_test.go` — live-first tree routing and exited-local fallback.
+- `cmd/evener-hub/internal/appsource/local_daemon.go` and tests — forward the replacement payload unchanged.
+- `cmd/evener-hub/frontend/src/protocol/model.ts`, `reducer.ts`, `reducer.test.ts` — store root tree revisions.
+- `cmd/evener-hub/frontend/src/stores/threads.ts`, `threads.test.ts` — route tree invalidation and expose list/output calls.
+- `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`, `SessionChrome.test.tsx` — replace Jobs with Activity and preserve collapsed-menu opening.
 
 **Delete after replacement tests pass**
 
-- `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.ts`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.test.ts`
-- `cmd/serf-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.ts`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.test.ts`
+- `cmd/evener-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
 
 ---
 
@@ -73,7 +73,7 @@
 - Modify: `appwire/protocol.go`
 - Modify: `appwire/protocol_test.go`
 - Generate: `docs/appwire-protocol.md`
-- Generate: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
+- Generate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
 - Produces: `JobsListParams{Ref, Continuation}` and `JobsListResponse{Data any}`.
@@ -218,7 +218,7 @@ git diff --check
 Commit only Task 1 files:
 
 ```bash
-git add appwire/types.go appwire/protocol.go appwire/protocol_test.go docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add appwire/types.go appwire/protocol.go appwire/protocol_test.go docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "feat(appwire): replace jobs list with activity tree contract"
 ```
 
@@ -428,12 +428,12 @@ git commit -m "feat(agent): traverse bounded activity history"
 - Modify: `server/server.go:555-563`
 - Modify: `server/appwire_runtime.go:893-905`
 - Modify: `server/server_test.go`
-- Modify: `cmd/serf/serve.go:80-100,831-834`
-- Modify: `cmd/serf/serve_residual_fuzz_test.go`
-- Modify: `cmd/serf-hub/app_jobs.go`
-- Modify: `cmd/serf-hub/app_jobs_test.go`
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go`
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon_test.go`
+- Modify: `cmd/evener/serve.go:80-100,831-834`
+- Modify: `cmd/evener/serve_residual_fuzz_test.go`
+- Modify: `cmd/evener-hub/app_jobs.go`
+- Modify: `cmd/evener-hub/app_jobs_test.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon_test.go`
 
 **Interfaces:**
 - Consumes: `Session.JobActivityTree` and `LoadSessionJobActivityTree` from Task 3.
@@ -467,7 +467,7 @@ Replace flat fallback fixtures with persisted parent/child activity. Prove:
 - [ ] **Step 3: Run and verify RED**
 
 ```bash
-go test ./server ./cmd/serf ./cmd/serf-hub/... -run 'JobsList|ActivityTree|JobsOutput' -count=1
+go test ./server ./cmd/evener ./cmd/evener-hub/... -run 'JobsList|ActivityTree|JobsOutput' -count=1
 ```
 
 Expected: compile failures at the old no-argument `SetJobsFunc` interface and flat fallback.
@@ -503,14 +503,14 @@ Remove the obsolete functions/types left in Task 2 only when the search contains
 Run:
 
 ```bash
-go test ./server ./cmd/serf ./cmd/serf-hub/... -run 'JobsList|ActivityTree|JobsOutput' -count=1
+go test ./server ./cmd/evener ./cmd/evener-hub/... -run 'JobsList|ActivityTree|JobsOutput' -count=1
 git diff --check
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/server.go server/appwire_runtime.go server/server_test.go cmd/serf/serve.go cmd/serf/serve_residual_fuzz_test.go cmd/serf-hub/app_jobs.go cmd/serf-hub/app_jobs_test.go cmd/serf-hub/internal/appsource/local_daemon.go cmd/serf-hub/internal/appsource/local_daemon_test.go agent/jobs_panel.go agent/jobs_panel_test.go
+git add server/server.go server/appwire_runtime.go server/server_test.go cmd/evener/serve.go cmd/evener/serve_residual_fuzz_test.go cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/internal/appsource/local_daemon.go cmd/evener-hub/internal/appsource/local_daemon_test.go agent/jobs_panel.go agent/jobs_panel_test.go
 git commit -m "feat(hub): serve recursive session activity"
 ```
 
@@ -527,11 +527,11 @@ git commit -m "feat(hub): serve recursive session activity"
 - Modify: relevant event/session lifecycle tests
 - Modify: `internal/appprojector/appwire_projection.go:931-977`
 - Modify: `internal/appprojector/appwire_projection_test.go`
-- Modify: `cmd/serf-hub/frontend/src/protocol/model.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts:861-865`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts:1052-1068`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/model.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts:861-865`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts:1052-1068`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
 
 **Interfaces:**
 - Produces: one `jobTreeClock` shared by root and descendants: `{rootSessionID string; revision atomic.Uint64}`.
@@ -566,7 +566,7 @@ Route a `serf/jobs/treeUpdated` frame for `local:root` while the currently open 
 
 ```bash
 go test ./agent ./internal/appprojector -run 'TreeRevision|JobsTreeUpdated' -count=1
-cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts src/stores/threads.test.ts
+cd cmd/evener-hub/frontend && npx vitest run src/protocol/reducer.test.ts src/stores/threads.test.ts
 ```
 
 Expected: missing clock fields, notification type, and model field.
@@ -596,7 +596,7 @@ Add `jobsTreeRevision` to model initialization and fixtures. In the store notifi
 ```bash
 make generate
 go test ./agent ./internal/appprojector -run 'TreeRevision|JobsTreeUpdated|JobStarted|JobFinished' -count=1
-cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts src/stores/threads.test.ts
+cd cmd/evener-hub/frontend && npx vitest run src/protocol/reducer.test.ts src/stores/threads.test.ts
 cd ../../.. && make lint-generated
 git diff --check
 ```
@@ -604,7 +604,7 @@ git diff --check
 Commit all Task 5 hand-written and regenerated files:
 
 ```bash
-git add agent/session.go agent/session_init.go agent/subagents.go agent/events internal/appprojector appwire docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts
+git add agent/session.go agent/session_init.go agent/subagents.go agent/events internal/appprojector appwire docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts
 git commit -m "feat(activity): invalidate roots for descendant jobs"
 ```
 
@@ -613,10 +613,10 @@ git commit -m "feat(activity): invalidate roots for descendant jobs"
 ### Task 6: Parse and reconcile recursive activity data in the client
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
 
 **Interfaces:**
 - Produces: `ActivityTree`, `ActivitySessionNode`, `ActivityShellEntry`, `ActivityDelegateEntry`, `ActivityCounts`, `ActivityBranchState`.
@@ -650,7 +650,7 @@ Assert default expansion includes the root and every ancestor of active work, ex
 - [ ] **Step 3: Run and verify RED**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/activityData.test.ts src/stores/threads.test.ts
 ```
 
@@ -682,12 +682,12 @@ listJobs: async (ref: string, continuation?: string) =>
 - [ ] **Step 6: Verify and commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/activityData.test.ts src/stores/threads.test.ts
 npm run typecheck
 npm run lint
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/serf-hub/frontend/src/stores/threads.ts cmd/serf-hub/frontend/src/stores/threads.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts
 git commit -m "feat(webui): parse and reconcile activity trees"
 ```
 
@@ -696,12 +696,12 @@ git commit -m "feat(webui): parse and reconcile activity trees"
 ### Task 7: Build the Activity tree and in-place inspector
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css`
 
 **Interfaces:**
 - Produces: `ActivityPanelProps` equal to the old panel props and `ActivityPanelHandle{open()}`.
@@ -740,7 +740,7 @@ For a shell job, assert metadata renders immediately and output fetch starts onl
 - [ ] **Step 4: Run and verify RED**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/ActivityTree.test.tsx
 ```
 
@@ -777,12 +777,12 @@ Subagent report content comes from the latest delegate turn's `ownerRef`/`jobId`
 - [ ] **Step 8: Verify and commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/ActivityTree.test.tsx
 npm run typecheck
 npm run lint
 cd ../../..
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css
 git commit -m "feat(webui): add session activity inspector"
 ```
 
@@ -791,13 +791,13 @@ git commit -m "feat(webui): add session activity inspector"
 ### Task 8: Replace Jobs integration and delete the flat UI
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.ts`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/jobData.test.ts`
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.tsx`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.ts`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/jobData.test.ts`
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/jobspanel.module.css`
 
 **Interfaces:**
 - Consumes: `ActivityPanel` and `ActivityPanelHandle` from Task 7.
@@ -810,7 +810,7 @@ Replace mocks and assertions so wide chrome renders **Activity**, narrow chrome 
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/SessionChrome.test.tsx
 ```
 
@@ -832,7 +832,7 @@ Do not change Tasks, Details, menu ordering, cadence, or unrelated chrome geomet
 - [ ] **Step 4: Delete flat UI files and prove no references remain**
 
 ```bash
-rg 'JobsPanel|jobData|jobspanel\.module|>Jobs<|"Jobs"' cmd/serf-hub/frontend/src
+rg 'JobsPanel|jobData|jobspanel\.module|>Jobs<|"Jobs"' cmd/evener-hub/frontend/src
 ```
 
 Expected: no production references; update any test names or comments that still describe the old panel.
@@ -840,12 +840,12 @@ Expected: no production references; update any test names or comments that still
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/SessionChrome.test.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/chrome/activityData.test.ts
 npm run typecheck
 npm run lint
 cd ../../..
-git add -- cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.tsx cmd/serf-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/jobData.ts cmd/serf-hub/frontend/src/panes/session/chrome/jobData.test.ts cmd/serf-hub/frontend/src/panes/session/chrome/jobspanel.module.css
+git add -- cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.tsx cmd/evener-hub/frontend/src/panes/session/chrome/SessionChrome.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.tsx cmd/evener-hub/frontend/src/panes/session/chrome/JobsPanel.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/jobData.ts cmd/evener-hub/frontend/src/panes/session/chrome/jobData.test.ts cmd/evener-hub/frontend/src/panes/session/chrome/jobspanel.module.css
 git commit -m "refactor(webui): replace jobs sheet with activity tree"
 ```
 
@@ -857,10 +857,10 @@ unrelated files. Inspect `git diff --cached --name-only` before committing.
 ### Task 9: Add real-browser depth and responsive guards
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/case.json`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/harness.html`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/assert.mjs`
-- Modify if necessary: `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/case.json`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/harness.html`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive/assert.mjs`
+- Modify if necessary: `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css`
 
 **Interfaces:**
 - Proves: deep rows do not create a sheet-level horizontal scroller; mobile shows exactly one readable pane; output alone may scroll horizontally.
@@ -888,7 +888,7 @@ Also assert deep labels use ellipsis/overflow clipping and the mobile Back contr
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard -- --case activity-tree-responsive
 ```
 
@@ -907,7 +907,7 @@ Expected: PASS at all configured widths.
 
 ```bash
 cd ../../..
-git add cmd/serf-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css
+git add cmd/evener-hub/frontend/scripts/layoutguard/cases/activity-tree-responsive cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css
 git commit -m "test(webui): guard activity tree responsiveness"
 ```
 
@@ -925,7 +925,7 @@ git commit -m "test(webui): guard activity tree responsiveness"
 - [ ] **Step 1: Run focused Go tests**
 
 ```bash
-go test ./appwire ./agent ./server ./internal/appprojector ./cmd/serf ./cmd/serf-hub/... -run 'Activity|JobsList|JobsOutput|TreeUpdated|JobStarted|JobFinished' -count=1
+go test ./appwire ./agent ./server ./internal/appprojector ./cmd/evener ./cmd/evener-hub/... -run 'Activity|JobsList|JobsOutput|TreeUpdated|JobStarted|JobFinished' -count=1
 ```
 
 Expected: PASS.
@@ -933,7 +933,7 @@ Expected: PASS.
 - [ ] **Step 2: Run focused frontend tests**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/chrome/activityData.test.ts src/panes/session/chrome/SessionChrome.test.tsx src/protocol/reducer.test.ts src/stores/threads.test.ts
 npm run typecheck
 npm run lint
@@ -959,7 +959,7 @@ Expected: PASS. If a failure repeats after a focused fix, stop and investigate t
 
 ```bash
 rg 'JobSummary|JobSummaries|LoadSessionJobList|JobsPanel|jobData|jobspanel\.module' --glob '!docs/superpowers/**'
-rg 'serf/jobs/treeUpdated|JobActivityTree|ActivityPanel' appwire agent internal server cmd/serf cmd/serf-hub
+rg 'serf/jobs/treeUpdated|JobActivityTree|ActivityPanel' appwire agent internal server cmd/evener cmd/evener-hub
 git status --short
 git diff --check
 ```

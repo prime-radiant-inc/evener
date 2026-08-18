@@ -1252,7 +1252,7 @@ Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`inter
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+go build -o /tmp/serf ./cmd/evener
 . "$PWD/.env"
 # In a scratch dir, run serf with a real model (e.g. --model oai-work/<model>) and ask it to:
 #  1. delegate a small task with background=false → confirm a job_id + completed + output;

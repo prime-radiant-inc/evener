@@ -111,7 +111,7 @@ The web UI and TUI use the same client package. The browser uses websocket JSON-
 
 ### `internal/appwire`
 
-Protocol definitions, JSON-RPC envelopes, typed requests, typed notifications, typed errors, refs, cursors, and client helpers. This package must not import `agent`, `server`, `cmd/serf-hub`, or UI packages.
+Protocol definitions, JSON-RPC envelopes, typed requests, typed notifications, typed errors, refs, cursors, and client helpers. This package must not import `agent`, `server`, `cmd/evener-hub`, or UI packages.
 
 ### `internal/appserver`
 
@@ -121,7 +121,7 @@ Reusable request routing, connection lifecycle, subscriptions, request serializa
 
 Interfaces for hub source drivers. The local daemon source and later remote sources implement these interfaces. This package bridges `internal/appserver` to concrete source clients.
 
-### `cmd/serf-hub`
+### `cmd/evener-hub`
 
 Process entrypoint, config, local source registry, spawn policy, static web server, and app-wire websocket endpoint. It should stop owning session behavior directly.
 
@@ -129,7 +129,7 @@ Process entrypoint, config, local source registry, spawn policy, static web serv
 
 Runtime-facing session server package. Its current REST/SSE server is replaced with app-wire handler construction and Serf agent event projection.
 
-### `cmd/serf-tui`
+### `cmd/evener-tui`
 
 Terminal UI. It should depend on `internal/appwire.Client`, not `internal/hubapi`, daemon addresses, or SSE parsing.
 

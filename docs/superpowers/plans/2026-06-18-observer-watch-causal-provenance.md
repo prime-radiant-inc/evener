@@ -2380,7 +2380,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go build ./cmd/serf ./cmd/serf-hub
+go build ./cmd/evener ./cmd/evener-hub
 ```
 
 Expected: PASS and binaries are produced in the working directory if the Go tool writes them there.

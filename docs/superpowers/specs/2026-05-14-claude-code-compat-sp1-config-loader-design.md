@@ -255,7 +255,7 @@ New files in `agent/`:
 - `agent/config_test.go` — table-driven unit tests for parse, merge, and discovery (§8).
 - `agent/testdata/config/<scenario>/` — JSON fixtures for the discovery tests. Each scenario directory contains the global, project, and CLI files needed for one row of the table.
 
-No existing file is modified by SP1 itself. Wiring `DiscoverSerfConfig` into the CLI entry points (`cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go`, `cmd/serfeval/main.go`) is SP8's job — SP1 ships only the loader and its tests.
+No existing file is modified by SP1 itself. Wiring `DiscoverSerfConfig` into the CLI entry points (`cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go`, `cmd/evenereval/main.go`) is SP8's job — SP1 ships only the loader and its tests.
 
 ## 8. Testing Strategy
 

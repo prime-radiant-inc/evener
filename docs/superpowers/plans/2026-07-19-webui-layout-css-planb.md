@@ -4,14 +4,14 @@
 
 **Goal:** Ship spec increments 5–9 of `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md`: the layout scale + breakpoint ladder, composer fixes, the server-rendered home launchpad, the canonical color-token migration, the state-color recolor, and the contrast/retired-treatments pass.
 
-**Architecture:** No bundler, no framework, embedded assets. All client changes are CSS (`cmd/serf-hub/assets/style.css`) plus small vanilla-JS edits in the existing `window.Serf*` module pattern; the launchpad is server-rendered Go (`cmd/serf-hub/web.go` + a new `html/template` partial). `docs/web-ui/design-system.md` is the north star; addenda land in the same commit as the change they record.
+**Architecture:** No bundler, no framework, embedded assets. All client changes are CSS (`cmd/evener-hub/assets/style.css`) plus small vanilla-JS edits in the existing `window.Serf*` module pattern; the launchpad is server-rendered Go (`cmd/evener-hub/web.go` + a new `html/template` partial). `docs/web-ui/design-system.md` is the north star; addenda land in the same commit as the change they record.
 
-**Tech Stack:** Go (`html/template`), vanilla CSS/JS, node+jsdom stylesheet-text/behavioral tests (`cmd/serf-hub/jstest/`), Go tests (`cmd/serf-hub`).
+**Tech Stack:** Go (`html/template`), vanilla CSS/JS, node+jsdom stylesheet-text/behavioral tests (`cmd/evener-hub/jstest/`), Go tests (`cmd/evener-hub`).
 
 ## Global Constraints
 
 - Per-commit gate (must pass before every commit):
-  `make build-hub` + `cd cmd/serf-hub/jstest && ./run-all.sh` + `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub`.
+  `make build-hub` + `cd cmd/evener-hub/jstest && ./run-all.sh` + `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`.
   (jsdom resolves via `/tmp/serf-jstest-jsdom/node_modules`; run-all.sh finds it.)
 - Breakpoint ladder (verbatim from spec): phone ≤767px (unchanged); tablet 768–1199px; desktop 1200–1799px; wide ≥1800px.
 - Width scale (verbatim): `--measure: 720px` prose column; machine rows bleed right to `--measure-machine` (1000px, ~1200px at wide); left edges never move.
@@ -22,22 +22,22 @@
 - Home launchpad: up to 8 sessions, Current+Recent tiers, sorted by `UpdatedAt` desc, **no live status dots**, **all interpolated strings HTML-escaped** (html/template), with a Go XSS test.
 - Tests are deterministic (AGENTS.md): no provider credentials, network, or live model behavior in default tests.
 - design-system.md addenda land in the same commit as the change they record: §3 hex table (Task 7), §4 wide-band rule (Task 2), §5 sidebar tri-state (Task 4), §8 breakpoint ladder (Task 2).
-- Line numbers below refer to `cmd/serf-hub/assets/style.css` (5815 lines) and siblings at base commit `2e7dfaa2`. Earlier tasks shift later line numbers — locate by the quoted selector/text, not the line number.
+- Line numbers below refer to `cmd/evener-hub/assets/style.css` (5815 lines) and siblings at base commit `2e7dfaa2`. Earlier tasks shift later line numbers — locate by the quoted selector/text, not the line number.
 
 ---
 
 ### Task 1: Width scale — `--measure` tokens and the machine bleed
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (`:root` token block ~:56-122; `#workspace` ~:499-516; new rules after ~:516)
-- Test: `cmd/serf-hub/jstest/test-layout-scale-css.js` (create)
+- Modify: `cmd/evener-hub/assets/style.css` (`:root` token block ~:56-122; `#workspace` ~:499-516; new rules after ~:516)
+- Test: `cmd/evener-hub/jstest/test-layout-scale-css.js` (create)
 
 **Interfaces:**
 - Produces: CSS custom properties `--measure` (720px) and `--measure-machine` (1000px) defined on `:root`; `--workspace-content-max-w` redefined as `var(--measure-machine)`. Tasks 2, 3, 6 consume these tokens.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-layout-scale-css.js`:
+Create `cmd/evener-hub/jstest/test-layout-scale-css.js`:
 
 ```js
 // Width scale: one measure for prose, a wider machine bleed, capped container.
@@ -64,7 +64,7 @@ console.log("ok layout width scale");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-layout-scale-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-layout-scale-css.js`
 Expected: FAIL with "--measure: 720px defined on :root"
 
 - [ ] **Step 3: Implement**
@@ -99,13 +99,13 @@ Immediately after the `.workspace-header, .conversation, .workspace-input { … 
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/jstest && node test-layout-scale-css.js && ./run-all.sh`
+Run: `cd cmd/evener-hub/jstest && node test-layout-scale-css.js && ./run-all.sh`
 Expected: PASS; full suite green (existing tests do not assert 832px — if one does, update its expectation to `var(--measure-machine)`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-layout-scale-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-layout-scale-css.js
 git commit -m "web: one width scale — 720px prose measure, machine rows bleed to 1000px"
 ```
 
@@ -114,9 +114,9 @@ git commit -m "web: one width scale — 720px prose measure, machine rows bleed 
 ### Task 2: Breakpoint ladder — tablet band, wide band, doc addenda
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (:539 side-panes hide; new wide-band block)
+- Modify: `cmd/evener-hub/assets/style.css` (:539 side-panes hide; new wide-band block)
 - Modify: `docs/web-ui/design-system.md` (§4 addendum, §8 addendum)
-- Test: `cmd/serf-hub/jstest/test-breakpoint-ladder-css.js` (create)
+- Test: `cmd/evener-hub/jstest/test-breakpoint-ladder-css.js` (create)
 
 **Interfaces:**
 - Consumes: `--measure-machine` from Task 1.
@@ -124,7 +124,7 @@ git commit -m "web: one width scale — 720px prose measure, machine rows bleed 
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-breakpoint-ladder-css.js`:
+Create `cmd/evener-hub/jstest/test-breakpoint-ladder-css.js`:
 
 ```js
 // Breakpoint ladder: phone ≤767 (unchanged), tablet 768–1199 (panes hidden),
@@ -147,7 +147,7 @@ console.log("ok breakpoint ladder");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-breakpoint-ladder-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-breakpoint-ladder-css.js`
 Expected: FAIL with "side panes hidden through the tablet band"
 
 - [ ] **Step 3: Implement**
@@ -190,13 +190,13 @@ In §8, change the heading line `## 8. Mobile (≤767px)` — leave the heading,
 
 - [ ] **Step 5: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-breakpoint-ladder-css.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-breakpoint-ladder-css.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS, suite green, build ok.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-breakpoint-ladder-css.js docs/web-ui/design-system.md
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-breakpoint-ladder-css.js docs/web-ui/design-system.md
 git commit -m "web: breakpoint ladder — tablet band hides panes, wide band widens machine bleed"
 ```
 
@@ -205,8 +205,8 @@ git commit -m "web: breakpoint ladder — tablet band hides panes, wide band wid
 ### Task 3: Composer — dock spans the window, hit targets, ceilings, short-desktop, phone rebalance
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (:511-516 cap group, :1924-1929 dock, :2056 textarea, :2083 model pill, phone band ~:4551-4553, new short-desktop block)
-- Test: `cmd/serf-hub/jstest/test-composer-layout-css.js` (create)
+- Modify: `cmd/evener-hub/assets/style.css` (:511-516 cap group, :1924-1929 dock, :2056 textarea, :2083 model pill, phone band ~:4551-4553, new short-desktop block)
+- Test: `cmd/evener-hub/jstest/test-composer-layout-css.js` (create)
 
 **Interfaces:**
 - Consumes: `--measure` from Task 1.
@@ -214,7 +214,7 @@ git commit -m "web: breakpoint ladder — tablet band hides panes, wide band wid
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-composer-layout-css.js`:
+Create `cmd/evener-hub/jstest/test-composer-layout-css.js`:
 
 ```js
 // Composer layout: the dock spans the window (design-system §6), the input
@@ -246,7 +246,7 @@ console.log("ok composer layout");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-composer-layout-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-composer-layout-css.js`
 Expected: FAIL with ".workspace-input removed from the width-capped group"
 
 - [ ] **Step 3: Implement**
@@ -316,13 +316,13 @@ g. Short-desktop band — add after the composer section (near the `.pane-compac
 
 - [ ] **Step 4: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-composer-layout-css.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-composer-layout-css.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS, suite green. If `test-mobile-css.js` or `test-composer-status-compact.js` asserts the old `.controls-center` flex or 50vh ceiling, update those expectations to the rules above (same commit).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-composer-layout-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-composer-layout-css.js
 git commit -m "web: composer dock spans the window; hit targets, textarea ceiling, short-desktop band"
 ```
 
@@ -331,11 +331,11 @@ git commit -m "web: composer dock spans the window; hit targets, textarea ceilin
 ### Task 4: Sidebar tri-state — auto/rail/pane with migration and one effective-state helper
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js` (:1141-1174 rail block, :1181-1189 click handler, :1204-1213 ⌘B handler, :1218-1224 label sync, :1243 exports)
-- Modify: `cmd/serf-hub/assets/settings-appearance.js` (:26-32 radio handler, :56-60 state reflect, :79-85 init IIFE)
-- Modify: `cmd/serf-hub/templates/partials/settings/theme.html` (:29-32 radio group)
+- Modify: `cmd/evener-hub/assets/sidebar.js` (:1141-1174 rail block, :1181-1189 click handler, :1204-1213 ⌘B handler, :1218-1224 label sync, :1243 exports)
+- Modify: `cmd/evener-hub/assets/settings-appearance.js` (:26-32 radio handler, :56-60 state reflect, :79-85 init IIFE)
+- Modify: `cmd/evener-hub/templates/partials/settings/theme.html` (:29-32 radio group)
 - Modify: `docs/web-ui/design-system.md` (§5 addendum)
-- Test: `cmd/serf-hub/jstest/test-sidebar-tristate.js` (create)
+- Test: `cmd/evener-hub/jstest/test-sidebar-tristate.js` (create)
 
 **Interfaces:**
 - Produces: `window.SerfSidebar.applySidebarMode(mode)`, `window.SerfSidebar.readSidebarMode()`, `window.SerfSidebar.effectiveSidebarState(mode)`. `body[data-sidebar-mode]` records the setting (`auto`|`rail`|`pane`); `body[data-sidebar-rail]` continues to reflect the **effective** state so all existing rail CSS and `panes.js`'s resizer-disable keep working unchanged.
@@ -343,7 +343,7 @@ git commit -m "web: composer dock spans the window; hit targets, textarea ceilin
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-tristate.js` (pattern mirrors `test-sidebar-migration.js`):
+Create `cmd/evener-hub/jstest/test-sidebar-tristate.js` (pattern mirrors `test-sidebar-migration.js`):
 
 ```js
 // Sidebar tri-state: auto|rail|pane persisted under the legacy key, binary
@@ -399,7 +399,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-tristate.js`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-tristate.js`
 Expected: FAIL (eval throws or first assertion fails — `readSidebarMode` is not exported yet)
 
 - [ ] **Step 3: Implement sidebar.js**
@@ -544,13 +544,13 @@ preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
 
 - [ ] **Step 6: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-sidebar-tristate.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-sidebar-tristate.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS, suite green. If `test-settings-appearance.js` asserts the two-value radio sync, update it for the third value and the `applySidebarMode` delegation (same commit).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/templates/partials/settings/theme.html cmd/serf-hub/jstest/test-sidebar-tristate.js docs/web-ui/design-system.md
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/settings-appearance.js cmd/evener-hub/templates/partials/settings/theme.html cmd/evener-hub/jstest/test-sidebar-tristate.js docs/web-ui/design-system.md
 git commit -m "web: sidebar tri-state (auto|rail|pane) with migration and one effective-state helper"
 ```
 
@@ -559,16 +559,16 @@ git commit -m "web: sidebar tri-state (auto|rail|pane) with migration and one ef
 ### Task 5: Picker panels clamp inside the viewport at tablet widths
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/dir-picker.js` (:19-22 anchored branch)
-- Modify: `cmd/serf-hub/assets/spawn.js` (`placeChipPicker` anchored branch — locate via `grep -n 'placeChipPicker' assets/spawn.js`)
-- Test: `cmd/serf-hub/jstest/test-picker-clamp.js` (create)
+- Modify: `cmd/evener-hub/assets/dir-picker.js` (:19-22 anchored branch)
+- Modify: `cmd/evener-hub/assets/spawn.js` (`placeChipPicker` anchored branch — locate via `grep -n 'placeChipPicker' assets/spawn.js`)
+- Test: `cmd/evener-hub/jstest/test-picker-clamp.js` (create)
 
 **Interfaces:**
 - Produces: both pickers keep the ≤767px bottom-sheet path; the anchored path clamps `left` so the fixed-width panel never overflows the viewport's right edge.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-picker-clamp.js`:
+Create `cmd/evener-hub/jstest/test-picker-clamp.js`:
 
 ```js
 // Anchored chip pickers clamp inside the viewport (tablet band: an anchor
@@ -608,7 +608,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-picker-clamp.js`
+Run: `cd cmd/evener-hub/jstest && node test-picker-clamp.js`
 Expected: FAIL with "left is clamped away from the anchor's raw offset"
 
 - [ ] **Step 3: Implement**
@@ -638,13 +638,13 @@ Export the seam in `dir-picker.js` (the test calls it directly):
 
 - [ ] **Step 4: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-picker-clamp.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-picker-clamp.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS, suite green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/dir-picker.js cmd/serf-hub/assets/spawn.js cmd/serf-hub/jstest/test-picker-clamp.js
+git add cmd/evener-hub/assets/dir-picker.js cmd/evener-hub/assets/spawn.js cmd/evener-hub/jstest/test-picker-clamp.js
 git commit -m "web: clamp anchored chip pickers inside the viewport at tablet widths"
 ```
 
@@ -653,10 +653,10 @@ git commit -m "web: clamp anchored chip pickers inside the viewport at tablet wi
 ### Task 6: Home launchpad — server-rendered "Jump back in"
 
 **Files:**
-- Create: `cmd/serf-hub/templates/partials/workspace_empty.html`
-- Modify: `cmd/serf-hub/web.go` (:70-73 template registration, :374-384 `handleWorkspaceEmpty`)
-- Modify: `cmd/serf-hub/assets/style.css` (launchpad rules after the empty-state block, ~:5580)
-- Test: `cmd/serf-hub/web_launchpad_test.go` (create)
+- Create: `cmd/evener-hub/templates/partials/workspace_empty.html`
+- Modify: `cmd/evener-hub/web.go` (:70-73 template registration, :374-384 `handleWorkspaceEmpty`)
+- Modify: `cmd/evener-hub/assets/style.css` (launchpad rules after the empty-state block, ~:5580)
+- Test: `cmd/evener-hub/web_launchpad_test.go` (create)
 
 **Interfaces:**
 - Consumes: `s.memoTree(ctx)` → `hubcore.Tree` (`Projects[].Current/Recent`, `ArchivedProjects`, `IsArchived`, `IsTestRun`; `TreeNode{ID, Title, Project, Age, Kind, UpdatedAt}`).
@@ -674,7 +674,7 @@ type launchpadRow struct {
 
 - [ ] **Step 1: Write the failing Go test**
 
-Create `cmd/serf-hub/web_launchpad_test.go`:
+Create `cmd/evener-hub/web_launchpad_test.go`:
 
 ```go
 package main
@@ -689,7 +689,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -763,12 +763,12 @@ All-archived variant: add a case where every meta is archived (last activity old
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub -run TestWorkspaceEmpty -v`
+Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v`
 Expected: FAIL to compile (`workspaceEmptyTmpl` undefined)
 
 - [ ] **Step 3: Implement the template**
 
-Create `cmd/serf-hub/templates/partials/workspace_empty.html`:
+Create `cmd/evener-hub/templates/partials/workspace_empty.html`:
 
 ```html
 {{define "workspace_empty"}}
@@ -885,13 +885,13 @@ After the `.empty-state-sidebar …` rules (~:5580), add:
 
 - [ ] **Step 6: Run tests + gate**
 
-Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub -run TestWorkspaceEmpty -v && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub && cd cmd/serf-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub`
-Expected: PASS everywhere. If an existing test asserts the old static empty markup (grep: `grep -rn 'empty-state-workspace\|welcome-wordmark' cmd/serf-hub/*_test.go`), update it to the template output (same commit).
+Run: `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -run TestWorkspaceEmpty -v && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub && cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub`
+Expected: PASS everywhere. If an existing test asserts the old static empty markup (grep: `grep -rn 'empty-state-workspace\|welcome-wordmark' cmd/evener-hub/*_test.go`), update it to the template output (same commit).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace_empty.html cmd/serf-hub/web.go cmd/serf-hub/web_launchpad_test.go cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/workspace_empty.html cmd/evener-hub/web.go cmd/evener-hub/web_launchpad_test.go cmd/evener-hub/assets/style.css
 git commit -m "web: home launchpad — server-rendered 'Jump back in' (escaped, age-only, ≤8 sessions)"
 ```
 
@@ -900,9 +900,9 @@ git commit -m "web: home launchpad — server-rendered 'Jump back in' (escaped, 
 ### Task 7: Token migration — canonical definitions, scripted rename, legacy/dead deletion
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (4 theme blocks :4-231; ~600 use sites; :270-275 and :5585-5600 dead/duplicate rules)
+- Modify: `cmd/evener-hub/assets/style.css` (4 theme blocks :4-231; ~600 use sites; :270-275 and :5585-5600 dead/duplicate rules)
 - Modify: `docs/web-ui/design-system.md` (§3 neutral-ramp alignment)
-- Test: `cmd/serf-hub/jstest/test-color-system-css.js` (rewrite in place)
+- Test: `cmd/evener-hub/jstest/test-color-system-css.js` (rewrite in place)
 
 **Interfaces:**
 - Produces: canonical tokens `--surface`, `--surface-2`, `--line`, `--hair`, `--ink`, `--ink-2`, `--ink-3`, `--ink-4`, `--attention`, `--done` defined in all 4 theme blocks; zero legacy names remain. Task 8 consumes `--attention`/`--done`.
@@ -930,7 +930,7 @@ git commit -m "web: home launchpad — server-rendered 'Jump back in' (escaped, 
 
 - [ ] **Step 1: Rewrite the failing contract test**
 
-Replace `cmd/serf-hub/jstest/test-color-system-css.js` with:
+Replace `cmd/evener-hub/jstest/test-color-system-css.js` with:
 
 ```js
 // Canonical color-token vocabulary: canonicals defined in all 4 theme blocks;
@@ -981,7 +981,7 @@ console.log("ok canonical color tokens");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-color-system-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-color-system-css.js`
 Expected: FAIL (canonicals undefined / legacy names present)
 
 - [ ] **Step 3: Scripted use-site rename**
@@ -989,7 +989,7 @@ Expected: FAIL (canonicals undefined / legacy names present)
 Re-verify the scope, then run the rename:
 
 ```bash
-cd cmd/serf-hub
+cd cmd/evener-hub
 grep -rn -- 'var(--text)\|var(--text-muted)\|var(--text-dim)\|var(--rule)\|var(--rule-soft)\|var(--bg-raised)\|var(--surface-secondary)\|var(--panel)\|var(--panel-2)\|var(--border)\|var(--muted)\|var(--tool)\|var(--user)\|var(--accent-secondary)' assets/*.js templates/ && echo "UNEXPECTED non-CSS uses — handle by hand"
 sed -i \
   -e 's/var(--text)/var(--ink)/g' \
@@ -1085,13 +1085,13 @@ Light theme: `--bg #fafafa`, `--surface #f1f1f2`, `--surface-2 #e6e6e8`, `--line
 
 - [ ] **Step 7: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-color-system-css.js && ./run-all.sh && cd ../../.. && make build-hub`
-Expected: the new contract test passes. Other jstest files that assert old token names FAIL — update each one's expected names per the mapping table (mechanical, same commit). Known candidates: `test-style-palette.js`, `test-mobile-css.js`, `test-pane-and-sidebar-css.js`, `test-sidebar-density-css.js`, `test-sidebar-polish-css.js`, `test-errored-light-tint.js`, `test-context-pressure-css.js`, `test-transcript-typography.js`, `test-font-size-presets.js` (should be unaffected — type-scale carve-out). Then `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub`.
+Run: `cd cmd/evener-hub/jstest && node test-color-system-css.js && ./run-all.sh && cd ../../.. && make build-hub`
+Expected: the new contract test passes. Other jstest files that assert old token names FAIL — update each one's expected names per the mapping table (mechanical, same commit). Known candidates: `test-style-palette.js`, `test-mobile-css.js`, `test-pane-and-sidebar-css.js`, `test-sidebar-density-css.js`, `test-sidebar-polish-css.js`, `test-errored-light-tint.js`, `test-context-pressure-css.js`, `test-transcript-typography.js`, `test-font-size-presets.js` (should be unaffected — type-scale carve-out). Then `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/ docs/web-ui/design-system.md
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/ docs/web-ui/design-system.md
 git commit -m "web: canonical color-token vocabulary (alias → rename → delete) + dead CSS removal"
 ```
 
@@ -1100,10 +1100,10 @@ git commit -m "web: canonical color-token vocabulary (alias → rename → delet
 ### Task 8: State colors — blue=live, amber=needs-you, diagnostics lane, neutral favicon
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (4 theme blocks; :13-17 comment; 31 `--state-warning` uses)
-- Modify: `cmd/serf-hub/assets/notifications.js` (:31-33 PLAIN_FAVICON, :35-43 STATE_COLORS, ~:127 buildFaviconDataURI base fill)
-- Modify: `cmd/serf-hub/templates/thread.html` (:8 favicon)
-- Test: `cmd/serf-hub/jstest/test-color-system-css.js`, `test-notifications-palette.js`, `test-style-palette.js`, `test-context-pressure-css.js`, `test-subagents.js` (update in place)
+- Modify: `cmd/evener-hub/assets/style.css` (4 theme blocks; :13-17 comment; 31 `--state-warning` uses)
+- Modify: `cmd/evener-hub/assets/notifications.js` (:31-33 PLAIN_FAVICON, :35-43 STATE_COLORS, ~:127 buildFaviconDataURI base fill)
+- Modify: `cmd/evener-hub/templates/thread.html` (:8 favicon)
+- Test: `cmd/evener-hub/jstest/test-color-system-css.js`, `test-notifications-palette.js`, `test-style-palette.js`, `test-context-pressure-css.js`, `test-subagents.js` (update in place)
 
 **Interfaces:**
 - Consumes: `--accent`, `--attention`, `--done` from Task 7.
@@ -1124,7 +1124,7 @@ assert(/--diagnostic-warning:\s*#e0af68;/.test(css), "dark --diagnostic-warning 
 assert(/--diagnostic-hub:\s*#7dc98f;/.test(css), "dark --diagnostic-hub takes the freed green (≠ --diagnostic-ui blue)");
 ```
 
-And create `cmd/serf-hub/jstest/test-favicon-language.js`:
+And create `cmd/evener-hub/jstest/test-favicon-language.js`:
 
 ```js
 // Favicon language: pinned dark-theme constants (the icon renders against
@@ -1148,7 +1148,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/jstest && node test-color-system-css.js; node test-favicon-language.js`
+Run: `cd cmd/evener-hub/jstest && node test-color-system-css.js; node test-favicon-language.js`
 Expected: FAIL (old hues / old favicon)
 
 - [ ] **Step 3: Re-hue + rename in style.css**
@@ -1178,7 +1178,7 @@ In all 4 theme blocks, change the state definitions:
 Delete every `--state-warning:` definition line, then rename all uses:
 
 ```bash
-cd cmd/serf-hub
+cd cmd/evener-hub
 sed -i 's/var(--state-warning)/var(--diagnostic-warning)/g' assets/style.css
 grep -rn -- '--state-warning' assets/ templates/ && echo "LEFTOVER — fix by hand"
 grep -rn '#7dc98f\|#2e7d4f' assets/*.js templates/ && echo "hardcoded old working-green — fix by hand"
@@ -1219,13 +1219,13 @@ In `thread.html` :8 change `fill='%237aa2f7'` → `fill='%237e8593'`.
 
 - [ ] **Step 5: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub`
+Run: `cd cmd/evener-hub/jstest && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
 Expected: the two updated/new tests pass. `test-notifications-palette.js`, `test-style-palette.js`, `test-context-pressure-css.js`, `test-subagents.js` hard-assert the old world — rewrite their expectations to the new language (green→blue for working/live, blue→amber for awaiting/needs-you, `--state-warning`→`--diagnostic-warning`, favicon neutral base), same commit.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/assets/notifications.js cmd/serf-hub/templates/thread.html cmd/serf-hub/jstest/
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/assets/notifications.js cmd/evener-hub/templates/thread.html cmd/evener-hub/jstest/
 git commit -m "web: state colors — blue=live, amber=needs-you, diagnostics lane, neutral base favicon"
 ```
 
@@ -1234,8 +1234,8 @@ git commit -m "web: state colors — blue=live, amber=needs-you, diagnostics lan
 ### Task 9: Contrast pass — `--ink-4` stops coloring words
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (~36 `var(--ink-4)` color sites)
-- Test: `cmd/serf-hub/jstest/test-contrast-css.js` (create)
+- Modify: `cmd/evener-hub/assets/style.css` (~36 `var(--ink-4)` color sites)
+- Test: `cmd/evener-hub/jstest/test-contrast-css.js` (create)
 
 **Interfaces:**
 - Consumes: `--ink-3`, `--ink-4` from Task 7.
@@ -1246,7 +1246,7 @@ git commit -m "web: state colors — blue=live, amber=needs-you, diagnostics lan
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-contrast-css.js`:
+Create `cmd/evener-hub/jstest/test-contrast-css.js`:
 
 ```js
 // Contrast: --ink-4 never colors words. It may appear ONLY in the
@@ -1279,7 +1279,7 @@ console.log("ok contrast: --ink-4 is non-text only");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-contrast-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-contrast-css.js`
 Expected: FAIL with "--ink-4 never colors words"
 
 - [ ] **Step 3: Implement**
@@ -1287,7 +1287,7 @@ Expected: FAIL with "--ink-4 never colors words"
 Enumerate and flip:
 
 ```bash
-cd cmd/serf-hub
+cd cmd/evener-hub
 grep -n 'var(--ink-4)' assets/style.css
 ```
 
@@ -1297,13 +1297,13 @@ The `.think` tiers are already compliant (they bottom out at `--ink-2`, AA — t
 
 - [ ] **Step 4: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-contrast-css.js && ./run-all.sh && cd ../../.. && make build-hub`
+Run: `cd cmd/evener-hub/jstest && node test-contrast-css.js && ./run-all.sh && cd ../../.. && make build-hub`
 Expected: PASS, suite green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-contrast-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-contrast-css.js
 git commit -m "web: contrast — --ink-4 stops coloring words (~36 sites to --ink-3)"
 ```
 
@@ -1312,15 +1312,15 @@ git commit -m "web: contrast — --ink-4 stops coloring words (~36 sites to --in
 ### Task 10: Retired treatments — ALL-CAPS labels out, radius literals snapped to the two tokens
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (13 `text-transform: uppercase` sites; literal `border-radius` values)
-- Test: `cmd/serf-hub/jstest/test-retired-treatments-css.js` (create)
+- Modify: `cmd/evener-hub/assets/style.css` (13 `text-transform: uppercase` sites; literal `border-radius` values)
+- Test: `cmd/evener-hub/jstest/test-retired-treatments-css.js` (create)
 
 **Interfaces:**
 - Produces: zero `text-transform: uppercase` in the stylesheet; `border-radius` uses only `var(--radius-md)`, `var(--radius-pill)`, `0`, or the documented squircle exception.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-retired-treatments-css.js`:
+Create `cmd/evener-hub/jstest/test-retired-treatments-css.js`:
 
 ```js
 // Retired treatments (design-system §3 "Retired from the old UI"): no
@@ -1343,13 +1343,13 @@ console.log("ok retired treatments");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/jstest && node test-retired-treatments-css.js`
+Run: `cd cmd/evener-hub/jstest && node test-retired-treatments-css.js`
 Expected: FAIL (13 uppercase sites; literal radii)
 
 - [ ] **Step 3: Retire the 13 ALL-CAPS sites**
 
 ```bash
-cd cmd/serf-hub
+cd cmd/evener-hub
 grep -n 'text-transform:\s*uppercase' assets/style.css
 ```
 
@@ -1365,13 +1365,13 @@ Map: `3px`/`4px` → `var(--radius-md)`; `50%` → `var(--radius-pill)`; `16px 1
 
 - [ ] **Step 5: Run tests + gate**
 
-Run: `cd cmd/serf-hub/jstest && node test-retired-treatments-css.js && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub`
+Run: `cd cmd/evener-hub/jstest && node test-retired-treatments-css.js && ./run-all.sh && cd ../../.. && make build-hub && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
 Expected: PASS, all gates green. Adjust the contract test's allowed-literal logic if a documented exception survives Step 4 — record the exception in a comment next to the value in style.css.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-retired-treatments-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-retired-treatments-css.js
 git commit -m "web: retire ALL-CAPS mono labels (13 sites); snap radius literals to the two tokens"
 ```
 
@@ -1384,12 +1384,12 @@ git commit -m "web: retire ALL-CAPS mono labels (13 sites); snap radius literals
 
 - [ ] **Step 1: Full gate**
 
-Run: `make build-hub && (cd cmd/serf-hub/jstest && ./run-all.sh) && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub`
+Run: `make build-hub && (cd cmd/evener-hub/jstest && ./run-all.sh) && GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub`
 Expected: all green.
 
 - [ ] **Step 2: Playwright visual matrix (dev-time, not CI)**
 
-Serve the worktree hub with dev assets (`SERF_HUB_ASSETS_DIR=<worktree>/cmd/serf-hub`) and screenshot: 390 / 768 / 1100 / 1440 / 2560 px widths **plus a short-height 1100×600 case**, × dark/light, × home/session. Review by eye against design-system.md: measure holds 720px at every width; machine bleed 1000→1200px at wide; dock spans the window with the card centered; tablet auto-rails the sidebar; home shows the launchpad; state colors read blue=live / amber=needs-you / neutral=done.
+Serve the worktree hub with dev assets (`SERF_HUB_ASSETS_DIR=<worktree>/cmd/evener-hub`) and screenshot: 390 / 768 / 1100 / 1440 / 2560 px widths **plus a short-height 1100×600 case**, × dark/light, × home/session. Review by eye against design-system.md: measure holds 720px at every width; machine bleed 1000→1200px at wide; dock spans the window with the card centered; tablet auto-rails the sidebar; home shows the launchpad; state colors read blue=live / amber=needs-you / neutral=done.
 
 - [ ] **Step 3: Commit any fixes the matrix surfaced, then close out**
 

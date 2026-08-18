@@ -20,18 +20,18 @@
 
 | File | Action | Purpose |
 | --- | --- | --- |
-| `cmd/serf-hub/assets/focus-trap.js` | **create** | `window.SerfFocusTrap.activate/deactivate` helper (~80 LOC) |
-| `cmd/serf-hub/jstest/test-focus-trap.js` | **create** | TDD coverage for the focus-trap helper |
-| `cmd/serf-hub/jstest/test-sidebar-active.js` | **create** | Covers `data-active` wiring on `htmx:afterSwap` |
-| `cmd/serf-hub/templates/app.html` | modify | Load `focus-trap.js` before `sidebar.js` + `renderer.js`; remove body-level `#mobile-hamburger` (it moves into the workspace header partial) |
-| `cmd/serf-hub/templates/partials/sidebar.html` | rewrite | New `.sb-row` markup; rail-toggle button at top; project chevron becomes `<button>` |
-| `cmd/serf-hub/templates/partials/workspace.html` | modify | Hamburger inline at left of header (phone only); status pill → status badge; drop `.rule-dot` separators in meta |
-| `cmd/serf-hub/assets/sidebar.js` | modify | Rail toggle + `⌘B` keybinding + localStorage persist; `data-active` wiring on `htmx:afterSwap`; activate focus-trap on mobile drawer open; chevron becomes keyboard-accessible (Enter/Space) |
-| `cmd/serf-hub/assets/renderer.js` | modify | `toggleTasksPanel` + `toggleDetailsPanel` call `SerfFocusTrap.activate/deactivate`; signatures accept the trigger element |
-| `cmd/serf-hub/assets/style.css` | modify | New `.sb-row` rules; rail mode + container query; workspace-header mobile rules drop the 56px padding-left offset; new `.status-badge` for the meta row; remove obsolete `.session-row`/`.live-row`/`.subagent-row`/`.fork-row`/`.row-title`/`.row-age` rules |
-| `cmd/serf-hub/web_test.go` | modify | Replace every `session-row` / `live-row` assertion with the new `sb-row` shape (full list in Task 5) |
-| `cmd/serf-hub/jstest/test-sidebar-collapse.js` | modify | Update inline DOM fixture from `class="session-row"` to `class="sb-row"` and add `data-state` |
-| `cmd/serf-hub/jstest/test-panels.js` | modify | Add a focus-trap stub in the JSDOM `window` so the existing panel tests don't break under the new activation calls |
+| `cmd/evener-hub/assets/focus-trap.js` | **create** | `window.SerfFocusTrap.activate/deactivate` helper (~80 LOC) |
+| `cmd/evener-hub/jstest/test-focus-trap.js` | **create** | TDD coverage for the focus-trap helper |
+| `cmd/evener-hub/jstest/test-sidebar-active.js` | **create** | Covers `data-active` wiring on `htmx:afterSwap` |
+| `cmd/evener-hub/templates/app.html` | modify | Load `focus-trap.js` before `sidebar.js` + `renderer.js`; remove body-level `#mobile-hamburger` (it moves into the workspace header partial) |
+| `cmd/evener-hub/templates/partials/sidebar.html` | rewrite | New `.sb-row` markup; rail-toggle button at top; project chevron becomes `<button>` |
+| `cmd/evener-hub/templates/partials/workspace.html` | modify | Hamburger inline at left of header (phone only); status pill → status badge; drop `.rule-dot` separators in meta |
+| `cmd/evener-hub/assets/sidebar.js` | modify | Rail toggle + `⌘B` keybinding + localStorage persist; `data-active` wiring on `htmx:afterSwap`; activate focus-trap on mobile drawer open; chevron becomes keyboard-accessible (Enter/Space) |
+| `cmd/evener-hub/assets/renderer.js` | modify | `toggleTasksPanel` + `toggleDetailsPanel` call `SerfFocusTrap.activate/deactivate`; signatures accept the trigger element |
+| `cmd/evener-hub/assets/style.css` | modify | New `.sb-row` rules; rail mode + container query; workspace-header mobile rules drop the 56px padding-left offset; new `.status-badge` for the meta row; remove obsolete `.session-row`/`.live-row`/`.subagent-row`/`.fork-row`/`.row-title`/`.row-age` rules |
+| `cmd/evener-hub/web_test.go` | modify | Replace every `session-row` / `live-row` assertion with the new `sb-row` shape (full list in Task 5) |
+| `cmd/evener-hub/jstest/test-sidebar-collapse.js` | modify | Update inline DOM fixture from `class="session-row"` to `class="sb-row"` and add `data-state` |
+| `cmd/evener-hub/jstest/test-panels.js` | modify | Add a focus-trap stub in the JSDOM `window` so the existing panel tests don't break under the new activation calls |
 
 The CSS file is touched throughout; CSS edits are batched per task so each commit ships a coherent visual unit.
 
@@ -40,13 +40,13 @@ The CSS file is touched throughout; CSS edits are batched per task so each commi
 ## Task 1: Write the failing focus-trap jstest
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-focus-trap.js`
+- Create: `cmd/evener-hub/jstest/test-focus-trap.js`
 
 This is TDD — the test is written and run **before** `focus-trap.js` exists. It must fail with `SerfFocusTrap is not defined`.
 
 - [ ] **Step 1: Write the test**
 
-Write `cmd/serf-hub/jstest/test-focus-trap.js` with this exact content:
+Write `cmd/evener-hub/jstest/test-focus-trap.js` with this exact content:
 
 ```js
 // Verify the SerfFocusTrap helper: on activate, stores activeElement as the
@@ -146,7 +146,7 @@ if (failures.length === 0) {
 - [ ] **Step 2: Run the test and confirm it fails**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-focus-trap.js
 ```
 
@@ -155,7 +155,7 @@ Expected: failure with `ENOENT` or `SerfFocusTrap should exist on window` / `Ser
 - [ ] **Step 3: Commit the failing test**
 
 ```bash
-git add cmd/serf-hub/jstest/test-focus-trap.js
+git add cmd/evener-hub/jstest/test-focus-trap.js
 git commit -m "test: add failing jstest for SerfFocusTrap helper"
 ```
 
@@ -164,11 +164,11 @@ git commit -m "test: add failing jstest for SerfFocusTrap helper"
 ## Task 2: Implement the focus-trap helper
 
 **Files:**
-- Create: `cmd/serf-hub/assets/focus-trap.js`
+- Create: `cmd/evener-hub/assets/focus-trap.js`
 
 - [ ] **Step 1: Write the helper**
 
-Create `cmd/serf-hub/assets/focus-trap.js` with this exact content:
+Create `cmd/evener-hub/assets/focus-trap.js` with this exact content:
 
 ```js
 // SerfFocusTrap — minimal focus management for slide-over panels, modal
@@ -293,7 +293,7 @@ Create `cmd/serf-hub/assets/focus-trap.js` with this exact content:
 - [ ] **Step 2: Run the test and confirm it passes**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-focus-trap.js
 ```
 
@@ -301,7 +301,7 @@ Expected: `PASS: focus-trap activate, cycle, deactivate`.
 
 - [ ] **Step 3: Wire the script tag**
 
-Edit `cmd/serf-hub/templates/app.html`. Find the script block at the bottom and insert `<script src="/assets/focus-trap.js"></script>` immediately before `<script src="/assets/sidebar.js"></script>`. The new script block ordering, in full:
+Edit `cmd/evener-hub/templates/app.html`. Find the script block at the bottom and insert `<script src="/assets/focus-trap.js"></script>` immediately before `<script src="/assets/sidebar.js"></script>`. The new script block ordering, in full:
 
 ```html
   <script src="/assets/htmx.min.js"></script>
@@ -325,7 +325,7 @@ Edit `cmd/serf-hub/templates/app.html`. Find the script block at the bottom and 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/focus-trap.js cmd/serf-hub/templates/app.html
+git add cmd/evener-hub/assets/focus-trap.js cmd/evener-hub/templates/app.html
 git commit -m "feat: add SerfFocusTrap helper for slide-over focus management"
 ```
 
@@ -334,13 +334,13 @@ git commit -m "feat: add SerfFocusTrap helper for slide-over focus management"
 ## Task 3: Restructure sidebar.html partial to .sb-row markup
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/templates/partials/sidebar.html`
 
 This task changes ONLY the template. The CSS and Go tests are updated in subsequent tasks. After this task, the visual presentation will look broken — that's expected; the CSS catches up in Task 4 and the Go tests in Task 5.
 
 - [ ] **Step 1: Rewrite the partial**
 
-Replace the entire contents of `cmd/serf-hub/templates/partials/sidebar.html` with:
+Replace the entire contents of `cmd/evener-hub/templates/partials/sidebar.html` with:
 
 ```html
 {{define "sidebar"}}
@@ -474,11 +474,11 @@ CSS (Task 4) and Go test updates (Task 5) ship together with this template chang
 ## Task 4: Add sidebar CSS rules for .sb-row, rail mode, container query
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (sidebar section lines 254–330; mobile section line 873 onward)
+- Modify: `cmd/evener-hub/assets/style.css` (sidebar section lines 254–330; mobile section line 873 onward)
 
 - [ ] **Step 1: Replace the existing sidebar row rules**
 
-In `cmd/serf-hub/assets/style.css`, locate the block of rules starting at line 265 (`.session-row, .subagent-row, .fork-row, .live-row { ... }`) and ending at line 293 (`.live-row[data-state="warning"] ...`). Replace the entire block (lines 265–293 inclusive) with:
+In `cmd/evener-hub/assets/style.css`, locate the block of rules starting at line 265 (`.session-row, .subagent-row, .fork-row, .live-row { ... }`) and ending at line 293 (`.live-row[data-state="warning"] ...`). Replace the entire block (lines 265–293 inclusive) with:
 
 ```css
 /* Sidebar row — grid: dot column + text column. The 2-line title wrap is
@@ -701,7 +701,7 @@ Tests and templates need to land together. Go to Task 5.
 ## Task 5: Update web_test.go assertions to the new .sb-row shape
 
 **Files:**
-- Modify: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/web_test.go`
 
 The implementation spec is explicit: old class names are removed entirely — they are NOT co-applied transitionally, because that leaves dead selectors. Every test that asserts on the old class names must move to the new ones in lockstep.
 
@@ -711,7 +711,7 @@ The two affected test functions are:
 
 - [ ] **Step 1: Update the project-sections collapsed test**
 
-In `cmd/serf-hub/web_test.go`, around line 828, find this block:
+In `cmd/evener-hub/web_test.go`, around line 828, find this block:
 
 ```go
 	if !strings.Contains(body, "session-row") {
@@ -729,7 +729,7 @@ Replace it with:
 
 - [ ] **Step 2: Update the live-row data-state test**
 
-In `cmd/serf-hub/web_test.go`, the entire `TestWeb_Sidebar_LiveRowDataState` function (lines ~3486–3537) uses `live-row` throughout. Replace the function body (everything between the function-opening brace and its closing brace) with the version below. The comment block at the top, the function signature, and the body are all updated; the test logic is preserved — just renamed to assert on `sb-row` rather than `live-row`.
+In `cmd/evener-hub/web_test.go`, the entire `TestWeb_Sidebar_LiveRowDataState` function (lines ~3486–3537) uses `live-row` throughout. Replace the function body (everything between the function-opening brace and its closing brace) with the version below. The comment block at the top, the function signature, and the body are all updated; the test logic is preserved — just renamed to assert on `sb-row` rather than `live-row`.
 
 Replace the test that begins at the comment `// TestWeb_Sidebar_LiveRowDataState verifies` with:
 
@@ -794,7 +794,7 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 
 - [ ] **Step 3: Update the sidebar-collapse jstest fixture**
 
-Edit `cmd/serf-hub/jstest/test-sidebar-collapse.js`. Find the four occurrences of `class="session-row"` (lines 22, 23, 24, 36) and replace each with `class="sb-row"`. The fixture HTML around line 22 should read:
+Edit `cmd/evener-hub/jstest/test-sidebar-collapse.js`. Find the four occurrences of `class="session-row"` (lines 22, 23, 24, 36) and replace each with `class="sb-row"`. The fixture HTML around line 22 should read:
 
 ```html
         <div class="project-children">
@@ -818,14 +818,14 @@ Run:
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf
-grep -rn "session-row\|live-row\|subagent-row\|fork-row\|row-title\|row-age\|row-meta" cmd/serf-hub/ --include='*.go' --include='*.js' --include='*.html' --include='*.css'
+grep -rn "session-row\|live-row\|subagent-row\|fork-row\|row-title\|row-age\|row-meta" cmd/evener-hub/ --include='*.go' --include='*.js' --include='*.html' --include='*.css'
 ```
 
 Expected: only matches in `style.css` for selectors we will delete in the next step. If matches appear elsewhere (other than the file already updated above), open each and rename to the new scheme: `sb-row`, the `.title` / `.meta` children, and the section/project-header `.count` for counters.
 
 - [ ] **Step 5: Delete dead CSS selectors**
 
-Re-open `cmd/serf-hub/assets/style.css`. Search for `.row-meta`, `.row-age`, `.row-title`, `.session-row`, `.live-row`, `.subagent-row`, `.fork-row`. Delete any rule whose entire selector list consists of these dead names. Where a rule mixes a dead selector with a still-live one, drop the dead one only.
+Re-open `cmd/evener-hub/assets/style.css`. Search for `.row-meta`, `.row-age`, `.row-title`, `.session-row`, `.live-row`, `.subagent-row`, `.fork-row`. Delete any rule whose entire selector list consists of these dead names. Where a rule mixes a dead selector with a still-live one, drop the dead one only.
 
 Specifically, the original lines 269–280 of style.css contain rules like:
 - `.session-row { font-weight: 500; }` — delete entirely.
@@ -846,7 +846,7 @@ make test
 Expected: pass. If `TestWeb_Sidebar_ProjectSections_DefaultCollapsed` or `TestWeb_Sidebar_LiveRowDataState` fails with an unrelated regression, capture the body diff and fix the template before continuing.
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-collapse.js
 ```
 
@@ -855,7 +855,7 @@ Expected: `PASS: sidebar collapse — toggle, persist, restore`.
 - [ ] **Step 7: Commit the sidebar restructure**
 
 ```bash
-git add cmd/serf-hub/templates/partials/sidebar.html cmd/serf-hub/assets/style.css cmd/serf-hub/web_test.go cmd/serf-hub/jstest/test-sidebar-collapse.js
+git add cmd/evener-hub/templates/partials/sidebar.html cmd/evener-hub/assets/style.css cmd/evener-hub/web_test.go cmd/evener-hub/jstest/test-sidebar-collapse.js
 git commit -m "feat(serf-hub): restructure sidebar to .sb-row with dot/text columns
 
 Sidebar rows become a 2-column grid (dot + text) with 2-line title wrap
@@ -875,11 +875,11 @@ removed entirely (not co-applied transitionally) per the design spec."
 ## Task 6: Add rail-mode JS — toggle button, localStorage, ⌘B keybinding
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
 
 - [ ] **Step 1: Add the rail-mode block to sidebar.js**
 
-Open `cmd/serf-hub/assets/sidebar.js`. Immediately above the closing `})();` line at the end of the IIFE (currently around line 128), insert the following block:
+Open `cmd/evener-hub/assets/sidebar.js`. Immediately above the closing `})();` line at the end of the IIFE (currently around line 128), insert the following block:
 
 ```js
   // Sidebar rail mode — persisted to localStorage. The body[data-sidebar-rail]
@@ -1011,7 +1011,7 @@ Also update `applyCollapseState` (currently lines 31–40) to sync `aria-expande
 - [ ] **Step 3: Run the existing sidebar jstest to confirm no regressions**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-collapse.js
 ```
 
@@ -1020,7 +1020,7 @@ Expected: `PASS: sidebar collapse — toggle, persist, restore`.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js
+git add cmd/evener-hub/assets/sidebar.js
 git commit -m "feat(serf-hub): add sidebar rail toggle with ⌘B keybinding
 
 Rail mode collapses the sidebar to 56px (icons + status dots only),
@@ -1036,11 +1036,11 @@ screen readers."
 ## Task 7: Write the data-active jstest (TDD-style)
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-sidebar-active.js`
+- Create: `cmd/evener-hub/jstest/test-sidebar-active.js`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-active.js` with this exact content:
+Create `cmd/evener-hub/jstest/test-sidebar-active.js` with this exact content:
 
 ```js
 // Verify that sidebar.js listens for htmx:afterSwap on #workspace and
@@ -1133,7 +1133,7 @@ const wait = () => new Promise(r => setTimeout(r, 30));
 - [ ] **Step 2: Run the test and confirm it fails**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-active.js
 ```
 
@@ -1142,7 +1142,7 @@ Expected: a FAIL line — likely `rowB should be marked active after swap to /s/
 - [ ] **Step 3: Commit the failing test**
 
 ```bash
-git add cmd/serf-hub/jstest/test-sidebar-active.js
+git add cmd/evener-hub/jstest/test-sidebar-active.js
 git commit -m "test(serf-hub): add failing jstest for sidebar data-active wiring"
 ```
 
@@ -1151,11 +1151,11 @@ git commit -m "test(serf-hub): add failing jstest for sidebar data-active wiring
 ## Task 8: Wire data-active in sidebar.js
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
 
 - [ ] **Step 1: Add the data-active sync handler**
 
-In `cmd/serf-hub/assets/sidebar.js`, immediately above the closing `})();` of the IIFE, insert:
+In `cmd/evener-hub/assets/sidebar.js`, immediately above the closing `})();` of the IIFE, insert:
 
 ```js
   // data-active marker — sync after every htmx swap into #workspace. The
@@ -1199,7 +1199,7 @@ In `cmd/serf-hub/assets/sidebar.js`, immediately above the closing `})();` of th
 - [ ] **Step 2: Run the test and confirm it passes**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-active.js
 ```
 
@@ -1208,7 +1208,7 @@ Expected: `PASS: sidebar data-active wiring on htmx:afterSwap`.
 - [ ] **Step 3: Run the full jstest suite to ensure no regressions**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
 ```
 
@@ -1217,7 +1217,7 @@ Expected: every test prints `PASS: ...` and exits 0.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js
+git add cmd/evener-hub/assets/sidebar.js
 git commit -m "feat(serf-hub): wire sidebar [data-active] from htmx:afterSwap
 
 After every swap into #workspace (or a re-render of #sidebar), parse
@@ -1231,15 +1231,15 @@ the marker from all other rows."
 ## Task 9: Move hamburger into the workspace header; refactor meta row
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html`
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/templates/app.html`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 This task makes three coordinated edits: remove the body-level `#mobile-hamburger`, render an inline `.header-hamburger` button inside `.workspace-header`, and replace the `status-pill` + `rule-dot` separators in the meta row with a `status-badge` and `gap`-based mono cluster.
 
 - [ ] **Step 1: Remove the body-level hamburger from app.html**
 
-In `cmd/serf-hub/templates/app.html`, delete line 20:
+In `cmd/evener-hub/templates/app.html`, delete line 20:
 
 ```html
   <button type="button" id="mobile-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
@@ -1249,7 +1249,7 @@ The line is removed entirely — no replacement at the body level. The hamburger
 
 - [ ] **Step 2: Inline hamburger + new meta row in workspace.html**
 
-In `cmd/serf-hub/templates/partials/workspace.html`, replace the existing `<header class="workspace-header" ...>` block and the `{{define "workspace_meta"}}` line at the bottom. The new full template:
+In `cmd/evener-hub/templates/partials/workspace.html`, replace the existing `<header class="workspace-header" ...>` block and the `{{define "workspace_meta"}}` line at the bottom. The new full template:
 
 ```html
 {{define "workspace"}}
@@ -1341,7 +1341,7 @@ Key changes inside `workspace_meta`:
 
 - [ ] **Step 3: Update the CSS — workspace header + status badge + drop rule-dot**
 
-In `cmd/serf-hub/assets/style.css`:
+In `cmd/evener-hub/assets/style.css`:
 
 (a) **Replace the `.workspace-meta` rule** (around line 337) so meta items cluster with `gap`. Find the line:
 
@@ -1582,7 +1582,7 @@ Expected: pass. If any test asserts on `mobile-hamburger`, `status-pill`, or `ru
 - [ ] **Step 5: Run the full jstest suite**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
 ```
 
@@ -1591,7 +1591,7 @@ Expected: every test prints `PASS: ...`. The existing `test-panels.js` does not 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/app.html cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/app.html cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css
 git commit -m "feat(serf-hub): inline workspace hamburger; status pill → status badge
 
 The hamburger moves from a body-level fixed-position button into the
@@ -1607,13 +1607,13 @@ gap: var(--space-4)."
 ## Task 10: Activate focus-trap on mobile sidebar drawer
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
 
 The existing `setSidebarOpen(open)` is the chokepoint for mobile drawer open/close. Add focus-trap activation when opening, deactivation on close.
 
 - [ ] **Step 1: Modify setSidebarOpen**
 
-In `cmd/serf-hub/assets/sidebar.js`, find the existing `setSidebarOpen` function (lines 82–90):
+In `cmd/evener-hub/assets/sidebar.js`, find the existing `setSidebarOpen` function (lines 82–90):
 
 ```js
   function setSidebarOpen(open) {
@@ -1662,7 +1662,7 @@ Replace with:
 `test-sidebar-collapse.js` doesn't exercise the mobile drawer code path, but it does eval `sidebar.js`, so any syntax error would surface here.
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-collapse.js
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-active.js
 ```
@@ -1672,7 +1672,7 @@ Expected: both pass.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js
+git add cmd/evener-hub/assets/sidebar.js
 git commit -m "feat(serf-hub): trap focus inside mobile sidebar drawer
 
 When setSidebarOpen(true) fires on a phone breakpoint, call
@@ -1686,14 +1686,14 @@ drawer."
 ## Task 11: Wire focus-trap into the tasks + details panels
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/jstest/test-panels.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/jstest/test-panels.js`
 
 `toggleTasksPanel` and `toggleDetailsPanel` currently take no arguments. Extend them to accept an optional trigger element (so focus restores correctly even when the toggle fires from a keyboard shortcut or a non-trigger element); call `SerfFocusTrap.activate/deactivate`.
 
 - [ ] **Step 1: Modify the existing panel test to stub SerfFocusTrap**
 
-In `cmd/serf-hub/jstest/test-panels.js`, immediately after the `window.fetch = (url) => { ... }` block (around line 30, before `window.eval(rendererSrc);`), insert:
+In `cmd/evener-hub/jstest/test-panels.js`, immediately after the `window.fetch = (url) => { ... }` block (around line 30, before `window.eval(rendererSrc);`), insert:
 
 ```js
 // Stub SerfFocusTrap — the renderer calls it but the panel test doesn't
@@ -1706,7 +1706,7 @@ window.SerfFocusTrap = {
 
 - [ ] **Step 2: Modify toggleTasksPanel + toggleDetailsPanel**
 
-In `cmd/serf-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (around line 2868). Replace the entire function with:
+In `cmd/evener-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (around line 2868). Replace the entire function with:
 
 ```js
   function toggleTasksPanel(trigger) {
@@ -1848,7 +1848,7 @@ Then locate `function toggleDetailsPanel()` (around line 3039). Replace it with:
 
 - [ ] **Step 3: Update the click delegate to pass the trigger element**
 
-In `cmd/serf-hub/assets/renderer.js`, find the body-level click handler around line 2793:
+In `cmd/evener-hub/assets/renderer.js`, find the body-level click handler around line 2793:
 
 ```js
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
@@ -1891,7 +1891,7 @@ Replace with:
 - [ ] **Step 4: Run the panels jstest**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-panels.js
 ```
 
@@ -1900,7 +1900,7 @@ Expected: `PASS: click-outside dismissal works for tasks and details panels`.
 - [ ] **Step 5: Run the whole jstest suite**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
 ```
 
@@ -1909,7 +1909,7 @@ Expected: every test passes.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-panels.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-panels.js
 git commit -m "feat(serf-hub): trap focus inside tasks and details slide-overs
 
 toggleTasksPanel and toggleDetailsPanel now accept the trigger element
@@ -1959,7 +1959,7 @@ Expected: no violations.
 - [ ] **Step 4: Run every jstest**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/cmd/serf-hub/jstest
+cd /home/jesse/git/prime-radiant/serf/cmd/evener-hub/jstest
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh
 ```
 
@@ -2033,7 +2033,7 @@ Pass 4 of the serf-hub UI overhaul (per the responsive-ui-design spec's ship-ord
 
 - [ ] `make test` passes
 - [ ] `make lint-naming` passes
-- [ ] All jstests pass (`cd cmd/serf-hub/jstest && NODE_PATH=... sh run-all.sh`)
+- [ ] All jstests pass (`cd cmd/evener-hub/jstest && NODE_PATH=... sh run-all.sh`)
 - [ ] Manual: sidebar 2-line wrap, rail toggle (button + ⌘B), localStorage persistence
 - [ ] Manual: `data-active` follows session clicks; clears on `/new`
 - [ ] Manual: workspace header inline hamburger on phone, status badge in meta row

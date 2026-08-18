@@ -145,7 +145,7 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	}
 
 	// The caller resolves the profile from the persisted meta before restoring
-	// (mirrors production: cmd/serf reconstructs the profile from meta.Model).
+	// (mirrors production: cmd/evener reconstructs the profile from meta.Model).
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
 	})

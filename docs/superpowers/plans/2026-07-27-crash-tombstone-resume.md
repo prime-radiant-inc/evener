@@ -20,8 +20,8 @@
 ### Task 1: Reject crash tombstones during locked resume
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc_test.go:6621`
-- Modify: `cmd/serf-hub/app_threadlifecycle.go:251`
+- Modify: `cmd/evener-hub/app_rpc_test.go:6621`
+- Modify: `cmd/evener-hub/app_threadlifecycle.go:251`
 
 **Interfaces:**
 - Consumes: `hubcore.LiveEntry.Status`, `hubcore.NewResumeLocks()`, and `hubThreadResume`
@@ -62,7 +62,7 @@ replacement turn start.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError$' -count=1
+go test ./cmd/evener-hub -run '^TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError$' -count=1
 ```
 
 Expected: FAIL from `TurnStart` with `local daemon unavailable` and a refused
@@ -87,7 +87,7 @@ crash tombstones and those must fall through to spawning.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^(TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError|TestHubRPCTurnStart)' -count=1
+go test ./cmd/evener-hub -run '^(TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError|TestHubRPCTurnStart)' -count=1
 ```
 
 Expected: PASS.
@@ -97,7 +97,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go test ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore
+go test ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore
 make build
 git diff --check
 ```
@@ -112,8 +112,8 @@ Stage only:
 ```bash
 git add docs/superpowers/specs/2026-07-27-crash-tombstone-resume-design.md \
   docs/superpowers/plans/2026-07-27-crash-tombstone-resume.md \
-  cmd/serf-hub/app_rpc_test.go \
-  cmd/serf-hub/app_threadlifecycle.go
+  cmd/evener-hub/app_rpc_test.go \
+  cmd/evener-hub/app_threadlifecycle.go
 ```
 
 Commit with a detailed message describing the observed dead PID/endpoint, the

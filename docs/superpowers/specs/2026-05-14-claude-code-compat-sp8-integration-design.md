@@ -11,7 +11,7 @@ SP8 is the seam. It owns the order in which every prior sub-project's output is 
 
 - The exact call sequence at session startup that turns a `SerfConfig` ([ref: SP1 §2]) plus a set of CLI flags into a fully wired `Session`.
 - A new typed field set on `SessionConfig` that lets the four CLI binaries hand the merged config to `agent.NewSession` without forcing each binary to re-implement loader composition.
-- The CLI-side wiring in `cmd/serf`, `cmd/serf-tui`, `cmd/serf-hub`, and `cmd/serfeval` that calls `DiscoverSerfConfig` ([ref: SP1 §2]) and threads the result into `SessionConfig`.
+- The CLI-side wiring in `cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, and `cmd/evenereval` that calls `DiscoverSerfConfig` ([ref: SP1 §2]) and threads the result into `SessionConfig`.
 - The fire sites in `agent/session.go` and `agent/subagents.go` for the seven new lifecycle events SP5 ships, plus the two SP2 fires from its enforcement layer.
 - The end-to-end test: marketplace add ([ref: SP3 §5.1]) → install ([ref: SP4 §4]) → session start fires plugin hook ([ref: SP5 §3]) → uninstall ([ref: SP4 §5]) leaves no residue.
 
@@ -189,25 +189,25 @@ The two flags do not conflict. Both populate distinct fields on `SessionConfig`.
 
 Each binary owns one well-defined construction site for `SessionConfig`. SP8's changes are mechanical and additive.
 
-### 5.1 `cmd/serf` (`run.go`)
+### 5.1 `cmd/evener` (`run.go`)
 
 Files touched:
 
-- `cmd/serf/main.go` — add `--config <path>` repeatable flag; add `--trust-marketplace <name>` repeatable flag ([ref: SP3 §7.4]); add `--plugin-option <plugin>.<key>=<value>` repeatable flag ([ref: SP7 §4.2]).
-- `cmd/serf/run.go` — `runConfig` grows the four new field slices; `run()` calls `BuildSessionConfig(env, flags)` before constructing the existing `SessionConfig` literal and merges the returned fields into it.
+- `cmd/evener/main.go` — add `--config <path>` repeatable flag; add `--trust-marketplace <name>` repeatable flag ([ref: SP3 §7.4]); add `--plugin-option <plugin>.<key>=<value>` repeatable flag ([ref: SP7 §4.2]).
+- `cmd/evener/run.go` — `runConfig` grows the four new field slices; `run()` calls `BuildSessionConfig(env, flags)` before constructing the existing `SessionConfig` literal and merges the returned fields into it.
 
 Functions touched:
 
 - `run()` (`run.go:68`) — between the env construction and the existing `agent.SessionConfig{...}` literal, call `agent.BuildSessionConfig(env, flags)` and copy the resulting `Permissions`, `PermissionAskFallback`, `MergedConfig`, `EnabledPluginPaths`, `PluginConfigStore`, `SecureStore`, `UserConfigPrompter`, `WatchConfig` into the literal.
-- `serve()` (`cmd/serf/serve.go:63`) — same change, applied to the daemon-mode `SessionConfig`.
+- `serve()` (`cmd/evener/serve.go:63`) — same change, applied to the daemon-mode `SessionConfig`.
 
 Prompter selection: `CLIPrompter` ([ref: SP7 §4.2]) when stdin is a TTY; `NonInteractivePrompter` otherwise.
 
 `PermissionAskFallback` selection: `AskFallbackInteractive` for TTY foreground; `AskFallbackDeny` for `-p` and piped stdin ([ref: SP2 §9]).
 
-### 5.2 `cmd/serf-tui` (`embedded.go`)
+### 5.2 `cmd/evener-tui` (`embedded.go`)
 
-Files touched: `cmd/serf-tui/embedded.go`.
+Files touched: `cmd/evener-tui/embedded.go`.
 
 Functions touched: the `SessionConfig` literal at line 126; the `agent.NewSession` call at line 174; the resume-path `agent.NewSession` at line 325.
 
@@ -217,9 +217,9 @@ Prompter selection: `TUIPrompter` ([ref: SP7 §4.2]).
 
 `IsRemote`: false.
 
-### 5.3 `cmd/serf-hub` (`web.go`)
+### 5.3 `cmd/evener-hub` (`web.go`)
 
-Files touched: `cmd/serf-hub/web.go`.
+Files touched: `cmd/evener-hub/web.go`.
 
 Functions touched: `WebConfig` grows `ConfigPaths []string` and the routes that spawn or resume sessions thread the merged config into `SessionConfig`. The Hub does not call `agent.NewSession` directly today (it spawns serf processes); the wiring is in the Spawner's `SpawnRequest` formation. SP8 adds the new flags to that request.
 
@@ -229,9 +229,9 @@ Prompter selection: `HubPrompter` ([ref: SP7 §4.2]). The Hub's prompter is a we
 
 `IsRemote`: true.
 
-### 5.4 `cmd/serfeval` (`main.go`)
+### 5.4 `cmd/evenereval` (`main.go`)
 
-Files touched: `cmd/serfeval/main.go`.
+Files touched: `cmd/evenereval/main.go`.
 
 Functions touched: the `agent.SessionConfig` literal at line 206; `agent.NewSession` call at line 231.
 
@@ -387,12 +387,12 @@ No new packages. Files touched:
 | `agent/context_strategy.go` | Place `PostCompact` fire site (§6). |
 | `agent/permissions.go` (SP2 file) | SP2 owns. SP8 adds nothing. |
 | `agent/config_watcher.go` (new, owned by SP5) | SP5 owns. SP8 references it. |
-| `cmd/serf/main.go` | Register `--config`, `--trust-marketplace`, `--plugin-option`. |
-| `cmd/serf/run.go` | Call `BuildSessionConfig`; copy fields. |
-| `cmd/serf/serve.go` | Same. |
-| `cmd/serf-tui/embedded.go` | Same. |
-| `cmd/serf-hub/web.go` | Extend `WebConfig`; thread into Spawner. |
-| `cmd/serfeval/main.go` | Same. |
+| `cmd/evener/main.go` | Register `--config`, `--trust-marketplace`, `--plugin-option`. |
+| `cmd/evener/run.go` | Call `BuildSessionConfig`; copy fields. |
+| `cmd/evener/serve.go` | Same. |
+| `cmd/evener-tui/embedded.go` | Same. |
+| `cmd/evener-hub/web.go` | Extend `WebConfig`; thread into Spawner. |
+| `cmd/evenereval/main.go` | Same. |
 
 No file is moved or renamed. Every existing test path is preserved. The `--plugin-dir` codepath continues to work via the `PluginDirs` → `EnabledPluginPaths` fallback in §4.
 

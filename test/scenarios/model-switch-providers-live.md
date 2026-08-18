@@ -25,7 +25,7 @@ no hub, no browser — so the switch path under test is exactly
   second concurrent run would overwrite mid-run (kata `k2rx`):
   ```sh
   run=$(mktemp -d -t serf-e2e-msw-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   mkdir -p "$run/cfg" "$run/state" "$run/wd" "$run/rendezvous"
   ```
 - An **isolated** provider config so the live `~/.serf/providers.toml` is

@@ -155,7 +155,7 @@ capacity, browser availability, and CI tool setup are explicit prerequisites.
 | <code>make fuzz</code> | Tagged fuzz contracts, committed seed/crasher replay, Rapid replay, golden replay, and fuzz-tool packages | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties (including the seqfuzz/schemafuzz family that <code>make test-fuzz</code> also owns) replay under a fixed coverage seed bank, and decode goldens remain stable | Required CI deterministic corpus gate; local pre-merge when warranted | No fuzz search or provider calls; uses committed inputs and serffuzz tags; sets <code>SERF_FUZZ_TESTS=1</code> so the seqfuzz/schemafuzz family's default skip does not swallow the replay; memory caps are best-effort by platform | Any compile, replay, invariant, Rapid, or golden failure is nonzero. Search campaigns belong to make fuzz-nightly, not this gate | Serf fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Serf fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless SERF_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Serf security/tooling; no new follow-up currently |
-| <code>make test-dev-tooling</code> | The scripts/*-selftest.sh suites that pin serf's own dev tooling | Each suite is the only thing pinning its script's contract; a suite that leaves anything in its private TMPDIR after passing fails, which is what enforces suite cleanup | Final step of <code>make merge-approval-gate</code>, and on demand; not part of <code>make test</code> because these suites test tooling, not the product | Each suite is offline and deterministic; the wave runner (<code>cmd/serf-test-dev-tooling</code>) gives every suite its own process group and private TMPDIR, is quiet on success, and replays a failing suite's whole log | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero | Serf CI/tooling; no new follow-up currently |
+| <code>make test-dev-tooling</code> | The scripts/*-selftest.sh suites that pin serf's own dev tooling | Each suite is the only thing pinning its script's contract; a suite that leaves anything in its private TMPDIR after passing fails, which is what enforces suite cleanup | Final step of <code>make merge-approval-gate</code>, and on demand; not part of <code>make test</code> because these suites test tooling, not the product | Each suite is offline and deterministic; the wave runner (<code>cmd/evener-test-dev-tooling</code>) gives every suite its own process group and private TMPDIR, is quiet on success, and replays a failing suite's whole log | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero | Serf CI/tooling; no new follow-up currently |
 | <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. A one-time capability preflight (<code>scripts/gate-capability-preflight.sh</code>) classifies loopback binds, Chrome/CDP, process inspection, and the external git cache directory before any phase runs; on an unrestricted host every capability is available and behavior is unchanged | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. A capability the preflight classifies as blocked skips exactly the known-infeasible tests that need it (reported, with an exact rerun command, on the preflight's own summary) instead of failing into them; a blocked capability alone never fails the gate, and a genuine test or build failure still does | Serf CI/tooling; no new follow-up currently |
 | <code>make dist DIST_GOOS=... DIST_GOARCH=...</code> | Release/distribution binaries | The archive contains serf, serf-hub, serf-tui, and serf-doctor built for the requested target with a fresh SPA | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Serf launcher work is implied |
 | <code>scripts/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Serf |
@@ -187,14 +187,14 @@ make test-dev-tooling
 Before any phase runs, `merge-approval-gate` evaluates
 `scripts/gate-capability-preflight.sh` (`eval "$(scripts/gate-capability-preflight.sh)"`),
 which classifies four sandbox-sensitive host capabilities ONCE via
-`go run ./cmd/serf-gate-probe`: loopback binds, a Chrome/Chromium binary,
+`go run ./cmd/evener-gate-probe`: loopback binds, a Chrome/Chromium binary,
 process inspection via `ps`, and a writable external git cache directory
 (kata 5gvk). Each probe is bounded (it classifies blocked rather than hanging
 on a stalled resource) and honest (it never guesses available). The
 preflight echoes one AVAILABLE/BLOCKED line per capability to stderr, and for
 any it finds blocked, exports `SERF_GATE_CAPABILITY_SKIP` - a `go test -skip`
 regex covering the known root-module test-name pattern that needs it
-(currently `TestE2E_`/`TestTUITmuxE2E_`, the cmd/serf-hub and cmd/serf-tui
+(currently `TestE2E_`/`TestTUITmuxE2E_`, the cmd/evener-hub and cmd/evener-tui
 live/e2e families that only run under `ROOT_FULL=1` and need a real
 loopback-bound hub/daemon or tmux pane). `scripts/run-module-tests.sh` unions
 that pattern into root's own `-skip` argument only - never into other
@@ -214,7 +214,7 @@ ROOT_FULL=1 makes the protected first wave remove root's ordinary -short mode
 while retaining the non-fuzz Test/Example name filter.
 The runner still excludes the explicitly fuzz-owned sanity functions; their
 deterministic replay is part of make fuzz. The retired standalone go test ./...
-also ran ordinary tests in cmd/serf-fuzzcov and cmd/serf-fuzz-harvest; all fuzz
+also ran ordinary tests in cmd/evener-fuzzcov and cmd/evener-fuzz-harvest; all fuzz
 coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
@@ -237,7 +237,7 @@ caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
 
 make test-dev-tooling runs the scripts/*-selftest.sh suites that pin serf's
-own tooling (cmd/serf-test-dev-tooling). They test tooling, not the product,
+own tooling (cmd/evener-test-dev-tooling). They test tooling, not the product,
 so they run here — where tooling regressions matter — and on demand, not
 inside every inner-loop make test.
 
@@ -278,8 +278,8 @@ reusable-cache roots:
 ```text
 /work/serf/serf
 /work/serf/serf-hub
-/work/serf/cmd/serf-hub/frontend/dist
-/work/serf/cmd/serf-hub/frontend/node_modules
+/work/serf/cmd/evener-hub/frontend/dist
+/work/serf/cmd/evener-hub/frontend/node_modules
 /root/.cache/go-build
 /root/.npm
 /go/pkg/mod
@@ -392,7 +392,7 @@ invokes 98 of them. These `Fuzz*BehaviorProgram` targets carry no `serffuzz`
 build tag; what excludes them from the test track is the same
 `-run '^(Test|Example)'` filter (`scripts/gate-surface-lib.sh`'s
 `GATE_TEST_RUN`) that excludes every other `FuzzXxx` name, so the test track
-cannot see that work at all: `cmd/serf-hub/internal/appsource` reads 66.4%
+cannot see that work at all: `cmd/evener-hub/internal/appsource` reads 66.4%
 there and 83.1% under its own program target, and four modules that look
 incomplete on both tracks separately are in fact fully covered.
 
@@ -401,21 +401,21 @@ test to raise its number — read `make coverage-union`, which unions the two
 tracks. The test you were about to write may already exist under the other build
 tag.
 
-`cmd/serf-hub/cov_*_test.go` pulls the union number in the other direction.
+`cmd/evener-hub/cov_*_test.go` pulls the union number in the other direction.
 (The `cov_`-prefixed name is not the marker — some, like
 `agent/execenv/cov_s4_local_test.go`, are ordinary untagged `TestXxx`
 suites. The marker is the shape below: a `FuzzXxx` target, not a `TestXxx`
 function — the `//go:build serffuzz` tag is not part of it, and most of
-`cmd/serf-hub`'s cov_* files carry no such tag, including
+`cmd/evener-hub`'s cov_* files carry no such tag, including
 `cov_auth_instances_fuzz_test.go` below. Its own seed shape isn't universal
 either: it ignores a single seed byte, `f.Add(byte(0))`, but several other
 cov_* files seed multiple bytes that select between behaviors.) Each of
-`cmd/serf-hub`'s cov_* files is a deterministic replay matrix that calls
+`cmd/evener-hub`'s cov_* files is a deterministic replay matrix that calls
 production functions and discards most results (`_ = f(x)`). Their oracle is
 real — a panic or a `-race` failure still fails the build — but thin: a call
 site with no assertion cannot fail on a wrong answer, only a crash. So
 statements these files reach count as EXECUTED toward coverage-union, not
-TESTED — read the number that way for `cmd/serf-hub`, where they are a large
+TESTED — read the number that way for `cmd/evener-hub`, where they are a large
 share of the fuzz track. Upgrading a call site's target from panic-net to an
 assertion against an independently-written literal (see
 `cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for that call
@@ -468,7 +468,7 @@ Two corollaries:
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
 of frontend defect is structurally invisible to `vitest`. Three checks in
-`cmd/serf-hub/frontend` cover it, and the split matters:
+`cmd/evener-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
   `tokens.css` and component stylesheets, in headless Chrome. Cheap — static
@@ -564,7 +564,7 @@ so in the case rather than letting a pass imply coverage it does not have.
 
 `tmux capture-pane` returns tmux's OWN terminal-grid state, not a snapshot of
 what the program last rendered. tmux updates that grid incrementally as bytes
-arrive from the pty; `cmd/serf-tui` writes each frame through bubbletea's
+arrive from the pty; `cmd/evener-tui` writes each frame through bubbletea's
 default renderer as one unsynchronized ANSI byte stream — bubbletea v1.3.10
 has no terminal synchronized-output-mode support at all (grep `standard_renderer.go`
 for `2026`/`SyncUpdate`; nothing), and a single frame commonly runs several
@@ -579,8 +579,8 @@ path writing the composer without repainting the frame above it — first, and
 ruled it out two ways before touching tmux at all:
 
 - `hubModel.View()` composes the full frame synchronously from model state on
-  every call (`cmd/serf-tui/hub_model.go`, `sessionView()` in
-  `cmd/serf-tui/hub_session_view.go`); there is no code path that writes only
+  every call (`cmd/evener-tui/hub_model.go`, `sessionView()` in
+  `cmd/evener-tui/hub_session_view.go`); there is no code path that writes only
   the composer, and the session breadcrumb (`topBar`) is provably non-empty
   for any reachable state, so `tuiprim.AppShell.View()` cannot legitimately
   drop it while keeping the footer.
@@ -590,7 +590,7 @@ ruled it out two ways before touching tmux at all:
   that had not changed" is exactly what a render/transport-path bug looks
   like from the outside, and exactly what a `View()` bug cannot produce.
 
-`cmd/serf-tui/hub_partial_repaint_nxq6_test.go` drives realistic notification
+`cmd/evener-tui/hub_partial_repaint_nxq6_test.go` drives realistic notification
 bursts through `hubModel.Update` directly (no terminal involved) and checks
 that invariant after every step, both as a fixed scenario and as a fuzz
 target; a mutation test (temporarily dropping `topBar` from `AppShell.View()`)
@@ -598,7 +598,7 @@ confirmed the check fails the way it should before the mutation was reverted.
 
 **The fix**: never trust a lone `Capture()` (or a lone `capture-pane`) for a
 negative assertion ("X is absent"). `WaitFor` in
-`cmd/serf-tui/tmux_e2e_test.go` already retries until its wanted substrings
+`cmd/evener-tui/tmux_e2e_test.go` already retries until its wanted substrings
 appear, which self-corrects for POSITIVE assertions the same way a capture
 race self-heals — but the screen it returns is only guaranteed to contain
 what it waited for, not to be a complete frame, so a
@@ -640,7 +640,7 @@ lags, bubbletea reports every printable rune of one read as a single
 KeyMsg, and a command mode that matches on `msg.String()` reads "kkf" as
 one unmatchable message instead of three keys (kata fazd — reproducible on
 an idle machine with one `send-keys -l` write). The dashboard replays such
-bursts rune by rune (`replayKeyBurst` in `cmd/serf-tui/hub_keys.go`), but
+bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`), but
 browse mode's batch-as-text behavior is pinned pending a design decision
 (kata 7hh0), so its command sequences must never coalesce in the first
 place: see `TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the
@@ -655,7 +655,7 @@ in this repo produce one, and neither announces itself.
 
 **Registered `check*` functions.** Several packages drive their behavioral
 contracts through a fuzz entry point that replays one check selected by the fuzz
-input — `FuzzFSPathsBehaviorProgram` and friends in `cmd/serf-hub/internal/`
+input — `FuzzFSPathsBehaviorProgram` and friends in `cmd/evener-hub/internal/`
 (`fspaths`, `hostlock`, `hubedge`, `codexlaunch`, `launchconfig`). A
 `check*(t *testing.T)` function in those packages runs **only** if it appears in
 its `checks := []func(*testing.T){…}` seed table. Write one, forget the table
@@ -819,7 +819,7 @@ rejected, and `PastIndex.Rebuild` then leaves the seeded session out of the
 index — so the fixture is invisible rather than wrong, and the test failure
 points nowhere near the id.
 
-Mint them with `cmd/serf-hub/internal/hubtest` instead of writing them out:
+Mint them with `cmd/evener-hub/internal/hubtest` instead of writing them out:
 
 ```go
 sessionID := hubtest.SessionID(t)            // e.g. 02wMz5Txv1C3Hut0M8GCeB

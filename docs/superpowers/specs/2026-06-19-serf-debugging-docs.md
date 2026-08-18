@@ -56,7 +56,7 @@ Serf's debugging knowledge is **real and mostly accurate, but neither consolidat
 ### Bench / ops (peripheral)
 
 - `docs/terminal-bench.md` — benchmark infra reference; hand-parses transcript JSONL over SSH (drift-prone), infra-host-specific.
-- `docs/serf-hub-remote-operations.md`, `cmd/serf-hub/README.md` — ops runbooks (health checks, restarts, OAuth). Useful for *ops* debugging; mostly evergreen; not session/job forensics.
+- `docs/serf-hub-remote-operations.md`, `cmd/evener-hub/README.md` — ops runbooks (health checks, restarts, OAuth). Useful for *ops* debugging; mostly evergreen; not session/job forensics.
 - `docs/testing.md` — provider-E2E setup only; **no** inspection/diagnosis content (confirmed). Not a debugging doc.
 
 ### Not debugging docs (scoped out)
@@ -72,8 +72,8 @@ Cross-checked load-bearing claims against current code. Findings, worst first.
 Rebuild point #5 says: *"**AppWire types** — `internal/appwire/`. Both daemon and hub statically link these; rebuild both."* The package is at **`appwire/`** (module-root, top-level). There is no `internal/appwire/` (verified: `./appwire` exists, `internal/appwire` does not). Anyone following the rebuild recipe gets "no such package." This is the headline example of why inlined paths rot.
 
 ### STALE — `docs/agentic-testing.md` falsification & over-spec examples cite moved files
-- The falsification example (lines ~330-336) shows the probe *"In `cmd/serf-tui/hub_model.go` `applyHubNotification`"*. `applyHubNotification` and `notificationMatchesCurrentSession` now live in **`cmd/serf-tui/hub_notifications.go`**.
-- The over-specification trap (line ~382) says *"`handleSessionForceSteer` in `cmd/serf-tui/hub_model.go` early-returns…"*. `handleSessionForceSteer` now lives in **`cmd/serf-tui/hub_session_keys.go`**.
+- The falsification example (lines ~330-336) shows the probe *"In `cmd/evener-tui/hub_model.go` `applyHubNotification`"*. `applyHubNotification` and `notificationMatchesCurrentSession` now live in **`cmd/evener-tui/hub_notifications.go`**.
+- The over-specification trap (line ~382) says *"`handleSessionForceSteer` in `cmd/evener-tui/hub_model.go` early-returns…"*. `handleSessionForceSteer` now lives in **`cmd/evener-tui/hub_session_keys.go`**.
 The *behavior* described is still correct; the file names are wrong. The TUI was split into per-concern files (`hub_notifications.go`, `hub_session_keys.go`, `hub_update.go`, …) and the doc didn't move with it — textbook line/path drift.
 
 ### STALE — `docs/performance-profiling.md` parses the deprecated transcript shape
@@ -95,10 +95,10 @@ The same `grep -c '"kind":"…"'` / `find ~/.local/state/serf/projects -name "$S
 The §"OpenAI Prompt Cache Defaults" opens *"This branch adds conservative OpenAI prompt-cache defaults…"*. "This branch adds…" is release-note language; in an evergreen diagnostics doc it should read as the present-tense behavior, with the history (if needed) in a dated spec.
 
 ### MINOR — the runbook hardcodes `~/.serf/auth-token` as absolute
-Lines 34/402/407 state the token is at `~/.serf/auth-token`. In code the hub resolves it at `$hubStateRoot/auth-token` (`LoadOrCreateAuthToken(hubStateRoot)`, `cmd/serf-hub/main.go:106` → `hubStateRoot := cfg.HubStateRoot`). `~/.serf/auth-token` is correct only under the default config. A doc that points at `serf --state-dir` / the hub's configured root (or `serf doctor locate`) instead of a fixed `~/.serf` path won't lie when someone sets a custom state root.
+Lines 34/402/407 state the token is at `~/.serf/auth-token`. In code the hub resolves it at `$hubStateRoot/auth-token` (`LoadOrCreateAuthToken(hubStateRoot)`, `cmd/evener-hub/main.go:106` → `hubStateRoot := cfg.HubStateRoot`). `~/.serf/auth-token` is correct only under the default config. A doc that points at `serf --state-dir` / the hub's configured root (or `serf doctor locate`) instead of a fixed `~/.serf` path won't lie when someone sets a custom state root.
 
 ### MINOR — even the doctoring spec already carries drifting line numbers
-The sibling spec cites `cmd/serf/main.go:170` for the result-tool default (actual flag is at **:158**) and `dispatchCLICommand` at `:248` (actual **:243**, `case "serve"` at :249). Its *type/path* cites that matter most (`agent/jobs.go:267`, `agent/schema/snapshot.go:67`, `fold.go` symbols) are accurate today. The point for *this* audit: even a careful, well-aimed spec rots at the line-number granularity within days. That is the evidence base for §4's principle — cite symbols and packages, not `file:line`.
+The sibling spec cites `cmd/evener/main.go:170` for the result-tool default (actual flag is at **:158**) and `dispatchCLICommand` at `:248` (actual **:243**, `case "serve"` at :249). Its *type/path* cites that matter most (`agent/jobs.go:267`, `agent/schema/snapshot.go:67`, `fold.go` symbols) are accurate today. The point for *this* audit: even a careful, well-aimed spec rots at the line-number granularity within days. That is the evidence base for §4's principle — cite symbols and packages, not `file:line`.
 
 ---
 

@@ -589,7 +589,7 @@ func TestStatusServesTheEnvelopesFailureCountAndEscalationBit(t *testing.T) {
 // literal wire key names statusOverWire cannot. That helper decodes into
 // StatusInfo, the same struct the handler filled in, so a JSON tag renamed or
 // dropped on StatusInfo is invisible to it -- encode and decode move
-// together. cmd/serf-hub/internal/hubcore/prober.go separately re-declares
+// together. cmd/evener-hub/internal/hubcore/prober.go separately re-declares
 // these same two tags to read them cross-process, so a silent rename here is
 // a silent break there (the hub's needs-you badge for pending_escalation).
 // Decoding into an untyped map instead means a renamed or dropped tag surfaces

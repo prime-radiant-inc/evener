@@ -904,11 +904,11 @@ git commit -m "feat: add GET /models server endpoint"
 ### Task 7: Wire `ListModels` in serve command
 
 **Files:**
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/serve.go`
 
 **Step 1: Wire the callback**
 
-In `cmd/serf/serve.go`, after `srv.SetModelFunc(sess.SetModel)` (line 104), add:
+In `cmd/evener/serve.go`, after `srv.SetModelFunc(sess.SetModel)` (line 104), add:
 
 ```go
 srv.SetListModelsFunc(func(ctx context.Context) ([]server.ModelsResponseItem, error) {
@@ -931,13 +931,13 @@ This requires adding `"context"` to imports if not already present. The `profile
 
 **Step 2: Verify it compiles**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/serf/`
+Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/evener/`
 Expected: Build succeeds.
 
 **Step 3: Commit**
 
 ```
-git add cmd/serf/serve.go
+git add cmd/evener/serve.go
 git commit -m "feat: wire ListModels into serve command"
 ```
 
@@ -946,16 +946,16 @@ git commit -m "feat: wire ListModels into serve command"
 ### Task 8: Add model picker to TUI
 
 **Files:**
-- Create: `cmd/serf-tui/model_picker.go`
-- Create: `cmd/serf-tui/model_picker_test.go`
-- Modify: `cmd/serf-tui/input.go` (add `fetchModels` command)
-- Modify: `cmd/serf-tui/model.go` (handle picker state + messages)
+- Create: `cmd/evener-tui/model_picker.go`
+- Create: `cmd/evener-tui/model_picker_test.go`
+- Modify: `cmd/evener-tui/input.go` (add `fetchModels` command)
+- Modify: `cmd/evener-tui/model.go` (handle picker state + messages)
 
 This is the largest task. The model picker is an inline overlay in the existing TUI — not a separate Bubble Tea program like `sessionPicker`. It renders inside the viewport area and intercepts key events when active.
 
 **Step 1: Write the test for modelPicker**
 
-Create `cmd/serf-tui/model_picker_test.go`:
+Create `cmd/evener-tui/model_picker_test.go`:
 
 ```go
 package main
@@ -1035,7 +1035,7 @@ func stringContains(s, sub string) bool {
 
 **Step 2: Create model picker implementation**
 
-Create `cmd/serf-tui/model_picker.go`:
+Create `cmd/evener-tui/model_picker.go`:
 
 ```go
 package main
@@ -1208,12 +1208,12 @@ func (m modelPicker) View() string {
 
 **Step 3: Run picker test**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/serf-tui/ -run TestModelPicker -v`
+Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/evener-tui/ -run TestModelPicker -v`
 Expected: PASS
 
 **Step 4: Add `fetchModels` HTTP command to `input.go`**
 
-Add to `cmd/serf-tui/input.go`:
+Add to `cmd/evener-tui/input.go`:
 
 ```go
 type modelsResult struct {
@@ -1256,7 +1256,7 @@ func fetchModels(addr string) tea.Cmd {
 
 **Step 5: Wire picker into TUI model**
 
-Modify `cmd/serf-tui/model.go`:
+Modify `cmd/evener-tui/model.go`:
 
 Add field to `model` struct:
 ```go
@@ -1343,20 +1343,20 @@ The exact integration depends on how `View()` is structured — the picker repla
 
 **Step 6: Update help text**
 
-In `cmd/serf-tui/input.go`, update the `/model` help line:
+In `cmd/evener-tui/input.go`, update the `/model` help line:
 ```go
 "  /model     Switch model (picker) or /model <name>",
 ```
 
 **Step 7: Run all TUI tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/serf-tui/ -v`
+Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/evener-tui/ -v`
 Expected: All PASS
 
 **Step 8: Commit**
 
 ```
-git add cmd/serf-tui/model_picker.go cmd/serf-tui/model_picker_test.go cmd/serf-tui/input.go cmd/serf-tui/model.go
+git add cmd/evener-tui/model_picker.go cmd/evener-tui/model_picker_test.go cmd/evener-tui/input.go cmd/evener-tui/model.go
 git commit -m "feat: add interactive model picker to TUI /model command"
 ```
 
@@ -1374,7 +1374,7 @@ Expected: All packages PASS.
 
 **Step 2: Build binaries**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/serf/ && go build ./cmd/serf-tui/`
+Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/evener/ && go build ./cmd/evener-tui/`
 Expected: Both build successfully.
 
 **Step 3: Commit any remaining changes**

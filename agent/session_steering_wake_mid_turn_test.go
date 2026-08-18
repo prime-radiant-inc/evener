@@ -124,7 +124,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	}
 
 	// This is the redelivery the wake is FOR: the daemon's serve loop reacts
-	// to the wake by calling ProcessPendingUserInput (cmd/serf/serve.go). The
+	// to the wake by calling ProcessPendingUserInput (cmd/evener/serve.go). The
 	// wake's own delivery through the guaranteed 1-slot channel is proven
 	// independently by server/pending_user_input_wake_test.go; this call
 	// exercises the agent-side half of the same contract.

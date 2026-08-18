@@ -5,7 +5,7 @@ real tools exposed by Serf now or added later. It is not a framework for testing
 imaginary tools.
 
 The current implementation is a Go runner at
-`tools/tool-fluency/cmd/serf-fluency`. The operational skill for agents lives at
+`tools/tool-fluency/cmd/evener-fluency`. The operational skill for agents lives at
 `docs/skills/tool-fluency/SKILL.md`.
 
 ## Goal
@@ -39,7 +39,7 @@ roles, and Serf revisions, then compare behavior without hand-written glue.
 ```text
 tools/tool-fluency/
   README.md
-  cmd/serf-fluency/        # Go runner
+  cmd/evener-fluency/        # Go runner
   probes/
     read_file.yaml
     write_file.yaml
@@ -60,13 +60,13 @@ one-off JSONL parsers.
 Catalog the model-facing tools for a provider/model:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model openai/gpt-5.4-mini
 ```
 
 Run every current probe with a fresh `serf` binary:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -88,7 +88,7 @@ To test prompt or tool-description improvements without editing the product
 prompt first, pass one or more append files:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --model openai/gpt-5.4-mini \
   --probe read_file.happy_path \
   --system-prompt-append tools/tool-fluency/variants/example.md \
@@ -105,7 +105,7 @@ the session after the root turn; that is useful for ordinary tool probes but
 cannot prove that a watch-resumed observer had time to complete callback work.
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \

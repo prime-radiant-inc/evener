@@ -2,7 +2,7 @@
 
 Status: approved (2026-07-18), revised after two adversarial-review rounds (v3).
 Work branch: `webui-joy`.
-Scope: `cmd/serf-hub` frontend (`assets/`, `templates/`, and `web.go` home rendering).
+Scope: `cmd/evener-hub` frontend (`assets/`, `templates/`, and `web.go` home rendering).
 
 v2 resolved 26 round-1 findings (reviewers 1–2, 13 each, tie). v3 resolves 26
 round-2 findings (reviewer 3: 14 — round winner; reviewer 4: 12). Round-2 reports
@@ -14,7 +14,7 @@ round-1 resolutions retained from v2 are unmarked.
 
 The owner reports the hub feels "clunky, unbalanced, and not very responsive" — both
 interaction latency/jank and layout adaptiveness. Two read-only audits (2026-07-18)
-produced the findings below; line numbers refer to `cmd/serf-hub/assets/` on `main`
+produced the findings below; line numbers refer to `cmd/evener-hub/assets/` on `main`
 at `be125a62`.
 
 ### Jank findings (performance audit)
@@ -254,7 +254,7 @@ extends it the doc gets an addendum in the same commit.
   short-height (1100×600) case** × dark/light × home/session, before/after,
   reviewed by eye; deep-history prepend scroll-stability spot check.
 - Gate per increment: `make build-hub` + `jstest/run-all.sh` +
-  `go test ./cmd/serf-hub`.
+  `go test ./cmd/evener-hub`.
 
 ## Increments [v3 — dependency order]
 

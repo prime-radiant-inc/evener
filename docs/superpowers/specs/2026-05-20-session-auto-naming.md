@@ -73,7 +73,7 @@ The resolved effective value is passed to daemon launch args.
 - appwire launch config types
   - add `FastCheapModel` to the wire layer struct
 - hub launch settings UI
-  - add editable row in `cmd/serf-tui/launch_settings_panel.go`
+  - add editable row in `cmd/evener-tui/launch_settings_panel.go`
 - launch arg rendering
   - `internal/launchconfig/args.go` emits `--fast-cheap-model <value>`
 - hub daemon spawn tests
@@ -371,7 +371,7 @@ All session-list/history/thread display names should prefer:
 
 Likely areas:
 
-- `cmd/serf-hub/tree.go`
+- `cmd/evener-hub/tree.go`
 - past session rendering
 - appwire thread previews if metadata is available
 
@@ -381,7 +381,7 @@ Past-session search should match both generated name and original prompt.
 
 Update:
 
-- in-memory search logic in `cmd/serf-hub/past.go`
+- in-memory search logic in `cmd/evener-hub/past.go`
 - SQLite FTS schema/indexing
 
 FTS should include a `name` column. Existing FTS index can be rebuilt. If schema migration is awkward, use a versioned FTS table name.

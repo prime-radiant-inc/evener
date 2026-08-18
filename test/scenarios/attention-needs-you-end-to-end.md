@@ -43,8 +43,8 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
   token and history:
   ```bash
   run=$(mktemp -d -t serf-e2e-attn-XXXXXX)
-  go build -o "$run/serf"     ./cmd/serf
-  go build -o "$run/serf-hub" ./cmd/serf-hub
+  go build -o "$run/serf"     ./cmd/evener
+  go build -o "$run/serf-hub" ./cmd/evener-hub
   export HOME="$run/home"
   mkdir -p "$HOME"
   unset XDG_STATE_HOME
@@ -230,7 +230,7 @@ those pass instead of driving a live goal session here.
   refresh-trigger list (`stores/tree.ts:443-451`), so this should land within a second —
   well inside the 6 s ceiling. Falsify: clearing consistently needs the full ~6 s, meaning
   the own-tab trigger regressed to the broadcast-only path (the 5 s attention-watcher tick,
-  `cmd/serf-hub/main_background.go:50`); or it never clears at all.
+  `cmd/evener-hub/main_background.go:50`); or it never clears at all.
 - **Step 6**: the interrupt POST returns **204**. A 404 means the request went to the dead
   `/s/<id>/` shim and nothing was interrupted.
 - **Step 7 (exact)**: `seen_awaiting` is `0` and the final state is `idle` — an interrupted

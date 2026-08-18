@@ -11,7 +11,7 @@ Wave 7 rebuilt the entire Settings surface (18 parity sections) as the React/doc
 ## Wave trail
 
 ### T1a — hub-side `serf/settings/overview` wire method (`87b7367ec`, `c1713edff`)
-Added the `serf/settings/overview` appwire method and the hub-side `hubSettingsOverview` implementation (`cmd/serf-hub/app_rpc_settings_overview.go`) that answers Settings → General/Hub/Storage/Agents/Codex-launch/MCP-servers (the read-only, overview-fed half). This is the one Go-side deliverable this branch carries; it is gated below (`go build ./...`, `go test ./cmd/serf-hub/...`). Review fixes: doc cross-reference + test hermeticity.
+Added the `serf/settings/overview` appwire method and the hub-side `hubSettingsOverview` implementation (`cmd/evener-hub/app_rpc_settings_overview.go`) that answers Settings → General/Hub/Storage/Agents/Codex-launch/MCP-servers (the read-only, overview-fed half). This is the one Go-side deliverable this branch carries; it is gated below (`go build ./...`, `go test ./cmd/evener-hub/...`). Review fixes: doc cross-reference + test hermeticity.
 
 ### T1b — settings shell, routing, and the shared widgets (`3d58927ab`, `9631b3cbf`, `a72339328`, `d88a163f9`, `d42f26b4e`, `1c5e72cf0`, `f50b5606e`, `42781d7b6`)
 The frozen Settings pane shell + nav + routing, plus the new widget primitives every stream builds on: `FormRow`, `RadioGroup`, `ConfirmDialog`, `CollectionEditor`, `PathPicker`. A CI guard for `requireClass`/styles class references was added (`72e3031ab`) and its silent-skip gap closed per review (`cd942f2f6`).
@@ -40,7 +40,7 @@ All approved (fix-round review: 8/8 probes clean, 154 files / 2332 tests green).
 
 ### This close (item 0 — `7381dd78f`)
 Two subscription-payload comments (`stores/credentials.ts`, `stores/extensions.ts`) claimed the notification payloads are "empty/no fields on the wire". That is wrong about the wire. Corrected against verified source:
-- `serf/auth/updated` carries `{provider, activeSource}` — `cmd/serf-hub/app_rpc.go:764-767` (`notifyAuthUpdated`).
+- `serf/auth/updated` carries `{provider, activeSource}` — `cmd/evener-hub/app_rpc.go:764-767` (`notifyAuthUpdated`).
 - `serf/launch/updated` carries `{cwd, layer}` — `app_rpc.go:772-775` (`notifyLaunchUpdated`).
 - `serf/marketplace/updated` and `serf/plugin/updated` genuinely send empty maps — `app_rpc.go:657,663`.
 - All four generated payload types are `{}` in `protocol/types.gen.ts` (554/594/604/616) because codegen cannot see into Go's untyped `map[string]string`; the refetch is payload-agnostic so nothing reads them. Comments now state exactly this.
@@ -83,7 +83,7 @@ The full 18-entry ledger is in `.superpowers/sdd/` sweep output; the load-bearin
 
 ## Live proof (real hub, real browser, no mocks)
 
-Built the real thing (`npm run build` → `git restore dist/PLACEHOLDER`; `go build -o serf-hub ./cmd/serf-hub` embedding the fresh dist), ran an **isolated** hub — `hub_state_root`/`run_dir`/`past_index_db` under a scratch dir, `addr 127.0.0.1:19280`, `SERF_HUB_WEB=new`, real provider keys sourced from the repo `.env` — and drove the UI with Chrome. Every navigate used an explicit `127.0.0.1:19280` URL; all credential/launch mutations landed in the isolated state root (verified: isolated `launch.toml` holds the edits, Jesse's `~/.serf/launch.toml` untouched). Screenshots in `.superpowers/sdd/w7-live-evidence/` (copied from the scratch run).
+Built the real thing (`npm run build` → `git restore dist/PLACEHOLDER`; `go build -o serf-hub ./cmd/evener-hub` embedding the fresh dist), ran an **isolated** hub — `hub_state_root`/`run_dir`/`past_index_db` under a scratch dir, `addr 127.0.0.1:19280`, `SERF_HUB_WEB=new`, real provider keys sourced from the repo `.env` — and drove the UI with Chrome. Every navigate used an explicit `127.0.0.1:19280` URL; all credential/launch mutations landed in the isolated state root (verified: isolated `launch.toml` holds the edits, Jesse's `~/.serf/launch.toml` untouched). Screenshots in `.superpowers/sdd/w7-live-evidence/` (copied from the scratch run).
 
 | # | Journey | Verdict | Evidence |
 |---|---|---|---|
@@ -125,7 +125,7 @@ Built the real thing (`npm run build` → `git restore dist/PLACEHOLDER`; `go bu
 
 ## Gates (this close)
 
-Frontend (`cmd/serf-hub/frontend`), AND-chained, vitest run bare:
+Frontend (`cmd/evener-hub/frontend`), AND-chained, vitest run bare:
 ```
 npx tsc --noEmit        → clean
 npx vitest run          → 154 files / 2332 tests, all passed
@@ -135,9 +135,9 @@ npm run build           → ok (270 modules) → git restore dist/PLACEHOLDER �
 Go (repo root; this branch carries T1a's overview method):
 ```
 go build ./...              → ok
-go test ./cmd/serf-hub/...  → ok (all packages; hub package 29.6s)
+go test ./cmd/evener-hub/...  → ok (all packages; hub package 29.6s)
 ```
-Note: the brief cited `go -C . test ./internal/hub/...`, but there is no `internal/hub` at the repo root — the hub is `cmd/serf-hub` (package main) + `cmd/serf-hub/internal/*`, and T1a's overview tests live in `cmd/serf-hub/app_rpc_settings_overview_test.go`. The correct target is `./cmd/serf-hub/...` (used above). Working tree clean at `7381dd78f`.
+Note: the brief cited `go -C . test ./internal/hub/...`, but there is no `internal/hub` at the repo root — the hub is `cmd/evener-hub` (package main) + `cmd/evener-hub/internal/*`, and T1a's overview tests live in `cmd/evener-hub/app_rpc_settings_overview_test.go`. The correct target is `./cmd/evener-hub/...` (used above). Working tree clean at `7381dd78f`.
 
 ---
 

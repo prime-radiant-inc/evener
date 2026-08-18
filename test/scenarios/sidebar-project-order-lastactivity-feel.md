@@ -4,7 +4,7 @@
 project-ordering comparator: active projects are emitted newest-first by
 `LastActivity`, the max `UpdatedAt` across a project's sessions, not by when a
 session was created (`byLastActivityDesc`,
-`cmd/serf-hub/internal/hubcore/tree.go:970-974`; `LastActivity` computed at
+`cmd/evener-hub/internal/hubcore/tree.go:970-974`; `LastActivity` computed at
 `:886-895`, field doc at `:135-138`). (2) The **propagation** of a completed
 turn into that comparator's input, which is what a person actually experiences
 as "did the project I just touched move to the top?".
@@ -15,7 +15,7 @@ Layer (1) is already pinned deterministically by two scenarios —
 (`internal/hubcore/tree_test.go:958,984`, replayed by `FuzzHubcoreScenarios`,
 `internal/hubcore/scenarios_fuzz_test.go#FuzzHubcoreScenarios`). This card exists for layer
 (2), which unit tests cannot see: `/api/tree` builds from
-`cfg.Past.AllMetas()` (`cmd/serf-hub/web_api_tree.go:389`, memoized on the
+`cfg.Past.AllMetas()` (`cmd/evener-hub/web_api_tree.go:389`, memoized on the
 inputs version at `:261-280`), an in-memory index that has to *learn* a
 session's meta changed.
 
@@ -23,7 +23,7 @@ session's meta changed.
 authoritative for the session verbs this card drives. The old text used
 `POST /s/$SID/send` and `POST /s/$SID/shutdown`; that shim was deleted at
 `660376f78` and now 404s silently
-(`cmd/serf-hub/web_workspace.go:19-22,37-46`). The namespace is
+(`cmd/evener-hub/web_workspace.go:19-22,37-46`). The namespace is
 `/api/sessions/local:$SID/…`.
 
 ## The gap this card found, and its current status
@@ -33,7 +33,7 @@ turn on the oldest project's session landed on disk at 12:31:50Z, and
 `/api/tree` did not reflect the new order until 12:33:16Z — **~86s**. At the
 time nothing on the turn-completion path refreshed the past index; only a
 `time.NewTicker(cfg.PastIndexRebuild)` (default 60s,
-`cmd/serf-hub/config.go:62,134-136`; started at `cmd/serf-hub/main.go:400`)
+`cmd/evener-hub/config.go:62,134-136`; started at `cmd/evener-hub/main.go:400`)
 ever did. The card's own recommendation was "a lighter per-session incremental
 update triggered from the turn-completion path".
 
@@ -47,7 +47,7 @@ chain is:
    changed id (`internal/hubcore/roster.go#Refresh`), driven by an fsnotify
    watch on the run dir plus a 5s ticker (`:433-471`).
 3. `refreshPastOnStatus` calls `past.RefreshOne(id)`
-   (`cmd/serf-hub/main_background.go#refreshPastOnStatus`), which re-reads that one session's
+   (`cmd/evener-hub/main_background.go#refreshPastOnStatus`), which re-reads that one session's
    `meta.json` and folds it in via `UpdateMeta`
    (`internal/hubcore/past.go:371-397,327-350`) — no full rescan.
 4. `past.SetOnChange(func(){ bump(); notifyTreeChanged(web.appRPC) })`
@@ -71,7 +71,7 @@ broken — that is the failure this card now catches.
   old text told you to move it aside because the config-aware branch of
   `validateProviderCredentials` demanded a credential for ollama; **that is
   fixed** — the branch now returns early for any instance type whose auth mode
-  is `none` (`cmd/serf-hub/spawn.go:566-572`, `envvars.RequiresNoCredential`,
+  is `none` (`cmd/evener-hub/spawn.go:566-572`, `envvars.RequiresNoCredential`,
   `envvars/providers.go#RequiresNoCredential`; ollama is `AuthModes: ["none"]` at
   `envvars/providers.go:155-161`). If an ollama spawn 503s with "provider
   credentials missing", that regression is back and is worth its own kata.

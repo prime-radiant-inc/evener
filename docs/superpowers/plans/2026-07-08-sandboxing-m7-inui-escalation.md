@@ -65,7 +65,7 @@ here later").
    types + method/notification name constants + catalog rows; docs regenerate via
    `make generate`; `protocol_test.go` cross-checks the catalog against both
    routers.
-3. **Transport plane (`server/`, `cmd/serf/serve.go`, `cmd/serf-hub/`,
+3. **Transport plane (`server/`, `cmd/evener/serve.go`, `cmd/evener-hub/`,
    `assets/`)** wires the round-trip: the daemon projects the escalation event to
    the notification (`internal/appprojector`), registers a resolve handler that
    calls a new session callback (`SetSandboxEscalationResolveFunc`), the hub
@@ -95,7 +95,7 @@ permission prompt; the tool will proceed"). M7 builds that missing primitive.
 **Tech Stack:** Go 1.25, stdlib. No new external dep. The blocking wait is a
 `select` over a per-escalation `chan escalationDecision` and `ctx.Done()`. Wire
 types are plain structs with snake_case JSON tags. Web is vanilla JS in
-`cmd/serf-hub/assets/` (no build step). Table-driven `testing`; a real
+`cmd/evener-hub/assets/` (no build step). Table-driven `testing`; a real
 `serf serve` daemon + `appwire.Client` for the round-trip e2e; a live bwrap
 sandbox for the file/shell approve/deny e2e (Linux; the branch is Linux-only —
 M6/Seatbelt parity for escalation is a documented follow-up, not an M7 task).
@@ -122,13 +122,13 @@ land):
 - `server/server.go:154` `steerFunc` field / `:302` `SetSteerFunc` (add the
   escalation-resolve callback beside it). `internal/appserver/server.go:94`
   `SubscriberCount(threadID)` — the "is a human actually watching" probe.
-- `cmd/serf/serve.go:326` `srv.SetSteerFunc(...)` — wire
+- `cmd/evener/serve.go:326` `srv.SetSteerFunc(...)` — wire
   `srv.SetSandboxEscalationResolveFunc(...)` alongside it.
-- `cmd/serf-hub/app_rpc.go:429` the `MethodTurnSteer` hub relay (copy its shape);
-  `cmd/serf-hub/internal/appsource/source.go:9` `Source` interface, `:18`
+- `cmd/evener-hub/app_rpc.go:429` the `MethodTurnSteer` hub relay (copy its shape);
+  `cmd/evener-hub/internal/appsource/source.go:9` `Source` interface, `:18`
   `SteerTurn`; impls `local_daemon.go:127`, `codex_source.go:292`.
-- `cmd/serf-hub/assets/appwire.js:811` `eventsFromNotification`;
-  `cmd/serf-hub/assets/renderer.js:~4372` the `ask_user` card (surfacing template
+- `cmd/evener-hub/assets/appwire.js:811` `eventsFromNotification`;
+  `cmd/evener-hub/assets/renderer.js:~4372` the `ask_user` card (surfacing template
   to adapt — **not** the control flow).
 
 ## Global Constraints
@@ -217,23 +217,23 @@ bool)` so the session layer never type-switches on internals.
   which calls the session callback.
 - `server/server.go` (modify) — `sandboxEscalationResolveFunc` field +
   `SetSandboxEscalationResolveFunc`.
-- `cmd/serf/serve.go` (modify) — `srv.SetSandboxEscalationResolveFunc(func(id
+- `cmd/evener/serve.go` (modify) — `srv.SetSandboxEscalationResolveFunc(func(id
   string, approve bool) error { return getSession().ResolveSandboxEscalation(id,
   approve) })` next to `SetSteerFunc`.
-- `cmd/serf-hub/internal/appsource/source.go` + `local_daemon.go` +
+- `cmd/evener-hub/internal/appsource/source.go` + `local_daemon.go` +
   `codex_source.go` (modify) — add `ResolveSandboxEscalation(ctx,
   SandboxEscalationResolveParams) error` to `Source`; LocalDaemon forwards via
   `client.Request`; Codex returns method-not-supported.
-- `cmd/serf-hub/app_rpc.go` (modify) — hub relay handler for the resolve method
+- `cmd/evener-hub/app_rpc.go` (modify) — hub relay handler for the resolve method
   (copy the `MethodTurnSteer` block at `:429`).
-- `cmd/serf-hub/assets/appwire.js` (modify) — map the notification in
+- `cmd/evener-hub/assets/appwire.js` (modify) — map the notification in
   `eventsFromNotification`.
-- `cmd/serf-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed)
+- `cmd/evener-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed)
   (modify) — render the escalation card (two shapes) and post the decision via the
   resolve request.
 - New tests colocated per package: `appwire/…_test.go` (round-trip + catalog),
   `internal/appprojector/…_test.go` (projection + redaction),
-  `server/…_test.go` (daemon handler), `cmd/serf-hub/…_test.go` (hub relay + web
+  `server/…_test.go` (daemon handler), `cmd/evener-hub/…_test.go` (hub relay + web
   mapping), and the two live e2e tests (Tasks 6–7).
 
 ---
@@ -317,7 +317,7 @@ needed (see "consumed contract").
 
 **Files:** `agent/events/events.go`,
 `internal/appprojector/appwire_projection.go`, `server/appwire_runtime.go`,
-`server/server.go`, `cmd/serf/serve.go` (modify); package tests.
+`server/server.go`, `cmd/evener/serve.go` (modify); package tests.
 
 - [ ] **Failing test:**
   - `internal/appprojector`: `TestProject_SandboxEscalationRequested` asserts the
@@ -341,14 +341,14 @@ needed (see "consumed contract").
 
 ## Task 5 — Hub relay + web card
 
-**Files:** `cmd/serf-hub/internal/appsource/{source.go,local_daemon.go,codex_source.go}`,
-`cmd/serf-hub/app_rpc.go`, `cmd/serf-hub/assets/appwire.js`,
-`cmd/serf-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed);
+**Files:** `cmd/evener-hub/internal/appsource/{source.go,local_daemon.go,codex_source.go}`,
+`cmd/evener-hub/app_rpc.go`, `cmd/evener-hub/assets/appwire.js`,
+`cmd/evener-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed);
 package + jstest tests.
 
 - [ ] **Failing test:** a hub-relay test asserts the resolve request routes daemon-
   ward through `LocalDaemonSource` and that Codex returns method-not-supported; a
-  `cmd/serf-hub/jstest` case asserts `eventsFromNotification` maps
+  `cmd/evener-hub/jstest` case asserts `eventsFromNotification` maps
   `serf/sandbox/escalation/requested` to a card event, and that the file-tool
   shape vs the shell shape render distinctly (the shell card shows the
   output-so-far + the "already partially ran; approving re-runs start-to-finish"
@@ -367,7 +367,7 @@ package + jstest tests.
 
 ## Task 6 — E2E: file-tool escalation (approve expands one invocation)
 
-**Files:** `cmd/serf-hub/…_test.go` (new e2e), real `serf serve` daemon + real
+**Files:** `cmd/evener-hub/…_test.go` (new e2e), real `serf serve` daemon + real
 bwrap, no mocks.
 
 - [ ] **Failing test** `TestE2E_FileToolEscalation_Approve/Deny` (Linux, bwrap):
@@ -387,7 +387,7 @@ bwrap, no mocks.
 
 ## Task 7 — E2E: shell escalation (partial-run honesty)
 
-**Files:** `cmd/serf-hub/…_test.go` (new e2e), real daemon + bwrap.
+**Files:** `cmd/evener-hub/…_test.go` (new e2e), real daemon + bwrap.
 
 - [ ] **Failing test** `TestE2E_ShellEscalation_PartialRun`: start a live sandboxed
   session; drive a `shell` command that writes some output **then** hits a denied
@@ -404,7 +404,7 @@ bwrap, no mocks.
 ## Task 8 — Invariants: the four walls + non-interactive parity
 
 **Files:** consolidate into `agent/session_escalation_test.go` +
-`cmd/serf-hub/…_test.go`.
+`cmd/evener-hub/…_test.go`.
 
 - [ ] **Failing test** — one assertion per wall, plus parity:
   - **Not triggerable:** grep-style test that no entry in the tool registry can

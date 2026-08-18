@@ -161,7 +161,7 @@ combobox, as a real gesture.
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state_dir" \
+   go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state_dir" \
      --format outline --range last:30
    TFILE=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
    jq -c 'select(.turn.kind=="USER_INPUT")
@@ -238,7 +238,7 @@ REST surface, and what is no longer on it" in the runbook.
   element to derive width/height before re-encoding to PNG. Without
   `blob:` in `img-src`, `Image.onerror` fires and every attachment is
   rejected. The directive lives at
-  `cmd/serf-hub/internal/httpsec/httpsec.go:40` (`img-src 'self' data:
+  `cmd/evener-hub/internal/httpsec/httpsec.go:40` (`img-src 'self' data:
   blob: https:`) — relocated from the deleted `security.go`, and its own
   comment records the kata. **The user-visible symptom changed with the
   rewrite**: the failure is no longer an inline "Not an image: <name>"
@@ -272,10 +272,10 @@ REST surface, and what is no longer on it" in the runbook.
   `MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024`), which also rejects any
   non-image outright and surfaces `Couldn't attach <name> …`. Server:
   `validateAppWireInputItems`
-  (`cmd/serf-hub/appwire_validation.go#validateAppWireInputItems`) against
+  (`cmd/evener-hub/appwire_validation.go#validateAppWireInputItems`) against
   `hubcore.SendMaxImageItems = 8` / `SendMaxImageBytes = 8 MiB` /
   `SendMaxRequestBytes = 96 MiB`
-  (`cmd/serf-hub/internal/hubcore/types.go:12-14`). The old card's
+  (`cmd/evener-hub/internal/hubcore/types.go:12-14`). The old card's
   "12 MB per image / 40 MB per request" and its `web.go:sendMax*Bytes`
   citation were both wrong; there is no such symbol. Note the status
   codes differ by route: the browser goes over appwire, where an

@@ -16,7 +16,7 @@ from accumulated stream items when the terminal payload is empty. Then make
 pre-fix logs stay diagnosable.
 
 **Tech stack:** Go. Modules: `llm` (provider adapter + apilog codec),
-`agent/doctor`, `cmd/serf-doctor`. Test conventions per `docs/testing.md`.
+`agent/doctor`, `cmd/evener-doctor`. Test conventions per `docs/testing.md`.
 
 **Context (verified 2026-08-06, file:line on main):**
 - Counts are computed once at call time: `llm/api_attempt.go:519-520`
@@ -40,7 +40,7 @@ pre-fix logs stay diagnosable.
   checks (`llm/apilog/record.go:109,143,190,197`). `doctor.APILog`
   (`agent/doctor/apilog.go:116`) streams via `apilog.NewDecoder`
   (`llm/apilog/codec.go`) but pays full decode per record; `--errors` and
-  `--empty` share this path (`cmd/serf-doctor/main.go:271`).
+  `--empty` share this path (`cmd/evener-doctor/main.go:271`).
 - `openaicompat` reuses the same Responses adapter
   (`llm/providers/openaicompat/adapter.go:372,381,389`), so one fix covers
   the codex-continuation family too.
@@ -55,9 +55,9 @@ pre-fix logs stay diagnosable.
 - No behavior change to the live streaming path consumed by the agent — this
   work changes only what gets *recorded/settled*, plus doctor-side reading.
 - Multi-module gates per `docs/conventions/go-workspace.md`: build and test
-  every touched module (`llm`, `agent`, `cmd/serf-doctor`) before commit.
+  every touched module (`llm`, `agent`, `cmd/evener-doctor`) before commit.
 - Error messages and new flags follow existing serf-doctor conventions
-  (`cmd/serf-doctor/main.go` flag patterns, `--json` support where output is
+  (`cmd/evener-doctor/main.go` flag patterns, `--json` support where output is
   structured).
 
 ---
@@ -140,7 +140,7 @@ pre-fix logs stay diagnosable.
 ### Task 3: `serf-doctor apilog --recompute` for historical logs
 
 **Files:**
-- Modify: `agent/doctor/apilog.go`, `cmd/serf-doctor/main.go` (flag)
+- Modify: `agent/doctor/apilog.go`, `cmd/evener-doctor/main.go` (flag)
 - Modify (export seam if needed): `llm/providers/openai/responses.go` (`fromResponses` is unexported; add a small exported entry point in the `openai` package for offline re-extraction, e.g. a func taking the raw response body bytes and returning the canonical `llm.Response` — name it by domain: `ExtractRecordedResponse`)
 - Test: `agent/doctor/apilog_recompute_test.go` (new)
 

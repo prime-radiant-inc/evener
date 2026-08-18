@@ -50,7 +50,7 @@ func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string
 // conversation is replayed on every request, with each answered round in it
 // as an assistant message carrying the tool call and a tool message carrying
 // its result. The shape is copied from a live run of the real stack
-// (cmd/serf-hub/e2e_control_invariant_test.go): system, environment context,
+// (cmd/evener-hub/e2e_control_invariant_test.go): system, environment context,
 // prompt, then assistant/tool pairs.
 type session struct {
 	t                *testing.T

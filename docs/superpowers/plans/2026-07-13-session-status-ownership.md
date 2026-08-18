@@ -87,11 +87,11 @@ git commit -m "fix(agent): keep child activity off idle parent state" -m "Report
 ### Task 2: Carry running-child evidence through the roster
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/prober.go`
-- Modify: `cmd/serf-hub/internal/hubcore/prober_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster_test.go`
-- Modify: test Prober implementations under `cmd/serf-hub/`
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go`
+- Modify: `cmd/evener-hub/internal/hubcore/prober_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster_test.go`
+- Modify: test Prober implementations under `cmd/evener-hub/`
 
 **Step 1: Write the failing probe test**
 
@@ -112,7 +112,7 @@ Assert that the result contains only `child-running`.
 **Step 2: Run the test to verify it fails**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
 ```
 
 Expected: compile failure because the structured result and running-child field do not exist.
@@ -147,7 +147,7 @@ This method scans the nested ID metadata under the roster lock. It must not inse
 **Step 5: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
 ```
 
 Expected: PASS, including `IsSubagentActive(child)==true` and `Find(child)==false`.
@@ -155,20 +155,20 @@ Expected: PASS, including `IsSubagentActive(child)==true` and `Find(child)==fals
 **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/roster.go cmd/serf-hub/internal/hubcore/roster_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/testmain_test.go cmd/serf-hub/web_test.go cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go
+git add cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/prober_test.go cmd/evener-hub/internal/hubcore/roster.go cmd/evener-hub/internal/hubcore/roster_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go cmd/evener-hub/testmain_test.go cmd/evener-hub/web_test.go cmd/evener-hub/cov_session_residue_pass5_fuzz_test.go
 git commit -m "feat(hub): retain running in-process subagent status" -m "Decode running local delegate transcript IDs from the existing daemon status response and retain them as non-routable metadata on the parent roster entry. Fingerprint child lifecycle changes so the UI refreshes without registering child IDs as daemon endpoints."
 ```
 
 ### Task 3: Project child activity consistently
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
-- Modify: `cmd/serf-hub/app_threadread.go`
-- Modify: `cmd/serf-hub/app_threadread_test.go`
-- Modify: `cmd/serf-hub/app_threadlist.go`
-- Modify: `cmd/serf-hub/app_rpc_test.go`
-- Modify: direct `pastEntryThread` call sites under `cmd/serf-hub/`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/app_threadread_test.go`
+- Modify: `cmd/evener-hub/app_threadlist.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
+- Modify: direct `pastEntryThread` call sites under `cmd/evener-hub/`
 
 **Step 1: Write failing tree ownership test**
 
@@ -191,8 +191,8 @@ Build a `PastIndex` containing the child plus a roster containing only the paren
 **Step 3: Run tests to verify they fail**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub -run 'Test(PastThreadRead.*RunningSubagent|HubThreadList.*RunningSubagent)' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(PastThreadRead.*RunningSubagent|HubThreadList.*RunningSubagent)' -count=1
 ```
 
 Expected: the child is `ended` / `notLoaded` and the rollup is idle.
@@ -208,8 +208,8 @@ Pass `WebConfig` into `pastEntryThread` and set `ThreadStatusActive` only when `
 **Step 6: Run focused package tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub -run 'Test(PastThread|HubThreadList|HubRPCThread)' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(PastThread|HubThreadList|HubRPCThread)' -count=1
 ```
 
 Expected: PASS.
@@ -217,7 +217,7 @@ Expected: PASS.
 **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go cmd/serf-hub/app_threadlist.go cmd/serf-hub/app_rpc_test.go cmd/serf-hub/app_transcripts.go cmd/serf-hub/cov_threadread_images_fuzz_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-hub/app_threadlist.go cmd/evener-hub/app_rpc_test.go cmd/evener-hub/app_transcripts.go cmd/evener-hub/cov_threadread_images_fuzz_test.go
 git commit -m "fix(hub): display running subagents on their own rows" -m "Use the parent roster entry's running-child evidence to render saved subagent sessions active in tree, read, and list projections. Keep the parent row idle and count its task tree once in the project working rollup."
 ```
 
@@ -237,7 +237,7 @@ git status --short
 **Step 2: Run affected packages**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1
+GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -245,7 +245,7 @@ Expected: PASS.
 **Step 3: Run focused race tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test -race ./agent ./cmd/serf-hub/internal/hubcore -run 'Test(WireState|StatusProber|Roster|BuildTree)' -count=1
+GOCACHE=/tmp/serf-gocache go test -race ./agent ./cmd/evener-hub/internal/hubcore -run 'Test(WireState|StatusProber|Roster|BuildTree)' -count=1
 ```
 
 Expected: PASS.
@@ -256,7 +256,7 @@ Expected: PASS.
 GOCACHE=/tmp/serf-gocache go test ./... -count=1
 ```
 
-Expected: no new failures. Compare any failures exactly with the recorded baseline fuzz failures in `cmd/serf-fuzz-harvest` and `cmd/serf-hub/internal/fspaths`.
+Expected: no new failures. Compare any failures exactly with the recorded baseline fuzz failures in `cmd/evener-fuzz-harvest` and `cmd/evener-hub/internal/fspaths`.
 
 **Step 5: Review branch evidence**
 

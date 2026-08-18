@@ -3,7 +3,7 @@ package appwire
 // AttentionEntry is one live session's derived attention level plus the
 // labels notification clients need. Levels: "working" | "needs_you" |
 // "error" | "idle" (spec v5 semantics table). Computed by
-// cmd/serf-hub/internal/hubcore.DeriveAttention from hub-internal inputs
+// cmd/evener-hub/internal/hubcore.DeriveAttention from hub-internal inputs
 // (archive decisions, live roster entries) that hubcore must not expose to
 // appwire — only this plain-data result crosses the boundary, in the
 // direction hubcore already imports (kata 4j2t).

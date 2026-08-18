@@ -25,7 +25,7 @@ requests.
 
 Before the gate, run `npx biome check --write` on touched frontend files
 under `src/`. Biome's enforced scope is `src/` only (the gate runs `biome ci
-src`; see cmd/serf-hub/frontend/package.json) — files outside it, such as the
+src`; see cmd/evener-hub/frontend/package.json) — files outside it, such as the
 `scripts/layoutguard` harness HTML, deliberately reproduce component markup
 that trips a11y lint rules, so an explicit-path Biome run over them reports
 violations the gate does not enforce. Do not "fix" those to satisfy an

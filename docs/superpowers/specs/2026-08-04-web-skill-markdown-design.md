@@ -10,7 +10,7 @@ Change only the expanded body of the `use_skill` tool renderer. Keep the existin
 
 ## Design
 
-In `cmd/serf-hub/frontend/src/panes/session/transcript/tools/useSkillTool.tsx`, pass non-empty `item.output` to the existing shared `Markdown` widget instead of rendering it in a plain `<div>`. This reuses the repository's established Marked-plus-DOMPurify pipeline and avoids duplicating parsing or sanitization logic.
+In `cmd/evener-hub/frontend/src/panes/session/transcript/tools/useSkillTool.tsx`, pass non-empty `item.output` to the existing shared `Markdown` widget instead of rendering it in a plain `<div>`. This reuses the repository's established Marked-plus-DOMPurify pipeline and avoids duplicating parsing or sanitization logic.
 
 The output remains the complete skill-tool result, including its existing metadata and separator. The tool summary continues to identify the activated skill; only the content shown after disclosure changes from plain text to rendered Markdown.
 

@@ -31,24 +31,24 @@
 
 ## Current Code Map
 
-- `cmd/serf-hub/frontend/src/shell/workspace.ts` owns the logical pane list, focus, slots, and generic `openPane` behavior.
-- `cmd/serf-hub/frontend/src/shell/workspace.test.ts` is the real store contract suite and already registers fixture pane descriptors.
-- `cmd/serf-hub/frontend/src/shell/AppShell.tsx` currently resolves routes but duplicates primary placement in `openSettingsInMain` and the `openPane("spawn")` branch.
-- `cmd/serf-hub/frontend/src/shell/sessionPlacement.ts` currently repeats close-then-open promotion for top-level and nested sessions.
-- `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx` currently opens sessions directly through `sessionPlacement.ts` and has a tree-arrival placement repair effect.
-- `cmd/serf-hub/frontend/src/shell/DockHost.tsx` currently captures routed panes before `restoreLayout` and reopens every captured pane through additive `openPane`.
-- `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`, `DockHost.test.tsx`, `Rail.test.tsx`, `sessionPlacement.test.ts`, `StackHost.test.tsx`, and `Spawn.test.tsx` already contain deterministic real-component seams for the requested regressions.
-- `cmd/serf-hub/frontend/src/shell/routing.ts` already emits canonical `/s/{ref}`, `/new`, `/settings`, and `/settings/{section}` paths and intentionally keeps aliases inbound-only. It must not gain aliases.
+- `cmd/evener-hub/frontend/src/shell/workspace.ts` owns the logical pane list, focus, slots, and generic `openPane` behavior.
+- `cmd/evener-hub/frontend/src/shell/workspace.test.ts` is the real store contract suite and already registers fixture pane descriptors.
+- `cmd/evener-hub/frontend/src/shell/AppShell.tsx` currently resolves routes but duplicates primary placement in `openSettingsInMain` and the `openPane("spawn")` branch.
+- `cmd/evener-hub/frontend/src/shell/sessionPlacement.ts` currently repeats close-then-open promotion for top-level and nested sessions.
+- `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx` currently opens sessions directly through `sessionPlacement.ts` and has a tree-arrival placement repair effect.
+- `cmd/evener-hub/frontend/src/shell/DockHost.tsx` currently captures routed panes before `restoreLayout` and reopens every captured pane through additive `openPane`.
+- `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`, `DockHost.test.tsx`, `Rail.test.tsx`, `sessionPlacement.test.ts`, `StackHost.test.tsx`, and `Spawn.test.tsx` already contain deterministic real-component seams for the requested regressions.
+- `cmd/evener-hub/frontend/src/shell/routing.ts` already emits canonical `/s/{ref}`, `/new`, `/settings`, and `/settings/{section}` paths and intentionally keeps aliases inbound-only. It must not gain aliases.
 
 ## Task 1: Add the complete behavioral RED suite before production edits
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/shell/workspace.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/sessionPlacement.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/DockHost.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/workspace.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/sessionPlacement.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/DockHost.test.tsx`
 
 **Interfaces:**
 
@@ -149,7 +149,7 @@
 
 - [ ] **Step 5: Run the focused tests and prove RED before any production edit.**
 
-  Run from `cmd/serf-hub/frontend`:
+  Run from `cmd/evener-hub/frontend`:
 
   ```sh
   npx vitest run src/shell/workspace.test.ts src/shell/AppShell.test.tsx src/shell/rail/Rail.test.tsx src/shell/sessionPlacement.test.ts src/shell/DockHost.test.tsx src/panes/spawn/Spawn.test.tsx --no-file-parallelism
@@ -161,7 +161,7 @@
 
   ```sh
   git status --short
-  git add cmd/serf-hub/frontend/src/shell/workspace.test.ts cmd/serf-hub/frontend/src/shell/AppShell.test.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx cmd/serf-hub/frontend/src/shell/sessionPlacement.test.ts cmd/serf-hub/frontend/src/shell/DockHost.test.tsx
+  git add cmd/evener-hub/frontend/src/shell/workspace.test.ts cmd/evener-hub/frontend/src/shell/AppShell.test.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx cmd/evener-hub/frontend/src/shell/sessionPlacement.test.ts cmd/evener-hub/frontend/src/shell/DockHost.test.tsx
   git commit -m "test: pin primary navigation placement regressions"
   ```
 
@@ -171,14 +171,14 @@
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/shell/workspace.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/sessionPlacement.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/workspace.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/sessionPlacement.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx` only when the RED test needs a fixture-only correction.
+- Modify: `cmd/evener-hub/frontend/src/shell/workspace.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/sessionPlacement.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/workspace.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/sessionPlacement.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx` only when the RED test needs a fixture-only correction.
 
 **Interfaces:**
 
@@ -269,7 +269,7 @@
 
   ```sh
   git status --short
-  git add cmd/serf-hub/frontend/src/shell/workspace.ts cmd/serf-hub/frontend/src/shell/sessionPlacement.ts cmd/serf-hub/frontend/src/shell/AppShell.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.tsx cmd/serf-hub/frontend/src/shell/workspace.test.ts cmd/serf-hub/frontend/src/shell/sessionPlacement.test.ts cmd/serf-hub/frontend/src/shell/AppShell.test.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx
+  git add cmd/evener-hub/frontend/src/shell/workspace.ts cmd/evener-hub/frontend/src/shell/sessionPlacement.ts cmd/evener-hub/frontend/src/shell/AppShell.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.tsx cmd/evener-hub/frontend/src/shell/workspace.test.ts cmd/evener-hub/frontend/src/shell/sessionPlacement.test.ts cmd/evener-hub/frontend/src/shell/AppShell.test.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx
   git commit -m "fix: centralize primary navigation placement"
   ```
 
@@ -279,10 +279,10 @@
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/shell/DockHost.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/DockHost.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/mobile/StackHost.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/DockHost.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/DockHost.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/mobile/StackHost.test.tsx`
 
 **Interfaces:**
 
@@ -332,7 +332,7 @@
 
 - [ ] **Step 5: Run the complete required verification suite.**
 
-  From `cmd/serf-hub/frontend`, run each command separately and record its exit code and relevant summary:
+  From `cmd/evener-hub/frontend`, run each command separately and record its exit code and relevant summary:
 
   ```sh
   npm test
@@ -354,7 +354,7 @@
   npx biome format --write src/shell/workspace.ts src/shell/workspace.test.ts src/shell/sessionPlacement.ts src/shell/sessionPlacement.test.ts src/shell/AppShell.tsx src/shell/AppShell.test.tsx src/shell/rail/Rail.tsx src/shell/rail/Rail.test.tsx src/shell/DockHost.tsx src/shell/DockHost.test.tsx src/shell/mobile/StackHost.test.tsx
   git diff --check
   git diff --stat
-  git diff -- cmd/serf-hub/frontend/src/shell/workspace.ts cmd/serf-hub/frontend/src/shell/AppShell.tsx cmd/serf-hub/frontend/src/shell/DockHost.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.tsx cmd/serf-hub/frontend/src/shell/sessionPlacement.ts
+  git diff -- cmd/evener-hub/frontend/src/shell/workspace.ts cmd/evener-hub/frontend/src/shell/AppShell.tsx cmd/evener-hub/frontend/src/shell/DockHost.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.tsx cmd/evener-hub/frontend/src/shell/sessionPlacement.ts
   git status --short
   ```
 
@@ -364,7 +364,7 @@
 
   ```sh
   git status --short
-  git add cmd/serf-hub/frontend/src/shell/DockHost.tsx cmd/serf-hub/frontend/src/shell/DockHost.test.tsx cmd/serf-hub/frontend/src/shell/AppShell.test.tsx cmd/serf-hub/frontend/src/shell/mobile/StackHost.test.tsx
+  git add cmd/evener-hub/frontend/src/shell/DockHost.tsx cmd/evener-hub/frontend/src/shell/DockHost.test.tsx cmd/evener-hub/frontend/src/shell/AppShell.test.tsx cmd/evener-hub/frontend/src/shell/mobile/StackHost.test.tsx
   git commit -m "fix: restore primary routes through workspace policy"
   ```
 

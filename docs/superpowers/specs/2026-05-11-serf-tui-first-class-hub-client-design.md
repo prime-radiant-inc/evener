@@ -25,7 +25,7 @@ This is a breaking design. There is no embedded/direct TUI compatibility path.
 
 The current hub TUI behaves like a second app that embeds pieces of the old app:
 
-- `cmd/serf-tui/main.go` now starts `newHubModel(...)` unconditionally.
+- `cmd/evener-tui/main.go` now starts `newHubModel(...)` unconditionally.
 - The old single-session `model` still exists and is embedded inside `hubModel`, but the old `Update` loop and command behavior are not the active top-level product.
 - Slash command help is shared text, but hub mode implements only part of the command set.
 - Model loading, spawn, resume, and command behavior are tested in pieces, but not as a coherent terminal product.
@@ -650,7 +650,7 @@ No action should fail silently.
 Keep package `main` for now, but split files by responsibility.
 
 ```text
-cmd/serf-tui/
+cmd/evener-tui/
   main.go                    startup only
   hub_start.go               hub auto-start and health
   openai_auth.go             TUI auth commands/status/login orchestration
@@ -682,7 +682,7 @@ cmd/serf-tui/
   styles.go                  Lip Gloss theme tokens
   tmux_e2e_test.go           full terminal coverage
 
-cmd/serf/
+cmd/evener/
   openai_login.go            CLI OpenAI login
   openai_logout.go           CLI OpenAI logout
   openai_status.go           CLI OpenAI status
@@ -932,5 +932,5 @@ Implement in small commits:
 - Approved widgets have fixture-backed render samples and focus/key tests before
   they are integrated into the live app.
 - Tmux E2E tests cover the full flows above.
-- `go test ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm` passes.
+- `go test ./cmd/evener-tui ./cmd/evener-hub ./cmd/evener ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm` passes.
 - `go test ./...` passes before merge.

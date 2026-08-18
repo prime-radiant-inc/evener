@@ -32,9 +32,9 @@
 ### Task 2: Prefer description in the frontend card
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.test.ts`
 
 - [ ] Add failing parser/card tests for a delegate notification with `description="Inspect the workspace"`; assert the parsed notification and collapsed card show that text.
 - [ ] Add a fallback test with no description; assert the secondary label remains `delegate`.

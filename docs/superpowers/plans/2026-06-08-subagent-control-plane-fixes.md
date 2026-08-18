@@ -6,11 +6,11 @@
 
 **Architecture:** The subagent record's run outcome lives in a single immutable `status` field; close-ness becomes two booleans (`closed`, `close_timed_out`) instead of overwriting `status`. `subagent_output` returns child output raw (no redaction layer). The `00` doc is rewritten to describe the merged model and the removed redactor.
 
-**Tech Stack:** Go (go.work multi-module: `agent`, `llm`, `server`, `cmd/serf`). Gates: `make test` and `make lint` (golangci + `serf-namingcheck`/`serf-internalcheck`/`serf-docscheck`) — run the FULL `make lint`, not just golangci. Live agentic tests live in `test/scenarios/`.
+**Tech Stack:** Go (go.work multi-module: `agent`, `llm`, `server`, `cmd/evener`). Gates: `make test` and `make lint` (golangci + `serf-namingcheck`/`serf-internalcheck`/`serf-docscheck`) — run the FULL `make lint`, not just golangci. Live agentic tests live in `test/scenarios/`.
 
 **Branch / worktree:** Work on `docs-fix-notification-goal` in the worktree `/Users/jesse/prime-radiant/toil-suite/serf-wt-docfix` (off `main` `579be5ba`; it already carries the notification/goal doc fix `e3a26d56` and the design spec `460814ed`). **Do NOT merge** — `main` has branch protection; pause for Jesse's review after Task 4.
 
-**Scoping guard (read before any edit):** The word "reason" is used by many unrelated subsystems — `events.SessionEndData.Reason`, `events.GoalEndedData.Reason`, hook input `Reason`, `llm` `FinishReason`, the goal engine, the TUI pending/notice panels, and session/goal snapshots in `agent/schema/`. **This plan touches ONLY the subagent `reason`** (the field on `subagentResult`, `SubagentInfo`, `subagentNotification`, and `events.SubagentEndData`). Do not edit goal/session/hook/finish reasons or anything in `agent/schema/`, `agent/internal/goal/`, `cmd/serf-tui/`. Likewise, the `llm/` provider "redacted thinking" code is unrelated to Fix 2 and stays untouched.
+**Scoping guard (read before any edit):** The word "reason" is used by many unrelated subsystems — `events.SessionEndData.Reason`, `events.GoalEndedData.Reason`, hook input `Reason`, `llm` `FinishReason`, the goal engine, the TUI pending/notice panels, and session/goal snapshots in `agent/schema/`. **This plan touches ONLY the subagent `reason`** (the field on `subagentResult`, `SubagentInfo`, `subagentNotification`, and `events.SubagentEndData`). Do not edit goal/session/hook/finish reasons or anything in `agent/schema/`, `agent/internal/goal/`, `cmd/evener-tui/`. Likewise, the `llm/` provider "redacted thinking" code is unrelated to Fix 2 and stays untouched.
 
 **Commits:** Three code/doc commits + a live re-check:
 1. Task 1 — Fix 1 (reason→status), production + tests + reason-asserting scenario cards, one atomic commit.
@@ -945,9 +945,9 @@ guard, suppress-at-drain set)."
 
 ## Task 4: Live re-check + PAUSE
 
-**This task is driven in the main session (not a code subagent)** — it requires a live API key and a running serf. Per `reference_serf_live_run`: build `go build -o /tmp/serf ./cmd/serf`, source the repo `.env` (`. "$PWD/.env"`), and use the **`openai/` instance** (NOT `oai-work`).
+**This task is driven in the main session (not a code subagent)** — it requires a live API key and a running serf. Per `reference_serf_live_run`: build `go build -o /tmp/serf ./cmd/evener`, source the repo `.env` (`. "$PWD/.env"`), and use the **`openai/` instance** (NOT `oai-work`).
 
-- [ ] **Step 4.1: Build + smoke.** `go build -o /tmp/serf ./cmd/serf` and confirm it starts.
+- [ ] **Step 4.1: Build + smoke.** `go build -o /tmp/serf ./cmd/evener` and confirm it starts.
 
 - [ ] **Step 4.2: Live agentic re-check** of the two DoD behaviors, via the updated scenario cards or an ad-hoc live session:
   - `subagent_output(view=result)` on a child whose output contains a credential-shaped string returns it **raw/verbatim** (no `«redacted»`, no `redaction` field).
@@ -970,4 +970,4 @@ Expected: no subagent-`reason`/`lastOutcome`/`reasonLocked`/`runOutcomeReason`, 
 - **State table:** Task 1 implements the spec's four rows exactly: running=(running,false,false); idle-terminal=(outcome,false,false); closed=(outcome,true,false); close-timed-out=(outcome,false,true). The transient `closing` gets no record state (Step 1.5 removes the status write). ✓
 - **Type consistency:** `closed bool` is added to `subagent`, `subagentResult` (`json:"closed"`), and `SubagentInfo` (`json:"closed"`); `countsTowardCap` and `subagentMatchesFilter` signatures updated at definition and all call sites (Steps 1.9/1.10/1.14/1.15). `terminalStatus` reimplemented without `runOutcomeReason`; its callers (`infoLocked`) unchanged. `boundContent` replaces `redactAndBound`; `subagentResultView`/`subagentTranscriptView`/`unavailableSubagentOutput` signatures lose the redaction args at definition and all call sites within the rewritten file. ✓
 - **Atomicity note:** Task 1 cannot reach intermediate green (the enum/field removals are type-system changes), so it is one commit with the compiler-driven test reconciliation (Steps 1.20–1.24) — deliberate, matching the spec's "characterization net so the flip is visible."
-- **Out-of-scope guard restated:** no edits to `agent/schema/`, `agent/internal/goal/`, `cmd/serf-tui/`, `llm/`, or any non-subagent `reason`/`Reason`.
+- **Out-of-scope guard restated:** no edits to `agent/schema/`, `agent/internal/goal/`, `cmd/evener-tui/`, `llm/`, or any non-subagent `reason`/`Reason`.

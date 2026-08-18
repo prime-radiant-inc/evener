@@ -14,7 +14,7 @@ import (
 // lifecycle, this models the hub's MULTI-SESSION fan-out fabric: the
 // appserver.Server's connection registry plus its Subscriptions index, which is
 // how the live hub multiplexes many sessions (threads) over many clients
-// (connections). The hub's relay machinery (cmd/serf-hub/app_rpc.go) drives this
+// (connections). The hub's relay machinery (cmd/evener-hub/app_rpc.go) drives this
 // exact fabric: startRelay calls appserver.Subscribe / server.Broadcast /
 // server.SubscriberCount, and the websocket lifecycle calls registerConnection /
 // unregisterConnection. So driving those seams directly exercises the real

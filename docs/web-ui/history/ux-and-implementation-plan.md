@@ -137,7 +137,7 @@ order (`renderer-format` → `renderer-tools` → `renderer-panels` → `rendere
    status-dot pulse (`applyStatusDotPulse` honors `.conversation[data-stale]`). Reasoning frames
    now flow, so the clock is honest during the think phase. Test: `test-renderer-liveness.js`.
 
-Tests: JS harness `cmd/serf-hub/jstest/` (`run-all.sh`; mirror
+Tests: JS harness `cmd/evener-hub/jstest/` (`run-all.sh`; mirror
 `test-appwire-lifecycle-notifications.js` / `test-renderer.js`). Web changes need a rebuild —
 assets are embedded: `make build-hub` + restart.
 

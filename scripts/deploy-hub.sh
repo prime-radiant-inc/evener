@@ -157,7 +157,7 @@ if ! make build-hub; then
 	die "build failed; old hub (pid ${old_pid:-<not running>}) left running untouched. Nothing was restarted."
 fi
 
-dist_dir="$repo_root/cmd/serf-hub/frontend/dist"
+dist_dir="$repo_root/cmd/evener-hub/frontend/dist"
 dist_mtime="unknown"
 if [ -d "$dist_dir" ]; then
 	dist_mtime=$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' "$dist_dir" 2>/dev/null || date -r "$(stat -c '%Y' "$dist_dir" 2>/dev/null || echo 0)" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo "unknown")

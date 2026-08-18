@@ -2,7 +2,7 @@
 
 **Status:** approved
 **Date:** 2026-05-10
-**Scope:** `cmd/serf-hub` web UI
+**Scope:** `cmd/evener-hub` web UI
 
 ## Goal
 
@@ -176,20 +176,20 @@ No other server work.
 
 ### New files
 
-- `cmd/serf-hub/jstest/test-search-commands.js` — JSDOM tests for command-filter mode, command-args mode, scope filtering, `/`-trigger from textarea, mode toggling.
+- `cmd/evener-hub/jstest/test-search-commands.js` — JSDOM tests for command-filter mode, command-args mode, scope filtering, `/`-trigger from textarea, mode toggling.
 
 ### Modified files
 
-- `cmd/serf-hub/assets/search.js` — extended with:
+- `cmd/evener-hub/assets/search.js` — extended with:
   - command registry (top of file or split into a co-located `commands.js` if it grows past ~150 lines; default plan is keep it in `search.js`).
   - a `mode()` helper that returns `"search" | "command-filter" | "command-args"` based on query + selected command state.
   - the `input` event handler now branches on mode: search → existing `search()` fetch; command-filter → local filter + render; command-args → enum fetch + filter or free-text.
   - the `Enter` handler now branches on mode similarly.
   - a public `openWith(initialQuery)` method (additive; existing `open()` preserved).
-- `cmd/serf-hub/assets/style.css` — small additions for the command-args pill and any command-row variants (~40 lines). Existing search row styles reused.
-- `cmd/serf-hub/assets/renderer.js` — hook in the textarea keydown handler: if the textarea is empty and the key is `/`, prevent default and call `window.SerfSearch.openWith("/")`. ~6 lines.
-- `cmd/serf-hub/web.go` — add `case "clear":` to the session action proxy switch in `handleSession`.
-- `cmd/serf-hub/web_test.go` — `TestWeb_SessionClear_ForwardsToDaemon`.
+- `cmd/evener-hub/assets/style.css` — small additions for the command-args pill and any command-row variants (~40 lines). Existing search row styles reused.
+- `cmd/evener-hub/assets/renderer.js` — hook in the textarea keydown handler: if the textarea is empty and the key is `/`, prevent default and call `window.SerfSearch.openWith("/")`. ~6 lines.
+- `cmd/evener-hub/web.go` — add `case "clear":` to the session action proxy switch in `handleSession`.
+- `cmd/evener-hub/web_test.go` — `TestWeb_SessionClear_ForwardsToDaemon`.
 
 No template changes — the existing `#search-dialog` markup is reused as-is.
 

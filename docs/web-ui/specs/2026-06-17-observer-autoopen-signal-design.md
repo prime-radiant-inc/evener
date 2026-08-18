@@ -3,7 +3,7 @@
 Date: 2026-06-17
 Status: Draft for Jesse's review. **No implementation** — this is a design/feasibility doc.
 Scope: the agent runtime (`agent/`), the appwire wire types (`appwire/`), the Serf web hub
-(`cmd/serf-hub/`), and the multi-pane workspace (`assets/panes.js`, `assets/renderer.js`).
+(`cmd/evener-hub/`), and the multi-pane workspace (`assets/panes.js`, `assets/renderer.js`).
 Companion to `docs/web-ui/specs/2026-06-17-multi-pane-workspace-design.md` (the multi-pane MVP this
 extends).
 
@@ -19,7 +19,7 @@ The blocker found during planning: **the web has no way to identify which subage
 observer."** "Observer" is a runtime `job_watch` concept (`agent/job_watch.go`), not a flag that
 reaches the hub. Subagents carry only `IsSubagent`/`ParentSessionID`
 (`agent/schema/snapshot.go:52-54`); `AgentRole` (`appwire/types.go:152`) is a codex-only field
-(populated solely in `cmd/serf-hub/internal/appsource/codex_source.go:638`, never for local
+(populated solely in `cmd/evener-hub/internal/appsource/codex_source.go:638`, never for local
 sessions). This doc defines what it takes to surface the observer signal, grounds every claim in
 code (file:line), and recommends an approach.
 
@@ -33,7 +33,7 @@ code (file:line), and recommends an approach.
   `FoldGrants` into `map[observerSessionID]map[watchedJobID]bool`
   (`agent/internal/jobstore/fold.go:104-126`). The hub reads **only** session `.meta.json` files
   (`agent/schema/snapshot.go:139-150`, via `hubcore.PastIndex`), **never** the jobstore — a grep of
-  `cmd/serf-hub` for `jobstore`/`jobs.jsonl`/`LoadGrants` returns zero hits. So the data exists; the
+  `cmd/evener-hub` for `jobstore`/`jobs.jsonl`/`LoadGrants` returns zero hits. So the data exists; the
   plumbing to surface it does not.
 - **Recommended approach: persist the observer link on the *watched worker's* `SessionMeta` at
   watch-install time, then carry it through the existing lineage seam to a data-attribute the
@@ -41,7 +41,7 @@ code (file:line), and recommends an approach.
   watched subagent's meta when `job_watch` mints the read grant
   (`agent/job_watch.go:2016-2041`); the hub already reads that meta
   (`web_workspace.go:243,321` → `fillSubagentLineage` `web_workspace.go:381-396`), so add
-  `ObserverRouteIDs` to `WorkspaceData` (`cmd/serf-hub/web_types.go:161-199`) and render it as a
+  `ObserverRouteIDs` to `WorkspaceData` (`cmd/evener-hub/web_types.go:161-199`) and render it as a
   `data-observers` attribute on `#conversation` (`templates/partials/workspace.html:37-43`). The JS
   reads it in `SerfRenderer.init()` where `this.sessionId` is already set (`renderer.js:97`) and
   calls `SerfPanes.open` for each live observer.
@@ -50,7 +50,7 @@ code (file:line), and recommends an approach.
   tests (moderate). No CSP, transport, or renderer-singleton work — the multi-pane MVP already paid
   those costs.
 - **Local-only for v1.** The signal can be computed for **local** sessions (the hub has filesystem
-  access to their state dir — `PastEntry.StateDir`, `cmd/serf-hub/internal/hubcore/past.go:17-20`).
+  access to their state dir — `PastEntry.StateDir`, `cmd/evener-hub/internal/hubcore/past.go:17-20`).
   For **remote** sources (codex), the hub has only the appwire `Thread` snapshot
   (`appwire/types.go:136-157`) and no jobstore access; remote observer auto-open needs the remote
   daemon to emit the field over appwire — deferred.
@@ -118,7 +118,7 @@ watching session's jobs.jsonl
 
 **The relationship (worker session ↔ observer session) is fully reconstructable from durable
 on-disk state for local sessions.** The hub's `PastEntry` already carries the project `StateDir`
-(parent of `sessions/`, `cmd/serf-hub/internal/hubcore/past.go:17-20`), so the hub *could* open the
+(parent of `sessions/`, `cmd/evener-hub/internal/hubcore/past.go:17-20`), so the hub *could* open the
 watching session's `jobs.jsonl` and `LoadGrants()` — it just doesn't today.
 
 ### The one thing that does NOT exist today
@@ -135,7 +135,7 @@ stamp until `job_watch` runs.
 ## How subagents reach the web today (ground truth)
 
 ### Sidebar tree (disk-meta path, local + remote)
-- `/api/tree` → `handleAPITree` (`cmd/serf-hub/web_api_tree.go:32`) → `navigationTreeInputs`
+- `/api/tree` → `handleAPITree` (`cmd/evener-hub/web_api_tree.go:32`) → `navigationTreeInputs`
   (`:107-127`) → `hubcore.BuildTree` (`internal/hubcore/tree.go:261`). Local metas come from
   `s.cfg.Past.AllMetas()` (`web_api_tree.go:114`, disk `.meta.json`); **remote** threads come from
   `source.ListThreads(...)` and are projected into synthetic `SessionMeta`s
@@ -148,12 +148,12 @@ stamp until `job_watch` runs.
 ### `SessionDetail` (per-session detail DTO)
 - `hubapi.SessionDetail` (`hubapi/types.go:64-93`) carries `IsSubagent` (`:85`), `ParentSessionID`
   (fork lineage), `DivergenceTurn`, `ForkLabel` — **no observer field.**
-- `apiSessionDetail` (`cmd/serf-hub/web_api_tree.go:450-518`) blends two sources: local past meta
+- `apiSessionDetail` (`cmd/evener-hub/web_api_tree.go:450-518`) blends two sources: local past meta
   (`pe.Meta`, `detail.IsSubagent = pe.Meta.IsSubagent` at `:514`) and, for live/remote, the appwire
   thread snapshot (`hubDetailFromAppThread`, `:274`; live overwrite at `:492`).
 
 ### Workspace data (the seam the auto-open should ride)
-- The workspace page is rendered from `WorkspaceData` (`cmd/serf-hub/web_types.go:161-199`).
+- The workspace page is rendered from `WorkspaceData` (`cmd/evener-hub/web_types.go:161-199`).
   `workspaceData(id)` (`web_workspace.go:243`) reads `pe.Meta` from the past index and calls
   `fillSubagentLineage` (`:293,321` → `:381-396`), which sets `ParentRouteID`/`ParentTitle` from
   the **local meta** — exactly the precedent an observer field follows.
@@ -282,7 +282,7 @@ Teach the hub to open the watching session's `jobs.jsonl` and `LoadGrants()`
 
 **Cons / risks**
 - The hub would import/consume `agent/internal/jobstore` (an internal package) and read a file it
-  has never touched (`cmd/serf-hub` has zero jobstore references today). New coupling between the
+  has never touched (`cmd/evener-hub` has zero jobstore references today). New coupling between the
   hub and an agent-internal format.
 - **Inversion is non-trivial:** grants are keyed `observerSession → watchedJob`; mapping a *worker
   session* to its observers requires resolving each watched job's `TranscriptRef` → worker session

@@ -634,7 +634,7 @@ Run, at minimum:
 cd /Users/jesse/prime-radiant/toil-suite/serf
 go test ./agent/internal/jobstore -run 'Test.*Delegate|Test.*Structured|Test.*Restore' -count=1
 go test ./agent -run 'Test.*Watch|Test.*Delegate|Test.*JobSend|Test.*Structured|Test.*Restore' -count=1
-go test ./agent ./agent/internal/jobstore ./agent/internal/tool ./appwire ./internal/appprojector ./cmd/serf-hub ./cmd/serf-tui/internal/msgrender ./cmd/serf-tui/internal/toolsummary -count=1
+go test ./agent ./agent/internal/jobstore ./agent/internal/tool ./appwire ./internal/appprojector ./cmd/evener-hub ./cmd/evener-tui/internal/msgrender ./cmd/evener-tui/internal/toolsummary -count=1
 make build
 make test
 make lint

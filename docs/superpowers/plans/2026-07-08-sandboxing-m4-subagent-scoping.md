@@ -94,7 +94,7 @@ editing; M1/M2/M3 will have shifted these):
   `reacquireDelegateWorktreeLock` `:979` builds two control envs (`:984`, `:989`).
 - Restore call site `job_delegate.go:839`; isolation-deny-survives-restore
   precedent `agent/session_init.go:735`.
-- Validation e2e extends `cmd/serf-hub/sandbox_test.go`'s containment invariant.
+- Validation e2e extends `cmd/evener-hub/sandbox_test.go`'s containment invariant.
 
 ## Global Constraints
 
@@ -166,7 +166,7 @@ editing; M1/M2/M3 will have shifted these):
   variant; `enterWorktree`/`exitWorktree` need no policy code (they ride
   `WithWorkingDirectory` / restore a saved env).
 - Tests: `agent/sandbox_delegate_test.go` (new) — the plumbing suite (capture,
-  re-root, persist, resume, depth, cross-lane); `cmd/serf-hub/sandbox_test.go`
+  re-root, persist, resume, depth, cross-lane); `cmd/evener-hub/sandbox_test.go`
   (extend) — the real-confinement escape suite.
 
 ## Task 1 — `ReRoot` + `ControlPolicy` primitives (agent/sandbox)
@@ -276,7 +276,7 @@ editing; M1/M2/M3 will have shifted these):
 
 ## Task 6 — Adversarial escape suite (real confinement, needs M3)
 
-**Files:** `cmd/serf-hub/sandbox_test.go` (extend).
+**Files:** `cmd/evener-hub/sandbox_test.go` (extend).
 
 - [ ] **Failing test** (live M3 backend on this branch; skip-guarded if the host
   lacks bwrap, mirroring the M3 e2e guards): a **sandboxed parent delegates** →
@@ -297,7 +297,7 @@ editing; M1/M2/M3 will have shifted these):
 ## Done criteria
 
 - `cd <worktree> && make test-short && make vet && make lint` clean.
-- `go test ./agent/sandbox/... ./agent/... ./cmd/serf-hub/...` green incl. the
+- `go test ./agent/sandbox/... ./agent/... ./cmd/evener-hub/...` green incl. the
   fuzz seed corpus and the skip-guarded e2e escape suite.
 - The re-root contract cases are exported (`ReRootCase`/`AssertReRoot`) for M6.
 - A sandboxed delegate is confined to its own worktree (not parent's/sibling's);

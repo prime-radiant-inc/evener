@@ -65,7 +65,7 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 // That closes omission, not misuse, and the distinction is load-bearing rather
 // than pedantic: passing `func() {}` here and tearing the sink down elsewhere
 // compiles, and reproduces the original crash with a byte-identical stack.
-// cmd/serf/serve.go is deliberately that shape -- one --verbose tee outlives N
+// cmd/evener/serve.go is deliberately that shape -- one --verbose tee outlives N
 // drains across /clear, so the session cannot own the sink's lifetime and the
 // wait has to live at the caller that joins them. So unlike
 // authoritativeConsumer above, the unsafe state here is still spellable; what
@@ -114,9 +114,9 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 //
 // This matters beyond tidiness: a client only creates its per-thread state in
 // response to SESSION_START's projection (see internal/appprojector's
-// EventSessionStart case and cmd/serf-hub/frontend's thread/started handling),
+// EventSessionStart case and cmd/evener-hub/frontend's thread/started handling),
 // and a warning is never persisted to the transcript for a later snapshot to
-// recover (cmd/serf-hub/frontend/src/protocol/reducer.ts's "warning" case
+// recover (cmd/evener-hub/frontend/src/protocol/reducer.ts's "warning" case
 // comment: "warnings are not transcript-persisted at all ... the next
 // snapshot would not carry it either"). A diagnostic that reaches the stream
 // before SESSION_START therefore has no tracked thread to land on and is lost

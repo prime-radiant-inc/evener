@@ -118,13 +118,13 @@ observer's terminal `communicate(end_turn:true)` callback — see
 ## Doctor audit
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count read_transcript
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_status
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count read_transcript
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count job_status
 ```
 
 ## Sharp edges

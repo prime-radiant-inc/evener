@@ -72,7 +72,7 @@ mid-turn, and this card previously asserted that it was.
    # Re-read the session and confirm its model did NOT move.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq .model
    ```
-   `handleAPIModel` (`cmd/serf-hub/web_api.go#handleAPIModel`) forwards
+   `handleAPIModel` (`cmd/evener-hub/web_api.go#handleAPIModel`) forwards
    `ThreadModelSetParams` to the same source the browser's RPC reaches.
 
 5. **[browser, optional] The same rejection through the UI.** Repeat step 4's
@@ -114,7 +114,7 @@ mid-turn, and this card previously asserted that it was.
   does nothing, or the model changes.
 - **Step 6**: the switch during the drain window is **also** rejected with
   the same 409 family. The daemon re-arms `SetProcessing(true)` for each
-  drained turn (`cmd/serf/serve.go:950-958`), and `ProcessInputKind` loops to
+  drained turn (`cmd/evener/serve.go:950-958`), and `ProcessInputKind` loops to
   run queued messages as further turns (`agent/session_lifecycle.go:517-524`),
   so `handleAppThreadModelSet`'s `processing || reservedTurnID != ""` guard
   (`server/appwire_runtime.go#handleAppThreadModelSet`) stays true across the whole drain.
@@ -148,7 +148,7 @@ mid-turn, and this card previously asserted that it was.
   reaches a human.
 - **`capabilities.changeModel` is true for an ENDED session too.** The hub
   advertises Send and ChangeModel for a cold exited thread and resumes it
-  behind `thread/model/set` (`cmd/serf-hub/app_model.go:11-26`'s
+  behind `thread/model/set` (`cmd/evener-hub/app_model.go:11-26`'s
   `setThreadModelWithResume`). A live-looking model chip on a finished
   session is the design. Note that the *REST* route refuses a non-live
   session earlier, with `404 session not live` (`web_api.go:309-312`) — so

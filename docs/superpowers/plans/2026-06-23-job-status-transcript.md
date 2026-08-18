@@ -929,7 +929,7 @@ Expected: PASS.
 go test ./...
 ```
 
-Expected: PASS. If `cmd/serf-tui/internal/hubstart::TestStartLocalHubReportsImmediateExitOutput` fails once and passes on direct rerun, record it as the same pre-existing transient baseline observed before implementation.
+Expected: PASS. If `cmd/evener-tui/internal/hubstart::TestStartLocalHubReportsImmediateExitOutput` fails once and passes on direct rerun, record it as the same pre-existing transient baseline observed before implementation.
 
 - [ ] **Step 3: Inspect final diff**
 

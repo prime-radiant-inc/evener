@@ -34,8 +34,8 @@ A call that is in flight, returns only delivery metadata, or has no response omi
 
 Keep the change inside the existing job-tool renderer module:
 
-- `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`
-- `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx`
+- `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`
 
 Extract the subagent-row correlation effect from `CorrelatingBody` into a small hook. `CorrelatingBody` continues to serve `job_status` and `job_stop` without visual changes.
 
@@ -88,7 +88,7 @@ Add focused deterministic tests to `jobTools.test.tsx` for:
 Run:
 
 ```sh
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test -- --run src/panes/session/transcript/tools/jobTools.test.tsx
 npm run typecheck
 npm run lint

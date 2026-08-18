@@ -33,8 +33,8 @@ GATE_TEST_RUN='^(Test|Example)'
 # pattern for one id, or nothing when that capability has no known consumer.
 #
 # Evidenced mapping, root module ONLY (kata 5gvk's premise check):
-#   - loopback-bind, process-inspect: cmd/serf-hub's TestE2E_* family and
-#     cmd/serf-tui's TestTUITmuxE2E_* family are the root module's ONLY test
+#   - loopback-bind, process-inspect: cmd/evener-hub's TestE2E_* family and
+#     cmd/evener-tui's TestTUITmuxE2E_* family are the root module's ONLY test
 #     files that both (a) run only under ROOT_FULL=1 (gated by
 #     testing.Short(); merge-approval-gate is the only caller that sets it)
 #     and (b) spawn a real hub/daemon or tmux pane bound to a real loopback
@@ -42,14 +42,14 @@ GATE_TEST_RUN='^(Test|Example)'
 #   - chrome-cdp, git-cache: no test file anywhere in this tree consumes
 #     either today. test-web-browser needs Chrome but is a separate,
 #     non-gate target; the only thing in the tree that names the fixed
-#     /tmp/git-cache path is cmd/serf-gate-probe's own default, which the
+#     /tmp/git-cache path is cmd/evener-gate-probe's own default, which the
 #     probe creates in order to prove it is writable. Both are still probed
 #     and reported for completeness and honesty; the pattern is empty because
 #     nothing is skipped yet.
 #
 # Applied to the ROOT module ONLY, deliberately: `agent/session_escalation_e2e_test.go`
 # (Linux-only, unrelated sandbox-escalation coverage) also has two
-# `TestE2E_*`-named tests that share nothing with the cmd/serf-hub family
+# `TestE2E_*`-named tests that share nothing with the cmd/evener-hub family
 # except the prefix. Unioning this pattern into every module's `-skip` would
 # silently and wrongly skip those two whenever loopback-bind or
 # process-inspect is blocked. run-module-tests.sh applies the pattern to "."

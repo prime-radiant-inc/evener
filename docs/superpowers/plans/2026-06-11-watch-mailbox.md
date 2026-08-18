@@ -849,7 +849,7 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 
 ### Task 5.2: Live validation
 
-- [ ] **Step 1: Build + run live** per the recipe in the project memory (`go build -o /tmp/serf ./cmd/serf`; source `.env`; `--model oai-work/<model>`): drive the incident smoke shape — background shell job, sidecar observer with an events watch, `output_match` watch attached AFTER the token printed, `job_read_output(block, grep)` — and confirm: no wedge, observer receives a frame and reads the watched job, catch-up fires, blocking grep returns on match.
+- [ ] **Step 1: Build + run live** per the recipe in the project memory (`go build -o /tmp/serf ./cmd/evener`; source `.env`; `--model oai-work/<model>`): drive the incident smoke shape — background shell job, sidecar observer with an events watch, `output_match` watch attached AFTER the token printed, `job_read_output(block, grep)` — and confirm: no wedge, observer receives a frame and reads the watched job, catch-up fires, blocking grep returns on match.
 - [ ] **Step 2: Capture the transcript refs in the final commit message.** Commit any fixes uncovered, each with its own test first.
 
 ---

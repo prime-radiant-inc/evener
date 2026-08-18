@@ -95,7 +95,7 @@ and assert what each tab converges to.
    for i in $(seq 1 15); do [ "$(state)" = "active" ] && break; sleep 1; done   # turn claimed
    for i in $(seq 1 90); do [ "$(state)" = "active" ] || break; sleep 1; done   # turn done
    sleep 2   # let the transcript tail flush
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:8
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:8
    ```
 4. **(browser)** Now repeat the gesture from two tabs, to check what each *client* shows.
    Spawn a second asking session the same way as step 1 (call it `SID2`), wait for
@@ -141,21 +141,21 @@ and assert what each tab converges to.
    })
    ```
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID2" --format outline --range last:8
+   go run ./cmd/evener-doctor transcript "$SID2" --format outline --range last:8
    ```
 
 ## Expected
 
 - **Step 2 (exact, the whole point)**: one request returns **202**; the other returns
   **409** with body `{"error":"turn is already active","code":-32013,"serf_error_info":"conflict"}`
-  (`statusForWireError`, `cmd/serf-hub/web_api.go#statusForWireError`; `hubapi.ErrorResponse` tags at
+  (`statusForWireError`, `cmd/evener-hub/web_api.go#statusForWireError`; `hubapi.ErrorResponse` tags at
   `hubapi/types.go#ErrorResponse`), **or** — if the capability gate saw the flip first — **503**
   with `serf_error_info: "actionUnavailable"` (`ensureThreadActionAvailable(…, "send")`
-  ahead of `StartTurn`, `cmd/serf-hub/web_session.go:137-139`). Either loser shape is
+  ahead of `StartTurn`, `cmd/evener-hub/web_session.go:137-139`). Either loser shape is
   correct; two 202s is not. Falsify: both requests return 202, or the loser returns 502
   ("daemon unreachable") — a conflict must not be mistaken for an unavailable session and
   retried through the resume path (`shouldResumeAfterTurnStartError` →
-  `isSessionUnavailableError`, `cmd/serf-hub/app_compact.go:12-29`, deliberately excludes
+  `isSessionUnavailableError`, `cmd/evener-hub/app_compact.go:12-29`, deliberately excludes
   `CodeConflict`).
 - **Step 3 (exact)**: exactly **one** new user turn in the outline, containing either
   `→ "now"` or `→ "wait"` — never both, never a merge of the two, and never a second

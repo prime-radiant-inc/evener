@@ -22,8 +22,8 @@
 ### Task 1: Correlate Failed Turn-Start Auto-Resume
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc_test.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
 
 **Interfaces:**
 - Consumes: `appwire.TurnStartParams.ClientMutationID`, `appwire.WireError`, and the existing `resolveTurnStartSource` and `resumeTurnStartThread` seams.
@@ -121,7 +121,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails$' -count=1
+go test ./cmd/evener-hub -run '^TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails$' -count=1
 ```
 
 Expected: both subtests fail because the current handler returns the raw
@@ -132,7 +132,7 @@ those behavioral assertions.
 - [ ] **Step 3: Add the minimal Hub-local error constructor**
 
 Add this function beside the turn-start handler support code in
-`cmd/serf-hub/app_rpc.go`:
+`cmd/evener-hub/app_rpc.go`:
 
 ```go
 func blockedUnknownMutationError(clientMutationID string, err error) error {
@@ -162,7 +162,7 @@ return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMut
 Run:
 
 ```bash
-gofmt -w cmd/serf-hub/app_rpc.go cmd/serf-hub/app_rpc_test.go
+gofmt -w cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
 ```
 
 - [ ] **Step 5: Run the focused regression and verify GREEN**
@@ -170,7 +170,7 @@ gofmt -w cmd/serf-hub/app_rpc.go cmd/serf-hub/app_rpc_test.go
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run '^TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails$' -count=1
+go test ./cmd/evener-hub -run '^TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails$' -count=1
 ```
 
 Expected: PASS for both subtests.
@@ -180,8 +180,8 @@ Expected: PASS for both subtests.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestHubRPCTurnStart|TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates' -count=1
-go test ./cmd/serf-hub/internal/appsource -run '^FuzzAppSourceProgram$' -count=1
+go test ./cmd/evener-hub -run 'TestHubRPCTurnStart|TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates' -count=1
+go test ./cmd/evener-hub/internal/appsource -run '^FuzzAppSourceProgram$' -count=1
 ```
 
 Expected: PASS. Successful auto-resume, non-resumable errors, managed refs, and
@@ -193,7 +193,7 @@ unchanged.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 go test ./... -count=1
 git diff --check
 ```
@@ -208,7 +208,7 @@ Review:
 
 ```bash
 git status --short
-git diff -- cmd/serf-hub/app_rpc.go cmd/serf-hub/app_rpc_test.go
+git diff -- cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
 ```
 
 Confirm that removing either normalized return would make its corresponding
@@ -216,7 +216,7 @@ subtest fail, and that no persistence or frontend production file changed.
 Then commit only the two Go files:
 
 ```bash
-git add cmd/serf-hub/app_rpc.go cmd/serf-hub/app_rpc_test.go
+git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
 git commit
 ```
 

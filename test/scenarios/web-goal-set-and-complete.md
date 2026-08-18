@@ -11,7 +11,7 @@
   (`panes/session/chrome/GoalControl.tsx:153,165`).
 - **A6 capability gate** — `goal/set` is pre-flight gated by the `Goal`
   thread capability inside `setGoalWithResume`
-  (`cmd/serf-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
+  (`cmd/evener-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
   a serf session must advertise the appwire `Goal` capability or the call is
   rejected.
 - **B6 compact continuation marker** — each autonomous continuation turn is
@@ -27,7 +27,7 @@
   `<status> · <N> iterations`; on completion the chip flips to `complete`.
 
 The Go layer covers the gate and persistence with unit tests
-(`cmd/serf-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
+(`cmd/evener-hub/app_rpc_test.go:5873` `TestHubRPCGoalSetGatedByCapability`,
 `agent/session_goal_*_test.go`); this is the live web counterpart that
 proves the palette, the chip, and the marker actually render.
 
@@ -55,15 +55,15 @@ browser half must go through the real UI, and the exact assertions go to
   while Jesse's real hub already holds that flock, so check for that
   first rather than debugging a mysterious startup failure. What it does
   NOT have to share is session history: exporting `XDG_STATE_HOME` (a
-  var independent of `$HOME` — see `cmd/serf-hub/config.go:89-99`'s
+  var independent of `$HOME` — see `cmd/evener-hub/config.go:89-99`'s
   `DefaultStateGlob`, which prefers it over `$HOME/.local/state`)
   relocates every session this hub spawns under a scratch dir instead of
   Jesse's real `~/.local/state/serf/projects`, with no effect on the
   credentials/token/lock paths above:
   ```bash
   run=$(mktemp -d -t serf-e2e-goal-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/serf-hub
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf-hub" ./cmd/evener-hub
+  go build -o "$run/serf" ./cmd/evener
   pgrep -f 'serf-hub.*:9180' >/dev/null && \
     { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.serf/hub.lock)" >&2; exit 1; }
   export XDG_STATE_HOME="$run/state"
@@ -113,7 +113,7 @@ done
    **Expected:** `state` is `idle`. Note: the `Goal` capability lives on the
    **appwire** `ThreadCapabilities` (which the hub gate reads), NOT on the
    REST `/api/sessions` shape — `hubCapabilitiesFromAppwire`
-   (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
+   (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
    `capabilities.goal` over REST is always absent. A6 is proven
    positively by step 2 (the `goal/set` call succeeds because the gate read
    `appCapabilities.Goal == true`) and negatively by the unit test
@@ -177,7 +177,7 @@ done
    Cross-check against the daemon's authoritative record — the steering turns
    it actually sent the model:
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
    ```
    **Expected:** every entry in `goalNotices` is the short one-line marker
    `Continuing toward: Create a file seed.txt …`. It must **not** contain the

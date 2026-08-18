@@ -84,7 +84,7 @@ model).
 - `initPlugins` (`agent/session_init.go:1121`) **early-returns when
   `cfg.PluginDirs` is empty** (line 1122) — serf-wide discovery must not
   live behind that gate.
-- `hubCommandList` (`cmd/serf-hub/app_rpc.go:815-839`) answers
+- `hubCommandList` (`cmd/evener-hub/app_rpc.go:815-839`) answers
   `serf/command/list` via `plugins.Manager.EnabledPluginDirs` +
   `plugin.LoadAllFailSoft`, flattened into
   `appwire.CommandDescriptor{Name, PluginName, Description, ArgumentHint}`;
@@ -95,10 +95,10 @@ model).
   imports neither `execenv` nor `events` today; neither imports `plugin`, so
   the additions below create no import cycle.
 - Client interception: the TUI resolves typed `/name` against ~27 built-in
-  commands before forwarding to the session (cmd/serf-tui/
+  commands before forwarding to the session (cmd/evener-tui/
   hub_session_keys.go:439-468; registry in hub_command_registry.go). The web
   composer routes a leading `/` in an empty composer to its local command
-  palette (cmd/serf-hub/frontend/src/panes/session/composer/
+  palette (cmd/evener-hub/frontend/src/panes/session/composer/
   Composer.tsx:679-682).
 
 ## Threat model
@@ -441,8 +441,8 @@ no live requests.
 | `appwire/types.go` | `CommandDescriptor.Source`; update the type's doc comment (currently says "plugin-provided") |
 | generated AppWire outputs | Run `make generate` (`types.gen.ts`, protocol doc); `make lint-generated` must pass |
 | `appwire/protocol.go` | `serf/command/list` description mentions source |
-| `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
-| `cmd/serf-hub/frontend` palette (`CommandPalette.tsx`, command registry) | Command-filter fallthrough sends unmatched `/name args` as session input; palette lists `serf/command/list` commands badged by source |
+| `cmd/evener-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
+| `cmd/evener-hub/frontend` palette (`CommandPalette.tsx`, command registry) | Command-filter fallthrough sends unmatched `/name args` as session input; palette lists `serf/command/list` commands badged by source |
 | `docs/appwire-protocol.md` | Document the `source` field |
 | `docs/skills.md` | Document skills and command sources, the inert-expansion posture, and the trust model |
 

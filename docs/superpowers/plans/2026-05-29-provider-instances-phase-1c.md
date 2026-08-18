@@ -225,7 +225,7 @@ func TestLoadClientMaterializesAndInjects(t *testing.T) {
   5. **Inject:** for each `inst` in `cfg.Instances` where `inst.APIKey == ""`, set `inst.APIKey, _ = store.ResolveKey(inst.Name, string(inst.Type))` on the **in-memory** cfg copy.
   6. `client, err := llm.NewFromProviders(cfg, opts...)`; return `(client, cfg, true, nil)`.
   - Remove the `NewFromEnv` "absent" branch. Update the doc comment.
-  - **Path alignment note:** confirm `filepath.Dir(path)` is the correct credentials root for hub-spawned children (they get `SERF_PROVIDERS_CONFIG` + `SERF_STATE_DIR` from the hub). If the hub's credentials root differs, align via the same state-dir the OAuth records use. Verify against `cmd/serf-hub/main.go` + `internal/launchconfig/env.go`.
+  - **Path alignment note:** confirm `filepath.Dir(path)` is the correct credentials root for hub-spawned children (they get `SERF_PROVIDERS_CONFIG` + `SERF_STATE_DIR` from the hub). If the hub's credentials root differs, align via the same state-dir the OAuth records use. Verify against `cmd/evener-hub/main.go` + `internal/launchconfig/env.go`.
 - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: Commit** — `git commit -m "feat(cmdutil): LoadClient always config — materialize + inject credentials"`
 
@@ -233,12 +233,12 @@ func TestLoadClientMaterializesAndInjects(t *testing.T) {
 
 ### Task 8: Retire env-default in callers + wire-through
 
-**Files:** `cmd/serf/serve.go` (`buildInitialProfile:440`), `cmd/serf/run.go:138`, `cmdutil.BuildResolveProfile`, any `hasConfig`/`hasProvConfig` branches.
+**Files:** `cmd/evener/serve.go` (`buildInitialProfile:440`), `cmd/evener/run.go:138`, `cmdutil.BuildResolveProfile`, any `hasConfig`/`hasProvConfig` branches.
 
 - [ ] **Step 1: Survey** — grep for `hasConfig`, `hasProvConfig`, `NewFromEnv` callers, and the env branches in `buildInitialProfile`/`BuildResolveProfile`. List each.
 - [ ] **Step 2: Failing/region tests** — assert `buildInitialProfile` resolves a materialized instance (e.g. `openai/gpt-5`) via the config path; `BuildResolveProfile` always uses `ResolveProfileFromConfig`.
 - [ ] **Step 3: Implement** — since `LoadClient` now always returns `hasConfig == true`, simplify the env branches to dead-code removal (keep one logged defensive fallback only if `materialize` fails). Keep `cmdutil.SelectProfile` for the alias/validation paths that still need it (e.g. `gemini` alias), but the *initial profile* + resolver go through config.
-- [ ] **Step 4: Run** — `go build ./... && go test ./cmd/serf/... ./cmdutil/...` → PASS.
+- [ ] **Step 4: Run** — `go build ./... && go test ./cmd/evener/... ./cmdutil/...` → PASS.
 - [ ] **Step 5: Commit** — `git commit -m "refactor: retire env-path-as-default; config is always-on"`
 
 ---

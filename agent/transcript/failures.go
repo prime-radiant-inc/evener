@@ -10,7 +10,7 @@ import (
 
 // ShellToolNames are the tool names whose result carries a process exit code
 // that the transcript reads as failure. It mirrors the transcript renderer's
-// own shell descriptor (cmd/serf-hub/frontend/src/panes/session/transcript/
+// own shell descriptor (cmd/evener-hub/frontend/src/panes/session/transcript/
 // tools/shellTool.tsx's registerToolRenderer match), and the two lists have to
 // agree: a name in one and not the other means a row wearing a failure glyph
 // that the session's failure count does not include, or the reverse.

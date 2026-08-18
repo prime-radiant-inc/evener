@@ -91,7 +91,7 @@ HUB=http://127.0.0.1:$PORT
    ```
 5. Let the turn settle and read the durable record:
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:40
    ```
 
 ## Expected
@@ -152,7 +152,7 @@ rm -rf "$tmpdir"
   race, not a regression — retry from a fresh snapshot before filing.
 - **A partial drain is its own error code.** `appwire.ErrorQueuedDrainPartial`
   reports that some entries drained and some did not; the TUI treats it as a
-  success-ish outcome (`cmd/serf-tui/hub_session_keys.go:529-538`). If you
+  success-ish outcome (`cmd/evener-tui/hub_session_keys.go:529-538`). If you
   see a partial, count what actually landed in the transcript rather than
   reading the error as a flat failure.
 - **The strip disappears when the queue empties.** Its absence after a drain

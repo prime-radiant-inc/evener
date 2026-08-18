@@ -54,18 +54,18 @@ Library.
 - Modify: `appwire/client.go`
 - Modify: `internal/appserver/server.go`
 - Modify: `server/appwire_runtime.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/internal/appsource/source.go`
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go`
-- Modify: `cmd/serf-hub/internal/appsource/codex_source.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/internal/appsource/source.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go`
+- Modify: `cmd/evener-hub/internal/appsource/codex_source.go`
 - Test: `appwire/protocol_test.go`
 - Test: `appwire/client_test.go`
 - Test: `internal/appserver/server_test.go`
 - Test: `server/appwire_catalog_test.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Test: `cmd/serf-hub/internal/appsource/local_daemon_test.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Test: `cmd/evener-hub/internal/appsource/local_daemon_test.go`
 - Generate: `docs/appwire-protocol.md`
-- Generate: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
+- Generate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
 
@@ -108,7 +108,7 @@ Library.
 - [ ] Run `make generate`, then:
 
   ```bash
-  go test ./appwire ./internal/appserver ./server ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -count=1
+  go test ./appwire ./internal/appserver ./server ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -count=1
   make lint-generated
   git diff --check
   ```
@@ -295,20 +295,20 @@ Library.
 
 - Modify: `server/server.go`
 - Modify: `server/appwire_runtime.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf-hub/internal/appsource/source.go`
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener-hub/internal/appsource/source.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
 - Test: `server/appwire_mutation_recovery_test.go`
 - Test: `server/appwire_server_test.go`
-- Test: `cmd/serf/serve_test.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Test: `cmd/serf-hub/internal/appsource/local_daemon_test.go`
+- Test: `cmd/evener/serve_test.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Test: `cmd/evener-hub/internal/appsource/local_daemon_test.go`
 
 **Interfaces:**
 
 - Add one typed `server.RetrySafeTurnFunctions` callback bundle installed by
-  `cmd/serf/serve.go`; handlers no longer independently validate mutable
+  `cmd/evener/serve.go`; handlers no longer independently validate mutable
   processing/queue state.
 - The daemon validates static shape, then delegates journal lookup and dynamic
   compare-and-commit to `agent.Session`.
@@ -330,7 +330,7 @@ Library.
   failure followed by same-process recovery.
 
 - [ ] Install the session callback bundle and mutation wake path in
-  `cmd/serf/serve.go`. Remove the v1 direct queue/steer/cancel handler decisions
+  `cmd/evener/serve.go`. Remove the v1 direct queue/steer/cancel handler decisions
   from the seven AppWire routes; unrelated REST routes stay unchanged.
 
 - [ ] Change Hub source interfaces and handlers to return typed responses.
@@ -339,8 +339,8 @@ Library.
 - [ ] Run:
 
   ```bash
-  go test ./server ./cmd/serf ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -run 'Mutation|Turn(Start|Steer|Queue|Drain|Promote|Cancel|Interrupt)' -count=1
-  go test ./server ./cmd/serf ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -count=1
+  go test ./server ./cmd/evener ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -run 'Mutation|Turn(Start|Steer|Queue|Drain|Promote|Cancel|Interrupt)' -count=1
+  go test ./server ./cmd/evener ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -count=1
   git diff --check
   ```
 
@@ -407,19 +407,19 @@ Library.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/app_relay.go`
-- Modify: `cmd/serf-hub/internal/appsource/source.go`
-- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go`
-- Create: `cmd/serf-hub/internal/appsource/relay_session.go`
-- Modify: `cmd/serf-hub/internal/appsource/codex_source.go`
-- Modify: `cmd/serf-hub/internal/appsource/codex_live_thread.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_relay.go`
+- Modify: `cmd/evener-hub/internal/appsource/source.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go`
+- Create: `cmd/evener-hub/internal/appsource/relay_session.go`
+- Modify: `cmd/evener-hub/internal/appsource/codex_source.go`
+- Modify: `cmd/evener-hub/internal/appsource/codex_live_thread.go`
 - Modify: `internal/appserver/server.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Test: `cmd/serf-hub/app_relay_test.go`
-- Test: `cmd/serf-hub/internal/appsource/relay_session_test.go`
-- Test: `cmd/serf-hub/internal/appsource/codex_source_test.go`
-- Test: `cmd/serf-hub/internal/appsource/transport_seams_test.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Test: `cmd/evener-hub/app_relay_test.go`
+- Test: `cmd/evener-hub/internal/appsource/relay_session_test.go`
+- Test: `cmd/evener-hub/internal/appsource/codex_source_test.go`
+- Test: `cmd/evener-hub/internal/appsource/transport_seams_test.go`
 - Test: `internal/appserver/server_test.go`
 
 **Interfaces:**
@@ -528,7 +528,7 @@ Library.
   event. Prove reconnect performs an unconditional full read.
 
   ```bash
-  go test ./cmd/serf-hub ./cmd/serf-hub/internal/appsource -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Idle|Codex.*FullState|Codex.*Dirty' -count=1
+  go test ./cmd/evener-hub ./cmd/evener-hub/internal/appsource -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Idle|Codex.*FullState|Codex.*Dirty' -count=1
   ```
 
 - [ ] Implement the per-source/thread `RelaySession` actor for
@@ -557,9 +557,9 @@ Library.
 - [ ] Run:
 
   ```bash
-  go test ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=100
-  go test -race ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=20
-  go test ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -count=1
+  go test ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=100
+  go test -race ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=20
+  go test ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -count=1
   git diff --check
   ```
 
@@ -571,19 +571,19 @@ Library.
 
 **Files:**
 
-- Create: `cmd/serf-hub/internal/hubcore/deletion_store.go`
-- Create: `cmd/serf-hub/internal/hubcore/deletion_store_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/config.go`
-- Modify: `cmd/serf-hub/main.go`
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-hub/web_api_project_delete.go`
-- Modify: `cmd/serf-hub/app_sources.go`
-- Modify: `cmd/serf-hub/app_session_resume.go`
-- Modify: `cmd/serf-hub/app_launch.go`
-- Modify: `cmd/serf-hub/app_threadlifecycle.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Test: `cmd/serf-hub/web_api_project_delete_test.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
+- Create: `cmd/evener-hub/internal/hubcore/deletion_store.go`
+- Create: `cmd/evener-hub/internal/hubcore/deletion_store_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/config.go`
+- Modify: `cmd/evener-hub/main.go`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-hub/web_api_project_delete.go`
+- Modify: `cmd/evener-hub/app_sources.go`
+- Modify: `cmd/evener-hub/app_session_resume.go`
+- Modify: `cmd/evener-hub/app_launch.go`
+- Modify: `cmd/evener-hub/app_threadlifecycle.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Test: `cmd/evener-hub/web_api_project_delete_test.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
 
 **Interfaces:**
 
@@ -601,7 +601,7 @@ Library.
   resumes. Add direct mutation/resolve/resume/launch tests for `deleting`.
 
   ```bash
-  go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -run 'Deletion(State|Fence|Resume)|ProjectDelete' -count=1
+  go test ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -run 'Deletion(State|Fence|Resume)|ProjectDelete' -count=1
   ```
 
 - [ ] Implement atomic host records and one idempotent cleanup driver. Do not
@@ -613,7 +613,7 @@ Library.
 - [ ] Run:
 
   ```bash
-  go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1
+  go test ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
   git diff --check
   ```
 
@@ -623,11 +623,11 @@ Library.
 
 **Files:**
 
-- Create: `cmd/serf-hub/frontend/src/stores/mutationOutbox.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/mutationOutbox.test.ts`
-- Modify: `cmd/serf-hub/frontend/package.json`
-- Modify: `cmd/serf-hub/frontend/package-lock.json`
+- Create: `cmd/evener-hub/frontend/src/stores/mutationOutbox.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts`
+- Modify: `cmd/evener-hub/frontend/package.json`
+- Modify: `cmd/evener-hub/frontend/package-lock.json`
 
 **Interfaces:**
 
@@ -650,7 +650,7 @@ Library.
   simultaneous two-tab recovery resend, and blocked lower-sequence ordering.
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/stores/mutationOutbox.test.ts
   ```
 
@@ -664,7 +664,7 @@ Library.
 - [ ] Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/stores/mutationOutbox.test.ts
   npm run typecheck
   npm run lint
@@ -676,14 +676,14 @@ Library.
 
 **Files:**
 
-- Create: `cmd/serf-hub/frontend/src/stores/mutationDispatcher.ts`
-- Create: `cmd/serf-hub/frontend/src/stores/mutationDispatcher.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/client.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/errors.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/mutationDispatcher.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/mutationDispatcher.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/client.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/errors.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
 
 **Interfaces:**
 
@@ -703,7 +703,7 @@ Library.
   generations.
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/stores/mutationDispatcher.test.ts src/stores/threads.test.ts src/protocol/reducer.test.ts
   ```
 
@@ -721,7 +721,7 @@ Library.
 - [ ] Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/stores/mutationDispatcher.test.ts src/stores/threads.test.ts src/protocol
   npm run typecheck
   npm run lint
@@ -733,18 +733,18 @@ Library.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/pendingReconcile.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/pending/PendingChips.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingReconcile.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/recoverytray.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/queue/QueueStrip.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/recovery/RecoveryTray.test.tsx`
 
 **Interfaces:**
 
@@ -764,7 +764,7 @@ Library.
   indefinitely pending steer with no warning.
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/panes/session/composer src/panes/session/pending
   ```
 
@@ -781,7 +781,7 @@ Library.
 - [ ] Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm run test -- src/panes/session/composer src/panes/session/pending
   npm run typecheck
   npm run lint
@@ -795,7 +795,7 @@ Library.
 
 - Modify: focused Go and frontend integration tests identified above
 - Modify: `docs/appwire-protocol.md` through `make generate` only
-- Modify: `cmd/serf-hub/frontend/src/protocol/types.gen.ts` through
+- Modify: `cmd/evener-hub/frontend/src/protocol/types.gen.ts` through
   `make generate` only
 - Modify: comments/docs that still describe confirmation deadlines or v1
   mutation behavior
@@ -823,7 +823,7 @@ Library.
 
   ```bash
   make generate
-  go test ./appwire ./internal/appserver ./internal/appprojector ./agent ./server ./cmd/serf ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -count=1
+  go test ./appwire ./internal/appserver ./internal/appprojector ./agent ./server ./cmd/evener ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -count=1
   make test-web
   make lint-generated
   git diff --check

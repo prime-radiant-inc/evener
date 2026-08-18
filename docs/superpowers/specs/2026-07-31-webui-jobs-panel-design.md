@@ -129,7 +129,7 @@ dir, notify state) stay out of the wire shape.
   rows, the TUI's transcript reducer, and this panel's refetch trigger
   alike.
 
-## 3. Hub (cmd/serf-hub/)
+## 3. Hub (cmd/evener-hub/)
 
 **app_jobs.go** (new), mirroring `app_tasks.go`:
 
@@ -154,9 +154,9 @@ place shared by the daemon jobs function and the hub fallback, so the wire
 shape cannot drift between the live and past paths. It stays *unexported*:
 the hub reaches it only through `agent.LoadSessionJobList` and
 `agent.LoadSessionJobOutputTail`, which is what keeps `jobstore.JobRecord`
-from crossing the library boundary into `cmd/serf-hub`.
+from crossing the library boundary into `cmd/evener-hub`.
 
-## 4. Frontend (cmd/serf-hub/frontend/src/)
+## 4. Frontend (cmd/evener-hub/frontend/src/)
 
 **protocol**
 

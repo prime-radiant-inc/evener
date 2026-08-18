@@ -34,10 +34,10 @@ AppWire should not carry generated image bytes. AppWire should carry only small 
 
 The current web UI already has most of the visual pieces:
 
-- `cmd/serf-hub/assets/renderer.js` renders user-message image cards, multi-image sheets, captions, dimensions, lightbox navigation, and open-beside controls.
-- `cmd/serf-hub/assets/appwire.js` converts AppWire `ThreadItem` objects into renderer events.
-- `cmd/serf-hub/image_serve.go` serves sha-addressed images found in past user-input transcript parts at `/s/<session>/images/<sha>`.
-- `cmd/serf-hub/doc_serve.go` serves read-only file panes through `/doc/file?session=<id>&path=<rel>`, resolving paths against the local session cwd with `fspaths.ResolveInRoot`.
+- `cmd/evener-hub/assets/renderer.js` renders user-message image cards, multi-image sheets, captions, dimensions, lightbox navigation, and open-beside controls.
+- `cmd/evener-hub/assets/appwire.js` converts AppWire `ThreadItem` objects into renderer events.
+- `cmd/evener-hub/image_serve.go` serves sha-addressed images found in past user-input transcript parts at `/s/<session>/images/<sha>`.
+- `cmd/evener-hub/doc_serve.go` serves read-only file panes through `/doc/file?session=<id>&path=<rel>`, resolving paths against the local session cwd with `fspaths.ResolveInRoot`.
 - `agent/internal/tool/registry.go` already has `ExecResult.ImageData`, `ExecResult.ImageMediaType`, and `ImageResult` for image-bearing tool results.
 - `llm.ToolResultData` already has `ImageData` and `ImageMediaType`, but AppWire projection does not expose tool-result images to the web UI today.
 
@@ -143,13 +143,13 @@ Supported media for v1: PNG, JPEG, GIF, and WebP. Exclude SVG in v1. SVG is text
 ### Reload and history
 
 1. `internal/apptranscript` projects persisted `llm.ToolResultData` into `commandExecution` items.
-2. `cmd/serf-hub/app_threadread.go` supplies the hub-specific resolver for transcript-backed image bytes and file-backed paths.
+2. `cmd/evener-hub/app_threadread.go` supplies the hub-specific resolver for transcript-backed image bytes and file-backed paths.
 3. The projected item includes the same `OutputImages` descriptor shape as live projection.
 4. The browser renders the same thumbnail UI as the live path.
 
 ## Frontend data flow
 
-1. `cmd/serf-hub/assets/appwire.js` passes `item.outputImages` from `commandExecution` items into `TOOL_CALL_END` renderer payloads.
+1. `cmd/evener-hub/assets/appwire.js` passes `item.outputImages` from `commandExecution` items into `TOOL_CALL_END` renderer payloads.
 2. `renderer.js.finalizeToolCall` calls a new helper, for example `renderToolOutputImages(state, data.output_images || data.outputImages)`.
 3. The helper resolves each descriptor to `{src, name}` using `descriptor.url` first, then `descriptor.sha` only when the route is known.
 4. It appends one image card or one image sheet under the tool row.

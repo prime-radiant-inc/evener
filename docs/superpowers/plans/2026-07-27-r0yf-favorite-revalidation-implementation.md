@@ -48,7 +48,7 @@ Add focused tests before production code and verify they fail for the missing be
 ### Verification and commit
 
 - Run the new focused hubcore tests and the existing favorite/tree hubcore tests.
-- Run `go test ./cmd/serf-hub/internal/hubcore -count=1`.
+- Run `go test ./cmd/evener-hub/internal/hubcore -count=1`.
 - Run the relevant module linter.
 - Commit the task with its tests and report the exact red/green evidence.
 
@@ -115,7 +115,7 @@ Add or strengthen tests before production changes and verify the intended failur
 ### Verification and commit
 
 - Run focused project-delete and favorite endpoint tests, including repeated failure-path runs.
-- Run all `cmd/serf-hub` tests, `make vet`, and the relevant linters.
+- Run all `cmd/evener-hub` tests, `make vet`, and the relevant linters.
 - Commit the task with exact red/green evidence.
 
 ## Final branch verification

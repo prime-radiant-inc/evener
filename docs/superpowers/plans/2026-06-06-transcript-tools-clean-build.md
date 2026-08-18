@@ -74,8 +74,8 @@ git checkout $W -- \
   agent/internal/contextmgr/context_strategy.go agent/internal/contextmgr/strategy_host_test.go \
   agent/internal/contextmgr/strategy_ooda.go agent/internal/contextmgr/strategy_ooda_test.go \
   agent/internal/contextmgr/strategy_session_log.go agent/internal/contextmgr/strategy_session_log_test.go \
-  cmd/serf-hub/internal/launchconfig/schema.go cmd/serf-hub/internal/launchconfig/schema_test.go \
-  cmd/serf/main.go
+  cmd/evener-hub/internal/launchconfig/schema.go cmd/evener-hub/internal/launchconfig/schema_test.go \
+  cmd/evener/main.go
 ```
 
 - [ ] **Step 4: Verify the engine builds and its tests pass.** The two tools are NOT registered yet (base `session_tool_registry.go` and `definitions.go` are untouched), so nothing references the missing surface.

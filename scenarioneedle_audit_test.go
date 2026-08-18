@@ -91,7 +91,7 @@ const scenarioNeedleBundledRoot = "internal/bundled"
 // exists to find.
 //
 // These are ROOT-RELATIVE on purpose. Matching them by base name at any depth
-// silently blanked cmd/serf-hub/frontend/src/panes/session/transcript/tools —
+// silently blanked cmd/evener-hub/frontend/src/panes/session/transcript/tools —
 // 20 files and ~3.7k lines of the transcript renderers for jobs, delegates and
 // subagents, which is precisely the subsystem this kata is about. Two live wire
 // tokens live only there (`not_delivered` in jobTools.tsx's delegate-send status
@@ -815,7 +815,7 @@ func TestScenarioNeedleExtractorReportsTheLineTheNeedleIsOn(t *testing.T) {
 
 // TestScenarioNeedleHaystackReachesTheTranscriptRenderers pins the skip-root
 // fix. Matching skip directories by BASE NAME blanked
-// cmd/serf-hub/frontend/src/panes/session/transcript/tools — the renderers for
+// cmd/evener-hub/frontend/src/panes/session/transcript/tools — the renderers for
 // job, delegate and subagent tool calls — because its last path element is
 // "tools". `not_delivered` is the witness: it is a delegate-send status in that
 // tree's jobTools.tsx and appears in no other production file, so a card quoting
@@ -828,7 +828,7 @@ func TestScenarioNeedleHaystackReachesTheTranscriptRenderers(t *testing.T) {
 	source := scenarioNeedleProductionSource(t)
 	if !scenarioNeedleInSource(source, "not_delivered") {
 		t.Error("not_delivered is not in the production haystack: the skip list is blanking " +
-			"cmd/serf-hub/frontend/src/panes/session/transcript/tools again, and a " +
+			"cmd/evener-hub/frontend/src/panes/session/transcript/tools again, and a " +
 			"card quoting it correctly would be reported as asserting on nothing")
 	}
 	// The roots that SHOULD be skipped still are, or the audit would count the

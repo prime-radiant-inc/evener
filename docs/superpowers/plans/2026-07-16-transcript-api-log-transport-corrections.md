@@ -114,7 +114,7 @@ Task 4 consumes Task 3's `bodyEvidenceSnapshot` and `APIAttemptCapture.Complete`
 | OpenAI fallback | `llm/providers/openai/adapter.go`, `llm/providers/openai/responses.go` | `llm/providers/openai/adapter_test.go`, `llm/providers/openai/wire_capture_test.go`, `llm/providers/openai/response_header_timeout_test.go` |
 | OpenAI-compatible streaming | `llm/providers/openaicompat/adapter.go` | `llm/providers/openaicompat/adapter_test.go`, `llm/providers/openaicompat/wire_capture_test.go` |
 | Model listing | each provider's `models.go` | each provider's `models_fuzz_test.go` and `adapter_test.go` |
-| Hub credentials | `cmd/serf-hub/spawn.go` | `cmd/serf-hub/spawn_test.go` |
+| Hub credentials | `cmd/evener-hub/spawn.go` | `cmd/evener-hub/spawn_test.go` |
 | Endpoint provenance | `llm/apilog.go`, core adapter files, `agent/session_model_call.go` | adapter wire-capture tests, `agent/session_model_test.go`, `agent/atif_test.go` |
 | Anthropic ordering tests | none | `llm/providers/anthropic/wire_capture_test.go` |
 
@@ -1171,8 +1171,8 @@ leave complete versus inexact raw evidence to the shared transport capture."
 
 **Files:**
 
-- Modify: `cmd/serf-hub/spawn.go`
-- Test: `cmd/serf-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Test: `cmd/evener-hub/spawn_test.go`
 
 **Fresh roles:** Assign a fresh implementer and a different fresh reviewer.
 
@@ -1190,7 +1190,7 @@ Extend `validateProviderCredentials` tests with these exact cases:
 Retain existing cases for API key, OAuth, configured environment credentials, and credential-free endpoints.
 
 ```bash
-go test ./cmd/serf-hub -run 'TestValidateProviderCredentials' -count=1
+go test ./cmd/evener-hub -run 'TestValidateProviderCredentials' -count=1
 ```
 
 Expected: FAIL because `CredentialHeaders` is currently ignored.
@@ -1206,8 +1206,8 @@ Do not change command-line credential parsing or unrelated `cmdutil` behavior.
 - [ ] **Step 3: Run focused and Hub tests**
 
 ```bash
-go test ./cmd/serf-hub -run 'TestValidateProviderCredentials' -count=1
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -run 'TestValidateProviderCredentials' -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -1216,7 +1216,7 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add cmd/serf-hub/spawn.go cmd/serf-hub/spawn_test.go
+git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
 git commit -m "fix: recognize Hub credential headers
 
 Treat a nonempty declared CredentialHeaders value as a valid provider
@@ -1463,7 +1463,7 @@ rg -n 'responseDrain|io\.Copy\(io\.Discard, resp\.Body\)' \
   llm/providers/internal/transport \
   llm/providers/{openai,openaicompat,anthropic,google}/models.go
 rg -n 'TODO|TBD|placeholder|implement later' \
-  llm/providers/internal/transport llm/providers agent cmd/serf-hub
+  llm/providers/internal/transport llm/providers agent cmd/evener-hub
 ```
 
 Expected:
@@ -1478,7 +1478,7 @@ Expected:
 go test ./llm/providers/internal/transport -count=1
 go test ./llm/providers/openai ./llm/providers/openaicompat \
   ./llm/providers/anthropic ./llm/providers/google -count=1
-go test ./llm ./agent ./cmd/serf-hub -count=1
+go test ./llm ./agent ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS with no live credentials or external network.

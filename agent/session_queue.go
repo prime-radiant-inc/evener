@@ -768,7 +768,7 @@ func interruptDrainConfig(ctx context.Context, err error) (queuedInputDrainConfi
 }
 
 // nextTurnContext returns the context the drained queue head runs under. It
-// carries the side effect of announcing the new turn to the host (cmd/serf's
+// carries the side effect of announcing the new turn to the host (cmd/evener's
 // handler publishes processing state and registers the turn's cancel), so it
 // runs only once the head is really claimed.
 //

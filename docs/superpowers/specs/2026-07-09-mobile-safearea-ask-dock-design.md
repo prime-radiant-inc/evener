@@ -111,10 +111,10 @@ The existing inline interactive card is replaced by this record and the bottom d
 
 | File | Responsibility |
 | --- | --- |
-| `cmd/serf-hub/assets/style.css` | Workspace flex/viewport/safe-area contract; non-sticky phone dock; ask-mode dock presentation; responsive rules. |
-| `cmd/serf-hub/assets/renderer.js` | Visual viewport coordinator lifecycle; transcript ask anchor; mounting/unmounting the canonical ask response form in the dock; focus and settlement behavior. |
+| `cmd/evener-hub/assets/style.css` | Workspace flex/viewport/safe-area contract; non-sticky phone dock; ask-mode dock presentation; responsive rules. |
+| `cmd/evener-hub/assets/renderer.js` | Visual viewport coordinator lifecycle; transcript ask anchor; mounting/unmounting the canonical ask response form in the dock; focus and settlement behavior. |
 | Hub templates, only if needed | Stable semantic wrappers, dock hooks, and accessible labels. No data-flow changes. |
-| `cmd/serf-hub/jstest/*` | Deterministic renderer, ask lifecycle, visual viewport coordinator, and CSS contract tests. |
+| `cmd/evener-hub/jstest/*` | Deterministic renderer, ask lifecycle, visual viewport coordinator, and CSS contract tests. |
 
 ## Deterministic verification
 
@@ -152,10 +152,10 @@ Assert that phone rules preserve:
 Run:
 
 ```sh
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-compose.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-mobile-css.js
-cd cmd/serf-hub/jstest && ./run-all.sh
-go test ./cmd/serf-hub -count=1
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+cd cmd/evener-hub/jstest && ./run-all.sh
+go test ./cmd/evener-hub -count=1
 git diff --check
 ```
 

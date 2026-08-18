@@ -100,8 +100,8 @@ Anchors below are current as of `8a12938e` (line numbers in the design's §8 had
 - Test: a self-delivering `assistant.tool` / `communicate` / wildcard watch is now accepted (no `invalid_request`); the existing rejection tests are inverted/removed.
 - Impl: relax `validateWatchDeliveryLoop` to `return nil` (or delete the function + call, per what reads cleanest); confirm no other callers depend on the error.
 
-**Step 6 — re-point `serf-doctor watches --self-loops` to *read* recorded telemetry.** `agent/doctor/watches.go` (+ `cmd/serf-doctor`, tests).
-- Test: `--self-loops` reports per-watch **max stamped depth** and **whether the fuse fired** (a `runaway` drop); a merely self-influenced (bounded) watch is **not** flagged; only unbounded/fused is. Update `watches_test.go` and `cmd/serf-doctor/main_test.go` (the `SELF-LOOP` assertion changes meaning).
+**Step 6 — re-point `serf-doctor watches --self-loops` to *read* recorded telemetry.** `agent/doctor/watches.go` (+ `cmd/evener-doctor`, tests).
+- Test: `--self-loops` reports per-watch **max stamped depth** and **whether the fuse fired** (a `runaway` drop); a merely self-influenced (bounded) watch is **not** flagged; only unbounded/fused is. Update `watches_test.go` and `cmd/evener-doctor/main_test.go` (the `SELF-LOOP` assertion changes meaning).
 - Impl: **delete `deliverySelfLoop` and the `SelfLoop` field** — the doctor stops re-deriving. Read the stamped `SelfInfluenceDepth` off the delivered/dropped records and the `runaway` `DiagnosticReason` it already surfaces (watches.go:316). No shared compute with the runtime.
 
 **Step 7 — re-baseline scenarios + docs.** `test/scenarios/`, `docs/skills/doctoring-serf/`.

@@ -96,7 +96,7 @@ doctoring-serf skill markdown in-repo.
   `watches`, `tree`, `audit`)
 
 - [ ] **Step 1:** verify each WS9 command exists on main (run
-  `go run ./cmd/serf-doctor --help` or read `agent/doctor/`) — document
+  `go run ./cmd/evener-doctor --help` or read `agent/doctor/`) — document
   only what is real.
 - [ ] **Step 2:** update the skill's tool table with the batch `audit`
   driver and any WS9 commands it lacks; add the caveat that api logs

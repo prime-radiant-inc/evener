@@ -257,7 +257,7 @@ func isSerfConfiguration(message string) bool {
 // "Retry" and "Reconnect & retry" on a failed turn
 // (frontend/src/panes/session/transcript/turnFailure.ts), and the two lists had
 // already drifted apart in both directions by the time anyone noticed. They are
-// held together now by TestHubFailureKeywordsMatchWebClient in cmd/serf-hub.
+// held together now by TestHubFailureKeywordsMatchWebClient in cmd/evener-hub.
 //
 // Every entry must be lowercase: isHubFailure matches against an
 // already-lowercased message, so an uppercase keyword would never fire.

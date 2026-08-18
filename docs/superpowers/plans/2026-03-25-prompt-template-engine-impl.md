@@ -1833,7 +1833,7 @@ Expected: all pass
 
 - [ ] **Step 2: Build the binary**
 
-Run: `make build` (or `go build ./cmd/serf/`)
+Run: `make build` (or `go build ./cmd/evener/`)
 Expected: success
 
 - [ ] **Step 3: Run serf with a trivial task and inspect the transcript**

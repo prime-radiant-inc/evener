@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Read the design spec at `docs/superpowers/specs/2026-05-08-serf-hub-ux-redesign.md` for visual and IA detail; this plan provides the sequence, files, and acceptance criteria.
 
-**Goal:** Rebuild `cmd/serf-hub` UI per the 2026-05-08 redesign spec. Add fork support and a few small data-model fields.
+**Goal:** Rebuild `cmd/evener-hub` UI per the 2026-05-08 redesign spec. Add fork support and a few small data-model fields.
 
 **Architecture:** 8 phases (A–H), each shippable. Phase A is data-model and fork-operation in shared packages; B is theming infra; C is the sidebar rewrite; D is the workspace rewrite; E is the spawn surface; F is search; G is settings; H is cleanup. Daemons are unchanged except for one bug-fix to `serf-hub`'s resume redirect.
 
@@ -19,18 +19,18 @@
 - `agent/fork.go` (new) — `ForkSession()` operation: read prefix, write new transcript + meta.
 
 **Hub server changes:**
-- `cmd/serf-hub/web.go` — substantially rewritten: new routes, new tree builder, fork endpoint, search endpoint, settings routes.
-- `cmd/serf-hub/tree.go` (new) — sidebar tree builder (Live + Projects with subagents/forks ordering).
-- `cmd/serf-hub/settings.go` (new) — settings page handlers.
-- `cmd/serf-hub/search.go` (new) — search endpoint.
-- `cmd/serf-hub/config.go` — drop `SpawnTemplate` struct and `spawn_template` TOML.
-- `cmd/serf-hub/spawn.go` — drop `findTemplate` and `Templates()`; `Spawn` accepts a direct `(provider, model, agent, working_dir, reasoning_effort)` tuple.
+- `cmd/evener-hub/web.go` — substantially rewritten: new routes, new tree builder, fork endpoint, search endpoint, settings routes.
+- `cmd/evener-hub/tree.go` (new) — sidebar tree builder (Live + Projects with subagents/forks ordering).
+- `cmd/evener-hub/settings.go` (new) — settings page handlers.
+- `cmd/evener-hub/search.go` (new) — search endpoint.
+- `cmd/evener-hub/config.go` — drop `SpawnTemplate` struct and `spawn_template` TOML.
+- `cmd/evener-hub/spawn.go` — drop `findTemplate` and `Templates()`; `Spawn` accepts a direct `(provider, model, agent, working_dir, reasoning_effort)` tuple.
 
 **Hub UI:**
-- `cmd/serf-hub/templates/*.html` — substantially rewritten. New: `app.html` (single shell), `partials/sidebar.html`, `partials/workspace.html`, `partials/spawn.html`, `partials/settings/*.html`, `partials/search.html`, `partials/fork_dialog.html`. Old `landing.html`, `live.html`, `live_new.html`, `past.html`, `past_view.html` removed.
-- `cmd/serf-hub/assets/style.css` — rewritten with semantic class names + CSS custom properties for light/dark themes.
-- `cmd/serf-hub/assets/renderer.js` — rewritten for two-tier rendering, prose tools, edit affordance, fork dialog.
-- `cmd/serf-hub/assets/init-app.js` (new) — single SPA-ish init reading `data-*` attributes.
+- `cmd/evener-hub/templates/*.html` — substantially rewritten. New: `app.html` (single shell), `partials/sidebar.html`, `partials/workspace.html`, `partials/spawn.html`, `partials/settings/*.html`, `partials/search.html`, `partials/fork_dialog.html`. Old `landing.html`, `live.html`, `live_new.html`, `past.html`, `past_view.html` removed.
+- `cmd/evener-hub/assets/style.css` — rewritten with semantic class names + CSS custom properties for light/dark themes.
+- `cmd/evener-hub/assets/renderer.js` — rewritten for two-tier rendering, prose tools, edit affordance, fork dialog.
+- `cmd/evener-hub/assets/init-app.js` (new) — single SPA-ish init reading `data-*` attributes.
 - Old `init-live.js` and `init-past.js` removed.
 
 ---
@@ -441,15 +441,15 @@ git commit -m "feat(agent): add ForkSession to create a branched session from a 
 ### Task A-3: Tree builder for sidebar
 
 **Files:**
-- Create: `cmd/serf-hub/tree.go`
-- Test: `cmd/serf-hub/tree_test.go`
+- Create: `cmd/evener-hub/tree.go`
+- Test: `cmd/evener-hub/tree_test.go`
 
 The tree builder takes the current Live roster + Past index and produces a structured payload the sidebar template renders.
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-hub/tree_test.go
+// cmd/evener-hub/tree_test.go
 package main
 
 import (
@@ -533,7 +533,7 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 - [ ] **Step 3: Implement tree builder**
 
 ```go
-// cmd/serf-hub/tree.go
+// cmd/evener-hub/tree.go
 package main
 
 import (
@@ -725,19 +725,19 @@ func ageString(t time.Time) string {
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/tree.go cmd/serf-hub/tree_test.go cmd/serf-hub/roster.go agent/snapshot.go
+git add cmd/evener-hub/tree.go cmd/evener-hub/tree_test.go cmd/evener-hub/roster.go agent/snapshot.go
 git commit -m "feat(serf-hub): tree builder for sidebar (live + projects with subagents/forks)"
 ```
 
 ### Task A-4: Drop ?from= from resume redirect
 
-**Files:** `cmd/serf-hub/web.go`
+**Files:** `cmd/evener-hub/web.go`
 
 The kata #7 implementation added `?from=<id>` to the resume redirect to surface "forked from" UI. The redesign makes resume invisible (same identity throughout), so this is now redundant. Remove it.
 
 - [ ] **Step 1: Remove the `?from=` query and the `ForkedFrom` template wiring**
 
-In `cmd/serf-hub/web.go`, find:
+In `cmd/evener-hub/web.go`, find:
 ```go
 http.Redirect(w, r, "/live/"+sessID+"?from="+id, http.StatusFound)
 ```
@@ -750,7 +750,7 @@ Remove `ForkedFrom: r.URL.Query().Get("from")` from the live drive page handler'
 
 - [ ] **Step 2: Update tests**
 
-  Find `TestWeb_DrivePage_ShowsForkedFrom` in `cmd/serf-hub/web_test.go` and remove it (the feature it tests is being removed).
+  Find `TestWeb_DrivePage_ShowsForkedFrom` in `cmd/evener-hub/web_test.go` and remove it (the feature it tests is being removed).
 
 - [ ] **Step 3: Run → all hub tests pass**
 
@@ -767,8 +767,8 @@ git commit -m "refactor(serf-hub): drop ?from= cruft from resume redirect — re
 ### Task B-1: CSS custom properties for light + dark
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (full rewrite incoming in Phase D; for now, define tokens at top)
-- Modify: `cmd/serf-hub/templates/base.html`
+- Modify: `cmd/evener-hub/assets/style.css` (full rewrite incoming in Phase D; for now, define tokens at top)
+- Modify: `cmd/evener-hub/templates/base.html`
 
 - [ ] **Step 1: Define color tokens in style.css**
 
@@ -828,7 +828,7 @@ Add at the top of `style.css` (preserving existing styles below for now):
 
 - [ ] **Step 2: Add early theme-init script to base.html**
 
-In `cmd/serf-hub/templates/base.html`, before any other script, in `<head>` (after the `<meta>` tags):
+In `cmd/evener-hub/templates/base.html`, before any other script, in `<head>` (after the `<meta>` tags):
 
 ```html
 <script>
@@ -846,7 +846,7 @@ In `cmd/serf-hub/templates/base.html`, before any other script, in `<head>` (aft
 
 - [ ] **Step 3: Run hub, manually verify**
 
-  Run `go test ./cmd/serf-hub/ -count=1` to make sure nothing broke.
+  Run `go test ./cmd/evener-hub/ -count=1` to make sure nothing broke.
 
 - [ ] **Step 4: Commit**
 
@@ -856,7 +856,7 @@ git commit -m "feat(serf-hub): introduce light/dark theme tokens via CSS custom 
 
 ### Task B-2: Replace hardcoded colors with tokens (existing styles)
 
-**Files:** `cmd/serf-hub/assets/style.css`
+**Files:** `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1: Replace literals with var() calls throughout existing style.css**
 
@@ -892,7 +892,7 @@ A real Settings page comes in Phase G. For now, expose a programmatic theme togg
 - [ ] **Step 1: Add window.serfHub.setTheme() helper to a new asset**
 
 ```js
-// cmd/serf-hub/assets/theme.js
+// cmd/evener-hub/assets/theme.js
 (function () {
   window.serfHub = window.serfHub || {};
   window.serfHub.setTheme = function (theme) {
@@ -926,8 +926,8 @@ The sidebar is replaced with the combined Live + Projects shape from the spec. R
 ### Task C-1: Sidebar partial template + route
 
 **Files:**
-- Create: `cmd/serf-hub/templates/partials/sidebar.html`
-- Modify: `cmd/serf-hub/web.go` (add `/sidebar` partial route)
+- Create: `cmd/evener-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/web.go` (add `/sidebar` partial route)
 
 - [ ] **Step 1: Write the partial template**
 
@@ -1026,7 +1026,7 @@ The sidebar is replaced with the combined Live + Projects shape from the spec. R
 
 - [ ] **Step 3: Wire `/sidebar` partial endpoint**
 
-  In `cmd/serf-hub/web.go`, add a handler:
+  In `cmd/evener-hub/web.go`, add a handler:
 
 ```go
 mux.HandleFunc("/sidebar", s.handleSidebarPartial)
@@ -1194,8 +1194,8 @@ This phase is the largest. Each task is a contained piece of the workspace.
 ### Task D-1: Workspace partial template skeleton
 
 **Files:**
-- Create: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/web.go` (add `/s/<id>` workspace handler)
+- Create: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/web.go` (add `/s/<id>` workspace handler)
 
 - [ ] **Step 1: Write the partial template**
 
@@ -1296,7 +1296,7 @@ git commit -m "feat(serf-hub): workspace partial — title, conversation, input 
 
 ### Task D-2: Two-tier conversation rendering in renderer.js
 
-**Files:** `cmd/serf-hub/assets/renderer.js`
+**Files:** `cmd/evener-hub/assets/renderer.js`
 
 The current renderer.js handles SSE events and produces DOM. Refactor for the new visual model: messages in `.message-tier`, tool calls in `.annotation-tier` (margin-indented).
 
@@ -1345,7 +1345,7 @@ git commit -m "refactor(renderer): two-tier conversation rendering with semantic
 
 ### Task D-3: User message edit affordance
 
-**Files:** `cmd/serf-hub/assets/renderer.js`, `style.css`
+**Files:** `cmd/evener-hub/assets/renderer.js`, `style.css`
 
 - [ ] **Step 1: Wrap user pills with hover-affordances**
 
@@ -1407,7 +1407,7 @@ git commit -m "feat(renderer): subagent references — inline one-line, click na
 
 ### Task D-6: Fork dialog
 
-**Files:** `cmd/serf-hub/templates/partials/fork_dialog.html`, `renderer.js`, `web.go`
+**Files:** `cmd/evener-hub/templates/partials/fork_dialog.html`, `renderer.js`, `web.go`
 
 - [ ] **Step 1: Add fork dialog HTML** (rendered inline in the conversation body in the assistant-response slot)
 
@@ -1521,7 +1521,7 @@ Read spec section "Spawn surface".
 ### Task E-1: Spawn template + chips
 
 **Files:**
-- Create: `cmd/serf-hub/templates/partials/spawn.html`
+- Create: `cmd/evener-hub/templates/partials/spawn.html`
 
 - [ ] **Step 1: Build the template per spec.** Big task input, four chips (model, working_dir, branch, mode), advanced section, recent tasks list.
 
@@ -1630,7 +1630,7 @@ Read spec section "Settings".
 
 ### Task H-1: Remove [[spawn_template]] and template-using code
 
-- [ ] **Step 1: Remove `SpawnTemplate` struct from `cmd/serf-hub/config.go`.**
+- [ ] **Step 1: Remove `SpawnTemplate` struct from `cmd/evener-hub/config.go`.**
 - [ ] **Step 2: Remove `findTemplate`, `Templates()`, `SpawnTemplate` references from `spawn.go` and `web.go`.**
 - [ ] **Step 3: Update `Spawner` interface to take `(provider, model, agent, working_dir, reasoning_effort)` directly.**
 - [ ] **Step 4: Update tests.**

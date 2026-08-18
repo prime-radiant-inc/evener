@@ -1,6 +1,6 @@
 # sidebar-project-delete-full-cycle: POST /api/project/delete validation, live-refusal, deletion, what happens to an open pane, and re-creation
 
-**What this covers**: `cmd/serf-hub/web_api_project_delete.go`'s full state
+**What this covers**: `cmd/evener-hub/web_api_project_delete.go`'s full state
 machine end to end — path-validated destructive delete, live-session refusal
 (409), successful delete (200 plus files removed from disk), what the browser
 does when the project whose session it is *showing* is deleted, and that a

@@ -8,7 +8,7 @@ retry loop. Exercises commits through `ab5a38b1`. If enforcement, the enforcemen
 line, or denial legibility regresses, this card catches it.
 
 ## Pre-state
-- Build serf from the branch under test: `go build -o /tmp/serf-e2e ./cmd/serf`.
+- Build serf from the branch under test: `go build -o /tmp/serf-e2e ./cmd/evener`.
 - A model that reliably tool-calls (kimi used here). Keys from `.env`:
   `set -a; . ./.env; set +a; export KIMI_API_KEY="${KIMI_API_KEY:-$MOONSHOT_API_KEY}"`.
 - Hermetic dirs: `WORK=$(mktemp -d)` (run `git init` + one commit — a real repo),

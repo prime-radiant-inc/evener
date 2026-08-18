@@ -327,7 +327,7 @@ flagging a real behavior change.
 
 ## Secret scanning & corpus harvesting
 
-The seed corpora include shape-scrubbed real traffic (`cmd/serf-fuzz-harvest`
+The seed corpora include shape-scrubbed real traffic (`cmd/evener-fuzz-harvest`
 sanitizes recorded sessions into seeds), so two gitleaks scans guard against a
 real secret slipping in:
 

@@ -154,7 +154,7 @@ func decodeStrictJSON(line []byte, target any) error {
 	// build only ever fails to decode a field IT does not know about, never
 	// drops a field it does know how to decode. wf7e closed wontfix on that
 	// basis; TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField in
-	// cmd/serf-hub pins the resulting behavior so a future change to it is a
+	// cmd/evener-hub pins the resulting behavior so a future change to it is a
 	// decision, not an accident.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

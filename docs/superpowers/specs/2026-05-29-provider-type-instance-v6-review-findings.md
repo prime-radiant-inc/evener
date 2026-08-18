@@ -75,7 +75,7 @@ asymptotic-but-never-zero completeness problem.
    `{openai,anthropic,google,gemini,openrouter,ollama,kimi,glm,minimax}`; after
    §4.3 stamps the **instance name**, `"work error (status=403)"` matches nothing
    → misclassified as a hub/serf failure (wrong user remediation). Duplicated in
-   `cmd/serf-hub/assets/diagnostics.js:108-111`. **Fix:** classify on the
+   `cmd/evener-hub/assets/diagnostics.js:108-111`. **Fix:** classify on the
    structured `llm.Error` (which carries provider + the new behavior tag), not the
    message string; re-key the JS mirror. *(A4, B2 — both.)*
 
@@ -94,10 +94,10 @@ asymptotic-but-never-zero completeness problem.
    `SetModel` re-evaluates provider-conditional tool registration. *(B latent
    flag.)*
 
-8. **[SERIOUS] `hubStateRoot` resolver lives in `cmd/serf-hub` (`package main`),
+8. **[SERIOUS] `hubStateRoot` resolver lives in `cmd/evener-hub` (`package main`),
    unreachable from standalone `serf`; a custom hub root diverges.** §4.10 says
    both read `$hubStateRoot/providers.toml`, but `DefaultHubStateRoot`
-   (`config.go:51`) can't be imported by `cmd/serf`, and a `hub.toml`-customized
+   (`config.go:51`) can't be imported by `cmd/evener`, and a `hub.toml`-customized
    root means a directly-invoked `serf run` (no `SERF_PROVIDERS_CONFIG`) reads
    `~/.serf` while the hub reads the custom root. **Fix:** move the path resolver
    to `internal/providerconfig`; document that hub-spawned daemons get
@@ -118,7 +118,7 @@ asymptotic-but-never-zero completeness problem.
     "quirks preset from type" covers only kimi/glm/openrouter. Spell out the recipe
     = {which adapter, base URL, quirks, label} per type. *(B9.)*
 
-12. **[MINOR] `cmd/serf-tui` provider-literal sites:** `model_display.go:7-13`
+12. **[MINOR] `cmd/evener-tui` provider-literal sites:** `model_display.go:7-13`
     `abbreviateModel` strips a hardcoded prefix list (called raw at
     `hub_model.go:4142`); `hub_status.go:248`/`hub_auth.go:12`/`hub_model.go:877`
     default OAuth provider to `"openai"`. Display/default-only, degrade gracefully,

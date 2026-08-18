@@ -56,15 +56,15 @@ server/server.go                    # replace REST/SSE handler with app-wire run
 server/broadcaster.go               # remove after appserver notifier is in use
 agent/events.go                     # keep event payloads; add projection tests in new package
 agent/session.go                    # expose stable active turn/item hooks needed by projection
-cmd/serf/serve.go                   # start app-wire endpoint and write new rendezvous format
-cmd/serf-hub/main.go                # initialize appserver and source registry
-cmd/serf-hub/web.go                 # replace /api session handlers with /rpc and static shell
-cmd/serf-hub/roster.go              # discover app-wire daemon endpoints, not REST status
-cmd/serf-hub/spawn.go               # spawn daemon app-wire source and return ref
-cmd/serf-tui/main.go                # connect appwire client
-cmd/serf-tui/hub_model.go           # consume Thread/Turn/Item state
-cmd/serf-tui/hub_commands.go        # call appwire methods instead of hubapi REST
-cmd/serf-tui/sse_client.go          # delete once appwire notifications drive session view
+cmd/evener/serve.go                   # start app-wire endpoint and write new rendezvous format
+cmd/evener-hub/main.go                # initialize appserver and source registry
+cmd/evener-hub/web.go                 # replace /api session handlers with /rpc and static shell
+cmd/evener-hub/roster.go              # discover app-wire daemon endpoints, not REST status
+cmd/evener-hub/spawn.go               # spawn daemon app-wire source and return ref
+cmd/evener-tui/main.go                # connect appwire client
+cmd/evener-tui/hub_model.go           # consume Thread/Turn/Item state
+cmd/evener-tui/hub_commands.go        # call appwire methods instead of hubapi REST
+cmd/evener-tui/sse_client.go          # delete once appwire notifications drive session view
 internal/hubapi/*                   # delete after TUI and web no longer import it
 ```
 
@@ -1577,8 +1577,8 @@ git commit -m "feat(appwire): project serf events into app notifications"
 - Delete in Task 11: `server/broadcaster.go`
 - Delete in Task 11: `server/broadcaster_test.go`
 - Modify: `server/server_test.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf/serve_test.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener/serve_test.go`
 - Modify: `rendezvous/rendezvous.go`
 - Modify: `rendezvous/rendezvous_test.go`
 
@@ -1675,9 +1675,9 @@ type Runtime interface {
 
 Register each method with `appserver.Router`.
 
-- [x] **Step 5: Update `cmd/serf serve`**
+- [x] **Step 5: Update `cmd/evener serve`**
 
-Modify `cmd/serf/serve.go` so it:
+Modify `cmd/evener/serve.go` so it:
 
 - Allocates an app-wire endpoint instead of REST endpoint.
 - Builds a `server.Runtime` around the existing `agent.Session`.
@@ -1690,7 +1690,7 @@ Modify `cmd/serf/serve.go` so it:
 Run:
 
 ```bash
-go test ./rendezvous ./server ./cmd/serf
+go test ./rendezvous ./server ./cmd/evener
 ```
 
 Expected: PASS.
@@ -1698,7 +1698,7 @@ Expected: PASS.
 - [x] **Step 7: Commit**
 
 ```bash
-git add rendezvous/rendezvous.go rendezvous/rendezvous_test.go server cmd/serf
+git add rendezvous/rendezvous.go rendezvous/rendezvous_test.go server cmd/evener
 git commit -m "feat(serve): expose appwire runtime endpoint"
 ```
 
@@ -1712,8 +1712,8 @@ git commit -m "feat(serve): expose appwire runtime endpoint"
 - Create: `internal/appsource/registry_test.go`
 - Create: `internal/appsource/local_daemon.go`
 - Create: `internal/appsource/local_daemon_test.go`
-- Modify: `cmd/serf-hub/roster.go`
-- Modify: `cmd/serf-hub/roster_test.go`
+- Modify: `cmd/evener-hub/roster.go`
+- Modify: `cmd/evener-hub/roster_test.go`
 
 - [ ] **Step 1: Write source registry tests**
 
@@ -1824,7 +1824,7 @@ func (r *Registry) SourceForRef(raw string) (Source, error) {
 
 - [ ] **Step 3: Update hub roster**
 
-Modify `cmd/serf-hub/roster.go` so it reads rendezvous files with `Endpoint`, `Protocol`, `ThreadID`, and `SessionID`. Remove `/status` probing. A live daemon is present if:
+Modify `cmd/evener-hub/roster.go` so it reads rendezvous files with `Endpoint`, `Protocol`, `ThreadID`, and `SessionID`. Remove `/status` probing. A live daemon is present if:
 
 - The rendezvous file exists.
 - `Protocol == "serf-appwire-v1"`.
@@ -1845,7 +1845,7 @@ Create `internal/appsource/local_daemon.go`. It should:
 Run:
 
 ```bash
-go test ./internal/appsource ./cmd/serf-hub
+go test ./internal/appsource ./cmd/evener-hub
 ```
 
 Expected: PASS.
@@ -1853,7 +1853,7 @@ Expected: PASS.
 Commit:
 
 ```bash
-git add internal/appsource cmd/serf-hub/roster.go cmd/serf-hub/roster_test.go
+git add internal/appsource cmd/evener-hub/roster.go cmd/evener-hub/roster_test.go
 git commit -m "feat(hub): route local daemon appwire sources"
 ```
 
@@ -1862,18 +1862,18 @@ git commit -m "feat(hub): route local daemon appwire sources"
 ## Task 8: Convert `serf-hub` To Public `/rpc`
 
 **Files:**
-- Modify: `cmd/serf-hub/main.go`
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-hub/spawn.go`
-- Modify: `cmd/serf-hub/spawn_test.go`
-- Modify: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/main.go`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Modify: `cmd/evener-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/web_test.go`
 - Delete after clients move: `internal/hubapi/client.go`
 - Delete after clients move: `internal/hubapi/types.go`
 - Delete after clients move: `internal/hubapi/refs.go`
 
 - [ ] **Step 1: Write hub RPC test**
 
-In `cmd/serf-hub/web_test.go`, add a test that starts the hub handler, dials `/rpc`, sends `initialize`, sends `thread/list`, and receives a JSON-RPC response.
+In `cmd/evener-hub/web_test.go`, add a test that starts the hub handler, dials `/rpc`, sends `initialize`, sends `thread/list`, and receives a JSON-RPC response.
 
 Use this request body over websocket:
 
@@ -1885,7 +1885,7 @@ Expected response has `protocolVersion == "serf-appwire-v1"`.
 
 - [ ] **Step 2: Wire appserver into hub**
 
-Modify `cmd/serf-hub/main.go` to construct:
+Modify `cmd/evener-hub/main.go` to construct:
 
 - `appsource.Registry`
 - local daemon source
@@ -1911,7 +1911,7 @@ The hub method handlers should implement:
 
 - [ ] **Step 3: Replace `/api/*` session handlers**
 
-Modify `cmd/serf-hub/web.go`:
+Modify `cmd/evener-hub/web.go`:
 
 - Keep static assets and page shell.
 - Add `mux.HandleFunc("/rpc", s.handleRPC)`.
@@ -1920,14 +1920,14 @@ Modify `cmd/serf-hub/web.go`:
 
 - [ ] **Step 4: Update spawn**
 
-Modify `cmd/serf-hub/spawn.go` so spawn starts `serf serve` with app-wire endpoint support and returns `appwire.ThreadStartResponse`.
+Modify `cmd/evener-hub/spawn.go` so spawn starts `serf serve` with app-wire endpoint support and returns `appwire.ThreadStartResponse`.
 
 - [ ] **Step 5: Run hub tests**
 
 Run:
 
 ```bash
-go test ./cmd/serf-hub
+go test ./cmd/evener-hub
 ```
 
 Expected: PASS.
@@ -1935,7 +1935,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub internal/appsource
+git add cmd/evener-hub internal/appsource
 git commit -m "feat(hub): expose appwire rpc"
 ```
 
@@ -1944,18 +1944,18 @@ git commit -m "feat(hub): expose appwire rpc"
 ## Task 9: Move `serf-tui` To App-Wire Client
 
 **Files:**
-- Modify: `cmd/serf-tui/main.go`
-- Modify: `cmd/serf-tui/hub_start.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
-- Modify: `cmd/serf-tui/hub_model.go`
-- Modify: `cmd/serf-tui/hub_model_test.go`
-- Delete: `cmd/serf-tui/sse_client.go`
-- Delete: `cmd/serf-tui/sse_client_test.go`
+- Modify: `cmd/evener-tui/main.go`
+- Modify: `cmd/evener-tui/hub_start.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Modify: `cmd/evener-tui/hub_model_test.go`
+- Delete: `cmd/evener-tui/sse_client.go`
+- Delete: `cmd/evener-tui/sse_client_test.go`
 - Modify or delete: `internal/hubapi/client_test.go`
 
 - [ ] **Step 1: Write TUI client command tests**
 
-Update `cmd/serf-tui/hub_commands_test.go` or create it if missing. Use a fake appwire client and verify:
+Update `cmd/evener-tui/hub_commands_test.go` or create it if missing. Use a fake appwire client and verify:
 
 - Dashboard fetch calls `ThreadList`.
 - Session open calls `ThreadRead`.
@@ -1965,7 +1965,7 @@ Update `cmd/serf-tui/hub_commands_test.go` or create it if missing. Use a fake a
 
 - [ ] **Step 2: Update hub startup**
 
-Modify `cmd/serf-tui/hub_start.go`:
+Modify `cmd/evener-tui/hub_start.go`:
 
 - Keep address normalization and auto-start behavior.
 - Change health probe to websocket `/rpc` initialize.
@@ -1973,7 +1973,7 @@ Modify `cmd/serf-tui/hub_start.go`:
 
 - [ ] **Step 3: Update commands**
 
-Modify `cmd/serf-tui/hub_commands.go` to call app-wire methods. Replace:
+Modify `cmd/evener-tui/hub_commands.go` to call app-wire methods. Replace:
 
 - `fetchHubTree` with `fetchThreadList`.
 - `fetchHubSession` with `fetchThreadRead`.
@@ -1985,7 +1985,7 @@ Modify `cmd/serf-tui/hub_commands.go` to call app-wire methods. Replace:
 
 - [ ] **Step 4: Update model reducer**
 
-Modify `cmd/serf-tui/hub_model.go` so `hubModel` stores:
+Modify `cmd/evener-tui/hub_model.go` so `hubModel` stores:
 
 ```go
 threads []appwire.Thread
@@ -1998,14 +1998,14 @@ Apply notifications from app-wire instead of SSE events. Keep existing chat mess
 
 - [ ] **Step 5: Remove SSE parser**
 
-Delete `cmd/serf-tui/sse_client.go` and `cmd/serf-tui/sse_client_test.go`. Remove all `sseEventMsg`, `sseConnectedMsg`, and `sseErrorMsg` references from TUI files.
+Delete `cmd/evener-tui/sse_client.go` and `cmd/evener-tui/sse_client_test.go`. Remove all `sseEventMsg`, `sseConnectedMsg`, and `sseErrorMsg` references from TUI files.
 
 - [ ] **Step 6: Run TUI tests**
 
 Run:
 
 ```bash
-go test ./cmd/serf-tui
+go test ./cmd/evener-tui
 ```
 
 Expected: PASS.
@@ -2013,7 +2013,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui internal/hubapi
+git add cmd/evener-tui internal/hubapi
 git commit -m "feat(tui): use appwire protocol"
 ```
 
@@ -2022,15 +2022,15 @@ git commit -m "feat(tui): use appwire protocol"
 ## Task 10: Move Browser Session State To JSON-RPC Websocket
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html`
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Modify: `cmd/serf-hub/assets/spawn.js`
-- Modify: `cmd/serf-hub/assets/search.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Create: `cmd/serf-hub/assets/rpc.js`
-- Create: `cmd/serf-hub/assets/session_store.js`
-- Modify: `cmd/serf-hub/jstest/test-realistic-flow.js`
-- Modify: `cmd/serf-hub/jstest/test-renderer.js`
+- Modify: `cmd/evener-hub/templates/app.html`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Modify: `cmd/evener-hub/assets/spawn.js`
+- Modify: `cmd/evener-hub/assets/search.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Create: `cmd/evener-hub/assets/rpc.js`
+- Create: `cmd/evener-hub/assets/session_store.js`
+- Modify: `cmd/evener-hub/jstest/test-realistic-flow.js`
+- Modify: `cmd/evener-hub/jstest/test-renderer.js`
 
 - [ ] **Step 1: Add browser RPC unit tests**
 
@@ -2043,7 +2043,7 @@ Create JS tests that instantiate `RpcClient` with a fake websocket and verify:
 
 - [ ] **Step 2: Add `rpc.js`**
 
-Create `cmd/serf-hub/assets/rpc.js` with:
+Create `cmd/evener-hub/assets/rpc.js` with:
 
 ```js
 export class RpcClient {
@@ -2104,7 +2104,7 @@ export class RpcClient {
 
 - [ ] **Step 3: Add session store**
 
-Create `cmd/serf-hub/assets/session_store.js` to normalize threads, turns, items, and notifications. Include tests for assistant delta accumulation and item completion.
+Create `cmd/evener-hub/assets/session_store.js` to normalize threads, turns, items, and notifications. Include tests for assistant delta accumulation and item completion.
 
 - [ ] **Step 4: Replace fetch calls**
 
@@ -2126,7 +2126,7 @@ Replace current fetches to `/api/search`, `/api/models`, `/api/spawn`, `/api/ses
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 npm test
 ```
 
@@ -2135,7 +2135,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets cmd/serf-hub/templates cmd/serf-hub/jstest
+git add cmd/evener-hub/assets cmd/evener-hub/templates cmd/evener-hub/jstest
 git commit -m "feat(hub-web): use appwire websocket"
 ```
 
@@ -2149,8 +2149,8 @@ git commit -m "feat(hub-web): use appwire websocket"
 - Delete: `internal/hubapi/refs.go`
 - Delete: `internal/hubapi/refs_test.go`
 - Delete: `internal/hubapi/types.go`
-- Delete: `cmd/serf-hub/proxy.go`
-- Delete: `cmd/serf-hub/proxy_test.go`
+- Delete: `cmd/evener-hub/proxy.go`
+- Delete: `cmd/evener-hub/proxy_test.go`
 - Delete old REST/SSE tests in `server/server_test.go` already replaced by Task 6
 - Modify: `README.md`
 - Modify: docs that mention `/status`, `/input`, `/events`, or `/api/sessions`
@@ -2171,7 +2171,7 @@ Run:
 
 ```bash
 rm -r internal/hubapi
-rm -f cmd/serf-hub/proxy.go cmd/serf-hub/proxy_test.go
+rm -f cmd/evener-hub/proxy.go cmd/evener-hub/proxy_test.go
 ```
 
 - [ ] **Step 3: Update docs**
@@ -2216,13 +2216,13 @@ git commit -m "refactor: remove legacy REST SSE backend"
 ## Task 12: End-To-End Verification
 
 **Files:**
-- Create: `cmd/serf-hub/appwire_e2e_test.go`
-- Create: `cmd/serf-tui/appwire_e2e_test.go`
+- Create: `cmd/evener-hub/appwire_e2e_test.go`
+- Create: `cmd/evener-tui/appwire_e2e_test.go`
 - Modify: existing e2e fixtures as needed
 
 - [ ] **Step 1: Add hub e2e test**
 
-Create `cmd/serf-hub/appwire_e2e_test.go` with a test that:
+Create `cmd/evener-hub/appwire_e2e_test.go` with a test that:
 
 - Starts a hub on a random loopback port.
 - Connects to `/rpc`.
@@ -2264,7 +2264,7 @@ Run:
 
 ```bash
 go test ./...
-cd cmd/serf-hub/jstest && npm test
+cd cmd/evener-hub/jstest && npm test
 ```
 
 Expected: PASS for both Go and JS tests.
@@ -2274,9 +2274,9 @@ Expected: PASS for both Go and JS tests.
 Run:
 
 ```bash
-go build ./cmd/serf
-go build ./cmd/serf-hub
-go build ./cmd/serf-tui
+go build ./cmd/evener
+go build ./cmd/evener-hub
+go build ./cmd/evener-tui
 ```
 
 Expected: all builds complete with no output.
@@ -2284,7 +2284,7 @@ Expected: all builds complete with no output.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/appwire_e2e_test.go cmd/serf-tui/appwire_e2e_test.go
+git add cmd/evener-hub/appwire_e2e_test.go cmd/evener-tui/appwire_e2e_test.go
 git commit -m "test: verify appwire backend end to end"
 ```
 
@@ -2294,8 +2294,8 @@ git commit -m "test: verify appwire backend end to end"
 
 - [ ] `rg -n "internal/hubapi|SSEProxy|RESTProxy|sseEventMsg|/api/sessions|/status|/input|/events" cmd internal server agent rendezvous` has no runtime-code matches.
 - [ ] `go test ./...` passes.
-- [ ] `cd cmd/serf-hub/jstest && npm test` passes.
-- [ ] `go build ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui` passes.
+- [ ] `cd cmd/evener-hub/jstest && npm test` passes.
+- [ ] `go build ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui` passes.
 - [ ] Starting `serf-hub` and connecting a browser uses `/rpc`.
 - [ ] Starting `serf-tui` initializes app-wire and shows threads from `thread/list`.
 - [ ] A live turn streams typed notifications without SSE.

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing hub-backed `hubModel`, but split its row model into dashboard/project/session concerns. Derive dashboard and project rows from `GET /api/tree`, use existing session detail and stream APIs for drill-in, and add a typed fork call to `internal/hubapi.Client`. Session browse uses the existing embedded session model's scroll/tool focus fields instead of creating a second viewport implementation.
 
-**Tech Stack:** Go, Bubble Tea, existing `internal/hubapi` JSON client, existing `cmd/serf-tui` rendering helpers, `go test`.
+**Tech Stack:** Go, Bubble Tea, existing `internal/hubapi` JSON client, existing `cmd/evener-tui` rendering helpers, `go test`.
 
 ---
 
@@ -14,18 +14,18 @@
 
 - Modify `internal/hubapi/types.go` to add `ForkRequest`.
 - Modify `internal/hubapi/client.go` to add `Fork(ctx, ref, req)`.
-- Modify `cmd/serf-hub/web.go` only if fork replay lacks turn identity for the TUI.
-- Modify `cmd/serf-tui/message.go` to carry transcript entry index on user messages.
-- Modify `cmd/serf-tui/model.go` only if SSE replay needs to preserve turn index on messages.
-- Modify `cmd/serf-tui/hub_commands.go` to add `sendHubFork`.
-- Modify `cmd/serf-tui/hub_model.go` for dashboard/project row adapters, navigation, session browse, and fork draft flow.
-- Modify `cmd/serf-tui/hub_model_test.go` for the main behavior tests.
+- Modify `cmd/evener-hub/web.go` only if fork replay lacks turn identity for the TUI.
+- Modify `cmd/evener-tui/message.go` to carry transcript entry index on user messages.
+- Modify `cmd/evener-tui/model.go` only if SSE replay needs to preserve turn index on messages.
+- Modify `cmd/evener-tui/hub_commands.go` to add `sendHubFork`.
+- Modify `cmd/evener-tui/hub_model.go` for dashboard/project row adapters, navigation, session browse, and fork draft flow.
+- Modify `cmd/evener-tui/hub_model_test.go` for the main behavior tests.
 
 ## Task 1: Live-Only Dashboard And Project Rows
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
 
 - [ ] **Step 1: Add failing dashboard/project row tests**
 
@@ -45,7 +45,7 @@ The project test should construct a `hubapi.TreeProject{Name: "serf", Key: "serf
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject|TestHubModelProjectViewShowsLiveThenRecent' -count=1
+go test ./cmd/evener-tui -run 'TestHubModelDashboardShowsOnlyLiveSessionsGroupedByProject|TestHubModelProjectViewShowsLiveThenRecent' -count=1
 ```
 
 Expected: fail because the row builders and project mode do not exist yet.
@@ -95,15 +95,15 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/hub_model_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go
 git commit -m "feat: add serf-tui live dashboard rows"
 ```
 
 ## Task 2: Dashboard, Project, And Session Navigation
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
 
 - [ ] **Step 1: Add failing navigation tests**
 
@@ -124,7 +124,7 @@ These tests should drive `hubModel.Update` with `tea.KeyMsg` values and assert `
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestHubModelDashboardProjectHeaderOpensProject|TestHubModelProjectEscReturnsDashboard|TestHubModelSessionEscEntersBrowseInsteadOfDashboard|TestHubModelCtrlOReturnsDashboardFromSession|TestHubModelSlashDashboardAndProjectNavigate' -count=1
+go test ./cmd/evener-tui -run 'TestHubModelDashboardProjectHeaderOpensProject|TestHubModelProjectEscReturnsDashboard|TestHubModelSessionEscEntersBrowseInsteadOfDashboard|TestHubModelCtrlOReturnsDashboardFromSession|TestHubModelSlashDashboardAndProjectNavigate' -count=1
 ```
 
 Expected: fail because current `esc` returns session to dashboard and project mode does not exist.
@@ -157,7 +157,7 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/hub_model_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go
 git commit -m "feat: wire serf-tui dashboard navigation"
 ```
 
@@ -166,13 +166,13 @@ git commit -m "feat: wire serf-tui dashboard navigation"
 **Files:**
 - Modify: `internal/hubapi/types.go`
 - Modify: `internal/hubapi/client.go`
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-tui/message.go`
-- Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
-- Test: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-tui/message.go`
+- Modify: `cmd/evener-tui/model.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
+- Test: `cmd/evener-hub/web_test.go`
 
 - [ ] **Step 1: Add failing fork tests**
 
@@ -191,7 +191,7 @@ The replay test should assert a replayed `USER_INPUT` SSE payload contains `"tur
 Run:
 
 ```bash
-go test ./cmd/serf-hub ./cmd/serf-tui -run 'TestHubReplayUserInputIncludesTurnIndex|TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild|TestHubModelBrowseForkRequiresUserTurnWithTurnIndex' -count=1
+go test ./cmd/evener-hub ./cmd/evener-tui -run 'TestHubReplayUserInputIncludesTurnIndex|TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild|TestHubModelBrowseForkRequiresUserTurnWithTurnIndex' -count=1
 ```
 
 Expected: fail because replay lacks turn index and TUI fork draft does not exist.
@@ -235,17 +235,17 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/hubapi/types.go internal/hubapi/client.go cmd/serf-hub/web.go cmd/serf-tui/message.go cmd/serf-tui/model.go cmd/serf-tui/hub_commands.go cmd/serf-tui/hub_model.go cmd/serf-tui/hub_model_test.go cmd/serf-hub/web_test.go
+git add internal/hubapi/types.go internal/hubapi/client.go cmd/evener-hub/web.go cmd/evener-tui/message.go cmd/evener-tui/model.go cmd/evener-tui/hub_commands.go cmd/evener-tui/hub_model.go cmd/evener-tui/hub_model_test.go cmd/evener-hub/web_test.go
 git commit -m "feat: support serf-tui transcript fork drafts"
 ```
 
 ## Task 4: UX Polish, Help Text, And Regression Sweep
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Modify: `cmd/serf-tui/input.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
-- Test: `cmd/serf-tui/input_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Modify: `cmd/evener-tui/input.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
+- Test: `cmd/evener-tui/input_test.go`
 
 - [ ] **Step 1: Add failing UX output tests**
 
@@ -264,7 +264,7 @@ Assert the no-live dashboard says `No live sessions are running` and does not re
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestHubModelDashboardEmptyStateIsLiveOnly|TestHubModelSessionFooterShowsBrowseAndDashboardKeys|TestSlashCommandHelpMentionsDashboardProjectAndBrowse' -count=1
+go test ./cmd/evener-tui -run 'TestHubModelDashboardEmptyStateIsLiveOnly|TestHubModelSessionFooterShowsBrowseAndDashboardKeys|TestSlashCommandHelpMentionsDashboardProjectAndBrowse' -count=1
 ```
 
 Expected: fail until footer/help text is updated.
@@ -291,7 +291,7 @@ Expected: pass.
 Run:
 
 ```bash
-go test ./cmd/serf-tui ./internal/hubapi
+go test ./cmd/evener-tui ./internal/hubapi
 ```
 
 Expected: pass.
@@ -299,13 +299,13 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/input.go cmd/serf-tui/hub_model_test.go cmd/serf-tui/input_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/input.go cmd/evener-tui/hub_model_test.go cmd/evener-tui/input_test.go
 git commit -m "polish: update serf-tui hub dashboard UX"
 ```
 
 ## Final Verification
 
-- [ ] Run `go test ./cmd/serf-tui ./internal/hubapi ./cmd/serf-hub`.
+- [ ] Run `go test ./cmd/evener-tui ./internal/hubapi ./cmd/evener-hub`.
 - [ ] Run `go test ./...` if the focused package suite passes and runtime is reasonable.
 - [ ] Run `git status --short` and verify only unrelated pre-existing files remain dirty.
 - [ ] Summarize commits, tests, and any limitations.

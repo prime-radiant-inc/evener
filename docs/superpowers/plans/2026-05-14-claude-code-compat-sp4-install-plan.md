@@ -4,9 +4,9 @@
 
 **Goal:** Implement the plugin lifecycle (install / uninstall / update / list / enable / disable) for Claude Code-compatible plugins, including the `installed_plugins.json` registry, atomic IO, version resolution, file lock, and the `serf plugin` CLI subcommand tree.
 
-**Architecture:** All install logic lives in a new `internal/plugins` package; the CLI lives in a new `cmd/serf/plugin` package. SP4 calls SP3 only through the `MarketplaceResolver` / `PluginSource` interfaces declared locally — production SP3 satisfies them later. Each registry mutation is serialized by a file lock and persisted atomically (tmp + rename). The `enabledPlugins` field of `config.json` is rewritten via a JSON round-trip that preserves unknown top-level keys, so SP4 never strands SP1's hooks/mcpServers/permissions sections.
+**Architecture:** All install logic lives in a new `internal/plugins` package; the CLI lives in a new `cmd/evener/plugin` package. SP4 calls SP3 only through the `MarketplaceResolver` / `PluginSource` interfaces declared locally — production SP3 satisfies them later. Each registry mutation is serialized by a file lock and persisted atomically (tmp + rename). The `enabledPlugins` field of `config.json` is rewritten via a JSON round-trip that preserves unknown top-level keys, so SP4 never strands SP1's hooks/mcpServers/permissions sections.
 
-**Tech Stack:** Go 1.25, `encoding/json`, `golang.org/x/sys/unix` (flock), `github.com/spf13/cobra` (already used by `cmd/serf`), `testing` with `t.TempDir()` and real files. No mocked filesystem. Optional `git` binary used only for directory-source SHA tests (`t.Skip` when absent).
+**Tech Stack:** Go 1.25, `encoding/json`, `golang.org/x/sys/unix` (flock), `github.com/spf13/cobra` (already used by `cmd/evener`), `testing` with `t.TempDir()` and real files. No mocked filesystem. Optional `git` binary used only for directory-source SHA tests (`t.Skip` when absent).
 
 Spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp4-install-design.md`.
 
@@ -24,13 +24,13 @@ New package `internal/plugins/`:
 - `install.go` / `install_test.go` — `Installer` struct + `Install` / `Uninstall` / `Update` / `UpdateAll` / `Enable` / `Disable` / `List`.
 - `testdata/installed_plugins_v2.json`, `installed_plugins_malformed.json`, `plugin_with_version.json`, `plugin_no_version.json`, `plugin_invalid_version.json`.
 
-New package `cmd/serf/plugin/`:
+New package `cmd/evener/plugin/`:
 
 - `install.go` — Cobra commands + flag wiring.
 - `install_test.go` — flag parsing, exit codes, rendering against a stub `Installer`-shaped interface.
 - `render.go` — human + `--json` output.
 
-No existing file is modified by SP4 itself. SP8 wires `cmd/serf/plugin.NewCommand()` into the root `serf` command.
+No existing file is modified by SP4 itself. SP8 wires `cmd/evener/plugin.NewCommand()` into the root `serf` command.
 
 ---
 
@@ -47,7 +47,7 @@ No existing file is modified by SP4 itself. SP8 wires `cmd/serf/plugin.NewComman
 // Package plugins implements the on-disk plugin install state for serf:
 // the installed_plugins.json registry, atomic IO, version resolution, a
 // file lock, and the Installer that exposes Install/Uninstall/Update/
-// Enable/Disable/List. The CLI in cmd/serf/plugin is a thin wrapper.
+// Enable/Disable/List. The CLI in cmd/evener/plugin is a thin wrapper.
 //
 // SP4 calls SP3 only through MarketplaceResolver / PluginSource declared
 // in resolver.go.
@@ -4109,12 +4109,12 @@ git commit -m "plugins: cover lock serialization and lock timeout"
 
 ## Phase 12 — CLI surface
 
-The CLI in `cmd/serf/plugin/` wraps `Installer` with a Cobra command tree. Existing serf binaries use Cobra; verify by reading `cmd/serf/main.go` before adding the import.
+The CLI in `cmd/evener/plugin/` wraps `Installer` with a Cobra command tree. Existing serf binaries use Cobra; verify by reading `cmd/evener/main.go` before adding the import.
 
 ### Task 12.1: Define `pluginInstaller` interface for testable CLI
 
 **Files:**
-- Create: `cmd/serf/plugin/install.go`
+- Create: `cmd/evener/plugin/install.go`
 
 - [ ] **Step 1: Write the scaffolding**
 
@@ -4146,21 +4146,21 @@ type pluginInstaller interface {
 
 - [ ] **Step 2: Build**
 
-Run: `go build ./cmd/serf/plugin/...`
+Run: `go build ./cmd/evener/plugin/...`
 Expected: succeeds.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go
+git add cmd/evener/plugin/install.go
 git commit -m "plugin cli: scaffold pluginInstaller interface"
 ```
 
 ### Task 12.2: `NewCommand` factory + install subcommand wiring
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`
-- Create: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`
+- Create: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4233,12 +4233,12 @@ func TestInstallCommand_MissingMarketplace(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand -v`
 Expected: FAIL — undefined `Run`.
 
 - [ ] **Step 3: Implement `Run` and the install subcommand**
 
-Replace `cmd/serf/plugin/install.go` content with:
+Replace `cmd/evener/plugin/install.go` content with:
 
 ```go
 // Package plugin implements the `serf plugin` subcommand tree for installing,
@@ -4444,20 +4444,20 @@ func renderJSONError(w io.Writer, err error) error {
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: install subcommand with human and --json output"
 ```
 
 ### Task 12.3: CLI rejects `--scope managed` with exit 2
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4480,20 +4480,20 @@ func TestInstallCommand_RejectsManagedScope(t *testing.T) {
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_RejectsManagedScope -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_RejectsManagedScope -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover --scope managed rejection"
 ```
 
 ### Task 12.4: CLI `--json` install output is valid JSON with `ok:true`
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4525,20 +4525,20 @@ Add `"encoding/json"` to test imports.
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_JSON -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_JSON -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover install --json output"
 ```
 
 ### Task 12.5: CLI install resolver miss → exit 4
 
 **Files:**
-- Modify: `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4555,20 +4555,20 @@ func TestInstallCommand_ResolverMissExit4(t *testing.T) {
 
 - [ ] **Step 2: Run — should PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestInstallCommand_ResolverMissExit4 -v`
+Run: `go test ./cmd/evener/plugin/ -run TestInstallCommand_ResolverMissExit4 -v`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: cover resolver-miss exit 4"
 ```
 
 ### Task 12.6: Uninstall subcommand + `--keep-data` warning + `--prune` rejection
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4612,7 +4612,7 @@ func TestUninstallCommand_PruneRejected(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUninstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUninstallCommand -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement `uninstallCmd`**
@@ -4676,20 +4676,20 @@ func NewCommand(inst pluginInstaller) *cobra.Command {
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUninstallCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUninstallCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: uninstall subcommand with --keep-data warn and --prune reject"
 ```
 
 ### Task 12.7: Update + update --all subcommand
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4740,7 +4740,7 @@ func (f *fakeUpdateAll) UpdateAll(_ context.Context, _ plugins.Scope) ([]plugins
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUpdate -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUpdate -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement `updateCmd`**
@@ -4846,20 +4846,20 @@ Update `NewCommand`:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestUpdate -v`
+Run: `go test ./cmd/evener/plugin/ -run TestUpdate -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: update and update --all with JSON output"
 ```
 
 ### Task 12.8: Enable / disable subcommands
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4885,7 +4885,7 @@ func TestEnableDisableCommands(t *testing.T) {
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestEnableDisableCommands -v`
+Run: `go test ./cmd/evener/plugin/ -run TestEnableDisableCommands -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement and register**
@@ -4955,20 +4955,20 @@ Register:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestEnableDisableCommands -v`
+Run: `go test ./cmd/evener/plugin/ -run TestEnableDisableCommands -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: enable and disable subcommands"
 ```
 
 ### Task 12.9: List subcommand + `--available` requires `--json`
 
 **Files:**
-- Modify: `cmd/serf/plugin/install.go`, `cmd/serf/plugin/install_test.go`
+- Modify: `cmd/evener/plugin/install.go`, `cmd/evener/plugin/install_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5017,7 +5017,7 @@ func (f *fakeList) List(_ context.Context, _ plugins.Scope) ([]plugins.ListEntry
 
 - [ ] **Step 2: Run — FAIL**
 
-Run: `go test ./cmd/serf/plugin/ -run TestListCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestListCommand -v`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement and register `listCmd`**
@@ -5090,13 +5090,13 @@ Register:
 
 - [ ] **Step 4: Run — PASS**
 
-Run: `go test ./cmd/serf/plugin/ -run TestListCommand -v`
+Run: `go test ./cmd/evener/plugin/ -run TestListCommand -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/plugin/install.go cmd/serf/plugin/install_test.go
+git add cmd/evener/plugin/install.go cmd/evener/plugin/install_test.go
 git commit -m "plugin cli: list subcommand with --json and --available gating"
 ```
 
@@ -5106,7 +5106,7 @@ git commit -m "plugin cli: list subcommand with --json and --available gating"
 
 - [ ] **Step 1: Run the full SP4 test suite**
 
-Run: `go test ./internal/plugins/... ./cmd/serf/plugin/...`
+Run: `go test ./internal/plugins/... ./cmd/evener/plugin/...`
 Expected: ok, all green.
 
 - [ ] **Step 2: Commit (no-op if green; otherwise fix and commit each fix as its own change)**

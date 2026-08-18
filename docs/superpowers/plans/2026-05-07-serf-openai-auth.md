@@ -26,18 +26,18 @@
 | `internal/auth/openai/claims.go` | Optional token claim parsing |
 | `internal/auth/openai/service.go` | Login/logout/status/runtime credential orchestration |
 | `internal/auth/openai/*_test.go` | Unit tests for the new package |
-| `cmd/serf/openai_login.go` | `serf openai login` command |
-| `cmd/serf/openai_logout.go` | `serf openai logout` command |
-| `cmd/serf/openai_status.go` | `serf openai status` command |
+| `cmd/evener/openai_login.go` | `serf openai login` command |
+| `cmd/evener/openai_logout.go` | `serf openai logout` command |
+| `cmd/evener/openai_status.go` | `serf openai status` command |
 
 ### Modified files
 | File | Changes |
 |------|---------|
-| `cmd/serf/main.go` | Add `openai` subcommand dispatch |
+| `cmd/evener/main.go` | Add `openai` subcommand dispatch |
 | `cmdutil/*.go` | Reuse or expose state-dir resolution helpers if needed |
 | `llm/providers/openai/adapter.go` | Replace env-only lookup with env-plus-state credential resolution |
 | `llm/providers/openai/adapter_test.go` | Add stored-auth and refresh coverage |
-| `cmd/serf/*_test.go` | CLI coverage for login/logout/status |
+| `cmd/evener/*_test.go` | CLI coverage for login/logout/status |
 | `README.md` | Document OpenAI commands and auth behavior |
 
 ---
@@ -377,8 +377,8 @@ git commit -m "feat: add OpenAI auth refresh resolution"
 ### Task 9: Add `serf openai login`
 
 **Files:**
-- Create: `cmd/serf/openai_login.go`
-- Create or Modify: `cmd/serf/main_test.go`
+- Create: `cmd/evener/openai_login.go`
+- Create or Modify: `cmd/evener/main_test.go`
 
 - [ ] **Step 1: Write the failing CLI login tests**
 
@@ -389,7 +389,7 @@ Cover:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAILogin|OpenAISubcommand)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAILogin|OpenAISubcommand)'`
 Expected: FAIL because the command does not exist yet.
 
 - [ ] **Step 3: Implement the login command**
@@ -402,22 +402,22 @@ Requirements:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAILogin|OpenAISubcommand)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAILogin|OpenAISubcommand)'`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/openai_login.go cmd/serf/main_test.go
+git add cmd/evener/openai_login.go cmd/evener/main_test.go
 git commit -m "feat: add serf openai login"
 ```
 
 ### Task 10: Add `serf openai logout` and `serf openai status`
 
 **Files:**
-- Create: `cmd/serf/openai_logout.go`
-- Create: `cmd/serf/openai_status.go`
-- Modify: `cmd/serf/main_test.go`
+- Create: `cmd/evener/openai_logout.go`
+- Create: `cmd/evener/openai_status.go`
+- Modify: `cmd/evener/main_test.go`
 
 - [ ] **Step 1: Write the failing logout/status tests**
 
@@ -429,7 +429,7 @@ Cover:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAIStatus|OpenAILogout)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAIStatus|OpenAILogout)'`
 Expected: FAIL because the commands do not exist yet.
 
 - [ ] **Step 3: Implement the commands**
@@ -442,21 +442,21 @@ Keep status output compact and script-friendly:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAIStatus|OpenAILogout)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAIStatus|OpenAILogout)'`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/openai_logout.go cmd/serf/openai_status.go cmd/serf/main_test.go
+git add cmd/evener/openai_logout.go cmd/evener/openai_status.go cmd/evener/main_test.go
 git commit -m "feat: add serf openai logout and status"
 ```
 
 ### Task 11: Wire top-level `openai` dispatch
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf/main_test.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener/main_test.go`
 
 - [ ] **Step 1: Write the failing dispatch tests**
 
@@ -467,7 +467,7 @@ Cover:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAISubcommandDispatch|OpenAIHelp)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAISubcommandDispatch|OpenAIHelp)'`
 Expected: FAIL because dispatch is incomplete.
 
 - [ ] **Step 3: Implement subcommand dispatch**
@@ -476,13 +476,13 @@ Add explicit parsing before the main agent flags are processed.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `go test ./cmd/serf -run 'Test(OpenAISubcommandDispatch|OpenAIHelp)'`
+Run: `go test ./cmd/evener -run 'Test(OpenAISubcommandDispatch|OpenAIHelp)'`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/main.go cmd/serf/main_test.go
+git add cmd/evener/main.go cmd/evener/main_test.go
 git commit -m "feat: dispatch OpenAI auth subcommands"
 ```
 
@@ -530,9 +530,9 @@ git commit -m "feat: resolve OpenAI auth from Serf state"
 ### Task 13: Ensure run/serve/tui use the same state-dir-backed auth
 
 **Files:**
-- Modify: `cmd/serf/run.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf-tui/embedded.go`
+- Modify: `cmd/evener/run.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener-tui/embedded.go`
 - Modify tests as needed
 
 - [ ] **Step 1: Write the failing integration tests**
@@ -544,7 +544,7 @@ Cover:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./cmd/serf ./cmd/serf-tui -run 'Test(StateDirAuth|Embedded|Serve)'`
+Run: `go test ./cmd/evener ./cmd/evener-tui -run 'Test(StateDirAuth|Embedded|Serve)'`
 Expected: FAIL because the runtime does not yet pass through the new auth expectations.
 
 - [ ] **Step 3: Implement runtime plumbing**
@@ -553,13 +553,13 @@ Do the minimum needed so all OpenAI entry points share the same state-dir auth s
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `go test ./cmd/serf ./cmd/serf-tui -run 'Test(StateDirAuth|Embedded|Serve)'`
+Run: `go test ./cmd/evener ./cmd/evener-tui -run 'Test(StateDirAuth|Embedded|Serve)'`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/run.go cmd/serf/serve.go cmd/serf-tui/embedded.go
+git add cmd/evener/run.go cmd/evener/serve.go cmd/evener-tui/embedded.go
 git commit -m "feat: share OpenAI auth across runtime entry points"
 ```
 
@@ -571,7 +571,7 @@ git commit -m "feat: share OpenAI auth across runtime entry points"
 
 **Files:**
 - Modify: `README.md`
-- Modify: `cmd/serf/main.go`
+- Modify: `cmd/evener/main.go`
 
 - [ ] **Step 1: Write the failing documentation checks**
 
@@ -582,7 +582,7 @@ Define the checks:
 
 - [ ] **Step 2: Run the checks to verify they fail**
 
-Run: `rg -n "serf openai login|pasted redirect|OPENAI_API_KEY" README.md cmd/serf/main.go`
+Run: `rg -n "serf openai login|pasted redirect|OPENAI_API_KEY" README.md cmd/evener/main.go`
 Expected: missing or incomplete matches.
 
 - [ ] **Step 3: Update the docs**
@@ -594,13 +594,13 @@ Add:
 
 - [ ] **Step 4: Run the checks to verify they pass**
 
-Run: `rg -n "serf openai login|pasted redirect|OPENAI_API_KEY" README.md cmd/serf/main.go`
+Run: `rg -n "serf openai login|pasted redirect|OPENAI_API_KEY" README.md cmd/evener/main.go`
 Expected: all intended references present.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md cmd/serf/main.go
+git add README.md cmd/evener/main.go
 git commit -m "docs: document Serf OpenAI login"
 ```
 
@@ -613,7 +613,7 @@ git commit -m "docs: document Serf OpenAI login"
 
 Run:
 ```bash
-go test ./internal/auth/openai ./llm/providers/openai ./cmd/serf ./cmd/serf-tui
+go test ./internal/auth/openai ./llm/providers/openai ./cmd/evener ./cmd/evener-tui
 ```
 Expected: PASS
 
@@ -621,7 +621,7 @@ Expected: PASS
 
 Run:
 ```bash
-go test ./llm/... ./cmdutil ./cmd/serf/... ./cmd/serf-tui/...
+go test ./llm/... ./cmdutil ./cmd/evener/... ./cmd/evener-tui/...
 ```
 Expected: PASS
 

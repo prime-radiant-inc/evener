@@ -133,7 +133,7 @@ Edit `agent/prompts/base.md` in the serf repo.
 
 ### 2. Build and test locally (quick iteration)
 ```bash
-go build -o /tmp/serf-mac ./cmd/serf/
+go build -o /tmp/serf-mac ./cmd/evener/
 export $(cat .env | xargs)
 /tmp/serf-mac --model openai/gpt-5.2-codex --max-rounds 8 \
   --state-dir /tmp/test-state -- 'task instructions here'
@@ -154,7 +154,7 @@ export $(cat .env | xargs)
 
 ### 4. Build Linux binary and upload
 ```bash
-GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
+GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/evener/
 scp -o StrictHostKeyChecking=no serf-linux-amd64 jesse@192.168.118.101:~/git/terminal-bench/serf-linux-amd64
 ```
 

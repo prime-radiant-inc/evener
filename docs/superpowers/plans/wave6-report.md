@@ -229,7 +229,7 @@ persistence behavior, but it points at a session absent from this hub.
 
 ## Verification
 
-Gates run from `cmd/serf-hub/frontend`, AND-chained, `vitest` bare (exit code unmasked):
+Gates run from `cmd/evener-hub/frontend`, AND-chained, `vitest` bare (exit code unmasked):
 
 ```
 npx tsc --noEmit  → EXIT 0
@@ -243,7 +243,7 @@ Go (this branch absorbed main's hub changes):
 
 ```
 go build ./...                → EXIT 0
-go test ./cmd/serf-hub/...    → ok (all packages; root suite 29.9s, rest cached)
+go test ./cmd/evener-hub/...    → ok (all packages; root suite 29.9s, rest cached)
 ```
 
 **Commit trail (this task):** micro-items `a6debb8f0` (`webui wave6 close: micro-items`), then this

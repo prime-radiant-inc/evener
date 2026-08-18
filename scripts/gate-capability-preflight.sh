@@ -48,7 +48,7 @@ if [ "${FAKE_GATE_PROBE_BLOCKED+set}" = set ]; then
 	for id in $capability_ids; do
 		case " $FAKE_GATE_PROBE_BLOCKED " in
 			*" $id "*)
-				lines="${lines}${id}${tab}BLOCKED${tab}forced blocked via FAKE_GATE_PROBE_BLOCKED (selftest)${tab}go run ./cmd/serf-gate-probe -only=$id
+				lines="${lines}${id}${tab}BLOCKED${tab}forced blocked via FAKE_GATE_PROBE_BLOCKED (selftest)${tab}go run ./cmd/evener-gate-probe -only=$id
 "
 				;;
 			*)
@@ -58,8 +58,8 @@ if [ "${FAKE_GATE_PROBE_BLOCKED+set}" = set ]; then
 		esac
 	done
 else
-	if ! lines="$(cd "$repo_root" && go run ./cmd/serf-gate-probe 2>&1)"; then
-		emit_fatal "go run ./cmd/serf-gate-probe exited nonzero: $lines"
+	if ! lines="$(cd "$repo_root" && go run ./cmd/evener-gate-probe 2>&1)"; then
+		emit_fatal "go run ./cmd/evener-gate-probe exited nonzero: $lines"
 	fi
 fi
 

@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Build runtime pair and all Go workspace packages
         run: make build && make build-go

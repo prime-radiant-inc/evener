@@ -51,43 +51,43 @@
 
 Create or reshape these TUI files:
 
-- Create: `cmd/serf-tui/app_model.go` - top-level Bubble Tea shell, mode routing, global keys, shared status/error.
-- Create: `cmd/serf-tui/app_modes.go` - mode enum, navigation helpers, return targets.
-- Integrate/adapt from main: `cmd/serf-tui/openai_auth.go` - TUI auth status/login/logout orchestration over hub APIs.
-- Create: `cmd/serf-tui/command_registry.go` - command definitions, slash parser integration, help generator, palette source.
-- Create: `cmd/serf-tui/command_registry_test.go` - command/help/parity tests.
-- Create: `cmd/serf-tui/dashboard_model.go` - dashboard state, selection, refresh handling.
-- Create: `cmd/serf-tui/dashboard_view.go` - dashboard rendering.
-- Create: `cmd/serf-tui/dashboard_model_test.go` - live-only grouping/sorting tests.
-- Create: `cmd/serf-tui/project_model.go` - project drilldown state and rendering.
-- Create: `cmd/serf-tui/project_model_test.go` - project live/recent ordering tests.
-- Create: `cmd/serf-tui/session_surface.go` - hub-native session workspace state/update/view.
-- Create: `cmd/serf-tui/session_surface_test.go` - slash command, browse, fork, action tests.
-- Create: `cmd/serf-tui/session_reducer.go` - transcript replay/live event reducer.
-- Create: `cmd/serf-tui/session_reducer_test.go` - replay/live dedupe and ordering tests.
-- Create: `cmd/serf-tui/spawn_model.go` - spawn form state/update/view.
-- Create: `cmd/serf-tui/spawn_model_test.go` - spawn form model load, model picker, submit tests.
-- Create: `cmd/serf-tui/palette_model.go` - command/search palette.
-- Create: `cmd/serf-tui/palette_model_test.go` - palette source and dispatch tests.
-- Create: `cmd/serf-tui/styles.go` - Lip Gloss tokens, theme status styles, layout helpers.
+- Create: `cmd/evener-tui/app_model.go` - top-level Bubble Tea shell, mode routing, global keys, shared status/error.
+- Create: `cmd/evener-tui/app_modes.go` - mode enum, navigation helpers, return targets.
+- Integrate/adapt from main: `cmd/evener-tui/openai_auth.go` - TUI auth status/login/logout orchestration over hub APIs.
+- Create: `cmd/evener-tui/command_registry.go` - command definitions, slash parser integration, help generator, palette source.
+- Create: `cmd/evener-tui/command_registry_test.go` - command/help/parity tests.
+- Create: `cmd/evener-tui/dashboard_model.go` - dashboard state, selection, refresh handling.
+- Create: `cmd/evener-tui/dashboard_view.go` - dashboard rendering.
+- Create: `cmd/evener-tui/dashboard_model_test.go` - live-only grouping/sorting tests.
+- Create: `cmd/evener-tui/project_model.go` - project drilldown state and rendering.
+- Create: `cmd/evener-tui/project_model_test.go` - project live/recent ordering tests.
+- Create: `cmd/evener-tui/session_surface.go` - hub-native session workspace state/update/view.
+- Create: `cmd/evener-tui/session_surface_test.go` - slash command, browse, fork, action tests.
+- Create: `cmd/evener-tui/session_reducer.go` - transcript replay/live event reducer.
+- Create: `cmd/evener-tui/session_reducer_test.go` - replay/live dedupe and ordering tests.
+- Create: `cmd/evener-tui/spawn_model.go` - spawn form state/update/view.
+- Create: `cmd/evener-tui/spawn_model_test.go` - spawn form model load, model picker, submit tests.
+- Create: `cmd/evener-tui/palette_model.go` - command/search palette.
+- Create: `cmd/evener-tui/palette_model_test.go` - palette source and dispatch tests.
+- Create: `cmd/evener-tui/styles.go` - Lip Gloss tokens, theme status styles, layout helpers.
 
 Modify these existing files:
 
-- Modify: `cmd/serf-tui/main.go` - boot `appModel`, not the old `hubModel` directly.
-- Modify: `cmd/serf-tui/hub_commands.go` - keep typed async commands; add the replay/follow/model/task helpers named in Tasks 8 and 9.
-- Modify: `cmd/serf-tui/hub_model.go` - shrink or delete after replacement; do not keep duplicated command logic.
-- Modify: `cmd/serf-tui/model.go` - preserve reusable rendering/data structures only; remove direct daemon ownership after parity.
-- Modify: `cmd/serf-tui/input.go` - keep slash parsing if useful, but move help generation to command registry.
-- Modify: `cmd/serf-tui/history.go` - preserve persisted input history semantics in the new session composer.
-- Modify: `cmd/serf-tui/theme_picker.go` and `cmd/serf-tui/theme_test.go` - keep real theme picker behavior and persistence.
-- Modify: `cmd/serf-tui/transcript_view.go` - preserve main/subagent transcript picker behavior behind hub-backed data.
-- Modify: `cmd/serf-tui/tmux_e2e_test.go` - expand full terminal journey coverage.
+- Modify: `cmd/evener-tui/main.go` - boot `appModel`, not the old `hubModel` directly.
+- Modify: `cmd/evener-tui/hub_commands.go` - keep typed async commands; add the replay/follow/model/task helpers named in Tasks 8 and 9.
+- Modify: `cmd/evener-tui/hub_model.go` - shrink or delete after replacement; do not keep duplicated command logic.
+- Modify: `cmd/evener-tui/model.go` - preserve reusable rendering/data structures only; remove direct daemon ownership after parity.
+- Modify: `cmd/evener-tui/input.go` - keep slash parsing if useful, but move help generation to command registry.
+- Modify: `cmd/evener-tui/history.go` - preserve persisted input history semantics in the new session composer.
+- Modify: `cmd/evener-tui/theme_picker.go` and `cmd/evener-tui/theme_test.go` - keep real theme picker behavior and persistence.
+- Modify: `cmd/evener-tui/transcript_view.go` - preserve main/subagent transcript picker behavior behind hub-backed data.
+- Modify: `cmd/evener-tui/tmux_e2e_test.go` - expand full terminal journey coverage.
 - Modify: `internal/hubapi/client.go` and `internal/hubapi/types.go` - add the typed endpoints listed in the spec: project, replay transcript, transcript follow, tasks, details, subagent transcripts, auth, steer, fork, clear, and model change.
-- Modify: `cmd/serf-hub/web.go` and tests - only for hub API gaps required by TUI.
+- Modify: `cmd/evener-hub/web.go` and tests - only for hub API gaps required by TUI.
 - Integrate/adapt from main: `internal/auth/openai/config.go`, `pkce.go`, `server.go`, `manual.go`, `tokens.go`, `storage.go`, `claims.go`, `service.go` - Serf-owned OpenAI OAuth lifecycle.
 - Integrate/adapt from main: `internal/auth/openai/*_test.go` - auth storage, PKCE, manual pasteback, callback, token exchange, refresh, and status tests.
-- Integrate/adapt from main: `cmd/serf/openai_login.go`, `cmd/serf/openai_logout.go`, `cmd/serf/openai_status.go` - canonical CLI auth commands.
-- Modify: `cmd/serf/main.go` - dispatch the OpenAI command family.
+- Integrate/adapt from main: `cmd/evener/openai_login.go`, `cmd/evener/openai_logout.go`, `cmd/evener/openai_status.go` - canonical CLI auth commands.
+- Modify: `cmd/evener/main.go` - dispatch the OpenAI command family.
 - Modify: `llm/providers/openai/adapter.go` and tests - resolve env key first, then Serf OAuth, with refresh.
 
 ## Task 0: Integrate Main-Line OpenAI Auth And Build The Parity Inventory
@@ -95,16 +95,16 @@ Modify these existing files:
 **Files:**
 - Create: `docs/superpowers/notes/2026-05-11-serf-tui-parity-checklist.md`
 - Integrate/modify: `internal/auth/openai/*`
-- Integrate/modify: `cmd/serf/openai_*.go`
-- Integrate/modify: `cmd/serf-tui/openai_auth.go`
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf-tui/main.go`
-- Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/input.go`
-- Modify: `cmd/serf-tui/sse_client.go`
-- Modify: `cmd/serf-tui/statusbar.go`
+- Integrate/modify: `cmd/evener/openai_*.go`
+- Integrate/modify: `cmd/evener-tui/openai_auth.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener-tui/main.go`
+- Modify: `cmd/evener-tui/model.go`
+- Modify: `cmd/evener-tui/input.go`
+- Modify: `cmd/evener-tui/sse_client.go`
+- Modify: `cmd/evener-tui/statusbar.go`
 - Modify: `llm/providers/openai/adapter.go`
-- Modify: `cmd/serf-tui/tmux_e2e_test.go`
+- Modify: `cmd/evener-tui/tmux_e2e_test.go`
 
 - [ ] **Step 1: Prove the auth gap is branch-base drift**
 
@@ -164,7 +164,7 @@ Run:
 
 ```bash
 test ! -d internal/auth/openai
-rg -n "openai login|OpenAIAuth|oauth|auth/openai" cmd/serf cmd/serf-tui llm/providers/openai
+rg -n "openai login|OpenAIAuth|oauth|auth/openai" cmd/evener cmd/evener-tui llm/providers/openai
 ```
 
 Expected:
@@ -192,7 +192,7 @@ git merge --no-ff main
 
 Expected:
 
-- If conflicts are small and mostly in `cmd/serf-tui`, resolve them by preserving hub-backed TUI architecture and main-line auth behavior.
+- If conflicts are small and mostly in `cmd/evener-tui`, resolve them by preserving hub-backed TUI architecture and main-line auth behavior.
 - If conflicts are broad outside auth/TUI/provider files, abort only the merge operation with `git merge --abort`, then use the cherry-pick path below. Do not reset the worktree.
 
 Cherry-pick fallback:
@@ -207,7 +207,7 @@ git cherry-pick -n \
 Expected:
 
 - Auth package, CLI commands, OpenAI adapter auth resolution, and old TUI auth support appear in the worktree.
-- Conflicts in `cmd/serf-tui/*` are expected because hub TUI work also changed those files.
+- Conflicts in `cmd/evener-tui/*` are expected because hub TUI work also changed those files.
 - Resolve conflicts in favor of: hub-backed navigation and sessions from `serf-hub`, auth lifecycle and provider-context behavior from `main`.
 
 - [ ] **Step 5: Validate auth foundation after integration**
@@ -242,7 +242,7 @@ Tests must cover signed-out, env-auth, stored-auth, logout, callback login, and 
 Run:
 
 ```bash
-go test ./cmd/serf -run 'OpenAI|Auth|Login|Logout|Status' -count=1
+go test ./cmd/evener -run 'OpenAI|Auth|Login|Logout|Status' -count=1
 ```
 
 - [ ] **Step 7: Validate OpenAI adapter credential resolution**
@@ -274,7 +274,7 @@ Hub tests must prove the hub never returns token secrets and never reads Codex c
 Run:
 
 ```bash
-go test ./internal/hubapi ./cmd/serf-hub -run 'Auth|OpenAI' -count=1
+go test ./internal/hubapi ./cmd/evener-hub -run 'Auth|OpenAI' -count=1
 ```
 
 - [ ] **Step 9: Adapt TUI auth UX over hub APIs**
@@ -292,7 +292,7 @@ go test ./internal/hubapi ./cmd/serf-hub -run 'Auth|OpenAI' -count=1
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'Auth|OpenAI|CommandRegistry' -count=1
+go test ./cmd/evener-tui -run 'Auth|OpenAI|CommandRegistry' -count=1
 ```
 
 - [ ] **Step 10: Add auth E2E coverage**
@@ -308,26 +308,26 @@ Extend the fake hub/tmux harness to cover:
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestTUIE2E_OpenAIAuth -count=1
+go test ./cmd/evener-tui -run TestTUIE2E_OpenAIAuth -count=1
 ```
 
 - [ ] **Step 11: Commit**
 
 ```bash
-git add docs/superpowers/notes/2026-05-11-serf-tui-parity-checklist.md internal/auth/openai cmd/serf/openai_login.go cmd/serf/openai_logout.go cmd/serf/openai_status.go cmd/serf/main.go cmd/serf-tui/openai_auth.go cmd/serf-tui/tmux_e2e_test.go llm/providers/openai/adapter.go
+git add docs/superpowers/notes/2026-05-11-serf-tui-parity-checklist.md internal/auth/openai cmd/evener/openai_login.go cmd/evener/openai_logout.go cmd/evener/openai_status.go cmd/evener/main.go cmd/evener-tui/openai_auth.go cmd/evener-tui/tmux_e2e_test.go llm/providers/openai/adapter.go
 git commit -m "feat(serf): integrate Serf-owned OpenAI auth"
 ```
 
 ## Task 1: Lock The Current Gaps With Command Registry Tests
 
 **Files:**
-- Create: `cmd/serf-tui/command_registry.go`
-- Create: `cmd/serf-tui/command_registry_test.go`
-- Modify: `cmd/serf-tui/input.go`
+- Create: `cmd/evener-tui/command_registry.go`
+- Create: `cmd/evener-tui/command_registry_test.go`
+- Modify: `cmd/evener-tui/input.go`
 
 - [ ] **Step 1: Write failing tests for command/help parity**
 
-Create `cmd/serf-tui/command_registry_test.go`:
+Create `cmd/evener-tui/command_registry_test.go`:
 
 ```go
 package main
@@ -384,14 +384,14 @@ func TestParseCommandInvocation(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestCommandRegistry' -count=1
+go test ./cmd/evener-tui -run 'TestCommandRegistry' -count=1
 ```
 
 Expected: fail because `defaultCommandRegistry`, `commandContext`, and related types do not exist.
 
 - [ ] **Step 3: Add minimal registry types**
 
-Create `cmd/serf-tui/command_registry.go`:
+Create `cmd/evener-tui/command_registry.go`:
 
 ```go
 package main
@@ -537,7 +537,7 @@ func parseCommandInvocation(input string) commandInvocation {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestCommandRegistry|TestParseCommandInvocation' -count=1
+go test ./cmd/evener-tui -run 'TestCommandRegistry|TestParseCommandInvocation' -count=1
 ```
 
 Expected: pass.
@@ -545,21 +545,21 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/command_registry.go cmd/serf-tui/command_registry_test.go
+git add cmd/evener-tui/command_registry.go cmd/evener-tui/command_registry_test.go
 git commit -m "test(serf-tui): define hub command registry contract"
 ```
 
 ## Task 2: Add The App Shell And Mode Routing
 
 **Files:**
-- Create: `cmd/serf-tui/app_modes.go`
-- Create: `cmd/serf-tui/app_model.go`
-- Modify: `cmd/serf-tui/main.go`
-- Test: `cmd/serf-tui/app_model_test.go`
+- Create: `cmd/evener-tui/app_modes.go`
+- Create: `cmd/evener-tui/app_model.go`
+- Modify: `cmd/evener-tui/main.go`
+- Test: `cmd/evener-tui/app_model_test.go`
 
 - [ ] **Step 1: Write failing app shell tests**
 
-Create `cmd/serf-tui/app_model_test.go`:
+Create `cmd/evener-tui/app_model_test.go`:
 
 ```go
 package main
@@ -593,14 +593,14 @@ func TestAppModelCtrlOReturnsDashboard(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestAppModel -count=1
+go test ./cmd/evener-tui -run TestAppModel -count=1
 ```
 
 Expected: fail because `appModel` does not exist.
 
 - [ ] **Step 3: Implement minimal app modes**
 
-Create `cmd/serf-tui/app_modes.go`:
+Create `cmd/evener-tui/app_modes.go`:
 
 ```go
 package main
@@ -618,7 +618,7 @@ const (
 
 - [ ] **Step 4: Implement minimal app model**
 
-Create `cmd/serf-tui/app_model.go`:
+Create `cmd/evener-tui/app_model.go`:
 
 ```go
 package main
@@ -676,7 +676,7 @@ func (m appModel) View() string {
 
 - [ ] **Step 5: Wire main to app model**
 
-Modify `cmd/serf-tui/main.go`:
+Modify `cmd/evener-tui/main.go`:
 
 ```go
 m := newAppModel(runtime.Client, runtime.Address.BaseURL)
@@ -693,7 +693,7 @@ m := newHubModel(runtime.Client, runtime.Address.BaseURL)
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestAppModel -count=1
+go test ./cmd/evener-tui -run TestAppModel -count=1
 ```
 
 Expected: pass.
@@ -701,21 +701,21 @@ Expected: pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/app_modes.go cmd/serf-tui/app_model.go cmd/serf-tui/app_model_test.go cmd/serf-tui/main.go
+git add cmd/evener-tui/app_modes.go cmd/evener-tui/app_model.go cmd/evener-tui/app_model_test.go cmd/evener-tui/main.go
 git commit -m "feat(serf-tui): add hub app shell"
 ```
 
 ## Task 3: Build The Live Dashboard Component
 
 **Files:**
-- Create: `cmd/serf-tui/dashboard_model.go`
-- Create: `cmd/serf-tui/dashboard_view.go`
-- Create: `cmd/serf-tui/dashboard_model_test.go`
-- Modify: `cmd/serf-tui/app_model.go`
+- Create: `cmd/evener-tui/dashboard_model.go`
+- Create: `cmd/evener-tui/dashboard_view.go`
+- Create: `cmd/evener-tui/dashboard_model_test.go`
+- Modify: `cmd/evener-tui/app_model.go`
 
 - [ ] **Step 1: Write failing live-only dashboard tests**
 
-Create `cmd/serf-tui/dashboard_model_test.go`:
+Create `cmd/evener-tui/dashboard_model_test.go`:
 
 ```go
 package main
@@ -750,14 +750,14 @@ func TestDashboardRowsShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestDashboardRowsShowsOnlyLiveSessionsGroupedByProject -count=1
+go test ./cmd/evener-tui -run TestDashboardRowsShowsOnlyLiveSessionsGroupedByProject -count=1
 ```
 
 Expected: fail because dashboard V2 types do not exist.
 
 - [ ] **Step 3: Implement dashboard row builder**
 
-Create `cmd/serf-tui/dashboard_model.go`:
+Create `cmd/evener-tui/dashboard_model.go`:
 
 ```go
 package main
@@ -847,7 +847,7 @@ func sessionAttentionRank(state string) int {
 
 - [ ] **Step 4: Add dashboard view**
 
-Create `cmd/serf-tui/dashboard_view.go`:
+Create `cmd/evener-tui/dashboard_view.go`:
 
 ```go
 package main
@@ -922,7 +922,7 @@ if m.mode == appModeDashboard {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestDashboard|TestAppModel' -count=1
+go test ./cmd/evener-tui -run 'TestDashboard|TestAppModel' -count=1
 ```
 
 Expected: pass.
@@ -930,21 +930,21 @@ Expected: pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/dashboard_model.go cmd/serf-tui/dashboard_view.go cmd/serf-tui/dashboard_model_test.go cmd/serf-tui/app_model.go
+git add cmd/evener-tui/dashboard_model.go cmd/evener-tui/dashboard_view.go cmd/evener-tui/dashboard_model_test.go cmd/evener-tui/app_model.go
 git commit -m "feat(serf-tui): render live dashboard"
 ```
 
 ## Task 4: Add Project Drilldown
 
 **Files:**
-- Create: `cmd/serf-tui/project_model.go`
-- Create: `cmd/serf-tui/project_model_test.go`
-- Modify: `cmd/serf-tui/app_model.go`
-- Modify: `cmd/serf-tui/dashboard_model.go`
+- Create: `cmd/evener-tui/project_model.go`
+- Create: `cmd/evener-tui/project_model_test.go`
+- Modify: `cmd/evener-tui/app_model.go`
+- Modify: `cmd/evener-tui/dashboard_model.go`
 
 - [ ] **Step 1: Write failing project drilldown tests**
 
-Create `cmd/serf-tui/project_model_test.go`:
+Create `cmd/evener-tui/project_model_test.go`:
 
 ```go
 package main
@@ -979,14 +979,14 @@ func TestProjectRowsShowsLiveThenRecentEnded(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestProjectRowsShowsLiveThenRecentEnded -count=1
+go test ./cmd/evener-tui -run TestProjectRowsShowsLiveThenRecentEnded -count=1
 ```
 
 Expected: fail because project model does not exist.
 
 - [ ] **Step 3: Implement project row model**
 
-Create `cmd/serf-tui/project_model.go`:
+Create `cmd/evener-tui/project_model.go`:
 
 ```go
 package main
@@ -1084,7 +1084,7 @@ func projectByKey(tree hubapi.TreeResponse, key string) (hubapi.ProjectNode, boo
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestProject|TestDashboard' -count=1
+go test ./cmd/evener-tui -run 'TestProject|TestDashboard' -count=1
 ```
 
 Expected: pass.
@@ -1092,21 +1092,21 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/project_model.go cmd/serf-tui/project_model_test.go cmd/serf-tui/app_model.go cmd/serf-tui/dashboard_model.go
+git add cmd/evener-tui/project_model.go cmd/evener-tui/project_model_test.go cmd/evener-tui/app_model.go cmd/evener-tui/dashboard_model.go
 git commit -m "feat(serf-tui): add project drilldown"
 ```
 
 ## Task 5: Make Hub Model Discovery Correct For Spawn
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-hub/web_test.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
-- Test: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-hub/web_test.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
+- Test: `cmd/evener-hub/web_test.go`
 
 - [ ] **Step 1: Write failing hub test for OpenRouter filtering**
 
-Add to `cmd/serf-hub/web_test.go`:
+Add to `cmd/evener-hub/web_test.go`:
 
 ```go
 func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
@@ -1161,14 +1161,14 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable -count=1
+go test ./cmd/evener-hub -run TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable -count=1
 ```
 
 Expected: fail because OpenRouter returns all three models.
 
 - [ ] **Step 3: Filter OpenRouter using catalog tool metadata**
 
-In `cmd/serf-hub/web.go`, inside `fetchLiveModels`, compute catalog metadata before appending each model:
+In `cmd/evener-hub/web.go`, inside `fetchLiveModels`, compute catalog metadata before appending each model:
 
 ```go
 mi := catalogModelInfo(cat, m.ID)
@@ -1195,7 +1195,7 @@ Reuse `mi` for metadata enrichment instead of calling `cat.GetModelInfo(m.ID)` a
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'TestWeb_ApiModels' -count=1
+go test ./cmd/evener-hub -run 'TestWeb_ApiModels' -count=1
 ```
 
 Expected: pass.
@@ -1203,21 +1203,21 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go cmd/serf-hub/web_test.go
+git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go
 git commit -m "fix(serf-hub): filter live OpenRouter models for tools"
 ```
 
 ## Task 6: Build Spawn Form Component
 
 **Files:**
-- Create: `cmd/serf-tui/spawn_model.go`
-- Create: `cmd/serf-tui/spawn_model_test.go`
-- Modify: `cmd/serf-tui/app_model.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
+- Create: `cmd/evener-tui/spawn_model.go`
+- Create: `cmd/evener-tui/spawn_model_test.go`
+- Modify: `cmd/evener-tui/app_model.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
 
 - [ ] **Step 1: Write failing spawn form tests**
 
-Create `cmd/serf-tui/spawn_model_test.go`:
+Create `cmd/evener-tui/spawn_model_test.go`:
 
 ```go
 package main
@@ -1261,14 +1261,14 @@ func TestSpawnModelMOpensPicker(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSpawnModel -count=1
+go test ./cmd/evener-tui -run TestSpawnModel -count=1
 ```
 
 Expected: fail because `spawnModel` does not exist.
 
 - [ ] **Step 3: Implement spawn component**
 
-Create `cmd/serf-tui/spawn_model.go`:
+Create `cmd/evener-tui/spawn_model.go`:
 
 ```go
 package main
@@ -1382,7 +1382,7 @@ Route `hubModelsMsg` and spawn key messages to `spawn.Update`.
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestSpawnModel|TestAppModel' -count=1
+go test ./cmd/evener-tui -run 'TestSpawnModel|TestAppModel' -count=1
 ```
 
 Expected: pass.
@@ -1390,21 +1390,21 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/spawn_model.go cmd/serf-tui/spawn_model_test.go cmd/serf-tui/app_model.go cmd/serf-tui/hub_commands.go
+git add cmd/evener-tui/spawn_model.go cmd/evener-tui/spawn_model_test.go cmd/evener-tui/app_model.go cmd/evener-tui/hub_commands.go
 git commit -m "feat(serf-tui): add first-class spawn form"
 ```
 
 ## Task 7: Build Hub-Native Session Surface
 
 **Files:**
-- Create: `cmd/serf-tui/session_surface.go`
-- Create: `cmd/serf-tui/session_surface_test.go`
-- Modify: `cmd/serf-tui/app_model.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
+- Create: `cmd/evener-tui/session_surface.go`
+- Create: `cmd/evener-tui/session_surface_test.go`
+- Modify: `cmd/evener-tui/app_model.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
 
 - [ ] **Step 1: Write failing session slash command tests**
 
-Create `cmd/serf-tui/session_surface_test.go`:
+Create `cmd/evener-tui/session_surface_test.go`:
 
 ```go
 package main
@@ -1445,14 +1445,14 @@ func TestSessionSurfaceModelWithoutArgsOpensPicker(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSessionSurface -count=1
+go test ./cmd/evener-tui -run TestSessionSurface -count=1
 ```
 
 Expected: fail because `sessionSurface` does not exist.
 
 - [ ] **Step 3: Implement minimal session surface**
 
-Create `cmd/serf-tui/session_surface.go`:
+Create `cmd/evener-tui/session_surface.go`:
 
 ```go
 package main
@@ -1560,7 +1560,7 @@ func (s sessionSurface) View(width int) string {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSessionSurface -count=1
+go test ./cmd/evener-tui -run TestSessionSurface -count=1
 ```
 
 Expected: pass.
@@ -1568,21 +1568,21 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/session_surface.go cmd/serf-tui/session_surface_test.go cmd/serf-tui/app_model.go cmd/serf-tui/hub_commands.go
+git add cmd/evener-tui/session_surface.go cmd/evener-tui/session_surface_test.go cmd/evener-tui/app_model.go cmd/evener-tui/hub_commands.go
 git commit -m "feat(serf-tui): add hub-native session surface"
 ```
 
 ## Task 8: Move All Session Slash Commands To Registry Dispatch
 
 **Files:**
-- Modify: `cmd/serf-tui/command_registry.go`
-- Modify: `cmd/serf-tui/session_surface.go`
-- Modify: `cmd/serf-tui/session_surface_test.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
+- Modify: `cmd/evener-tui/command_registry.go`
+- Modify: `cmd/evener-tui/session_surface.go`
+- Modify: `cmd/evener-tui/session_surface_test.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
 
 - [ ] **Step 1: Write failing tests for required command dispatch**
 
-Add to `cmd/serf-tui/session_surface_test.go`:
+Add to `cmd/evener-tui/session_surface_test.go`:
 
 ```go
 func TestSessionSurfaceRequiredCommandsHaveExecutors(t *testing.T) {
@@ -1604,7 +1604,7 @@ func TestSessionSurfaceRequiredCommandsHaveExecutors(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSessionSurfaceRequiredCommandsHaveExecutors -count=1
+go test ./cmd/evener-tui -run TestSessionSurfaceRequiredCommandsHaveExecutors -count=1
 ```
 
 Expected: fail because registry entries have nil `Run`.
@@ -1665,7 +1665,7 @@ type commandInvocationMsg struct {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestCommandRegistry|TestSessionSurface' -count=1
+go test ./cmd/evener-tui -run 'TestCommandRegistry|TestSessionSurface' -count=1
 ```
 
 Expected: pass.
@@ -1673,21 +1673,21 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/command_registry.go cmd/serf-tui/session_surface.go cmd/serf-tui/session_surface_test.go cmd/serf-tui/hub_commands.go cmd/serf-tui/app_model.go
+git add cmd/evener-tui/command_registry.go cmd/evener-tui/session_surface.go cmd/evener-tui/session_surface_test.go cmd/evener-tui/hub_commands.go cmd/evener-tui/app_model.go
 git commit -m "feat(serf-tui): unify slash command dispatch"
 ```
 
 ## Task 9: Add Transcript Reducer With Replay/Live Dedupe
 
 **Files:**
-- Create: `cmd/serf-tui/session_reducer.go`
-- Create: `cmd/serf-tui/session_reducer_test.go`
-- Modify: `cmd/serf-tui/session_surface.go`
+- Create: `cmd/evener-tui/session_reducer.go`
+- Create: `cmd/evener-tui/session_reducer_test.go`
+- Modify: `cmd/evener-tui/session_surface.go`
 - Modify: `internal/hubapi/types.go` when the existing replay/follow payload type cannot carry a stable event ID; add `EventID string`, `Turn int`, and `Source string` to that payload.
 
 - [ ] **Step 1: Write failing reducer tests**
 
-Create `cmd/serf-tui/session_reducer_test.go`:
+Create `cmd/evener-tui/session_reducer_test.go`:
 
 ```go
 package main
@@ -1719,14 +1719,14 @@ func TestSessionReducerKeepsOrder(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSessionReducer -count=1
+go test ./cmd/evener-tui -run TestSessionReducer -count=1
 ```
 
 Expected: fail because reducer does not exist.
 
 - [ ] **Step 3: Implement reducer**
 
-Create `cmd/serf-tui/session_reducer.go`:
+Create `cmd/evener-tui/session_reducer.go`:
 
 ```go
 package main
@@ -1775,7 +1775,7 @@ func (r *sessionReducer) Messages() []chatMessage {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestSessionReducer -count=1
+go test ./cmd/evener-tui -run TestSessionReducer -count=1
 ```
 
 Expected: pass.
@@ -1783,23 +1783,23 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/session_reducer.go cmd/serf-tui/session_reducer_test.go cmd/serf-tui/session_surface.go internal/hubapi/types.go
+git add cmd/evener-tui/session_reducer.go cmd/evener-tui/session_reducer_test.go cmd/evener-tui/session_surface.go internal/hubapi/types.go
 git commit -m "feat(serf-tui): add transcript reducer"
 ```
 
 ## Task 10: Add Bubble Tea Styling And Theme Tokens
 
 **Files:**
-- Create: `cmd/serf-tui/styles.go`
-- Modify: `cmd/serf-tui/dashboard_view.go`
-- Modify: `cmd/serf-tui/project_model.go`
-- Modify: `cmd/serf-tui/session_surface.go`
-- Modify: `cmd/serf-tui/spawn_model.go`
-- Test: `cmd/serf-tui/theme_test.go`
+- Create: `cmd/evener-tui/styles.go`
+- Modify: `cmd/evener-tui/dashboard_view.go`
+- Modify: `cmd/evener-tui/project_model.go`
+- Modify: `cmd/evener-tui/session_surface.go`
+- Modify: `cmd/evener-tui/spawn_model.go`
+- Test: `cmd/evener-tui/theme_test.go`
 
 - [ ] **Step 1: Write failing style smoke test**
 
-Add to `cmd/serf-tui/theme_test.go`:
+Add to `cmd/evener-tui/theme_test.go`:
 
 ```go
 func TestTUIStylesRenderSelectedRow(t *testing.T) {
@@ -1816,14 +1816,14 @@ func TestTUIStylesRenderSelectedRow(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestTUIStylesRenderSelectedRow -count=1
+go test ./cmd/evener-tui -run TestTUIStylesRenderSelectedRow -count=1
 ```
 
 Expected: fail because style tokens do not exist.
 
 - [ ] **Step 3: Implement style tokens**
 
-Create `cmd/serf-tui/styles.go`:
+Create `cmd/evener-tui/styles.go`:
 
 ```go
 package main
@@ -1873,7 +1873,7 @@ Do not add heavy boxes. Use color and spacing for hierarchy.
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'TestTUIStyles|TestDashboard|TestProject|TestSpawn|TestSessionSurface' -count=1
+go test ./cmd/evener-tui -run 'TestTUIStyles|TestDashboard|TestProject|TestSpawn|TestSessionSurface' -count=1
 ```
 
 Expected: pass.
@@ -1881,18 +1881,18 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/styles.go cmd/serf-tui/dashboard_view.go cmd/serf-tui/project_model.go cmd/serf-tui/session_surface.go cmd/serf-tui/spawn_model.go cmd/serf-tui/theme_test.go
+git add cmd/evener-tui/styles.go cmd/evener-tui/dashboard_view.go cmd/evener-tui/project_model.go cmd/evener-tui/session_surface.go cmd/evener-tui/spawn_model.go cmd/evener-tui/theme_test.go
 git commit -m "style(serf-tui): add polished terminal styles"
 ```
 
 ## Task 11: Add Full Tmux E2E Coverage
 
 **Files:**
-- Modify: `cmd/serf-tui/tmux_e2e_test.go`
+- Modify: `cmd/evener-tui/tmux_e2e_test.go`
 
 - [ ] **Step 1: Add fake hub scenarios**
 
-Extend the fake hub in `cmd/serf-tui/tmux_e2e_test.go` to serve:
+Extend the fake hub in `cmd/evener-tui/tmux_e2e_test.go` to serve:
 
 - `GET /api/tree`
 - `GET /api/models`
@@ -2011,7 +2011,7 @@ func TestTUITmuxE2E_OpenAIAuthAndSteer(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1
+go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1
 ```
 
 Expected: pass. If tmux is missing, tests should skip with a clear message.
@@ -2019,25 +2019,25 @@ Expected: pass. If tmux is missing, tests should skip with a clear message.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/tmux_e2e_test.go
+git add cmd/evener-tui/tmux_e2e_test.go
 git commit -m "test(serf-tui): cover hub tui end to end"
 ```
 
 ## Task 12: Delete Dead Embedded/Direct Paths After Parity
 
 **Files:**
-- Modify: `cmd/serf-tui/main.go`
-- Modify: `cmd/serf-tui/embedded.go`
-- Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/input.go`
-- Modify: tests under `cmd/serf-tui`
+- Modify: `cmd/evener-tui/main.go`
+- Modify: `cmd/evener-tui/embedded.go`
+- Modify: `cmd/evener-tui/model.go`
+- Modify: `cmd/evener-tui/input.go`
+- Modify: tests under `cmd/evener-tui`
 
 - [ ] **Step 1: Search for direct daemon-only paths**
 
 Run:
 
 ```bash
-rg -n "embedded|--addr|provider|sendInput\\(|fetchModels\\(|http://%s/(input|models|compact|clear|model)" cmd/serf-tui -g'*.go'
+rg -n "embedded|--addr|provider|sendInput\\(|fetchModels\\(|http://%s/(input|models|compact|clear|model)" cmd/evener-tui -g'*.go'
 ```
 
 Expected: find old direct helpers and tests.
@@ -2051,7 +2051,7 @@ Delete direct daemon helpers only after all hub E2E tests pass. Keep reusable tr
 Run:
 
 ```bash
-rg -n "slashCommandHelp\\(|sendInput\\(|fetchModels\\(|/models\"|/input\"" cmd/serf-tui -g'*.go'
+rg -n "slashCommandHelp\\(|sendInput\\(|fetchModels\\(|/models\"|/input\"" cmd/evener-tui -g'*.go'
 ```
 
 Expected: no stale handwritten help; no direct daemon `/models` or `/input` calls from the TUI.
@@ -2061,7 +2061,7 @@ Expected: no stale handwritten help; no direct daemon `/models` or `/input` call
 Run:
 
 ```bash
-go test ./cmd/serf-tui -count=1
+go test ./cmd/evener-tui -count=1
 ```
 
 Expected: pass.
@@ -2069,7 +2069,7 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui
+git add cmd/evener-tui
 git commit -m "refactor(serf-tui): remove direct session mode"
 ```
 
@@ -2083,7 +2083,7 @@ git commit -m "refactor(serf-tui): remove direct session mode"
 Run:
 
 ```bash
-go test ./cmd/serf-tui ./cmd/serf-hub ./cmd/serf ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm -count=1
+go test ./cmd/evener-tui ./cmd/evener-hub ./cmd/evener ./internal/hubapi ./internal/auth/openai ./llm/providers/openai ./llm -count=1
 ```
 
 Expected: pass.
@@ -2103,9 +2103,9 @@ Expected: pass.
 Run:
 
 ```bash
-go build -o ./serf ./cmd/serf
-go build -o ./serf-hub ./cmd/serf-hub
-go build -o ./serf-tui ./cmd/serf-tui
+go build -o ./serf ./cmd/evener
+go build -o ./serf-hub ./cmd/evener-hub
+go build -o ./serf-tui ./cmd/evener-tui
 ```
 
 Expected: all builds exit 0.

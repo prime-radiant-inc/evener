@@ -7,7 +7,7 @@
 // either flows through automatically or fails to compile. There is no second
 // implementation of the on-disk format to drift.
 //
-// The cmd/serf-doctor binary is a thin main over this package.
+// The cmd/evener-doctor binary is a thin main over this package.
 package doctor
 
 // Paths is the resolved on-disk location set for one session.

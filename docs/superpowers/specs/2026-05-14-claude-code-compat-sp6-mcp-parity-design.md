@@ -463,7 +463,7 @@ no new packages.
 
 `NewMCPManager`'s public signature gains `env ExecutionEnvironment` only
 if no caller already supplies one in scope; review of the four call sites
-(`cmd/serf`, `cmd/serf-tui`, `cmd/serf-hub`, `cmd/serfeval`) is part of
+(`cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, `cmd/evenereval`) is part of
 the implementation step. Worst case, an extra parameter threads through;
 no existing call site will become invalid in a way TDD does not catch.
 

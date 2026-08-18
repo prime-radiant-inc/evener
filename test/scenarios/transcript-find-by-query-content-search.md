@@ -18,7 +18,7 @@ reports it honestly.
   overwrite mid-run (kata `k2rx`):
   ```bash
   run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   ```
 - Creds exported into the child env (bare `.env`, so `set -a` is
   mandatory):

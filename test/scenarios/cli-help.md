@@ -8,7 +8,7 @@ plumbs `os.Stderr` into the FlagSet output, supplies a structured
 
 ## Pre-state
 
-- Repo built: `go build -o serf ./cmd/serf && go build -o serf-tui ./cmd/serf-tui`
+- Repo built: `go build -o serf ./cmd/evener && go build -o serf-tui ./cmd/evener-tui`
 - Binaries `./serf` and `./serf-tui` exist in the repo root.
 
 ## Steps
@@ -16,7 +16,7 @@ plumbs `os.Stderr` into the FlagSet output, supplies a structured
 1. `./serf-tui --help` and capture output + exit code.
 2. `./serf openai login --help` and capture output + exit code.
 3. `./serf openai logout --help` and `./serf openai status --help` —
-   these route through the same dispatcher arm in `cmd/serf/main.go`.
+   these route through the same dispatcher arm in `cmd/evener/main.go`.
 4. `./serf launch-check --help` — another subcommand using the same
    dispatcher.
 5. As a negative case, run `./serf-tui --bogus`. Confirm it still

@@ -104,12 +104,12 @@ This is a presentation and rendering-boundary change. The existing status partia
 
 | File area | Responsibility |
 | --- | --- |
-| `cmd/serf-hub/templates/partials/workspace.html` and status partials | Compact semantic grouping and removal of duplicated visible task/status fields without changing status data flow. |
-| `cmd/serf-hub/assets/style.css` | Raised borderless composer treatment, compact spacing, one-line rail, truncation and responsive priority rules. |
-| `cmd/serf-hub/assets/renderer.js` | Only if needed to supply a concise active-task/state presentation while preserving existing refresh behavior and composer/ask lifecycle. |
-| `cmd/serf-hub/jstest/test-input-area.js` | Composer DOM structure, attachment/queue/control behavior, and input-area contract coverage. |
-| `cmd/serf-hub/jstest/test-status-refresh.js` and new focused status/layout tests if needed | Refresh behavior, status hierarchy, task-count de-duplication, and compact telemetry DOM/CSS contracts. |
-| `cmd/serf-hub/web_test.go` | Template/render contracts if server-rendered markup changes. |
+| `cmd/evener-hub/templates/partials/workspace.html` and status partials | Compact semantic grouping and removal of duplicated visible task/status fields without changing status data flow. |
+| `cmd/evener-hub/assets/style.css` | Raised borderless composer treatment, compact spacing, one-line rail, truncation and responsive priority rules. |
+| `cmd/evener-hub/assets/renderer.js` | Only if needed to supply a concise active-task/state presentation while preserving existing refresh behavior and composer/ask lifecycle. |
+| `cmd/evener-hub/jstest/test-input-area.js` | Composer DOM structure, attachment/queue/control behavior, and input-area contract coverage. |
+| `cmd/evener-hub/jstest/test-status-refresh.js` and new focused status/layout tests if needed | Refresh behavior, status hierarchy, task-count de-duplication, and compact telemetry DOM/CSS contracts. |
+| `cmd/evener-hub/web_test.go` | Template/render contracts if server-rendered markup changes. |
 
 ## Deterministic verification
 
@@ -141,11 +141,11 @@ Retain and run existing deterministic coverage proving:
 Run at minimum:
 
 ```sh
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-input-area.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-status-refresh.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-mobile-css.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 180 sh cmd/serf-hub/jstest/run-all.sh
-GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub -count=1
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-input-area.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-status-refresh.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 180 sh cmd/evener-hub/jstest/run-all.sh
+GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -count=1
 git diff --check
 ```
 

@@ -13,7 +13,7 @@
 Authority for the deletion is the approved design spec §10:
 `docs/superpowers/specs/2026-07-20-webui-workspace-shell-rewrite-design.md`. This document turns
 that one-paragraph mandate into a file- and symbol-level inventory, cross-referenced against the
-two things that must not break: the **new SPA** (`cmd/serf-hub/frontend/src`) and the **TUI / Go
+two things that must not break: the **new SPA** (`cmd/evener-hub/frontend/src`) and the **TUI / Go
 REST client** (`hubapi.Client`).
 
 ---
@@ -32,7 +32,7 @@ REST client** (`hubapi.Client`).
 
 ## 1. Deletion inventory
 
-### 1.1 Static assets — `cmd/serf-hub/assets/` (33 `.js` DELETE + `style.css` DELETE; 5 files KEEP)
+### 1.1 Static assets — `cmd/evener-hub/assets/` (33 `.js` DELETE + `style.css` DELETE; 5 files KEEP)
 
 Per spec §10: `assets/*.js` (all) and `assets/style.css`. The glob is deliberately `*.js` +
 `style.css`, **not** `assets/*` — the PWA icons and manifest are excluded and **survive** (see
@@ -83,7 +83,7 @@ files reached over REST are handled in §1.6.
 **KEEP (do NOT delete — see §2.4):** `icon-192.png`, `icon-512.png`, `icon-maskable-512.png`,
 `icon.svg`, `manifest.webmanifest`.
 
-### 1.2 Templates — `cmd/serf-hub/templates/` (all 25 `.html` DELETE)
+### 1.2 Templates — `cmd/evener-hub/templates/` (all 25 `.html` DELETE)
 
 Spec §10: `templates/` (all). Every template is consumed only by the SSR/fragment handlers in
 §1.5, all of which are deleted or reduced to `serveSPAIndex`.
@@ -95,7 +95,7 @@ Spec §10: `templates/` (all). Every template is consumed only by the SSR/fragme
 - `partials/credentials.html` — credentials fragment.
 - `partials/settings.html` + `partials/settings/{general,theme,transcript,display,notifications,providers,agents,launch-serf,launch-codex,inrepo,plugins,plugins-manager,skills,mcp,hub,storage,project}.html` (17 files) — the settings section fragments.
 
-### 1.3 JS test suite — `cmd/serf-hub/jstest/` (all 203 files DELETE)
+### 1.3 JS test suite — `cmd/evener-hub/jstest/` (all 203 files DELETE)
 
 Spec §9/§10: the jstest suite tested the old DOM and is not ported. 201 `.js` + 1 `.sh` + 1 `.md`
 = 203 files (30,723 JS lines). Verification: **no Makefile target and no `.go` file references
@@ -275,7 +275,7 @@ assertions). Consumers: **S** = new SPA, **T** = TUI/`hubapi.Client`.
 ## 3. The flag flip
 
 **Mechanism (located):** a single **environment variable**, no CLI flag, no build tag.
-`cmd/serf-hub/webnext.go:16`:
+`cmd/evener-hub/webnext.go:16`:
 
 ```go
 func newWebEnabled() bool { return os.Getenv("SERF_HUB_WEB") == "new" }
@@ -372,11 +372,11 @@ change. Confirm the final icon location before touching the auth allowlist.
   SPA spawn pane is wave-6/unimplemented; confirm the new spawn pane honors `?prompt=`/`?dir=` so
   the palette's `/spawn` command and the sidebar "+" button keep working.
 - **Dead leaf symbols:** after the §1.5 handler removals, run `staticcheck U1000` / `deadcode`
-  across `cmd/serf-hub` — Go does not error on unused package-level types/functions, so the exact
+  across `cmd/evener-hub` — Go does not error on unused package-level types/functions, so the exact
   set of now-dead structs (`web_types.go`) and helpers (`web_format.go` `formatWorkMillis`/
   `htmlEscape`, `app_subagent_preview.go` `writeJSON`) must be swept mechanically, not by eye.
   (`web.go` `validAssetPath` is NOT dead — the `/assets/` handler survives to serve the icons.)
-- **Docs to update (spec §10):** `docs/serf-hub-web-routing.md`, `cmd/serf-hub/README.md`,
+- **Docs to update (spec §10):** `docs/serf-hub-web-routing.md`, `cmd/evener-hub/README.md`,
   `docs/web-ui/*`. Acceptance gate: `git grep htmx` returns nothing.
 - **CSP tightening (spec §7.4):** drop the inline-script `'unsafe-inline'` exemption once
   templates are gone (`internal/httpsec`). Not a deletion, but part of the same milestone.
@@ -384,7 +384,7 @@ change. Confirm the final icon location before touching the auth allowlist.
 ---
 
 ## Appendix A — verification method: reachability of deletion candidates (§1.5)
-For every candidate legacy function, all call sites were grepped across `cmd/serf-hub/**/*.go`
+For every candidate legacy function, all call sites were grepped across `cmd/evener-hub/**/*.go`
 (excluding `_test.go`). A function was classed **delete-whole** only when its sole caller is a
 legacy route (`/_partials/*`, `/_api/*`, or a `/s/{id}/{action}` form-POST case). **Exceptions the
 method caught:** `handleSend` and `handleSessionAction` have a **second** caller under
@@ -395,7 +395,7 @@ method caught:** `handleSend` and `handleSessionAction` have a **second** caller
 
 ## Appendix B — verification method: shared-surface cross-reference (§2)
 Two independent exhaustive sweeps: (1) every `fetch(`, URL literal, and WebSocket construction in
-`cmd/serf-hub/frontend/src` (SPA uses exactly 8 REST paths + `/rpc`); (2) every route template in
+`cmd/evener-hub/frontend/src` (SPA uses exactly 8 REST paths + `/rpc`); (2) every route template in
 `hubapi/client.go` (13 paths, all pinned by `client_test.go` exact-path assertions) plus the TUI's
 `appwire.Client` dial of `/rpc`. An endpoint is **protected** if it appears in either sweep. The
 sweeps also proved the negatives behind §1.6: `/api/search`, `/api/upgrade`, `/api/git/head`,
@@ -406,10 +406,10 @@ sweeps also proved the negatives behind §1.6: `/api/search`, `/api/upgrade`, `/
 
 ## Appendix C — re-validation before execution
 Waves 6 and 8 are unlanded. Before deleting, re-run against the final tree:
-1. `grep -rn "newWebEnabled" cmd/serf-hub --include=*.go` — confirm still exactly the 5 sites in §3.
+1. `grep -rn "newWebEnabled" cmd/evener-hub --include=*.go` — confirm still exactly the 5 sites in §3.
 2. Re-sweep `frontend/src` for `fetch(`/URL literals — confirm no new REST dependency on any §1.6
    endpoint or on `/doc/*` (wave-6 spawn / wave-8 doc pane are the likely changers).
-3. `grep -rn "/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort" cmd/serf-hub/frontend/src` — must stay empty to delete the §1.6 cluster.
+3. `grep -rn "/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort" cmd/evener-hub/frontend/src` — must stay empty to delete the §1.6 cluster.
 4. Confirm `hubapi/client.go` still lists exactly the 13 routes in §2.1 (it is the TUI contract).
 5. `git grep htmx` at the end — must be empty.
 
@@ -424,21 +424,21 @@ Wave 6 (spawn/palette/notifications/rail) is merged to integration (`ed5057be2`,
 
 ### Appendix C check outcomes
 
-1. **`newWebEnabled` sites (§3).** `grep -rn "newWebEnabled" cmd/serf-hub --include='*.go'` → still exactly 5 call sites + the definition, unchanged: `web_workspace.go:45` (`handleSession`), `web_workspace.go:158` (`handleThreadDocument`), `web.go:226` (`handleIndex`), `web_launchconfig.go:8` (`handleCredentials`), `web_settings.go:46` (`handleSettings`); definition `webnext.go:16`. **PASS, no drift.**
+1. **`newWebEnabled` sites (§3).** `grep -rn "newWebEnabled" cmd/evener-hub --include='*.go'` → still exactly 5 call sites + the definition, unchanged: `web_workspace.go:45` (`handleSession`), `web_workspace.go:158` (`handleThreadDocument`), `web.go:226` (`handleIndex`), `web_launchconfig.go:8` (`handleCredentials`), `web_settings.go:46` (`handleSettings`); definition `webnext.go:16`. **PASS, no drift.**
 
 2. **Re-sweep `frontend/src` for `fetch(`/URL literals (§1.6, R2).** Enumerated every `fetch(` and `new WebSocket(` in non-test source. The SPA now uses **11 REST paths + `/rpc`** (was 8 at the original sweep): the original 8 (`tree`, `tree/project`, `rename`, `archive`, `favorite`, `project/delete`, `images/{sha}`, `manifest.webmanifest`) plus three new ones wave 6 added — `/api/search`, `/api/dirs/create`, `/api/git/head` — all three are exactly the endpoints §1.6/R1 flagged as "plausible future consumers." Zero `/doc/*` references anywhere in the current integration tree — the doc pane doesn't exist on this side of the merge yet (it's wave-8 T5, unmerged). **Confirms new REST dependencies on 3 of the 6 §1.6 endpoints; confirms none yet on `/doc/*` in the merged tree** (see wave-8 pending-protection below).
 
-3. **Orphaned-cluster literal grep (§1.6).** `grep -rn '/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort' cmd/serf-hub/frontend/src` → **not empty.** Decomposes into: real `fetch()` calls for `/api/search`, `/api/dirs/create`, `/api/git/head` (production dependencies — see reclassification table); and every `reasoning-effort` hit is the **AppWire method name** `thread/reasoning-effort/set`/`changed`, never the REST path (zero literal hits for the REST endpoint itself). Separately, zero hits anywhere for `/api/upgrade` or `/api/path/validate` as REST literals — both live only as AppWire `serf/upgrade` / `serf/path/validate` now. **The check no longer passes as originally written — 3 of 6 endpoints must leave the orphaned cluster; the other 3 are now confirmed (not just predicted) fully migrated to AppWire, which is stronger evidence than the original doc had.**
+3. **Orphaned-cluster literal grep (§1.6).** `grep -rn '/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort' cmd/evener-hub/frontend/src` → **not empty.** Decomposes into: real `fetch()` calls for `/api/search`, `/api/dirs/create`, `/api/git/head` (production dependencies — see reclassification table); and every `reasoning-effort` hit is the **AppWire method name** `thread/reasoning-effort/set`/`changed`, never the REST path (zero literal hits for the REST endpoint itself). Separately, zero hits anywhere for `/api/upgrade` or `/api/path/validate` as REST literals — both live only as AppWire `serf/upgrade` / `serf/path/validate` now. **The check no longer passes as originally written — 3 of 6 endpoints must leave the orphaned cluster; the other 3 are now confirmed (not just predicted) fully migrated to AppWire, which is stronger evidence than the original doc had.**
 
 4. **`hubapi/client.go` route count (§2.1).** Exactly 13 `c.get`/`c.post` call sites, matching the 13 listed T-routes exactly (health, tree, sessions/{ref} bare, spawn-schema, spawn, models, send, tasks, interrupt, compact, clear, fork, model); confirmed `c.get`/`c.post` are the only two request-issuing helpers in the file (no stray `http.NewRequest`/`.Get`/`.Post`). **PASS, no drift.**
 
-5. **`git grep htmx` (§4 acceptance gate).** Not empty — expected pre-deletion. Hits fall into three buckets: (a) the exact §1.1/§1.2/§1.3 DELETE-scoped files (`assets/*.js`, `style.css`, `templates/**`, `jstest/**`) — matches the plan exactly, nothing unexpected; (b) SDD/plan/spec prose under `docs/**`/`.superpowers/**` (out of M10 scope); (c) **5 files the current plan does not touch**, using "htmx" only as historical/explanatory prose or incidental test data, never as a dependency: `cmd/serf-hub/doc_serve.go:25`, `frontend/src/panes/session/composer/draft.ts:6`, `frontend/src/panes/settings/sections/theme.tsx:43`, `frontend/src/stores/prefs.ts:24,26` (comments contrasting new behavior with "the legacy's htmx world"), and `internal/hubcore/tree_test.go:93` (a test fixture string, `"htmx swap"`, coincidental). None is a functional dependency — the gate's *intent* ("nothing depends on htmx") is already satisfied once §1.1 executes. Recommend scrubbing the 4 comments in the same PR series so the gate is literally, not just functionally, empty — cosmetic, not a blocker. Also noted in passing: `web_test.go` carries htmx-named tests (`TestWeb_AppShellScopesHtmxHistoryToWorkspace`, `TestWeb_Assets_ServeHtmx`) exercising exactly the deleted behavior/asset — §1.5/Appendix A's reachability method explicitly excludes `_test.go`, so the kill list's function/file counts never included test-file surgery. That surgery is mandatory (the deletions won't compile/pass without it) but ordinary — not a new decision, just budget for it.
+5. **`git grep htmx` (§4 acceptance gate).** Not empty — expected pre-deletion. Hits fall into three buckets: (a) the exact §1.1/§1.2/§1.3 DELETE-scoped files (`assets/*.js`, `style.css`, `templates/**`, `jstest/**`) — matches the plan exactly, nothing unexpected; (b) SDD/plan/spec prose under `docs/**`/`.superpowers/**` (out of M10 scope); (c) **5 files the current plan does not touch**, using "htmx" only as historical/explanatory prose or incidental test data, never as a dependency: `cmd/evener-hub/doc_serve.go:25`, `frontend/src/panes/session/composer/draft.ts:6`, `frontend/src/panes/settings/sections/theme.tsx:43`, `frontend/src/stores/prefs.ts:24,26` (comments contrasting new behavior with "the legacy's htmx world"), and `internal/hubcore/tree_test.go:93` (a test fixture string, `"htmx swap"`, coincidental). None is a functional dependency — the gate's *intent* ("nothing depends on htmx") is already satisfied once §1.1 executes. Recommend scrubbing the 4 comments in the same PR series so the gate is literally, not just functionally, empty — cosmetic, not a blocker. Also noted in passing: `web_test.go` carries htmx-named tests (`TestWeb_AppShellScopesHtmxHistoryToWorkspace`, `TestWeb_Assets_ServeHtmx`) exercising exactly the deleted behavior/asset — §1.5/Appendix A's reachability method explicitly excludes `_test.go`, so the kill list's function/file counts never included test-file surgery. That surgery is mandatory (the deletions won't compile/pass without it) but ordinary — not a new decision, just budget for it.
 
 ### Risk recap (the three named risks)
 
 - **R1 (orphaned-REST cluster is a judgment call).** Substantially resolved by wave 6 — see reclassification below. The 3 endpoints that remain unconsumed are now **confirmed** migrated to live AppWire replacements in production code (not merely "planned to be"), stronger evidence than the original doc had.
 - **R2 (`/doc/*` limbo, broken-asset trap).** MW-B (the `?format=raw` variant, commit `770800fe8`) has already landed in integration (`doc_serve.go:75`), ahead of where the wave-8 plan doc frames it (it still lists MW-B as an open go/no-go). But **the broken-asset trap itself is unresolved and unchanged**: `writeDocPage`/`writeDocMarkdownPage` (`doc_serve.go:237-270`, the default non-`raw` response) still hardcode `<link href="/assets/style.css">` and, for markdown, `<script src="/assets/marked.min.js">` — both §1.1 DELETE targets, byte-for-byte unchanged per the function's own doc comment. See Ambiguity below.
-- **R3 (`assets/` partial keep).** Unchanged, confirmed no drift: `cmd/serf-hub/assets/` still holds exactly the 33 JS + `style.css` (DELETE) alongside the 4 icons + `manifest.webmanifest` (KEEP); `hubedge/auth_token.go:109-117`'s `isAuthExempt` still lists exactly the same 6 exact-match paths the kill list and the wave-8 plan both pin (`/auth`, `/api/health`, the 4 icon paths). No wave-6/8 change has touched this.
+- **R3 (`assets/` partial keep).** Unchanged, confirmed no drift: `cmd/evener-hub/assets/` still holds exactly the 33 JS + `style.css` (DELETE) alongside the 4 icons + `manifest.webmanifest` (KEEP); `hubedge/auth_token.go:109-117`'s `isAuthExempt` still lists exactly the same 6 exact-match paths the kill list and the wave-8 plan both pin (`/auth`, `/api/health`, the 4 icon paths). No wave-6/8 change has touched this.
 
 ### Reclassification table
 

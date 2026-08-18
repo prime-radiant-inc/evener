@@ -2,7 +2,7 @@
 
 **What this covers**: kata `2frx` (live e2e for image attachments) over
 kata `xy3t`'s pasted-path detection in
-`cmd/serf-tui/hub_model.go:handleBracketedPaste`. When the user pastes
+`cmd/evener-tui/hub_model.go:handleBracketedPaste`. When the user pastes
 TEXT into the session composer (delivered as a bubbletea
 `KeyMsg{Paste: true}`), the TUI inspects the payload with
 `NormalizePastedPath` + `IsImageFile` + an `os.Stat` existence check.
@@ -162,7 +162,7 @@ rm -f "$IMG"
 
 - **Bracketed-paste detection lives in the SESSION composer only.**
   The handler is invoked from
-  `cmd/serf-tui/hub_model.go:handleSessionInput` (line ~1457). The
+  `cmd/evener-tui/hub_model.go:handleSessionInput` (line ~1457). The
   SPAWN form's prompt text field doesn't have a paste-path branch
   — pasting a path there inserts the literal text into the
   textarea. If you want "attach at spawn time", use the web /new
@@ -172,7 +172,7 @@ rm -f "$IMG"
   bubbletea never sets `KeyMsg.Paste=true`. `tmux send-keys -l "$IMG"`
   similarly inserts the path as text without firing the detection.
 - **Supported extensions** are pinned in
-  `cmd/serf-tui/clipboard_paste.go:IsImageFile`:
+  `cmd/evener-tui/clipboard_paste.go:IsImageFile`:
   `.png .jpg .jpeg .gif .webp`. Other extensions pass through to
   the textarea unchanged. To attach a `.heic` or `.svg` today,
   copy the file to a `.png` (Pre-state) before pasting.

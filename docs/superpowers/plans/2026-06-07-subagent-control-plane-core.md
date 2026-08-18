@@ -359,7 +359,7 @@ func TestListAgents_IncludeClosed(t *testing.T) { /* include_closed=true surface
 
 Do **not** change `TestSubagentManager_InfosEnumeratesTracked` (it tracks running+completed, both still visible) — add the new closed-filter test instead.
 
-- [ ] **Step 6: Schema + registration.** `DefListAgents()` per spec; register; **add `"list_agents"` to `rootOnlyAgentManagementTools`**. (Note in the plan, not code: the rich fields reach `list_agents` but not `/status` unless `server.SubagentStatusInfo` + `cmd/serf/serve.go:528-534` projector are extended — out of scope here.)
+- [ ] **Step 6: Schema + registration.** `DefListAgents()` per spec; register; **add `"list_agents"` to `rootOnlyAgentManagementTools`**. (Note in the plan, not code: the rich fields reach `list_agents` but not `/status` unless `server.SubagentStatusInfo` + `cmd/evener/serve.go:528-534` projector are extended — out of scope here.)
 
 - [ ] **Step 7: Run** → PASS. `go build ./...`. `make lint`.
 

@@ -22,9 +22,9 @@
 ### Task 1: Add failing task-only and semantic regression contracts
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/toolRowGrammar.test.tsx` only for the smallest missing row/CSS contract
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/toolRowGrammar.test.tsx` only for the smallest missing row/CSS contract
 
 **Interfaces:**
 - Consumes: the existing `ItemModel` fixture shape with `argumentsJSON`, `toolName: "delegate"`, and optional `description`.
@@ -32,16 +32,16 @@
 
 - [ ] **Step 1: Write the failing component test.** Add a production-shaped task-only `ToolCallItem` case with no `description`, a task containing markdown punctuation, newlines, and enough text to exceed the preview bound. Assert the top-level `tool-row-purpose` is a single normalized bounded preview, the full original task is present in `subagent-mandate`, the top-level row has exactly one status image and one `details > summary`, and the module has no nested disclosure or large primary transcript button.
 - [ ] **Step 2: Write malformed/blank and precedence cases.** Assert malformed JSON, a blank task, and a non-string task keep status visible but render neither purpose nor a generic label. Keep or strengthen the existing description-bearing assertion so `Testing delegation` remains the purpose and the technical delegate summary remains suppressed.
-- [ ] **Step 3: Run the focused tests and verify RED.** Run `npm test -- --run src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/toolRowGrammar.test.tsx` from `cmd/serf-hub/frontend`; expected failure is the missing top-level purpose for task-only delegates, not a fixture or transform error.
+- [ ] **Step 3: Run the focused tests and verify RED.** Run `npm test -- --run src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/toolRowGrammar.test.tsx` from `cmd/evener-hub/frontend`; expected failure is the missing top-level purpose for task-only delegates, not a fixture or transform error.
 - [ ] **Step 4: Preserve the existing multi-row contracts.** Extend the existing aggregate assertion only if needed to name the behavior under protection: one elected module, all genuine child rows, no per-row Mandate duplication, and no nested `details > summary`.
 - [ ] **Step 5: Commit the failing-test slice.** Stage only the three frontend test files and commit with a message describing the task-only wire-shape regression and the contracts it exposes.
 
 ### Task 2: Implement the smallest delegate-purpose fallback
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentmodule.module.css` only if the Mandate needs an explicit prose/line-break contract
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx` only for that CSS contract
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentmodule.module.css` only if the Mandate needs an explicit prose/line-break contract
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx` only for that CSS contract
 
 **Interfaces:**
 - Consumes: `statedPurposeOf`, `parseArgs`, `str`, and the existing `clip` helper; `rowFromDelegateItem` remains the source of the full Mandate task.
@@ -55,7 +55,7 @@
 ### Task 3: Verify browser-shaped layout and repository quality
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx` only if inspection proves the fixture is no longer production-shaped
+- Modify: `cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx` only if inspection proves the fixture is no longer production-shaped
 
 - [ ] **Step 1: Inspect the overflow fixture after the fix.** Confirm it still has a real `commandExecution` delegate with `argumentsJson: JSON.stringify({ task: TASK, ... })` and no `description`; do not add a synthetic stand-in or unrelated fixture data.
 - [ ] **Step 2: Run browser guards.** Run `npm run layoutguard` and `npm run overflowguard`; explicitly cover 390px and 1400px, and ensure the task-only preview remains bounded without horizontal scroll.

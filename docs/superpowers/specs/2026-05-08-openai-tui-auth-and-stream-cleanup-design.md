@@ -88,11 +88,11 @@ Use Approach B.
 This branch already contains the reusable OpenAI auth seam:
 
 - `internal/auth/openai/service.go`
-- `cmd/serf/openai_login.go`
-- `cmd/serf/openai_logout.go`
-- `cmd/serf/openai_status.go`
+- `cmd/evener/openai_login.go`
+- `cmd/evener/openai_logout.go`
+- `cmd/evener/openai_status.go`
 
-The TUI should reuse that branch-local service layer directly. It should not shell out to the CLI and it should not reimplement storage/token exchange in `cmd/serf-tui`.
+The TUI should reuse that branch-local service layer directly. It should not shell out to the CLI and it should not reimplement storage/token exchange in `cmd/evener-tui`.
 
 ### Concrete v1 UX choice
 
@@ -273,21 +273,21 @@ This is the smallest practical way to align the live runtime with the updated au
   - keep end-of-call overwrite semantics explicit
 - `llm/stream_accumulator_test.go`
   - cover provider-independent end-of-call replacement semantics
-- `cmd/serf-tui/model.go`
+- `cmd/evener-tui/model.go`
   - add auth UI state and key handling
-- `cmd/serf-tui/openai_auth.go`
+- `cmd/evener-tui/openai_auth.go`
   - own TUI auth orchestration and Bubble Tea message types
-- `cmd/serf-tui/embedded.go`
+- `cmd/evener-tui/embedded.go`
   - own auth-first startup and embedded-session recreation behavior
-- `cmd/serf-tui/main.go`
+- `cmd/evener-tui/main.go`
   - only if needed to initialize any auth-related startup refresh command
-- `cmd/serf-tui/statusbar.go`
+- `cmd/evener-tui/statusbar.go`
   - surface compact OpenAI auth status when relevant
-- `cmd/serf-tui/message.go`
+- `cmd/evener-tui/message.go`
   - reuse or extend transcript/system message rendering for auth prompts
-- `cmd/serf-tui/input.go`
+- `cmd/evener-tui/input.go`
   - only if required by current textarea command routing; otherwise keep auth input behavior in `model.go`
-- `cmd/serf-tui/*_test.go`
+- `cmd/evener-tui/*_test.go`
   - add focused tests for key flow, auth mode transitions, and status rendering
 
 Ownership map:
@@ -298,7 +298,7 @@ Ownership map:
 - `model.go`: TUI state transitions and key handling only
 - `statusbar.go`: compact status rendering only
 
-If picker reuse requires a small extension, that belongs in `cmd/serf-tui/model_picker.go` or a focused sibling file, not in `model.go`.
+If picker reuse requires a small extension, that belongs in `cmd/evener-tui/model_picker.go` or a focused sibling file, not in `model.go`.
 
 ## Data Flow
 

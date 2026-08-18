@@ -33,7 +33,7 @@ build-runtime: build-web
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
 build-linux:
 	go clean -cache 2>/dev/null && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/evener/
 
 build-hub: build-runtime
 
@@ -44,7 +44,7 @@ build-hub: build-runtime
 web-preflight:
 	@NODE_DISABLE_COMPILE_CACHE=1 scripts/web-preflight.sh
 
-# build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
+# build-web builds the frontend TypeScript/React app (cmd/evener-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. The vite build
 # itself stays unconditional — dist freshness is the entire point, the
 # install step is the only cacheable part. vite's emptyOutDir wipes the
@@ -52,7 +52,7 @@ web-preflight:
 # closeBundle, so no recipe here restores it and `git status` stays clean
 # after a build however vite was invoked (kata 88nn).
 build-web: web-preflight
-	cd cmd/serf-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
+	cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain
@@ -62,7 +62,7 @@ build-web: web-preflight
 # of the sum. Each writes its own log; a failure replays exactly the failing
 # check's output.
 test-web: web-preflight
-	@set -u; cd cmd/serf-hub/frontend && \
+	@set -u; cd cmd/evener-hub/frontend && \
 	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web.XXXXXX")" || exit 1; \
 	pids=""; started=""; fail=0; complete=0; \
 	stop_checks() { \
@@ -111,7 +111,7 @@ test-web: web-preflight
 # Run every guard so one missing browser or failing case does not hide the
 # remaining guard's verdict; return the first nonzero status.
 test-web-browser: web-preflight
-	@set -u; cd cmd/serf-hub/frontend && \
+	@set -u; cd cmd/evener-hub/frontend && \
 	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web-browser.XXXXXX")" || exit 1; \
 	guard_pid=""; status=0; complete=0; \
 	stop_guard() { [ -z "$$guard_pid" ] || { kill -TERM "$$guard_pid" 2>/dev/null || :; wait "$$guard_pid" 2>/dev/null || :; guard_pid=""; }; }; \
@@ -147,11 +147,11 @@ test-web-browser: web-preflight
 	exit "$$status"
 
 build-tui:
-	go build -o serf-tui ./cmd/serf-tui/
+	go build -o serf-tui ./cmd/evener-tui/
 
 # serf-doctor: the read-only forensic inspector (data plane of the doctoring system).
 build-doctor:
-	go build -o serf-doctor ./cmd/serf-doctor/
+	go build -o serf-doctor ./cmd/evener-doctor/
 
 build-all: build-runtime build-tui build-doctor
 
@@ -162,19 +162,19 @@ build-llmcall:
 dist: build-web
 	rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
 	install -d "$(SERF_DIST_BIN_DIR)"
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(SERF_DIST_BIN_DIR)/serf" ./cmd/serf/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-hub" ./cmd/serf-hub/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-tui" ./cmd/serf-tui/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-doctor" ./cmd/serf-doctor/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(SERF_DIST_BIN_DIR)/serf" ./cmd/evener/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-hub" ./cmd/evener-hub/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-tui" ./cmd/evener-tui/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-doctor" ./cmd/evener-doctor/
 	tar -C "$(DIST_DIR)" -czf "$(SERF_DIST_ARCHIVE)" "$(SERF_DIST_NAME)"
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
-	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/serf/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/serf-hub/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-tui" ./cmd/serf-tui/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-doctor" ./cmd/serf-doctor/
+	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/evener/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/evener-hub/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-tui" ./cmd/evener-tui/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-doctor" ./cmd/evener-doctor/
 	install -d "$(SERF_SHARE_BINDIR)" "$(BINDIR)"
 	@for bin in $(SERF_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(SERF_SHARE_BINDIR)/$$bin"; \
@@ -237,15 +237,15 @@ DEV_TOOLING_TEST_SCRIPTS := run-module-tests private-go-home merge-approval-gate
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
 # — not in every inner-loop `make test` and not on `make lint`, which checks
 # the product's code, not the tooling's behaviour.
-# The wave runner (cmd/serf-test-dev-tooling) owns parallel
+# The wave runner (cmd/evener-test-dev-tooling) owns parallel
 # spawn, signal forwarding to each suite's process group, per-suite TMPDIR
 # isolation, and the leftover-files check that fails any suite that does not
 # clean up after itself. Quiet on success; a failing suite's whole log is
 # replayed. The runner's contract is pinned by
-# cmd/serf-test-dev-tooling/wave_test.go, which runs in the ordinary Go test
+# cmd/evener-test-dev-tooling/wave_test.go, which runs in the ordinary Go test
 # wave.
 test-dev-tooling:
-	@go run ./cmd/serf-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
+	@go run ./cmd/evener-test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
@@ -337,7 +337,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd agent && go test -run "^$$" -tags serffuzz -count=1 ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
 	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
@@ -572,7 +572,7 @@ define run_quiet_lint
 endef
 
 lint-naming:
-	$(call run_quiet_lint,go run ./cmd/serf-namingcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-namingcheck)
 
 # lint-gofmt keeps the repository's Go sources formatter-clean. The formatter
 # configuration in golangci-lint is not the Makefile gate and may not run in
@@ -606,21 +606,21 @@ lint-eval:
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a serf-internal type — keeping them externally importable.
 lint-internal:
-	$(call run_quiet_lint,go run ./cmd/serf-internalcheck)
+	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
 # lint-docs fails if any exported package-level declaration in the published
 # library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.
 lint-docs:
-	$(call run_quiet_lint,go run ./cmd/serf-docscheck)
+	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
 
 build-namingcheck:
-	go build -o serf-namingcheck ./cmd/serf-namingcheck/
+	go build -o serf-namingcheck ./cmd/evener-namingcheck/
 
 # golangci-lint across every module (./... is per-module under go.work).
-# The runner lives in Go (cmd/serf-dev); MODULES and LINT_PARALLEL keep the
+# The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
 # interface run-module-lint.sh shipped with.
 lint-golangci:
-	@MODULES="$(GO_MODULES)" go run ./cmd/serf-dev module-lint
+	@MODULES="$(GO_MODULES)" go run ./cmd/evener-dev module-lint
 
 # generate runs all `go generate` directives. The AppWire protocol reference
 # and frontend TypeScript declarations come from the catalog in appwire/protocol.go.
@@ -630,7 +630,7 @@ generate:
 # lint-generated fails if either committed AppWire output is stale — i.e. the
 # catalog changed without regenerating the protocol doc and TypeScript types.
 lint-generated:
-	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
+	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
 LINT_TARGETS := lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
 

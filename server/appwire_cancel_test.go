@@ -168,7 +168,7 @@ func TestServerAppWireTurnCancelQueuedPropagatesSessionError(t *testing.T) {
 }
 
 // TestServerAppWireTurnCancelQueuedThroughSession exercises the full stack
-// the way cmd/serf serve wires it: the RPC drives the real agent session's
+// the way cmd/evener serve wires it: the RPC drives the real agent session's
 // CancelQueued, so the canceled entry leaves the queue (and is never
 // consumed) while the other queued message stays queued. The thread
 // snapshot carries the full Texts the edit affordance restores into the

@@ -47,7 +47,7 @@ Two distinct wins, **separated** because the review proved they are:
    `agent.X` alive and defeats the point).
 5. **CI gates are hardcoded lists (A-M4/B-M3).** `serf-docscheck` and
    `serf-internalcheck` enumerate `libraryPackages` literally
-   (`cmd/serf-docscheck/main.go:36`, `cmd/serf-internalcheck/main.go:35`); they do
+   (`cmd/evener-docscheck/main.go:36`, `cmd/evener-internalcheck/main.go:35`); they do
    **not** auto-cover new packages. → Every chunk that adds a public package edits
    both lists, and we add a test asserting the lists cover all `agent/**` public
    packages.

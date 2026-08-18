@@ -1,6 +1,6 @@
 # serf-doctor-forensics: the read-only forensic inspector produces the *right* numbers where naive grep produces the wrong ones
 
-**What this covers**: the `serf-doctor` binary (`cmd/serf-doctor` over the
+**What this covers**: the `serf-doctor` binary (`cmd/evener-doctor` over the
 `agent/doctor` package) end-to-end against a real on-disk state tree — the data
 plane that produced the *wrong numbers* during the observer-provenance work.
 Proves the six corrections the tool exists for:
@@ -27,7 +27,7 @@ Proves the six corrections the tool exists for:
    target job stopped with zero output and so could never match its condition
    (`agent/doctor/watches.go:33-41,206-221`). See Step 6.
 
-Unit coverage: `agent/doctor/*_test.go`, `cmd/serf-doctor/main_test.go`. This
+Unit coverage: `agent/doctor/*_test.go`, `cmd/evener-doctor/main_test.go`. This
 card proves it against a built binary on a real state-dir shape.
 
 ## Pre-state
@@ -40,7 +40,7 @@ card proves it against a built binary on a real state-dir shape.
 
   ```bash
   run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf-doctor" ./cmd/serf-doctor
+  go build -o "$run/serf-doctor" ./cmd/evener-doctor
   ```
 - A scratch state dir with one session whose `jobs.jsonl` exercises coalescing,
   a dropped delivery, an `evicted` terminal, and a self-loop `Chain`. Build it

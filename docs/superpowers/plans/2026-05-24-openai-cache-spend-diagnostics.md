@@ -13,9 +13,9 @@
 ## File Structure
 
 - `cmdutil/api_logging.go`: new shared helper for attaching `llm.APILogger` to a client.
-- `cmd/serf/run.go`: replace inline API logger setup with the shared helper.
-- `cmd/serf/serve.go`: attach shared API logger for app-wire server sessions.
-- `cmd/serf-tui/embedded.go`: attach shared API logger for embedded TUI sessions.
+- `cmd/evener/run.go`: replace inline API logger setup with the shared helper.
+- `cmd/evener/serve.go`: attach shared API logger for app-wire server sessions.
+- `cmd/evener-tui/embedded.go`: attach shared API logger for embedded TUI sessions.
 - `cmdutil/api_logging_test.go`: unit tests for shared logger setup, raw logging, and close behavior.
 - `agent/session.go`: set stable OpenAI prompt-cache request defaults on session LLM requests.
 - `agent/session_openai_cache_test.go`: request-capture tests for OpenAI cache key and retention defaults.
@@ -30,7 +30,7 @@
 **Files:**
 - Create: `cmdutil/api_logging.go`
 - Create: `cmdutil/api_logging_test.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/run.go`
 
 - [ ] **Step 1: Write failing tests for shared logging helper**
 
@@ -166,7 +166,7 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (f
 }
 ```
 
-- [ ] **Step 4: Update `cmd/serf/run.go` to use helper**
+- [ ] **Step 4: Update `cmd/evener/run.go` to use helper**
 
 Replace the inline `llm.NewAPILogger` block with:
 
@@ -180,14 +180,14 @@ Replace the inline `llm.NewAPILogger` block with:
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmdutil ./cmd/serf -run 'APILog|Run' -count=1`
+Run: `go test ./cmdutil ./cmd/evener -run 'APILog|Run' -count=1`
 
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmdutil/api_logging.go cmdutil/api_logging_test.go cmd/serf/run.go
+git add cmdutil/api_logging.go cmdutil/api_logging_test.go cmd/evener/run.go
 git commit -m "refactor: share API logging setup"
 ```
 
@@ -196,13 +196,13 @@ git commit -m "refactor: share API logging setup"
 ### Task 2: Add API Logging To Serve And Embedded TUI
 
 **Files:**
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf-tui/embedded.go`
-- Test: existing `cmd/serf` and `cmd/serf-tui` tests
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener-tui/embedded.go`
+- Test: existing `cmd/evener` and `cmd/evener-tui` tests
 
 - [ ] **Step 1: Write failing serve regression test**
 
-Add to `cmd/serf/serve_test.go` or the closest existing serve test file:
+Add to `cmd/evener/serve_test.go` or the closest existing serve test file:
 
 ```go
 func TestRunServeInstallsAPILogger(t *testing.T) {
@@ -244,7 +244,7 @@ func TestRunServeInstallsAPILogger(t *testing.T) {
 
 If the existing serve tests do not expose fake server helpers, use the embedded TUI test first and leave serve verification as a black-box startup test that asserts logger attachment by creating the file on startup.
 
-- [ ] **Step 2: Update `cmd/serf/serve.go`**
+- [ ] **Step 2: Update `cmd/evener/serve.go`**
 
 After `llm.NewFromEnv` succeeds, add:
 
@@ -258,7 +258,7 @@ After `llm.NewFromEnv` succeeds, add:
 
 - [ ] **Step 3: Write embedded TUI regression test**
 
-In the closest existing embedded wiring test, capture the client after `newEmbeddedRuntime` and assert that a real request writes `api.jsonl`. Use the same fake adapter/test harness pattern already used in `cmd/serf-tui/embedded_wiring_test.go`.
+In the closest existing embedded wiring test, capture the client after `newEmbeddedRuntime` and assert that a real request writes `api.jsonl`. Use the same fake adapter/test harness pattern already used in `cmd/evener-tui/embedded_wiring_test.go`.
 
 Expected assertion:
 
@@ -272,7 +272,7 @@ if !strings.Contains(string(data), `"provider":"openai"`) {
 }
 ```
 
-- [ ] **Step 4: Update `cmd/serf-tui/embedded.go`**
+- [ ] **Step 4: Update `cmd/evener-tui/embedded.go`**
 
 After `llm.NewFromEnv` succeeds, add:
 
@@ -287,14 +287,14 @@ Store `closeAPILog` in the embedded runtime struct and call it from the runtime 
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf ./cmd/serf-tui -run 'Serve|Embedded|APILog' -count=1`
+Run: `go test ./cmd/evener ./cmd/evener-tui -run 'Serve|Embedded|APILog' -count=1`
 
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf/serve.go cmd/serf/serve_test.go cmd/serf-tui/embedded.go cmd/serf-tui/embedded_wiring_test.go
+git add cmd/evener/serve.go cmd/evener/serve_test.go cmd/evener-tui/embedded.go cmd/evener-tui/embedded_wiring_test.go
 git commit -m "fix: log API usage from serve and embedded TUI"
 ```
 
@@ -711,7 +711,7 @@ git commit -m "docs: document OpenAI spend diagnostics"
 - [ ] Run focused Go tests:
 
 ```bash
-go test ./cmdutil ./cmd/serf ./cmd/serf-tui ./agent -run 'APILog|OpenAIPromptCache|TranscriptAPICall|Serve|Embedded' -count=1
+go test ./cmdutil ./cmd/evener ./cmd/evener-tui ./agent -run 'APILog|OpenAIPromptCache|TranscriptAPICall|Serve|Embedded' -count=1
 ```
 
 - [ ] Run analyzer tests:

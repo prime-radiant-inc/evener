@@ -36,7 +36,7 @@
 - Verify: `go build ./...`
 
 **Commit 2: cmd/ directory renames**
-- `git mv cmd/serf cmd/evener`, `git mv cmd/serf-hub cmd/evener-hub`, ... (all 14)
+- `git mv cmd/serf cmd/evener`, `git mv cmd/evener-hub cmd/evener-hub`, ... (all 14)
 - sed remaining `cmd/serf` → `cmd/evener` in import paths
 - Verify: `go build ./...`
 
@@ -67,7 +67,7 @@
 - Verify: `go build ./... && go test ./...`
 
 **Commit 9: User data paths in Go**
-- cmdutil/userdirs.go, cmdutil/statedir.go, appwire/frame_recorder.go, internal/credentials/store.go, agent/transcript_lookup.go, agent/mcpconfig/config.go, agent/runtime_dir.go, agent/sandbox_infra.go, cmd/serf-hub/config.go, etc.
+- cmdutil/userdirs.go, cmdutil/statedir.go, appwire/frame_recorder.go, internal/credentials/store.go, agent/transcript_lookup.go, agent/mcpconfig/config.go, agent/runtime_dir.go, agent/sandbox_infra.go, cmd/evener-hub/config.go, etc.
 - `~/.serf` → `~/.evener`, `.serf` → `.evener`, `serf/projects` → `evener/projects`, `share/serf` → `share/evener`, `cache/serf` → `cache/evener`
 - Verify: `go test ./...`
 

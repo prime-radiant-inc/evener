@@ -490,7 +490,7 @@ Expected: all packages PASS. If a downstream package test happened to count embe
 
 - [ ] **Step 3: Verify the file is in git and the embed actually picked it up**
 
-Run: `git ls-files agent/skills/manage-plugins/` and `go run ./cmd/serf -h 2>&1 | head -5` (the second command just ensures the binary still builds with the embed change).
+Run: `git ls-files agent/skills/manage-plugins/` and `go run ./cmd/evener -h 2>&1 | head -5` (the second command just ensures the binary still builds with the embed change).
 
 Expected: `agent/skills/manage-plugins/SKILL.md` appears in `git ls-files` output; serf binary builds and prints its help banner.
 

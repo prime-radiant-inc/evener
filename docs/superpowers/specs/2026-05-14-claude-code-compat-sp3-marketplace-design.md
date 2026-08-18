@@ -7,7 +7,7 @@ Companion spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config
 
 ## 1. Goal
 
-SP3 turns a marketplace reference into a usable on-disk catalog of plugin entries. It owns three concerns: cloning or copying the marketplace itself into `~/.config/serf/plugins/marketplaces/<name>/`, parsing the resulting `.claude-plugin/marketplace.json` into typed Go values, and presenting the catalog through the `serf plugin marketplace` subcommand tree. SP3 supports all four source types both for the marketplace container (`directory`, `github`, `url`, `git-subdir`) and for the plugin entries inside it (same four). SP3 maintains a registry file (`known_marketplaces.json`) under the user config, enforces explicit trust on project-declared marketplaces via `trusted_projects.json`, and exposes a single Go package that SP4 will call to resolve a plugin spec to its source. SP3 does not install plugins, does not read or merge the parent `config.json` (SP1 owns that), and does not route `serf plugin install` (SP4 owns that). It does ship the shared `cmd/serf/plugin/` scaffolding that SP4 plugs into.
+SP3 turns a marketplace reference into a usable on-disk catalog of plugin entries. It owns three concerns: cloning or copying the marketplace itself into `~/.config/serf/plugins/marketplaces/<name>/`, parsing the resulting `.claude-plugin/marketplace.json` into typed Go values, and presenting the catalog through the `serf plugin marketplace` subcommand tree. SP3 supports all four source types both for the marketplace container (`directory`, `github`, `url`, `git-subdir`) and for the plugin entries inside it (same four). SP3 maintains a registry file (`known_marketplaces.json`) under the user config, enforces explicit trust on project-declared marketplaces via `trusted_projects.json`, and exposes a single Go package that SP4 will call to resolve a plugin spec to its source. SP3 does not install plugins, does not read or merge the parent `config.json` (SP1 owns that), and does not route `serf plugin install` (SP4 owns that). It does ship the shared `cmd/evener/plugin/` scaffolding that SP4 plugs into.
 
 ## 2. Public API Surface
 
@@ -226,7 +226,7 @@ package marketplacecmd
 func Dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (handled bool, exitCode int, err error)
 ```
 
-The parent `serf plugin` router (shared with SP4) lives at `cmd/serf/plugin/plugin.go` and switches on `args[1]` between `marketplace` and the SP4-owned verbs. The top-level `dispatchCLICommand` in `cmd/serf/main.go` gains one new case (`"plugin"`).
+The parent `serf plugin` router (shared with SP4) lives at `cmd/evener/plugin/plugin.go` and switches on `args[1]` between `marketplace` and the SP4-owned verbs. The top-level `dispatchCLICommand` in `cmd/evener/main.go` gains one new case (`"plugin"`).
 
 ## 3. The `marketplace.json` Schema
 
@@ -520,10 +520,10 @@ All four subcommands accept `--json` and emit a single top-level JSON object to 
 
 Error codes: `fetch_failed`, `parse_failed`, `unknown_marketplace`, `name_conflict`, `trust_declined`, `argument_error`. SP4 reuses the same envelope.
 
-### 5.6 Shared `cmd/serf/plugin/` scaffolding
+### 5.6 Shared `cmd/evener/plugin/` scaffolding
 
 ```
-cmd/serf/plugin/
+cmd/evener/plugin/
 ├── plugin.go        // top-level "serf plugin <verb>" dispatcher
 ├── marketplace.go   // owned by SP3; "marketplace add|remove|list|update"
 └── install.go       // owned by SP4; "install|uninstall|list|enable|disable|update"
@@ -537,7 +537,7 @@ serf plugin install ...          -> install.Dispatch(args, ...)
 serf plugin help                 -> printHelp()
 ```
 
-`cmd/serf/main.go`'s `dispatchCLICommand` gains:
+`cmd/evener/main.go`'s `dispatchCLICommand` gains:
 
 ```go
 case "plugin":
@@ -687,7 +687,7 @@ Every public function returns an error annotated with the relevant file or sourc
 | Trust declined | `EnforceTrustOnConfig` | `marketplace <name> declared by project not trusted` |
 | Install dir collision | `FetchMarketplace` | `install directory <path> exists and is not empty; remove it or pick another --name` |
 
-The CLI prefixes user-facing error output with `serf plugin marketplace: ` — matching the existing `fmt.Fprintf(stderr, "%s: %v\n", label, err)` convention in `cmd/serf/main.go:28`.
+The CLI prefixes user-facing error output with `serf plugin marketplace: ` — matching the existing `fmt.Fprintf(stderr, "%s: %v\n", label, err)` convention in `cmd/evener/main.go:28`.
 
 `http://` URLs (non-TLS) parse successfully but emit a one-time warning: `warning: <url> is not HTTPS; marketplaces fetched over plain HTTP may be tampered with`. They are not blocked — some self-hosted environments still serve over HTTP — but the warning is loud.
 
@@ -716,16 +716,16 @@ internal/plugins/
     ├── gitsubdir_test.go
     └── git.go             // shared low-level git wrapper used by github/url/gitsubdir
 
-cmd/serf/plugin/
+cmd/evener/plugin/
 ├── plugin.go             // top-level dispatcher, shared with SP4
 ├── plugin_test.go
 ├── marketplace.go        // CLI handlers for add|remove|list|update|trust|untrust
 └── marketplace_test.go
 
-cmd/serf/main.go          // +1 case in dispatchCLICommand
+cmd/evener/main.go          // +1 case in dispatchCLICommand
 ```
 
-Existing files touched: only `cmd/serf/main.go`, additively (one switch case).
+Existing files touched: only `cmd/evener/main.go`, additively (one switch case).
 
 `testdata/`:
 
@@ -842,7 +842,7 @@ For each fetcher, a unit test exercises the success path and the major failure p
 | 5 | Untrust removes entry | gone |
 | 6 | Atomic-write round-trip | yes |
 
-### 10.5 CLI handlers (`cmd/serf/plugin/marketplace_test.go`)
+### 10.5 CLI handlers (`cmd/evener/plugin/marketplace_test.go`)
 
 Each subcommand has at least one happy path and one error path. The CLI tests construct a `Fetchers` with stubs in process, point `XDG_CONFIG_HOME` at `t.TempDir()`, and assert on stdout/stderr text and exit code.
 
@@ -875,7 +875,7 @@ Gated on `SERF_LIVE_NET_TESTS=1`. Adds the real `obra/superpowers-marketplace` (
 
 ### 10.8 Coverage gate
 
-Every exported function in §2 has at least one direct test. Every error in §8 has a test case it surfaces from. Every fetcher in §4 has both a success and a failure case. `go test ./internal/plugins/... ./cmd/serf/plugin/...` is green.
+Every exported function in §2 has at least one direct test. Every error in §8 has a test case it surfaces from. Every fetcher in §4 has both a success and a failure case. `go test ./internal/plugins/... ./cmd/evener/plugin/...` is green.
 
 ## 11. Open Questions Settled Here
 

@@ -10,7 +10,7 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 
 ## Pre-state
 
-- Repo built: `go build -o serf-tui ./cmd/serf-tui && go build -o serf-hub ./cmd/serf-hub`.
+- Repo built: `go build -o serf-tui ./cmd/evener-tui && go build -o serf-hub ./cmd/evener-hub`.
 - A fresh `mktemp -d` directory the test will copy binaries into.
 - `SERF_HUB_BIN` unset in the environment.
 - `python3` on PATH (step 4 uses it to take a port from the kernel).
@@ -34,7 +34,7 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 6. Capture stderr.
 7. Record the hub this run caused, if it started one. The TUI execs
    `serf-hub --addr <the address you passed>` and deliberately releases
-   it (`cmd/serf-tui/internal/hubstart/hub_start.go`, `StartLocalHub`),
+   it (`cmd/evener-tui/internal/hubstart/hub_start.go`, `StartLocalHub`),
    so on a machine where the flock was free a detached hub is now
    holding the REAL `~/.serf/hub.lock` — this card runs on the real
    `$HOME` on purpose. `$PORT` came from the kernel in step 4, so that
@@ -57,7 +57,7 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
   real message names the lock path and continues past that point
   (`flock <path>: resource temporarily unavailable (another serf-hub
   may already be running; a disposable hub needs its own HOME)`,
-  `cmd/serf-hub/internal/hostlock/hostlock.go:32`).
+  `cmd/evener-hub/internal/hostlock/hostlock.go:32`).
   If no other serf-hub holds that flock, the sibling hub starts
   instead of failing and the TUI attaches to it — no `serf-hub exited
   during startup` line at all, which is still a pass, since the
@@ -65,7 +65,7 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
   conflict is not one of the outcomes any more: step 4's port was free
   when the kernel handed it back. The hub started this way is
   deliberately detached and outlives the TUI
-  (`cmd/serf-tui/internal/hubstart/hub_start.go:441`); step 7 records
+  (`cmd/evener-tui/internal/hubstart/hub_start.go:441`); step 7 records
   its pid and Cleanup kills it, so nothing this card started is left
   holding the real `~/.serf/hub.lock` (kata `zw9j`).
 - Falsification: stderr contains `executable file not found in $PATH`
@@ -104,7 +104,7 @@ prevent, and the next card to start a hub is the one that pays for it.
   and the port is known-free rather than assumed-free. Plain `-addr
   127.0.0.1:0` is not a substitute: the TUI hands its bind address
   straight to the hub it starts
-  (`cmd/serf-tui/internal/hubstart/hub_start.go:275` and `:444`), so
+  (`cmd/evener-tui/internal/hubstart/hub_start.go:275` and `:444`), so
   the hub would come up on a kernel-assigned port while the TUI kept
   health-checking port 0 — a different failure than the one this card
   reads. Between the close and the TUI's connect there is a window in
@@ -118,7 +118,7 @@ prevent, and the next card to start a hub is the one that pays for it.
   `$HOME` would remove the very signal the Expected section reads: the
   flock contention that proves the sibling binary was exec'd only
   happens against the one host-wide lock (`~/.serf/hub.lock`,
-  `cmd/serf-hub/main.go:157`). So the card takes the opposite trade —
+  `cmd/evener-hub/main.go:157`). So the card takes the opposite trade —
   keep the real lock in play, and account for the hub it may start.
   Step 7 plus Cleanup are that accounting; do not "fix" this card by
   isolating `$HOME` without replacing the assertion first.

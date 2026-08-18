@@ -169,7 +169,7 @@ cases exist.
       are the two **root** serve-loop entry points —
       `ProcessClientMutationStart` (`agent/session_client_mutation.go:421`) and
       `ProcessPendingUserInput` (`agent/session_client_mutation_queue.go:206`),
-      called only from `cmd/serf/serve.go:1026` and `:1033` — plus the drain-loop
+      called only from `cmd/evener/serve.go:1026` and `:1033` — plus the drain-loop
       re-wraps at `agent/session_lifecycle.go:717` and `:840`. A delegate run
       context is rooted in `context.Background()` and carries only lease and
       preseed keys, so the field is `""`.
@@ -190,8 +190,8 @@ cases exist.
       none of the cancel channels that actually stop a child:
 
       - the daemon's interrupt callback cancels the **root** runner
-        (`cmd/serf/serve.go:832` → `cancelAndWaitMutationRunner`,
-        `cmd/serf/serve.go:662-673`). It reads `mutationRunnerCancel`
+        (`cmd/evener/serve.go:832` → `cancelAndWaitMutationRunner`,
+        `cmd/evener/serve.go:662-673`). It reads `mutationRunnerCancel`
         (declared `:646`), whose **only** writer is `setMutationRunner`
         (`:648-651`), called from four places in the root serve loop: `:1008`,
         `:1016`, `:1028`, `:1035`. Note `:1008` is the drain-loop re-arm inside

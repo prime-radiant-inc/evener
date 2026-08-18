@@ -4,7 +4,7 @@
 // groups, so a stop reaches every forked descendant rather than just the
 // direct child, and stops them TERM-first with a bounded KILL escalation.
 // It is the Go home of the stop_children/process-group discipline the shell
-// runners each hand-rolled (and cmd/serf-test-dev-tooling's wave carries).
+// runners each hand-rolled (and cmd/evener-test-dev-tooling's wave carries).
 package procgroup
 
 import (
@@ -42,7 +42,7 @@ func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 // unrelated process group by now, which is exactly the wrong target for a
 // group TERM. The window between this check and the Terminate below is
 // microseconds wide and requires an immediate pid wraparound — the same
-// residue cmd/serf-test-dev-tooling's wave documents; closing it fully
+// residue cmd/evener-test-dev-tooling's wave documents; closing it fully
 // would need waitid(WNOWAIT), which pure Go doesn't expose. The shell
 // runner's window was zero only because a single-threaded shell cannot
 // reap concurrently with its own stop loop.

@@ -127,7 +127,7 @@ Add tests under `internal/appprojector` for:
 
 ### Web renderer tests
 
-Add or extend `cmd/serf-hub/jstest/test-tool-renderers.js` coverage for:
+Add or extend `cmd/evener-hub/jstest/test-tool-renderers.js` coverage for:
 
 1. grouped activation renders inside `.tool-call.use_skill`,
 2. no sibling `.system-message` with title `Skill activated` is rendered for the grouped case, and

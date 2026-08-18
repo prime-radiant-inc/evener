@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 Status: Draft for Jesse's review. **No implementation** — this is a design doc.
-Scope: the session transcript pane (`cmd/serf-hub/frontend/src/panes/session/transcript/**`)
+Scope: the session transcript pane (`cmd/evener-hub/frontend/src/panes/session/transcript/**`)
 plus one new widget (`src/widgets/speakeravatar/`).
 Evidence: rendered mockups in `assets/2026-07-29-transcript-slack-lean/`, produced from a
 static page using the repo's real `tokens.css`/`global.css` and the real toolicon glyph

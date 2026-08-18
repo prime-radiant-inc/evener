@@ -73,7 +73,7 @@ bug-masking) jstest fixtures this surfaced.
   `n/1_000_000` vs `formatCtx`'s `toFixed(1)`, both correctly derived from
   the same `1050000`). The TUI's compact tail omits `web search` by design
   (`modelInfoMetaTail` only surfaces tools/vision/reasoning + ctx/price,
-  confirmed by reading `cmd/serf-tui/hub_commands.go`) — not a bug.
+  confirmed by reading `cmd/evener-tui/hub_commands.go`) — not a bug.
 - Falsification: any rendered number disagrees with the catalog's raw
   per-token values (after the documented ×1e6/rounding); a badge is present
   in the API but absent from a picker (or vice versa) for reasons other than
@@ -85,7 +85,7 @@ bug-masking) jstest fixtures this surfaced.
 
 ## Sharp edges
 
-- **The bug and the fix.** `cmd/serf-hub/assets/spawn.js`'s
+- **The bug and the fix.** `cmd/evener-hub/assets/spawn.js`'s
   `listModelsWithDiagnosticsForHarness` (used solely by `openModelPicker`)
   was changed to always fetch `/api/models?diagnostics=1` (REST), dropping
   the `window.SerfAppwire.listModelsWithDiagnostics` branch entirely — this
@@ -98,7 +98,7 @@ bug-masking) jstest fixtures this surfaced.
   nothing until rebuild).
 - **Tests that tested mocked behavior, not real logic** (surfaced by this
   card, flagged per this project's standing rule against exactly this):
-  `cmd/serf-hub/jstest/test-spawn-model-picker-badges.js` and
+  `cmd/evener-hub/jstest/test-spawn-model-picker-badges.js` and
   `test-spawn-model-picker-recent.js` both stubbed
   `window.SerfAppwire.listModelsWithDiagnostics` to return hand-built
   enriched objects (`display_name`, `supports_tools`, `context_window`,
@@ -111,7 +111,7 @@ bug-masking) jstest fixtures this surfaced.
   changing both to mock `window.fetch("/api/models?...")` instead (matching
   the pattern `test-spawn-model-picker-recent-fetch-fallback.js` already
   used), which now exercises the real, sole code path.
-  `cmd/serf-hub/jstest/test-spawn.js` (a pre-existing, larger, non-Track-B
+  `cmd/evener-hub/jstest/test-spawn.js` (a pre-existing, larger, non-Track-B
   test file covering spawn-form navigation/harness switching) had two more
   instances of the same pattern (`formDom`, `diagModelDom`) and needed the
   same treatment, plus a `setTimeout(r,0)` flush after each model-picker
@@ -120,6 +120,6 @@ bug-masking) jstest fixtures this surfaced.
   built one tick later than it used to be.
 - The web settings picker and the TUI were never affected — they always
   read the enriched REST endpoint (`settings-pickers.js` directly;
-  `cmd/serf-tui/hub_commands.go`'s `modelInfoMetaTail` reads
+  `cmd/evener-tui/hub_commands.go`'s `modelInfoMetaTail` reads
   `llm.EmbeddedModelCatalog()` directly in-process, no HTTP round trip at
   all). Only the web spawn form's model picker was silently broken.

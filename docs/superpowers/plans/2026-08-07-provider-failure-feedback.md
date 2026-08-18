@@ -6,7 +6,7 @@
 
 **Architecture:** A phase/stats-aware attempt contract in `llm.RetryStream` powers two early-stop rules that raise `llm.ProviderUnhealthyError`. An agent-side round recorder retains per-attempt stats and best partials across the round's retry groups; settlement persists the best partial as a normal assistant turn plus a steering turn composed from templates. Events keep live clients consistent; the retry chip gains honest denominators and elapsed time.
 
-**Tech Stack:** Go (daemon: `llm/`, `agent/`), TypeScript (web: `cmd/serf-hub/frontend/`), Go TUI (`cmd/serf-tui/`).
+**Tech Stack:** Go (daemon: `llm/`, `agent/`), TypeScript (web: `cmd/evener-hub/frontend/`), Go TUI (`cmd/evener-tui/`).
 
 ## Global Constraints
 
@@ -313,11 +313,11 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 ### Task 11: TUI + web chip rendering and clearing rules
 
 **Files:**
-- Modify: `cmd/serf-tui/composer_render.go` (`composerRetryChip`: denominator = `AttemptCap`; append ` · <model>` when `retry.Model` differs from the session's primary model; append ` · <Nm> on this call` from `GroupElapsedMS`), `cmd/serf-tui/hub_notifications.go` (`clearModelRetryOnProgress`: REMOVE `NotifyAgentMessageDelta`, `NotifyReasoningSummaryDelta`, `NotifyToolOutputDelta` from the clear set; keep `NotifyTurnCompleted`, `NotifyTurnStarted`; keep `NotifyItemCompleted` ONLY for model-output items — the notification carries the item kind; systemMessage/user items must not clear), web `cmd/serf-hub/frontend/src/protocol/reducer.ts` + `LivenessLine.tsx` (same rules; render "in progress" while deltas flow instead of clearing)
+- Modify: `cmd/evener-tui/composer_render.go` (`composerRetryChip`: denominator = `AttemptCap`; append ` · <model>` when `retry.Model` differs from the session's primary model; append ` · <Nm> on this call` from `GroupElapsedMS`), `cmd/evener-tui/hub_notifications.go` (`clearModelRetryOnProgress`: REMOVE `NotifyAgentMessageDelta`, `NotifyReasoningSummaryDelta`, `NotifyToolOutputDelta` from the clear set; keep `NotifyTurnCompleted`, `NotifyTurnStarted`; keep `NotifyItemCompleted` ONLY for model-output items — the notification carries the item kind; systemMessage/user items must not clear), web `cmd/evener-hub/frontend/src/protocol/reducer.ts` + `LivenessLine.tsx` (same rules; render "in progress" while deltas flow instead of clearing)
 - Test: TUI notification tests, web reducer tests
 
 - [ ] **Step 1: Failing tests:** chip survives an assistant delta and a systemMessage item completion; clears on turn completion; renders `attempt 3/4`, model tag on fallback group, elapsed.
-- [ ] **Step 2-4: Red / implement / green (`go test ./cmd/serf-tui/... -count=1`; `npm test` per frontend README). Step 5: Commit** `feat(ui): sticky honest retry chip in TUI and web`
+- [ ] **Step 2-4: Red / implement / green (`go test ./cmd/evener-tui/... -count=1`; `npm test` per frontend README). Step 5: Commit** `feat(ui): sticky honest retry chip in TUI and web`
 
 ### Task 12: Delegate surfacing
 

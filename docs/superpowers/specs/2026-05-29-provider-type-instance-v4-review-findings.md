@@ -77,7 +77,7 @@ dissolve #1 (no selector to inject) and #3 (no instance-name prefix ambiguity).
    prevents a torn file but not divergent content. *(Both.)*
 
 6. **[SERIOUS] No usable cross-process lock exists.** The only flock
-   (`cmd/serf-hub/flock.go`) is `package main` (unimportable by `cmd/serf`) **and**
+   (`cmd/evener-hub/flock.go`) is `package main` (unimportable by `cmd/evener`) **and**
    `LOCK_NB` (loser errors, doesn't wait-and-read). §4.10/§6 "the loser sees the
    winner's file" needs a new shared **blocking** primitive that doesn't exist.
    *(Both.)*

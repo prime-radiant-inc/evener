@@ -30,17 +30,17 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
 - **Three recorders, all default-off, all reading `os.Getenv` directly** (no central
   default): `SERF_RECORD_APPWIRE` → `<state>/appwire-frames.jsonl`
   (`appwire/frame_recorder.go:newEnvFrameRecorder`, attached in `appwire/ws_transport.go`);
-  `SERF_RECORD_HTTP` → `<state>/hub-http.jsonl` (`cmd/serf-hub/http_recorder.go`, middleware
-  in `cmd/serf-hub/web.go`); **`SERF_LOG_RAW_HTTP` → `<state>/api-raw.jsonl`** capturing
+  `SERF_RECORD_HTTP` → `<state>/hub-http.jsonl` (`cmd/evener-hub/http_recorder.go`, middleware
+  in `cmd/evener-hub/web.go`); **`SERF_LOG_RAW_HTTP` → `<state>/api-raw.jsonl`** capturing
   per-call provider `request_body` + streaming `response_body`
   (`llm/apilog.go:EnableRawLogging`, attached via `cmdutil.AttachAPILogger`). All registered
   in `envvars/envvars.go` with `Visibility: Tooling`.
 - **The provider-traffic harvest path is already complete end-to-end.**
   `serf-fuzz-harvest --surface sse` reads `api-raw.jsonl`, takes streaming `ResponseBody`,
   and routes by provider into the per-provider metamorphic seed dirs
-  (`cmd/serf-fuzz-harvest/raw.go:harvestSSE`, `main.go:112`). Surfaces: `sse, toolargs,
+  (`cmd/evener-fuzz-harvest/raw.go:harvestSSE`, `main.go:112`). Surfaces: `sse, toolargs,
   appwire, http, jobs`.
-- **A robust sanitization chokepoint** (`cmd/serf-fuzz-harvest/sanitize.go`): shape-scrub by
+- **A robust sanitization chokepoint** (`cmd/evener-fuzz-harvest/sanitize.go`): shape-scrub by
   default (structure/enums kept, free-text length-bucketed, numbers zeroed, timestamps
   fixed), nine high-confidence secret regexes + entropy gate, `--keep-values` gated behind
   `SERF_FUZZ_CAPTURE_ENV`, personal `~/.serf` forced to shape-scrub, plus a write-time
@@ -48,8 +48,8 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
   genuinely scrubbed to commit.
 - **The headless driving surface:** `serf --model <provider/model> [--verbose]
   [--max-rounds N] [--reasoning-effort L] [--fast-cheap-model <m>] "<prompt>"` (prompt
-  positional or stdin via `cmd/serf/main.go:111 cliprompt.Read`; `--verbose` emits NDJSON
-  events to stderr; flags at `cmd/serf/main.go:166-195`). Kimi: `type = "kimi-anthropic"`,
+  positional or stdin via `cmd/evener/main.go:111 cliprompt.Read`; `--verbose` emits NDJSON
+  events to stderr; flags at `cmd/evener/main.go:166-195`). Kimi: `type = "kimi-anthropic"`,
   keys `KIMI_CODING_API_KEY` / `KIMI_CODING_BASE_URL`. OpenAI: `OPENAI_API_KEY`,
   model `gpt-5.4-mini`. Configurable via `~/.serf/providers.toml` `[instances.*]`.
 
@@ -113,12 +113,12 @@ Highest cheap leverage: real inputs reach states random generation never will. T
 path exists; we need the local-record default and a driver.
 
 **A1 — Local-record master switch (D1).** Add `envvars.SERFFuzzRecord`; thread it into the
-three recorders' enable checks (`appwire/frame_recorder.go`, `cmd/serf-hub/http_recorder.go`,
+three recorders' enable checks (`appwire/frame_recorder.go`, `cmd/evener-hub/http_recorder.go`,
 `llm/apilog.go:rawHTTPLogEnabled`) as "per-recorder var OR (master ∧ not explicitly off)".
 Document in dev onboarding. Gitignore `./.serf/`. *~40 LoC + tests asserting off-by-default
 when master unset.*
 
-**A2 — The driver (`cmd/serf-fuzz-drive`, or `scripts/fuzz-drive.sh`).** Runs a corpus of
+**A2 — The driver (`cmd/evener-fuzz-drive`, or `scripts/fuzz-drive.sh`).** Runs a corpus of
 varied coding tasks headless against each configured provider, recorders on, in throwaway
 sandboxed workdirs, then invokes the harvester. Requirements:
 - **Task corpus**: a directory of prompt files spanning the tool/behavior surface — file
@@ -153,11 +153,11 @@ decoded value into the production logic that consumes it. Worklist (verified fil
 
 | Target (floor) | Decoded type | Drive into | Seam |
 | --- | --- | --- | --- |
-| `FuzzWireTypes` (1.0%) | all 99 wire types | RPC dispatch → typed handlers (`cmd/serf-hub/app_rpc.go`, `internal/appserver/router.go:Dispatch`) | sandbox sources/registry — **reuse the existing `FuzzAppWireDispatch` sandbox**; first coverage-diff against it to avoid duplication |
+| `FuzzWireTypes` (1.0%) | all 99 wire types | RPC dispatch → typed handlers (`cmd/evener-hub/app_rpc.go`, `internal/appserver/router.go:Dispatch`) | sandbox sources/registry — **reuse the existing `FuzzAppWireDispatch` sandbox**; first coverage-diff against it to avoid duplication |
 | `FuzzMethodParams` (1.0%) | 46 method Params | same dispatch path, per-method | same sandbox |
-| `FuzzLaunchConfigDecode` (1.5%) | `LaunchConfigLayer` | `launchconfig.Resolve` + `validateAndExpandRepoLayer` (`cmd/serf-hub/internal/launchconfig/resolver.go`) | fs/trust-store seam (temp dir + fake trust) |
-| `FuzzApplyEdit` (24%) | `LaunchConfigLayer` edits | `launch_settings_panel.go:applyEdit` path → `SetLayer` (`cmd/serf-tui/internal/launchconfig`) | path-validation seam |
-| `FuzzMCPConfigLoad` (48%) | MCP server map | already calls `LoadFile`; extend to `mcpstatus.ProbeMCPStatus` (`cmd/serf-hub/web_settings.go`) | probe stub (no real subprocess) |
+| `FuzzLaunchConfigDecode` (1.5%) | `LaunchConfigLayer` | `launchconfig.Resolve` + `validateAndExpandRepoLayer` (`cmd/evener-hub/internal/launchconfig/resolver.go`) | fs/trust-store seam (temp dir + fake trust) |
+| `FuzzApplyEdit` (24%) | `LaunchConfigLayer` edits | `launch_settings_panel.go:applyEdit` path → `SetLayer` (`cmd/evener-tui/internal/launchconfig`) | path-validation seam |
+| `FuzzMCPConfigLoad` (48%) | MCP server map | already calls `LoadFile`; extend to `mcpstatus.ProbeMCPStatus` (`cmd/evener-hub/web_settings.go`) | probe stub (no real subprocess) |
 | `FuzzCodexItemDecode` | `ThreadItem`/`Turn` | `server/appwire_turns.go:appTurnsFromNotifications` (pure) | none — just route the decoded value in |
 
 **Already behavioral — enrich seeds only, don't rebuild:** `FuzzProject`
@@ -189,7 +189,7 @@ provider target re-seeded in A gets a differential or internal invariant:
 ## Phase D — Whole-codebase coverage measurement + global ratchet (parallel, infra)
 
 Lever #4 — makes "the entire codebase" measurable instead of a hand-picked focus set. Today
-`cmd/serf-fuzzcov` + `scripts/fuzzcov-floors.txt` track a focus set per target. Add:
+`cmd/evener-fuzzcov` + `scripts/fuzzcov-floors.txt` track a focus set per target. Add:
 - A **global fuzz-reachable coverage number**: run the full seed corpus (`go test -run '^Fuzz'`)
   with `-coverpkg=./...` per module, merge profiles, report total % per module + repo.
 - A **global ratchet** (`scripts/fuzzcov-floors.txt` sibling) that fails CI if the global
@@ -226,7 +226,7 @@ an uncommitted file; verify each lane scoped while siblings still edit.**
   - Lane 2 (root / launchconfig×2): `FuzzLaunchConfigDecode` + `FuzzApplyEdit`.
   - Lane 3 (agent / mcpconfig): `FuzzMCPConfigLoad` → probe.
   - Lane 4 (llm / difftest): Phase C provider oracles + goldens from the A corpus.
-  - Lane 5 (infra): Phase D global coverage + ratchet (touches `cmd/serf-fuzzcov` + scripts —
+  - Lane 5 (infra): Phase D global coverage + ratchet (touches `cmd/evener-fuzzcov` + scripts —
     parent-adjacent; run it as a parent-supervised lane so it doesn't race scripts edits).
 
   Note most B targets live in the **root module** — parallelism there is by disjoint
@@ -251,13 +251,13 @@ then `--no-ff` merge → push.
 
 ## Anchors (verified)
 
-- Recorders: `appwire/frame_recorder.go`, `cmd/serf-hub/http_recorder.go`,
+- Recorders: `appwire/frame_recorder.go`, `cmd/evener-hub/http_recorder.go`,
   `llm/apilog.go` (`EnableRawLogging`, `rawHTTPLogEnabled`), `envvars/envvars.go`.
-- Harvest: `cmd/serf-fuzz-harvest/{main.go,raw.go,sanitize.go,discover.go,emit.go}`,
+- Harvest: `cmd/evener-fuzz-harvest/{main.go,raw.go,sanitize.go,discover.go,emit.go}`,
   `scripts/gitleaks-scan.sh`, `.gitleaks.toml`.
-- Driving: `cmd/serf/main.go:166-195` (flags), `:111` (prompt), `cmd/serf/run.go`.
+- Driving: `cmd/evener/main.go:166-195` (flags), `:111` (prompt), `cmd/evener/run.go`.
 - Targets/coverage: `scripts/run-fuzz.sh` (registry), `scripts/fuzzcov-floors.txt`,
-  `cmd/serf-fuzzcov`, `scripts/fuzz-mutation-score.sh` (coverage-artifact caveat).
-- Promotion consumers: `internal/appserver/router.go:Dispatch`, `cmd/serf-hub/app_rpc.go`,
-  `cmd/serf-hub/internal/launchconfig/resolver.go:Resolve`, `agent/mcpconfig/config.go:LoadFile`,
+  `cmd/evener-fuzzcov`, `scripts/fuzz-mutation-score.sh` (coverage-artifact caveat).
+- Promotion consumers: `internal/appserver/router.go:Dispatch`, `cmd/evener-hub/app_rpc.go`,
+  `cmd/evener-hub/internal/launchconfig/resolver.go:Resolve`, `agent/mcpconfig/config.go:LoadFile`,
   `server/appwire_turns.go:appTurnsFromNotifications`.

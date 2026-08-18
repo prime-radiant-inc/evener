@@ -1,0 +1,118 @@
+package hubcore
+
+import (
+	"context"
+	"os"
+	"time"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
+)
+
+// RelayLifecycleHooks are optional test seams the relay idle-retirement loop
+// invokes to observe teardown. They are nil in production and set once via
+// WebConfig at construction (never mutated after a relay goroutine starts), so
+// each hub server instance carries its own — no shared global, no data race.
+type RelayLifecycleHooks struct {
+	IdleExit                   func(threadID string)
+	AfterIdleDelete            func(threadID string)
+	RetryWait                  func(context.Context, time.Duration) error
+	AfterPlaceholder           func(threadID string)
+	AfterReady                 func(threadID string)
+	BeforeExistingRegistration func(threadID string)
+	RegisterSubscription       func(context.Context, string, bool) bool
+	BeforeSupervisor           func(threadID string)
+	BeforeLaunchCommit         func(threadID string)
+}
+
+// WebConfig is everything the web server needs.
+type WebConfig struct {
+	HubAddr             string
+	AuthToken           string // capability token gating every non-exempt route
+	HubStateRoot        string // root of hub-level state; defaults to $HOME/.serf
+	RunDir              string // run directory where rendezvous files live
+	PastIndexPath       string // path to the SQLite past-index DB, for display in settings
+	Roster              *Roster
+	Past                *PastIndex
+	Spawner             Spawner             // optional; nil disables spawn
+	ResumeLocks         *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
+	DeletionStore       *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
+	Models              []ModelDescriptor   // available models for the spawn chip
+	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
+	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore          *credentials.Store  // credentials store; passed to auth controller
+	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	PluginRoot          string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/serf/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
+	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	ProviderConfig      *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	ProvidersConfigPath string              // path to providers.toml; forwarded to the auth controller
+	CodexSources        []appsource.CodexSourceConfig
+	CodexLaunches       []codexlaunch.CodexLaunchConfig
+	CodexLauncher       *codexlaunch.CodexLauncher
+
+	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
+	PinSections *PinSectionStore // named pin-section store; nil when not configured
+
+	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
+
+	// RemoteThreadCache holds the last-refreshed remote-source thread list so
+	// the tree read path never blocks on a network hop. Nil in tests, which
+	// fall back to the old synchronous walk (see remoteTreeThreads).
+	RemoteThreadCache *RemoteThreadCache
+
+	// PokeAttention nudges the hub's attention watcher to recompute
+	// immediately (e.g. after an archive decision changes tier eligibility)
+	// instead of waiting for its next tick. Nil when the watcher isn't wired
+	// (e.g. in tests that construct a WebServer directly).
+	PokeAttention func()
+
+	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
+
+	// Sandbox seams. Each is nil in production (the real implementation runs);
+	// a fuzz/test sandbox sets them so the matching mutating handler runs without
+	// shelling out, hitting the network, or mutating the real filesystem. These
+	// are the escapes a read-only harness cannot drive: the live-git probe
+	// (/api/git/head), the live-provider model query (/api/models), and the
+	// directory creator (/api/dirs/create). See cmd/evener-hub's sandbox_test.go.
+	GitHeadBranch func(ctx context.Context, dir string) (string, error) // nil → real `git`
+	LiveModels    func(ctx context.Context) []map[string]any            // nil → real provider query
+	MkdirAll      func(path string, perm os.FileMode) error             // nil → os.MkdirAll
+}
+
+// Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
+// Returns the discovered Entry on success.
+type Spawner interface {
+	Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error)
+	Resume(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error)
+}
+
+// SpawnRequest carries the per-spawn knobs passed directly from the caller.
+type SpawnRequest struct {
+	Project       identifier.Project
+	Resolved      launchconfig.Resolved
+	WorkingDir    string
+	StateDir      string
+	RunDir        string
+	AppReplaySize int
+	Env           []string // populated by ToEnv during Spawn
+	Provider      string   // for credential injection
+}
+
+// ResumeRequest carries the resolved state needed to resume a saved session.
+type ResumeRequest struct {
+	Project       identifier.Project
+	SessionID     string
+	WorkingDir    string
+	StateDir      string
+	Resolved      launchconfig.Resolved
+	RunDir        string
+	AppReplaySize int
+	Env           []string // populated by ToEnv during Resume
+	Provider      string   // for credential injection
+}

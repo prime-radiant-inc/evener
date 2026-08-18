@@ -19,7 +19,7 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
   overwrite mid-run (kata `k2rx`):
   ```bash
   run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   ```
 - Creds exported into the child env:
   ```bash

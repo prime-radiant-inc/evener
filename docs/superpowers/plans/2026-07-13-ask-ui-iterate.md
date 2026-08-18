@@ -24,10 +24,10 @@
 ### Task 1: Accessible Ask Controls and Stable Form Lifecycle
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-ask-card.js`
-- Modify: `cmd/serf-hub/jstest/test-ask-compose.js`
-- Modify: `cmd/serf-hub/jstest/test-ask-submit.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/jstest/test-ask-card.js`
+- Modify: `cmd/evener-hub/jstest/test-ask-compose.js`
+- Modify: `cmd/evener-hub/jstest/test-ask-submit.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
 - Consumes: `pendingAsk.items`, `setQuestionResolution(item, resolution, options)`, `composeAskAnswers(items)`, and `SerfAppwire.startTurn(ref, text)`.
@@ -71,8 +71,8 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-card.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-submit.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
   ```
 
   Expected: FAIL because free/decide are buttons, the note field is disclosed by `+`, the footer is inside the dock, and the send button is not disabled during the request.
@@ -115,9 +115,9 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-card.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-compose.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-submit.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-compose.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-submit.js
   ```
 
   Expected: all three scripts print `PASS` and exit 0.
@@ -125,18 +125,18 @@
 - [ ] **Step 6: Commit the renderer task**
 
   ```sh
-  git add cmd/serf-hub/assets/renderer.js \
-    cmd/serf-hub/jstest/test-ask-card.js \
-    cmd/serf-hub/jstest/test-ask-compose.js \
-    cmd/serf-hub/jstest/test-ask-submit.js
+  git add cmd/evener-hub/assets/renderer.js \
+    cmd/evener-hub/jstest/test-ask-card.js \
+    cmd/evener-hub/jstest/test-ask-compose.js \
+    cmd/evener-hub/jstest/test-ask-submit.js
   git commit -m "feat(hub): refine ask response controls"
   ```
 
 ### Task 2: Constrained Ask-Dock Layout and Mobile Footer
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-mobile-css.js`
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-mobile-css.js`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 **Interfaces:**
 - Consumes: Task 1's form-level `data-response-mode="ask"`, scrolling `[data-ask-response-dock]`, sibling `[data-ask-footer]`, and option/fallback/skip hooks.
@@ -162,7 +162,7 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-mobile-css.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
   ```
 
   Expected: FAIL because ask mode is not yet a constrained form flex column and the footer is still styled as a sticky child of the scroller.
@@ -184,9 +184,9 @@
   Run:
 
   ```sh
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-mobile-css.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-renderer-viewport-dock.js
-  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/serf-hub/jstest/test-ask-card.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-renderer-viewport-dock.js
+  NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-ask-card.js
   ```
 
   Expected: all scripts print `PASS` and exit 0.
@@ -194,7 +194,7 @@
 - [ ] **Step 5: Commit the layout task**
 
   ```sh
-  git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-mobile-css.js
+  git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-mobile-css.js
   git commit -m "feat(hub): keep ask actions above mobile viewport"
   ```
 
@@ -210,7 +210,7 @@
 - [ ] **Step 1: Run the full deterministic Hub JSDOM suite**
 
   ```sh
-  cd cmd/serf-hub/jstest
+  cd cmd/evener-hub/jstest
   NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 900 ./run-all.sh
   ```
 
@@ -220,10 +220,10 @@
 
   ```sh
   cd "$(git rev-parse --show-toplevel)"
-  go test ./cmd/serf-hub -count=1
+  go test ./cmd/evener-hub -count=1
   ```
 
-  Expected: `ok` for `cmd/serf-hub` and its tested subpackages.
+  Expected: `ok` for `cmd/evener-hub` and its tested subpackages.
 
 - [ ] **Step 3: Run repository hygiene checks**
 

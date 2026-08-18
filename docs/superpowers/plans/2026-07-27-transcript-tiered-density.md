@@ -6,11 +6,11 @@
 
 **Architecture:** No new components. Each existing transcript item renderer is adjusted to its tier: agent prose drops to body size, user/agent voices get stacked speaker eyebrows at exchange boundaries, the think block shows its preview only when collapsed, settled tool calls compose to one line, and meta items (notifications, round timings, turn failures) lose their card/box chrome by default.
 
-**Tech Stack:** React 19 + TypeScript, CSS Modules, Vitest + Testing Library, Biome. All work in `cmd/serf-hub/frontend` of the `transcript-view-design` worktree.
+**Tech Stack:** React 19 + TypeScript, CSS Modules, Vitest + Testing Library, Biome. All work in `cmd/evener-hub/frontend` of the `transcript-view-design` worktree.
 
 ## Global Constraints
 
-- Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/transcript-view-design`, branch `transcript-view-design`. All commands run from `cmd/serf-hub/frontend` unless noted.
+- Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/transcript-view-design`, branch `transcript-view-design`. All commands run from `cmd/evener-hub/frontend` unless noted.
 - No new colours, no new type sizes, no new motion (spec §Non-goals).
 - Colour allowlist: non-widget stylesheets may not reference `--danger`/`--attention`/`--alive`; tone comes from `Chip`/`FailureGlyph` widgets only (`styles/token-contract.test.ts` enforces).
 - Eyebrow idiom: `--font-size-caption`, `--font-weight-medium`, `--ink-low`, sentence case, no uppercase transform (design-system.md §Type).

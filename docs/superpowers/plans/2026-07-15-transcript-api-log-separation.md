@@ -41,7 +41,7 @@ Additional constraints:
 - Before changing tests, reread `docs/testing.md`. Default tests must use scripted clients, `httptest`, or fake transports; no provider credential, network, quota, timing luck, or current model behavior may affect `go test ./...` or `make test`.
 - Tests must assert behavior and structured records. Do not test generated JSON, scripts, commands, HTML, or large strings with broad regular expressions.
 - After each task, run `git status --short`, stage only the named files, and commit with the detailed message shown. Never use `git add -A`.
-- Known code conflict: `cmd/serf-hub/internal/hubcore/wedge.go` currently infers a wedged session from a failed transcript `api_call` tail. Do not preserve that heuristic by reading the API log during Hub cold-load. Remove the transcript dependency in Task 7. If current owning session/status state cannot represent the signal, stop and report that separate behavior gap to Jesse; do not invent a sidecar, compatibility record, or provider-log cold-load path in this change.
+- Known code conflict: `cmd/evener-hub/internal/hubcore/wedge.go` currently infers a wedged session from a failed transcript `api_call` tail. Do not preserve that heuristic by reading the API log during Hub cold-load. Remove the transcript dependency in Task 7. If current owning session/status state cannot represent the signal, stop and report that separate behavior gap to Jesse; do not invent a sidecar, compatibility record, or provider-log cold-load path in this change.
 
 ---
 
@@ -56,9 +56,9 @@ Additional constraints:
 - Modify: `internal/apptranscript/apptranscript.go`
 - Modify: `internal/apptranscript/turn_cache.go`
 - Modify: `internal/apptranscript/turn_index.go`
-- Modify: `cmd/serf-hub/app_threadread.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/image_serve.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/image_serve.go`
 - Test: `agent/transcript_test.go`
 - Test: `agent/s4cov_transcript_read_test.go`
 - Test: `agent/cov_s2_fork_test.go`
@@ -68,9 +68,9 @@ Additional constraints:
 - Test: `internal/apptranscript/turn_cache_test.go`
 - Test: `internal/apptranscript/turn_index_test.go`
 - Test: `internal/apptranscript/projectturn_fuzz_test.go`
-- Test: `cmd/serf-hub/app_threadread_test.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Test: `cmd/serf-hub/web_test.go`
+- Test: `cmd/evener-hub/app_threadread_test.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Test: `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 
@@ -141,7 +141,7 @@ Prime both the in-memory turn cache and persisted turn-index sidecars from a val
 Run:
 
 ```bash
-go test ./agent ./agent/transcript ./agent/doctor ./internal/apptranscript ./cmd/serf-hub -run 'Transcript|Fork|LoadTranscript|ScanPrelude|TurnCache|TurnIndex|SessionImage'
+go test ./agent ./agent/transcript ./agent/doctor ./internal/apptranscript ./cmd/evener-hub -run 'Transcript|Fork|LoadTranscript|ScanPrelude|TurnCache|TurnIndex|SessionImage'
 ```
 
 Expected: failures because version 1/missing-version/mixed files are currently accepted, skipped, indexed, or projected, API-bearing cache fields still compile, and `Turn.AttemptGroupID` does not compile.
@@ -179,7 +179,7 @@ Remove tests whose contract is APICall round-trip, API-derived prelude/failure t
 Run:
 
 ```bash
-go test ./agent/transcript ./agent/doctor ./agent ./internal/apptranscript ./cmd/serf-hub -run 'Transcript|Fork|LoadTranscript|ScanPrelude|TurnCache|TurnIndex|SessionImage'
+go test ./agent/transcript ./agent/doctor ./agent ./internal/apptranscript ./cmd/evener-hub -run 'Transcript|Fork|LoadTranscript|ScanPrelude|TurnCache|TurnIndex|SessionImage'
 ```
 
 Expected: `ok` for all packages; no reader, cache, index, Hub cold-load, or image path accepts or retains a mixed transcript.
@@ -188,7 +188,7 @@ Expected: `ok` for all packages; no reader, cache, index, Hub cold-load, or imag
 
 ```bash
 git status --short
-git add agent/schema/turn.go agent/transcript/transcript.go agent/transcript_read.go agent/fork.go agent/doctor/transcript.go internal/apptranscript/apptranscript.go internal/apptranscript/turn_cache.go internal/apptranscript/turn_index.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_rpc.go cmd/serf-hub/image_serve.go agent/transcript_test.go agent/s4cov_transcript_read_test.go agent/cov_s2_fork_test.go agent/doctor/transcript_test.go agent/doctor/transcript_load_fuzz_test.go internal/apptranscript/apptranscript_test.go internal/apptranscript/turn_cache_test.go internal/apptranscript/turn_index_test.go internal/apptranscript/projectturn_fuzz_test.go cmd/serf-hub/app_threadread_test.go cmd/serf-hub/app_rpc_test.go cmd/serf-hub/web_test.go
+git add agent/schema/turn.go agent/transcript/transcript.go agent/transcript_read.go agent/fork.go agent/doctor/transcript.go internal/apptranscript/apptranscript.go internal/apptranscript/turn_cache.go internal/apptranscript/turn_index.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_rpc.go cmd/evener-hub/image_serve.go agent/transcript_test.go agent/s4cov_transcript_read_test.go agent/cov_s2_fork_test.go agent/doctor/transcript_test.go agent/doctor/transcript_load_fuzz_test.go internal/apptranscript/apptranscript_test.go internal/apptranscript/turn_cache_test.go internal/apptranscript/turn_index_test.go internal/apptranscript/projectturn_fuzz_test.go cmd/evener-hub/app_threadread_test.go cmd/evener-hub/app_rpc_test.go cmd/evener-hub/web_test.go
 git commit -m "Break transcripts from provider API records
 
 Introduce transcript format version 2 as a semantic-only record stream. Reject legacy mixed transcripts instead of translating or skipping API records, and add the attempt-group join key to semantic turns.
@@ -910,15 +910,15 @@ Keep normal transcript reads semantic and isolated from API files. Add bounded A
 - Modify: `agent/doctor/apilog_test.go`
 - Modify: `agent/doctor/filesystem_program_fuzz_test.go`
 - Modify: `agent/doctor/dr2_build_report_fuzz_test.go`
-- Modify: `cmd/serf-doctor/main.go`
-- Modify: `cmd/serf-doctor/main_test.go`
-- Modify: `cmd/serf-doctor/README.md`
-- Modify: `cmd/serf-hub/internal/hubcore/wedge.go`
-- Modify: `cmd/serf-hub/internal/hubcore/wedge_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`
-- Modify: `cmd/serf-hub/main_background.go`
-- Modify: `cmd/serf-hub/app_threadlist.go`
-- Modify: `cmd/serf-hub/main.go`
+- Modify: `cmd/evener-doctor/main.go`
+- Modify: `cmd/evener-doctor/main_test.go`
+- Modify: `cmd/evener-doctor/README.md`
+- Modify: `cmd/evener-hub/internal/hubcore/wedge.go`
+- Modify: `cmd/evener-hub/internal/hubcore/wedge_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go`
+- Modify: `cmd/evener-hub/main_background.go`
+- Modify: `cmd/evener-hub/app_threadlist.go`
+- Modify: `cmd/evener-hub/main.go`
 
 **Doctor behavior:**
 
@@ -941,7 +941,7 @@ Place a valid v2 transcript beside an API file whose open would fail or whose bo
 - [ ] **Step 3: Run doctor and Hub tests and confirm RED.**
 
 ```bash
-go test ./llm/apilog ./agent/doctor ./cmd/serf-doctor ./cmd/serf-hub/... -run 'APILog|Settlement|Unsettled|Count|Wedge|ColdLoad|Transcript'
+go test ./llm/apilog ./agent/doctor ./cmd/evener-doctor ./cmd/evener-hub/... -run 'APILog|Settlement|Unsettled|Count|Wedge|ColdLoad|Transcript'
 ```
 
 Expected: doctor still reads `transcript.APICall`, Count still scans API payloads, and Hub wedge logic still depends on transcript `api_call` tails.
@@ -955,7 +955,7 @@ For Hub, remove only the incompatible transcript API-call heuristic and its call
 - [ ] **Step 5: Run focused tests and confirm GREEN.**
 
 ```bash
-go test ./llm/apilog ./agent/doctor ./cmd/serf-doctor ./cmd/serf-hub/... -run 'APILog|Settlement|Unsettled|Count|Wedge|ColdLoad|Transcript'
+go test ./llm/apilog ./agent/doctor ./cmd/evener-doctor ./cmd/evener-hub/... -run 'APILog|Settlement|Unsettled|Count|Wedge|ColdLoad|Transcript'
 ```
 
 Expected: `ok`; doctor operates without any transcript API record and Hub cold-load never opens the API file.
@@ -964,7 +964,7 @@ Expected: `ok`; doctor operates without any transcript API record and Hub cold-l
 
 ```bash
 git status --short
-git add agent/doctor/locate.go agent/doctor/doctor.go agent/doctor/apilog.go agent/doctor/apilog_test.go agent/doctor/filesystem_program_fuzz_test.go agent/doctor/dr2_build_report_fuzz_test.go cmd/serf-doctor/main.go cmd/serf-doctor/main_test.go cmd/serf-doctor/README.md cmd/serf-hub/internal/hubcore/wedge.go cmd/serf-hub/internal/hubcore/wedge_test.go cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go cmd/serf-hub/main_background.go cmd/serf-hub/app_threadlist.go cmd/serf-hub/main.go
+git add agent/doctor/locate.go agent/doctor/doctor.go agent/doctor/apilog.go agent/doctor/apilog_test.go agent/doctor/filesystem_program_fuzz_test.go agent/doctor/dr2_build_report_fuzz_test.go cmd/evener-doctor/main.go cmd/evener-doctor/main_test.go cmd/evener-doctor/README.md cmd/evener-hub/internal/hubcore/wedge.go cmd/evener-hub/internal/hubcore/wedge_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go cmd/evener-hub/main_background.go cmd/evener-hub/app_threadlist.go cmd/evener-hub/main.go
 git commit -m "Read provider diagnostics from the canonical API log
 
 Move serf-doctor API analysis off transcript records and expose attempt identity without bodies. Remove Hub's dependency on failed transcript API-call tails so semantic cold-load paths never inspect private provider data."
@@ -974,12 +974,12 @@ Move serf-doctor API analysis off transcript records and expose attempt identity
 
 **Files:**
 - Modify: `envvars/envvars.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/schema.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/types.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/merge.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/schema_test.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/merge_test.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/wire_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/types.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/merge.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/merge_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/wire_test.go`
 - Modify: `docs/environment.md`
 - Modify: `docs/tools/transcripts.md`
 - Modify: `docs/performance-profiling.md`
@@ -1003,7 +1003,7 @@ Update launch schema tests to assert `raw_http_logging` is absent from controls,
 - [ ] **Step 2: Run focused tests and confirm RED.**
 
 ```bash
-go test ./envvars ./cmd/serf-hub/internal/launchconfig
+go test ./envvars ./cmd/evener-hub/internal/launchconfig
 ```
 
 Expected: obsolete environment/config fields are still present.
@@ -1030,7 +1030,7 @@ Expected: no production code or current/live documentation matches. Remaining te
 - [ ] **Step 5: Run focused tests and confirm GREEN.**
 
 ```bash
-go test ./envvars ./cmd/serf-hub/internal/launchconfig
+go test ./envvars ./cmd/evener-hub/internal/launchconfig
 ```
 
 Expected: `ok`.
@@ -1039,7 +1039,7 @@ Expected: `ok`.
 
 ```bash
 git status --short
-git add envvars/envvars.go cmd/serf-hub/internal/launchconfig/schema.go cmd/serf-hub/internal/launchconfig/types.go cmd/serf-hub/internal/launchconfig/merge.go cmd/serf-hub/internal/launchconfig/schema_test.go cmd/serf-hub/internal/launchconfig/merge_test.go cmd/serf-hub/internal/launchconfig/wire_test.go docs/environment.md docs/tools/transcripts.md docs/performance-profiling.md fuzz/README.md README.md
+git add envvars/envvars.go cmd/evener-hub/internal/launchconfig/schema.go cmd/evener-hub/internal/launchconfig/types.go cmd/evener-hub/internal/launchconfig/merge.go cmd/evener-hub/internal/launchconfig/schema_test.go cmd/evener-hub/internal/launchconfig/merge_test.go cmd/evener-hub/internal/launchconfig/wire_test.go docs/environment.md docs/tools/transcripts.md docs/performance-profiling.md fuzz/README.md README.md
 git commit -m "Remove obsolete mixed and raw API logging controls
 
 Delete the raw-body opt-in and launch setting now that one private API log is canonical and lossless. Correct current user and operator documentation while leaving historical proof artifacts unchanged."
@@ -1051,13 +1051,13 @@ If `README.md` did not require a content change, omit it from `git add`; never s
 
 **Files:**
 - Modify only tests that fail because they still encode the pre-break mixed-format contract; do not change production behavior during this task without returning to its owning task.
-- Likely affected rejection/fixture tests: `agent/transcript_roundtrip_fuzz_test.go`, `agent/transcript_structured_fuzz_test.go`, `agent/doctor/cov_s5_gaps_test.go`, `cmd/serf-hub/cov_final_main_background_fuzz_test.go`, `cmd/serf-hub/cov_thread_data_pass5_fuzz_test.go`, `cmd/serf-hub/internal/hubcore/coverage_edges_test.go`.
+- Likely affected rejection/fixture tests: `agent/transcript_roundtrip_fuzz_test.go`, `agent/transcript_structured_fuzz_test.go`, `agent/doctor/cov_s5_gaps_test.go`, `cmd/evener-hub/cov_final_main_background_fuzz_test.go`, `cmd/evener-hub/cov_thread_data_pass5_fuzz_test.go`, `cmd/evener-hub/internal/hubcore/coverage_edges_test.go`.
 
 - [ ] **Step 1: Run the required structural searches.**
 
 ```bash
 rg -n 'AppendAPICall|transcript\.APICall|APICalls|apiLines|BuildAPILogRequest|APIRawLogEntry|EnableRawLogging|EnableSessionRawLogging|RawBodyEnabled' --glob '*.go' .
-rg -n 'FirstCall|failedAPICallTurn|record\.Kind == "api_call"|case "api_call"' internal/apptranscript cmd/serf-hub --glob '*.go'
+rg -n 'FirstCall|failedAPICallTurn|record\.Kind == "api_call"|case "api_call"' internal/apptranscript cmd/evener-hub --glob '*.go'
 rg -n '"kind"\s*:\s*"api_call"' --glob '*.go' --glob '*.md' .
 ```
 
@@ -1068,7 +1068,7 @@ Expected: the first two commands have no production matches. Every final-command
 ```bash
 go test ./llm/... -run 'APIAttempt|Settlement|CrashWindow|APILog|WireCapture|Credential|Outcome|TimeoutOwnership|StreamingHappensBefore|CloseWaits|Retry|Fallback|Cancellation|StorageFailure'
 go test ./agent/... -run 'Transcript|AttemptGroup|APILogSource|Doctor|ATIF|Budget|Exhaust|Steering|PartialEvidence'
-go test ./internal/apptranscript ./cmd/serf-doctor ./cmd/serf-hub/... ./cmdutil -run 'APILog|Transcript|Mixed|TurnCache|TurnIndex|SessionImage|ColdLoad|AttachAPILogger'
+go test ./internal/apptranscript ./cmd/evener-doctor ./cmd/evener-hub/... ./cmdutil -run 'APILog|Transcript|Mixed|TurnCache|TurnIndex|SessionImage|ColdLoad|AttachAPILogger'
 ```
 
 Expected: all packages report `ok`; no test is skipped for a missing provider credential or environment variable.
@@ -1076,7 +1076,7 @@ Expected: all packages report `ok`; no test is skipped for a missing provider cr
 - [ ] **Step 3: Run package suites for every touched subsystem.**
 
 ```bash
-go test ./identifier ./llm/... ./agent/... ./internal/apptranscript ./cmdutil ./cmd/serf-doctor ./cmd/serf-hub/... ./envvars
+go test ./identifier ./llm/... ./agent/... ./internal/apptranscript ./cmdutil ./cmd/evener-doctor ./cmd/evener-hub/... ./envvars
 ```
 
 Expected: all packages report `ok`.
@@ -1125,8 +1125,8 @@ Check every heading in `docs/superpowers/specs/2026-07-15-transcript-api-log-sep
 - [ ] **Step 7: Check for placeholders and type drift in this implementation.**
 
 ```bash
-rg -n 'TODO|TBD|FIXME|implement later|compat|legacy fallback' identifier llm agent cmdutil cmd/serf-doctor cmd/serf-hub envvars docs/tools docs/environment.md fuzz/README.md
-go vet ./identifier ./llm/... ./agent/... ./internal/apptranscript ./cmdutil ./cmd/serf-doctor ./cmd/serf-hub/... ./envvars
+rg -n 'TODO|TBD|FIXME|implement later|compat|legacy fallback' identifier llm agent cmdutil cmd/evener-doctor cmd/evener-hub envvars docs/tools docs/environment.md fuzz/README.md
+go vet ./identifier ./llm/... ./agent/... ./internal/apptranscript ./cmdutil ./cmd/evener-doctor ./cmd/evener-hub/... ./envvars
 ```
 
 Expected: no newly introduced placeholder or compatibility path; `go vet` exits 0. Existing unrelated findings must be reported, not silently edited in this scope.

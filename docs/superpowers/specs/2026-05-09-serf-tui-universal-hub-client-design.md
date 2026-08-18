@@ -192,7 +192,7 @@ The TUI should not implement transcript mutation. Fork creation is a hub/agent o
                  terminal
                     |
                     v
-             cmd/serf-tui
+             cmd/evener-tui
           dashboard + session UI
                     |
             JSON + SSE over HTTP
@@ -210,7 +210,7 @@ The TUI should not implement transcript mutation. Fork creation is a hub/agent o
 Future remote architecture:
 
 ```text
-cmd/serf-tui
+cmd/evener-tui
    |
    v
 local or remote hub endpoint
@@ -540,9 +540,9 @@ Ownership:
 - `internal/hubapi/refs.go`: ref parsing, validation, and path escaping.
 - `internal/hubmodel/state.go`: daemon-to-UI state normalization.
 - `internal/hubmodel/capabilities.go`: capability derivation from daemon status and hub source state.
-- `internal/hubmodel/tree.go`: pure tree construction if the existing `cmd/serf-hub` tree code becomes hard to test in place.
-- `cmd/serf-hub`: server binary, web templates, static assets, route wiring, roster, past index, and spawner until there is a concrete reason to move them.
-- `cmd/serf-tui`: Bubble Tea UI and terminal-specific client behavior.
+- `internal/hubmodel/tree.go`: pure tree construction if the existing `cmd/evener-hub` tree code becomes hard to test in place.
+- `cmd/evener-hub`: server binary, web templates, static assets, route wiring, roster, past index, and spawner until there is a concrete reason to move them.
+- `cmd/evener-tui`: Bubble Tea UI and terminal-specific client behavior.
 
 This keeps the TUI from importing a `cmd` package without forcing a large process/discovery refactor before the API is proven.
 
@@ -550,7 +550,7 @@ This keeps the TUI from importing a `cmd` package without forcing a large proces
 
 ### Top-level model
 
-`cmd/serf-tui` should replace the single-session `model` with an app model:
+`cmd/evener-tui` should replace the single-session `model` with an app model:
 
 ```go
 type appModel struct {
@@ -612,7 +612,7 @@ The current single-session renderer can move here with minimal conceptual change
 Split event handling from Bubble Tea layout:
 
 ```text
-cmd/serf-tui/
+cmd/evener-tui/
   event_reducer.go
   session_view.go
   dashboard_model.go

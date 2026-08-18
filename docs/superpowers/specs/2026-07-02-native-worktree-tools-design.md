@@ -23,7 +23,7 @@ Four coupled changes:
    launch config, that resolves the main repo root through linked-worktree
    `.git` pointer files. State-keying paths must use it where they need stable
    repository identity rather than the current linked-worktree directory —
-   including the `RuntimeDir` calls in `cmd/serf/run.go` and `cmd/serf/serve.go`.
+   including the `RuntimeDir` calls in `cmd/evener/run.go` and `cmd/evener/serve.go`.
 2. **`manage_worktree` tool:** a single agent-facing tool with
    `operation: create|list|switch|exit|remove|prune` that manages the full
    worktree lifecycle and swaps the session's `env` to enter/leave worktrees.
@@ -218,7 +218,7 @@ Two companion call-site migrations are in scope:
   accept both roots: read repo/project config content from the active content
   root, but key trust metadata and legacy project state under the stable
   identity root.
-- **Runtime state keying at launch:** `cmd/serf/run.go` (and the equivalent in
+- **Runtime state keying at launch:** `cmd/evener/run.go` (and the equivalent in
   `serve.go`) currently derive the default state dir via
   `agent.RuntimeDir(originURL, cfg.workDir, "")`. `RuntimeDir` keys off
   `originURL` when present — stable across worktrees — but for origin-less
@@ -987,7 +987,7 @@ safe restore env can be constructed and verified.
 ### Persistence and resume (new in rev 4)
 
 The env swap is in-memory, and today's resume path rebuilds the env from the
-launch cwd (`cmd/serf/run.go:169`: `env :=
+launch cwd (`cmd/evener/run.go:169`: `env :=
 execenv.NewLocalExecutionEnvironment(cfg.workDir)`), so without explicit
 handling a session that dies inside a worktree resumes at the launch root
 while its transcript, persisted `EnvInfo`, and system-prompt history all say
@@ -1035,10 +1035,10 @@ co-occupying).
 
 **Hub consumers of the persisted working dir must migrate** (rev-7 review
 finding — §7 changes what `EnvInfo.WorkingDir` means and the hub reads it as
-a launch directory today): `cmd/serf-hub/internal/hubcore/tree.go:325-336`
+a launch directory today): `cmd/evener-hub/internal/hubcore/tree.go:325-336`
 groups sidebar projects by working-dir basename and prefills the spawn form
-with it, and `cmd/serf-hub/app_threadlifecycle.go:246` feeds it to
-`buildResumeArgs` → `--dir <path>` (`cmd/serf-hub/spawn.go:245-246`). All
+with it, and `cmd/evener-hub/app_threadlifecycle.go:246` feeds it to
+`buildResumeArgs` → `--dir <path>` (`cmd/evener-hub/spawn.go:245-246`). All
 three must read the new meta fields: group and prefill by the **restore
 root** (else a worktree session migrates to a phantom sidebar project named
 `dlg_01H…` and the spawn form offers a managed worktree as a fresh session's
@@ -1183,7 +1183,7 @@ ever added, it and `isolation` must be mutually exclusive.)
    disposal keeps the lane.)
 4. **Disposal inside `Session.close`, on every close surface.** Rev 6 hung
    disposal off "after `DrainJobTree`", but `DrainJobTree` has exactly one
-   production call site — one-shot `serf run` (`cmd/serf/run.go:238`); serve
+   production call site — one-shot `serf run` (`cmd/evener/run.go:238`); serve
    and hub closes go through `Session.close`, which *kills* running delegates
    rather than draining them (`agent/session_lifecycle.go:88-121`) — so rev
    6's precondition existed on one of three surfaces (rev-6 review finding).

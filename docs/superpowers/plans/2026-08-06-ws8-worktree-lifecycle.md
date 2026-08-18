@@ -43,7 +43,7 @@ verified 2026-08-06; trust symbol names.
 **The original task's premise was false.** It assumed resume mints a new
 session id and that lane ownership therefore breaks. It does not: resume
 preserves `meta.ID` (`agent/session_init.go`, `id: meta.ID`), and
-`cmd/serf-hub/spawn.go` documents that as load-bearing — a fresh id is
+`cmd/evener-hub/spawn.go` documents that as load-bearing — a fresh id is
 minted only by `/clear`. The ownership gate already passes for a resumed
 session, so the prescribed Step-1 failing test could not be written. The
 prescribed fix — re-stamping `ParentSessionID` on inherited descriptors —

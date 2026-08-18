@@ -4,19 +4,19 @@
 
 - Branch: `wip/tool-fluency-framework`
 - Model: `kimi/kimi-for-coding`
-- Runner: `go run ./tools/tool-fluency/cmd/serf-fluency`
+- Runner: `go run ./tools/tool-fluency/cmd/evener-fluency`
 - Full result directory: `/tmp/serf-fluency-kimi-all-1`
 
 Catalog command:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
+go run ./tools/tool-fluency/cmd/evener-fluency catalog --model kimi/kimi-for-coding
 ```
 
 Run command:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --model kimi/kimi-for-coding \
   --probe all \

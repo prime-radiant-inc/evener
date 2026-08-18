@@ -21,7 +21,7 @@ We need a single coordinated pattern per renderer that:
 In scope:
 
 - All four conversation-affecting appwire methods: `turn/send`, `turn/queue`, `turn/steer`, `turn/drainAsSteer`.
-- Both renderers: the web hub (`cmd/serf-hub/assets/`) and the TUI (`cmd/serf-tui/`).
+- Both renderers: the web hub (`cmd/evener-hub/assets/`) and the TUI (`cmd/evener-tui/`).
 - Daemon fix for the underlying race in kata `wymv`: gate `caps.Steer` on `processing` (matching `caps.Queue`).
 - Replacing the existing silent user-message echo so all four actions share one treatment.
 
@@ -35,7 +35,7 @@ Out of scope:
 
 One coordinator per renderer, structured as a thin wrapper inside the existing appwire client.
 
-- **Web**: `window.SerfAppwire` (in `cmd/serf-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `SerfAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
+- **Web**: `window.SerfAppwire` (in `cmd/evener-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `SerfAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
 - **TUI**: `internal/appwire.Client` (Go) gains the same shape. The wrapper lives inside `TurnStart`, `TurnSteer`, `TurnQueue`, `TurnDrainAsSteer` — those are the existing public methods, no rename. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
 
 `optimisticCall` owns the **call lifecycle**, not the event-matching:
@@ -69,7 +69,7 @@ Normalizer: `text.replace(/\s+/g, " ").trim()` — matches the existing web `nor
 
 ### Web
 
-One new CSS block in `cmd/serf-hub/assets/style.css`:
+One new CSS block in `cmd/evener-hub/assets/style.css`:
 
 ```css
 .optimistic-pending { animation: optimistic-pulse 1.4s ease-in-out infinite; }
@@ -138,7 +138,7 @@ Write the test, confirm it fails on the current code (Steer is always `true`), a
 
 ### Web wrapper unit (jstest)
 
-`cmd/serf-hub/jstest/test-optimistic-rendering.js`:
+`cmd/evener-hub/jstest/test-optimistic-rendering.js`:
 
 Tests must exercise the real `SerfAppwire.steer` (and siblings) facades — those facades are where the wrapper logic lives. Mocking the facade itself defeats the test. Instead, inject a fake transport at the lower-level RPC layer (the WebSocket `send` plus `onNotification` event bus) so the wrapper's full lifecycle runs end-to-end while we control the wire-level reply and the notification stream.
 
@@ -149,7 +149,7 @@ Tests must exercise the real `SerfAppwire.steer` (and siblings) facades — thos
 
 ### TUI wrapper unit
 
-`cmd/serf-tui/optimistic_test.go`:
+`cmd/evener-tui/optimistic_test.go`:
 
 Tests exercise the real `appwire.Client.TurnSteer` (and siblings) — the wrapper logic lives inside those methods. Inject a fake `appwire.Transport` whose `Send` enqueues outgoing requests for assertion and whose `Recv` returns `appwire.Message` values the test produces. Notifications cannot be written to `client.Notifications()` directly — the backing channel is private — so the test delivers notifications by returning an `appwire.NotificationMessage(...)` from `transport.Recv` while `client.Start(ctx)` is running. The client pumps it onto its public notifications channel through the real code path; the TUI consumer reads from there and applies it through the reducer; `pending.tryReconcile` runs afterwards.
 
@@ -173,15 +173,15 @@ Under `test/scenarios/`:
 New / modified files (no exhaustive line counts — that's the plan's job):
 
 ```
-cmd/serf-hub/assets/appwire.js              modify: add optimisticCall + four facade wrappers + event subscriber
-cmd/serf-hub/assets/renderer.js             modify: pending registry; convert send/queue/steer/drain callsites
-cmd/serf-hub/assets/style.css               modify: add .optimistic-pending / -failed / -retry, @keyframes
-cmd/serf-hub/jstest/test-optimistic-rendering.js   new
+cmd/evener-hub/assets/appwire.js              modify: add optimisticCall + four facade wrappers + event subscriber
+cmd/evener-hub/assets/renderer.js             modify: pending registry; convert send/queue/steer/drain callsites
+cmd/evener-hub/assets/style.css               modify: add .optimistic-pending / -failed / -retry, @keyframes
+cmd/evener-hub/jstest/test-optimistic-rendering.js   new
 
-cmd/serf-tui/optimistic.go                   new: pending registry + spinner glue
-cmd/serf-tui/optimistic_test.go              new
-cmd/serf-tui/hub_model.go                    modify: route send/queue/steer/drain through wrapper
-cmd/serf-tui/hub_transcript_reducer.go       modify: extend chatMessage with pending/failed fields; honor in render
+cmd/evener-tui/optimistic.go                   new: pending registry + spinner glue
+cmd/evener-tui/optimistic_test.go              new
+cmd/evener-tui/hub_model.go                    modify: route send/queue/steer/drain through wrapper
+cmd/evener-tui/hub_transcript_reducer.go       modify: extend chatMessage with pending/failed fields; honor in render
 
 server/appwire_runtime.go                   modify: one-line cap gate
 server/appwire_runtime_test.go              modify: add steer-cap state table

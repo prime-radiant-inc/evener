@@ -31,17 +31,17 @@
 
 - Modify: `agent/session_jobtree_drain.go` — shared drain-job eligibility, outstanding/live accounting, stall diagnostics, and durable-pending rematerialization.
 - Modify: `agent/subagents.go` — keep a subagent run nonterminal while its owned job tree drains.
-- Modify: `cmd/serf/run.go` — update the delegate-only comment to describe all managed jobs; the control flow remains unchanged.
+- Modify: `cmd/evener/run.go` — update the delegate-only comment to describe all managed jobs; the control flow remains unchanged.
 
 **Behavioral tests:**
 
 - Modify: `agent/session_jobtree_drain_test.go` — managed-shell accounting, foreground promotion, cancellation, durable notifications, batching, descendants, and stop gates.
 - Modify: `agent/session_jobtree_drain_stall_test.go` — running shell liveness and generalized stall diagnostics.
 - Create: `agent/subagent_owned_job_drain_test.go` — subagent final-result and retention-pressure contracts.
-- Modify: `cmd/serf/scripted_provider_test.go` — reusable structured shell-call fixture.
-- Modify: `cmd/serf/run_drain_test.go` — root one-shot success, failure, and chained-job cycles.
-- Create: `cmd/serf/run_drain_error_test.go` — fatal model-error boundary.
-- Re-run unchanged: `cmd/serf/run_detached_test.go` — detached survival and nonparticipation.
+- Modify: `cmd/evener/scripted_provider_test.go` — reusable structured shell-call fixture.
+- Modify: `cmd/evener/run_drain_test.go` — root one-shot success, failure, and chained-job cycles.
+- Create: `cmd/evener/run_drain_error_test.go` — fatal model-error boundary.
+- Re-run unchanged: `cmd/evener/run_detached_test.go` — detached survival and nonparticipation.
 
 **Focused evaluation:**
 
@@ -260,14 +260,14 @@ The commit body must record that the durable ledger and the in-memory delivery q
 
 **Files:**
 
-- Modify: `cmd/serf/scripted_provider_test.go`
-- Modify: `cmd/serf/run_drain_test.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/scripted_provider_test.go`
+- Modify: `cmd/evener/run_drain_test.go`
+- Modify: `cmd/evener/run.go`
 - Modify: `agent/session_jobtree_drain_test.go`
 
 - [ ] **Step 1: Add a structured shell-call fixture**
 
-In `cmd/serf/scripted_provider_test.go`, add:
+In `cmd/evener/scripted_provider_test.go`, add:
 
 ```go
 func scriptedShellCall(id, command, mode string) llm.ToolCallData {
@@ -307,7 +307,7 @@ Assert the one-shot `run` result prints the third message, the provider saw exac
 - [ ] **Step 3: Run the root cases**
 
 ```bash
-go test ./cmd/serf -run TestRunDrainsManagedShellBeforeExit -count=1
+go test ./cmd/evener -run TestRunDrainsManagedShellBeforeExit -count=1
 ```
 
 Expected after Tasks 1–2: PASS. On the pre-change baseline these cases returned `"waiting for shell"` after two requests.
@@ -338,13 +338,13 @@ This is the regression that prevents a future implementation from treating the r
 
 - [ ] **Step 6: Update the one-shot comment without changing control flow**
 
-In `cmd/serf/run.go`, change the comment above `runDrainJobTree` from fire-and-return delegates to all session-owned managed jobs. Keep the existing rule exactly: drain only when `runProcessInput` succeeds, and replace the initial result only when the drain returns a nonempty result.
+In `cmd/evener/run.go`, change the comment above `runDrainJobTree` from fire-and-return delegates to all session-owned managed jobs. Keep the existing rule exactly: drain only when `runProcessInput` succeeds, and replace the initial result only when the drain returns a nonempty result.
 
 - [ ] **Step 7: Run focused root and promotion tests**
 
 ```bash
-gofmt -w cmd/serf/scripted_provider_test.go cmd/serf/run_drain_test.go cmd/serf/run.go agent/session_jobtree_drain_test.go
-go test ./cmd/serf -run 'TestRunDrain|TestRunDrains' -count=1
+gofmt -w cmd/evener/scripted_provider_test.go cmd/evener/run_drain_test.go cmd/evener/run.go agent/session_jobtree_drain_test.go
+go test ./cmd/evener -run 'TestRunDrain|TestRunDrains' -count=1
 go test ./agent -run TestDrainJobTreeWaitsForForegroundPromotedShell -count=1
 ```
 
@@ -354,7 +354,7 @@ Expected: PASS.
 
 ```bash
 git status --short
-git add cmd/serf/scripted_provider_test.go cmd/serf/run_drain_test.go cmd/serf/run.go agent/session_jobtree_drain_test.go
+git add cmd/evener/scripted_provider_test.go cmd/evener/run_drain_test.go cmd/evener/run.go agent/session_jobtree_drain_test.go
 git commit -m "test(run): require managed shell notification turns"
 ```
 
@@ -489,8 +489,8 @@ The commit body must explain that retaining `SubagentRunning` fixes both delegat
 **Files:**
 
 - Modify: `agent/session_jobtree_drain_test.go`
-- Create: `cmd/serf/run_drain_error_test.go`
-- Re-run unchanged: `cmd/serf/run_detached_test.go`
+- Create: `cmd/evener/run_drain_error_test.go`
+- Re-run unchanged: `cmd/evener/run_detached_test.go`
 
 - [ ] **Step 1: Prove cancelled drains return the caller error and shutdown stops the process**
 
@@ -498,7 +498,7 @@ Add `TestCancelledManagedShellDrainStopsOnSessionClose`. Start a background shel
 
 - [ ] **Step 2: Prove a fatal initial model error never enters the drain**
 
-In `cmd/serf/run_drain_error_test.go`, add `TestRunSkipsDrainAfterFatalModelError`. Install a scripted provider so session construction stays offline, replace `runProcessInput` with a seam that returns a sentinel error, and replace `runDrainJobTree` with a seam that increments a counter. Restore both seams with `t.Cleanup`. Call `run` and assert:
+In `cmd/evener/run_drain_error_test.go`, add `TestRunSkipsDrainAfterFatalModelError`. Install a scripted provider so session construction stays offline, replace `runProcessInput` with a seam that returns a sentinel error, and replace `runDrainJobTree` with a seam that increments a counter. Restore both seams with `t.Cleanup`. Call `run` and assert:
 
 - `errors.Is(err, sentinel)` is true;
 - the returned error is the original process error, not a drain or close error;
@@ -514,9 +514,9 @@ In `TestTreeHasOutstandingWorkSkipsStopGatedChild`, replace the generic queued t
 - [ ] **Step 4: Run boundary regressions, including detached survival**
 
 ```bash
-gofmt -w agent/session_jobtree_drain_test.go cmd/serf/run_drain_error_test.go
+gofmt -w agent/session_jobtree_drain_test.go cmd/evener/run_drain_error_test.go
 go test ./agent -run 'Test(CancelledManagedShellDrainStopsOnSessionClose|TreeHasOutstandingWorkSkipsStopGatedChild)' -count=1
-go test ./cmd/serf -run 'Test(RunSkipsDrainAfterFatalModelError|RunDetachedCommandSurvivesExit)' -count=1
+go test ./cmd/evener -run 'Test(RunSkipsDrainAfterFatalModelError|RunDetachedCommandSurvivesExit)' -count=1
 ```
 
 Expected: PASS. Detached execution must still return a PID, outlive `run`, and create no managed job or notification turn.
@@ -525,7 +525,7 @@ Expected: PASS. Detached execution must still return a PID, outlive `run`, and c
 
 ```bash
 git status --short
-git add agent/session_jobtree_drain_test.go cmd/serf/run_drain_error_test.go
+git add agent/session_jobtree_drain_test.go cmd/evener/run_drain_error_test.go
 git commit -m "test(drain): pin terminal lifecycle boundaries"
 ```
 
@@ -538,7 +538,7 @@ git commit -m "test(drain): pin terminal lifecycle boundaries"
 - [ ] **Step 1: Check formatting and the patch boundary**
 
 ```bash
-gofmt -w agent/session_jobtree_drain.go agent/session_jobtree_drain_test.go agent/session_jobtree_drain_stall_test.go agent/subagents.go agent/subagent_owned_job_drain_test.go cmd/serf/run.go cmd/serf/run_drain_test.go cmd/serf/run_drain_error_test.go cmd/serf/scripted_provider_test.go
+gofmt -w agent/session_jobtree_drain.go agent/session_jobtree_drain_test.go agent/session_jobtree_drain_stall_test.go agent/subagents.go agent/subagent_owned_job_drain_test.go cmd/evener/run.go cmd/evener/run_drain_test.go cmd/evener/run_drain_error_test.go cmd/evener/scripted_provider_test.go
 git diff --check
 git status --short
 ```
@@ -548,7 +548,7 @@ Expected: no formatting or whitespace errors, and only the planned files are mod
 - [ ] **Step 2: Run focused packages without cache reuse**
 
 ```bash
-go test ./agent ./cmd/serf -count=1
+go test ./agent ./cmd/evener -count=1
 ```
 
 Expected: PASS.
@@ -615,7 +615,7 @@ These are the five prior Serf misses whose trajectories directly showed terminal
 From a clean Serf commit after Task 6:
 
 ```bash
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /Users/jesse/git/prime-radiant/harbor-runner/dist/serf-linux-amd64 ./cmd/serf
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /Users/jesse/git/prime-radiant/harbor-runner/dist/serf-linux-amd64 ./cmd/evener
 shasum -a 256 /Users/jesse/git/prime-radiant/harbor-runner/dist/serf-linux-amd64
 git rev-parse HEAD
 git status --short

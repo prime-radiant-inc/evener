@@ -13,7 +13,7 @@ OpenAI supports "API key **or** OAuth" — which the data model already claims
 Today the Credentials page renders a "Set API key" button for OpenAI, but
 saving it fails: `hubAuthController.ApiKeySet` rejects `openai` with
 *"openai api keys must be configured via env or hub.env; use
-serf/auth/login/start for OAuth"* (`cmd/serf-hub/app_auth.go`). The button
+serf/auth/login/start for OAuth"* (`cmd/evener-hub/app_auth.go`). The button
 lies. This closes that gap.
 
 ## 2. Non-Goals
@@ -48,8 +48,8 @@ record → else `OPENAI_API_KEY` env":
 - `internal/auth/openai/service.go` — `Status`, `ResolveRuntimeCredentials`.
 - `llm/providers/openai/adapter.go` — `NewFromEnv` (OAuth → ChatGPT backend;
   else `OPENAI_API_KEY` → API backend).
-- `cmd/serf-hub/app_auth.go` — `openAIStatus`.
-- `cmd/serf-hub/spawn.go` — `openAIStoredOAuthUsable` (launch gating).
+- `cmd/evener-hub/app_auth.go` — `openAIStatus`.
+- `cmd/evener-hub/spawn.go` — `openAIStoredOAuthUsable` (launch gating).
 
 **The plumbing for a stored key already exists.** The blocker is narrow:
 
@@ -60,7 +60,7 @@ record → else `OPENAI_API_KEY` env":
   (`internal/launchconfig/env.go`).
 - The adapter's env branch already routes `OPENAI_API_KEY` to the standard
   API backend (`llm/providers/openai/adapter.go`).
-- `cmd/serf-hub/main.go` loads **one** `credsStore` and hands the same
+- `cmd/evener-hub/main.go` loads **one** `credsStore` and hands the same
   `*credentials.Store` instance to both the spawner (`Creds`) and the auth
   controller (`CredsStore`), so a write is instantly visible to spawns.
 
@@ -90,7 +90,7 @@ child adapter prefers a usable OAuth record over `OPENAI_API_KEY`.
 
 ### 4.2 Changes
 
-Almost everything lives in `cmd/serf-hub/app_auth.go`:
+Almost everything lives in `cmd/evener-hub/app_auth.go`:
 
 1. **`ApiKeySet`** — drop the `if provider == "openai"` rejection so it falls
    through to `c.creds.Set("openai", value)`.
@@ -124,7 +124,7 @@ Almost everything lives in `cmd/serf-hub/app_auth.go`:
 `credentials.Store`, the adapter env branch. If any test exposes a gap (e.g.
 an openai exclusion hidden in a path not yet read), it is fixed there.
 
-**Frontend (`cmd/serf-hub/templates/partials/credentials.html`):** already
+**Frontend (`cmd/evener-hub/templates/partials/credentials.html`):** already
 renders "Set API key"/"Replace key"/"Sign in…"/"Clear" for OpenAI and a
 layered `sourceLayers` display. No change expected beyond verifying the layers
 render once the status response carries `HasStoredFile`/`EnvVar`.
@@ -162,7 +162,7 @@ render once the status response carries `HasStoredFile`/`EnvVar`.
 - **`credentials.Store`** (`internal/credentials`): `openai` `Set`/`Get`/
   `Clear`/`Layers` and file→env precedence. Likely already covered
   generically; add explicit openai cases if missing.
-- **`app_auth`** (`cmd/serf-hub`):
+- **`app_auth`** (`cmd/evener-hub`):
   - `ApiKeySet("openai", key)` persists to the store (no longer rejected).
   - Status reflects each source and the `oauth > file > env > absent`
     precedence, including shadowed layers (`HasStoredFile`/`EnvVar`).
@@ -172,12 +172,12 @@ render once the status response carries `HasStoredFile`/`EnvVar`.
   OAuth is preserved.
 - **adapter** (`llm/providers/openai`): `OPENAI_API_KEY` (from the file layer)
   → standard API backend (existing behavior, asserted).
-- **web** (`cmd/serf-hub/web_test.go` / app_rpc): the credentials RPC round
+- **web** (`cmd/evener-hub/web_test.go` / app_rpc): the credentials RPC round
   trip for openai set/clear.
 
 ## 7. Documentation
 
-This change makes `cmd/serf-hub/README.md` § "Provider Credentials" stale — it
+This change makes `cmd/evener-hub/README.md` § "Provider Credentials" stale — it
 currently frames OpenAI as OAuth-only (no `api_key`) and does not state the
 resolution model. Update that section (the evergreen home) as part of the
 implementation to capture the durable, cross-cutting knowledge:

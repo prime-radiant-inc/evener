@@ -13,8 +13,8 @@ Replace the brittle env-var + key-name heuristic path (`SERF_SUBMIT_RESULT_REQUI
 
 Add `--output-schema` to:
 
-- **`cmd/serf/main.go`** (the top-level `serf run` command) — added to `flag.String`, wired into `runConfig.jsonSchema`, forwarded to `runConfig`.
-- **`cmd/serf/serve.go`** (the `serf serve` subcommand) — added to its `fs.String`, passed into `SelectProfile`.
+- **`cmd/evener/main.go`** (the top-level `serf run` command) — added to `flag.String`, wired into `runConfig.jsonSchema`, forwarded to `runConfig`.
+- **`cmd/evener/serve.go`** (the `serf serve` subcommand) — added to its `fs.String`, passed into `SelectProfile`.
 
 **Semantics:**
 
@@ -55,8 +55,8 @@ Delete the env-var fallback block and the helper `parseCommunicateRequiredDataKe
 
 Every caller of `SelectProfile` must update to the new three-arg signature:
 
-- `cmd/serf/run.go` — pass `cfg.jsonSchema`.
-- `cmd/serf/serve.go` — pass `*jsonSchema`.
+- `cmd/evener/run.go` — pass `cfg.jsonSchema`.
+- `cmd/evener/serve.go` — pass `*jsonSchema`.
 - Any other internal callers (confirm none via `grep -rn "SelectProfile(" serf/`).
 
 ## 3. New function: `WithCommunicateOutputSchema`
@@ -113,7 +113,7 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 - `TestWithCommunicateOutputSchema_Anthropic` — same as above but with `NewAnthropicProfile`, verify the returned type is `*anthropicProfile`.
 - `TestWithCommunicateOutputSchema_WithAllowedDecisions_StackOrder` — apply schema then decisions; verify `decision` got added into the user-supplied `output.properties` (since `addDecisionToSchema` mutates `output.properties`). Document the stacking order in a code comment.
 
-**File: `cmd/serf/main_test.go`** / `run_test.go` — one black-box test that invokes main-style argument parsing with `--json-schema '...'` and asserts `cfg.jsonSchema` threads through to `run(cfg)` correctly.
+**File: `cmd/evener/main_test.go`** / `run_test.go` — one black-box test that invokes main-style argument parsing with `--json-schema '...'` and asserts `cfg.jsonSchema` threads through to `run(cfg)` correctly.
 
 ## 6. What gets deleted
 
@@ -139,7 +139,7 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 
 ## 7. User-facing doc updates
 
-**`cmd/serf/main.go` Usage block:** add `--json-schema <json>` under Options.
+**`cmd/evener/main.go` Usage block:** add `--json-schema <json>` under Options.
 
 **`README.md`:**
 - Add `--json-schema <json>` to the flags table.
@@ -155,8 +155,8 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 
 ## Critical Files for Implementation
 
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/serf/main.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/serf/run.go`
-- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/serf/serve.go`
+- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/main.go`
+- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/run.go`
+- `/Users/jesse/prime-radiant/toil-suite/serf/cmd/evener/serve.go`
 - `/Users/jesse/prime-radiant/toil-suite/serf/cmdutil/cmdutil.go`
 - `/Users/jesse/prime-radiant/toil-suite/serf/agent/profile_overrides.go`

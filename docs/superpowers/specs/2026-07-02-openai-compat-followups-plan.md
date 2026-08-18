@@ -66,7 +66,7 @@ commits. Rules learned the hard way this session:
   (`InstanceConfig.Models`) must win over the embedded catalog in the hub's
   models REST endpoint (`reasoning_effort_levels` from ThinkingLevels keys in
   `llm.ReasoningEffortRank` order; reasoning=false → empty). Files:
-  `cmd/serf-hub/`, `server/`. Must keep jstests green.
+  `cmd/evener-hub/`, `server/`. Must keep jstests green.
 
 ## Wave 2 — DONE (af363192 headers+compat, bd3dc7bd catalog defaults; plus refresh-model-catalog automation f81c550c/a2f57838)
 

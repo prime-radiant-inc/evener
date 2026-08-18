@@ -68,7 +68,7 @@ type AuthRecord struct {
 // a caller read/write/delete an arbitrary file. Callers validate names upstream;
 // this is the last-line guard at the filesystem sink (a missing controller-level
 // check let serf/instance/remove delete arbitrary .json files — see the
-// ValidateInstanceName fix in cmd/serf-hub/app_instances.go).
+// ValidateInstanceName fix in cmd/evener-hub/app_instances.go).
 func AuthFilePath(stateDir, instanceName string) string {
 	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+".json")
 }

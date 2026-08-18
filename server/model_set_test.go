@@ -154,7 +154,7 @@ func TestHandleModel_SuccessReturnsNoContent(t *testing.T) {
 // info (status.Model) must refresh SYNCHRONOUSLY on the model-hook path, so
 // thread/read reports the new model immediately after thread/model/set
 // returns — with NO intervening turn and no EventSessionStart round trip.
-// This is the same wiring shape cmd/serf/serve.go's SetModelFunc closure
+// This is the same wiring shape cmd/evener/serve.go's SetModelFunc closure
 // uses: on a successful model hook, call UpdateSessionInfo with the new
 // provider/model before returning.
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {

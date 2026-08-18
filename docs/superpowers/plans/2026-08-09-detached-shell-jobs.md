@@ -471,7 +471,7 @@ Do not stage `agent/internal/agenttest/agenttest.go` unless it actually changed.
 ### Task 4: Prove one-shot process survival and finish documentation
 
 **Files:**
-- Create: `cmd/serf/run_detached_test.go`
+- Create: `cmd/evener/run_detached_test.go`
 - Modify: `docs/job-control.md`
 - Modify: `README.md`
 - Modify: `docs/superpowers/specs/2026-08-09-detached-shell-jobs-design.md` only if implementation reveals a factual mismatch
@@ -482,7 +482,7 @@ Do not stage `agent/internal/agenttest/agenttest.go` unless it actually changed.
 
 - [ ] **Step 1: Write a scripted-provider CLI integration test**
 
-Use the existing scripted provider helpers and `waitForFileContent` from `cmd/serf/scripted_provider_test.go`. The provider must call shell once with a detached command that writes its PID to a caller-owned file, waits for a caller-owned release file, and then writes a completion marker; the next scripted response communicates completion of the agent task. Build the command with `fmt.Sprintf` and `strconv.Quote` exactly as in Task 2 so paths remain literal shell arguments.
+Use the existing scripted provider helpers and `waitForFileContent` from `cmd/evener/scripted_provider_test.go`. The provider must call shell once with a detached command that writes its PID to a caller-owned file, waits for a caller-owned release file, and then writes a completion marker; the next scripted response communicates completion of the agent task. Build the command with `fmt.Sprintf` and `strconv.Quote` exactly as in Task 2 so paths remain literal shell arguments.
 
 Run `run(...)` in-process and assert:
 
@@ -499,7 +499,7 @@ Do not use fixed sleeps in Go. Synchronize through the files and the existing `w
 Run:
 
 ```bash
-go test ./cmd/serf -run TestRunDetachedCommandSurvivesExit -count=1
+go test ./cmd/evener -run TestRunDetachedCommandSurvivesExit -count=1
 ```
 
 Expected: PASS.
@@ -525,10 +525,10 @@ Replace shell examples using `background: true` with `mode: "background"`. Add o
 Run:
 
 ```bash
-gofmt -w agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/job_shell.go agent/session_tools_shell.go agent/session_tools_shell_test.go agent/execenv/execenv.go agent/execenv/command_runtime.go agent/execenv/local.go agent/execenv/detach_unix.go agent/execenv/detach_other.go agent/execenv/command_runtime_test.go agent/execenv/detach_test.go cmd/serf/run_detached_test.go
+gofmt -w agent/internal/tool/definitions.go agent/internal/tool/definitions_test.go agent/job_shell.go agent/session_tools_shell.go agent/session_tools_shell_test.go agent/execenv/execenv.go agent/execenv/command_runtime.go agent/execenv/local.go agent/execenv/detach_unix.go agent/execenv/detach_other.go agent/execenv/command_runtime_test.go agent/execenv/detach_test.go cmd/evener/run_detached_test.go
 go test ./agent/execenv -count=1
 go test ./agent -count=1
-go test ./cmd/serf -count=1
+go test ./cmd/evener -count=1
 make lint
 make build-go
 ROOT_FULL=1 WEB=0 make test
@@ -540,7 +540,7 @@ Expected: every command exits 0. If any flake appears, stop and root-cause it un
 
 ```bash
 git status --short
-git add cmd/serf/run_detached_test.go docs/job-control.md README.md
+git add cmd/evener/run_detached_test.go docs/job-control.md README.md
 git add docs/superpowers/specs/2026-08-09-detached-shell-jobs-design.md
 git commit -m "test(shell): prove detached process survival"
 ```

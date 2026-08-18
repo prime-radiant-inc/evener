@@ -24,7 +24,7 @@ reaches a real serf session and gates a real model-driven tool call.
 ### Loading mechanism (how a hooks.json reaches a live session)
 
 `serf` (the CLI) takes a repeatable `--plugin-dir <dir>` flag
-(`cmd/serf/main.go`, wired to `SessionConfig.PluginDirs`). Each `<dir>`
+(`cmd/evener/main.go`, wired to `SessionConfig.PluginDirs`). Each `<dir>`
 is a plugin ROOT: it must contain `.claude-plugin/plugin.json` (or
 `.codex-plugin/plugin.json`), and hooks are read from
 `<dir>/hooks/hooks.json` by default (`agent/plugin/plugin.go` `Load` →
@@ -55,7 +55,7 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
   ```bash
   cd "$(git rev-parse --show-toplevel)"   # must be the branch under test
   WORK=$(mktemp -d /tmp/serf-hook-scenario.XXXXXX)
-  go build -o "$WORK/serf" ./cmd/serf
+  go build -o "$WORK/serf" ./cmd/evener
   set -a; . "$PWD/.env"; set +a   # zsh: bare `. .env` fails; use the explicit form
   ```
 - A model whose instance is credentialed by `.env`. This card uses

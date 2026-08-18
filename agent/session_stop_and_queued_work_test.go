@@ -192,7 +192,7 @@ func (a *stopHoldAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 // queue, nothing auto-starts, and the Stop RPC returns as soon as the
 // interrupted turn is settled.
 //
-// The wiring mirrors cmd/serf/serve.go's processMessage: a per-turn context
+// The wiring mirrors cmd/evener/serve.go's processMessage: a per-turn context
 // marked WithQueuedInputDrainOnInterruptHandler, a mutation runner whose
 // cancel+done pair backs the Stop's cancelAndWait, and a nextTurnCtx factory
 // that re-arms the runner for a drained turn. Before the fix, the drain loop

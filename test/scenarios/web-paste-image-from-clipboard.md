@@ -36,7 +36,7 @@ inline banner.
   SPA bundle — a checkout that has never run `make build-web` serves a
   one-line `frontend/dist/PLACEHOLDER` and no app at all.
 - The CSP fix from kata `1pgw` is in effect — `img-src` must include
-  `blob:` (`cmd/serf-hub/internal/httpsec/httpsec.go:40`). Otherwise every
+  `blob:` (`cmd/evener-hub/internal/httpsec/httpsec.go:40`). Otherwise every
   paste/drop/picker silently rejects images (see Sharp edges).
 
 ## Steps
@@ -132,11 +132,11 @@ inline banner.
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
    ```
    For the byte-level check that an image part really landed (the one case
    the runbook sanctions reading raw JSONL for), locate the file with
-   `go run ./cmd/serf-doctor locate "$SID"` and grep it for `"kind":"image"`.
+   `go run ./cmd/evener-doctor locate "$SID"` and grep it for `"kind":"image"`.
 
 ## Expected
 
@@ -190,7 +190,7 @@ curl -s -X POST -H "Content-Type: application/json" \
   PNG. The message wording changed with the rewrite; the legacy
   `Not an image: <name>` text is gone. Unit tests stub the image decode, so
   only live browser verification catches this. The fix lives at
-  `cmd/serf-hub/internal/httpsec/httpsec.go:40`
+  `cmd/evener-hub/internal/httpsec/httpsec.go:40`
   (`img-src 'self' data: blob: https:;`) — `security.go` no longer exists.
 - **The attachment chip has no `data-testid`.** Address it by the Chip
   widget's remove button, whose `aria-label` is `Remove <children>`

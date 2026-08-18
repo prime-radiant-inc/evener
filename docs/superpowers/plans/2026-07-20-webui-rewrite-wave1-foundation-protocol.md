@@ -8,7 +8,7 @@
 complete AppWire protocol core (generated types, client, reducer, stores) proven against a live
 hub.
 
-**Architecture:** New app lives in `cmd/serf-hub/frontend/` (Vite 8 + React 19 + TS strict),
+**Architecture:** New app lives in `cmd/evener-hub/frontend/` (Vite 8 + React 19 + TS strict),
 embedded into `serf-hub` via `go:embed all:frontend/dist` and served only when `SERF_HUB_WEB=new`;
 the legacy UI stays untouched until the M10 deletion wave. TS wire types are generated from the
 `appwire` Go catalog with a drift test. One `AppwireClient` per browser window; one pure
@@ -27,12 +27,12 @@ jsdom, eslint, typescript-eslint.
 - No inline scripts ever (CSP will drop `unsafe-inline`).
 - CSS Modules + `src/styles/tokens.css` custom properties only; no CSS-in-JS, no Tailwind.
 - The legacy UI must keep working untouched in `SERF_HUB_WEB=legacy` (default) until M10:
-  existing `cmd/serf-hub` Go tests keep passing unmodified except where a task says otherwise.
+  existing `cmd/evener-hub` Go tests keep passing unmodified except where a task says otherwise.
 - Snapshot recovery is the truth model: on any doubt, re-`thread/read` and rebuild; never
   patch guessed state.
 - Commit after every green test cycle. All commits on branch `worktree-webui-workspace-shell`.
 - Run Go commands from the repo root (the worktree root); frontend commands from
-  `cmd/serf-hub/frontend/`.
+  `cmd/evener-hub/frontend/`.
 
 ## Locked interfaces (later waves import these; do not rename)
 
@@ -57,7 +57,7 @@ jsdom, eslint, typescript-eslint.
 ### Task 1: Frontend scaffold, Makefile targets, CI job
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/package.json`, `vite.config.ts`, `tsconfig.json`,
+- Create: `cmd/evener-hub/frontend/package.json`, `vite.config.ts`, `tsconfig.json`,
   `index.html`, `src/main.tsx`, `src/App.tsx`, `src/styles/tokens.css`, `src/styles/global.css`,
   `src/App.test.tsx`, `.eslintrc.cjs` (or flat config), `frontend/.gitignore`,
   `frontend/dist/PLACEHOLDER`
@@ -69,7 +69,7 @@ jsdom, eslint, typescript-eslint.
 - Produces: `make build-web`, `make test-web`, `npm run dev|build|test|typecheck|lint` inside
   `frontend/`; `frontend/dist/` build output; CI gating.
 
-- [ ] **Step 1: Scaffold the package.** From `cmd/serf-hub/frontend/`:
+- [ ] **Step 1: Scaffold the package.** From `cmd/evener-hub/frontend/`:
 
 ```bash
 npm init -y
@@ -215,10 +215,10 @@ Run: `npm run test` → PASS (1 test). Run `npm run build` → emits `dist/index
 
 ```make
 build-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run build
+	cd cmd/evener-hub/frontend && npm ci && npm run build
 
 test-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
+	cd cmd/evener-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
 ```
 
 and add `build-web` as a prerequisite of the existing `build-hub` target. Run `make build-web`
@@ -226,14 +226,14 @@ and `make test-web`; both must exit 0.
 
 - [ ] **Step 5: CI.** In `.github/workflows/ci.yml`, add a `web` job: checkout,
   `actions/setup-node` with `node-version: 22` and npm cache keyed on
-  `cmd/serf-hub/frontend/package-lock.json`, then `make test-web && make build-web`. Add
+  `cmd/evener-hub/frontend/package-lock.json`, then `make test-web && make build-web`. Add
   `make build-web` (with the same Node setup) before the Go build/test steps of the existing
   job(s) so `go:embed all:frontend/dist` (Task 2) always has a real build in CI.
 
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add cmd/serf-hub/frontend Makefile .github/workflows/ci.yml
+git add cmd/evener-hub/frontend Makefile .github/workflows/ci.yml
 git commit -m "webui: scaffold TypeScript frontend (vite+react+vitest) with make/CI wiring"
 ```
 
@@ -242,8 +242,8 @@ git commit -m "webui: scaffold TypeScript frontend (vite+react+vitest) with make
 ### Task 2: Hub serves the SPA behind SERF_HUB_WEB=new
 
 **Files:**
-- Create: `cmd/serf-hub/webnext.go`, `cmd/serf-hub/webnext_test.go`
-- Modify: `cmd/serf-hub/web.go` (route registration only, in `Handler()`)
+- Create: `cmd/evener-hub/webnext.go`, `cmd/evener-hub/webnext_test.go`
+- Modify: `cmd/evener-hub/web.go` (route registration only, in `Handler()`)
 
 **Interfaces:**
 - Consumes: `frontend/dist` (Task 1).
@@ -297,7 +297,7 @@ func TestWebNextWithoutBuildServes503(t *testing.T) {
 }
 ```
 
-Run: `go test ./cmd/serf-hub/ -run TestWebNext -v` → FAIL (helpers/handler missing).
+Run: `go test ./cmd/evener-hub/ -run TestWebNext -v` → FAIL (helpers/handler missing).
 
 - [ ] **Step 2: Implement `webnext.go`.**
 
@@ -376,13 +376,13 @@ if newWebEnabled() {
 
 This keeps route registration and auth-guard behavior identical between modes.
 
-- [ ] **Step 4: Green + legacy suite.** `go test ./cmd/serf-hub/ -run 'TestWebNext|TestWeb' -v`
-  → all PASS, plus a full `go test ./cmd/serf-hub/` to prove the legacy suite is untouched.
+- [ ] **Step 4: Green + legacy suite.** `go test ./cmd/evener-hub/ -run 'TestWebNext|TestWeb' -v`
+  → all PASS, plus a full `go test ./cmd/evener-hub/` to prove the legacy suite is untouched.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add cmd/serf-hub/webnext.go cmd/serf-hub/webnext_test.go cmd/serf-hub/web.go
+git add cmd/evener-hub/webnext.go cmd/evener-hub/webnext_test.go cmd/evener-hub/web.go
 git commit -m "hub: serve rewritten SPA behind SERF_HUB_WEB=new; /webassets immutable assets"
 ```
 
@@ -393,7 +393,7 @@ git commit -m "hub: serve rewritten SPA behind SERF_HUB_WEB=new; /webassets immu
 **Files:**
 - Create: `internal/appwirets/emit.go`, `internal/appwirets/emit_test.go`,
   `internal/appwirets/main/main.go` (the `go run`-able entry),
-  `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (generated, committed)
+  `cmd/evener-hub/frontend/src/protocol/types.gen.ts` (generated, committed)
 - Modify: `appwire/doc.go` (add the `go:generate` line beside the appwiredoc one)
 
 **Interfaces:**
@@ -468,7 +468,7 @@ Header line: `// Code generated by internal/appwirets; DO NOT EDIT. Run make gen
 `appwire/doc.go`, beside the existing appwiredoc directive:
 
 ```go
-//go:generate go run primeradiant.com/evener/internal/appwirets/main -out ../cmd/serf-hub/frontend/src/protocol/types.gen.ts
+//go:generate go run primeradiant.com/evener/internal/appwirets/main -out ../cmd/evener-hub/frontend/src/protocol/types.gen.ts
 ```
 
 Drift test in `emit_test.go`:
@@ -476,7 +476,7 @@ Drift test in `emit_test.go`:
 ```go
 func TestGeneratedFileCurrent(t *testing.T) {
 	want := appwirets.EmitCatalog()
-	got, err := os.ReadFile("../../cmd/serf-hub/frontend/src/protocol/types.gen.ts")
+	got, err := os.ReadFile("../../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
 	if err != nil || string(got) != want {
 		t.Fatal("types.gen.ts stale: run `make generate`")
 	}
@@ -490,7 +490,7 @@ PASS.
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add internal/appwirets appwire/doc.go cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add internal/appwirets appwire/doc.go cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "appwire: generate TypeScript protocol types from the catalog (drift-tested)"
 ```
 
@@ -779,7 +779,7 @@ replaceSubscription: false, turnLimit: 40}` on ensure and on every `onReady`.
 
 ```bash
 make build-hub && SERF_HUB_WEB=new <hub binary> &  # binary path: check `make -n build-hub`; do not guess
-cd cmd/serf-hub/frontend && npm run dev            # open the printed URL, /auth?token=… first
+cd cmd/evener-hub/frontend && npm run dev            # open the printed URL, /auth?token=… first
 # in another terminal: spawn a real session via the CLI against the same hub and send a prompt
 ```
 
@@ -792,7 +792,7 @@ the JSON view without reload; killing the hub shows `reconnecting` then recovery
 
 ### Task 9: Wave gate
 
-- [ ] `make test-web` → 0 failures; `go test ./cmd/serf-hub/ ./internal/appwirets/` → PASS;
+- [ ] `make test-web` → 0 failures; `go test ./cmd/evener-hub/ ./internal/appwirets/` → PASS;
   `make lint && make test` (all modules) → PASS; `make build-hub` embeds a real build.
 - [ ] Re-run the legacy smoke: default (no env) hub serves the old UI; `web_test.go` untouched.
 - [ ] Commit any stragglers; write `docs/superpowers/plans/wave1-report.md` with what shipped,

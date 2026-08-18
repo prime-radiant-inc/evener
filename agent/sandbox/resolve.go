@@ -359,7 +359,7 @@ func toolchainBinDir(host HostFacts, rp ResolvedPolicy, worktree string) string 
 
 // ResolveNamed resolves a session policy from a mode NAME (the persisted/flag form)
 // plus the network decision, host facts, and cwd. It is the single glue the live
-// flag path (cmd/serf) and the resume path (agent.RestoreSessionFromMetaWithConfig)
+// flag path (cmd/evener) and the resume path (agent.RestoreSessionFromMetaWithConfig)
 // share so both build a policy identically. An empty or off name returns
 // (nil, nil) — byte-identical to today, no containment; an unknown name is a typed
 // parse error; otherwise it returns the Resolve result (a *RefusalError when the

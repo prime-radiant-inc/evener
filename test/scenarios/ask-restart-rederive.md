@@ -5,12 +5,12 @@
 question at the transcript tail must report `awaiting` on its **first** successful
 `/status` read after restart (never an idle-until-next-turn window), and the question must
 still render and be answerable after the restart. Mirrors
-`cmd/serf/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
+`cmd/evener/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
 live, hub-fronted level, plus `reconnect-auto-resume.md`'s daemon-kill technique.
 
 **Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
 it" and "Driving the web UI with superpowers-chrome:browsing". The answering surface is the
-composer's **ask dock** (`cmd/serf-hub/frontend/src/panes/session/composer/askDock/`); the
+composer's **ask dock** (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`); the
 `[data-ask-card]` / `.ask-question-header` / `[data-ask-option]` / `[data-ask-send-btn]`
 selectors this card used to drive died with the vanilla frontend (`660376f78`) and have no
 same-named successors. See `ask-web-answer.md` for the current answering gesture in full.
@@ -77,7 +77,7 @@ Chrome.
    daemon-level guarantee with zero caching ambiguity — the same shape as
    `TestServeAsk_RestoreReportsAwaitingImmediately`, driven live. Bind a kernel-assigned
    port and give this daemon its own `--run-dir` so the hub never adopts it; both are real
-   `serf serve` flags (`cmd/serf/serve.go:236,239,241,242`), and the daemon reports the
+   `serf serve` flags (`cmd/evener/serve.go:236,239,241,242`), and the daemon reports the
    address it actually bound in its own rendezvous entry (`rendezvous.Entry.Address`,
    `rendezvous/rendezvous.go#Address`). Do **not** pass `--state-dir`: Part A must read the
    same default state layout the hub wrote.
@@ -102,7 +102,7 @@ Chrome.
 4. **(browser) Part B — hub-triggered respawn, and the dock still works.** Navigate to the
    (now daemonless) session. A passive page load does **not** respawn the daemon: the hub's
    `thread/read` falls back to the on-disk past transcript when no live source answers
-   (`cmd/serf-hub/app_rpc.go:172-190`), so the question is reconstructed from the
+   (`cmd/evener-hub/app_rpc.go:172-190`), so the question is reconstructed from the
    transcript rather than from any particular daemon instance. Only an actual `turn/start`
    — here, sending the answer — resumes.
    ```
@@ -149,7 +149,7 @@ Chrome.
      sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
      [ "$sid" = "$SID" ] && jq -c '{pid, session_id}' "$f"
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:6
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:6
    ```
 
 ## Expected

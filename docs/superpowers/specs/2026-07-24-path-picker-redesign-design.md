@@ -18,7 +18,7 @@ Five separate implementations of "enter a path" exist:
 | `launchShared/fields.tsx` `path` kind | plain `Input` | no browse at all |
 | `pathList` add rows (spawn + settings) | plain-text add field | no browse at all |
 
-The three "no browse at all" rows are documented scope cuts from waves 7/8, and the documented reason is the wire: `completeDirs` (`cmd/serf-hub/internal/fspaths/app_paths.go:53`) hard-`continue`s on `!entry.IsDir()`, so no listing RPC can serve a `file` or `outputFile` field. The schema has five such fields — `systemPromptFile`, `systemPromptAppendFile` (`file`), `traceFile`, `cpuProfile`, `exportATIFPath` (`outputFile`) — plus one `file`-kind list, `mcpConfigs`.
+The three "no browse at all" rows are documented scope cuts from waves 7/8, and the documented reason is the wire: `completeDirs` (`cmd/evener-hub/internal/fspaths/app_paths.go:53`) hard-`continue`s on `!entry.IsDir()`, so no listing RPC can serve a `file` or `outputFile` field. The schema has five such fields — `systemPromptFile`, `systemPromptAppendFile` (`file`), `traceFile`, `cpuProfile`, `exportATIFPath` (`outputFile`) — plus one `file`-kind list, `mcpConfigs`.
 
 ## 2. Wire changes
 
@@ -31,13 +31,13 @@ The three "no browse at all" rows are documented scope cuts from waves 7/8, and 
 | `appwire/types.go` | `MethodSerfDirsComplete` → `MethodSerfPathsComplete`; `DirsCompleteParams`/`DirsCompleteResponse` → `PathsCompleteParams`/`PathsCompleteResponse` |
 | `appwire/client.go:403` | `(*Client).DirsComplete` → `PathsComplete` |
 | `appwire/protocol.go:112` | catalog row; description becomes "Path autocompletion for a prefix." |
-| `cmd/serf-hub/app_rpc.go:659` | handler registration |
-| `cmd/serf-hub/internal/fspaths/app_paths.go` | `CompleteDirs`/`completeDirs` → `CompletePaths`/`completePaths` |
-| `cmd/serf-hub/web_appwire_fuzz_test.go:238` | method-list entry |
+| `cmd/evener-hub/app_rpc.go:659` | handler registration |
+| `cmd/evener-hub/internal/fspaths/app_paths.go` | `CompleteDirs`/`completeDirs` → `CompletePaths`/`completePaths` |
+| `cmd/evener-hub/web_appwire_fuzz_test.go:238` | method-list entry |
 | `appwire/cov_rhub_appwire_test.go:179` | client round-trip case |
-| `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts` | regenerated via `go generate ./appwire` |
+| `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts` | regenerated via `go generate ./appwire` |
 
-`SanitizeDirPrefix` (`cmd/serf-hub/internal/fspaths/paths.go:134`) keeps its name: it sanitizes a *prefix*, and the traversal rule it enforces is unchanged by this work.
+`SanitizeDirPrefix` (`cmd/evener-hub/internal/fspaths/paths.go:134`) keeps its name: it sanitizes a *prefix*, and the traversal rule it enforces is unchanged by this work.
 
 ### 2.2 New parameter
 
@@ -73,7 +73,7 @@ Rationale: the trailing slash carries the single bit the client needs, is alread
 
 ### 2.4 Go tests
 
-New/updated in `cmd/serf-hub/internal/fspaths/paths_test.go`:
+New/updated in `cmd/evener-hub/internal/fspaths/paths_test.go`:
 
 - dirs-only mode still excludes files, and returns directories unsuffixed
 - `IncludeFiles: true` returns both files and directories

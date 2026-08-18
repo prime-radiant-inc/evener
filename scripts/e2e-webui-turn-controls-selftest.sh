@@ -139,7 +139,7 @@ echo "serf-hub listening on 127.0.0.1:14002" >&2
 # scrape worth testing: a grandchild the hub deliberately outlives, exec'd
 # from the run directory the way the real hub execs the serf it was pointed
 # at, and announced in this log in the real hub's format
-# (cmd/serf-hub/spawn_daemonlog.go). It is a process this suite started, so
+# (cmd/evener-hub/spawn_daemonlog.go). It is a process this suite started, so
 # --stop reaping it is a real assertion and no bystander is ever at risk.
 run_dir="$(dirname "$0")"
 ("$run_dir/serf" serve --session s-fixture >/dev/null 2>&1 & printf '%s' "$!" >"$FAKE_STATE/daemon.pid")

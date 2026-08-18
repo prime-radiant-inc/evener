@@ -405,7 +405,7 @@ what way, models drift off serf's schema on the non-strict paths.
 sealed set and several consumers switch on event kinds with a `default:` that
 silently drops unknown kinds. To surface the repair event they need a case:
 `internal/appprojector/appwire_projection.go` (the hub/TUI projection; has a
-`default:` at `:533`, so no crash, but no bubble without a case), `cmd/serf/run.go`
+`default:` at `:533`, so no crash, but no bubble without a case), `cmd/evener/run.go`
 (the CLI renderer's tool-call switch), and `tools/tool-fluency/…` (the natural
 place to *measure* the drift metric). `server/bridge.go` needs **no** change: it
 records every event via `RecordAppEvent` before its state-only switch, so the
@@ -527,7 +527,7 @@ names to avoid false positives from prose) is the piece that carries forward.
   ValidationError tree here. Snapshot the name-map via `currentProfile()` inside
   `execTool` (NOT by locking `providerToolName` — see concurrency note).
 - `agent/events/events.go` — `EventToolCallRepaired` + `ToolCallRepairedData`.
-- `internal/appprojector/appwire_projection.go`, `cmd/serf/run.go`,
+- `internal/appprojector/appwire_projection.go`, `cmd/evener/run.go`,
   `tools/tool-fluency/…` — switch cases for the new event so it projects/renders
   and the drift metric is measurable. `server/bridge.go` needs no change.
 - Tests as above.

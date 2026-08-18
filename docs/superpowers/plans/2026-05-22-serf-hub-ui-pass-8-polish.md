@@ -13,29 +13,29 @@
 ## Files
 
 **Create**
-- `cmd/serf-hub/assets/toast.js` — `window.SerfToast.show / .dismiss`, auto-dismiss queue, slide-in animation hook.
-- `cmd/serf-hub/assets/skeleton.js` — htmx hook that sets/clears `data-loading` on swap targets.
-- `cmd/serf-hub/assets/chip-overflow.js` — caps visible spawn chips at 4, adds `+N more` expand button.
-- `cmd/serf-hub/jstest/test-toast.js` — JSDOM smoke for `SerfToast.show`, auto-dismiss, dismiss handle, `aria-live`.
-- `cmd/serf-hub/jstest/test-skeleton-data-loading.js` — JSDOM smoke for `data-loading` set on `htmx:beforeRequest`, cleared on `htmx:afterSwap`.
-- `cmd/serf-hub/jstest/test-chip-overflow.js` — JSDOM smoke for visible-chip cap + expand.
+- `cmd/evener-hub/assets/toast.js` — `window.SerfToast.show / .dismiss`, auto-dismiss queue, slide-in animation hook.
+- `cmd/evener-hub/assets/skeleton.js` — htmx hook that sets/clears `data-loading` on swap targets.
+- `cmd/evener-hub/assets/chip-overflow.js` — caps visible spawn chips at 4, adds `+N more` expand button.
+- `cmd/evener-hub/jstest/test-toast.js` — JSDOM smoke for `SerfToast.show`, auto-dismiss, dismiss handle, `aria-live`.
+- `cmd/evener-hub/jstest/test-skeleton-data-loading.js` — JSDOM smoke for `data-loading` set on `htmx:beforeRequest`, cleared on `htmx:afterSwap`.
+- `cmd/evener-hub/jstest/test-chip-overflow.js` — JSDOM smoke for visible-chip cap + expand.
 
 **Modify**
-- `cmd/serf-hub/templates/app.html` — add `#toast-region`, three new `<script>` tags.
-- `cmd/serf-hub/templates/partials/workspace.html` (lines 33, 80) — replace `.conversation-empty` placeholder with `.empty-state` markup; drop `.rule-dot` from `workspace_meta`.
-- `cmd/serf-hub/templates/partials/input_strip.html` (lines 3, 5, 8) — drop `.rule-dot` separators; rely on gap.
-- `cmd/serf-hub/templates/partials/sidebar.html` (lines 1–8, 9–30, 32–100) — add 5 skeleton-row placeholders in Live, 3 per project, plus an empty-state when no projects + no live.
-- `cmd/serf-hub/web.go:1557` — replace inline `.workspace-empty` markup with new orientation empty-state.
-- `cmd/serf-hub/assets/style.css` — add `.toast`, `#toast-region`, `.skeleton`, `[data-loading]` rules, `.empty-state*`, `.stagger`/`@keyframes enter`, `:active` per button variant, `@media (prefers-reduced-motion)` fallbacks, `.chip-overflow*` rules. Remove `.rule-dot` rule.
-- `cmd/serf-hub/assets/renderer.js` (~line 2783) — wire toast for copy-id (and replace ✓ text-swap with toast); `~line 2947` — replace `.tasks-empty` div with `.empty-state` markup.
-- `cmd/serf-hub/assets/search.js` (~line 254, 261, 491, 593, 627, 762) — wire toast for model change + shutdown; replace `.search-empty` with `.empty-state` markup.
-- `cmd/serf-hub/assets/settings.js` — toast on theme change + notification toggle save.
-- `cmd/serf-hub/assets/launchconfig.js` / `templates/partials/settings/launch-serf.html` + `project.html` — emit toast on successful save.
-- `cmd/serf-hub/assets/composer-attachments.js` (~line 339, 354) — toast on rejected files alongside the inline banner.
-- `cmd/serf-hub/assets/appwire.js` (~line 168–177) — fire connection-lost + connection-restored notifications.
-- `cmd/serf-hub/assets/sidebar.js` (~line 63–71) — first-paint stagger; set `style.setProperty('--i', n)` on Live rows.
-- `cmd/serf-hub/templates/partials/credentials.html` (~line 137, 146, 175, 190) — toast on credential set/clear success/failure.
-- `cmd/serf-hub/templates/partials/spawn.html` (chips block, lines 12–37) — add `data-chip-overflow-host` attribute so `chip-overflow.js` can hook in.
+- `cmd/evener-hub/templates/app.html` — add `#toast-region`, three new `<script>` tags.
+- `cmd/evener-hub/templates/partials/workspace.html` (lines 33, 80) — replace `.conversation-empty` placeholder with `.empty-state` markup; drop `.rule-dot` from `workspace_meta`.
+- `cmd/evener-hub/templates/partials/input_strip.html` (lines 3, 5, 8) — drop `.rule-dot` separators; rely on gap.
+- `cmd/evener-hub/templates/partials/sidebar.html` (lines 1–8, 9–30, 32–100) — add 5 skeleton-row placeholders in Live, 3 per project, plus an empty-state when no projects + no live.
+- `cmd/evener-hub/web.go:1557` — replace inline `.workspace-empty` markup with new orientation empty-state.
+- `cmd/evener-hub/assets/style.css` — add `.toast`, `#toast-region`, `.skeleton`, `[data-loading]` rules, `.empty-state*`, `.stagger`/`@keyframes enter`, `:active` per button variant, `@media (prefers-reduced-motion)` fallbacks, `.chip-overflow*` rules. Remove `.rule-dot` rule.
+- `cmd/evener-hub/assets/renderer.js` (~line 2783) — wire toast for copy-id (and replace ✓ text-swap with toast); `~line 2947` — replace `.tasks-empty` div with `.empty-state` markup.
+- `cmd/evener-hub/assets/search.js` (~line 254, 261, 491, 593, 627, 762) — wire toast for model change + shutdown; replace `.search-empty` with `.empty-state` markup.
+- `cmd/evener-hub/assets/settings.js` — toast on theme change + notification toggle save.
+- `cmd/evener-hub/assets/launchconfig.js` / `templates/partials/settings/launch-serf.html` + `project.html` — emit toast on successful save.
+- `cmd/evener-hub/assets/composer-attachments.js` (~line 339, 354) — toast on rejected files alongside the inline banner.
+- `cmd/evener-hub/assets/appwire.js` (~line 168–177) — fire connection-lost + connection-restored notifications.
+- `cmd/evener-hub/assets/sidebar.js` (~line 63–71) — first-paint stagger; set `style.setProperty('--i', n)` on Live rows.
+- `cmd/evener-hub/templates/partials/credentials.html` (~line 137, 146, 175, 190) — toast on credential set/clear success/failure.
+- `cmd/evener-hub/templates/partials/spawn.html` (chips block, lines 12–37) — add `data-chip-overflow-host` attribute so `chip-overflow.js` can hook in.
 
 ---
 
@@ -45,15 +45,15 @@
 - New JS modules use `(function () { "use strict"; … })()` IIFE wrapper to match existing files.
 - Toast messages are short noun-phrases or imperative past tense ("Settings saved", "Session shut down", "Connection lost").
 - No `console.log` in shipped code.
-- JS tests are JSDOM + Node, run via `cd cmd/serf-hub/jstest && ./run-all.sh`.
+- JS tests are JSDOM + Node, run via `cd cmd/evener-hub/jstest && ./run-all.sh`.
 
 ---
 
 ### Task 1: Add `.toast` / `#toast-region` CSS and `#toast-region` to `app.html`
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html:19-50`
-- Modify: `cmd/serf-hub/assets/style.css` (append a new section)
+- Modify: `cmd/evener-hub/templates/app.html:19-50`
+- Modify: `cmd/evener-hub/assets/style.css` (append a new section)
 
 - [ ] **Step 1: Add `#toast-region` to `app.html`**
 
@@ -127,7 +127,7 @@ Append at the end of `style.css` under a new comment header `/* Pass 8 — Toast
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/app.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/app.html cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): add #toast-region and toast CSS"
 ```
 
@@ -136,7 +136,7 @@ git commit -m "ui(pass-8): add #toast-region and toast CSS"
 ### Task 2: Write `toast.js` test (TDD-red)
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-toast.js`
+- Create: `cmd/evener-hub/jstest/test-toast.js`
 
 - [ ] **Step 1: Write the failing JSDOM test**
 
@@ -225,7 +225,7 @@ if (failures.length === 0) {
 - [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-toast.js
+cd cmd/evener-hub/jstest && node test-toast.js
 ```
 
 Expected: FAIL (file `../assets/toast.js` does not exist yet, so `readFileSync` throws ENOENT).
@@ -233,7 +233,7 @@ Expected: FAIL (file `../assets/toast.js` does not exist yet, so `readFileSync` 
 - [ ] **Step 3: Commit the failing test**
 
 ```bash
-git add cmd/serf-hub/jstest/test-toast.js
+git add cmd/evener-hub/jstest/test-toast.js
 git commit -m "test(pass-8): toast smoke test (red)"
 ```
 
@@ -242,8 +242,8 @@ git commit -m "test(pass-8): toast smoke test (red)"
 ### Task 3: Implement `toast.js`
 
 **Files:**
-- Create: `cmd/serf-hub/assets/toast.js`
-- Modify: `cmd/serf-hub/templates/app.html` — register `<script>`
+- Create: `cmd/evener-hub/assets/toast.js`
+- Modify: `cmd/evener-hub/templates/app.html` — register `<script>`
 
 - [ ] **Step 1: Write `toast.js`**
 
@@ -345,7 +345,7 @@ git commit -m "test(pass-8): toast smoke test (red)"
 
 - [ ] **Step 2: Register the script in `app.html`**
 
-In `cmd/serf-hub/templates/app.html`, add this line after the `<script src="/assets/htmx.min.js"></script>` line (so toast is available before any other module fires events):
+In `cmd/evener-hub/templates/app.html`, add this line after the `<script src="/assets/htmx.min.js"></script>` line (so toast is available before any other module fires events):
 
 ```html
   <script src="/assets/toast.js"></script>
@@ -354,7 +354,7 @@ In `cmd/serf-hub/templates/app.html`, add this line after the `<script src="/ass
 - [ ] **Step 3: Run the toast test to confirm pass**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-toast.js
+cd cmd/evener-hub/jstest && node test-toast.js
 ```
 
 Expected: `PASS: toast show/dismiss/auto-dismiss/aria-live`
@@ -362,7 +362,7 @@ Expected: `PASS: toast show/dismiss/auto-dismiss/aria-live`
 - [ ] **Step 4: Run the full jstest suite to confirm no regressions**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all tests pass.
@@ -370,7 +370,7 @@ Expected: all tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/toast.js cmd/serf-hub/templates/app.html
+git add cmd/evener-hub/assets/toast.js cmd/evener-hub/templates/app.html
 git commit -m "feat(pass-8): toast.js (window.SerfToast.show/dismiss)"
 ```
 
@@ -379,7 +379,7 @@ git commit -m "feat(pass-8): toast.js (window.SerfToast.show/dismiss)"
 ### Task 4: Wire toast in `renderer.js` — copy session ID
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js:2783-2792`
+- Modify: `cmd/evener-hub/assets/renderer.js:2783-2792`
 
 - [ ] **Step 1: Replace the inline ✓ text-swap with a toast call**
 
@@ -418,7 +418,7 @@ with:
 - [ ] **Step 2: Run all jstests to confirm no regressions**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: PASS (the existing renderer tests do not depend on the `✓` text swap).
@@ -426,7 +426,7 @@ Expected: PASS (the existing renderer tests do not depend on the `✓` text swap
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/assets/renderer.js
 git commit -m "ui(pass-8): toast on copy session ID"
 ```
 
@@ -435,7 +435,7 @@ git commit -m "ui(pass-8): toast on copy session ID"
 ### Task 5: Wire toast in `search.js` — model change + session shutdown
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/search.js:253-261`
+- Modify: `cmd/evener-hub/assets/search.js:253-261`
 
 - [ ] **Step 1: Wrap the `shutdown` and `model` runners with success/error toasts**
 
@@ -488,7 +488,7 @@ with:
 - [ ] **Step 2: Run search tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-search-commands.js && node test-search.js
+cd cmd/evener-hub/jstest && node test-search-commands.js && node test-search.js
 ```
 
 Expected: PASS.
@@ -496,7 +496,7 @@ Expected: PASS.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/search.js
+git add cmd/evener-hub/assets/search.js
 git commit -m "ui(pass-8): toast on model change + shutdown"
 ```
 
@@ -505,7 +505,7 @@ git commit -m "ui(pass-8): toast on model change + shutdown"
 ### Task 6: Wire toast in `settings.js` (theme + notification toggle)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/settings.js:8-31`
+- Modify: `cmd/evener-hub/assets/settings.js:8-31`
 
 - [ ] **Step 1: Add toast calls after each successful state change**
 
@@ -544,7 +544,7 @@ Replace the `change` handler body so each successful save fires a toast:
 - [ ] **Step 2: Run notifications test**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-notifications.js
+cd cmd/evener-hub/jstest && node test-notifications.js
 ```
 
 Expected: PASS.
@@ -552,7 +552,7 @@ Expected: PASS.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/settings.js
+git add cmd/evener-hub/assets/settings.js
 git commit -m "ui(pass-8): toast on theme + notification toggle save"
 ```
 
@@ -561,8 +561,8 @@ git commit -m "ui(pass-8): toast on theme + notification toggle save"
 ### Task 7: Wire toast in launch settings (launch-serf.html + project.html)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/launch-serf.html:50-60`
-- Modify: `cmd/serf-hub/templates/partials/settings/project.html` (analogous block, ~lines 50–65)
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-serf.html:50-60`
+- Modify: `cmd/evener-hub/templates/partials/settings/project.html` (analogous block, ~lines 50–65)
 
 - [ ] **Step 1: Add toast after save in `launch-serf.html`**
 
@@ -586,7 +586,7 @@ Replace the `form.addEventListener("submit", …)` block:
 
 - [ ] **Step 2: Find and update the analogous block in `project.html`**
 
-Read `cmd/serf-hub/templates/partials/settings/project.html` around line 50–65. The block ends with `setStatus("Saved at " + …)` per the grep results. Replace with the same pattern:
+Read `cmd/evener-hub/templates/partials/settings/project.html` around line 50–65. The block ends with `setStatus("Saved at " + …)` per the grep results. Replace with the same pattern:
 
 ```javascript
           setStatus("Saved at " + new Date().toLocaleTimeString());
@@ -604,7 +604,7 @@ And in the corresponding `catch (err)` branch:
 - [ ] **Step 3: Build serf-hub to confirm templates parse**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -612,7 +612,7 @@ Expected: clean build.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/launch-serf.html cmd/serf-hub/templates/partials/settings/project.html
+git add cmd/evener-hub/templates/partials/settings/launch-serf.html cmd/evener-hub/templates/partials/settings/project.html
 git commit -m "ui(pass-8): toast on launch + project settings save"
 ```
 
@@ -621,7 +621,7 @@ git commit -m "ui(pass-8): toast on launch + project settings save"
 ### Task 8: Wire toast in `composer-attachments.js` (attachment failed)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/composer-attachments.js:339-356`
+- Modify: `cmd/evener-hub/assets/composer-attachments.js:339-356`
 
 - [ ] **Step 1: Add toast call inside `surfaceRejections`**
 
@@ -681,7 +681,7 @@ with:
 - [ ] **Step 2: Run composer-attachment tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-submit-attachments.js && node test-composer-image-markers.js && node test-drag-drop-image.js && node test-paste-image.js
+cd cmd/evener-hub/jstest && node test-submit-attachments.js && node test-composer-image-markers.js && node test-drag-drop-image.js && node test-paste-image.js
 ```
 
 Expected: PASS (existing assertions still pass; the toast call is best-effort guarded by `if (window.SerfToast)`, so jsdom tests without the global skip it).
@@ -689,7 +689,7 @@ Expected: PASS (existing assertions still pass; the toast call is best-effort gu
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/composer-attachments.js
+git add cmd/evener-hub/assets/composer-attachments.js
 git commit -m "ui(pass-8): toast on rejected attachments"
 ```
 
@@ -698,8 +698,8 @@ git commit -m "ui(pass-8): toast on rejected attachments"
 ### Task 9: Wire toast + persistent banner in `appwire.js` (connection lost/restored)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/appwire.js:163-177`
-- Modify: `cmd/serf-hub/assets/style.css` — add `.connection-banner` rule
+- Modify: `cmd/evener-hub/assets/appwire.js:163-177`
+- Modify: `cmd/evener-hub/assets/style.css` — add `.connection-banner` rule
 
 - [ ] **Step 1: Add `connection-restored` event surface alongside `connection-lost`**
 
@@ -826,7 +826,7 @@ Append to `style.css`:
 - [ ] **Step 4: Run appwire tests**
 
 ```bash
-cd cmd/serf-hub/jstest && for t in test-appwire-*.js; do node "$t"; done
+cd cmd/evener-hub/jstest && for t in test-appwire-*.js; do node "$t"; done
 ```
 
 Expected: PASS for all appwire tests (the new code is additive; the new `onConnectionRestored` is only triggered by `wasDisconnected = true → false` transitions, which the existing tests do not exercise).
@@ -834,7 +834,7 @@ Expected: PASS for all appwire tests (the new code is additive; the new `onConne
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/appwire.js cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): connection-lost toast + persistent banner; connection-restored toast"
 ```
 
@@ -843,7 +843,7 @@ git commit -m "ui(pass-8): connection-lost toast + persistent banner; connection
 ### Task 10: Add global htmx error toast hook
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html` — add an inline hook
+- Modify: `cmd/evener-hub/templates/app.html` — add an inline hook
 
 - [ ] **Step 1: Add the hook inline in `app.html`**
 
@@ -868,7 +868,7 @@ In `app.html`, just before the closing `</body>` (after all other `<script>` tag
 - [ ] **Step 2: Build serf-hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -876,7 +876,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/app.html
+git add cmd/evener-hub/templates/app.html
 git commit -m "ui(pass-8): global htmx error → toast"
 ```
 
@@ -885,7 +885,7 @@ git commit -m "ui(pass-8): global htmx error → toast"
 ### Task 11: Write skeleton `data-loading` jstest (TDD-red)
 
 **Files:**
-- Create: `cmd/serf-hub/jstest/test-skeleton-data-loading.js`
+- Create: `cmd/evener-hub/jstest/test-skeleton-data-loading.js`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -953,7 +953,7 @@ if (failures.length === 0) {
 - [ ] **Step 2: Run the test, confirm it fails**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-skeleton-data-loading.js
+cd cmd/evener-hub/jstest && node test-skeleton-data-loading.js
 ```
 
 Expected: FAIL with ENOENT for `../assets/skeleton.js`.
@@ -961,7 +961,7 @@ Expected: FAIL with ENOENT for `../assets/skeleton.js`.
 - [ ] **Step 3: Commit failing test**
 
 ```bash
-git add cmd/serf-hub/jstest/test-skeleton-data-loading.js
+git add cmd/evener-hub/jstest/test-skeleton-data-loading.js
 git commit -m "test(pass-8): skeleton data-loading toggle (red)"
 ```
 
@@ -970,9 +970,9 @@ git commit -m "test(pass-8): skeleton data-loading toggle (red)"
 ### Task 12: Implement `skeleton.js` + CSS
 
 **Files:**
-- Create: `cmd/serf-hub/assets/skeleton.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/templates/app.html` — register `<script>`
+- Create: `cmd/evener-hub/assets/skeleton.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/templates/app.html` — register `<script>`
 
 - [ ] **Step 1: Write `skeleton.js`**
 
@@ -1066,7 +1066,7 @@ git commit -m "test(pass-8): skeleton data-loading toggle (red)"
 
 - [ ] **Step 3: Register the script in `app.html`**
 
-In `cmd/serf-hub/templates/app.html`, add immediately after `<script src="/assets/toast.js"></script>`:
+In `cmd/evener-hub/templates/app.html`, add immediately after `<script src="/assets/toast.js"></script>`:
 
 ```html
   <script src="/assets/skeleton.js"></script>
@@ -1075,7 +1075,7 @@ In `cmd/serf-hub/templates/app.html`, add immediately after `<script src="/asset
 - [ ] **Step 4: Run the skeleton test, confirm pass**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-skeleton-data-loading.js
+cd cmd/evener-hub/jstest && node test-skeleton-data-loading.js
 ```
 
 Expected: `PASS: skeleton data-loading toggle`
@@ -1083,7 +1083,7 @@ Expected: `PASS: skeleton data-loading toggle`
 - [ ] **Step 5: Run the full suite**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: PASS.
@@ -1091,7 +1091,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/skeleton.js cmd/serf-hub/assets/style.css cmd/serf-hub/templates/app.html
+git add cmd/evener-hub/assets/skeleton.js cmd/evener-hub/assets/style.css cmd/evener-hub/templates/app.html
 git commit -m "feat(pass-8): .skeleton utility + data-loading htmx hook"
 ```
 
@@ -1100,7 +1100,7 @@ git commit -m "feat(pass-8): .skeleton utility + data-loading htmx hook"
 ### Task 13: Add skeleton rows to sidebar partial
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/sidebar.html`
+- Modify: `cmd/evener-hub/templates/partials/sidebar.html`
 
 - [ ] **Step 1: Add skeleton rows inside the Live section and inside each project's children**
 
@@ -1241,7 +1241,7 @@ Replace the contents of `partials/sidebar.html` with:
 - [ ] **Step 2: Build serf-hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -1249,7 +1249,7 @@ Expected: clean build.
 - [ ] **Step 3: Run sidebar tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-sidebar.js && node test-sidebar-collapse.js
+cd cmd/evener-hub/jstest && node test-sidebar.js && node test-sidebar-collapse.js
 ```
 
 Expected: PASS.
@@ -1257,7 +1257,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/sidebar.html
+git add cmd/evener-hub/templates/partials/sidebar.html
 git commit -m "ui(pass-8): skeleton rows + empty state in sidebar partial"
 ```
 
@@ -1266,7 +1266,7 @@ git commit -m "ui(pass-8): skeleton rows + empty state in sidebar partial"
 ### Task 14: Add skeleton rows to workspace partial + replace `.conversation-empty`
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:20-34`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:20-34`
 
 - [ ] **Step 1: Add skeleton meta + skeleton transcript turns; replace conversation-empty with empty-state**
 
@@ -1323,7 +1323,7 @@ The renderer removes `.empty-state-conversation` (via `data-empty-placeholder`) 
 - [ ] **Step 2: Build serf-hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -1331,7 +1331,7 @@ Expected: clean build.
 - [ ] **Step 3: Run renderer tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-renderer.js && node test-renderer-advanced.js
+cd cmd/evener-hub/jstest && node test-renderer.js && node test-renderer-advanced.js
 ```
 
 Expected: PASS.
@@ -1339,7 +1339,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): skeleton meta + transcript; empty-state conversation"
 ```
 
@@ -1348,8 +1348,8 @@ git commit -m "ui(pass-8): skeleton meta + transcript; empty-state conversation"
 ### Task 15: Workspace empty-state markup (no session selected)
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go:1557`
-- Modify: `cmd/serf-hub/assets/style.css` — add `.empty-state*` rules
+- Modify: `cmd/evener-hub/web.go:1557`
+- Modify: `cmd/evener-hub/assets/style.css` — add `.empty-state*` rules
 
 - [ ] **Step 1: Replace the inline `.workspace-empty` markup in `web.go`**
 
@@ -1423,7 +1423,7 @@ Replace with:
 - [ ] **Step 3: Build and run Go tests**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub/...
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub/...
 ```
 
 Expected: clean.
@@ -1431,7 +1431,7 @@ Expected: clean.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/web.go cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): workspace empty-state with orientation copy + CTAs"
 ```
 
@@ -1440,7 +1440,7 @@ git commit -m "ui(pass-8): workspace empty-state with orientation copy + CTAs"
 ### Task 16: Search empty-state markup (`search.js`)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/search.js:491, 593, 610, 627, 730, 762`
+- Modify: `cmd/evener-hub/assets/search.js:491, 593, 610, 627, 730, 762`
 
 - [ ] **Step 1: Replace each `.search-empty` insertion with `.empty-state-search`**
 
@@ -1521,7 +1521,7 @@ Locate (around line 704):
 - [ ] **Step 3: Run search tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-search.js && node test-search-commands.js
+cd cmd/evener-hub/jstest && node test-search.js && node test-search-commands.js
 ```
 
 Expected: PASS. If any test asserts on the old class name, update the test to assert on `.empty-state-search` (run, inspect failure, edit, re-run).
@@ -1529,7 +1529,7 @@ Expected: PASS. If any test asserts on the old class name, update the test to as
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/search.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-search.js cmd/serf-hub/jstest/test-search-commands.js
+git add cmd/evener-hub/assets/search.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-search.js cmd/evener-hub/jstest/test-search-commands.js
 git commit -m "ui(pass-8): search palette empty-state markup"
 ```
 
@@ -1538,7 +1538,7 @@ git commit -m "ui(pass-8): search palette empty-state markup"
 ### Task 17: Tasks panel empty-state markup (`renderer.js`)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js:2947`
+- Modify: `cmd/evener-hub/assets/renderer.js:2947`
 
 - [ ] **Step 1: Replace `.tasks-empty` with `.empty-state-tasks`**
 
@@ -1567,7 +1567,7 @@ Delete this rule.
 - [ ] **Step 3: Run renderer + sidebar (tasks) test**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-sidebar.js && node test-renderer.js
+cd cmd/evener-hub/jstest && node test-sidebar.js && node test-renderer.js
 ```
 
 Expected: PASS. If `test-sidebar.js` asserts on `.tasks-empty`, update it to `.empty-state-tasks`.
@@ -1575,7 +1575,7 @@ Expected: PASS. If `test-sidebar.js` asserts on `.tasks-empty`, update it to `.e
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar.js
 git commit -m "ui(pass-8): tasks panel empty-state markup"
 ```
 
@@ -1584,8 +1584,8 @@ git commit -m "ui(pass-8): tasks panel empty-state markup"
 ### Task 18: Chip-picker empty-state markup (spawn.js + settings-pickers.js)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/spawn.js:1480`
-- Modify: `cmd/serf-hub/assets/settings-pickers.js:204`
+- Modify: `cmd/evener-hub/assets/spawn.js:1480`
+- Modify: `cmd/evener-hub/assets/settings-pickers.js:204`
 
 - [ ] **Step 1: Update both call sites**
 
@@ -1631,7 +1631,7 @@ Delete the old `.chip-picker-empty` rule (around line 686).
 - [ ] **Step 3: Run picker-related tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-spawn.js && node test-input-area.js
+cd cmd/evener-hub/jstest && node test-spawn.js && node test-input-area.js
 ```
 
 Expected: PASS.
@@ -1639,7 +1639,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/spawn.js cmd/serf-hub/assets/settings-pickers.js cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/spawn.js cmd/evener-hub/assets/settings-pickers.js cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): chip-picker empty-state markup"
 ```
 
@@ -1648,7 +1648,7 @@ git commit -m "ui(pass-8): chip-picker empty-state markup"
 ### Task 19: Sidebar first-paint stagger (sidebar.js)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js:63-71`
+- Modify: `cmd/evener-hub/assets/sidebar.js:63-71`
 
 - [ ] **Step 1: Add a once-only stagger application to the Live section**
 
@@ -1694,7 +1694,7 @@ After the existing `applyAll(document)` and `htmx:afterSwap` listener (around li
 - [ ] **Step 2: Run sidebar tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-sidebar.js && node test-sidebar-collapse.js
+cd cmd/evener-hub/jstest && node test-sidebar.js && node test-sidebar-collapse.js
 ```
 
 Expected: PASS.
@@ -1702,7 +1702,7 @@ Expected: PASS.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js
+git add cmd/evener-hub/assets/sidebar.js
 git commit -m "ui(pass-8): sidebar first-paint stagger"
 ```
 
@@ -1711,7 +1711,7 @@ git commit -m "ui(pass-8): sidebar first-paint stagger"
 ### Task 20: `:active` press states across all button variants
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1: Append `:active` rules under a Pass 8 header**
 
@@ -1738,7 +1738,7 @@ Append to `style.css`:
 - [ ] **Step 2: Build serf-hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean build.
@@ -1746,7 +1746,7 @@ Expected: clean build.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): :active press states for all .btn variants"
 ```
 
@@ -1755,7 +1755,7 @@ git commit -m "ui(pass-8): :active press states for all .btn variants"
 ### Task 21: Reduced-motion fallback for `.optimistic-pending` and `.status-dot[data-pulse]`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1: Append the reduced-motion override**
 
@@ -1779,7 +1779,7 @@ Append to `style.css`:
 - [ ] **Step 2: Build + run optimistic tests**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && node test-optimistic-rendering.js
 ```
 
 Expected: PASS (the test does not enable `prefers-reduced-motion`; the CSS is a media-query branch with no JS surface).
@@ -1787,7 +1787,7 @@ Expected: PASS (the test does not enable `prefers-reduced-motion`; the CSS is a 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): reduced-motion fallback for optimistic-pending + status-dot pulse"
 ```
 
@@ -1796,11 +1796,11 @@ git commit -m "ui(pass-8): reduced-motion fallback for optimistic-pending + stat
 ### Task 22: Spawn chip overflow ("+N more")
 
 **Files:**
-- Create: `cmd/serf-hub/assets/chip-overflow.js`
-- Create: `cmd/serf-hub/jstest/test-chip-overflow.js`
-- Modify: `cmd/serf-hub/templates/partials/spawn.html:12-37` — add `data-chip-overflow-host`
-- Modify: `cmd/serf-hub/templates/app.html` — register `<script>`
-- Modify: `cmd/serf-hub/assets/style.css` — add `.chip-overflow*` rules
+- Create: `cmd/evener-hub/assets/chip-overflow.js`
+- Create: `cmd/evener-hub/jstest/test-chip-overflow.js`
+- Modify: `cmd/evener-hub/templates/partials/spawn.html:12-37` — add `data-chip-overflow-host`
+- Modify: `cmd/evener-hub/templates/app.html` — register `<script>`
+- Modify: `cmd/evener-hub/assets/style.css` — add `.chip-overflow*` rules
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1858,7 +1858,7 @@ if (failures.length === 0) {
 - [ ] **Step 2: Run test, confirm fail**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-chip-overflow.js
+cd cmd/evener-hub/jstest && node test-chip-overflow.js
 ```
 
 Expected: FAIL (file missing).
@@ -1933,7 +1933,7 @@ Expected: FAIL (file missing).
 
 - [ ] **Step 4: Add `data-chip-overflow-host` to spawn.html**
 
-In `cmd/serf-hub/templates/partials/spawn.html` line 12, replace:
+In `cmd/evener-hub/templates/partials/spawn.html` line 12, replace:
 
 ```html
     <div class="spawn-chips" id="spawn-chips">
@@ -1969,7 +1969,7 @@ Add after `<script src="/assets/skeleton.js"></script>`:
 - [ ] **Step 7: Run the test**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-chip-overflow.js
+cd cmd/evener-hub/jstest && node test-chip-overflow.js
 ```
 
 Expected: `PASS: chip overflow caps + expand`.
@@ -1977,7 +1977,7 @@ Expected: `PASS: chip overflow caps + expand`.
 - [ ] **Step 8: Run the spawn test**
 
 ```bash
-cd cmd/serf-hub/jstest && node test-spawn.js
+cd cmd/evener-hub/jstest && node test-spawn.js
 ```
 
 Expected: PASS (the spawn template still has 5 chips today, so the cap of 4 means one is hidden; if spawn.js test relies on all chips being visible, adjust it to either expand first or assert on `:not([hidden])` selectors).
@@ -1985,7 +1985,7 @@ Expected: PASS (the spawn template still has 5 chips today, so the cap of 4 mean
 - [ ] **Step 9: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/chip-overflow.js cmd/serf-hub/jstest/test-chip-overflow.js cmd/serf-hub/templates/partials/spawn.html cmd/serf-hub/templates/app.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/chip-overflow.js cmd/evener-hub/jstest/test-chip-overflow.js cmd/evener-hub/templates/partials/spawn.html cmd/evener-hub/templates/app.html cmd/evener-hub/assets/style.css
 git commit -m "feat(pass-8): chip-overflow.js (+N more for spawn chips)"
 ```
 
@@ -1994,7 +1994,7 @@ git commit -m "feat(pass-8): chip-overflow.js (+N more for spawn chips)"
 ### Task 23: Wire toast in `credentials.html` (set/clear/oauth)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/credentials.html:130-200`
+- Modify: `cmd/evener-hub/templates/partials/credentials.html:130-200`
 
 - [ ] **Step 1: Replace `alert()` calls with toast + add success toasts**
 
@@ -2098,7 +2098,7 @@ with:
 - [ ] **Step 2: Build serf-hub**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub
 ```
 
 Expected: clean.
@@ -2106,7 +2106,7 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/credentials.html
+git add cmd/evener-hub/templates/partials/credentials.html
 git commit -m "ui(pass-8): toast on credentials set/clear/oauth"
 ```
 
@@ -2115,9 +2115,9 @@ git commit -m "ui(pass-8): toast on credentials set/clear/oauth"
 ### Task 24: Remove remaining `.rule-dot` references
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:80`
-- Modify: `cmd/serf-hub/templates/partials/input_strip.html:3, 5, 8`
-- Modify: `cmd/serf-hub/assets/style.css:355`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:80`
+- Modify: `cmd/evener-hub/templates/partials/input_strip.html:3, 5, 8`
+- Modify: `cmd/evener-hub/assets/style.css:355`
 
 - [ ] **Step 1: Remove `.rule-dot` from `workspace_meta` template**
 
@@ -2137,7 +2137,7 @@ with:
 
 - [ ] **Step 2: Remove `.rule-dot` from `input_strip.html`**
 
-Open `cmd/serf-hub/templates/partials/input_strip.html`. Replace any `<span class="rule-dot">·</span>` with nothing (delete the whole span tag). The surrounding container should already use `gap` on its flex layout (set in Pass 4); confirm by reading `style.css` for the rule on `.input-status` and adding `display: inline-flex; gap: var(--space-4)` if missing.
+Open `cmd/evener-hub/templates/partials/input_strip.html`. Replace any `<span class="rule-dot">·</span>` with nothing (delete the whole span tag). The surrounding container should already use `gap` on its flex layout (set in Pass 4); confirm by reading `style.css` for the rule on `.input-status` and adding `display: inline-flex; gap: var(--space-4)` if missing.
 
 - [ ] **Step 3: Delete the `.rule-dot` CSS rule**
 
@@ -2150,7 +2150,7 @@ In `style.css` line 355, delete:
 - [ ] **Step 4: Grep for any remaining references**
 
 ```bash
-grep -rn "rule-dot" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/
+grep -rn "rule-dot" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/
 ```
 
 Expected: zero matches (or only matches inside `vendor/`, generated files, or this plan document).
@@ -2158,7 +2158,7 @@ Expected: zero matches (or only matches inside `vendor/`, generated files, or th
 - [ ] **Step 5: Build + run jstests**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && cd cmd/serf-hub/jstest && ./run-all.sh
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: PASS.
@@ -2166,7 +2166,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/templates/partials/input_strip.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/templates/partials/input_strip.html cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): remove .rule-dot separators (gap carries the work)"
 ```
 
@@ -2179,7 +2179,7 @@ git commit -m "ui(pass-8): remove .rule-dot separators (gap carries the work)"
 - [ ] **Step 1: Build + run the full Go + JS test suites**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go build ./cmd/serf-hub && go test ./cmd/serf-hub/... && cd cmd/serf-hub/jstest && ./run-all.sh
+cd /home/jesse/git/prime-radiant/serf && go build ./cmd/evener-hub && go test ./cmd/evener-hub/... && cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all green.
@@ -2187,7 +2187,7 @@ Expected: all green.
 - [ ] **Step 2: Launch `serf-hub` and verify each toast trigger by hand**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go run ./cmd/serf-hub
+cd /home/jesse/git/prime-radiant/serf && go run ./cmd/evener-hub
 ```
 
 Then in a browser tab at `http://localhost:9180`:
@@ -2235,7 +2235,7 @@ Open `/new`. With the default 5 chips, one should be hidden behind a "+1 more" o
 - [ ] **Step 9: Audit for lingering `.rule-dot`**
 
 ```bash
-grep -rn "rule-dot" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/
+grep -rn "rule-dot" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/
 ```
 
 Expected: zero hits.

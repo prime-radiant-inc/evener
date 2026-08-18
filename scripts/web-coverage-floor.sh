@@ -33,7 +33,7 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 floors_file="${SERF_WEBCOV_FLOORS:-$repo_root/scripts/webcov-floors.txt}"
-frontend="${SERF_WEB_FRONTEND_DIR:-$repo_root/cmd/serf-hub/frontend}"
+frontend="${SERF_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}"
 tolerance="0.5"
 check=false
 bless=false

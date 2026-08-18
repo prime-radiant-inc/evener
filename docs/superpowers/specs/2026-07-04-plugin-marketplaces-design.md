@@ -61,7 +61,7 @@ plugins: its package doc states it "loads Claude Code-style plugins from disk �
 their manifest, skills, subagents, hooks, and MCP server configs."
 
 **Already implemented (the consumption foundation):**
-- `--plugin-dir` points serf at a plugin directory (`cmd/serf/serve.go` →
+- `--plugin-dir` points serf at a plugin directory (`cmd/evener/serve.go` →
   `SessionConfig.PluginDirs`, `agent/session_config.go`).
 - `plugin.Load(dir)` / `plugin.LoadAll(dirs)` (`agent/plugin/plugin.go`) read the
   `.claude-plugin/plugin.json` manifest (with `.codex-plugin/` fallback), expand
@@ -79,8 +79,8 @@ their manifest, skills, subagents, hooks, and MCP server configs."
   provider CRUD (PRI-1880) — and a read-only **Extensions** settings group
   (Plugins / Skills / MCP).
 - The hub already hosts long-running background goroutines on the signal context
-  (`cmd/serf-hub/main.go`), and spawns `serf serve` **subprocess** daemons that
-  outlive the spawning call (`cmd/serf-hub/spawn.go`); sessions receive their
+  (`cmd/evener-hub/main.go`), and spawns `serf serve` **subprocess** daemons that
+  outlive the spawning call (`cmd/evener-hub/spawn.go`); sessions receive their
   config as CLI argv, not an in-process `SessionConfig` (see §8).
 
 **Greenfield (this design):**
@@ -100,7 +100,7 @@ their manifest, skills, subagents, hooks, and MCP server configs."
 not implement the lifecycle:
 - `sp3-marketplace-design.md` — the marketplace resolver: `SourceKind` =
   {`directory`, `github`, `url`, `git-subdir`}, `known_marketplaces.json`, catalog
-  parsing, and the `cmd/serf/plugin/` scaffolding. **This design adopts its source
+  parsing, and the `cmd/evener/plugin/` scaffolding. **This design adopts its source
   types verbatim** (the v1 draft's `git` was wrong).
 - `sp4-install-plan.md` — the lifecycle/registry: an `internal/plugins` package
   with `Registry` (matching Claude's `installed_plugins.json`), atomic IO, file
@@ -134,12 +134,12 @@ the `claude` binary.
 ## 4. Architecture: one manager, three drivers, loader stays the consumer
 
 All lifecycle logic lives in **one new package in the root module**:
-`internal/plugins` (importable by `cmd/serf`, `cmd/serf-hub`, `cmd/serf-doctor`,
+`internal/plugins` (importable by `cmd/evener`, `cmd/evener-hub`, `cmd/evener-doctor`,
 all in the root module `primeradiant.com/evener`). It is the single source of truth
 for on-disk plugin state, serialized by one file lock. Three things drive it; none
 reimplement it:
 
-- **`serf plugin` CLI** (`cmd/serf/plugin/`) — calls the package directly.
+- **`serf plugin` CLI** (`cmd/evener/plugin/`) — calls the package directly.
 - **Web + TUI** — call it over new appwire RPCs the hub exposes
   (`serf/marketplace/*`, `serf/plugin/*`), the same way `/credentials` uses
   `serf/instance/*` today.
@@ -161,13 +161,13 @@ internal/plugins/            NEW — the manager (root module)
   locks.go / atomic.go       flock + tmp-rename writes
   seed.go                    first-run default-marketplace seed (§11)
 
-cmd/serf/plugin/             NEW — `serf plugin …` CLI (§9.5)
-cmd/serf-doctor/             MODIFY — add a `plugins` subcommand (§13)
+cmd/evener/plugin/             NEW — `serf plugin …` CLI (§9.5)
+cmd/evener-doctor/             MODIFY — add a `plugins` subcommand (§13)
 agent/plugin/commands.go     NEW — commands/*.md discovery (§10)
 agent/plugin/plugin.go       MODIFY — Instance.Commands; agent/session_init.go registers them
-appwire/ + cmd/serf-hub/     NEW — methods + hubPluginsController (§9.2)
-cmd/serf-hub/assets/         NEW — plugins.js, template partial (§9.3)
-cmd/serf-tui/                NEW — PluginsPanel overlay (§9.4)
+appwire/ + cmd/evener-hub/     NEW — methods + hubPluginsController (§9.2)
+cmd/evener-hub/assets/         NEW — plugins.js, template partial (§9.3)
+cmd/evener-tui/                NEW — PluginsPanel overlay (§9.4)
 ```
 
 The `agent` module never imports the manager, preserving the module boundary; the
@@ -332,7 +332,7 @@ writes:
   `--json`/non-interactive use). **Auto-upgrade needs no per-run confirmation
   because enabling `autoUpgrade` on an already-installed, git-backed plugin *is*
   the standing consent.** (serf's existing repo-trust precedent
-  `LaunchConfigTrustRepo`, `cmd/serf-hub/app_launch.go`, is the model to reuse if a
+  `LaunchConfigTrustRepo`, `cmd/evener-hub/app_launch.go`, is the model to reuse if a
   future project scope needs per-repo marketplace trust.)
 - flock serializes concurrent CLI / hub / TUI mutations.
 
@@ -356,12 +356,12 @@ duplicate-named enabled plugin would otherwise brick every new session.
 4. Returns the surviving dirs.
 
 **The injection seams differ by surface (corrected from v1):**
-- **CLI** (`cmd/serf`) builds a `SessionConfig` in-process, so it sets
+- **CLI** (`cmd/evener`) builds a `SessionConfig` in-process, so it sets
   `SessionConfig.PluginDirs = EnabledPluginDirs() + explicit --plugin-dir`.
 - **Hub** does **not** build a `SessionConfig` — it **spawns a `serf serve`
-  subprocess** (`cmd/serf-hub/spawn.go`) and passes config as **argv**. Enabled
+  subprocess** (`cmd/evener-hub/spawn.go`) and passes config as **argv**. Enabled
   dirs are injected as `--plugin-dir` arguments via the launch-config
-  `plugin_dirs` → `ToArgs` path (`cmd/serf-hub/internal/launchconfig/args.go`).
+  `plugin_dirs` → `ToArgs` path (`cmd/evener-hub/internal/launchconfig/args.go`).
   The `~/.config/serf/plugins/*` scan in `web_settings.go` is **display-only**
   (`discoverPluginsForSettings`) and is *not* a session seam; the unused
   `hubcore/config.go` `PluginDirs` default is not the mechanism either.
@@ -377,7 +377,7 @@ merged and deduped with registry-enabled dirs.
 ### 9.1 Auto-upgrade daemon
 
 Lives in the **hub** (`serf-hub`) — the only persistent process; it already hosts
-background goroutines on the signal context (`cmd/serf-hub/main.go`).
+background goroutines on the signal context (`cmd/evener-hub/main.go`).
 
 - A background goroutine on a configurable interval (proposed default ~12h, plus
   once on hub start) refreshes marketplaces (`git pull --ff-only`), then for each
@@ -398,7 +398,7 @@ background goroutines on the signal context (`cmd/serf-hub/main.go`).
 
 One method set the hub exposes; web and TUI both call it (as `/credentials` shares
 `serf/instance/*`). Declared in `appwire/protocol.go`, registered in
-`cmd/serf-hub/app_rpc.go` via `HandleTyped`, delegating to a `hubPluginsController`
+`cmd/evener-hub/app_rpc.go` via `HandleTyped`, delegating to a `hubPluginsController`
 that mirrors `app_instances.go` (reload → mutate → atomic write, mutex; delegates
 to `internal/plugins`). All operate on the single user-scope store.
 
@@ -407,7 +407,7 @@ to `internal/plugins`). All operate on the single user-scope store.
 - `serf/command/list` (slash-command catalog for autocomplete — **owned by P3**, §10)
 - Notifications: `serf/marketplace/updated`, `serf/plugin/updated`.
 
-### 9.3 Web surface (`cmd/serf-hub`)
+### 9.3 Web surface (`cmd/evener-hub`)
 
 Clones the `/credentials` end-to-end pattern (appwire RPC + htmx settings section +
 inline controller). A new **"Marketplaces & Plugins"** section in the *Extensions*
@@ -420,7 +420,7 @@ upgrade, remove; broken flagged). Files: a template partial modeled on
 `assets/launchconfig.js`; routing in `web.go`; section registration in
 `web_settings.go`.
 
-### 9.4 TUI surface (`cmd/serf-tui`)
+### 9.4 TUI surface (`cmd/evener-tui`)
 
 A tabbed `PluginsPanel` overlay modeled on `LaunchSettingsPanel` (**Marketplaces │
 Browse │ Installed** tabs, single-key actions like `CredentialsPanel`). Opened via
@@ -428,7 +428,7 @@ a `/plugins` (`/marketplaces` alias) command in `hub_command_registry.go`; wired
 through `focus_trap.go` precedence, `hub_update_config.go` handlers, and `Cmd*`
 wrappers in `launchconfig_client.go` calling the same RPCs as web.
 
-### 9.5 CLI (`cmd/serf/plugin/`)
+### 9.5 CLI (`cmd/evener/plugin/`)
 
 The `serf plugin` tree (sp4 design), thin over the same manager:
 `marketplace add|remove|list|refresh`, `install <plugin>@<mkt>`, `upgrade [--all]`,
@@ -464,7 +464,7 @@ lives where the session is, and both surfaces must reach it — but they differ:
   `Session.ProcessInput` (`agent/session_lifecycle.go:388`; `renderer.js`
   composer). So server-side interception at the `ProcessInput` boundary gives web
   execution nearly for free; its only addition is a `/` autocomplete menu.
-- **TUI** does **not**. `cmd/serf-tui/hub_session_keys.go` intercepts *all*
+- **TUI** does **not**. `cmd/evener-tui/hub_session_keys.go` intercepts *all*
   `/`-input client-side, routes it to the static `hubCommandRegistry`
   (`runHubSlashCommand`), and dead-ends an unrecognized command with "Unknown
   command" — it **never** forwards to `turn/start`. P6 must add a real dispatch
@@ -476,7 +476,7 @@ lives where the session is, and both surfaces must reach it — but they differ:
 (`/model`, `/compact`, `/plugins`, …) are handled client-side in each surface and
 win; only unrecognized-but-known-plugin commands are forwarded to the session
 expander. The server-side expander also runs for headless `serf /name args`
-(`cmd/serf/main.go` → `run` prompt path).
+(`cmd/evener/main.go` → `run` prompt path).
 
 **Security.** `` !`cmd` `` and the command's tools run under serf's existing
 execution-environment / permission model — no extra privilege. A plugin running
@@ -604,13 +604,13 @@ TDD, real files, real `git`, no mocks:
 ## 17. Summary of new/changed files
 
 **New:** `internal/plugins/{registry,marketplaces,source,install,enabled,doctor,git,locks,atomic,seed}.go`;
-`cmd/serf/plugin/`; `agent/plugin/commands.go`; the slash-command expander package;
-`cmd/serf-hub/assets/plugins.js` + a template partial; `cmd/serf-tui` PluginsPanel.
+`cmd/evener/plugin/`; `agent/plugin/commands.go`; the slash-command expander package;
+`cmd/evener-hub/assets/plugins.js` + a template partial; `cmd/evener-tui` PluginsPanel.
 
 **Modified:** `agent/plugin/plugin.go` (`Instance.Commands`), `agent/session_init.go`
 (register commands), `appwire/protocol.go` (method catalog),
-`cmd/serf-hub/{web.go,web_settings.go,app_rpc.go}` + new controller,
-`cmd/serf-hub/internal/launchconfig/args.go` (enabled dirs → `--plugin-dir` argv),
-`cmd/serf-tui/{hub_command_registry.go,hub_session_keys.go,focus_trap.go,hub_update_config.go,hub_model.go}`
-(plugin-command forwarding), `cmd/serf-doctor/main.go` (`plugins` subcommand),
-`cmd/serf/main.go` (`plugin` command), `hub.toml` (auto-upgrade config).
+`cmd/evener-hub/{web.go,web_settings.go,app_rpc.go}` + new controller,
+`cmd/evener-hub/internal/launchconfig/args.go` (enabled dirs → `--plugin-dir` argv),
+`cmd/evener-tui/{hub_command_registry.go,hub_session_keys.go,focus_trap.go,hub_update_config.go,hub_model.go}`
+(plugin-command forwarding), `cmd/evener-doctor/main.go` (`plugins` subcommand),
+`cmd/evener/main.go` (`plugin` command), `hub.toml` (auto-upgrade config).

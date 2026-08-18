@@ -33,7 +33,7 @@ Keeping the replace in `go.work` rather than in each `go.mod` leaves the
 committed `go.mod` files clean and publishable.
 
 Before assuming a module edge does not exist, check: the root `go.mod`
-already requires `agent`, and `cmd/serf-hub/internal/hubcore` already
+already requires `agent`, and `cmd/evener-hub/internal/hubcore` already
 imports `agent/schema` in several files. A wrapper type introduced to
 "avoid a dependency" that already exists is pure cost — that is exactly
 what the hub's `ReplayTurn` mirror turned out to be, and deleting it
@@ -101,7 +101,7 @@ tagged tests, and build+test alone never notices. A controller or
 implementer gating a commit that touches `agent` runs it; it is cheap
 (type-checking only, no fuzz execution). Before those
 floors existed it did not: renaming a test that
-`cmd/serf-tui/root_factories_fuzz_test.go` replays by function value left
+`cmd/evener-tui/root_factories_fuzz_test.go` replays by function value left
 that build broken while `make lint` returned 0, and a `[]string` that
 became a `[]summarizationRoute` stranded a `//go:build eval` caller for
 six weeks.
@@ -199,7 +199,7 @@ When adding a scenario function, add it to the table in the same commit.
 
 `make generate` regenerates the AppWire protocol reference
 (`docs/appwire-protocol.md`) and frontend TypeScript declarations
-(`cmd/serf-hub/frontend/src/protocol/types.gen.ts`) from the catalog in
+(`cmd/evener-hub/frontend/src/protocol/types.gen.ts`) from the catalog in
 `appwire/protocol.go`, and `make lint-generated` fails if either committed
 output is stale.
 Change the catalog, run `make generate`, commit both.

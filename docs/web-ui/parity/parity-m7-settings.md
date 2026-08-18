@@ -12,7 +12,7 @@ sections + credentials/OAuth + plugins/marketplaces manager", called out in that
   after any further edits to the old UI before relying on them.
 - **Read for this checklist:** `templates/partials/settings.html`, everything in
   `templates/partials/settings/`, `templates/partials/credentials.html`, `assets/settings-*.js`,
-  `assets/launchconfig.js`, `assets/plugins.js`. Paths below are relative to `cmd/serf-hub/`.
+  `assets/launchconfig.js`, `assets/plugins.js`. Paths below are relative to `cmd/evener-hub/`.
 - **Not read for this checklist** (out of the assigned scope — flag before assuming): the Go
   handlers that populate template data and implement the `serf/*` RPCs, `assets/sidebar.js`,
   `assets/notifications.js` (the runtime alerting engine, as opposed to the settings controls for
@@ -135,7 +135,7 @@ per-browser" per the page copy.
 - [ ] "Font size" radio (s/m/l/xl), default **m**. The current React frontend
       stores it under localStorage key `serf.prefs.fontSize` and mirrors it onto
       `document.body.dataset.fontSize` via `setFontSize` / `applyFontSize` —
-      `cmd/serf-hub/frontend/src/stores/prefs.ts`. The retired legacy page used
+      `cmd/evener-hub/frontend/src/stores/prefs.ts`. The retired legacy page used
       `serf-hub.appearance.fontSize` — `assets/settings-appearance.js:36-40,84-87`,
       `templates/partials/settings/theme.html:39-46`
 - [ ] None of the 4 radio groups carry a server-rendered `checked` attribute — correctness depends

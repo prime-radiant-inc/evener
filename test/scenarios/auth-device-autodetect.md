@@ -71,9 +71,9 @@ fresh device code each run; that's expected and harmless.
   your setup. The reason string does **not** distinguish an SSH session
   from a genuinely display-less one — `chooseLoginMode` emits the single
   `auto_no_display` reason for every auto-detected headless case
-  (`cmd/serf/openai_login.go:168-179`), and `isHeadlessLoginFor` folds the
+  (`cmd/evener/openai_login.go:168-179`), and `isHeadlessLoginFor` folds the
   SSH check (`:198`) in alongside the platform/DISPLAY checks
-  (`cmd/serf/openai_login.go:189-211`). Do not expect a distinct
+  (`cmd/evener/openai_login.go:189-211`). Do not expect a distinct
   `auto_ssh` value; none exists.
 - The device flow on macOS would default to browser regardless of
   `$DISPLAY` (because `runtime.GOOS == "darwin"` falls through). The

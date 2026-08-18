@@ -14,7 +14,7 @@ The discipline is adopted wholesale from meta-doctor's repair pipeline:
 | **Diagnose** — run runbooks → Findings | read-only | **Autonomous.** No mutation. |
 | **Extend** — author a *new* runbook | adds a runbook, not the doctor's own machinery | **Autonomous authoring**, subject to the runbook contract (zero-on-healthy, stable signature). This is also how the corpus stays evergreen. |
 | **Heal — runbook repair** — fix an *existing* runbook | one runbook | **Propose + light validation.** Re-run the runbook against a **known-healthy** and a **known-broken** target; the repair must emit **zero** findings on healthy and **catch** the broken case before it lands. |
-| **Heal — core-skill / doctor-tool repair** — the `doctoring-serf` skill, the persona, a reference, **or the serf-doctor Go tools** (`agent/doctor` + `cmd/serf-doctor`) | the doctor's own foundation | **Propose-only + review + a validation gate — NEVER silently applied.** A human (or an explicitly-authorized higher-authority agent) approves before it is written. |
+| **Heal — core-skill / doctor-tool repair** — the `doctoring-serf` skill, the persona, a reference, **or the serf-doctor Go tools** (`agent/doctor` + `cmd/evener-doctor`) | the doctor's own foundation | **Propose-only + review + a validation gate — NEVER silently applied.** A human (or an explicitly-authorized higher-authority agent) approves before it is written. |
 
 ## The one-line rule
 
@@ -32,7 +32,7 @@ operator to a fresh compatible state root.
 
 ## Core-skill / doctor-tool repair — the two gates
 
-**Go-tool repair** (the `agent/doctor` package + the `cmd/serf-doctor` main):
+**Go-tool repair** (the `agent/doctor` package + the `cmd/evener-doctor` main):
 1. **Self-consistency first.** Generate **N candidate edits** independently and
    require a **majority (≥2) agreeing by byte-identical normalized source** (this
    is meta-doctor's winner-selection — it bites on *code*) **before the proposal

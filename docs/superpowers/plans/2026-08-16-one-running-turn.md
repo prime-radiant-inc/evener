@@ -36,7 +36,7 @@ loop stops writing `processing`; the projector stops inventing names for real
 turns.
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent` module, root module's
-`internal/appprojector` / `server` / `cmd/serf` / `cmd/serf-hub`), `appwire`
+`internal/appprojector` / `server` / `cmd/evener` / `cmd/evener-hub`), `appwire`
 JSON-RPC, React/TypeScript frontend.
 
 **Spec:** this document.
@@ -56,7 +56,7 @@ Katas: `c2ty` (the window and Jesse's ruling), `2f41` (rejections are illegible)
 
 | Representation | Written by | Where |
 | --- | --- | --- |
-| `server.processing` (bool) | the serve loop goroutine | `cmd/serf/serve.go:1001,1014,1031` |
+| `server.processing` (bool) | the serve loop goroutine | `cmd/evener/serve.go:1001,1014,1031` |
 | `server.appActiveTurnID` (string) | two different setters | `server/server.go:691,715`, `server/appwire_runtime.go:212` |
 | `projector.activeTurnID` / `reservedTurnID` | the event goroutine | `internal/appprojector/appwire_projection.go` |
 | `clientMutationSnapshot.ActiveTurnID` (durable) | **eight** sites | `session_client_mutation.go:246,566`, `session_client_mutation_queue.go:1043,1136`, `session_active_turn.go:70,92`, `session_client_mutation_persist.go:83`, `session_queue.go:581` |
@@ -86,7 +86,7 @@ Both verified; both are why that plan could not have worked.
    `thread/read`.
 2. **`POST /input` has no production client.** The web UI routes every composer
    action through `turn/start` (`stores/threads.ts:1929`) and so does the TUI
-   (`cmd/serf-tui/hub_model.go:232`). The one in-repo caller is a live-scenario
+   (`cmd/evener-tui/hub_model.go:232`). The one in-repo caller is a live-scenario
    doc. So that plan's Task 1 changed what `thread/read` would say on a path
    nothing reads, and justified it with a user-visible win no user could reach.
 
@@ -164,7 +164,7 @@ mismatch cannot recur.
 
 - The **daemon** learns through a callback the session invokes when a turn opens
   and when it closes — the seam `ProcessClientMutationStart` already uses
-  (`cmd/serf/serve.go:1022-1028`). Per-turn by construction. `serve.go` stops
+  (`cmd/evener/serve.go:1022-1028`). Per-turn by construction. `serve.go` stops
   calling `SetProcessing(true)` for turn starts.
 - The **projector** learns through the opening event, as it already does. It
   always adopts; it never mints a name for a turn.
@@ -260,7 +260,7 @@ so `appReservedTurnID` is never non-empty in production.
 
 ## Task 4: The daemon learns from the handle, not from the serve loop
 
-**Files:** `cmd/serf/serve.go`, `server/server.go`, `server/appwire_runtime.go`
+**Files:** `cmd/evener/serve.go`, `server/server.go`, `server/appwire_runtime.go`
 
 - [ ] **Step 1:** Failing test — `thread/read` during a drain-loop turn reports
       the running turn's durable name, not a bucket id.
@@ -274,7 +274,7 @@ so `appReservedTurnID` is never non-empty in production.
 - [ ] **Step 5:** Release-before-idle. The superseded plan's ordering left the
       name held after the thread read idle, which is the inverse window the goal
       forbids. Assert the ordering.
-- [ ] **Step 6:** Mutation-check, run `./server/ ./cmd/serf/ ./agent/`. Commit.
+- [ ] **Step 6:** Mutation-check, run `./server/ ./cmd/evener/ ./agent/`. Commit.
 
 ## Task 5: The projector never names a turn
 
@@ -390,7 +390,7 @@ The real defects:
       a third four. After a failed turn `reasoningItem`, `toolArgsByKey` and
       `toolStartByKey` survive, and `ensureReasoningItem` (`:1818-1825`) then
       reuses a stale item id with no `item/started`.
-- [ ] Dedupe `cmd/serf-hub/e2e_turn_control_test.go` (700 lines): the
+- [ ] Dedupe `cmd/evener-hub/e2e_turn_control_test.go` (700 lines): the
       `thread/start` + cleanup block appears three times, steer-and-prove and
       interrupt-and-prove twice each. ~140 lines, and it makes visible that only
       one test covers Send-while-busy.

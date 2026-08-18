@@ -141,10 +141,10 @@ deterministic sparse test readers, existing Unix target-file locking.
   Run:
 
   ```bash
-  go test ./llm/apilog ./llm ./cmdutil ./cmd/serf -count=1
+  go test ./llm/apilog ./llm ./cmdutil ./cmd/evener -count=1
   go test -race ./llm/apilog ./llm -count=1
-  go vet ./llm/apilog ./llm ./cmdutil ./cmd/serf
-  golangci-lint run ./llm/apilog ./llm ./cmdutil ./cmd/serf
+  go vet ./llm/apilog ./llm ./cmdutil ./cmd/evener
+  golangci-lint run ./llm/apilog ./llm ./cmdutil ./cmd/evener
   make build
   ```
 

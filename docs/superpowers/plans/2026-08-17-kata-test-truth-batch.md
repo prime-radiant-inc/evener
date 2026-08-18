@@ -6,7 +6,7 @@
 
 **Architecture:** Five independent tasks, one kata each, executed sequentially in one worktree. Each kata is its own spec: it states evidence and a stop condition, deliberately not a solution (per `docs/conventions/agent-fleets.md`, naming the mechanism in a brief is harmful — the implementer verifies the evidence and finds the mechanism). Tasks touch disjoint files.
 
-**Tech Stack:** Go (multi-module workspace, see `go.work`), vitest/React for `cmd/serf-hub/frontend`, bash dev-tooling under `scripts/`.
+**Tech Stack:** Go (multi-module workspace, see `go.work`), vitest/React for `cmd/evener-hub/frontend`, bash dev-tooling under `scripts/`.
 
 **Spec:** The kata ledger entries 72k9, e2wm, vxz3, yj52, qz3e (bodies reproduced verbatim in each task below). Normative decision records: `docs/testing.md`, `docs/conventions/agent-fleets.md`, `docs/conventions/go-workspace.md`.
 
@@ -179,7 +179,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 >     the toast region contains `Steer failed: no active turn`
 >     (`Composer.tsx:641-643`)
 >
-> That string does not exist in Composer.tsx at any line. It lives in cmd/serf-hub/frontend/src/shell/palette/commands.ts:515, and it is lower-case there ('steer failed: no active turn'), so the card has the wrong file, the wrong line, and the wrong capitalisation of the literal it claims to quote.
+> That string does not exist in Composer.tsx at any line. It lives in cmd/evener-hub/frontend/src/shell/palette/commands.ts:515, and it is lower-case there ('steer failed: no active turn'), so the card has the wrong file, the wrong line, and the wrong capitalisation of the literal it claims to quote.
 >
 > THE POINT IS NOT THE STALE CITATION, IT IS THAT make lint PASSES. I ran the full nine-target lint on the rebased result and it reported PASS (7 modules, 56s) with this citation in place. So whatever audit repointed the citations in #84 does not cover this card, this file, or this shape -- which means the batch that PR just fixed can silently rot again, and there is no gate that would say so.
 >
@@ -199,7 +199,7 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 ### Task 5: Kata qz3e — small test-quality cleanups from the perf-wave reviews
 
 **Files:**
-- Modify (locate each precisely): frontend `toolRowGrammar` / `linkifySummary` / `ToolCallItem.tsx` tests under `cmd/serf-hub/frontend/src/`; the make-selftest fixture under `scripts/`-adjacent test tooling; the liveeval fuzz oracle; `jm.openOutput` (jobstore/job-manager area); the delegate retry test using a 2s `time.After`.
+- Modify (locate each precisely): frontend `toolRowGrammar` / `linkifySummary` / `ToolCallItem.tsx` tests under `cmd/evener-hub/frontend/src/`; the make-selftest fixture under `scripts/`-adjacent test tooling; the liveeval fuzz oracle; `jm.openOutput` (jobstore/job-manager area); the delegate retry test using a 2s `time.After`.
 
 **Interfaces:** none consumed from or produced for other tasks.
 
@@ -228,22 +228,22 @@ Both failures are deterministic in this worktree (not load flakes — the first 
 Added mid-run at Jesse's direction: hunt and excise tautological tests, tests asserting strings match strings, and other tests that cannot fail — coverage drop explicitly authorized. A read-only hunt of the whole repo produced six findings; the four small confident ones are this task. The cov_* cluster is kata 24te (out of scope here — its own disposition forbids wholesale deletion); the borderline AppWire source-grep guard keeps its KEEP-WITH-REASON (no change).
 
 **Files:**
-- Modify: `cmd/serf-hub/app_threadread_decode_fidelity_test.go`, `docs/testing.md:317-319`
-- Modify: `cmd/serf-hub/frontend/src/panes/sessionPanels/index.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
-- Modify: `cmd/serf-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/app_threadread_decode_fidelity_test.go`, `docs/testing.md:317-319`
+- Modify: `cmd/evener-hub/frontend/src/panes/sessionPanels/index.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
+- Modify: `cmd/evener-hub/spawn_test.go`
 
 **Interfaces:** none consumed from or produced for other tasks.
 
 **The findings (hunt report evidence, verified read-only at 9c6a6f1e4):**
 
-**(a) EXCISE `TestDecodeTranscriptTurnLosesNoField`** (`cmd/serf-hub/app_threadread_decode_fidelity_test.go:25`). Both sides of its `reflect.DeepEqual(got, want.Turn)` are the identical expression — `json.Unmarshal(raw, &transcript.Entry{})` then `.Turn`; production `decodeTranscriptTurn` (`app_threadread.go:554-560`) IS the test's own `want` computation. The mirror type died in commit 9eda7a46e, whose message deleted the sibling `FuzzHubReplayCarryThrough` for exactly this reason and kept this test on grounds that no longer hold. `docs/testing.md:334-336` already mandates deletion ("Delete the round-trip test when the second path dies"). Excise the test plus its now-dead apparatus: `populatedTurnEntryJSON`, `divergentTurnFields`, `fillForJSON`. **KEEP `hubDecodedTurn`** (same file, line 45) — live consumers at `app_threadread_failed_turn_test.go:23,51` and `app_threadread_hook_turn_test.go:24,47`. Then fix `docs/testing.md:317-319`, which still holds this file up as the worked example of the good technique ("verified by adding a synthetic field...") — that verification predates the mirror type's death; the doc currently teaches the pattern with a file that decayed into the failure mode the same section warns about at :334.
+**(a) EXCISE `TestDecodeTranscriptTurnLosesNoField`** (`cmd/evener-hub/app_threadread_decode_fidelity_test.go:25`). Both sides of its `reflect.DeepEqual(got, want.Turn)` are the identical expression — `json.Unmarshal(raw, &transcript.Entry{})` then `.Turn`; production `decodeTranscriptTurn` (`app_threadread.go:554-560`) IS the test's own `want` computation. The mirror type died in commit 9eda7a46e, whose message deleted the sibling `FuzzHubReplayCarryThrough` for exactly this reason and kept this test on grounds that no longer hold. `docs/testing.md:334-336` already mandates deletion ("Delete the round-trip test when the second path dies"). Excise the test plus its now-dead apparatus: `populatedTurnEntryJSON`, `divergentTurnFields`, `fillForJSON`. **KEEP `hubDecodedTurn`** (same file, line 45) — live consumers at `app_threadread_failed_turn_test.go:23,51` and `app_threadread_hook_turn_test.go:24,47`. Then fix `docs/testing.md:317-319`, which still holds this file up as the worked example of the good technique ("verified by adding a synthetic field...") — that verification predates the mirror type's death; the doc currently teaches the pattern with a file that decayed into the failure mode the same section warns about at :334.
 
-**(b) EXCISE the tautological sessionPanels title test** (`cmd/serf-hub/frontend/src/panes/sessionPanels/index.test.ts:17`, "uses the same title derivation for fallback and renamed sessions"). Its expectations are routed through `sessionPanelTitle`, which is exactly what `descriptor.title` calls (`panes/sessionPanels/index.ts:32-33`) — both sides of every assertion are the same call; no mutation of `sessionPanelTitle` can fail it. Its only sliver of teeth (registration wiring) is a strict subset of the `test.each` block at :7-16, which pins the same ids against independent hardcoded literals. Delete the tautological test only; the `test.each` block stays.
+**(b) EXCISE the tautological sessionPanels title test** (`cmd/evener-hub/frontend/src/panes/sessionPanels/index.test.ts:17`, "uses the same title derivation for fallback and renamed sessions"). Its expectations are routed through `sessionPanelTitle`, which is exactly what `descriptor.title` calls (`panes/sessionPanels/index.ts:32-33`) — both sides of every assertion are the same call; no mutation of `sessionPanelTitle` can fail it. Its only sliver of teeth (registration wiring) is a strict subset of the `test.each` block at :7-16, which pins the same ids against independent hardcoded literals. Delete the tautological test only; the `test.each` block stays.
 
-**(c) REWRITE the `resolveRowKey` self-assertion** (`cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx:112`): `expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"))` — identical call both sides. Replace with a pin against the independent literal `"call:call_1"`. Also add the missing one-line anti-collision case the production comment (`subagentModuleStore.ts:278-280`) claims but nothing tests: `expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"))`. The other three assertions in the test are sound; leave them.
+**(c) REWRITE the `resolveRowKey` self-assertion** (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx:112`): `expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"))` — identical call both sides. Replace with a pin against the independent literal `"call:call_1"`. Also add the missing one-line anti-collision case the production comment (`subagentModuleStore.ts:278-280`) claims but nothing tests: `expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"))`. The other three assertions in the test are sound; leave them.
 
-**(d) REWRITE the determinism half of `TestResolveSerfStateDirNotInRepoFallsBackToWorkDir`** (`cmd/serf-hub/spawn_test.go:1197`): `got`/`want` are two identical calls to `resolveSerfStateDir(workDir, "")` (pure path derivation) — x == x. Drop the determinism pair, keep the collision half (it has teeth), and add an assertion on the actual promised shape: the returned path is under the resolved state home and carries the project id derived from workDir (`resolveSerfStateDirWithProject` already returns the `identifier.Project`, so the oracle needs no new plumbing).
+**(d) REWRITE the determinism half of `TestResolveSerfStateDirNotInRepoFallsBackToWorkDir`** (`cmd/evener-hub/spawn_test.go:1197`): `got`/`want` are two identical calls to `resolveSerfStateDir(workDir, "")` (pure path derivation) — x == x. Drop the determinism pair, keep the collision half (it has teeth), and add an assertion on the actual promised shape: the returned path is under the resolved state home and carries the project id derived from workDir (`resolveSerfStateDirWithProject` already returns the `identifier.Project`, so the oracle needs no new plumbing).
 
 **Constraints specific to this task:** These edits delete assertions on purpose; Jesse has authorized the coverage drop. If a coverage floor file (`scripts/covunion-floors.txt`, test-coverage-floor or web-coverage-floor inputs) is violated by these deletions, lower the affected floor in the same commit with a one-line comment saying why — do not restore worthless assertions to satisfy a floor. Mutation-list contract applies to every REWRITTEN assertion (the new literal pins must be shown killable).
 

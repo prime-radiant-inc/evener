@@ -5,7 +5,7 @@ full gate green. Integration branch: `worktree-webui-workspace-shell`.
 
 ## What shipped
 
-- **Toolchain** (T1): `cmd/serf-hub/frontend/` — Vite 8 + React 19 + TS strict + vitest; npm with
+- **Toolchain** (T1): `cmd/evener-hub/frontend/` — Vite 8 + React 19 + TS strict + vitest; npm with
   `ignore-scripts` enforced; `make build-web`/`test-web`; CI Node job; web tests gate CI for the
   first time.
 - **Flag-gated serving** (T2): `SERF_HUB_WEB=new` serves the SPA shell for page GETs only;

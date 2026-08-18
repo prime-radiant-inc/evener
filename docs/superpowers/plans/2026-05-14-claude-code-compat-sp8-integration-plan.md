@@ -4,7 +4,7 @@
 
 **Goal:** Compose the outputs of SP1..SP7 at session startup so a single `agent.NewSession` call produces a fully wired session whose hooks, MCP servers, permissions, skills, agents, plugin binaries, and user-config substitutions all reflect the merged Claude-Code-shaped configuration.
 
-**Architecture:** A new `agent/session_bootstrap.go` helper (`BuildSessionConfig`) owns steps 1–4 of the startup pipeline. `SessionConfig` gains typed fields that thread merged config from the four CLI binaries through `NewSession`. Fire sites for seven new lifecycle events land in `agent/session.go`, `agent/subagents.go`, and `agent/context_strategy.go`. Permission enforcement is inserted into `execTool` between `PreToolUse` and the tool call. The four binaries (`cmd/serf`, `cmd/serf-tui`, `cmd/serf-hub`, `cmd/serfeval`) call `BuildSessionConfig` and copy its fields onto their existing `SessionConfig` literals.
+**Architecture:** A new `agent/session_bootstrap.go` helper (`BuildSessionConfig`) owns steps 1–4 of the startup pipeline. `SessionConfig` gains typed fields that thread merged config from the four CLI binaries through `NewSession`. Fire sites for seven new lifecycle events land in `agent/session.go`, `agent/subagents.go`, and `agent/context_strategy.go`. Permission enforcement is inserted into `execTool` between `PreToolUse` and the tool call. The four binaries (`cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, `cmd/evenereval`) call `BuildSessionConfig` and copy its fields onto their existing `SessionConfig` literals.
 
 **Tech Stack:** Go (existing). No new dependencies. Table-driven tests with `t.TempDir`, `t.Setenv`. Real `git`, `bash` with `t.Skip` when absent. `httptest.NewServer` for HTTP hooks.
 
@@ -26,12 +26,12 @@
 | `agent/subagents_test.go` | modify | Subagent inheritance tests |
 | `agent/context_strategy.go` | modify | `PostCompact` fire site after compaction returns |
 | `agent/context_strategy_test.go` | modify | `PostCompact` fire test |
-| `cmd/serf/main.go` | modify | Register `--config`, `--trust-marketplace`, `--plugin-option` flags |
-| `cmd/serf/run.go` | modify | Call `BuildSessionConfig`; copy returned fields into existing `SessionConfig` literal |
-| `cmd/serf/serve.go` | modify | Same for daemon-mode `SessionConfig` |
-| `cmd/serf-tui/embedded.go` | modify | Same for the three `SessionConfig` sites in TUI |
-| `cmd/serf-hub/web.go` | modify | Add `ConfigPaths` to `WebConfig`; thread merged config into the Spawner request |
-| `cmd/serfeval/main.go` | modify | Same wiring for serfeval |
+| `cmd/evener/main.go` | modify | Register `--config`, `--trust-marketplace`, `--plugin-option` flags |
+| `cmd/evener/run.go` | modify | Call `BuildSessionConfig`; copy returned fields into existing `SessionConfig` literal |
+| `cmd/evener/serve.go` | modify | Same for daemon-mode `SessionConfig` |
+| `cmd/evener-tui/embedded.go` | modify | Same for the three `SessionConfig` sites in TUI |
+| `cmd/evener-hub/web.go` | modify | Add `ConfigPaths` to `WebConfig`; thread merged config into the Spawner request |
+| `cmd/evenereval/main.go` | modify | Same wiring for serfeval |
 | `agent/integration_sp8_test.go` | create | End-to-end suite covering the 19 cases in spec §12.1 |
 | `agent/testdata/plugins/sp8-hookparity/` | create | Fixture plugin with one hook per new SP5 event |
 | `agent/testdata/marketplaces/sp8-basic/` | create | Smallest directory-source marketplace exercising the install → run → uninstall loop |
@@ -2691,15 +2691,15 @@ git commit -m "agent: --plugin-dir name collision shadows enabledPlugins entry"
 
 ---
 
-## Task 26: CLI wiring — `cmd/serf` flag registration
+## Task 26: CLI wiring — `cmd/evener` flag registration
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Test: smoke test via `go build ./cmd/serf`
+- Modify: `cmd/evener/main.go`
+- Test: smoke test via `go build ./cmd/evener`
 
 - [ ] **Step 1: Locate the existing flag-registration block**
 
-Read `cmd/serf/main.go` and find where existing flags like `--plugin-dir` are registered (likely a `flag.Var` or `pflag.StringArrayVar`).
+Read `cmd/evener/main.go` and find where existing flags like `--plugin-dir` are registered (likely a `flag.Var` or `pflag.StringArrayVar`).
 
 - [ ] **Step 2: Add three new flag registrations**
 
@@ -2722,7 +2722,7 @@ If the existing CLI uses stdlib `flag` instead of cobra, adapt accordingly:
 
 - [ ] **Step 3: Add the field declarations to runFlags struct**
 
-In `cmd/serf/run.go` (or the same file if `runFlags` lives there):
+In `cmd/evener/run.go` (or the same file if `runFlags` lives there):
 
 ```go
 type runFlags struct {
@@ -2736,7 +2736,7 @@ type runFlags struct {
 - [ ] **Step 4: Build to verify no compile errors**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean exit.
@@ -2744,21 +2744,21 @@ Expected: clean exit.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf/main.go cmd/serf/run.go
-git commit -m "cmd/serf: register --config, --trust-marketplace, --plugin-option flags"
+git add cmd/evener/main.go cmd/evener/run.go
+git commit -m "cmd/evener: register --config, --trust-marketplace, --plugin-option flags"
 ```
 
 ---
 
-## Task 27: CLI wiring — `cmd/serf/run.go` calls `BuildSessionConfig`
+## Task 27: CLI wiring — `cmd/evener/run.go` calls `BuildSessionConfig`
 
 **Files:**
-- Modify: `cmd/serf/run.go` (function `run`, spec cites line 68)
+- Modify: `cmd/evener/run.go` (function `run`, spec cites line 68)
 - Test: build + an existing serf integration test stays green
 
 - [ ] **Step 1: Add the wiring**
 
-In `cmd/serf/run.go`'s `run()`, between the env-construction block and the existing `agent.SessionConfig{...}` literal, add:
+In `cmd/evener/run.go`'s `run()`, between the env-construction block and the existing `agent.SessionConfig{...}` literal, add:
 
 ```go
 	bootstrap, err := agent.BuildSessionConfig(env, agent.BootstrapFlags{
@@ -2861,7 +2861,7 @@ And add an overload `BuildSessionConfigWithDeps(env, flags, BootstrapDepsExporte
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean.
@@ -2877,16 +2877,16 @@ Expected: PASS (no regression).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf/run.go agent/session_bootstrap.go
-git commit -m "cmd/serf: call BuildSessionConfig and thread merged fields into SessionConfig"
+git add cmd/evener/run.go agent/session_bootstrap.go
+git commit -m "cmd/evener: call BuildSessionConfig and thread merged fields into SessionConfig"
 ```
 
 ---
 
-## Task 28: CLI wiring — `cmd/serf/serve.go`
+## Task 28: CLI wiring — `cmd/evener/serve.go`
 
 **Files:**
-- Modify: `cmd/serf/serve.go` (function `serve`, spec cites line 63)
+- Modify: `cmd/evener/serve.go` (function `serve`, spec cites line 63)
 
 - [ ] **Step 1: Apply the same wiring as `run.go`**
 
@@ -2895,7 +2895,7 @@ Locate the existing `agent.SessionConfig{...}` literal in `serve.go`. Wrap it wi
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf
+go build ./cmd/evener
 ```
 
 Expected: clean.
@@ -2903,16 +2903,16 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf/serve.go
-git commit -m "cmd/serf: wire BuildSessionConfig in serve (daemon) mode"
+git add cmd/evener/serve.go
+git commit -m "cmd/evener: wire BuildSessionConfig in serve (daemon) mode"
 ```
 
 ---
 
-## Task 29: CLI wiring — `cmd/serf-tui/embedded.go`
+## Task 29: CLI wiring — `cmd/evener-tui/embedded.go`
 
 **Files:**
-- Modify: `cmd/serf-tui/embedded.go` (spec cites lines 126, 174, 325)
+- Modify: `cmd/evener-tui/embedded.go` (spec cites lines 126, 174, 325)
 
 - [ ] **Step 1: Apply the same wiring at each of the three `SessionConfig` sites**
 
@@ -2939,7 +2939,7 @@ Add `--config` flag registration to TUI's flag set if it doesn't already have on
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serf-tui
+go build ./cmd/evener-tui
 ```
 
 Expected: clean.
@@ -2947,16 +2947,16 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-tui/embedded.go
-git commit -m "cmd/serf-tui: wire BuildSessionConfig at all three session sites"
+git add cmd/evener-tui/embedded.go
+git commit -m "cmd/evener-tui: wire BuildSessionConfig at all three session sites"
 ```
 
 ---
 
-## Task 30: CLI wiring — `cmd/serf-hub/web.go`
+## Task 30: CLI wiring — `cmd/evener-hub/web.go`
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go`
+- Modify: `cmd/evener-hub/web.go`
 
 - [ ] **Step 1: Extend `WebConfig`**
 
@@ -2983,7 +2983,7 @@ If the Hub spawns serf as a subprocess (per spec §5.3), this is the simplest co
 - [ ] **Step 3: Build**
 
 ```bash
-go build ./cmd/serf-hub
+go build ./cmd/evener-hub
 ```
 
 Expected: clean.
@@ -2991,16 +2991,16 @@ Expected: clean.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/web.go
-git commit -m "cmd/serf-hub: pass --config through to spawned serf processes"
+git add cmd/evener-hub/web.go
+git commit -m "cmd/evener-hub: pass --config through to spawned serf processes"
 ```
 
 ---
 
-## Task 31: CLI wiring — `cmd/serfeval/main.go`
+## Task 31: CLI wiring — `cmd/evenereval/main.go`
 
 **Files:**
-- Modify: `cmd/serfeval/main.go` (spec cites lines 206, 231)
+- Modify: `cmd/evenereval/main.go` (spec cites lines 206, 231)
 
 - [ ] **Step 1: Apply the same wiring**
 
@@ -3009,7 +3009,7 @@ Same as Task 27, but with `agent.NewNonInteractivePrompter()` and `agent.AskFall
 - [ ] **Step 2: Build**
 
 ```bash
-go build ./cmd/serfeval
+go build ./cmd/evenereval
 ```
 
 Expected: clean.
@@ -3017,8 +3017,8 @@ Expected: clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serfeval/main.go
-git commit -m "cmd/serfeval: wire BuildSessionConfig with non-interactive prompter"
+git add cmd/evenereval/main.go
+git commit -m "cmd/evenereval: wire BuildSessionConfig with non-interactive prompter"
 ```
 
 ---
@@ -4184,7 +4184,7 @@ Expected: PASS (with any tests that require not-yet-merged SP1..SP7 surfaces app
 - [ ] **Step 2: Run the binaries' build**
 
 ```bash
-go build ./cmd/serf ./cmd/serf-tui ./cmd/serf-hub ./cmd/serfeval
+go build ./cmd/evener ./cmd/evener-tui ./cmd/evener-hub ./cmd/evenereval
 ```
 
 Expected: clean.
@@ -4225,10 +4225,10 @@ git commit -m "agent: SP8 cleanup pass — vet/fmt"
 | §3.6 enabledPlugins resolution | Tasks 8, 45 |
 | §4 SessionConfig schema | Tasks 1, 4, 5, 10 |
 | §4.1 --config vs --plugin-dir | Tasks 9, 24, 26 |
-| §5.1 cmd/serf | Tasks 26, 27, 28 |
-| §5.2 cmd/serf-tui | Task 29 |
-| §5.3 cmd/serf-hub | Task 30 |
-| §5.4 cmd/serfeval | Task 31 |
+| §5.1 cmd/evener | Tasks 26, 27, 28 |
+| §5.2 cmd/evener-tui | Task 29 |
+| §5.3 cmd/evener-hub | Task 30 |
+| §5.4 cmd/evenereval | Task 31 |
 | §5.5 shared helper BuildSessionConfig | Tasks 6–10 |
 | §6 Fire sites (9 events) | Tasks 17–22 (7 events) + Task 16 (PermReq/Denied) |
 | §7 Permission enforcement wire-in | Task 16 |

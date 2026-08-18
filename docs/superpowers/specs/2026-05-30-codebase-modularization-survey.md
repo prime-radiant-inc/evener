@@ -11,9 +11,9 @@ only a thin entrypoint belongs. Jesse's hypothesis is confirmed with numbers:
 
 | Area | Lines (prod) | In `package main`? | Est. % that should be a library |
 | --- | --- | --- | --- |
-| `cmd/serf-tui` | ~15,800 | yes | **~80%** (→ `internal/tui` + leaf pkgs) |
-| `cmd/serf-hub` | ~10,050 | yes | **~78%** (→ several `internal/hub*` pkgs) |
-| `cmd/serf` (CLI) | ~1,850 | yes | **~65–70%** (→ `cmdutil` + `internal/launchcheck`) |
+| `cmd/evener-tui` | ~15,800 | yes | **~80%** (→ `internal/tui` + leaf pkgs) |
+| `cmd/evener-hub` | ~10,050 | yes | **~78%** (→ several `internal/hub*` pkgs) |
+| `cmd/evener` (CLI) | ~1,850 | yes | **~65–70%** (→ `cmdutil` + `internal/launchcheck`) |
 
 Nothing in the repo imports these `package main` dirs, so extraction has **zero external-caller
 breakage** — the only cost is moving the (substantial) co-located tests. `llm/`, `server/`, and
@@ -22,17 +22,17 @@ splits, dedup, and a few clean leaf extractions.
 
 ## Per-area findings
 
-### cmd/serf-hub (~10k prod / ~16k test) — biggest structural debt #2
+### cmd/evener-hub (~10k prod / ~16k test) — biggest structural debt #2
 - **God-files:** `web.go` (3,385 — HTTP layer), `app_rpc.go` (2,002 — RPC wiring + ~1,440 lines of domain logic).
 - **Extract to libraries:** `internal/hubspawn` (spawn.go, zero web coupling), `internal/hubindex` (past/roster/prober/session_order), `internal/hubtree` (tree.go — a **pure function**), `internal/hubauth` + `internal/hubinstances`, `internal/hublaunch`, `internal/codexlaunch`, and the domain half of `app_rpc.go` → `internal/hubthread`. ~700–900 lines genuinely stay `main`.
 - **Top moves:** P1 `spawn.go`→`internal/hubspawn` (M/low) · P2 `tree.go`→`internal/hubtree` (S/low, pure fn) · P3 `app_rpc.go` domain fns→`internal/hubthread` (L/med — split the `WebConfig` god-struct as part of it) · P7 split `web.go` internally by concern (M/low, same-package).
 
-### cmd/serf-tui (~15.8k prod / ~15k test) — biggest structural debt #1
+### cmd/evener-tui (~15.8k prod / ~15k test) — biggest structural debt #1
 - **God-file:** `hub_model.go` (**4,557 — largest file in the repo**), the central bubbletea model.
 - **The move:** extract essentially everything to `internal/tui` (package rename; `main.go` shrinks to ~150 lines), then decompose `hub_model.go` into ~5 concern files (dashboard / session / spawn / views / core update-loop). Clean leaf packages fall out: `internal/tui/widgets` (~1,800, lipgloss-only), `internal/tui/toolrender` (~1,075), `internal/tui/clipboard` (~680), `internal/hubstart` (564). `tui_samples.go` (551, ships in the binary, test-only callers) → a `_test.go`.
 - **Top moves:** P1 `internal/tui` extraction (L/low) · P2 split `hub_model.go` (M/low) · P4–6 leaf widget/toolrender/clipboard packages (S–M/low).
 
-### cmd/serf (CLI, ~1.85k) + cmdutil (558)
+### cmd/evener (CLI, ~1.85k) + cmdutil (558)
 - No god-files. ~65–70% of the CLI is logic that should leave `main`.
 - **Moves:** `buildInitialProfile`/`applyFastCheapModel`/`agentToServerDetailedStatus`/`drainEvents*` → `cmdutil`; launch-check model logic → `internal/launchcheck` (150 testable lines stuck in `main`); a shared `cmdutil.BuildSession(...)` to kill the ~40-line session-construction pattern duplicated across run.go/serve.go/serfeval.
 - **cmdutil is a moderate grab-bag:** `SelectProfile` + `queryModelContextWindow` are pre-`providerconfig` tech debt (migrate `serfeval` off them, then delete); `ResolveSnapshot` is dead code (delete); the hub-only `MaterializeProvidersConfig`/`seedConfigFromEnv` don't belong with CLI-flag helpers.
@@ -62,12 +62,12 @@ splits, dedup, and a few clean leaf extractions.
 - `tree.go`→`internal/hubtree` (pure fn), `AppEventProjector`→`internal/appprojector`, `internal/tui/{widgets,toolrender,clipboard}`, `internal/launchcheck`.
 
 **Tier C — the big main→library moves (the hypothesis payoff, per-area, spec'd + gated):**
-- `cmd/serf-tui` → `internal/tui` (largest single win), `cmd/serf-hub` → `internal/hub*` (spawn/index/auth/…), `cmd/serf` CLI → cmdutil/`internal/launchcheck`.
+- `cmd/evener-tui` → `internal/tui` (largest single win), `cmd/evener-hub` → `internal/hub*` (spawn/index/auth/…), `cmd/evener` CLI → cmdutil/`internal/launchcheck`.
 
 **Tier D — deferred (high blast radius, needs design):**
 - server `Set*`→interface, `llm/catalog` subpackage, the DTO-layer collapses, the LaunchOption type unification.
 
 **Recommended execution order:** Tier A first (safe, immediate cognitive-load relief, proven pattern),
 then Tier B leaf extractions, then Tier C per-area as deliberate spec'd efforts. Each area should get
-its own ticket; the `cmd/serf-tui`→`internal/tui` and `cmd/serf-hub` library extractions are large
+its own ticket; the `cmd/evener-tui`→`internal/tui` and `cmd/evener-hub` library extractions are large
 enough to warrant their own specs (like `agent` got).

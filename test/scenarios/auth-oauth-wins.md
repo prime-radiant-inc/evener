@@ -12,15 +12,15 @@ env is fallback only.
 Fully hermetic — this card never reads or writes Jesse's real
 `~/.local/state/serf/auth/openai.json`. The precedence rule under test is
 decided entirely from disk (`Service.Status`, `auth/openai/service.go`, and
-the hub's `openAIInstanceStatus`, `cmd/serf-hub/app_auth.go`, both make no
+the hub's `openAIInstanceStatus`, `cmd/evener-hub/app_auth.go`, both make no
 network calls), so a synthetic record with a future expiry exercises it
 exactly as a real sign-in would.
 
 ```bash
 # Isolated everything, per docs/agentic-testing.md's Setup checklist.
 run=$(mktemp -d -t serf-e2e-oauth-wins-XXXXXX)
-go build -o "$run/serf" ./cmd/serf
-go build -o "$run/serf-hub" ./cmd/serf-hub
+go build -o "$run/serf" ./cmd/evener
+go build -o "$run/serf-hub" ./cmd/evener-hub
 
 export HOME="$run/home"
 mkdir -p "$HOME"
@@ -111,7 +111,7 @@ rm -rf "$run"
   scenario would send both the fixture write and the lookup somewhere the
   scratch `$HOME` doesn't reach.
 - Step 3 needs the frontend built into the binary. `frontend/dist` is not
-  tracked, so a `go build ./cmd/serf-hub` in a fresh checkout embeds
+  tracked, so a `go build ./cmd/evener-hub` in a fresh checkout embeds
   nothing and every page route answers `503 serf-hub web app not built:
   run 'make build-web' and rebuild`. Run `make build-web` once before the
   `go build` above (steps 1 and 2 need only the `serf` binary and are

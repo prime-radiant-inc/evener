@@ -39,7 +39,7 @@ import (
 // SCOPE (honest): the turn/job *status* lifecycle (a turn going processing→idle,
 // steer/interrupt/queue semantics) is NOT in this package. Those handlers live in
 // server/appwire_runtime.go (driven by a live agent/LLM, not deterministic offline)
-// and cmd/serf-hub/app_rpc.go (package main; and importing server here would be an
+// and cmd/evener-hub/app_rpc.go (package main; and importing server here would be an
 // import cycle). internal/appserver is pure transport: a generic Router with
 // injected handler closures plus the real connection gate. So the model is scoped to
 // the dispatch/lifecycle layer that needs no live LLM — the connection protocol

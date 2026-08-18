@@ -373,11 +373,11 @@ Expected: the pre-commit hook passes; do not skip or disable it.
 - Verify: `llm/...`
 - Verify: `agent/session_state.go`
 - Verify: `agent/session_awaiting_test.go`
-- Verify: `cmd/serf-hub/internal/hubcore/prober.go`
-- Verify: `cmd/serf-hub/internal/hubcore/roster.go`
-- Verify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Verify: `cmd/serf-hub/app_threadlist.go`
-- Verify: `cmd/serf-hub/app_threadread.go`
+- Verify: `cmd/evener-hub/internal/hubcore/prober.go`
+- Verify: `cmd/evener-hub/internal/hubcore/roster.go`
+- Verify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Verify: `cmd/evener-hub/app_threadlist.go`
+- Verify: `cmd/evener-hub/app_threadread.go`
 
 **Proof obligations:**
 
@@ -407,8 +407,8 @@ Run:
 
 ```bash
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestWireState_(LiveChildDoesNotMakeIdleParentActive|PendingParentWorkMakesIdleParentActive|AwaitingOutranksAutonomy)' -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub -run 'Test(HubThreadListProjectsRunningSubagentActive|PastThreadReadProjectsRunningSubagentActive)$' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(HubThreadListProjectsRunningSubagentActive|PastThreadReadProjectsRunningSubagentActive)$' -count=1
 ```
 
 Expected: PASS. `FuzzHubcoreScenarios` runs the checked-in seed corpus containing the status-prober, roster, tree-child, and one-task-tree rollup scenarios; the app tests pin thread-list and thread-read projection.
@@ -418,7 +418,7 @@ Expected: PASS. `FuzzHubcoreScenarios` runs the checked-in seed corpus containin
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore -count=1
+GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore -count=1
 ```
 
 Expected: PASS.
@@ -441,7 +441,7 @@ Run:
 GOCACHE=/tmp/serf-gocache go test ./... -count=1
 ```
 
-Expected target: PASS. This checkout previously exposed two unrelated, pre-existing environment-sensitive failures: `cmd/serf-fuzz-harvest/FuzzHarvestProgram/seed#3` and `cmd/serf-hub/internal/fspaths/FuzzResolveInRoot` seeds `#0` and `#4` (`/var` versus `/private/var`). If any failure remains, capture its exact package, test, seed, and message. Re-run it in isolation on `HEAD`; if it is one of those known failures, also run that exact test at the branch merge base in a disposable worktree to prove it is not introduced here. Do not report the full suite as passing when it did not.
+Expected target: PASS. This checkout previously exposed two unrelated, pre-existing environment-sensitive failures: `cmd/evener-fuzz-harvest/FuzzHarvestProgram/seed#3` and `cmd/evener-hub/internal/fspaths/FuzzResolveInRoot` seeds `#0` and `#4` (`/var` versus `/private/var`). If any failure remains, capture its exact package, test, seed, and message. Re-run it in isolation on `HEAD`; if it is one of those known failures, also run that exact test at the branch merge base in a disposable worktree to prove it is not introduced here. Do not report the full suite as passing when it did not.
 
 - [ ] **Step 6: Audit the finished branch and record proof**
 

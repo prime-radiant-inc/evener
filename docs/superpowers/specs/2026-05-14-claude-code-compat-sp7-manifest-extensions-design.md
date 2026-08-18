@@ -608,8 +608,8 @@ Existing files modified:
 - `agent/skills.go` / the existing `discoverPluginSkills` helper — accept an override argument; default-only callers pass `nil`.
 - `agent/session.go` — wire `PluginBinPATH` into the shell tool registration; call `ResolveUserConfig` per plugin during `initPlugins`; stash resolved configs on `s.pluginUserConfigs` for SP5/SP6 to consume.
 - `agent/config.go` (SP1) — add the `PluginConfigs` field on `SerfConfig`. SP1's parser already keeps unknown JSON as `RawMessage`; this is the typed accessor.
-- `cmd/serf/plugin/install.go` (SP4) — call `PromptForUserConfig` after install/enable.
-- `cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go` — register the surface-specific `UserConfigPrompter` with the session.
+- `cmd/evener/plugin/install.go` (SP4) — call `PromptForUserConfig` after install/enable.
+- `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go` — register the surface-specific `UserConfigPrompter` with the session.
 
 Tests live next to the code they cover; integration fixtures live under `agent/testdata/plugins/<scenario>/`. Specifically, `agent/testdata/plugins/userconfig-basic/` is the smallest plugin that exercises one of each `userConfig` type.
 

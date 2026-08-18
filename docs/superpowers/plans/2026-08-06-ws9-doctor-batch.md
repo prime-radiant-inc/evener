@@ -12,13 +12,13 @@ readers (`transcript`, `apilog`, `jobstore` folds, `schema.SessionMeta`) —
 never hand-parsed JSONL, per the doctoring-serf hard gate. Everything
 supports `--json`. New runbooks codify the 2026-08-05 study's detectors.
 
-**Tech stack:** Go: `agent/doctor` (analysis), `cmd/serf-doctor` (CLI),
+**Tech stack:** Go: `agent/doctor` (analysis), `cmd/evener-doctor` (CLI),
 `internal/bundled/skills/doctoring-serf` (runbooks + skill doc). Fixture
 session dirs use the `--state-dir` scratch-root shape (state dir *is* the
 bucket; see `references/data-model.md`).
 
 **Context (verified):** existing subcommands and selector handling live in
-`cmd/serf-doctor/main.go` (e.g. `cmdAPILog` at :271); analysis in
+`cmd/evener-doctor/main.go` (e.g. `cmdAPILog` at :271); analysis in
 `agent/doctor/` (e.g. `apilog.go:116`). Session metas enumerate via
 `schema.ListSessionMetas(bucketDir)`; transcripts read via the `transcript`
 package; jobs via `jobstore` folds (`Fold`, `FoldWatches`, raw terminal
@@ -47,7 +47,7 @@ scan). The Finding contract and runbook format are
 
 **Files:**
 - Create: `agent/doctor/sessions.go`, `agent/doctor/sessions_test.go`
-- Modify: `cmd/serf-doctor/main.go` (subcommand + help)
+- Modify: `cmd/evener-doctor/main.go` (subcommand + help)
 
 **Interfaces:**
 - Produces: `doctor.ListSessions(opts)` returning per-session rows:
@@ -73,7 +73,7 @@ scan). The Finding contract and runbook format are
 
 **Files:**
 - Create: `agent/doctor/health.go`, `agent/doctor/health_test.go`
-- Modify: `cmd/serf-doctor/main.go` (flag on the transcript subcommand)
+- Modify: `cmd/evener-doctor/main.go` (flag on the transcript subcommand)
 
 **Interfaces:**
 - Produces: `doctor.TranscriptHealth(sel)` → struct with:
@@ -108,7 +108,7 @@ scan). The Finding contract and runbook format are
 
 **Files:**
 - Create: `agent/doctor/audit.go`, `agent/doctor/audit_test.go`
-- Modify: `cmd/serf-doctor/main.go`
+- Modify: `cmd/evener-doctor/main.go`
 
 **Interfaces:**
 - Produces: `serf-doctor audit --runbook NAME --sessions <sel,...> |
@@ -140,7 +140,7 @@ scan). The Finding contract and runbook format are
 ### Task 4: `serf-doctor apilog --health`
 
 **Files:**
-- Modify: `agent/doctor/apilog.go`, `cmd/serf-doctor/main.go`
+- Modify: `agent/doctor/apilog.go`, `cmd/evener-doctor/main.go`
 - Test: extend `agent/doctor` apilog tests
 
 **Interfaces:**

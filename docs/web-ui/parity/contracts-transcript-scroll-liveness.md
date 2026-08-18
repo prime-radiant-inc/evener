@@ -1,6 +1,6 @@
 # Transcript / scroll / liveness / thinking / streaming — jstest behavior contracts
 
-Mined from `cmd/serf-hub/jstest/` for a future Vitest rewrite. Each line is one observable
+Mined from `cmd/evener-hub/jstest/` for a future Vitest rewrite. Each line is one observable
 behavior a new suite must re-cover, tagged with the jstest file that currently pins it (not
 line numbers — see the sibling `parity-m4-transcript.md` for source-level file:line citations
 against `renderer.js`/`renderer-tools.js`/`renderer-format.js`; this document is derived purely

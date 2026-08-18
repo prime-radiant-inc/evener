@@ -209,18 +209,18 @@ func TestNewSubagentManagerDefaultCap2048(t *testing.T) {
 ### Task 4: CLI flags + launch surfaces
 
 **Files:**
-- Modify: `cmd/serf/main.go:184,234` (flag registration + runCfg field), `cmd/serf/run.go:43,236` (struct field + apply), `cmd/serf/serve.go:209,376` (flag + apply)
-- Modify: `cmd/serf-hub/internal/launchconfig/types.go:27`, `schema.go:91`, `merge.go:123`, `args.go:39`, `wire.go:17,60`
+- Modify: `cmd/evener/main.go:184,234` (flag registration + runCfg field), `cmd/evener/run.go:43,236` (struct field + apply), `cmd/evener/serve.go:209,376` (flag + apply)
+- Modify: `cmd/evener-hub/internal/launchconfig/types.go:27`, `schema.go:91`, `merge.go:123`, `args.go:39`, `wire.go:17,60`
 - Modify: `appwire/types.go:1154`
-- Modify: `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go:256,387`, `launch_schema.go:120`
+- Modify: `cmd/evener-tui/internal/launchconfig/launch_settings_panel.go:256,387`, `launch_schema.go:120`
 - Modify: `docs/conventions/naming.md` (add rows)
-- Test: `cmd/serf/run_flags_fuzz_test.go` pattern; hub `merge`/`args` tests; `appwire/wiretypes_fuzz_test.go:35`
+- Test: `cmd/evener/run_flags_fuzz_test.go` pattern; hub `merge`/`args` tests; `appwire/wiretypes_fuzz_test.go:35`
 
 **Interfaces:**
 - Consumes: Task 1 fields.
 - Produces: CLI `--max-concurrent-delegates`, `--max-retained-terminal` (both `-1` = default); toml `max_concurrent_delegate_turns`, `max_retained_terminal`; wire `maxConcurrentDelegateTurns`, `maxRetainedTerminal` (`*int`).
 
-- [ ] **Step 1: Failing test** — extend a run-flag test in `cmd/serf` (mirror the `maxSubagentDepth` case): parse `--max-concurrent-delegates 12 --max-retained-terminal 300`, assert both land on `baseSessionCfg`. Exact placement: the test file that covers `cfg.maxSubagentDepth` (`run_coverage_fuzz_test.go:182` region / run flag tests).
+- [ ] **Step 1: Failing test** — extend a run-flag test in `cmd/evener` (mirror the `maxSubagentDepth` case): parse `--max-concurrent-delegates 12 --max-retained-terminal 300`, assert both land on `baseSessionCfg`. Exact placement: the test file that covers `cfg.maxSubagentDepth` (`run_coverage_fuzz_test.go:182` region / run flag tests).
 
 - [ ] **Step 2: Run, verify fail.**
 
@@ -233,7 +233,7 @@ func TestNewSubagentManagerDefaultCap2048(t *testing.T) {
   - TUI: panel row + setter case mirroring `max_subagent_depth` in both files.
   - `docs/conventions/naming.md`: rows for both knobs.
 
-- [ ] **Step 4: Run, verify pass** — `go build ./... && go test ./cmd/serf/ ./cmd/serf-hub/internal/launchconfig/ ./cmd/serf-tui/internal/launchconfig/ ./appwire/ -count=1`
+- [ ] **Step 4: Run, verify pass** — `go build ./... && go test ./cmd/evener/ ./cmd/evener-hub/internal/launchconfig/ ./cmd/evener-tui/internal/launchconfig/ ./appwire/ -count=1`
 
 - [ ] **Step 5: Commit** — `git commit -am "cmd,appwire: --max-concurrent-delegates / --max-retained-terminal across CLI, hub, TUI, wire"`
 

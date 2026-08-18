@@ -48,11 +48,11 @@ The component is intentionally not a modal or toast. The failure is part of sess
 ## Implementation
 
 - Browser taxonomy lives in
-  `cmd/serf-hub/frontend/src/panes/session/transcript/turnFailure.ts`, whose
+  `cmd/evener-hub/frontend/src/panes/session/transcript/turnFailure.ts`, whose
   reconnect-class vocabulary is held equal to the Go one by
-  `TestHubFailureKeywordsMatchWebClient` (`cmd/serf-hub`).
+  `TestHubFailureKeywordsMatchWebClient` (`cmd/evener-hub`).
 - Transcript rendering of a failed turn is
-  `cmd/serf-hub/frontend/src/panes/session/transcript/TurnFailureEndCap.tsx`.
+  `cmd/evener-hub/frontend/src/panes/session/transcript/TurnFailureEndCap.tsx`.
 - Backend classification for appwire/replay payloads lives in `agent/diagnostic`.
 - Failed appwire turns can carry `error.source`, `error.title`, and `error.hint`.
 - SSE warning/error payloads should include `source`, `title`, and `hint` when available.

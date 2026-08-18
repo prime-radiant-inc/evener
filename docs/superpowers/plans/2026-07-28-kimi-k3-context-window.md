@@ -23,10 +23,10 @@
 **Files:**
 - Modify: `agent/provider/resolve_test.go`
 - Modify: `llm/model_catalog_test.go`
-- Modify: `cmd/serf-hub/app_models_test.go`
+- Modify: `cmd/evener-hub/app_models_test.go`
 - Modify: `llm/data/serf_model_catalog_overrides.json`
 - Modify: `agent/provider/profile.go`
-- Modify: `cmd/serf-hub/web_spawn.go`
+- Modify: `cmd/evener-hub/web_spawn.go`
 
 **Interfaces:**
 - Consumes: `llm.EmbeddedModelCatalog().GetModelInfo(modelID)`
@@ -52,7 +52,7 @@ Run:
 ```bash
 go test ./agent/provider -run 'TestResolveProfileFromConfig_KimiAnthropic' -count=1
 go test ./llm -run 'TestEmbeddedCatalog_Kimi' -count=1
-go test ./cmd/serf-hub -run 'TestFetchLiveModels_KimiContextWindow' -count=1
+go test ./cmd/evener-hub -run 'TestFetchLiveModels_KimiContextWindow' -count=1
 ```
 
 Expected: behavioral assertion failures showing 262,144 or a missing
@@ -81,7 +81,7 @@ context window into the response entry. Do not replace a live value.
 Run:
 
 ```bash
-go test ./agent/provider ./llm ./cmd/serf-hub
+go test ./agent/provider ./llm ./cmd/evener-hub
 ```
 
 Expected: all packages pass.

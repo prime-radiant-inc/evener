@@ -164,21 +164,21 @@ git commit -m "fix: preserve authoritative streamed tool call payloads"
 ### Task 3: Add TUI-native auth orchestration
 
 **Files:**
-- Create: `cmd/serf-tui/openai_auth.go`
-- Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/input.go`
-- Modify: `cmd/serf-tui/model_picker.go`
-- Modify: `cmd/serf-tui/embedded.go`
-- Test: `cmd/serf-tui/*_test.go`
+- Create: `cmd/evener-tui/openai_auth.go`
+- Modify: `cmd/evener-tui/model.go`
+- Modify: `cmd/evener-tui/input.go`
+- Modify: `cmd/evener-tui/model_picker.go`
+- Modify: `cmd/evener-tui/embedded.go`
+- Test: `cmd/evener-tui/*_test.go`
 
 - [ ] **Step 1: Inspect current TUI command and state patterns**
 
 Read and reuse patterns from:
 
-- `cmd/serf-tui/model.go`
-- `cmd/serf-tui/message.go`
-- `cmd/serf-tui/input.go`
-- `cmd/serf-tui/model_picker.go`
+- `cmd/evener-tui/model.go`
+- `cmd/evener-tui/message.go`
+- `cmd/evener-tui/input.go`
+- `cmd/evener-tui/model_picker.go`
 
 Confirm where temporary modal/input states belong before writing code.
 
@@ -187,11 +187,11 @@ Confirm where temporary modal/input states belong before writing code.
 Confirm this work will reuse:
 
 - `internal/auth/openai/service.go`
-- `cmd/serf/openai_login.go`
-- `cmd/serf/openai_logout.go`
-- `cmd/serf/openai_status.go`
+- `cmd/evener/openai_login.go`
+- `cmd/evener/openai_logout.go`
+- `cmd/evener/openai_status.go`
 
-Do not duplicate token exchange or storage logic in `cmd/serf-tui`.
+Do not duplicate token exchange or storage logic in `cmd/evener-tui`.
 
 - [ ] **Step 3: Write the failing TUI auth flow test**
 
@@ -205,7 +205,7 @@ Add a focused test that exercises:
 
 Use a fake `authopenai.Service` seam or injectable function to avoid live OAuth in tests.
 
-- [ ] **Step 4: Create `cmd/serf-tui/openai_auth.go`**
+- [ ] **Step 4: Create `cmd/evener-tui/openai_auth.go`**
 
 Add a focused controller with responsibilities like:
 
@@ -218,7 +218,7 @@ Keep it TUI-local. Do not move generic auth logic out of `internal/auth/openai`.
 
 - [ ] **Step 5: Add auth UI state to the TUI model**
 
-Modify `cmd/serf-tui/model.go` to track:
+Modify `cmd/evener-tui/model.go` to track:
 
 - whether auth input mode is active
 - the temporary redirect input prompt/state
@@ -290,7 +290,7 @@ When the embedded session is OpenAI-backed:
 - load auth status on startup
 - if signed out, append a one-time system message that points the user at `/openai`
 - after successful login or logout, recreate the embedded client/session so live requests pick up the new auth state
-- reuse or extend the existing embedded-session reset pattern in `cmd/serf-tui/embedded.go` rather than inventing a second lifecycle path
+- reuse or extend the existing embedded-session reset pattern in `cmd/evener-tui/embedded.go` rather than inventing a second lifecycle path
 
 Keep the TUI shell alive while refreshing the embedded runtime.
 
@@ -318,7 +318,7 @@ Keep these controller-focused and offline.
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'Test.*OpenAI.*'
+go test ./cmd/evener-tui -run 'Test.*OpenAI.*'
 ```
 
 Expected:
@@ -328,7 +328,7 @@ Expected:
 - [ ] **Step 13: Commit the TUI auth controller**
 
 ```bash
-git add cmd/serf-tui/openai_auth.go cmd/serf-tui/model.go cmd/serf-tui/input.go cmd/serf-tui/model_picker.go cmd/serf-tui/*_test.go
+git add cmd/evener-tui/openai_auth.go cmd/evener-tui/model.go cmd/evener-tui/input.go cmd/evener-tui/model_picker.go cmd/evener-tui/*_test.go
 git commit -m "feat: add OpenAI login flow to serf-tui"
 ```
 
@@ -337,10 +337,10 @@ git commit -m "feat: add OpenAI login flow to serf-tui"
 ### Task 4: Surface OpenAI auth state cleanly
 
 **Files:**
-- Modify: `cmd/serf-tui/statusbar.go`
-- Modify: `cmd/serf-tui/model.go`
-- Modify: `cmd/serf-tui/message.go`
-- Test: `cmd/serf-tui/*_test.go`
+- Modify: `cmd/evener-tui/statusbar.go`
+- Modify: `cmd/evener-tui/model.go`
+- Modify: `cmd/evener-tui/message.go`
+- Test: `cmd/evener-tui/*_test.go`
 
 - [ ] **Step 1: Write the failing status rendering test**
 
@@ -389,7 +389,7 @@ Keep `model.go` responsible only for state transitions and command dispatch. Put
 Run:
 
 ```bash
-go test ./cmd/serf-tui -run 'Test.*Status.*|Test.*OpenAI.*'
+go test ./cmd/evener-tui -run 'Test.*Status.*|Test.*OpenAI.*'
 ```
 
 Expected:
@@ -399,7 +399,7 @@ Expected:
 - [ ] **Step 6: Commit the UX polish**
 
 ```bash
-git add cmd/serf-tui/statusbar.go cmd/serf-tui/model.go cmd/serf-tui/message.go cmd/serf-tui/*_test.go
+git add cmd/evener-tui/statusbar.go cmd/evener-tui/model.go cmd/evener-tui/message.go cmd/evener-tui/*_test.go
 git commit -m "feat: surface OpenAI auth status in serf-tui"
 ```
 
@@ -416,7 +416,7 @@ git commit -m "feat: surface OpenAI auth status in serf-tui"
 Run:
 
 ```bash
-go test ./internal/auth/openai ./llm ./llm/providers/openai ./cmd/serf ./cmd/serf-tui
+go test ./internal/auth/openai ./llm ./llm/providers/openai ./cmd/evener ./cmd/evener-tui
 ```
 
 Expected:
@@ -428,8 +428,8 @@ Expected:
 Run:
 
 ```bash
-go build -o ./serf-tui ./cmd/serf-tui
-go build -o ./serf ./cmd/serf
+go build -o ./serf-tui ./cmd/evener-tui
+go build -o ./serf ./cmd/evener
 ```
 
 Expected:

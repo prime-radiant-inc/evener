@@ -26,9 +26,9 @@ have no image-attachment UX.
   payloads on the wire.
 - **`ThreadStartParams` / `TurnStartParams`** carry `Items
   []InputItem` (line ~244 + ~344).
-- **`cmd/serf-hub/web.go:3394`** has an `Items` append path on
+- **`cmd/evener-hub/web.go:3394`** has an `Items` append path on
   `/turn` — needs verification it threads image bytes correctly.
-- **`cmd/serf-hub/assets/renderer.js:1311`** already filters input
+- **`cmd/evener-hub/assets/renderer.js:1311`** already filters input
   items by `kind === "file" && type.startsWith("image/")` for
   history rendering. No composer-side input flow yet.
 
@@ -176,7 +176,7 @@ For images:
 `appwire.TurnStartParams` already has `Items []InputItem` — verify
 the daemon-side accepts type=image and turns it into a content part
 in the user message. (May need a small handler update in
-`cmd/serf/serve.go` or `agent/session.go`.)
+`cmd/evener/serve.go` or `agent/session.go`.)
 
 For queued messages: `appwire.MethodTurnQueue` (added by 111a)
 needs to accept items in addition to text. Add `Items []InputItem`
@@ -188,7 +188,7 @@ content kind list already supports images.
 
 ### TUI composer
 
-New file: `cmd/serf-tui/clipboard_paste.go`.
+New file: `cmd/evener-tui/clipboard_paste.go`.
 
 ```go
 type PastedImage struct {
@@ -243,7 +243,7 @@ Pasted-path detection:
 
 ### Web composer
 
-`cmd/serf-hub/assets/renderer.js`:
+`cmd/evener-hub/assets/renderer.js`:
 
 Clipboard paste:
 - `textarea.addEventListener('paste', ...)` — inspect
@@ -275,7 +275,7 @@ CSS:
 
 ### /new spawn form
 
-`cmd/serf-hub/assets/spawn.js`:
+`cmd/evener-hub/assets/spawn.js`:
 - Same paste / drag-drop / file picker on the prompt textarea.
 - `pendingAttachments` survives into the `/api/spawn` request body
   as a new `items` field.

@@ -6,7 +6,7 @@
 
 **Architecture:** A pure strip helper per surface (TS and Go), applied only at display time. Web: helper beside `shellTool.tsx`, cwd read from the threads store by session ref (the `fileOpenBeside.tsx` pattern), plus a one-field optional context added to the tool-descriptor `summary()` signature. TUI: `SummarizeToolInDir` variant in `toolsummary`; existing `SummarizeTool` delegates with empty cwd (no strip), callers that can reach `appwire.Thread.Cwd` upgrade.
 
-**Tech Stack:** TypeScript (React, Vitest) in `cmd/serf-hub/frontend`; Go in `cmd/serf-tui`.
+**Tech Stack:** TypeScript (React, Vitest) in `cmd/evener-hub/frontend`; Go in `cmd/evener-tui`.
 
 **Spec:** `docs/superpowers/specs/2026-08-06-shell-cd-strip-design.md` — read it first.
 
@@ -15,18 +15,18 @@
 - Literal match only: the stripped prefix is exactly `"cd " + cwd + " && "`. No quote handling, no path normalization, no trailing-slash tolerance, no `;`/`&` variants. Empty cwd → never strip.
 - Display-only: recorded arguments (`argumentsJSON`, `RawArgs`) are never modified; copy/raw affordances show the original.
 - TDD; gofmt clean; `golangci-lint run` clean on touched Go packages; pristine test output.
-- Frontend tests run from `cmd/serf-hub/frontend` with `npx vitest run <file>`; full stream `make test-web` from repo root.
-- TUI tests: `cd cmd/serf-tui && go test ./... -count=1`.
+- Frontend tests run from `cmd/evener-hub/frontend` with `npx vitest run <file>`; full stream `make test-web` from repo root.
+- TUI tests: `cd cmd/evener-tui && go test ./... -count=1`.
 
 ---
 
 ### Task 1: Web — strip in shellTool summary and expanded block
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx` (helper + `ShellBody` + `summary`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.ts` (descriptor `summary` signature, ~line 29)
-- Modify: the `summary(...)` call site (find it: `grep -n "\.summary(" cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx` — it is in `ToolCallItem.tsx`; pass the context there)
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx` (extend; the file exists)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.tsx` (helper + `ShellBody` + `summary`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/toolRenderers.ts` (descriptor `summary` signature, ~line 29)
+- Modify: the `summary(...)` call site (find it: `grep -n "\.summary(" cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx` — it is in `ToolCallItem.tsx`; pass the context there)
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/shellTool.test.tsx` (extend; the file exists)
 
 **Interfaces:**
 - Produces: `export function stripRedundantCd(command: string, cwd: string | undefined): string` in `shellTool.tsx`; `ToolSummaryContext = { cwd?: string }` as an optional second parameter of `ToolRendererDescriptor.summary`.
@@ -71,7 +71,7 @@ The last case pins a deliberate choice: stripping to an empty command would rend
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/shellTool.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/shellTool.test.tsx`
 Expected: FAIL — `stripRedundantCd` is not exported.
 
 - [ ] **Step 3: Implement**
@@ -109,13 +109,13 @@ In `shellTool.tsx`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/shellTool.test.tsx && npx tsc --noEmit`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/shellTool.test.tsx && npx tsc --noEmit`
 Expected: PASS, typecheck clean (the widened `summary` signature is optional-param, so other descriptors compile unchanged).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/
+git add cmd/evener-hub/frontend/src/panes/session/transcript/
 git commit -m "feat(web): hide redundant cd-to-cwd prefix on displayed shell commands"
 ```
 
@@ -124,10 +124,10 @@ git commit -m "feat(web): hide redundant cd-to-cwd prefix on displayed shell com
 ### Task 2: TUI — SummarizeToolInDir
 
 **Files:**
-- Modify: `cmd/serf-tui/internal/toolsummary/tool_summary.go` (~line 23)
-- Modify: `cmd/serf-tui/internal/transcript/item.go:36` and `:68` (callers)
-- Modify: `cmd/serf-tui/internal/msgrender/message.go:488` (caller)
-- Test: `cmd/serf-tui/internal/toolsummary/tool_summary_test.go` (extend)
+- Modify: `cmd/evener-tui/internal/toolsummary/tool_summary.go` (~line 23)
+- Modify: `cmd/evener-tui/internal/transcript/item.go:36` and `:68` (callers)
+- Modify: `cmd/evener-tui/internal/msgrender/message.go:488` (caller)
+- Test: `cmd/evener-tui/internal/toolsummary/tool_summary_test.go` (extend)
 
 **Interfaces:**
 - Produces: `func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string)`. Existing `SummarizeTool(toolName, argsJSON)` becomes a delegator: `return SummarizeToolInDir(toolName, argsJSON, "")` (empty cwd = never strip), so untraceable call paths keep today's behavior.
@@ -178,7 +178,7 @@ func TestSummarizeToolEmptyCwdNeverStrips(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-tui && go test ./internal/toolsummary/ -run TestSummarizeToolInDir -v`
+Run: `cd cmd/evener-tui && go test ./internal/toolsummary/ -run TestSummarizeToolInDir -v`
 Expected: FAIL to build — `undefined: SummarizeToolInDir`.
 
 - [ ] **Step 3: Implement**
@@ -219,13 +219,13 @@ For each of the three call sites (`internal/transcript/item.go:36`, `:68`, `inte
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd cmd/serf-tui && go test ./... -count=1 && gofmt -l . && golangci-lint run ./internal/toolsummary/ ./internal/transcript/ ./internal/msgrender/`
+Run: `cd cmd/evener-tui && go test ./... -count=1 && gofmt -l . && golangci-lint run ./internal/toolsummary/ ./internal/transcript/ ./internal/msgrender/`
 Expected: all PASS, no gofmt output, 0 lint issues.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/
+git add cmd/evener-tui/
 git commit -m "feat(tui): hide redundant cd-to-cwd prefix on displayed shell commands"
 ```
 

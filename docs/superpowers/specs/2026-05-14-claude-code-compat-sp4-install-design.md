@@ -13,7 +13,7 @@ SP4 does not parse marketplace catalogs, does not fetch plugin source bytes, and
 
 ## 2. Public API Surface
 
-All install logic lives in package `internal/plugins`. The CLI lives in `cmd/serf/plugin`. Symbol naming follows the existing `agent/mcp_config.go` triad: `Load…`, `Merge…`, `Discover…`.
+All install logic lives in package `internal/plugins`. The CLI lives in `cmd/evener/plugin`. Symbol naming follows the existing `agent/mcp_config.go` triad: `Load…`, `Merge…`, `Discover…`.
 
 ### 2.1 Registry types
 
@@ -453,7 +453,7 @@ Atomicity: same tmp+rename dance as `SaveRegistry`. If the file did not previous
 
 ## 8. CLI Surface
 
-The subcommand tree lives at `cmd/serf/plugin/install.go` and is registered under the root `serf plugin` group alongside SP3's `serf plugin marketplace`. Cobra-style flags, matching the rest of the serf CLI.
+The subcommand tree lives at `cmd/evener/plugin/install.go` and is registered under the root `serf plugin` group alongside SP3's `serf plugin marketplace`. Cobra-style flags, matching the rest of the serf CLI.
 
 ### 8.1 Commands
 
@@ -639,7 +639,7 @@ internal/plugins/
     ├── plugin_no_version.json
     └── plugin_invalid_version.json
 
-cmd/serf/plugin/
+cmd/evener/plugin/
 ├── install.go              # Cobra command setup, flag wiring
 ├── install_test.go         # CLI-level tests; exec the binary or call Cobra Run
 └── render.go               # Human + --json output formatting
@@ -651,7 +651,7 @@ agent/testdata/marketplaces/
 internal/plugins/sources/   # SP3-owned; SP4 only imports the interface
 ```
 
-SP4 does not modify any existing file directly. Wiring is SP8's job: `cmd/serf/main.go` adds the `plugin` subgroup, and SP4's `Installer` is constructed at command-time from CLI flags + `agent.LocalExecutionEnvironment` for cwd/git-root lookup.
+SP4 does not modify any existing file directly. Wiring is SP8's job: `cmd/evener/main.go` adds the `plugin` subgroup, and SP4's `Installer` is constructed at command-time from CLI flags + `agent.LocalExecutionEnvironment` for cwd/git-root lookup.
 
 Shared with SP3: `internal/plugins/registry.go` houses both `installed_plugins.json` (SP4) and `known_marketplaces.json` (SP3) types because they share the atomic-write infrastructure. The file is co-owned; SP4 lands the `installed_plugins.json` half first, SP3 lands the marketplace half. They sit in the same file so reviewers see the shared invariants in one place.
 
@@ -786,7 +786,7 @@ TDD: every test row below lands before the corresponding implementation. No mock
 
 `TestLock_Timeout` — hold the lock from goroutine A for 2s; call `Install` from goroutine B with `LockTimeout=500ms`; B errors with lock-timeout message.
 
-### 13.5 CLI tests (`cmd/serf/plugin/install_test.go`)
+### 13.5 CLI tests (`cmd/evener/plugin/install_test.go`)
 
 Exercise flag parsing, exit codes, and rendering. Stub the `Installer` interface (we extract `Installer` into a small interface for this purpose).
 
@@ -809,7 +809,7 @@ Exercise flag parsing, exit codes, and rendering. Stub the `Installer` interface
 - Every error in §11 has a triggering test row.
 - Every rule in §9 has a row in `TestComputeVersion`.
 - Every CLI flag in §8.2 has a test row in §13.5.
-- `go test ./internal/plugins/... ./cmd/serf/plugin/...` is green.
+- `go test ./internal/plugins/... ./cmd/evener/plugin/...` is green.
 
 ## 14. Open Questions Settled Here
 

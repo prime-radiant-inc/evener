@@ -165,7 +165,7 @@ code did while every test of the new code passes. This produced a
 "right side of the chip strip missing at 200 columns" mystery once, and
 a full re-investigation of the already-landed fix a second time (kata
 wqyx, both occurrences). Before any live TUI verification:
-`go build -o serf-tui ./cmd/serf-tui/` and check the binary's mtime.
+`go build -o serf-tui ./cmd/evener-tui/` and check the binary's mtime.
 
 **Chrome is one shared instance.** With eight browser agents up, 41 tabs
 across 13 ports accumulate and `new_tab` followed by an eval lands on

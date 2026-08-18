@@ -19,4 +19,4 @@ registry="$(mktemp -t serf-fuzz-registry.XXXXXX)"
 trap 'rm -f "$registry"' EXIT
 
 bash "$repo_root/scripts/run-fuzz.sh" --list >"$registry"
-( cd "$repo_root" && go run ./cmd/serf-fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )
+( cd "$repo_root" && go run ./cmd/evener-fuzzcov -gap-only -registry "$registry" -repo-root "$repo_root" "$@" )

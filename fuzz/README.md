@@ -55,7 +55,7 @@ Two cross-cutting facts about every run above:
 `make fuzz-coverage` answers the question `make fuzz` cannot: *how much of each
 parse surface does the corpus actually exercise?* It replays every target's
 **committed corpus** under `go test -coverprofile` (no `-fuzz`, so deterministic
-and reproducible from a clean checkout), then `cmd/serf-fuzzcov` reports, per
+and reproducible from a clean checkout), then `cmd/evener-fuzzcov` reports, per
 target:
 
 - **FOCUS-SET %** — the primary, drivable-to-100% metric: line coverage of the
@@ -255,7 +255,7 @@ traffic** into each target's `testdata/fuzz/<FuzzName>/` (Go auto-loads it under
 
 ## Harvesting real traffic into the corpus
 
-`cmd/serf-fuzz-harvest` walks recorded serf state and emits seeds:
+`cmd/evener-fuzz-harvest` walks recorded serf state and emits seeds:
 
 | Surface | Source | Targets |
 |---|---|---|

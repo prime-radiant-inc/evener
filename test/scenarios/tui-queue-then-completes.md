@@ -2,9 +2,9 @@
 
 **What this covers**: kata `111a` (TUI surface). While a turn is in flight,
 the hub TUI's composer uses `queue` mode
-(`cmd/serf-tui/composer_panel.go#hubComposerModeQueue`). Pressing Enter follows
+(`cmd/evener-tui/composer_panel.go#hubComposerModeQueue`). Pressing Enter follows
 the queue branch in `(*hubModel).updateSessionKey`
-(`cmd/serf-tui/hub_session_keys.go#updateSessionKey`), calls `turn/queue`, and
+(`cmd/evener-tui/hub_session_keys.go#updateSessionKey`), calls `turn/queue`, and
 shows the daemon-owned queue above the composer. When the in-flight turn
 finishes cleanly, `(*Session).ProcessInput`
 (`agent/session_lifecycle.go#ProcessInput`) drains the queued input as a fresh
@@ -262,11 +262,11 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
 3. **Launch the first TUI process and open that exact session**. From the
    dashboard, `/` opens the command palette (`updateDashboardKey`,
-   `cmd/serf-tui/hub_keys.go#updateDashboardKey`); its session item ID contains
+   `cmd/evener-tui/hub_keys.go#updateDashboardKey`); its session item ID contains
    the full ref (`commandPaletteEntriesForRows`,
-   `cmd/serf-tui/command_palette.go#commandPaletteEntriesForRows`), and the
+   `cmd/evener-tui/command_palette.go#commandPaletteEntriesForRows`), and the
    picker filters on item IDs as well as visible labels
-   (`cmd/serf-tui/internal/tuipick/picker_panel.go#PickerPanel.filtered`):
+   (`cmd/evener-tui/internal/tuipick/picker_panel.go#PickerPanel.filtered`):
 
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
@@ -316,7 +316,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    There is no ellipsis at this width. The daemon collapses an entry to its
    first line without imposing a length bound (`agent/session_queue.go#firstQueueLine`),
    and `renderQueuePreview` truncates only beyond `width - 6`
-   (`cmd/serf-tui/composer_panel.go#renderQueuePreview`). This message is well
+   (`cmd/evener-tui/composer_panel.go#renderQueuePreview`). This message is well
    below the 194-rune limit at width 200.
 
 5. **Cold-reattach and prove snapshot authority**. Kill the first TUI process,
@@ -354,7 +354,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    process's notifications. Reproducing the count and full preview therefore
    exercises the `thread/read` snapshot path: session entry clears local queue
    state and applies `detail.Queue` via `applyQueueState`
-   (`cmd/serf-tui/hub_notifications.go#applyQueueState`). Falsification: the
+   (`cmd/evener-tui/hub_notifications.go#applyQueueState`). Falsification: the
    live pane in step 4 has the queue but this cold pane does not, or the count
    or text differs. The REST assertion is deliberately repeated after the cold
    attach: a queue preview alone does not prove the first turn is still active.
@@ -453,7 +453,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    direct-driving stable-capture rule in `docs/testing.md` (the Go harness
    equivalent is `CaptureStable`, exercised by
    `TestTUITmuxE2E_CaptureStableDuringStream` in
-   `cmd/serf-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).
+   `cmd/evener-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).
    Only that stable frame is persisted and used for the final negative
    queue-row assertion. The transcript checks above prove the queued turn's
    successful file-listing result and final response durably, rather than
@@ -508,7 +508,7 @@ function once.
 - **Do not auto-start a fallback hub.** Both TUI invocations pass
   `--no-auto-start-hub`; an unreachable test hub must fail this run rather than
   make the TUI create a second hub outside this run's ownership boundary
-  (`cmd/serf-tui/internal/hubstart/hub_start.go#ParseTUIStartupOptions`).
+  (`cmd/evener-tui/internal/hubstart/hub_start.go#ParseTUIStartupOptions`).
 - **The queue preview is authoritative.** `appwire.QueueState` carries queue
   depth and first-line preview text on both `thread/read` and
   `thread/queueChanged`. `applyQueueState` replaces the TUI's snapshot rather

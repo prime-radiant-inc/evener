@@ -1576,7 +1576,7 @@ Adjust YAML field names only to match the existing probe manifest schema. Do not
 Run:
 
 ```bash
-go test ./tools/tool-fluency/cmd/serf-fluency -v
+go test ./tools/tool-fluency/cmd/evener-fluency -v
 ```
 
 Expected: PASS.
@@ -1586,7 +1586,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --build \
   --harness live \
   --model openai/gpt-5.4-mini \
@@ -1596,7 +1596,7 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
   --post-turn-wait 45s \
   --out /tmp/serf-fluency-parent-watch-gpt-default
 
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model openai/gpt-5.4-mini \
   --fast-cheap-model openai/gpt-5.4-mini \
@@ -1613,14 +1613,14 @@ Expected: both probes pass with no `delegate_send` calls and no polling after th
 Run:
 
 ```bash
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model moonshot/kimi-for-coding \
   --probe job_watch.parent_sidecar_default_source \
   --post-turn-wait 45s \
   --out /tmp/serf-fluency-parent-watch-kimi-default
 
-go run ./tools/tool-fluency/cmd/serf-fluency run \
+go run ./tools/tool-fluency/cmd/evener-fluency run \
   --harness live \
   --model moonshot/kimi-for-coding \
   --probe job_watch.parent_sidecar_filtered_tool \
@@ -1684,7 +1684,7 @@ documentation strings."
 Run:
 
 ```bash
-go test ./agent/internal/tool ./agent ./tools/tool-fluency/cmd/serf-fluency
+go test ./agent/internal/tool ./agent ./tools/tool-fluency/cmd/evener-fluency
 ```
 
 Expected: PASS.
@@ -1741,7 +1741,7 @@ Record in the implementation handoff:
 Implemented parent-watch sidecars.
 
 Verification:
-- go test ./agent/internal/tool ./agent ./tools/tool-fluency/cmd/serf-fluency
+- go test ./agent/internal/tool ./agent ./tools/tool-fluency/cmd/evener-fluency
 - go test ./...
 - GPT live fluency probes
 - Kimi live fluency probes

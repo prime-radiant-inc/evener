@@ -64,7 +64,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 // A daemon announcing its own close is describing a thread it is about to
 // stop running, and the actions still on offer for that thread are the HUB's
 // to state: it answers an exited session's read from the past index and
-// resumes it on the next send (cmd/serf-hub/app_threadread.go's
+// resumes it on the next send (cmd/evener-hub/app_threadread.go's
 // pastThreadCapabilities advertises Send: true for exactly that). A daemon's
 // own "send: false" would therefore take the follow-up composer away from a
 // session the hub would happily wake — the same wedge in the other direction.

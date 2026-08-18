@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse the plugin command pipeline (`plugin.ParseCommand`, `plugin.ResolveCommand`, `Session.expandSlashCommand`). Serf-wide commands enter `Session.pluginCommands` under bare-name keys (plugin commands keep `plugin:name` keys), so the existing exact-match-first resolution gives precedence project > user > plugin for free. Expansion branches on a new `Command.Source`: plugin commands keep full `command.Expand` (shell execution), serf-wide commands use a new inert `command.ExpandArgs`. The hub catalog and web palette gain source-labeled entries, and the palette gains an exact-match fallthrough that forwards unmatched `/name args` to the session.
 
-**Tech Stack:** Go (agent, appwire, cmd/serf-hub), React/TypeScript + zustand (cmd/serf-hub/frontend), make generate/lint-generated for AppWire codegen.
+**Tech Stack:** Go (agent, appwire, cmd/evener-hub), React/TypeScript + zustand (cmd/evener-hub/frontend), make generate/lint-generated for AppWire codegen.
 
 **Spec:** `docs/superpowers/specs/2026-08-04-serf-wide-slash-commands-design.md` (normative — read it first).
 
@@ -873,7 +873,7 @@ git commit -m "agent: expand serf-wide commands inert via ExpandArgs"
 - Modify: `appwire/types.go:1844-1852` (CommandDescriptor + doc comment)
 - Modify: `appwire/protocol.go:158` (method description)
 - Modify: `docs/appwire-protocol.md` (`serf/command/list` row)
-- Generated: `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (via make generate)
+- Generated: `cmd/evener-hub/frontend/src/protocol/types.gen.ts` (via make generate)
 
 **Interfaces:**
 - Produces: `CommandDescriptor.Source string \`json:"source,omitempty"\`` — `"plugin"` or `"user"` in this implementation; `"project"` reserved. The frontend (Tasks 10–11) reads it from `types.gen.ts`.
@@ -916,7 +916,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "appwire: add source to CommandDescriptor"
 ```
 
@@ -925,8 +925,8 @@ git commit -m "appwire: add source to CommandDescriptor"
 ### Task 9: Hub catalog via `MergeCommands`
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go:815-839` (`hubCommandList`)
-- Test: `cmd/serf-hub/app_command_list_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go:815-839` (`hubCommandList`)
+- Test: `cmd/evener-hub/app_command_list_test.go`
 
 **Interfaces:**
 - Consumes: `plugin.MergeCommands`, `plugin.DiscoverSerfWideCommands(nil)` (nil env — the hub is multi-project and must never see project commands).
@@ -934,7 +934,7 @@ git commit -m "appwire: add source to CommandDescriptor"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `cmd/serf-hub/app_command_list_test.go`:
+Add to `cmd/evener-hub/app_command_list_test.go`:
 
 ```go
 func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
@@ -998,7 +998,7 @@ func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub && go test . -run 'TestHubCommandList_UserGlobalWithoutPlugins|TestHubCommandList_ShadowedPluginListsBoth' -v`
+Run: `cd cmd/evener-hub && go test . -run 'TestHubCommandList_UserGlobalWithoutPlugins|TestHubCommandList_ShadowedPluginListsBoth' -v`
 Expected: FAIL — empty-dirs early return yields 0 commands; no `Source`.
 
 - [ ] **Step 3: Implement**
@@ -1040,13 +1040,13 @@ func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) 
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub && go test . -run 'CommandList'`
+Run: `cd cmd/evener-hub && go test . -run 'CommandList'`
 Expected: PASS, including the existing catalog tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_rpc.go cmd/serf-hub/app_command_list_test.go
+git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_command_list_test.go
 git commit -m "serf-hub: serve serf-wide commands in serf/command/list"
 ```
 
@@ -1055,9 +1055,9 @@ git commit -m "serf-hub: serve serf-wide commands in serf/command/list"
 ### Task 10: Web palette lists catalog commands
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/stores/commandCatalog.ts` (+ test)
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/commands.ts` (`filterCommands`/`commandsInScope`)
-- Test: `cmd/serf-hub/frontend/src/shell/palette/commands.test.ts`
+- Create: `cmd/evener-hub/frontend/src/stores/commandCatalog.ts` (+ test)
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/commands.ts` (`filterCommands`/`commandsInScope`)
+- Test: `cmd/evener-hub/frontend/src/shell/palette/commands.test.ts`
 
 **Interfaces:**
 - Consumes: `connectionStore.getState().client` with `client.request("serf/command/list", {})` (pattern: `commands.ts:155-158`), `CommandDescriptor` from `../protocol/types.gen` (has `source` after Task 8).
@@ -1099,7 +1099,7 @@ test("refresh populates catalog entries and tolerates failure", async () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/stores/commandCatalog.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/stores/commandCatalog.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement the store**
@@ -1160,15 +1160,15 @@ Add `slashCommandInvocation?: string` to the `Command` type; Task 11's Enter han
 
 Extend `commands.test.ts`: with a catalog store containing one plugin and one user entry, `filterCommands(ctx, "/rev")` includes the entry titled `review [plugin]` with `slashCommandInvocation === "/p:review"`; with `ctx.sessionRef === null`, catalog entries are absent.
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/palette/commands.test.ts src/stores/commandCatalog.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/palette/commands.test.ts src/stores/commandCatalog.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Biome, gates, commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/stores/commandCatalog.ts src/stores/commandCatalog.test.ts src/shell/palette/commands.ts src/shell/palette/commands.test.ts
-cd cmd/serf-hub && make test-web
-git add cmd/serf-hub/frontend/src/stores/commandCatalog.ts cmd/serf-hub/frontend/src/stores/commandCatalog.test.ts cmd/serf-hub/frontend/src/shell/palette/
+cd cmd/evener-hub/frontend && npx biome check --write src/stores/commandCatalog.ts src/stores/commandCatalog.test.ts src/shell/palette/commands.ts src/shell/palette/commands.test.ts
+cd cmd/evener-hub && make test-web
+git add cmd/evener-hub/frontend/src/stores/commandCatalog.ts cmd/evener-hub/frontend/src/stores/commandCatalog.test.ts cmd/evener-hub/frontend/src/shell/palette/
 git commit -m "web: list plugin and user slash commands in the palette"
 ```
 
@@ -1177,9 +1177,9 @@ git commit -m "web: list plugin and user slash commands in the palette"
 ### Task 11: Web palette slash fallthrough
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/CommandPalette.tsx:403-413` (`enterPressed`)
-- Modify: `cmd/serf-hub/frontend/src/shell/palette/commands.ts` (Task 10's `slashCommandInvocation`)
-- Test: `cmd/serf-hub/frontend/src/shell/palette/CommandPalette.test.tsx` (or the existing palette test file)
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/CommandPalette.tsx:403-413` (`enterPressed`)
+- Modify: `cmd/evener-hub/frontend/src/shell/palette/commands.ts` (Task 10's `slashCommandInvocation`)
+- Test: `cmd/evener-hub/frontend/src/shell/palette/CommandPalette.test.tsx` (or the existing palette test file)
 
 **Interfaces:**
 - Consumes: `slashCommandInvocation` (Task 10), `threadsStore.getState().send(ref, text)` (threads.ts:131/1868), `ctx.sessionRef`.
@@ -1209,7 +1209,7 @@ test("selecting a plugin catalog entry submits the qualified form", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/palette/CommandPalette.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/palette/CommandPalette.test.tsx`
 Expected: FAIL — Enter on unmatched query currently no-ops (CommandPalette.tsx:409-411).
 
 - [ ] **Step 3: Implement**
@@ -1256,15 +1256,15 @@ if (command.slashCommandInvocation) {
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/palette/`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/palette/`
 Expected: PASS, including the pre-existing palette suites.
 
 - [ ] **Step 5: Biome, gates, commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/shell/palette/
-cd cmd/serf-hub && make test-web && make test-web-browser   # browser gate on Chrome-capable hosts
-git add cmd/serf-hub/frontend/src/shell/palette/
+cd cmd/evener-hub/frontend && npx biome check --write src/shell/palette/
+cd cmd/evener-hub && make test-web && make test-web-browser   # browser gate on Chrome-capable hosts
+git add cmd/evener-hub/frontend/src/shell/palette/
 git commit -m "web: forward unmatched slash commands from the palette to the session"
 ```
 
@@ -1355,7 +1355,7 @@ git commit -m "docs: mark serf-wide slash commands implemented"
 ## Final verification
 
 - [ ] `cd agent && go test ./...`
-- [ ] `go test ./appwire/ ./cmd/serf-hub/`
+- [ ] `go test ./appwire/ ./cmd/evener-hub/`
 - [ ] `make lint-generated && make lint-docs`
-- [ ] `cd cmd/serf-hub && make test-web` (plus `make test-web-browser` on Chrome-capable hosts)
+- [ ] `cd cmd/evener-hub && make test-web` (plus `make test-web-browser` on Chrome-capable hosts)
 - [ ] Manual smoke: `mkdir -p /tmp/x/.serf/commands && printf 'hello $ARGUMENTS' > /tmp/x/.serf/commands/hi.md`, start a session in `/tmp/x`, type `/hi world` → expanded text, no execution; `/hi world` in the web UI via palette fallthrough.

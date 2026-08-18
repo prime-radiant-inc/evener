@@ -12,7 +12,7 @@
 nothing depends on the user knowing whether a session is "running".
 
 **Tech stack:** React 19, TS 6 strict (`noUncheckedIndexedAccess`), Vite 8, vitest 4 + jsdom,
-biome. Frontend root `cmd/serf-hub/frontend`.
+biome. Frontend root `cmd/evener-hub/frontend`.
 
 ## Global constraints
 
@@ -92,7 +92,7 @@ reads it, so the purpose line is silently dropped for every ordinary tool call.
 - [ ] Absent description → no placeholder, no empty element, no stray separator.
 - [ ] Do NOT duplicate `subagentModule`'s treatment; if both surfaces want the same presentation,
       that's a shared helper, not a copy (DRY).
-- [ ] Check how the legacy UI on `main` presented it (`cmd/serf-hub/assets/renderer-tools.js`)
+- [ ] Check how the legacy UI on `main` presented it (`cmd/evener-hub/assets/renderer-tools.js`)
       before designing — Jesse's "like it should" is a comparison to that.
 
 ### Task A2: a failed call is marked, and success costs no space

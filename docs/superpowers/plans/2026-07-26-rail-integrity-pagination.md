@@ -6,7 +6,7 @@
 
 **Architecture:** Preserve the existing memoized navigation tree as the source of ordering and tier classification. Add an explicit per-tier page projection over the uncapped tier slices retained by hubcore, then merge pages into the frontend tree by tier. Keep deletion and page loading state in the existing rail pending/store paths, and validate favorite session ids against real top-level tree nodes before touching the decision store.
 
-**Tech Stack:** Go `hubcore` and `cmd/serf-hub` HTTP handlers/tests; `hubapi` JSON wire structs; React/TypeScript rail, Zustand tree store, Vitest and Testing Library.
+**Tech Stack:** Go `hubcore` and `cmd/evener-hub` HTTP handlers/tests; `hubapi` JSON wire structs; React/TypeScript rail, Zustand tree store, Vitest and Testing Library.
 
 ## Global Constraints
 
@@ -21,15 +21,15 @@
 ### Task 1: Surface subagent overage in the tree wire and inactive fold
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go`
 - Modify: `hubapi/types.go`
 - Test: `hubapi/types_test.go`
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Test: `cmd/serf-hub/web_api_tree_test.go`
-- Modify: `cmd/serf-hub/frontend/src/stores/tree.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts`
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Test: `cmd/evener-hub/web_api_tree_test.go`
+- Modify: `cmd/evener-hub/frontend/src/stores/tree.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts`
 
 **Interfaces:**
 - Add `MoreSubagents int` to hubcore and hubapi `TreeNode`, serialized as `more_subagents` when nonzero.
@@ -48,19 +48,19 @@
 ### Task 2: Add server-side tier paging and make `+N older` fetch rows
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Test: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Test: `cmd/evener-hub/internal/hubcore/tree_test.go`
 - Modify: `hubapi/types.go`
-- Modify: `cmd/serf-hub/web_api.go` or the existing tree route registration in `cmd/serf-hub/web.go` only if needed
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Test: `cmd/serf-hub/web_api_tree_test.go`
-- Modify: `cmd/serf-hub/frontend/src/stores/tree.ts`
-- Test: `cmd/serf-hub/frontend/src/stores/tree.test.ts` or the existing tree store test file
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
+- Modify: `cmd/evener-hub/web_api.go` or the existing tree route registration in `cmd/evener-hub/web.go` only if needed
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Test: `cmd/evener-hub/web_api_tree_test.go`
+- Modify: `cmd/evener-hub/frontend/src/stores/tree.ts`
+- Test: `cmd/evener-hub/frontend/src/stores/tree.test.ts` or the existing tree store test file
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
 
 **Interfaces:**
 - Retain the uncapped Current/Recent/Archived slices behind a hubcore page method that returns a deterministic offset/limit page and remaining count.
@@ -80,10 +80,10 @@
 ### Task 3: Reconcile optimistic project deletion with partial success
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railPending.ts`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/railPending.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`
-- Test: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railPending.ts`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/railPending.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`
+- Test: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
 
 **Interfaces:**
 - Add one deletion pending operation that hides the project and carries the server response's deleted/skipped identity sets for reconciliation.
@@ -101,9 +101,9 @@
 ### Task 4: Validate favorite session ids before writing decisions
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_favorite.go`
-- Test: `cmd/serf-hub/web_api_favorite_test.go`
-- Test: `cmd/serf-hub/web_api_tree_test.go` only if a shared tree fixture contract needs coverage
+- Modify: `cmd/evener-hub/web_api_favorite.go`
+- Test: `cmd/evener-hub/web_api_favorite_test.go`
+- Test: `cmd/evener-hub/web_api_tree_test.go` only if a shared tree fixture contract needs coverage
 
 **Interfaces:**
 - For `kind:"session"`, normalize only for comparison to the tree's wire ref and accept ids matching a real top-level `kind:"session"` node across the memoized project tiers.

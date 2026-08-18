@@ -194,7 +194,7 @@ func isTestCommand(cmd string) bool {
 | `agent/repair_tracker.go` | New file |
 | `agent/session.go` | Add `repairTracker *RepairTracker` field. Initialize in `NewSession`. After `ExecuteCall` for `shell`: if `isTestCommand(cmd)`, call `RecordTestRun()`. After `edit_file`/`write_file`: call `RecordEdit()`. Before LLM call: check `SteeringNeeded()`. Add `forceSubmit bool` field. |
 | `agent/session.go` — `SessionConfig` | Add `MaxRepairCycles int` |
-| `cmd/serf/main.go` | Add `--max-repair-cycles` flag |
+| `cmd/evener/main.go` | Add `--max-repair-cycles` flag |
 
 ### Configuration
 

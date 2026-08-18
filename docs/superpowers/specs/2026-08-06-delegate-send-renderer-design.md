@@ -96,7 +96,7 @@ still renders nothing (the body's current early return).
 
 ## Testing
 
-Extend `cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`:
+Extend `cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx`:
 
 - Summary wording with and without a footer status.
 - `openTranscriptRef` returns the ref for valid raw state, `undefined` for

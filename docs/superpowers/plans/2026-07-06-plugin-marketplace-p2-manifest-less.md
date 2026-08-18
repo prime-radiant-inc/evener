@@ -42,7 +42,7 @@ test style), no mocks.
   drifted from the design spec's `~203-232` estimate — the extra lines are the already-existing
   hooks/MCP discovery calls the spec's estimate predated, not anything this plan adds) stays
   dir-only per the Architecture note above.
-- **No appwire/UI changes.** Part 2 is pure backend; nothing in `cmd/serf-hub` or `appwire`
+- **No appwire/UI changes.** Part 2 is pure backend; nothing in `cmd/evener-hub` or `appwire`
   changes. (Part 1 — the browse tree — is a separate, independent plan.)
 - **`strict` semantics — corrected from the design spec.** The design spec
   (`docs/superpowers/specs/2026-07-06-plugin-marketplace-improvements-design.md`) frames
@@ -78,7 +78,7 @@ test style), no mocks.
   here) and is pinned by a falsifiable test (Task 4) so it doesn't silently regress or get assumed
   to work.
 - **No `// serf:naming-ignore:` comments needed for the new fields — verified, not assumed.**
-  `cmd/serf-namingcheck/main.go` (read in full during planning) enforces snake_case JSON tags, but
+  `cmd/evener-namingcheck/main.go` (read in full during planning) enforces snake_case JSON tags, but
   `isUpstreamCamelKey` (line ~353-359) already **hardcodes `"mcpServers"` and `"enabledPlugins"`**
   as globally-exempt keys — matching `agent/plugin.Manifest.MCPServers`'s own tag, which likewise
   carries no ignore comment today. The other five new fields (`commands`, `agents`, `hooks`,
@@ -86,7 +86,7 @@ test style), no mocks.
   camelCase regexes trivially (`checkJSONTag`'s own comment: *"Pure-lowercase single-word keys...
   pass everywhere"*). So none of Task 1's six new struct fields need an ignore marker — this
   drifts from the task briefing's assumption that camelCase interop fields would need one;
-  `go run ./cmd/serf-namingcheck` (or `make lint-naming`) must still be run to confirm.
+  `go run ./cmd/evener-namingcheck` (or `make lint-naming`) must still be run to confirm.
 - **Directory-source (staged=false) plugins are not written into.** `Manager.stagePlugin`
   (`install.go` ~lines 39-57) returns `staged=false` only when the *marketplace itself* is a bare
   local directory and the plugin resolves to a `Rel`/`SourceDirectory` path in place — a
@@ -97,7 +97,7 @@ test style), no mocks.
 - Per-repo `GO_MODULES` (root, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`): this plan
   touches only the **root** module (`internal/plugins`). Run
   `go test ./internal/plugins/... -run '<Name>' -count=1` from the repo root;
-  `golangci-lint run ./internal/plugins/...` for the package; `go run ./cmd/serf-namingcheck` (no
+  `golangci-lint run ./internal/plugins/...` for the package; `go run ./cmd/evener-namingcheck` (no
   `-root` flag needed — it defaults to `.`, the repo root) for the full naming sweep at the end.
 - TDD red-first; test output pristine (a skipped-when-no-`git` test via `gitAvailable()`, matching
   the package's existing convention, is not a pristine-output violation).
@@ -897,7 +897,7 @@ invariant.)
 - [ ] **Run full package + naming + lint gates:**
   - `go test ./internal/plugins/... -count=1`
   - `golangci-lint run ./internal/plugins/...`
-  - `go run ./cmd/serf-namingcheck` (confirms none of Task 1's six new fields need a
+  - `go run ./cmd/evener-namingcheck` (confirms none of Task 1's six new fields need a
     `// serf:naming-ignore:` line, per Global Constraints)
   - `go build ./...` from repo root (confirms no other root-module package broke)
 - [ ] **Commit** — `git add internal/plugins/install.go internal/plugins/upgrade_test.go` →

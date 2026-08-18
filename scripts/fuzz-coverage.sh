@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fuzz-coverage.sh — measure each fuzz target's FOCUS-SET coverage by replaying
 # its COMMITTED corpus under -coverprofile (no -fuzz, so deterministic), then
-# hand the profiles to cmd/serf-fuzzcov for the report, ratchet, and gap map.
+# hand the profiles to cmd/evener-fuzzcov for the report, ratchet, and gap map.
 #
 # The target list is NOT redefined here: it is read verbatim from
 # `scripts/run-fuzz.sh --list`, the single source of truth. Each entry is
@@ -62,7 +62,7 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo
-( cd "$repo_root" && go run ./cmd/serf-fuzzcov --manifest "$manifest" --repo-root "$repo_root" "$@" )
+( cd "$repo_root" && go run ./cmd/evener-fuzzcov --manifest "$manifest" --repo-root "$repo_root" "$@" )
 report=$?
 
 # A target replay failure is itself a gate breach under --check.

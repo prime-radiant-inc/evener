@@ -5,9 +5,9 @@ registration-seam gate: `registerAskTool` never runs when `cfg.NonInteractive` i
 tool is unregistered (and therefore unadvertised to the provider) rather than present-but-
 blocked. Exercises both named surfaces: a hub-spawned `non_interactive:true` session (the
 same `SessionConfig.NonInteractive` flag `serve --non-interactive` sets — confirmed by
-`cmd/serf-hub/web_spawn.go:89` threading the spawn request's `non_interactive` straight into
+`cmd/evener-hub/web_spawn.go:89` threading the spawn request's `non_interactive` straight into
 the daemon's launch overrides) and the one-shot `serf <prompt>` CLI, which hardcodes
-`NonInteractive: true` unconditionally (`cmd/serf/main.go`/`run.go` — no flag needed or
+`NonInteractive: true` unconditionally (`cmd/evener/main.go`/`run.go` — no flag needed or
 available to turn it off).
 
 ## Pre-state
@@ -72,8 +72,8 @@ available to turn it off).
    It must parse the expanded JSON request structurally: list the names in `tools[]`, report
    whether `ask_user` is present, and confirm the non-interactive prompt section is present.
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID1" --count ask_user
-   go run ./cmd/serf-doctor transcript "$SID2" --count ask_user
+   go run ./cmd/evener-doctor transcript "$SID1" --count ask_user
+   go run ./cmd/evener-doctor transcript "$SID2" --count ask_user
    "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir1" \
      "Audit session $SID1. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
    "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir2" \
@@ -114,7 +114,7 @@ kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
   (`serf-doctor`'s `calls` field nonzero), the daemon's exec-time guard
   (`agent/session_tools_ask.go`) should still have produced an error result containing
   `unknown tool: ask_user` for it — check the outline
-  (`go run ./cmd/serf-doctor transcript "$SIDn" --format outline --range last:4`) if `calls`
+  (`go run ./cmd/evener-doctor transcript "$SIDn" --format outline --range last:4`) if `calls`
   is unexpectedly nonzero. Either outcome is consistent with gating working; the
   deterministic, always-applicable check is the `--count` invariant above, not the model's
   prose.

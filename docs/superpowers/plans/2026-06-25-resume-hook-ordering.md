@@ -684,7 +684,7 @@ Final report must include:
 Implemented deferred resume SessionStart hook delivery.
 Commits: <hashes>
 Tests: <commands and PASS/FAIL results>
-Unrelated worktree changes left untouched: cmd/serf-hub/assets/renderer.js, cmd/serf-hub/jstest/test-renderer-notifications.js (if still modified)
+Unrelated worktree changes left untouched: cmd/evener-hub/assets/renderer.js, cmd/evener-hub/jstest/test-renderer-notifications.js (if still modified)
 ```
 
 ---

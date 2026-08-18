@@ -428,7 +428,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			} else if now.Sub(stallStart) >= drainStallTimeout {
 				// The drain is wedged on undelivered work the machinery is not
 				// converting. Warn (naming the stuck managed job(s)) and return the last
-				// result with nil error so cmd/serf/run.go prints the coordinator's
+				// result with nil error so cmd/evener/run.go prints the coordinator's
 				// last answer and proceeds to Close(), rather than aborting the run.
 				ids := s.subtreeOutstandingDrainJobIDs()
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(

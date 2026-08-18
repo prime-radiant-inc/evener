@@ -23,7 +23,7 @@
 ### Task 1: Prove Steer and Stop fail against the projected temporary identity
 
 **Files:**
-- Modify: `cmd/serf/serve_state_test.go`
+- Modify: `cmd/evener/serve_state_test.go`
 
 **Interfaces:**
 - Consumes: `runServeWithDeps`, `server.Server`, `appwire.Client.TurnStart`, `appwire.Client.TurnSteer`, `appwire.Client.TurnInterrupt`, and the real Session event bridge.
@@ -143,7 +143,7 @@ no active turn.
 Run:
 
 ```bash
-go test ./cmd/serf -run '^TestRunServeRetrySafeTurnPublishesControllableStableIdentity$' -count=1 -v
+go test ./cmd/evener -run '^TestRunServeRetrySafeTurnPublishesControllableStableIdentity$' -count=1 -v
 ```
 
 Expected: both subtests compile and fail because `thread/read` publishes a
@@ -154,7 +154,7 @@ setup, or `[no tests to run]` is not acceptable RED evidence.
 - [ ] **Step 5: Commit the behavioral regression**
 
 ```bash
-git add cmd/serf/serve_state_test.go
+git add cmd/evener/serve_state_test.go
 git commit -m "test: reproduce retry-safe session control ID split"
 ```
 
@@ -168,7 +168,7 @@ The commit body must record the exact RED command and both behavioral failures.
 - Modify: `agent/session_client_mutation.go`
 - Modify: `internal/appprojector/appwire_projection.go`
 - Modify: `server/server.go`
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/serve.go`
 - Modify: `server/appwire_server_test.go`
 
 **Interfaces:**
@@ -281,8 +281,8 @@ non-empty active ID.
 Run:
 
 ```bash
-gofmt -w agent/session_client_mutation.go internal/appprojector/appwire_projection.go server/server.go cmd/serf/serve.go cmd/serf/serve_state_test.go server/appwire_server_test.go
-go test ./cmd/serf -run '^TestRunServeRetrySafeTurnPublishesControllableStableIdentity$' -count=1 -v
+gofmt -w agent/session_client_mutation.go internal/appprojector/appwire_projection.go server/server.go cmd/evener/serve.go cmd/evener/serve_state_test.go server/appwire_server_test.go
+go test ./cmd/evener -run '^TestRunServeRetrySafeTurnPublishesControllableStableIdentity$' -count=1 -v
 go test ./agent -run 'ClientMutationStart' -count=1
 go test ./server -run 'Processing|TurnStart' -count=1
 ```
@@ -300,7 +300,7 @@ rerun the focused test green. Do not use `git checkout --` on touched files.
 - [ ] **Step 8: Commit the minimal implementation**
 
 ```bash
-git add agent/session_client_mutation.go internal/appprojector/appwire_projection.go server/server.go cmd/serf/serve.go server/appwire_server_test.go
+git add agent/session_client_mutation.go internal/appprojector/appwire_projection.go server/server.go cmd/evener/serve.go server/appwire_server_test.go
 git commit -m "fix: keep retry-safe session controls on the stable turn"
 ```
 
@@ -332,7 +332,7 @@ present.
 - [ ] **Step 2: Run affected-package tests**
 
 ```bash
-go test ./agent ./server ./cmd/serf -count=1
+go test ./agent ./server ./cmd/evener -count=1
 ```
 
 Capture the bare exit code. Any sighted failure requires root-cause diagnosis

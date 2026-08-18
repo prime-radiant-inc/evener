@@ -7,7 +7,7 @@
 # diagnose-then-fix workflow, not measuring single-tool-call fluency. Select
 # it explicitly:
 #
-#   go run ./tools/tool-fluency/cmd/serf-fluency run \
+#   go run ./tools/tool-fluency/cmd/evener-fluency run \
 #     --build \
 #     --model <provider/model> \
 #     --probes-dir tools/tool-fluency/probes-nbcf \

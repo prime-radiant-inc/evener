@@ -26,12 +26,12 @@
 
 - Modify: `appwire/types.go`
 - Modify: `appwire/protocol.go`
-- Generate: `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
-- Modify: `cmd/serf-hub/app_relay.go`
-- Test: `cmd/serf-hub/app_rpc_test.go`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Test: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
+- Generate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
+- Modify: `cmd/evener-hub/app_relay.go`
+- Test: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Test: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.integration.test.tsx`
 
 **Interfaces:**
 
@@ -61,7 +61,7 @@
 - [ ] **Step 1: Add a failing hub relay-recovery test**
 
   Extend the existing scripted relay-recovery harness in
-  `cmd/serf-hub/app_rpc_test.go`. Establish the initial relay and assert that
+  `cmd/evener-hub/app_rpc_test.go`. Establish the initial relay and assert that
   no resync hint is emitted. Close the initial notification channel, script a
   failed retry followed by a successful replacement channel, and assert that
   the subscribed hub client receives exactly one:
@@ -84,7 +84,7 @@
   Run:
 
   ```bash
-  go test ./cmd/serf-hub -run 'TestHubRelay.*Resync' -count=1
+  go test ./cmd/evener-hub -run 'TestHubRelay.*Resync' -count=1
   ```
 
   Expected: compilation fails because `NotifySerfThreadResync` and
@@ -127,7 +127,7 @@
   Run:
 
   ```bash
-  go test ./cmd/serf-hub -run 'TestHubRelay.*Resync' -count=1
+  go test ./cmd/evener-hub -run 'TestHubRelay.*Resync' -count=1
   go test ./internal/appwirets ./appwire -count=1
   ```
 
@@ -152,7 +152,7 @@
 
 - [ ] **Step 7: Run the frontend store tests and verify RED**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/stores/threads.test.ts
@@ -179,7 +179,7 @@
 
 - [ ] **Step 9: Run frontend store tests and verify GREEN**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/stores/threads.test.ts
@@ -198,7 +198,7 @@
 
 - [ ] **Step 11: Run the composer regression and verify it passes**
 
-  From `cmd/serf-hub/frontend`, run:
+  From `cmd/evener-hub/frontend`, run:
 
   ```bash
   npm test -- src/panes/session/composer/Composer.integration.test.tsx
@@ -212,9 +212,9 @@
   Run:
 
   ```bash
-  gofmt -w appwire/types.go appwire/protocol.go cmd/serf-hub/app_relay.go cmd/serf-hub/app_rpc_test.go
-  go test ./cmd/serf-hub ./appwire ./internal/appwirets -count=1
-  cd cmd/serf-hub/frontend
+  gofmt -w appwire/types.go appwire/protocol.go cmd/evener-hub/app_relay.go cmd/evener-hub/app_rpc_test.go
+  go test ./cmd/evener-hub ./appwire ./internal/appwirets -count=1
+  cd cmd/evener-hub/frontend
   npm test -- src/stores/threads.test.ts src/panes/session/composer/Composer.integration.test.tsx
   npm run typecheck
   npm run lint

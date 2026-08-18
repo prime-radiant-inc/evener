@@ -4,7 +4,7 @@
 (`d2b5102`), `ws5f` (`d02d386`), `xcas` (`aecf225`). When the daemon
 backing a session has died but the session is still navigable, the
 hub should silently spawn a fresh daemon via `hubThreadResume`
-(`cmd/serf-hub/app_threadlifecycle.go#hubThreadResume`) and replay the user's turn. This
+(`cmd/evener-hub/app_threadlifecycle.go#hubThreadResume`) and replay the user's turn. This
 is the "server-side Layer 3" of the mggf design; the UI `Reconnect & retry`
 button uses the SAME path.
 
@@ -70,7 +70,7 @@ placeholder is not a stable hook at all — see step 6.
    ```
    `handleSend` re-resolves the session and, finding no live daemon, spawns
    one through the same `resumeRequestFor` → `Spawner.Resume` path before
-   starting the turn (`cmd/serf-hub/web_session.go:69-171`, kata `x3hp`).
+   starting the turn (`cmd/evener-hub/web_session.go:69-171`, kata `x3hp`).
 
 6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
    then drive the *other* entry point from a browser: navigate to
@@ -85,7 +85,7 @@ placeholder is not a stable hook at all — see step 6.
    `[data-testid="composer-submit"]` (or press `⌘↵`) after the text is in.
    That routes to appwire `turn/start`,
    whose hub handler retries through the same `hubThreadResume`
-   (`cmd/serf-hub/app_rpc.go:330` registers it; `:356,368` do the resume via
+   (`cmd/evener-hub/app_rpc.go:330` registers it; `:356,368` do the resume via
    the `resumeTurnStartThread` alias declared at `:58`). Note the ref form —
    a bare `/s/$SID` renders "Page not found" by design.
 
@@ -101,7 +101,7 @@ placeholder is not a stable hook at all — see step 6.
     transparent).
 - On the host:
   - A NEW daemon process exists with `serve ... --resume $SID` in its args
-    (`cmd/serf-hub/spawn.go:276`).
+    (`cmd/evener-hub/spawn.go:276`).
   - A NEW rendezvous file at `$HOME/.serf/run/<new-pid>.json`, with a
     different pid than step 2's.
 - In the browser (step 6 only): the new user turn and the assistant reply
@@ -146,7 +146,7 @@ placeholder is not a stable hook at all — see step 6.
   scenario.
 - **A live daemon speaking a different AppWire protocol version wedges the
   resume, and says so.** `resumeFailureError`
-  (`cmd/serf-hub/app_threadlifecycle.go#resumeFailureError`) re-reads the roster and
+  (`cmd/evener-hub/app_threadlifecycle.go#resumeFailureError`) re-reads the roster and
   names the blocking pid and protocol rather than returning a bare spawn
   failure. If step 5 fails, read the error text before assuming the resume
   chain regressed.

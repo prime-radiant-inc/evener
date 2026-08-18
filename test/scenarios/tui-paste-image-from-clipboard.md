@@ -211,7 +211,7 @@ rm -rf "$FIXDIR" "$WORKDIR"
   behind under `os.TempDir()`.
 - **Ctrl+V works only in the SESSION composer, not the SPAWN form.**
   The handler lives in
-  `cmd/serf-tui/hub_model.go:handleSessionInput` (line ~1454).
+  `cmd/evener-tui/hub_model.go:handleSessionInput` (line ~1454).
   The spawn-form text field has no paste-clipboard binding; for
   the "attach image at spawn time" UX, use the web `/new` form
   (covered by `web-file-picker-image.md`,

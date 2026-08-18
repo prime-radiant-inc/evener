@@ -37,9 +37,9 @@
 
 ## Test Harness Contract
 
-- The suite lives in `cmd/serf-tui/tmux_e2e_test.go`.
+- The suite lives in `cmd/evener-tui/tmux_e2e_test.go`.
 - Tests run by default when `tmux` is installed; otherwise they skip with a precise message.
-- Each test builds a temp `serf-tui` binary from `./cmd/serf-tui`.
+- Each test builds a temp `serf-tui` binary from `./cmd/evener-tui`.
 - Each test starts a unique tmux session with `-debug` to avoid alternate-screen opacity.
 - The fake hub records every state-changing API call so assertions are made on behavior, not only screen text.
 - Failures dump the visible pane and recent scrollback to make terminal-state failures debuggable.
@@ -100,14 +100,14 @@
     ("Remove obsolete TUI project mode"). They still reference the removed
     `Project: serf` details pane, the `/project` slash command, and the
     pre-overhaul `openLiveSession` palette flow, so each one times out
-    (~20s) under the current UI. Cumulatively they push `go test ./cmd/serf-tui/...`
+    (~20s) under the current UI. Cumulatively they push `go test ./cmd/evener-tui/...`
     well past the 90s test-binary timeout.
   - These tests are gated behind the `SERF_TMUX_E2E_FULL=1` env var (and
     skipped under `-short`) via `requireFullTmuxE2E` in
-    `cmd/serf-tui/tmux_e2e_test.go`. To run them locally while rewriting:
+    `cmd/evener-tui/tmux_e2e_test.go`. To run them locally while rewriting:
 
     ```bash
-    SERF_TMUX_E2E_FULL=1 go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1
+    SERF_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1
     ```
 
   - Affected cases (alphabetical): `APIErrorsRenderInPlace`,
@@ -131,9 +131,9 @@
 ## Commands
 
 ```bash
-go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1                      # default: skips pre-overhaul cases
-SERF_TMUX_E2E_FULL=1 go test ./cmd/serf-tui -run TestTUITmuxE2E -count=1 # opt-in: runs everything
-go test -short ./cmd/serf-tui/...                                        # CI-style: skips pre-overhaul cases
-go test ./cmd/serf-tui -count=1
+go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1                      # default: skips pre-overhaul cases
+SERF_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1 # opt-in: runs everything
+go test -short ./cmd/evener-tui/...                                        # CI-style: skips pre-overhaul cases
+go test ./cmd/evener-tui -count=1
 go test ./...
 ```

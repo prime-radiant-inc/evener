@@ -41,7 +41,7 @@ Session integration
 
 ### CLI
 
-New `--plugin-dir <path>` flag in `cmd/serf/main.go` (repeatable `stringSliceFlag`).
+New `--plugin-dir <path>` flag in `cmd/evener/main.go` (repeatable `stringSliceFlag`).
 Passed through `runConfig` → `SessionConfig.PluginDirs []string`.
 
 ### Loading
@@ -463,6 +463,6 @@ agent/skills.go       // No changes (reuse scanSkillsDir)
 agent/mcp_config.go   // Extend DiscoverMCPConfigs to accept plugin configs
 agent/subagents.go    // Enhance spawnAgent for plugin agent types
 agent/profile.go      // Add plugin agents to system prompt building
-cmd/serf/main.go      // Add --plugin-dir flag
-cmd/serf/run.go       // Pass PluginDirs through to SessionConfig
+cmd/evener/main.go      // Add --plugin-dir flag
+cmd/evener/run.go       // Pass PluginDirs through to SessionConfig
 ```

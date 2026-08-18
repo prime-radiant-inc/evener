@@ -4,20 +4,20 @@
 
 **Goal:** Consolidate the three duplicated attention-rank implementations into one shared `hubapi` source of truth; replace the web's text glyphs (`⟳ ◆ ✕`) with real line icons under a green/blue/amber/red/gray palette (needs-you moves amber→blue, warning gets its own amber identity, `processing`→`working` is a display-only rename); and land the ask-tiering remainder (§3–§7 of the folded-in spec) — an additive `pending_ask` wire bit, a three-band NeedsYou sort (errored → ask-pending → your-move), a `loudScope` notification preference, and blue `?`/`!` row markers — as one reviewed unit built on the consolidated rank.
 
-**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/serf-hub/internal/hubcore` and `cmd/serf-tui` (both live in the root Go module `primeradiant.com/evener`; `hubapi` is already a dependency-free package `cmd/serf-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/serf-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.SerfThread` → `cmd/serf-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
+**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/evener-hub/internal/hubcore` and `cmd/evener-tui` (both live in the root Go module `primeradiant.com/evener`; `hubapi` is already a dependency-free package `cmd/evener-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/evener-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.SerfThread` → `cmd/evener-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
 
-**Tech Stack:** Go (root module `primeradiant.com/evener` — `cmd/serf-hub/internal/hubcore`, `cmd/serf-tui`, `hubapi`, `server`, `cmd/serf`, `appwire`; all one module, no `go.work` cross-module wiring needed), vanilla JS (`cmd/serf-hub/assets/*.js`, JSDOM `jstest`), CSS custom properties (`cmd/serf-hub/assets/style.css`), inline SVG icons vendored from the Lucide project (ISC license, `github.com/lucide-icons/lucide`).
+**Tech Stack:** Go (root module `primeradiant.com/evener` — `cmd/evener-hub/internal/hubcore`, `cmd/evener-tui`, `hubapi`, `server`, `cmd/evener`, `appwire`; all one module, no `go.work` cross-module wiring needed), vanilla JS (`cmd/evener-hub/assets/*.js`, JSDOM `jstest`), CSS custom properties (`cmd/evener-hub/assets/style.css`), inline SVG icons vendored from the Lucide project (ISC license, `github.com/lucide-icons/lucide`).
 
 ## Global Constraints
 
 - JSON/TOML keys stay snake_case; wire enum values `active`/`awaiting`/`warning`/`errored` are the Codex-shaped contract and are **never** renamed. `processing`→`working` touches only CSS custom-property names, TUI theme-token identifiers (`StateProcessing`→`StateWorking`), and Go/JS display-word strings — never the wire state string `"active"`.
-- `appwire`/`hubcore` parallel-type camelCase JSON fields (e.g. `askPending`) require a `// serf:naming-ignore` comment on the line immediately above the field (bare comment, no suffix — confirmed against the existing `AttentionEntry.ID`/`AttentionSummary.NeedsYou` precedent and `cmd/serf-namingcheck/main.go`'s `ignoreMarker`).
+- `appwire`/`hubcore` parallel-type camelCase JSON fields (e.g. `askPending`) require a `// serf:naming-ignore` comment on the line immediately above the field (bare comment, no suffix — confirmed against the existing `AttentionEntry.ID`/`AttentionSummary.NeedsYou` precedent and `cmd/evener-namingcheck/main.go`'s `ignoreMarker`).
 - New struct **fields** (e.g. `PendingAsk` on `StatusInfo`, `AskPending` on `TreeNode`/`AttentionEntry`/`SerfThread`) need no appwire dual-router catalog change — only new/renamed **methods** do (confirmed: `server/appwire_catalog_test.go`'s `TestDaemonRouterMatchesCatalog` and `appwire/cov_rhub_appwire_test.go` diff only registered method names against `appwire.Methods`/`Notifications`, never struct shape).
-- `make lint` runs `lint-naming` (`go run ./cmd/serf-namingcheck`) in addition to `golangci-lint`; per-task `golangci-lint run ./...` misses the naming check, so run `make lint` before any merge-readiness claim.
-- `GO_MODULES := . agent llm auth envvars fuzz invariant` (root Makefile) — run `go test ./...` from the relevant module root; everything this track touches (`hubapi`, `hubcore`, `cmd/serf-tui`, `server`, `cmd/serf`, `appwire`) is in the root module `.`, so `go test ./...` from the repo root covers it (no `cd agent`/`cd llm` needed for this track).
-- jstest: `sh cmd/serf-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/serf-jstest-jsdom/node_modules`).
+- `make lint` runs `lint-naming` (`go run ./cmd/evener-namingcheck`) in addition to `golangci-lint`; per-task `golangci-lint run ./...` misses the naming check, so run `make lint` before any merge-readiness claim.
+- `GO_MODULES := . agent llm auth envvars fuzz invariant` (root Makefile) — run `go test ./...` from the relevant module root; everything this track touches (`hubapi`, `hubcore`, `cmd/evener-tui`, `server`, `cmd/evener`, `appwire`) is in the root module `.`, so `go test ./...` from the repo root covers it (no `cd agent`/`cd llm` needed for this track).
+- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/serf-jstest-jsdom/node_modules`).
 - Never `git add -A`; every commit lists exact paths.
-- **Corrected module-boundary fact** (the design spec's phrasing is imprecise): `cmd/serf-tui` and `cmd/serf-hub/internal/hubcore` are **not** separate Go modules — there is no `cmd/serf-tui/go.mod`; both live in the root module `primeradiant.com/evener`. The reason `cmd/serf-tui` cannot import `hubcore` directly is Go's `internal/` visibility rule (an `internal` package is importable only by code rooted at the parent of `internal/`, i.e. anything under `cmd/serf-hub/`), not a module boundary. `hubapi` has no such restriction and is already imported by `cmd/serf-tui/internal/hubstart/hub_start.go`, making it the correct shared home.
+- **Corrected module-boundary fact** (the design spec's phrasing is imprecise): `cmd/evener-tui` and `cmd/evener-hub/internal/hubcore` are **not** separate Go modules — there is no `cmd/evener-tui/go.mod`; both live in the root module `primeradiant.com/evener`. The reason `cmd/evener-tui` cannot import `hubcore` directly is Go's `internal/` visibility rule (an `internal` package is importable only by code rooted at the parent of `internal/`, i.e. anything under `cmd/evener-hub/`), not a module boundary. `hubapi` has no such restriction and is already imported by `cmd/evener-tui/internal/hubstart/hub_start.go`, making it the correct shared home.
 - Icon SVGs are vendored verbatim from `https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<name>.svg` (ISC license) — fetched and verified during planning (2026-07-05); do not hand-author path data.
 
 ---
@@ -27,32 +27,32 @@
 **Created:**
 - `hubapi/attention.go` — `AttentionRank`, `RollupRank`, `NeedsYouBand`, `StateWord` (the shared source of truth).
 - `hubapi/attention_test.go` — table tests for all four.
-- `cmd/serf-hub/assets/icons.js` — vendored Lucide SVG markup, keyed by unified-vocabulary state name.
-- `cmd/serf-hub/jstest/test-icons.js` — sanity test that every `SerfIcons` entry parses as an SVG element with the expected role.
-- `cmd/serf-hub/jstest/test-style-palette.js` — palette recolor + `processing`→`working` rename assertions against `style.css`.
-- `cmd/serf-hub/jstest/test-style-colorblind-shapes.js` — warning's distinct dot shape.
-- `cmd/serf-hub/jstest/test-sidebar-icons.js` — status-dot icon+tooltip rendering, rollup-badge icons, `data-ask` marker.
-- `cmd/serf-hub/jstest/test-notifications-palette.js` — `STATE_COLORS` recolor.
-- `cmd/serf-hub/jstest/test-renderer-subagent-glyphs.js` — subagent glyph/tally icon swap.
-- `cmd/serf-hub/jstest/test-renderer-format-plan-glyphs.js` — plan/task glyph icon swap.
-- `cmd/serf-hub/jstest/test-renderer-needsyou-affordances.js` — needs-you affordance + ask-chip icon swap.
-- `cmd/serf-hub/jstest/test-notifications-loudscope.js` — `loudScope` migration + gating.
-- `cmd/serf-hub/jstest/test-settings-loudscope.js` — `loudScope` settings-pane radio control.
+- `cmd/evener-hub/assets/icons.js` — vendored Lucide SVG markup, keyed by unified-vocabulary state name.
+- `cmd/evener-hub/jstest/test-icons.js` — sanity test that every `SerfIcons` entry parses as an SVG element with the expected role.
+- `cmd/evener-hub/jstest/test-style-palette.js` — palette recolor + `processing`→`working` rename assertions against `style.css`.
+- `cmd/evener-hub/jstest/test-style-colorblind-shapes.js` — warning's distinct dot shape.
+- `cmd/evener-hub/jstest/test-sidebar-icons.js` — status-dot icon+tooltip rendering, rollup-badge icons, `data-ask` marker.
+- `cmd/evener-hub/jstest/test-notifications-palette.js` — `STATE_COLORS` recolor.
+- `cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js` — subagent glyph/tally icon swap.
+- `cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js` — plan/task glyph icon swap.
+- `cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js` — needs-you affordance + ask-chip icon swap.
+- `cmd/evener-hub/jstest/test-notifications-loudscope.js` — `loudScope` migration + gating.
+- `cmd/evener-hub/jstest/test-settings-loudscope.js` — `loudScope` settings-pane radio control.
 - `test/scenarios/status-vocabulary-roundtrip.md` — new e2e scenario card.
 
 **Modified (Go):**
-- `cmd/serf-hub/internal/hubcore/tree.go` (`AttentionRank`/`rollupRank` removed in favor of `hubapi`; `TreeNode.AskPending`; NeedsYou band sort).
-- `cmd/serf-hub/internal/hubcore/tree_test.go` (rank tests retargeted to `hubapi`; band-sort test extended).
-- `cmd/serf-hub/internal/hubcore/attention.go` (`AttentionEntry.AskPending`; `DeriveAttention`; `AttentionWatcher.Tick` diffs on ask-flip too).
-- `cmd/serf-hub/internal/hubcore/attention_test.go` (new cases).
-- `cmd/serf-hub/internal/hubcore/prober.go` (`statusInfo.PendingAsk`; `Prober.Probe` gains a 4th return).
-- `cmd/serf-hub/internal/hubcore/prober_test.go` (new case).
-- `cmd/serf-hub/internal/hubcore/roster.go` (`LiveEntry.PendingAsk`; `probeResult`; `rosterFingerprint` hashes it too).
-- `cmd/serf-hub/internal/hubcore/roster_test.go` (new case).
-- `cmd/serf-hub/web_api_tree.go` (`apiTreeNode` copies `AskPending`).
-- `cmd/serf-hub/web_api_tree_test.go` (new case).
-- `cmd/serf-hub/web_format.go` (`stateLabel` delegates to `hubapi.StateWord`).
-- `cmd/serf-hub/web_format_test.go` (new cases).
+- `cmd/evener-hub/internal/hubcore/tree.go` (`AttentionRank`/`rollupRank` removed in favor of `hubapi`; `TreeNode.AskPending`; NeedsYou band sort).
+- `cmd/evener-hub/internal/hubcore/tree_test.go` (rank tests retargeted to `hubapi`; band-sort test extended).
+- `cmd/evener-hub/internal/hubcore/attention.go` (`AttentionEntry.AskPending`; `DeriveAttention`; `AttentionWatcher.Tick` diffs on ask-flip too).
+- `cmd/evener-hub/internal/hubcore/attention_test.go` (new cases).
+- `cmd/evener-hub/internal/hubcore/prober.go` (`statusInfo.PendingAsk`; `Prober.Probe` gains a 4th return).
+- `cmd/evener-hub/internal/hubcore/prober_test.go` (new case).
+- `cmd/evener-hub/internal/hubcore/roster.go` (`LiveEntry.PendingAsk`; `probeResult`; `rosterFingerprint` hashes it too).
+- `cmd/evener-hub/internal/hubcore/roster_test.go` (new case).
+- `cmd/evener-hub/web_api_tree.go` (`apiTreeNode` copies `AskPending`).
+- `cmd/evener-hub/web_api_tree_test.go` (new case).
+- `cmd/evener-hub/web_format.go` (`stateLabel` delegates to `hubapi.StateWord`).
+- `cmd/evener-hub/web_format_test.go` (new cases).
 - `hubapi/types.go` (`TreeNode.AskPending` — `ask_pending,omitempty`).
 - `hubapi/types_test.go` (round-trip case).
 - `server/server.go` (`StatusInfo.PendingAsk`; `pendingAskFn` field + `SetPendingAskFunc`).
@@ -62,25 +62,25 @@
 - `server/appwire_runtime_test.go` (new case).
 - `appwire/types.go` (`SerfThread.AskPending`).
 - `appwire/types_test.go` (round-trip case).
-- `cmd/serf/serve.go` (`srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })`).
-- `cmd/serf-tui/hub_types.go` (`hubTreeNode.AskPending`; `hubSessionDetail.AskPending`; `hubNodeFromThread`/`hubDetailFromThread` read it).
-- `cmd/serf-tui/hub_model.go` (`hubRow.askPending`).
-- `cmd/serf-tui/hub_dashboard.go` (`addSession` copies `askPending`; `dashboardRowLess` gains the band).
-- `cmd/serf-tui/hub_dashboard_view.go` (`attentionRankLabel` delegates to `hubapi.AttentionRank`; new `displayWord`; `projectSummary` rewritten; row marker for ask-pending).
-- `cmd/serf-tui/hub_dashboard_view_test.go` / `dashboard_rows_test.go` (new cases).
-- `cmd/serf-tui/hub_session_view.go` (`StatusBadge` label uses `displayWord`).
-- `cmd/serf-tui/internal/tuitheme/tokens.go` (`StateProcessing`→`StateWorking` rename + recolor; `StateAwaiting` recolor; `StateIdle` recolor).
-- `cmd/serf-tui/internal/tuitheme/tokens_test.go` (updated).
-- `cmd/serf-tui/internal/tuitheme/styles.go`, `cmd/serf-tui/composer_render.go`, `cmd/serf-tui/internal/msgrender/message.go`, `cmd/serf-tui/internal/msgrender/tool_bodies.go` (token rename call sites only).
-- `cmd/serf-hub/assets/style.css` (palette recolor across all 4 theme blocks; colorblind shapes; glyph legend).
-- `cmd/serf-hub/assets/sidebar.js` (status-dot → icon+dot+tooltip; rollup badge icons; `data-ask` marker).
-- `cmd/serf-hub/assets/notifications.js` (`STATE_COLORS` recolor; `DEFAULT_PREFS.loudScope`; `migratePrefs` version bump; `onAttentionChanged` gating).
-- `cmd/serf-hub/assets/settings.js` (radio-commit handler for `loudScope`).
-- `cmd/serf-hub/templates/partials/settings/notifications.html` (loud-scope control markup).
-- `cmd/serf-hub/assets/renderer.js` (connection banner, subagent glyphs, plan-adjacent needs-you affordances, ask-question chip — icon swap).
-- `cmd/serf-hub/assets/renderer-format.js` (plan/task glyphs — icon swap).
-- `cmd/serf-hub/templates/app.html`, `cmd/serf-hub/templates/thread.html` (load `icons.js`).
-- `cmd/serf-hub/jstest/test-renderer-connection-banner.js` (glyph assertion updated to expect an svg icon).
+- `cmd/evener/serve.go` (`srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })`).
+- `cmd/evener-tui/hub_types.go` (`hubTreeNode.AskPending`; `hubSessionDetail.AskPending`; `hubNodeFromThread`/`hubDetailFromThread` read it).
+- `cmd/evener-tui/hub_model.go` (`hubRow.askPending`).
+- `cmd/evener-tui/hub_dashboard.go` (`addSession` copies `askPending`; `dashboardRowLess` gains the band).
+- `cmd/evener-tui/hub_dashboard_view.go` (`attentionRankLabel` delegates to `hubapi.AttentionRank`; new `displayWord`; `projectSummary` rewritten; row marker for ask-pending).
+- `cmd/evener-tui/hub_dashboard_view_test.go` / `dashboard_rows_test.go` (new cases).
+- `cmd/evener-tui/hub_session_view.go` (`StatusBadge` label uses `displayWord`).
+- `cmd/evener-tui/internal/tuitheme/tokens.go` (`StateProcessing`→`StateWorking` rename + recolor; `StateAwaiting` recolor; `StateIdle` recolor).
+- `cmd/evener-tui/internal/tuitheme/tokens_test.go` (updated).
+- `cmd/evener-tui/internal/tuitheme/styles.go`, `cmd/evener-tui/composer_render.go`, `cmd/evener-tui/internal/msgrender/message.go`, `cmd/evener-tui/internal/msgrender/tool_bodies.go` (token rename call sites only).
+- `cmd/evener-hub/assets/style.css` (palette recolor across all 4 theme blocks; colorblind shapes; glyph legend).
+- `cmd/evener-hub/assets/sidebar.js` (status-dot → icon+dot+tooltip; rollup badge icons; `data-ask` marker).
+- `cmd/evener-hub/assets/notifications.js` (`STATE_COLORS` recolor; `DEFAULT_PREFS.loudScope`; `migratePrefs` version bump; `onAttentionChanged` gating).
+- `cmd/evener-hub/assets/settings.js` (radio-commit handler for `loudScope`).
+- `cmd/evener-hub/templates/partials/settings/notifications.html` (loud-scope control markup).
+- `cmd/evener-hub/assets/renderer.js` (connection banner, subagent glyphs, plan-adjacent needs-you affordances, ask-question chip — icon swap).
+- `cmd/evener-hub/assets/renderer-format.js` (plan/task glyphs — icon swap).
+- `cmd/evener-hub/templates/app.html`, `cmd/evener-hub/templates/thread.html` (load `icons.js`).
+- `cmd/evener-hub/jstest/test-renderer-connection-banner.js` (glyph assertion updated to expect an svg icon).
 - `test/scenarios/ask-cross-session-notify.md` (HX-Request header + NeedsYou-count + client-rendered-sidebar fixes + loud-scope default assertion).
 - `test/scenarios/ask-noninteractive-invisible.md`, `ask-subagent-invisible.md`, `ask-tui-answer.md`, and any idle-poll cards (hermetics batch, docs-only).
 
@@ -168,9 +168,9 @@ Create `hubapi/attention.go`:
 ```go
 // Package hubapi's attention.go is the single shared source of truth for
 // attention-state ranking and display words, imported by both the hub
-// (cmd/serf-hub/internal/hubcore, which cannot be imported directly by the
-// TUI because it is an `internal` package scoped to cmd/serf-hub) and the
-// TUI (cmd/serf-tui). Previously AttentionRank and rollupRank were
+// (cmd/evener-hub/internal/hubcore, which cannot be imported directly by the
+// TUI because it is an `internal` package scoped to cmd/evener-hub) and the
+// TUI (cmd/evener-tui). Previously AttentionRank and rollupRank were
 // duplicated in hubcore, and the TUI carried a third copy
 // (attentionRankLabel) — this file is the one place that ordering logic
 // lives now.
@@ -235,15 +235,15 @@ git commit -m "feat(hubapi): shared AttentionRank/RollupRank source of truth"
 ## Task 2: hubcore adopts `hubapi.AttentionRank`/`RollupRank`, dropping its own copies
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
 
 **Interfaces:**
 - Consumes: `hubapi.AttentionRank(state string) int`, `hubapi.RollupRank(state string) int` (Task 1).
 
 - [ ] **Step 1: Update the existing tests to call `hubapi` instead of the local functions**
 
-In `cmd/serf-hub/internal/hubcore/tree_test.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the bodies of `TestAttentionRank`, `TestRollupRank`, and `TestAttentionRanks_Errored` so they call `hubapi.AttentionRank`/`hubapi.RollupRank` instead of the local, soon-to-be-removed functions:
+In `cmd/evener-hub/internal/hubcore/tree_test.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the bodies of `TestAttentionRank`, `TestRollupRank`, and `TestAttentionRanks_Errored` so they call `hubapi.AttentionRank`/`hubapi.RollupRank` instead of the local, soon-to-be-removed functions:
 
 ```go
 func TestAttentionRank(t *testing.T) {
@@ -286,15 +286,15 @@ func TestAttentionRanks_Errored(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails to compile**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestAttentionRank|TestRollupRank' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestAttentionRank|TestRollupRank' -v`
 Expected: FAIL to compile — `tree.go` still defines local `AttentionRank`/`rollupRank`, so this is a harmless double-definition at this step only if names collided; since the test now qualifies every call with `hubapi.`, it actually compiles fine against the still-present local functions too. This step's real purpose is the next one: deleting the local functions and updating their two call sites, which is what makes the local names disappear for good — run the full package test now as a baseline:
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -v 2>&1 | tail -20`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -v 2>&1 | tail -20`
 Expected: PASS (baseline, before removing the local functions).
 
 - [ ] **Step 3: Remove the local rank functions and their call sites**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then delete the `AttentionRank`/`rollupRank` function definitions (currently at lines 148-191, immediately after the `TreeNode` struct):
+In `cmd/evener-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then delete the `AttentionRank`/`rollupRank` function definitions (currently at lines 148-191, immediately after the `TreeNode` struct):
 
 ```go
 // (delete AttentionRank and rollupRank entirely)
@@ -323,13 +323,13 @@ The live-nodes sort (around line 642-647):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... -v 2>&1 | tail -40`
+Run: `go test ./cmd/evener-hub/... -v 2>&1 | tail -40`
 Expected: PASS — every hubcore and web test green, including `TestAttentionRank`, `TestRollupRank`, `TestAttentionRanks_Errored`, `TestNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "refactor(hub): delete duplicated rank functions, delegate to hubapi"
 ```
 
@@ -338,7 +338,7 @@ git commit -m "refactor(hub): delete duplicated rank functions, delegate to huba
 ## Task 3: TUI adopts `hubapi.AttentionRank`
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_dashboard_view.go`
+- Modify: `cmd/evener-tui/hub_dashboard_view.go`
 
 **Interfaces:**
 - Consumes: `hubapi.AttentionRank(state string) int` (Task 1), the existing local `stateLabel(state string) string` (hub_dashboard_view.go:556-578, unchanged by this task).
@@ -346,12 +346,12 @@ git commit -m "refactor(hub): delete duplicated rank functions, delegate to huba
 
 - [ ] **Step 1: Run the existing TUI rank test as a baseline**
 
-Run: `go test ./cmd/serf-tui/... -run TestErroredLane_TUI -v`
+Run: `go test ./cmd/evener-tui/... -run TestErroredLane_TUI -v`
 Expected: PASS (baseline before the refactor — this pins the observable behavior that must not change).
 
 - [ ] **Step 2: Replace `attentionRankLabel`'s body with a delegation**
 
-In `cmd/serf-tui/hub_dashboard_view.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the `attentionRankLabel` function (currently lines 597-612):
+In `cmd/evener-tui/hub_dashboard_view.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the `attentionRankLabel` function (currently lines 597-612):
 
 ```go
 // attentionRankLabel normalizes state via stateLabel, then delegates to the
@@ -364,13 +364,13 @@ func attentionRankLabel(state string) int {
 
 - [ ] **Step 3: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-tui/... -v 2>&1 | tail -40`
+Run: `go test ./cmd/evener-tui/... -v 2>&1 | tail -40`
 Expected: PASS — `TestErroredLane_TUI` and every dashboard-ordering test unchanged in behavior.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_dashboard_view.go
+git add cmd/evener-tui/hub_dashboard_view.go
 git commit -m "refactor(tui): delegate attentionRankLabel to hubapi.AttentionRank"
 ```
 
@@ -426,7 +426,7 @@ Append to `hubapi/attention.go`:
 
 ```go
 // StateWord returns the unified display word for a normalized attention
-// state — one word, shared verbatim by the web (cmd/serf-hub's stateLabel)
+// state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
 // and the TUI (displayWord) so the two surfaces can never independently
 // drift on vocabulary (Track A §1). askPending selects between the two
 // needs-you bands (Track A §2 ask-tiering) and is ignored for every other
@@ -475,13 +475,13 @@ git commit -m "feat(hubapi): shared StateWord display vocabulary"
 ## Task 5: Palette recolor in `style.css` — green Working, blue Needs-you, amber Warning stays, red Error, gray Idle/Ended
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 There are four theme blocks carrying the same six `--state-*`/`--error` tokens: `:root` (default/dark, lines 4-21), `@media (prefers-color-scheme: light)` (lines 123-143), `:root[data-theme="dark"]` (lines 154-181), `:root[data-theme="light"]` (lines 183-210). `--state-processing` (blue) renames to `--state-working` and becomes green; `--state-awaiting` (was amber) becomes blue, reusing the exact blue `--state-processing` vacates (no new color invented for that swap); `--state-warning` keeps its current amber (no collision remains once `--state-awaiting` isn't amber too); `--state-idle`, `--state-ended`, `--error`, `--state-subagent` are unchanged.
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-style-palette.js` (Node script reading `style.css` as text — follow the pattern of the sibling `test-context-pressure-css.js`):
+Create `cmd/evener-hub/jstest/test-style-palette.js` (Node script reading `style.css` as text — follow the pattern of the sibling `test-context-pressure-css.js`):
 
 ```js
 "use strict";
@@ -506,12 +506,12 @@ console.log("test-style-palette.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node cmd/serf-hub/jstest/test-style-palette.js`
+Run: `node cmd/evener-hub/jstest/test-style-palette.js`
 Expected: FAIL (assertion) — `--state-processing` still present.
 
 - [ ] **Step 3: Recolor all four theme blocks**
 
-In `cmd/serf-hub/assets/style.css`, the default `:root` block (lines 4-21):
+In `cmd/evener-hub/assets/style.css`, the default `:root` block (lines 4-21):
 
 ```css
   --state-awaiting: #7aa2f7;
@@ -565,16 +565,16 @@ Update every remaining `var(--state-processing)` reference in the file to `var(-
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node cmd/serf-hub/jstest/test-style-palette.js && grep -c "state-processing" cmd/serf-hub/assets/style.css`
+Run: `node cmd/evener-hub/jstest/test-style-palette.js && grep -c "state-processing" cmd/evener-hub/assets/style.css`
 Expected: `test-style-palette.js: OK` and the grep count is `0`.
 
-Run: `sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — no existing jstest (`test-context-pressure-css.js` etc.) asserted the literal old hex values, only that the rules/vars exist, so they stay green; if any test fails because it string-matched `--state-processing`, update that test's string to `--state-working` (grep the failure output for the exact assertion).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-style-palette.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-style-palette.js
 git commit -m "feat(web): recolor state palette — working green, needs-you blue, processing rename"
 ```
 
@@ -583,13 +583,13 @@ git commit -m "feat(web): recolor state palette — working green, needs-you blu
 ## Task 6: Colorblind shape channel + glyph legend rewrite
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 The dot shape channel (currently at lines 1048-1071) pairs `awaiting`+`warning` on the same rotated-diamond shape because both were amber; now that `awaiting` (needs-you) is blue and `warning` keeps amber, give `warning` its own shape so the "un-folded" identity is visible in shape too, not just color.
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-style-colorblind-shapes.js`:
+Create `cmd/evener-hub/jstest/test-style-colorblind-shapes.js`:
 
 ```js
 "use strict";
@@ -610,12 +610,12 @@ console.log("test-style-colorblind-shapes.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node cmd/serf-hub/jstest/test-style-colorblind-shapes.js`
+Run: `node cmd/evener-hub/jstest/test-style-colorblind-shapes.js`
 Expected: FAIL — both rules are still identical `border-radius: 1px; transform: rotate(45deg);`.
 
 - [ ] **Step 3: Give warning its own shape + rewrite the legend**
 
-In `cmd/serf-hub/assets/style.css`, replace the colorblind-shapes block (currently lines 1048-1071):
+In `cmd/evener-hub/assets/style.css`, replace the colorblind-shapes block (currently lines 1048-1071):
 
 ```css
 /* ============================================================
@@ -673,13 +673,13 @@ Also update the "Needs-you triage tier" heading comment (formerly citing amber) 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node cmd/serf-hub/jstest/test-style-colorblind-shapes.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `node cmd/evener-hub/jstest/test-style-colorblind-shapes.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-style-colorblind-shapes.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-style-colorblind-shapes.js
 git commit -m "feat(web): give warning its own colorblind-safe shape; rewrite glyph legend"
 ```
 
@@ -688,8 +688,8 @@ git commit -m "feat(web): give warning its own colorblind-safe shape; rewrite gl
 ## Task 7: Vendor the Lucide icon set (`icons.js`)
 
 **Files:**
-- Create: `cmd/serf-hub/assets/icons.js`
-- Create: `cmd/serf-hub/jstest/test-icons.js`
+- Create: `cmd/evener-hub/assets/icons.js`
+- Create: `cmd/evener-hub/jstest/test-icons.js`
 
 Seven icons, fetched verbatim (2026-07-05) from `https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<name>.svg` (ISC license): `refresh-cw` (Working), `message-circle-question-mark` (Question waiting), `message-circle-warning` (Your move), `triangle-alert` (Warning), `circle-x` (Error), `pause` (Idle), `check` (Ended). `width`/`height` are set to `1em` (not the fetched `24`) so each icon scales with the containing element's font-size via CSS, and `stroke="currentColor"` is preserved so color follows the element's CSS `color`.
 
@@ -698,7 +698,7 @@ Seven icons, fetched verbatim (2026-07-05) from `https://raw.githubusercontent.c
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-icons.js` (JSDOM harness — copy the bootstrap pattern from a sibling test like `test-sidebar-aria.js`):
+Create `cmd/evener-hub/jstest/test-icons.js` (JSDOM harness — copy the bootstrap pattern from a sibling test like `test-sidebar-aria.js`):
 
 ```js
 "use strict";
@@ -729,12 +729,12 @@ console.log("test-icons.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-icons.js`
-Expected: FAIL — `cmd/serf-hub/assets/icons.js` does not exist.
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
+Expected: FAIL — `cmd/evener-hub/assets/icons.js` does not exist.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `cmd/serf-hub/assets/icons.js`:
+Create `cmd/evener-hub/assets/icons.js`:
 
 ```js
 // Vendored Lucide line icons (ISC license, github.com/lucide-icons/lucide),
@@ -797,17 +797,17 @@ Create `cmd/serf-hub/assets/icons.js`:
 })();
 ```
 
-Add `<script src="/assets/icons.js"></script>` to `cmd/serf-hub/templates/app.html` immediately before the existing `<script src="/assets/sidebar.js"></script>` tag (grep `sidebar.js` in `app.html` to find the exact line), and the same in `cmd/serf-hub/templates/thread.html` if it independently loads `renderer.js` (grep `renderer.js` there).
+Add `<script src="/assets/icons.js"></script>` to `cmd/evener-hub/templates/app.html` immediately before the existing `<script src="/assets/sidebar.js"></script>` tag (grep `sidebar.js` in `app.html` to find the exact line), and the same in `cmd/evener-hub/templates/thread.html` if it independently loads `renderer.js` (grep `renderer.js` there).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-icons.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/icons.js cmd/serf-hub/jstest/test-icons.js cmd/serf-hub/templates/app.html cmd/serf-hub/templates/thread.html
+git add cmd/evener-hub/assets/icons.js cmd/evener-hub/jstest/test-icons.js cmd/evener-hub/templates/app.html cmd/evener-hub/templates/thread.html
 git commit -m "feat(web): vendor Lucide icon set for the unified status vocabulary"
 ```
 
@@ -816,15 +816,15 @@ git commit -m "feat(web): vendor Lucide icon set for the unified status vocabula
 ## Task 8: `sidebar.js` status-dot becomes icon + dot, word as hover tooltip
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
-- Create: `cmd/serf-hub/jstest/test-sidebar-icons.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
+- Create: `cmd/evener-hub/jstest/test-sidebar-icons.js`
 
 **Interfaces:**
 - Consumes: `window.SerfIcons` (Task 7), `hubapi.TreeNode.State` (already on the wire; the `ask_pending` field itself lands in Phase 4 Task 21 — this task wires the icon-choice function to accept an `askPending` parameter now so Phase 4 only needs to pass the real value, not restructure the call).
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-sidebar-icons.js` (copy the JSDOM + sidebar-model bootstrap from `test-sidebar-reconcile.js`):
+Create `cmd/evener-hub/jstest/test-sidebar-icons.js` (copy the JSDOM + sidebar-model bootstrap from `test-sidebar-reconcile.js`):
 
 ```js
 "use strict";
@@ -853,12 +853,12 @@ console.log("test-sidebar-icons.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — no `.status-icon` element, `window.SerfSidebarInternal` undefined.
 
 - [ ] **Step 3: Add the icon element + tooltip word to `buildRow`/`patchRow`**
 
-In `cmd/serf-hub/assets/sidebar.js`, add a small word/icon-key resolver near the top (after `function rowKey(n) { ... }`, line 24):
+In `cmd/evener-hub/assets/sidebar.js`, add a small word/icon-key resolver near the top (after `function rowKey(n) { ... }`, line 24):
 
 ```js
   // stateIconKey maps a tree-node state (+ optional ask_pending) to the
@@ -926,7 +926,7 @@ Expose the internals the test needs, near the top where `window.SerfSidebarModel
   window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord }; // test/inspection surface
 ```
 
-Add the `.status-icon` sizing rule to `cmd/serf-hub/assets/style.css` next to the existing `.status-dot` rule (line 637):
+Add the `.status-icon` sizing rule to `cmd/evener-hub/assets/style.css` next to the existing `.status-dot` rule (line 637):
 
 ```css
 .status-icon { display: inline-flex; width: 12px; height: 12px; font-size: 12px; color: var(--state-ended); flex-shrink: 0; }
@@ -939,13 +939,13 @@ Add the `.status-icon` sizing rule to `cmd/serf-hub/assets/style.css` next to th
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — including every pre-existing `test-sidebar-*.js` (row structure gained a sibling element, which reconciliation-keyed tests should tolerate; if a pre-existing test snapshot-matches `a.innerHTML` exactly, update its expected markup to include the new `.status-icon` span).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar-icons.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar-icons.js
 git commit -m "feat(web): sidebar status-dot renders icon + word tooltip"
 ```
 
@@ -954,14 +954,14 @@ git commit -m "feat(web): sidebar status-dot renders icon + word tooltip"
 ## Task 9: `sidebar.js` rollup badge (`⟳N · ◆M`) adopts the icon set
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
 
 **Interfaces:**
 - Consumes: `window.SerfIcons.working`, `window.SerfIcons.yourMove` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/jstest/test-sidebar-icons.js`:
+Append to `cmd/evener-hub/jstest/test-sidebar-icons.js`:
 
 ```js
 const badge = window.SerfSidebarInternal.buildRollupBadge("rollup-live", "working", 3);
@@ -971,12 +971,12 @@ assert.strictEqual(badge.textContent.trim(), "3", "rollup badge count text must 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — `buildRollupBadge` not exposed / still sets `textContent` to a glyph character, no `<svg>`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/sidebar.js`, replace `setProjectRollup`/`buildRollupBadge` (currently lines 482-507):
+In `cmd/evener-hub/assets/sidebar.js`, replace `setProjectRollup`/`buildRollupBadge` (currently lines 482-507):
 
 ```js
   function setProjectRollup(el, p) {
@@ -1021,13 +1021,13 @@ Update `.rollup-glyph`'s CSS (style.css, currently `font-family: var(--font-mono
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-sidebar-icons.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-sidebar-icons.js
 git commit -m "feat(web): rollup badge adopts icon set instead of text glyphs"
 ```
 
@@ -1036,9 +1036,9 @@ git commit -m "feat(web): rollup badge adopts icon set instead of text glyphs"
 ## Task 10: `web_format.go` `stateLabel` delegates to `hubapi.StateWord`
 
 **Files:**
-- Modify: `cmd/serf-hub/web_format.go`
-- Modify: `cmd/serf-hub/web_format_test.go`
-- Modify: every call site of `stateLabel` in `cmd/serf-hub` (grep `stateLabel(` — signature gains an `askPending bool` parameter)
+- Modify: `cmd/evener-hub/web_format.go`
+- Modify: `cmd/evener-hub/web_format_test.go`
+- Modify: every call site of `stateLabel` in `cmd/evener-hub` (grep `stateLabel(` — signature gains an `askPending bool` parameter)
 
 **Interfaces:**
 - Consumes: `hubapi.StateWord(state string, askPending bool) string` (Task 4).
@@ -1046,7 +1046,7 @@ git commit -m "feat(web): rollup badge adopts icon set instead of text glyphs"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/web_format_test.go`:
+Append to `cmd/evener-hub/web_format_test.go`:
 
 ```go
 func TestStateLabel_UnifiedVocabulary(t *testing.T) {
@@ -1072,12 +1072,12 @@ func TestStateLabel_UnifiedVocabulary(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestStateLabel_UnifiedVocabulary -v`
+Run: `go test ./cmd/evener-hub/ -run TestStateLabel_UnifiedVocabulary -v`
 Expected: FAIL to compile — `stateLabel` takes one argument today.
 
 - [ ] **Step 3: Implement + fix call sites**
 
-In `cmd/serf-hub/web_format.go`, replace `stateLabel` (currently lines 191-210):
+In `cmd/evener-hub/web_format.go`, replace `stateLabel` (currently lines 191-210):
 
 ```go
 // stateLabel returns the unified display word (Track A §1) for a normalized
@@ -1089,17 +1089,17 @@ func stateLabel(state string, askPending bool) string {
 }
 ```
 
-Add `"primeradiant.com/evener/hubapi"` to the file's imports. Run `grep -rn "stateLabel(" cmd/serf-hub/*.go` (excluding `_test.go`) to find every call site outside this file; update each to pass `false` for now (e.g. `stateLabel(state)` → `stateLabel(state, false)`) — Phase 4 Task 26's TUI-analogue threads the real bit through once `ask_pending` exists on the relevant response type; this task keeps every call site compiling and behaviorally identical for non-awaiting states (only `"awaiting"` differs, and it now reads "Your move" instead of the old "Needs you" — an intentional, spec-mandated wording change, not a regression).
+Add `"primeradiant.com/evener/hubapi"` to the file's imports. Run `grep -rn "stateLabel(" cmd/evener-hub/*.go` (excluding `_test.go`) to find every call site outside this file; update each to pass `false` for now (e.g. `stateLabel(state)` → `stateLabel(state, false)`) — Phase 4 Task 26's TUI-analogue threads the real bit through once `ask_pending` exists on the relevant response type; this task keeps every call site compiling and behaviorally identical for non-awaiting states (only `"awaiting"` differs, and it now reads "Your move" instead of the old "Needs you" — an intentional, spec-mandated wording change, not a regression).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... -v 2>&1 | tail -40`
+Run: `go test ./cmd/evener-hub/... -v 2>&1 | tail -40`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/web_format.go cmd/serf-hub/web_format_test.go
+git add cmd/evener-hub/web_format.go cmd/evener-hub/web_format_test.go
 git commit -m "refactor(web): stateLabel delegates to hubapi.StateWord"
 ```
 
@@ -1110,11 +1110,11 @@ git commit -m "refactor(web): stateLabel delegates to hubapi.StateWord"
 ## Task 11: `notifications.js` `STATE_COLORS` recolor (favicon/dot)
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/notifications.js`
+- Modify: `cmd/evener-hub/assets/notifications.js`
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-notifications-palette.js`:
+Create `cmd/evener-hub/jstest/test-notifications-palette.js`:
 
 ```js
 "use strict";
@@ -1134,12 +1134,12 @@ console.log("test-notifications-palette.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node cmd/serf-hub/jstest/test-notifications-palette.js`
+Run: `node cmd/evener-hub/jstest/test-notifications-palette.js`
 Expected: FAIL — `working: "#7aa2f7"` (old blue), `needs_you: "#e0af68"` (old amber).
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/notifications.js`, replace `STATE_COLORS` (currently lines 32-36):
+In `cmd/evener-hub/assets/notifications.js`, replace `STATE_COLORS` (currently lines 32-36):
 
 ```js
   // Dot color by attention level, mirroring style.css's --state-working /
@@ -1155,13 +1155,13 @@ In `cmd/serf-hub/assets/notifications.js`, replace `STATE_COLORS` (currently lin
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `node cmd/serf-hub/jstest/test-notifications-palette.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `node cmd/evener-hub/jstest/test-notifications-palette.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/notifications.js cmd/serf-hub/jstest/test-notifications-palette.js
+git add cmd/evener-hub/assets/notifications.js cmd/evener-hub/jstest/test-notifications-palette.js
 git commit -m "feat(web): recolor notification favicon/badge dots to the new palette"
 ```
 
@@ -1170,11 +1170,11 @@ git commit -m "feat(web): recolor notification favicon/badge dots to the new pal
 ## Task 12: `renderer.js` connection banner icon swap
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 - [ ] **Step 1: Write the failing jstest**
 
-Check the existing `cmd/serf-hub/jstest/test-renderer-connection-banner.js` (it currently asserts the banner text matches `/[⟳↻⤬✕⚠◐]/`, per the "glyph-paired (colorblind-safe)" comment at its line ~72). Update that assertion to expect an `<svg>` element instead of a Unicode glyph character:
+Check the existing `cmd/evener-hub/jstest/test-renderer-connection-banner.js` (it currently asserts the banner text matches `/[⟳↻⤬✕⚠◐]/`, per the "glyph-paired (colorblind-safe)" comment at its line ~72). Update that assertion to expect an `<svg>` element instead of a Unicode glyph character:
 
 ```js
 // (edit the existing assertion block, around line 70-75, from a regex glyph
@@ -1185,12 +1185,12 @@ assert.ok(glyphEl.querySelector("svg"), "reconnecting banner must render the wor
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-connection-banner.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js`
 Expected: FAIL — the banner glyph span still has `textContent = "⟳"`, no child `<svg>`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/renderer.js`, replace `showConnectionBanner` (currently lines 809-823):
+In `cmd/evener-hub/assets/renderer.js`, replace `showConnectionBanner` (currently lines 809-823):
 
 ```js
     showConnectionBanner(level) {
@@ -1220,13 +1220,13 @@ Add sizing CSS next to `.connection-banner-glyph`'s existing rule in `style.css`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-connection-banner.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-renderer-connection-banner.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-connection-banner.js
 git commit -m "feat(web): connection banner adopts icon set"
 ```
 
@@ -1235,14 +1235,14 @@ git commit -m "feat(web): connection banner adopts icon set"
 ## Task 13: `renderer.js` subagent glyphs + tally adopt the icon set
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
 - Consumes: `window.SerfIcons.working`, `.error`, `.ended` (Task 7). Note: `subagentGlyph("unknown")` returns `"?"` today — there is no unified-vocabulary state named "unknown" (subagent tool-status kinds are `running`/`done`/`failed`/`unknown`, a different axis than session attention state); this task maps `done`→`ended` icon, `failed`→`error` icon, `running`→`working` icon, and leaves `unknown` as a literal `"?"` character (out of scope — it is not one of the five/six unified states).
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-renderer-subagent-glyphs.js` (copy the JSDOM + `SerfRendererInternal` bootstrap from a sibling renderer test):
+Create `cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js` (copy the JSDOM + `SerfRendererInternal` bootstrap from a sibling renderer test):
 
 ```js
 "use strict";
@@ -1260,12 +1260,12 @@ console.log("test-renderer-subagent-glyphs.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-subagent-glyphs.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js`
 Expected: FAIL — `subagentGlyph("done")` returns `"✓"`, not svg markup; `SerfRendererInternal` may not yet expose `subagentGlyph` (if not already exposed, add it to whatever internal-test-surface object the sibling tests use).
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/renderer.js`, replace `subagentGlyph` (currently lines 2546-2551):
+In `cmd/evener-hub/assets/renderer.js`, replace `subagentGlyph` (currently lines 2546-2551):
 
 ```js
     subagentGlyph(kind) {
@@ -1290,13 +1290,13 @@ Check how `parts` is later joined into DOM (grep the variable a few lines below 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-subagent-glyphs.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — fix any sibling test that string-matched the old `"✓"`/`"✕"`/`"⟳"` glyph characters by updating its assertion to check for `<svg` presence instead (grep the failure output for the exact assertion to update).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-subagent-glyphs.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js
 git commit -m "feat(web): subagent glyphs + tally adopt icon set"
 ```
 
@@ -1305,14 +1305,14 @@ git commit -m "feat(web): subagent glyphs + tally adopt icon set"
 ## Task 14: `renderer-format.js` plan/task glyphs adopt the icon set
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-format.js`
+- Modify: `cmd/evener-hub/assets/renderer-format.js`
 
 **Interfaces:**
 - Consumes: `window.SerfIcons.ended`, `.working`, `.error` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-renderer-format-plan-glyphs.js`:
+Create `cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js`:
 
 ```js
 "use strict";
@@ -1332,12 +1332,12 @@ console.log("test-renderer-format-plan-glyphs.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-format-plan-glyphs.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js`
 Expected: FAIL — `planGlyphForStatus("done")` returns `"✓"`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/renderer-format.js`, replace `planGlyphForStatus` (currently lines 486-493):
+In `cmd/evener-hub/assets/renderer-format.js`, replace `planGlyphForStatus` (currently lines 486-493):
 
 ```js
   // planGlyphForStatus returns the glyph-paired status marker for a plan
@@ -1359,13 +1359,13 @@ Update every call site assigning the return value via `.textContent` to `.innerH
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-format-plan-glyphs.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/jstest/test-renderer-format-plan-glyphs.js
+git add cmd/evener-hub/assets/renderer-format.js cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js
 git commit -m "feat(web): plan/task glyphs adopt icon set"
 ```
 
@@ -1374,14 +1374,14 @@ git commit -m "feat(web): plan/task glyphs adopt icon set"
 ## Task 15: `renderer.js` needs-you affordances + ask-question chip adopt the blue bubble icons
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
 - Consumes: `window.SerfIcons.yourMove`, `.error`, `.questionWaiting` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-renderer-needsyou-affordances.js` (drive the four affordance builders the way the sibling renderer tests drive DOM-building functions — check `test-renderer-liveness.js` for the harness pattern):
+Create `cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js` (drive the four affordance builders the way the sibling renderer tests drive DOM-building functions — check `test-renderer-liveness.js` for the harness pattern):
 
 ```js
 "use strict";
@@ -1409,12 +1409,12 @@ console.log("test-renderer-needsyou-affordances.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-needsyou-affordances.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js`
 Expected: FAIL — each site still sets `.textContent` to a string containing `"◆"`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/renderer.js`, the four sites (verify current line numbers before editing — the design doc's citations were confirmed exact at 4213/4321/4451/4787 as of branch base `6647b744`, re-check for drift from this track's own earlier commits in this same plan):
+In `cmd/evener-hub/assets/renderer.js`, the four sites (verify current line numbers before editing — the design doc's citations were confirmed exact at 4213/4321/4451/4787 as of branch base `6647b744`, re-check for drift from this track's own earlier commits in this same plan):
 
 Line ~4213 (scroll-nudge pill, `pill.textContent = "↓ ◆ needs you";`):
 
@@ -1456,13 +1456,13 @@ Every string concatenated with `askedSummary`/user-provided text **must** go thr
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-needsyou-affordances.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-needsyou-affordances.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js
 git commit -m "feat(web): needs-you affordances + ask chip adopt the blue bubble icons"
 ```
 
@@ -1473,28 +1473,28 @@ git commit -m "feat(web): needs-you affordances + ask chip adopt the blue bubble
 ## Task 16: `tuitheme` token rename + recolor (`StateProcessing`→`StateWorking`, green/blue/gray reassignment)
 
 **Files:**
-- Modify: `cmd/serf-tui/internal/tuitheme/tokens.go`
-- Modify: `cmd/serf-tui/internal/tuitheme/tokens_test.go`
-- Modify: `cmd/serf-tui/internal/tuitheme/styles.go` (rename call site)
-- Modify: `cmd/serf-tui/hub_dashboard_view.go` (rename call site, `stateColor` line ~308)
-- Modify: `cmd/serf-tui/composer_render.go` (rename call site, line ~74)
-- Modify: `cmd/serf-tui/internal/msgrender/message.go` (rename call sites, lines ~200, ~361)
-- Modify: `cmd/serf-tui/internal/msgrender/tool_bodies.go` (rename call site, line ~182)
+- Modify: `cmd/evener-tui/internal/tuitheme/tokens.go`
+- Modify: `cmd/evener-tui/internal/tuitheme/tokens_test.go`
+- Modify: `cmd/evener-tui/internal/tuitheme/styles.go` (rename call site)
+- Modify: `cmd/evener-tui/hub_dashboard_view.go` (rename call site, `stateColor` line ~308)
+- Modify: `cmd/evener-tui/composer_render.go` (rename call site, line ~74)
+- Modify: `cmd/evener-tui/internal/msgrender/message.go` (rename call sites, lines ~200, ~361)
+- Modify: `cmd/evener-tui/internal/msgrender/tool_bodies.go` (rename call site, line ~182)
 
 The TUI's existing palette is a distinct "calm terracotta/slate/gold/sage" design language (`tokens.go`'s own comment), not the web's blue/amber/red scheme — so this is not a literal hex copy from `style.css`. It reassigns the SAME five semantic hues (green=working, blue=needs-you, amber=warning, red=error, gray=idle) onto the TUI's existing muted tones, reusing the TUI's own vacated values wherever possible: the old `StateProcessing` slate-blue becomes `StateAwaiting`'s new color (needs-you moves onto it, exactly mirroring the web's swap), and `StateIdle`'s old sage-green becomes `StateWorking`'s color (idle moves off green, working moves onto it) — zero new hex values needed for those two. `StateIdle` itself gets a new neutral gray (the one genuinely new value this task introduces, flagged as a first-cut for Jesse to tune). `StateWarning`, `StateEnded`, `StateError`, `StateSubagent` are unchanged.
 
 - [ ] **Step 1: Update the existing token test**
 
-Read `cmd/serf-tui/internal/tuitheme/tokens_test.go` around its current lines 125, 132 (per prior research, referencing `StateProcessing`) and update every reference from `StateProcessing`/`StateProcessingTint` to `StateWorking`/`StateWorkingTint`. If the test asserts specific hex values for `StateProcessing`/`StateAwaiting`/`StateIdle`, update the expected values to match Step 3 below.
+Read `cmd/evener-tui/internal/tuitheme/tokens_test.go` around its current lines 125, 132 (per prior research, referencing `StateProcessing`) and update every reference from `StateProcessing`/`StateProcessingTint` to `StateWorking`/`StateWorkingTint`. If the test asserts specific hex values for `StateProcessing`/`StateAwaiting`/`StateIdle`, update the expected values to match Step 3 below.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui/internal/tuitheme/... -v`
+Run: `go test ./cmd/evener-tui/internal/tuitheme/... -v`
 Expected: FAIL to compile — `StateWorking`/`StateWorkingTint` undefined until Step 3.
 
 - [ ] **Step 3: Rename + recolor in `tokens.go`**
 
-In `cmd/serf-tui/internal/tuitheme/tokens.go`, rename the struct fields (currently lines 23-29):
+In `cmd/evener-tui/internal/tuitheme/tokens.go`, rename the struct fields (currently lines 23-29):
 
 ```go
 	Accent, AccentSecondary lipgloss.Color
@@ -1551,7 +1551,7 @@ In `cmd/serf-tui/internal/tuitheme/tokens.go`, rename the struct fields (current
 
 - [ ] **Step 4: Fix every `StateProcessing`/`StateProcessingTint` call site**
 
-`cmd/serf-tui/internal/tuitheme/styles.go:41` (and the `Processing` struct field name at line 24, which is a separate cosmetic identifier — rename it to `Working` too for consistency, it has no outside callers per the prior research):
+`cmd/evener-tui/internal/tuitheme/styles.go:41` (and the `Processing` struct field name at line 24, which is a separate cosmetic identifier — rename it to `Working` too for consistency, it has no outside callers per the prior research):
 
 ```go
 	Working: lipgloss.NewStyle().Foreground(th.StateWorking),
@@ -1559,20 +1559,20 @@ In `cmd/serf-tui/internal/tuitheme/tokens.go`, rename the struct fields (current
 
 (and its declaration line 24: `Working lipgloss.Style` instead of `Processing lipgloss.Style`.)
 
-`cmd/serf-tui/hub_dashboard_view.go` (`stateColor`, case `"active"`, line ~308):
+`cmd/evener-tui/hub_dashboard_view.go` (`stateColor`, case `"active"`, line ~308):
 
 ```go
 	case "active":
 		return th.StateWorking
 ```
 
-`cmd/serf-tui/composer_render.go:74`:
+`cmd/evener-tui/composer_render.go:74`:
 
 ```go
 		modeColor = th.StateWorking
 ```
 
-`cmd/serf-tui/internal/msgrender/message.go:200` and `:361`:
+`cmd/evener-tui/internal/msgrender/message.go:200` and `:361`:
 
 ```go
 		bar := tuiprim.StateBar(th.StateWorking)
@@ -1581,7 +1581,7 @@ In `cmd/serf-tui/internal/tuitheme/tokens.go`, rename the struct fields (current
 		return th.StateWorking
 ```
 
-`cmd/serf-tui/internal/msgrender/tool_bodies.go:182`:
+`cmd/evener-tui/internal/msgrender/tool_bodies.go:182`:
 
 ```go
 		clr = th.StateWorking
@@ -1589,13 +1589,13 @@ In `cmd/serf-tui/internal/tuitheme/tokens.go`, rename the struct fields (current
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-tui/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-tui/... -v 2>&1 | tail -60`
 Expected: PASS. If any test asserted a specific old hex value for `StateAwaiting`/`StateIdle`/`StateProcessing` (beyond the ones already fixed in Step 1), fix it now — grep `go test` failure output for the exact hex string and update.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/internal/tuitheme/tokens.go cmd/serf-tui/internal/tuitheme/tokens_test.go cmd/serf-tui/internal/tuitheme/styles.go cmd/serf-tui/hub_dashboard_view.go cmd/serf-tui/composer_render.go cmd/serf-tui/internal/msgrender/message.go cmd/serf-tui/internal/msgrender/tool_bodies.go
+git add cmd/evener-tui/internal/tuitheme/tokens.go cmd/evener-tui/internal/tuitheme/tokens_test.go cmd/evener-tui/internal/tuitheme/styles.go cmd/evener-tui/hub_dashboard_view.go cmd/evener-tui/composer_render.go cmd/evener-tui/internal/msgrender/message.go cmd/evener-tui/internal/msgrender/tool_bodies.go
 git commit -m "feat(tui): rename StateProcessing->StateWorking, reassign palette hues"
 ```
 
@@ -1604,10 +1604,10 @@ git commit -m "feat(tui): rename StateProcessing->StateWorking, reassign palette
 ## Task 17: TUI `displayWord` — unified vocabulary words on the status badge and project summary
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_dashboard_view.go`
-- Modify: `cmd/serf-tui/hub_session_view.go`
-- Modify: `cmd/serf-tui/hub_types.go` (`hubSessionDetail.AskPending` field — populated with a hardcoded `false` in this task; Phase 4 Task 26 threads the real bit through)
-- Modify: `cmd/serf-tui/hub_dashboard_view_test.go`
+- Modify: `cmd/evener-tui/hub_dashboard_view.go`
+- Modify: `cmd/evener-tui/hub_session_view.go`
+- Modify: `cmd/evener-tui/hub_types.go` (`hubSessionDetail.AskPending` field — populated with a hardcoded `false` in this task; Phase 4 Task 26 threads the real bit through)
+- Modify: `cmd/evener-tui/hub_dashboard_view_test.go`
 
 **Interfaces:**
 - Consumes: `hubapi.StateWord(state string, askPending bool) string` (Task 4), `stateLabel(state string) string` (unchanged — still the internal normalized-key function).
@@ -1617,7 +1617,7 @@ git commit -m "feat(tui): rename StateProcessing->StateWorking, reassign palette
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-tui/hub_dashboard_view_test.go`:
+Append to `cmd/evener-tui/hub_dashboard_view_test.go`:
 
 ```go
 func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
@@ -1644,17 +1644,17 @@ func TestDisplayWord_UnifiedVocabulary(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui/... -run TestDisplayWord_UnifiedVocabulary -v`
+Run: `go test ./cmd/evener-tui/... -run TestDisplayWord_UnifiedVocabulary -v`
 Expected: FAIL — `displayWord` undefined.
 
 - [ ] **Step 3: Implement `displayWord` + rewrite `projectSummary`**
 
-In `cmd/serf-tui/hub_dashboard_view.go`, add near `stateLabel` (after its closing brace, line 578):
+In `cmd/evener-tui/hub_dashboard_view.go`, add near `stateLabel` (after its closing brace, line 578):
 
 ```go
 // displayWord returns the unified display word (Track A §1/§2) for a raw
 // wire state, normalizing via stateLabel first and then delegating to
-// hubapi.StateWord — the same table cmd/serf-hub's stateLabel uses, so the
+// hubapi.StateWord — the same table cmd/evener-hub's stateLabel uses, so the
 // TUI and the web can never independently drift on vocabulary.
 func displayWord(state string, askPending bool) string {
 	return hubapi.StateWord(stateLabel(state), askPending)
@@ -1685,9 +1685,9 @@ func projectSummary(project hubRow, rows []hubRow) string {
 }
 ```
 
-(`hubRow.askPending` does not exist until Phase 4 Task 26 — for this task, add a **temporary** unexported field stub so the file compiles: in `cmd/serf-tui/hub_model.go`, add `askPending bool` to the `hubRow` struct now, defaulted to its zero value everywhere it's constructed. Phase 4 Task 26 is then only a matter of *populating* this already-declared field from the wire, not adding it — reducing that later task's surface. Add `"primeradiant.com/evener/hubapi"` to `hub_dashboard_view.go`'s imports.)
+(`hubRow.askPending` does not exist until Phase 4 Task 26 — for this task, add a **temporary** unexported field stub so the file compiles: in `cmd/evener-tui/hub_model.go`, add `askPending bool` to the `hubRow` struct now, defaulted to its zero value everywhere it's constructed. Phase 4 Task 26 is then only a matter of *populating* this already-declared field from the wire, not adding it — reducing that later task's surface. Add `"primeradiant.com/evener/hubapi"` to `hub_dashboard_view.go`'s imports.)
 
-Add the field to `hubRow` in `cmd/serf-tui/hub_model.go` now:
+Add the field to `hubRow` in `cmd/evener-tui/hub_model.go` now:
 
 ```go
 type hubRow struct {
@@ -1710,13 +1710,13 @@ type hubRow struct {
 }
 ```
 
-Update `cmd/serf-tui/hub_session_view.go`'s badge line (currently line 29):
+Update `cmd/evener-tui/hub_session_view.go`'s badge line (currently line 29):
 
 ```go
 	badge := tuiprim.StatusBadge(stateColor(normalizedState), displayWord(state, m.detail.AskPending))
 ```
 
-Add `AskPending bool` to `hubSessionDetail` in `cmd/serf-tui/hub_types.go` (next to the existing `State string` field), and set it to `false` in `hubDetailFromThread` for now (Phase 4 Task 26 reads the real `thread.Serf.AskPending`):
+Add `AskPending bool` to `hubSessionDetail` in `cmd/evener-tui/hub_types.go` (next to the existing `State string` field), and set it to `false` in `hubDetailFromThread` for now (Phase 4 Task 26 reads the real `thread.Serf.AskPending`):
 
 ```go
 type hubSessionDetail struct {
@@ -1735,13 +1735,13 @@ In `hubDetailFromThread` (`hub_types.go`, currently building the `hubSessionDeta
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-tui/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-tui/... -v 2>&1 | tail -60`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_dashboard_view.go cmd/serf-tui/hub_dashboard_view_test.go cmd/serf-tui/hub_session_view.go cmd/serf-tui/hub_model.go cmd/serf-tui/hub_types.go
+git add cmd/evener-tui/hub_dashboard_view.go cmd/evener-tui/hub_dashboard_view_test.go cmd/evener-tui/hub_session_view.go cmd/evener-tui/hub_model.go cmd/evener-tui/hub_types.go
 git commit -m "feat(tui): displayWord unified vocabulary on status badge + project summary"
 ```
 
@@ -1832,7 +1832,7 @@ git commit -m "feat(hubapi): NeedsYouBand three-band ranking function"
 - Modify: `server/server.go`
 - Modify: `server/server_handlers.go`
 - Modify: `server/server_test.go`
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/serve.go`
 
 **Interfaces:**
 - Consumes: `func (s *Session) HasPendingAsk() bool` (`agent/session_tools_ask.go:67`, already shipped).
@@ -1922,7 +1922,7 @@ and overlay it after the existing `wmfn` block (after line 304's closing brace):
 	}
 ```
 
-In `cmd/serf/serve.go`, add the wiring next to the other `Set*Func` calls (after `srv.SetWorkMetricsFunc(...)`, line 353-356):
+In `cmd/evener/serve.go`, add the wiring next to the other `Set*Func` calls (after `srv.SetWorkMetricsFunc(...)`, line 353-356):
 
 ```go
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
@@ -1930,7 +1930,7 @@ In `cmd/serf/serve.go`, add the wiring next to the other `Set*Func` calls (after
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./server/... ./cmd/serf/... -v 2>&1 | tail -40`
+Run: `go test ./server/... ./cmd/evener/... -v 2>&1 | tail -40`
 Expected: PASS.
 
 - [ ] **Step 5: Regenerate + check the appwire doc**
@@ -1941,7 +1941,7 @@ Expected: PASS or a regenerated `docs/appwire-protocol.md` diff (new field is ad
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/server.go server/server_handlers.go server/server_test.go cmd/serf/serve.go docs/appwire-protocol.md
+git add server/server.go server/server_handlers.go server/server_test.go cmd/evener/serve.go docs/appwire-protocol.md
 git commit -m "feat(server): additive pending_ask bit on StatusInfo, daemon-truth via HasPendingAsk"
 ```
 
@@ -1950,10 +1950,10 @@ git commit -m "feat(server): additive pending_ask bit on StatusInfo, daemon-trut
 ## Task 20: Hub wire — prober decodes `pending_ask`, roster carries `PendingAsk`
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/prober.go`
-- Modify: `cmd/serf-hub/internal/hubcore/prober_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster.go`
-- Modify: `cmd/serf-hub/internal/hubcore/roster_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/prober.go`
+- Modify: `cmd/evener-hub/internal/hubcore/prober_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster.go`
+- Modify: `cmd/evener-hub/internal/hubcore/roster_test.go`
 
 The `Prober` interface's `Probe` method returns a plain 3-tuple `(sessionID, status string, ok bool)` today (not a struct), so this task's signature change touches every implementation and every call site — the production `StatusProber`, the roster's `probeResult`/`Refresh` loop, and any test fakes implementing `Prober`.
 
@@ -1963,7 +1963,7 @@ The `Prober` interface's `Probe` method returns a plain 3-tuple `(sessionID, sta
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `cmd/serf-hub/internal/hubcore/prober_test.go` (create the file if it doesn't exist, following the package's existing test-server pattern — check for an existing `prober_test.go` first):
+Add to `cmd/evener-hub/internal/hubcore/prober_test.go` (create the file if it doesn't exist, following the package's existing test-server pattern — check for an existing `prober_test.go` first):
 
 ```go
 func TestStatusProber_DecodesPendingAsk(t *testing.T) {
@@ -1993,7 +1993,7 @@ func TestStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
 }
 ```
 
-Append to `cmd/serf-hub/internal/hubcore/roster_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/roster_test.go`:
 
 ```go
 func TestRoster_CarriesPendingAskFromProber(t *testing.T) {
@@ -2012,12 +2012,12 @@ func TestRoster_CarriesPendingAskFromProber(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestStatusProber|TestRoster_CarriesPendingAsk' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestStatusProber|TestRoster_CarriesPendingAsk' -v`
 Expected: FAIL to compile — `Probe` returns 3 values today; `LiveEntry.PendingAsk` undefined.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/internal/hubcore/prober.go`, extend `statusInfo` and `Probe`:
+In `cmd/evener-hub/internal/hubcore/prober.go`, extend `statusInfo` and `Probe`:
 
 ```go
 // statusInfo is a partial mirror of server.StatusInfo (we only need
@@ -2058,7 +2058,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 }
 ```
 
-In `cmd/serf-hub/internal/hubcore/roster.go`, extend `LiveEntry` (currently lines 23-27):
+In `cmd/evener-hub/internal/hubcore/roster.go`, extend `LiveEntry` (currently lines 23-27):
 
 ```go
 type LiveEntry struct {
@@ -2138,13 +2138,13 @@ Fix every other `Prober` implementation in the package's tests (grep `func.*Prob
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-hub/... -v 2>&1 | tail -60`
 Expected: PASS — including a new assertion in `rosterFingerprint`'s own test (if one exists) or a new case added to it confirming an ask-only flip changes the fingerprint: grep `TestRosterFingerprint` or equivalent and add `{Status: "awaiting", PendingAsk: true}` vs `{Status: "awaiting", PendingAsk: false}` producing different hashes, following that test's existing style.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/prober.go cmd/serf-hub/internal/hubcore/prober_test.go cmd/serf-hub/internal/hubcore/roster.go cmd/serf-hub/internal/hubcore/roster_test.go
+git add cmd/evener-hub/internal/hubcore/prober.go cmd/evener-hub/internal/hubcore/prober_test.go cmd/evener-hub/internal/hubcore/roster.go cmd/evener-hub/internal/hubcore/roster_test.go
 git commit -m "feat(hub): prober decodes pending_ask; roster carries PendingAsk end to end"
 ```
 
@@ -2153,12 +2153,12 @@ git commit -m "feat(hub): prober decodes pending_ask; roster carries PendingAsk 
 ## Task 21: `hubcore.TreeNode.AskPending` → `hubapi.TreeNode.AskPending` (`ask_pending`)
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
 - Modify: `hubapi/types.go`
 - Modify: `hubapi/types_test.go`
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Modify: `cmd/serf-hub/web_api_tree_test.go`
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Modify: `cmd/evener-hub/web_api_tree_test.go`
 
 **Interfaces:**
 - Consumes: `LiveEntry.PendingAsk` (Task 20).
@@ -2166,7 +2166,7 @@ git commit -m "feat(hub): prober decodes pending_ask; roster carries PendingAsk 
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-hub/internal/hubcore/tree_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/tree_test.go`:
 
 ```go
 func TestNeedsYou_CarriesAskPendingFromLiveEntry(t *testing.T) {
@@ -2202,7 +2202,7 @@ func TestTreeNode_AskPendingRoundTrips(t *testing.T) {
 }
 ```
 
-Append to `cmd/serf-hub/web_api_tree_test.go`:
+Append to `cmd/evener-hub/web_api_tree_test.go`:
 
 ```go
 func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
@@ -2231,7 +2231,7 @@ func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./cmd/serf-hub/... ./hubapi/... -run 'AskPending' -v`
+Run: `go test ./cmd/evener-hub/... ./hubapi/... -run 'AskPending' -v`
 Expected: FAIL to compile — `AskPending` undefined on all three types.
 
 - [ ] **Step 3: Add the field to all three types + thread it through**
@@ -2242,7 +2242,7 @@ In `hubapi/types.go`, add to `TreeNode` (next to `Favorite`/`Rename`/`Live`):
 	AskPending bool `json:"ask_pending,omitempty"`
 ```
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add to `TreeNode` (currently lines 134-146, next to `State`):
+In `cmd/evener-hub/internal/hubcore/tree.go`, add to `TreeNode` (currently lines 134-146, next to `State`):
 
 ```go
 	AskPending bool // true while the daemon reports an unanswered ask_user question
@@ -2259,17 +2259,17 @@ In `BuildTreeAt`'s NeedsYou construction (currently lines 684-688), add `AskPend
 		}
 ```
 
-In `cmd/serf-hub/web_api_tree.go`'s `apiTreeNode` (currently lines 570-597), add `AskPending: n.AskPending,` to the `hubapi.TreeNode{...}` literal (next to `State`/`Kind`).
+In `cmd/evener-hub/web_api_tree.go`'s `apiTreeNode` (currently lines 570-597), add `AskPending: n.AskPending,` to the `hubapi.TreeNode{...}` literal (next to `State`/`Kind`).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... ./hubapi/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-hub/... ./hubapi/... -v 2>&1 | tail -60`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go hubapi/types.go hubapi/types_test.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go hubapi/types.go hubapi/types_test.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go
 git commit -m "feat(hub): ask_pending flows hubcore.TreeNode -> hubapi.TreeNode wire"
 ```
 
@@ -2278,8 +2278,8 @@ git commit -m "feat(hub): ask_pending flows hubcore.TreeNode -> hubapi.TreeNode 
 ## Task 22: `hubcore.AttentionEntry.askPending` + `Tick` diffs on an ask-only flip
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/attention.go`
-- Modify: `cmd/serf-hub/internal/hubcore/attention_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/attention.go`
+- Modify: `cmd/evener-hub/internal/hubcore/attention_test.go`
 
 Without this task's `Tick` change, a session whose `askPending` flips while its `Level` stays `"needs_you"` throughout (e.g. a second question arrives right after the first is answered, or vice versa) produces no `serf/attention/changed` diff — the client's loud-scope gating (Task 26) and row marker (Task 28) would then only refresh on the next unrelated level transition or a full tree refetch. `Tick` must treat an ask-only flip as a change too.
 
@@ -2289,7 +2289,7 @@ Without this task's `Tick` change, a session whose `askPending` flips while its 
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-hub/internal/hubcore/attention_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/attention_test.go`:
 
 ```go
 func TestDeriveAttention_CarriesAskPending(t *testing.T) {
@@ -2320,12 +2320,12 @@ func TestAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run 'TestDeriveAttention_CarriesAskPending|TestAttentionWatcher_TicksOnAskOnlyFlip' -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run 'TestDeriveAttention_CarriesAskPending|TestAttentionWatcher_TicksOnAskOnlyFlip' -v`
 Expected: FAIL — `AskPending` undefined; the second test also fails logically (0 payloads emitted) even once it compiles, since `Tick` only diffs on `Level`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/internal/hubcore/attention.go`, add to `AttentionEntry` (currently lines 17-23):
+In `cmd/evener-hub/internal/hubcore/attention.go`, add to `AttentionEntry` (currently lines 17-23):
 
 ```go
 type AttentionEntry struct {
@@ -2383,13 +2383,13 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -v 2>&1 | tail -60`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/attention.go cmd/serf-hub/internal/hubcore/attention_test.go
+git add cmd/evener-hub/internal/hubcore/attention.go cmd/evener-hub/internal/hubcore/attention_test.go
 git commit -m "feat(hub): AttentionEntry.askPending; Tick fires on an ask-only flip too"
 ```
 
@@ -2398,15 +2398,15 @@ git commit -m "feat(hub): AttentionEntry.askPending; Tick fires on an ask-only f
 ## Task 23: NeedsYou sort adopts `hubapi.NeedsYouBand`
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/hubcore/tree.go`
-- Modify: `cmd/serf-hub/internal/hubcore/tree_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree.go`
+- Modify: `cmd/evener-hub/internal/hubcore/tree_test.go`
 
 **Interfaces:**
 - Consumes: `hubapi.NeedsYouBand(state string, askPending bool) int` (Task 18), `TreeNode.AskPending` (Task 21).
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/internal/hubcore/tree_test.go`:
+Append to `cmd/evener-hub/internal/hubcore/tree_test.go`:
 
 ```go
 func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
@@ -2440,12 +2440,12 @@ func TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-hub/internal/hubcore/ -run TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove -v`
+Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestNeedsYou_AskPendingBandsBetweenErroredAndYourMove -v`
 Expected: FAIL — today's sort is errored-first then pure recency, so `01OLD_YOURMOVE` (oldest) sorts ahead of `01ASK`.
 
 - [ ] **Step 3: Replace the sort with the band function**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports (if not already added by Task 2), and replace the NeedsYou sort (currently lines 704-717):
+In `cmd/evener-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports (if not already added by Task 2), and replace the NeedsYou sort (currently lines 704-717):
 
 ```go
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
@@ -2464,13 +2464,13 @@ In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-hub/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-hub/... -v 2>&1 | tail -60`
 Expected: PASS — including the pre-existing `TestNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst` (unaffected: with `AskPending` false on both its fixtures, warning and awaiting both band at `0`, so ordering among them still falls through to recency exactly as before).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/tree.go cmd/serf-hub/internal/hubcore/tree_test.go
+git add cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go
 git commit -m "feat(hub): NeedsYou sort adopts the three-band hubapi.NeedsYouBand"
 ```
 
@@ -2484,10 +2484,10 @@ git commit -m "feat(hub): NeedsYou sort adopts the three-band hubapi.NeedsYouBan
 - Modify: `server/appwire_runtime.go`
 - Modify: `server/appwire_runtime_test.go`
 
-The web path (Tasks 19-23) travels through `/status` HTTP polling; the TUI reads `appwire.Thread` over JSON-RPC instead (`cmd/serf-tui/hub_types.go`'s `hubTreeFromThreads`/`hubNodeFromThread` build the TUI's local mirror directly from `[]appwire.Thread]`, never touching `hubapi.TreeNode`). This is a second, independent wire chain that needs its own field, sourced from the same `Server.pendingAskFn` Task 19 already wired up.
+The web path (Tasks 19-23) travels through `/status` HTTP polling; the TUI reads `appwire.Thread` over JSON-RPC instead (`cmd/evener-tui/hub_types.go`'s `hubTreeFromThreads`/`hubNodeFromThread` build the TUI's local mirror directly from `[]appwire.Thread]`, never touching `hubapi.TreeNode`). This is a second, independent wire chain that needs its own field, sourced from the same `Server.pendingAskFn` Task 19 already wired up.
 
 **Interfaces:**
-- Consumes: `Server.pendingAskFn` (Task 19, already wired to `getSession().HasPendingAsk()` in `cmd/serf/serve.go`).
+- Consumes: `Server.pendingAskFn` (Task 19, already wired to `getSession().HasPendingAsk()` in `cmd/evener/serve.go`).
 - Produces: `appwire.SerfThread.AskPending bool` (`json:"askPending,omitempty"`). Consumed by Task 25 (TUI reads it off `thread.Serf.AskPending`).
 
 - [ ] **Step 1: Write the failing tests**
@@ -2580,11 +2580,11 @@ git commit -m "feat(appwire): SerfThread.AskPending for the TUI's JSON-RPC wire 
 ## Task 25: TUI reads `AskPending` end to end — `hubRow`, `dashboardRowLess` band, real `displayWord` wiring
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_types.go`
-- Modify: `cmd/serf-tui/hub_dashboard.go`
-- Modify: `cmd/serf-tui/hub_session_view.go`
-- Modify: `cmd/serf-tui/hub_dashboard_view_test.go`
-- Modify: `cmd/serf-tui/dashboard_rows_test.go`
+- Modify: `cmd/evener-tui/hub_types.go`
+- Modify: `cmd/evener-tui/hub_dashboard.go`
+- Modify: `cmd/evener-tui/hub_session_view.go`
+- Modify: `cmd/evener-tui/hub_dashboard_view_test.go`
+- Modify: `cmd/evener-tui/dashboard_rows_test.go`
 
 `hubRow.askPending` and `hubSessionDetail.AskPending` were already declared as stub fields in Task 17 (defaulted false everywhere); this task populates them from the real wire value and wires the three-band sort.
 
@@ -2593,7 +2593,7 @@ git commit -m "feat(appwire): SerfThread.AskPending for the TUI's JSON-RPC wire 
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-tui/dashboard_rows_test.go`:
+Append to `cmd/evener-tui/dashboard_rows_test.go`:
 
 ```go
 func TestDashboardRowLess_AskPendingBandsAboveYourMove(t *testing.T) {
@@ -2605,7 +2605,7 @@ func TestDashboardRowLess_AskPendingBandsAboveYourMove(t *testing.T) {
 }
 ```
 
-Append to `cmd/serf-tui/hub_dashboard_view_test.go` (or wherever `hubNodeFromThread`/`hubDetailFromThread` are already tested — grep for their existing test coverage first):
+Append to `cmd/evener-tui/hub_dashboard_view_test.go` (or wherever `hubNodeFromThread`/`hubDetailFromThread` are already tested — grep for their existing test coverage first):
 
 ```go
 func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
@@ -2627,12 +2627,12 @@ func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./cmd/serf-tui/... -run 'AskPending' -v`
+Run: `go test ./cmd/evener-tui/... -run 'AskPending' -v`
 Expected: FAIL — `dashboardRowLess` has no band term; `hubTreeNode.AskPending` undefined; `hubDetailFromThread` still hardcodes `AskPending: false`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-tui/hub_types.go`, add `AskPending bool` to `hubTreeNode` (currently lines 24-38, next to `State`). In `hubNodeFromThread` (currently lines 159-185), add to the returned literal:
+In `cmd/evener-tui/hub_types.go`, add `AskPending bool` to `hubTreeNode` (currently lines 24-38, next to `State`). In `hubNodeFromThread` (currently lines 159-185), add to the returned literal:
 
 ```go
 		AskPending:  thread.Serf.AskPending,
@@ -2644,7 +2644,7 @@ In `hubDetailFromThread` (currently building the `hubSessionDetail{...}` literal
 		AskPending:          thread.Serf.AskPending,
 ```
 
-In `cmd/serf-tui/hub_dashboard.go`'s `addSession` closure (currently lines 90-140), add to the `hubRow{...}` literal (next to `state: n.State,`):
+In `cmd/evener-tui/hub_dashboard.go`'s `addSession` closure (currently lines 90-140), add to the `hubRow{...}` literal (next to `state: n.State,`):
 
 ```go
 			askPending:  n.AskPending,
@@ -2673,17 +2673,17 @@ func dashboardRowLess(a, b hubRow) bool {
 }
 ```
 
-In `cmd/serf-tui/hub_session_view.go`, the badge line already reads `m.detail.AskPending` (Task 17) — no further change needed here now that `hubDetailFromThread` populates the real value.
+In `cmd/evener-tui/hub_session_view.go`, the badge line already reads `m.detail.AskPending` (Task 17) — no further change needed here now that `hubDetailFromThread` populates the real value.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-tui/... -v 2>&1 | tail -60`
+Run: `go test ./cmd/evener-tui/... -v 2>&1 | tail -60`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_types.go cmd/serf-tui/hub_dashboard.go cmd/serf-tui/hub_session_view.go cmd/serf-tui/hub_dashboard_view_test.go cmd/serf-tui/dashboard_rows_test.go
+git add cmd/evener-tui/hub_types.go cmd/evener-tui/hub_dashboard.go cmd/evener-tui/hub_session_view.go cmd/evener-tui/hub_dashboard_view_test.go cmd/evener-tui/dashboard_rows_test.go
 git commit -m "feat(tui): AskPending flows thread -> hubRow -> dashboardRowLess band"
 ```
 
@@ -2692,8 +2692,8 @@ git commit -m "feat(tui): AskPending flows thread -> hubRow -> dashboardRowLess 
 ## Task 26: `loudScope` preference — default, migration, gating
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/notifications.js`
-- Create: `cmd/serf-hub/jstest/test-notifications-loudscope.js`
+- Modify: `cmd/evener-hub/assets/notifications.js`
+- Create: `cmd/evener-hub/jstest/test-notifications-loudscope.js`
 
 **Interfaces:**
 - Consumes: `ch.askPending` (the `AttentionChanged` payload field from Task 22, camelCase on the wire, read as-is in JS — no transform needed).
@@ -2701,7 +2701,7 @@ git commit -m "feat(tui): AskPending flows thread -> hubRow -> dashboardRowLess 
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/serf-hub/jstest/test-notifications-loudscope.js` (copy the JSDOM + `notifications.js` load pattern from `test-notifications-migration.js`):
+Create `cmd/evener-hub/jstest/test-notifications-loudscope.js` (copy the JSDOM + `notifications.js` load pattern from `test-notifications-migration.js`):
 
 ```js
 "use strict";
@@ -2753,12 +2753,12 @@ console.log("test-notifications-loudscope.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-notifications-loudscope.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js`
 Expected: FAIL — `loudScope` absent from `DEFAULT_PREFS`; version stays `"2"`; gating fires for every needs_you transition regardless of `askPending`.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/notifications.js`, extend `DEFAULT_PREFS` (currently line 27):
+In `cmd/evener-hub/assets/notifications.js`, extend `DEFAULT_PREFS` (currently line 27):
 
 ```js
   const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false, loudScope: "asks" };
@@ -2820,13 +2820,13 @@ Add the test-hook seam (near the module's existing `leader`/`summary` module-sco
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-notifications-loudscope.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — fix any pre-existing `test-notifications-migration.js`/`test-notifications-attention.js` case that hardcoded version `"2"` or the old unconditional gating, updating it to version `"3"` / the new loud-scope-aware behavior.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/notifications.js cmd/serf-hub/jstest/test-notifications-loudscope.js
+git add cmd/evener-hub/assets/notifications.js cmd/evener-hub/jstest/test-notifications-loudscope.js
 git commit -m "feat(web): loudScope preference — asks-by-default gating, versioned migration"
 ```
 
@@ -2835,14 +2835,14 @@ git commit -m "feat(web): loudScope preference — asks-by-default gating, versi
 ## Task 27: `loudScope` settings control
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/notifications.html`
-- Modify: `cmd/serf-hub/assets/settings.js`
+- Modify: `cmd/evener-hub/templates/partials/settings/notifications.html`
+- Modify: `cmd/evener-hub/assets/settings.js`
 
-The notifications settings section already lives in its own template file (`cmd/serf-hub/templates/partials/settings/notifications.html`) — the HTML-side per-section split some call this "Track 0 prep" already exists on this branch. The JS behavior file `cmd/serf-hub/assets/settings.js` is still monolithic (Track 0's JS-side split has not landed as of this branch's base commit `a2c5a0f7`); add the `loudScope` handler directly to `settings.js`'s existing `data-notif`-adjacent block for now. **If a per-section settings JS file (e.g. `settings-notifications.js`) exists by the time this task executes** (check `ls cmd/serf-hub/assets/settings*.js` first), add the handler there instead and skip editing the monolithic `settings.js`.
+The notifications settings section already lives in its own template file (`cmd/evener-hub/templates/partials/settings/notifications.html`) — the HTML-side per-section split some call this "Track 0 prep" already exists on this branch. The JS behavior file `cmd/evener-hub/assets/settings.js` is still monolithic (Track 0's JS-side split has not landed as of this branch's base commit `a2c5a0f7`); add the `loudScope` handler directly to `settings.js`'s existing `data-notif`-adjacent block for now. **If a per-section settings JS file (e.g. `settings-notifications.js`) exists by the time this task executes** (check `ls cmd/evener-hub/assets/settings*.js` first), add the handler there instead and skip editing the monolithic `settings.js`.
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-settings-loudscope.js` (copy the JSDOM bootstrap from a sibling `test-settings-*.js`, loading both `settings.js` and a DOM fragment containing the new radio markup from Step 3):
+Create `cmd/evener-hub/jstest/test-settings-loudscope.js` (copy the JSDOM bootstrap from a sibling `test-settings-*.js`, loading both `settings.js` and a DOM fragment containing the new radio markup from Step 3):
 
 ```js
 "use strict";
@@ -2867,12 +2867,12 @@ console.log("test-settings-loudscope.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-settings-loudscope.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js`
 Expected: FAIL — no handler matches `input[data-notif-radio]`; `stored.loudScope` is undefined.
 
 - [ ] **Step 3: Implement**
 
-Add the control to `cmd/serf-hub/templates/partials/settings/notifications.html` (inside the existing `<dl class="settings-table" data-notif-form>`, before or after the four existing `.row.editable` blocks):
+Add the control to `cmd/evener-hub/templates/partials/settings/notifications.html` (inside the existing `<dl class="settings-table" data-notif-form>`, before or after the four existing `.row.editable` blocks):
 
 ```html
   <div class="row editable">
@@ -2891,7 +2891,7 @@ Add the control to `cmd/serf-hub/templates/partials/settings/notifications.html`
   </div>
 ```
 
-Add the radio-commit handler to `cmd/serf-hub/assets/settings.js`, in the same `document.body.addEventListener("change", ...)` delegate (after the `data-notif` checkbox branch, before its closing `});`):
+Add the radio-commit handler to `cmd/evener-hub/assets/settings.js`, in the same `document.body.addEventListener("change", ...)` delegate (after the `data-notif` checkbox branch, before its closing `});`):
 
 ```js
     if (target.matches("input[type=radio][data-notif-radio]")) {
@@ -2920,13 +2920,13 @@ Reflect the stored value on settings-pane load, in `applySettingsState` (next to
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-settings-loudscope.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/notifications.html cmd/serf-hub/assets/settings.js cmd/serf-hub/jstest/test-settings-loudscope.js
+git add cmd/evener-hub/templates/partials/settings/notifications.html cmd/evener-hub/assets/settings.js cmd/evener-hub/jstest/test-settings-loudscope.js
 git commit -m "feat(web): loudScope settings control (questions & errors / everything)"
 ```
 
@@ -2935,13 +2935,13 @@ git commit -m "feat(web): loudScope settings control (questions & errors / every
 ## Task 28: Web row markers — `data-ask="true"` plumbed on the sidebar row
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js`
+- Modify: `cmd/evener-hub/assets/sidebar.js`
 
 Task 8 already made `buildRow`/`patchRow` choose the `questionWaiting` vs `yourMove` icon from `n.ask_pending` (with a stub reading `undefined`/falsy until now, since the wire field didn't exist yet — Task 21 added it). This task adds the explicit `data-ask` attribute the folded-in spec requires as its own hard requirement (independent of which icon rendered), so e2e/CSS/other consumers can select ask-pending rows without inspecting the icon.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-hub/jstest/test-sidebar-icons.js`:
+Append to `cmd/evener-hub/jstest/test-sidebar-icons.js`:
 
 ```js
 const askOnRow = window.SerfSidebarInternal.buildRow({ row_id: "x", ref: "local:01A", state: "awaiting", ask_pending: true, title: "t", session_id: "01A" });
@@ -2953,12 +2953,12 @@ assert.ok(!askOffRow.hasAttribute("data-ask"), "a your-move row must not carry d
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — `data-ask` never set.
 
 - [ ] **Step 3: Implement**
 
-In `cmd/serf-hub/assets/sidebar.js`'s `buildRow` (after the `if (n.favorite) a.setAttribute("data-favorite", "");` line):
+In `cmd/evener-hub/assets/sidebar.js`'s `buildRow` (after the `if (n.favorite) a.setAttribute("data-favorite", "");` line):
 
 ```js
     if (n.ask_pending) a.setAttribute("data-ask", "true");
@@ -2972,13 +2972,13 @@ In `patchRow` (after the existing `if (n.favorite) ... else ...` line):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-sidebar-icons.js && sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-sidebar-icons.js
+git add cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-icons.js
 git commit -m "feat(web): data-ask row marker on ask-pending sidebar rows"
 ```
 
@@ -2987,14 +2987,14 @@ git commit -m "feat(web): data-ask row marker on ask-pending sidebar rows"
 ## Task 29: TUI row marker — dashboard row shows the ask-pending bubble
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_dashboard_view.go`
-- Modify: `cmd/serf-tui/hub_dashboard_view_test.go`
+- Modify: `cmd/evener-tui/hub_dashboard_view.go`
+- Modify: `cmd/evener-tui/hub_dashboard_view_test.go`
 
 The `◆N` header badge (`needsYouBadge`, lines 173-182) already counts all of needs-you unconditionally and needs no change (folded-in spec: "keeps counting all needs-you"). This task adds a per-row marker to the dashboard's session-row rendering so an ask-pending row is visually distinguishable from a your-move row in the list, not just via band ordering.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `cmd/serf-tui/hub_dashboard_view_test.go`:
+Append to `cmd/evener-tui/hub_dashboard_view_test.go`:
 
 ```go
 func TestDashboardSessionRow_AskPendingMarker(t *testing.T) {
@@ -3010,7 +3010,7 @@ func TestDashboardSessionRow_AskPendingMarker(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui/... -run TestDashboardSessionRow_AskPendingMarker -v`
+Run: `go test ./cmd/evener-tui/... -run TestDashboardSessionRow_AskPendingMarker -v`
 Expected: FAIL — no `◆` present for an ask-pending row today (only the header badge shows one, not per-row).
 
 - [ ] **Step 3: Implement**
@@ -3028,13 +3028,13 @@ and prepend `marker` to the row's rendered title/text at the point the function 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./cmd/serf-tui/... -v 2>&1 | tail -40`
+Run: `go test ./cmd/evener-tui/... -v 2>&1 | tail -40`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_dashboard_view.go cmd/serf-tui/hub_dashboard_view_test.go
+git add cmd/evener-tui/hub_dashboard_view.go cmd/evener-tui/hub_dashboard_view_test.go
 git commit -m "feat(tui): per-row ask-pending marker in the dashboard list"
 ```
 
@@ -3202,7 +3202,7 @@ git commit -m "test(e2e): unified status vocabulary round-trip scenario card"
 **Files:**
 - Modify: `test/scenarios/ask-cross-session-notify.md`
 
-The card's step 5 and several "Sharp edges" bullets predate the WS3 sidebar rebuild (merge `f0030dbf`): `templates/partials/sidebar.html` no longer exists, there is no `/_partials/sidebar` route, and the sidebar is client-rendered from `GET /api/tree` JSON by `cmd/serf-hub/assets/sidebar.js`. Per the folded-in ask-tiering spec's hermetics batch item 4, this card needs its NeedsYou-tier check re-pointed at the real endpoint (no `HX-Request` header — `/api/tree` is a plain JSON API route, not an htmx partial) and its expected count corrected to account for **both** sessions now present in NeedsYou (this track's Task 23 band change doesn't add a session to the tier, only reorders it — the `(1)` vs `(2)` question from the handoff note is about Session B's own state, not this track's change; verify the actual live count at execution time rather than assuming). Also fold in the `loudScope` default assertion this track adds (Task 26): under the default `"asks"` scope, a *generic* your-move settle must not fire OS/sound, only an ask-pending or errored one does.
+The card's step 5 and several "Sharp edges" bullets predate the WS3 sidebar rebuild (merge `f0030dbf`): `templates/partials/sidebar.html` no longer exists, there is no `/_partials/sidebar` route, and the sidebar is client-rendered from `GET /api/tree` JSON by `cmd/evener-hub/assets/sidebar.js`. Per the folded-in ask-tiering spec's hermetics batch item 4, this card needs its NeedsYou-tier check re-pointed at the real endpoint (no `HX-Request` header — `/api/tree` is a plain JSON API route, not an htmx partial) and its expected count corrected to account for **both** sessions now present in NeedsYou (this track's Task 23 band change doesn't add a session to the tier, only reorders it — the `(1)` vs `(2)` question from the handoff note is about Session B's own state, not this track's change; verify the actual live count at execution time rather than assuming). Also fold in the `loudScope` default assertion this track adds (Task 26): under the default `"asks"` scope, a *generic* your-move settle must not fire OS/sound, only an ask-pending or errored one does.
 
 - [ ] **Step 1: Rewrite step 5 and the affected "Sharp edges" bullets**
 
@@ -3292,7 +3292,7 @@ git commit -m "fix(e2e): scenario-card hermetics batch — mechanics only, falsi
 - [ ] **Step 1: Run the full Go test suite**
 
 Run: `go test ./... 2>&1 | tail -80`
-Expected: PASS across every package this track touched (`hubapi`, `cmd/serf-hub/...`, `cmd/serf-tui/...`, `server`, `cmd/serf`, `appwire`).
+Expected: PASS across every package this track touched (`hubapi`, `cmd/evener-hub/...`, `cmd/evener-tui/...`, `server`, `cmd/evener`, `appwire`).
 
 - [ ] **Step 2: Run the full lint gate (includes `serf-namingcheck`, which per-task `golangci-lint` misses)**
 
@@ -3306,7 +3306,7 @@ Expected: PASS with no stale-doc diff (Tasks 19 and 24 already regenerated `docs
 
 - [ ] **Step 4: Run the full jstest suite**
 
-Run: `sh cmd/serf-hub/jstest/run-all.sh 2>&1 | tail -60`
+Run: `sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -60`
 Expected: every `test-*.js` exits 0, including every new/updated file this track added (`test-icons.js`, `test-sidebar-icons.js`, `test-style-palette.js`, `test-style-colorblind-shapes.js`, `test-notifications-palette.js`, `test-renderer-connection-banner.js`, `test-renderer-subagent-glyphs.js`, `test-renderer-format-plan-glyphs.js`, `test-renderer-needsyou-affordances.js`, `test-notifications-loudscope.js`, `test-settings-loudscope.js`).
 
 - [ ] **Step 5: Re-grep for conflict markers (repo process, post-any-merge hygiene)**
@@ -3316,7 +3316,7 @@ Expected: no output.
 
 - [ ] **Step 6: `go vet` every touched package (catches what `go build` alone misses in test files)**
 
-Run: `go vet ./hubapi/... ./cmd/serf-hub/... ./cmd/serf-tui/... ./server/... ./cmd/serf/... ./appwire/...`
+Run: `go vet ./hubapi/... ./cmd/evener-hub/... ./cmd/evener-tui/... ./server/... ./cmd/evener/... ./appwire/...`
 Expected: no output.
 
 This task has no commit of its own — it is the readiness gate before merging Track A per the design spec's merge order (Track 0 → **Track A** → B/C → D).

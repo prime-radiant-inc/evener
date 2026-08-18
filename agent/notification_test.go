@@ -648,7 +648,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 }
 
 // TestNotification_GoalContinuesInlineWithoutKickFunc is the IMPORTANT regression
-// guard for the kickFunc-nil stranding bug. A one-shot `serf run` (cmd/serf) never
+// guard for the kickFunc-nil stranding bug. A one-shot `serf run` (cmd/evener) never
 // wires a kickFunc, yet a restored session can carry an active goal and the model
 // can spawn a subagent (depth 1 by default). If a notification preempts the gate
 // and the design relied on settleGoalOnIdle to re-kick the goal, settleGoalOnIdle

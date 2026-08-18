@@ -69,7 +69,7 @@ func formatContentKinds(kinds []llm.ContentKind) string {
 }
 
 // modelSwitchEnumerationTimeout mirrors launchcheck's live model enumeration
-// budget (cmd/serf/internal/launchcheck/launchcheck.go's validateLaunchCheckModel)
+// budget (cmd/evener/internal/launchcheck/launchcheck.go's validateLaunchCheckModel)
 // for the analogous membership check SetModel performs.
 const modelSwitchEnumerationTimeout = 8 * time.Second
 
@@ -100,8 +100,8 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*p
 
 // validateModelSwitchMembership mirrors the launch policy's live-enumeration +
 // catalog-visibility model membership check
-// (cmd/serf/internal/launchcheck/launchcheck.go's validateLaunchCheckModel,
-// cmd/serf-hub/app_models.go's launchProviderAllowsUnreportedModels), with one
+// (cmd/evener/internal/launchcheck/launchcheck.go's validateLaunchCheckModel,
+// cmd/evener-hub/app_models.go's launchProviderAllowsUnreportedModels), with one
 // amendment per spec: a switch fails open (accepts) on ANY enumeration error
 // class — not just launchcheck's message allowlist — so dead credentials
 // never block a switch (those two files are cmd-internal and not importable

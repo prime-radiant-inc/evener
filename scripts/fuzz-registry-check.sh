@@ -11,5 +11,5 @@ trap 'rm -f "$registry"' EXIT
 bash "$repo_root/scripts/run-fuzz.sh" --list >"$registry"
 (
 	cd "$repo_root"
-	go run ./cmd/serf-fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
+	go run ./cmd/evener-fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
 )

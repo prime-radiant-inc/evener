@@ -5,7 +5,7 @@ card here whose value is entirely a **negative** assertion. A shell command
 prints an out-of-cwd path, a `../` traversal, an external URL, a missing file,
 a non-image, or an SVG; none of them may ever become a preview, and none of
 them may fail, blank, or error the tool row that printed them. The boundary is
-`fspaths.ResolveInRoot` (`cmd/serf-hub/internal/fspaths/paths.go#ResolveInRoot`) —
+`fspaths.ResolveInRoot` (`cmd/evener-hub/internal/fspaths/paths.go#ResolveInRoot`) —
 lexical containment *and* symlink-resolved containment, each independently
 sufficient — the same check `/doc/file` uses. Failing candidates are simply
 skipped (`output_images.go:74-77`), and a notification with nothing to add is
@@ -109,7 +109,7 @@ frontend (`660376f78`); "no thumbnail" now means no
 - **Nothing client-side may re-derive a preview from the text.** `ImageGallery`
   renders only `item.outputImages` and builds no URLs
   (`ImageGallery.tsx:1-16`); there is no shell-output parser in
-  `cmd/serf-hub/frontend/src`. Falsify: a thumb rendered for a path the wire
+  `cmd/evener-hub/frontend/src`. Falsify: a thumb rendered for a path the wire
   never described.
 
 ## Cleanup

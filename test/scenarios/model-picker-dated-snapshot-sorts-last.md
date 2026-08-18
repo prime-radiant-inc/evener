@@ -1,8 +1,8 @@
 # model-picker-dated-snapshot-sorts-last: bare family id before its dated snapshot, within a provider
 
 **What this covers**: Track B Tasks 4 (`sortModelEntriesDatedLast`,
-`cmd/serf-hub/web_spawn.go:226`, over `isDatedSnapshotModelID`, `:197`)
-and 11 (TUI `modelPickerItems`, `cmd/serf-tui/hub_commands.go:469-482`) —
+`cmd/evener-hub/web_spawn.go:226`, over `isDatedSnapshotModelID`, `:197`)
+and 11 (TUI `modelPickerItems`, `cmd/evener-tui/hub_commands.go:469-482`) —
 within one provider's group, a bare model id (e.g. `claude-opus-4-6`)
 must render before its dated snapshot (`claude-opus-4-6-20251101`),
 regardless of the order the live listing returned them in.
@@ -72,14 +72,14 @@ list.
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
    model`) as `modelPicker` controls
-   (`cmd/serf-hub/internal/launchconfig/schema.go:85,87`). Open the one
+   (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
 4. In a tmux session running `serf-tui --hub-addr 127.0.0.1:$PORT`,
    press `n` (opens the spawn form focused on Prompt,
-   `cmd/serf-tui/hub_keys.go:95`, `hub_spawn.go:300-311`), then
+   `cmd/evener-tui/hub_keys.go:95`, `hub_spawn.go:300-311`), then
    `BTab BTab` to reach the Model field (field order is
-   Prompt/Harness/Model/Dir, `cmd/serf-tui/hub_model.go:27-30`, and
+   Prompt/Harness/Model/Dir, `cmd/evener-tui/hub_model.go:27-30`, and
    focus wraps backwards through Dir — `advanceSpawnFocus`,
    `hub_spawn.go#advanceSpawnFocus`), then `Enter` to open the picker overlay;
    `capture-pane`.
@@ -95,7 +95,7 @@ list.
   re-sorting, which it must not do.
 - **Step 4**: under the provider's uppercased group header
   (`strings.ToUpper(item.Group)`,
-  `cmd/serf-tui/internal/tuipick/model_picker.go:165-167`) the bare row
+  `cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) the bare row
   precedes the dated row.
 - Note the display names are prettified and the dated suffix is
   *stripped from the label*, so the two rows read identically
@@ -132,7 +132,7 @@ Investigated and ruled out:
   including `qwen/qwen3.5-plus-20260420` which *does* match the 8-digit
   dated regex) was ruled out one layer further upstream:
   `launchCheckModelVisible`
-  (`cmd/serf/internal/launchcheck/launchcheck.go#launchCheckModelVisible`) filters every
+  (`cmd/evener/internal/launchcheck/launchcheck.go#launchCheckModelVisible`) filters every
   `openrouter`-tagged model to ones with an exact embedded-catalog match
   AND `SupportsTools` (`:286-288`) — none of the real openrouter ids
   (including the qwen dated pair) satisfy that filter, so they never
@@ -141,22 +141,22 @@ Investigated and ruled out:
 Given no live path existed, the rule was verified as passing, on that
 build, via:
 
-- `TestIsDatedSnapshotModelID` (`cmd/serf-hub/app_models_test.go#TestIsDatedSnapshotModelID`).
+- `TestIsDatedSnapshotModelID` (`cmd/evener-hub/app_models_test.go#TestIsDatedSnapshotModelID`).
 - `TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`
-  (`cmd/serf-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`) — asserts
+  (`cmd/evener-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`) — asserts
   `modelDescriptorsToAPIModels([{anthropic, claude-opus-4-6-20251101},
   {anthropic, claude-opus-4-6}, {openai, gpt-5.2}], nil)` returns the
   anthropic group in order `[claude-opus-4-6, claude-opus-4-6-20251101]`
   regardless of input order.
 - `TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`
-  (`cmd/serf-tui/hub_model_picker_items_test.go#TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`) — the same
+  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`) — the same
   assertion for the TUI's `modelPickerItems`.
 
 Both are still the fallback when no dated pair is reachable:
 
 ```bash
-go test ./cmd/serf-hub/ -run TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast
-go test ./cmd/serf-tui/ -run TestModelPickerItems_SortsDatedSnapshotLastWithinProvider
+go test ./cmd/evener-hub/ -run TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast
+go test ./cmd/evener-tui/ -run TestModelPickerItems_SortsDatedSnapshotLastWithinProvider
 ```
 
 Step 1 above is the part of that gap the rewrite closes: it needs a
@@ -191,7 +191,7 @@ remove your `$run` dir. Nothing is spawned by this card.
   by mapping over the scoped list, so the scoped order wins
   (`widgets/modelCatalog/scopedCatalog.ts:17-29`,
   `panes/spawn/ModelField.tsx:33-46`). `model/list` returns
-  `serfLaunchModelList`'s data untouched (`cmd/serf-hub/app_models.go:76-81`);
+  `serfLaunchModelList`'s data untouched (`cmd/evener-hub/app_models.go:76-81`);
   the launch check sorts models by raw id within a provider
   (`launchcheck.go:175`). For a bare/dated *pair* that by-id sort gives
   the same answer (the bare id is a prefix, so it sorts first), which is

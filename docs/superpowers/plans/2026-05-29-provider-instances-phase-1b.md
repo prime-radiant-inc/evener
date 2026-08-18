@@ -29,7 +29,7 @@ Current `InstanceConfig{Name,Type,APIStyle,BaseURL,APIKey}` and `Config{Default,
 
 - [ ] **Step 1: failing test** — `Load([]byte)` parses a `providers.toml` fixture (schema=1, default="work", `[instances.work]` type="openai" api_style="responses" api_key="sk-…", `[instances.kimi-corp]` type="kimi" base_url="…" quirks="kimi-k2.5") into a `Config`; round-trips; rejects (a) duplicate names, (b) a name containing `/`, (c) a non-lowercase name, (d) an unknown `type`, (e) a `default` naming no instance.
 - [ ] **Step 2:** run → fail.
-- [ ] **Step 3:** implement `Load(data []byte) (Config, error)` (and a `LoadFile(path)` that returns `(Config, bool, error)` — bool=exists) using the repo's TOML lib (match what `cmd/serf-hub/config.go`/`credentials` use). Validate: unique lowercased names, no `/`, known `Type`, `apiStyle` only for `openai`, `default` resolves (else first by sorted name). Add `Quirks` to `InstanceConfig`.
+- [ ] **Step 3:** implement `Load(data []byte) (Config, error)` (and a `LoadFile(path)` that returns `(Config, bool, error)` — bool=exists) using the repo's TOML lib (match what `cmd/evener-hub/config.go`/`credentials` use). Validate: unique lowercased names, no `/`, known `Type`, `apiStyle` only for `openai`, `default` resolves (else first by sorted name). Add `Quirks` to `InstanceConfig`.
 - [ ] **Step 4:** run → pass. `go build ./...`.
 - [ ] **Step 5:** commit `feat(providerconfig): providers.toml schema + loader (PRI-1880)`.
 
@@ -69,7 +69,7 @@ The thin wrappers (kimi/glm/openrouter→openaicompat; minimax/openrouter-anthro
 
 ## Task 5: config-aware profile resolver
 
-**Files:** `agent/resolve.go` (new) or extend the closure; `cmdutil/cmdutil.go`; `cmd/serf/serve.go`, `cmd/serf/run.go` (+ tests).
+**Files:** `agent/resolve.go` (new) or extend the closure; `cmdutil/cmdutil.go`; `cmd/evener/serve.go`, `cmd/evener/run.go` (+ tests).
 
 The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config-aware: given the loaded `Config`, resolve an instance name → build the type's profile via the constructor with `id=instanceName` (via `WithProviderID`), the instance's `apiStyle`/`baseURL`/context.
 
@@ -81,7 +81,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 ## Task 6: the load-or-env helper; wire all client consumers
 
-**Files:** a shared helper (e.g. `cmdutil` or a small `internal/providerload`); `cmd/serf/serve.go`, `run.go`, `cmd/serf-hub/web.go`, `cmd/serf/launch_check.go`, `llm/generate.go` `DefaultClient` (+ tests).
+**Files:** a shared helper (e.g. `cmdutil` or a small `internal/providerload`); `cmd/evener/serve.go`, `run.go`, `cmd/evener-hub/web.go`, `cmd/evener/launch_check.go`, `llm/generate.go` `DefaultClient` (+ tests).
 
 - [ ] **Step 1: failing test** — the helper returns `(*llm.Client, providerconfig.Config, hasConfig bool)`: when `$hubStateRoot/providers.toml` exists → `NewFromProviders` + the config + true; else → `NewFromEnv` + identity `NameToTag` + false. The path comes from `providerconfig.DefaultStateRoot()`/`SERF_PROVIDERS_CONFIG`.
 - [ ] **Step 2:** run → fail.
@@ -91,7 +91,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 ## Task 7: per-instance OAuth
 
-**Files:** `internal/auth/openai/storage.go`, the openai adapter OAuth resolution, `cmd/serf-hub/app_auth.go`, `cmd/serf/openai_login.go`, `cmd/serf-hub/spawn.go validateProviderCredentials` (+ tests).
+**Files:** `internal/auth/openai/storage.go`, the openai adapter OAuth resolution, `cmd/evener-hub/app_auth.go`, `cmd/evener/openai_login.go`, `cmd/evener-hub/spawn.go validateProviderCredentials` (+ tests).
 
 - [ ] **Step 1: failing tests** — `AuthFilePath(stateHome, instanceName)` → `$stateHome/serf/auth/<instanceName>.json`; default `openai` instance keeps `auth/openai.json`; `LoadAuth/SaveAuth/DeleteAuth` round-trip per instance; `AuthRecord.Validate` accepts a non-`openai`-named openai-tag instance (drop the hardcoded `Provider=="openai"` check); a custom openai instance `work` resolves its OAuth from `auth/work.json`.
 - [ ] **Step 2:** run → fail.
@@ -101,7 +101,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 ## Task 8: spawn `SERF_PROVIDERS_CONFIG`
 
-**Files:** `internal/launchconfig/env.go`, `cmd/serf-hub/spawn.go`, the daemon load helper (Task 6) (+ tests).
+**Files:** `internal/launchconfig/env.go`, `cmd/evener-hub/spawn.go`, the daemon load helper (Task 6) (+ tests).
 
 - [ ] **Step 1: failing tests** — `launchconfig.ToEnv` sets `SERF_PROVIDERS_CONFIG=<path>` when the hub has a config; a spawned `serf serve` and the `serf launch-check` subprocess both load it (the load helper consults `SERF_PROVIDERS_CONFIG` first, Task 6); `validateProviderCredentials` resolves the instance set (not the fixed maps) when a config exists.
 - [ ] **Step 2:** run → fail.
@@ -111,7 +111,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 ## Task 9: re-key the deferred behavior filters via `NameToTag`
 
-**Files:** `cmd/serf/launch_check.go` (the `openrouter-anthropic` skip + `openrouter` tools filter), `cmd/serf-hub/web.go` (picker filters), `cmd/serf-hub/app_rpc.go launchProviderAllowsUnreportedModels` (+ tests). May add a `Client.BehaviorTagOf(name)` accessor (identity fallback).
+**Files:** `cmd/evener/launch_check.go` (the `openrouter-anthropic` skip + `openrouter` tools filter), `cmd/evener-hub/web.go` (picker filters), `cmd/evener-hub/app_rpc.go launchProviderAllowsUnreportedModels` (+ tests). May add a `Client.BehaviorTagOf(name)` accessor (identity fallback).
 
 - [ ] **Step 1: failing tests** — with a config where instance `or-work` has type `openrouter`, the launch-check/picker filters that today match `provider=="openrouter"` fire for `or-work` (via `NameToTag`/`BehaviorTagOf`); a renamed `openrouter-anthropic` instance is still skipped in model enumeration by tag.
 - [ ] **Step 2:** run → fail.

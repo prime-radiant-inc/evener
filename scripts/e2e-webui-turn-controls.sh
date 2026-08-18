@@ -228,11 +228,11 @@ go build -o "$run/fakellm" "$repo_root/test/e2e/fakellm/cmd" || {
 	echo "build fakellm failed" >&2
 	exit 1
 }
-go build -o "$run/serf" "$repo_root/cmd/serf" || {
+go build -o "$run/serf" "$repo_root/cmd/evener" || {
 	echo "build serf failed" >&2
 	exit 1
 }
-go build -o "$run/serf-hub" "$repo_root/cmd/serf-hub" || {
+go build -o "$run/serf-hub" "$repo_root/cmd/evener-hub" || {
 	echo "build serf-hub failed" >&2
 	exit 1
 }
@@ -246,8 +246,8 @@ mkdir -p "$HOME/.serf"
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
 # the header above promises isolation. SERF_PROVIDERS_CONFIG belongs in this
-# list above all: it outranks $HOME/.serf/providers.toml (cmd/serf-hub/main.go,
-# cmd/serf-hub/internal/launchconfig/env.go), so leaving it set would load the
+# list above all: it outranks $HOME/.serf/providers.toml (cmd/evener-hub/main.go,
+# cmd/evener-hub/internal/launchconfig/env.go), so leaving it set would load the
 # operator's real providers instead of fakellm — a network call and a paid
 # request out of a fixture whose whole point is that neither happens.
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME

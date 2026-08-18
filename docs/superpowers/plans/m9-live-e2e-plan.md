@@ -36,7 +36,7 @@ By M9 the artifact contains, all merged to integration:
 
 ### The flag's fate — verified
 
-`cmd/serf-hub/webnext.go:16` today is `func newWebEnabled() bool { return
+`cmd/evener-hub/webnext.go:16` today is `func newWebEnabled() bool { return
 os.Getenv("SERF_HUB_WEB") == "new" }`, gating 5 page-route sites (`web.go:226`, `web_workspace.go:45`
 & `:158`, `web_settings.go:46`, `web_launchconfig.go:8`). The M10 flip **deletes** `newWebEnabled()`
 and makes those 5 sites unconditional `serveSPAIndex` (kill-list §3, `webnext.go` KEEP-list). **After
@@ -45,7 +45,7 @@ the flip `SERF_HUB_WEB` is read nowhere — it becomes dead/no-op.** Consequence
   live proofs required `SERF_HUB_WEB=new` because they ran pre-flip; that requirement is gone.)
 - Setting `SERF_HUB_WEB=new`, `=anything`, or leaving it unset must all behave **identically** — S7
   asserts this (the env var no longer branches anything).
-- `cmd/serf-hub/webnext_test.go` currently pins legacy-vs-new parity under `SERF_HUB_WEB=new`; the
+- `cmd/evener-hub/webnext_test.go` currently pins legacy-vs-new parity under `SERF_HUB_WEB=new`; the
   deletion updates/removes those tests. S7's Go-gate re-run catches any breakage.
 
 ## 2. Mission and the dedup principle
@@ -73,13 +73,13 @@ suite says what the close already proved and what M9 adds on top.
 ## 3. Isolation recipe (every suite obeys this)
 
 The host-global-flock lesson is load-bearing: `serf-hub` takes a **host-global flock at
-`$HOME/.serf/hub.lock`** (`cmd/serf-hub/main.go:133-135`, "single hub per host"). Two hubs under the
+`$HOME/.serf/hub.lock`** (`cmd/evener-hub/main.go:133-135`, "single hub per host"). Two hubs under the
 same `$HOME` cannot coexist, and a parallel suite that shares `$HOME` will collide (W5/W6 closes hit
 exactly this against each other). Therefore:
 
 - **Build once, centrally.** The controller builds the artifact **once** at M9 kickoff:
-  `npm run build` → `git restore dist/PLACEHOLDER` → `go build -o <shared>/serf-hub ./cmd/serf-hub`
-  (embeds the fresh dist) and `go build -o <shared>/serf ./cmd/serf` (for hub-spawn + the TUI in S7).
+  `npm run build` → `git restore dist/PLACEHOLDER` → `go build -o <shared>/serf-hub ./cmd/evener-hub`
+  (embeds the fresh dist) and `go build -o <shared>/serf ./cmd/evener` (for hub-spawn + the TUI in S7).
   Every suite runs **that** binary and confirms it is the fresh one (skill principle 1: the #1 e2e
   mistake is testing a stale process).
 - **Per-suite fake `$HOME`.** Each suite exports `HOME=<scratch>/s{N}-home`, giving it its own

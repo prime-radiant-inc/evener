@@ -33,8 +33,8 @@ Two plugin-marketplace pain points, raised together:
 
 ## Part 1 — Browse becomes a marketplace → plugin tree
 
-All UI, client-side, in `cmd/serf-hub/templates/partials/settings/plugins-manager.html` (the pane
-is fully rendered by its inline `<script>`); RPCs via `cmd/serf-hub/assets/plugins.js`. No backend
+All UI, client-side, in `cmd/evener-hub/templates/partials/settings/plugins-manager.html` (the pane
+is fully rendered by its inline `<script>`); RPCs via `cmd/evener-hub/assets/plugins.js`. No backend
 change for Part 1 — it reuses the existing `serf/marketplace/list`, `serf/marketplace/browse`,
 `serf/plugin/list`, `serf/plugin/install` RPCs.
 
@@ -157,7 +157,7 @@ marketplace entry's manifest fields (`mcpServers`, `commands`, `agents`, `hooks`
 
 ## Testing
 
-- **Part 1 (jstest, `cmd/serf-hub/jstest`):** tree render (marketplace nodes from `list`, expand →
+- **Part 1 (jstest, `cmd/evener-hub/jstest`):** tree render (marketplace nodes from `list`, expand →
   plugins from `browse`); lazy-load (browse called only on first expand, cached after); per-node
   loading + error states; install-state badge vs Install button (against a mocked `plugin/list`);
   inline install flips the row; the filter (matches across marketplaces, auto-expand, empty-result,

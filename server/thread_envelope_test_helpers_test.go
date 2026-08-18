@@ -8,7 +8,7 @@ import (
 
 // stubThreadEnvelopeSource is a test's stand-in for the live session behind the
 // thread envelope. It is the production seam (ThreadEnvelopeSource), not a mock
-// of anything internal: cmd/serf installs one over agent.Session, and a test
+// of anything internal: cmd/evener installs one over agent.Session, and a test
 // installs this one, so both go through the same sampler and the same store.
 //
 // Zero value reports the same thing a daemon with nothing to say reports.

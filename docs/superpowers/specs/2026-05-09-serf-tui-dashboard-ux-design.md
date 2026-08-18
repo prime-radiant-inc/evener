@@ -171,7 +171,7 @@ assistant
   I found the current hub model returns to dashboard on esc. That conflicts with
   transcript browse and fork behavior.
 
-tool · read_file · cmd/serf-tui/hub_model.go:180 · 24 lines
+tool · read_file · cmd/evener-tui/hub_model.go:180 · 24 lines
 
 user
   a is closest. but... g d doesn't make sense. this thing isn't modal like that?

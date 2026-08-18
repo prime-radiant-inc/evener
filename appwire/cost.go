@@ -9,8 +9,8 @@ import (
 // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
 // returning nil when every total (including CacheReadTokens) is zero so
 // callers hide the usage cluster rather than render ↑0 ↓0 — the established
-// WS2 convention (mirrors cmd/serf/serve.go's serfUsageFromLLM and
-// cmd/serf-hub's serfUsageFromCumulative; this is the appwire-level home the
+// WS2 convention (mirrors cmd/evener/serve.go's serfUsageFromLLM and
+// cmd/evener-hub's serfUsageFromCumulative; this is the appwire-level home the
 // other two should eventually delegate to).
 func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
 	cacheRead := int64(0)

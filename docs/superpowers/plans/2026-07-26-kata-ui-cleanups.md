@@ -21,8 +21,8 @@
 ### Task 1: Preserve the steering kind on notification leftovers (ghv3)
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -30,7 +30,7 @@ Add a mixed steer fixture containing a valid `<job-notification>` block followed
 
 - [ ] **Step 2: Run the focused test and verify the expected failure**
 
-Run `npm test -- --run src/panes/session/transcript/messages/SteeringItem.test.tsx -t "mixed notification"` from `cmd/serf-hub/frontend`. It must fail because the notification branch currently hardcodes `System steered`.
+Run `npm test -- --run src/panes/session/transcript/messages/SteeringItem.test.tsx -t "mixed notification"` from `cmd/evener-hub/frontend`. It must fail because the notification branch currently hardcodes `System steered`.
 
 - [ ] **Step 3: Implement the minimal fix**
 
@@ -65,12 +65,12 @@ Commit the two-document cleanup with a detailed message naming arx3 and the supe
 ### Task 3: Scope both ThemeFlip panes to their intended themes (zscn)
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/dev/ThemeFlip.tsx`
-- Test: `cmd/serf-hub/frontend/src/dev/ThemeFlip.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/styles/tokens.css`
-- Test: `cmd/serf-hub/frontend/src/styles/token-contract.test.ts`
-- Test: `cmd/serf-hub/frontend/src/styles/display-gates.test.ts`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/zscn-theme-flip-dark-surface/{case.json,harness.html,assert.mjs}`
+- Modify: `cmd/evener-hub/frontend/src/dev/ThemeFlip.tsx`
+- Test: `cmd/evener-hub/frontend/src/dev/ThemeFlip.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/styles/tokens.css`
+- Test: `cmd/evener-hub/frontend/src/styles/token-contract.test.ts`
+- Test: `cmd/evener-hub/frontend/src/styles/display-gates.test.ts`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/zscn-theme-flip-dark-surface/{case.json,harness.html,assert.mjs}`
 
 - [ ] **Step 1: Write the failing behavioral test**
 
@@ -95,11 +95,11 @@ Commit the component and behavioral contract with a detailed message naming zscn
 ### Task 4: Remove the export-only parser surface (5ev7)
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/steeringClassify.ts`
 
 - [ ] **Step 1: Verify the consumer boundary**
 
-Run `rg -n "stripSystemReminder" cmd/serf-hub/frontend/src` and confirm the declaration plus its in-module call are the only occurrences. Keep parser tests exercising `parseSteeringNotifications`, not the removed helper.
+Run `rg -n "stripSystemReminder" cmd/evener-hub/frontend/src` and confirm the declaration plus its in-module call are the only occurrences. Keep parser tests exercising `parseSteeringNotifications`, not the removed helper.
 
 - [ ] **Step 2: Remove only the export modifier**
 
@@ -116,9 +116,9 @@ Commit the export cleanup with a detailed message naming 5ev7 and the public par
 ### Task 5: Give StreamingText an overridable quiet-ink hook (gfaj)
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/streamingtext.module.css`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/thinkblock.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/streamingtext.module.css`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/thinkblock.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.test.tsx`
 
 - [ ] **Step 1: Write the failing cross-file contract**
 

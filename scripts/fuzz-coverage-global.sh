@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fuzz-coverage-global.sh replays the registry-audited deterministic fuzz corpus
 # into one canonical self-coverage profile per production package, then delegates
-# strict whole-module accounting to cmd/serf-fuzzcov.
+# strict whole-module accounting to cmd/evener-fuzzcov.
 #
 # This deliberately does not run `go test ./... -coverpkg=./...`. Every local
 # fuzz surface runs in its owning package only, so a package's profile has the
@@ -608,7 +608,7 @@ done <"$groups"
 [ -s "$global_manifest" ] || die "internal error: no package profiles were produced"
 
 fuzzcov_args=(
-	run ./cmd/serf-fuzzcov
+	run ./cmd/evener-fuzzcov
 	-global-manifest "$global_manifest"
 	-repo-root "$repo_root"
 	-global-exclusions "$exclusions_file"

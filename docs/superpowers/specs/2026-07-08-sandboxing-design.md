@@ -235,7 +235,7 @@ Everything flows through `execenv.ExecutionEnvironment` →
 
 1. **Policy carrier**: `SandboxPolicy` (mode, resolved roots, denylist incl.
    pseudo-fs, net, backend, env-floor, cache-strategy) on
-   `LocalExecutionEnvironment`; constructed at `cmd/serf/run.go:177` /
+   `LocalExecutionEnvironment`; constructed at `cmd/evener/run.go:177` /
    `serve.go:203`.
 2. **Config/flags**: `Sandbox`+`SandboxNet` on `SessionConfig`
    (`session_config.go:20`); `--sandbox`/`--sandbox-net`; denylist/root
@@ -319,7 +319,7 @@ interactive only:
 ## Validation
 
 - **Adversarial escape suite** (named deliverable, extends
-  `cmd/serf-hub/sandbox_test.go`'s containment invariant): symlink-out (file
+  `cmd/evener-hub/sandbox_test.go`'s containment invariant): symlink-out (file
   tools + shell), **TOCTOU symlink-swap race during read/write/rename/apply_patch
   (concurrent job)**, **`read_file("/proc/<serf-pid>/environ")` + `/proc/1/root`
   + `/proc/<pid>/root` aliasing** (expect denied both layers), fd/root aliasing,

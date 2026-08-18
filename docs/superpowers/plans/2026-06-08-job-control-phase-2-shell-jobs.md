@@ -653,7 +653,7 @@ Expected: all modules PASS; lint clean (golangci ×4 + namingcheck/internalcheck
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+go build -o /tmp/serf ./cmd/evener
 . "$PWD/.env"
 # In a scratch dir, run serf and ask it to start a background sleep, then job_list / job_read_output / job_stop.
 ```

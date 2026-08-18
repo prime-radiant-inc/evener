@@ -39,7 +39,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
 
       - name: Build archive
         env:

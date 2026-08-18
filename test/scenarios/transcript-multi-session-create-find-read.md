@@ -17,7 +17,7 @@ cross-session find/read seam working end to end.
   agents running this card at once share nothing:
   ```bash
   run=$(mktemp -d -t serf-e2e-xsession-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   export XDG_STATE_HOME="$run/state"
   ```
   The exported state home keeps every session this card writes out of

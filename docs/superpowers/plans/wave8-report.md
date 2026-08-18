@@ -277,8 +277,8 @@ and landed (MW-B `770800fe8`, MW-A `4e6936fcf`; the plan's own MW-B adjudication
 
 ## Verification (all gates green)
 
-Frontend (from `cmd/serf-hub/frontend`): `npx tsc --noEmit` EXIT 0 → `npx vitest run` (bare) **243
+Frontend (from `cmd/evener-hub/frontend`): `npx tsc --noEmit` EXIT 0 → `npx vitest run` (bare) **243
 files / 3474 tests, 0 failed** (baseline 3475; net −1 from the micro-items: −2 `modelLabel`, +1
 observer) → `npm run lint` (biome ci) EXIT 0 → `npm run build` EXIT 0, `dist/PLACEHOLDER` restored,
-tree clean. Go (worktree root): `go build ./...` EXIT 0; `go test ./cmd/serf-hub/...` — all 11 packages
+tree clean. Go (worktree root): `go build ./...` EXIT 0; `go test ./cmd/evener-hub/...` — all 11 packages
 `ok`.

@@ -126,8 +126,8 @@ Toil continues providing role-specific instructions via stdin. The `worker` pers
 | `agent/prompt_resolver.go` | `ResolveSystemPromptWithSources` loads `core.md` instead of `base.md`; new function to compose persona |
 | `agent/session.go` | `buildInitialSystemPrompt`: use persona composition for both top-level and subagent paths; new `AgentName` config field |
 | `agent/subagents.go` | Use `core.md` + agent persona instead of `subagent_base.md` + agent SystemPrompt |
-| `cmd/serf/main.go` | Add `--agent` flag |
-| `cmd/serf/run.go` | Wire `--agent` to `SessionConfig.AgentName` |
+| `cmd/evener/main.go` | Add `--agent` flag |
+| `cmd/evener/run.go` | Wire `--agent` to `SessionConfig.AgentName` |
 
 ## What does NOT change
 
@@ -177,7 +177,7 @@ Toil continues providing role-specific instructions via stdin. The `worker` pers
 ### Step 5: Add AgentName to SessionConfig and --agent flag
 
 - [ ] Add `AgentName string` field to `SessionConfig`
-- [ ] Add `--agent` flag to `cmd/serf/main.go` and wire through `run.go`
+- [ ] Add `--agent` flag to `cmd/evener/main.go` and wire through `run.go`
 - [ ] Agent name lookup: check built-in agents first, then plugin agents
 
 ### Step 6: Update prompt_resolver.go

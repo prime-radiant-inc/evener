@@ -353,7 +353,7 @@ serf-hub  # default 127.0.0.1:9180
 
 Open `http://127.0.0.1:9180` in your browser.
 For production-style setup, credentials, Codex app-server sources, and smoke
-checks, see [`cmd/serf-hub/README.md`](cmd/serf-hub/README.md).
+checks, see [`cmd/evener-hub/README.md`](cmd/evener-hub/README.md).
 
 ### What's there
 
@@ -410,7 +410,7 @@ The repo enforces a single naming rule across wire formats:
 - **TOML tags and keys** must be `snake_case`.
 - **CLI flags** are `kebab-case` (enforced at the flag registry).
 
-Run the linter via `make lint-naming` or directly with `go run ./cmd/serf-namingcheck`. CI runs it after `go vet`. The check is fast (< 1s on this tree) and exits non-zero on violations. A single field/key can opt out with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML) marker on the preceding line — use sparingly, and explain why.
+Run the linter via `make lint-naming` or directly with `go run ./cmd/evener-namingcheck`. CI runs it after `go vet`. The check is fast (< 1s on this tree) and exits non-zero on violations. A single field/key can opt out with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML) marker on the preceding line — use sparingly, and explain why.
 
 ## Acknowledgments
 

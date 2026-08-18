@@ -731,9 +731,9 @@ git commit -m "test: add ATIF converter tests for thinking, checkpoint, summary,
 **Files:**
 - Modify: `agent/session.go:59-160` (add ExportATIFPath to SessionConfig)
 - Modify: `agent/session.go:680-744` (add ATIF export to Close)
-- Modify: `cmd/serf/main.go:33-95` (add flag)
-- Modify: `cmd/serf/run.go:20-49` (add to runConfig)
-- Modify: `cmd/serf/run.go:158-178` (pass to SessionConfig)
+- Modify: `cmd/evener/main.go:33-95` (add flag)
+- Modify: `cmd/evener/run.go:20-49` (add to runConfig)
+- Modify: `cmd/evener/run.go:158-178` (pass to SessionConfig)
 
 **Step 1: Write a test that verifies ATIF export from transcript on disk**
 
@@ -849,13 +849,13 @@ Note: `s.config.Depth == 0` ensures only root sessions export (matching the desi
 
 **Step 4: Add the CLI flag**
 
-In `cmd/serf/main.go`, add after `reasoningEffort` flag (around line 46):
+In `cmd/evener/main.go`, add after `reasoningEffort` flag (around line 46):
 
 ```go
 exportATIF := flag.String("export-atif", "", "export ATIF v1.6 trajectory to this path on session close")
 ```
 
-In `cmd/serf/run.go`, add to `runConfig` struct:
+In `cmd/evener/run.go`, add to `runConfig` struct:
 
 ```go
 exportATIF string // --export-atif path
@@ -889,7 +889,7 @@ Run: `go test ./... -short` to verify nothing is broken.
 **Step 6: Commit**
 
 ```bash
-git add agent/atif.go agent/atif_test.go agent/session.go cmd/serf/main.go cmd/serf/run.go
+git add agent/atif.go agent/atif_test.go agent/session.go cmd/evener/main.go cmd/evener/run.go
 git commit -m "feat: --export-atif flag writes ATIF v1.6 trajectory at session close"
 ```
 
@@ -957,7 +957,7 @@ git commit -m "feat: adapter passes --export-atif flag and copies trajectory for
 ```bash
 # Build
 cd /Users/jesse/prime-radiant/serf
-GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/serf/ --version 2>&1 | head -1 || echo '')" -o /tmp/serf-linux-amd64 ./cmd/serf/
+GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/evener/ --version 2>&1 | head -1 || echo '')" -o /tmp/serf-linux-amd64 ./cmd/evener/
 
 # Deploy updated binary + adapter to magic-kingdom
 ./tools/run_eval.py launch --task build-cython-ext --reps 1 --dry-run
@@ -990,7 +990,7 @@ Open harbor viewer at `http://magic-kingdom:8081`, navigate to the trial, check 
 1. `go test ./agent/ -run TestConvertToATIF -v` — all converter tests pass
 2. `go test ./agent/ -run TestExportATIF -v` — file export test passes
 3. `go test ./... -short` — all Go tests pass, no regressions
-4. `go build ./cmd/serf/` — binary builds
+4. `go build ./cmd/evener/` — binary builds
 5. `./serf --export-atif /tmp/test-traj.json --provider openai --model gpt-5-mini-2025-08-07 -- "echo hello"` — trajectory.json written
 6. Single-task harbor run produces valid trajectory.json
 7. Harbor viewer at magic-kingdom:8081 renders trajectory tab with steps

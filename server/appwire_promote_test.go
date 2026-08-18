@@ -142,7 +142,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.
 }
 
 // TestServerAppWireTurnPromoteQueuedAsSteerThroughSession exercises the full
-// stack the way cmd/serf serve wires it: the RPC drives the real agent
+// stack the way cmd/evener serve wires it: the RPC drives the real agent
 // session's PromoteQueuedAsSteer, so the promoted entry leaves the queue and
 // lands on the steering queue as user-sourced steering while the other
 // queued message stays queued.

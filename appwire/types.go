@@ -1659,7 +1659,7 @@ type ThreadStatusChangedParams struct {
 	// A CLOSE frame is the one status a daemon does not fill in: what a thread
 	// can still be asked to do once its daemon is gone is the hub's answer, not
 	// the departing daemon's. The hub stamps that frame as it relays it
-	// (cmd/serf-hub/app_relay.go's stampClosedThreadCapabilities), so a close
+	// (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
 	// still arrives carrying a set — the same one the next thread/read returns.
 	// A client that read the daemon's own all-false set there would lose the
 	// follow-up composer for a session the hub would happily resume (kata pk2d).
@@ -2266,9 +2266,9 @@ type PluginSetAutoUpgradeParams struct {
 // SettingsOverviewResponse is the result of serf/settings/overview: the field
 // bag behind six settings sections whose only data path today is Go-template
 // variables rendered server-side — General, Hub, Storage, Agents, Codex
-// launch, and the probed half of MCP servers (cmd/serf-hub/templates/
+// launch, and the probed half of MCP servers (cmd/evener-hub/templates/
 // partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
-// replacing cmd/serf-hub/web_settings.go's settingsData for exactly those six
+// replacing cmd/evener-hub/web_settings.go's settingsData for exactly those six
 // (the deletion wave removes the template path once the frontend ports off
 // it). Every field is sourced from the same computation the legacy template
 // used; see each sub-type's doc comment for the exact web_settings.go
@@ -2289,8 +2289,8 @@ type SettingsOverviewResponse struct {
 }
 
 // SettingsHubOverview is the Settings → General / Settings → Hub section
-// (cmd/serf-hub/templates/partials/settings/{general,hub}.html). Fields
-// mirror cmd/serf-hub/web_settings.go's renderSettingsPartial settingsData
+// (cmd/evener-hub/templates/partials/settings/{general,hub}.html). Fields
+// mirror cmd/evener-hub/web_settings.go's renderSettingsPartial settingsData
 // construction. General.html's "State dir" row is not a field here — see
 // SettingsStorageOverview.StateDir, which the frontend reads for it instead.
 type SettingsHubOverview struct {
@@ -2347,7 +2347,7 @@ type SettingsPastIndexOverview struct {
 	Count int `json:"count,omitempty"`
 }
 
-// SettingsStorageOverview is the Settings → Storage section (cmd/serf-hub/
+// SettingsStorageOverview is the Settings → Storage section (cmd/evener-hub/
 // templates/partials/settings/storage.html). RunDir and the past-index
 // path/size/count that storage.html also renders are not duplicated here —
 // see SettingsHubOverview / SettingsPastIndexOverview, which the frontend
@@ -2360,7 +2360,7 @@ type SettingsStorageOverview struct {
 	StateDir string `json:"stateDir,omitempty"`
 }
 
-// SettingsAgentEntry is one row in Settings → Agents (cmd/serf-hub/templates/
+// SettingsAgentEntry is one row in Settings → Agents (cmd/evener-hub/templates/
 // partials/settings/agents.html) — today always exactly the three built-in
 // agent names compiled into the binary (defaultPersona.txt etc.).
 // Source: web_settings.go renderSettingsPartial's agentNames/agents
@@ -2375,7 +2375,7 @@ type SettingsAgentEntry struct {
 }
 
 // SettingsCodexLaunchEntry is one row in Settings → Codex launch config
-// (cmd/serf-hub/templates/partials/settings/launch-codex.html): a read-only
+// (cmd/evener-hub/templates/partials/settings/launch-codex.html): a read-only
 // display of one [[codex_launches]] hub.toml entry.
 // Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
 // codexlaunch.CodexLaunchConfig).
@@ -2404,7 +2404,7 @@ type SettingsCodexLaunchEntry struct {
 }
 
 // SettingsMCPServerEntry is one probed MCP server row in Settings → MCP
-// servers' "Discovered servers" list (cmd/serf-hub/templates/partials/
+// servers' "Discovered servers" list (cmd/evener-hub/templates/partials/
 // settings/mcp.html) — the probed/read-only half; the editable half (MCP
 // config file list, inline server CRUD) rides the existing launch-config
 // wire (serf/launch/getLayer + serf/launch/setLayer), not this method.

@@ -56,7 +56,7 @@ ids for live turns. (That last clause was Task 2, which was **dropped**:
 kata `c2ty`.)
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent`, root module's
-`server` / `internal/appprojector` / `cmd/serf`), `appwire` JSON-RPC.
+`server` / `internal/appprojector` / `cmd/evener`), `appwire` JSON-RPC.
 
 **Spec:** this document — the Diagnosis section below is the spec.
 
@@ -188,8 +188,8 @@ means *the turn that is running*, not *the turn a client mutation reserved*.
 | `agent/session_client_mutation_persist.go` (modify) | Reconcile `ActiveTurnID` at load. |
 | `agent/session_lifecycle.go` (modify) | ~~Mint after the accept block; pass the id into the two opening events.~~ **Both halves wrong** — see Step 6's REVERTED marker. The mint is *before* the accept chain (at the top of `processOneInput`'s `EntryNotification` block), and only one opening event carries the id: `EventGoalContinuation`. |
 | `server/server.go` (modify) | `SetProcessing` stops minting turn ids. (**Not done** — Task 2 was dropped; `setProcessingLocked` still mints.) |
-| `cmd/serf/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. (Task 2 left this file untouched.) |
-| `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression on a goal-continuation turn. |
+| `cmd/evener/serve.go` (modify) | Nothing announces turn ids; `holdServeStateForAwaitingWake` stays. (Task 2 left this file untouched.) |
+| `cmd/evener-hub/e2e_turn_control_test.go` (modify) | Live-stack regression on a goal-continuation turn. |
 
 ---
 
@@ -679,8 +679,8 @@ in-band naming does not compose with for free. Recorded as a comment on
 **Interfaces:**
 - Consumes: nothing from Task 1 — this is independent and could land first.
 - Produces: no signature changes. `SetProcessing(bool)`, `SetProcessingTurn`,
-  the `serveServer` interface (`cmd/serf/serve.go:65`) and both test doubles
-  (`cmd/serf/serve_state_test.go:75,154`) all keep their shapes.
+  the `serveServer` interface (`cmd/evener/serve.go:65`) and both test doubles
+  (`cmd/evener/serve_state_test.go:75,154`) all keep their shapes.
 
 **Do not delete `AppEventProjector.ReserveTurnID`.** v1 said it had one
 caller; it has two. `server/appwire_runtime.go:1416`
@@ -734,10 +734,10 @@ Drop the now-unused `strings` import only if nothing else in the file uses it.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `go test ./server/ ./cmd/serf/ ./internal/appprojector/`
+Run: `go test ./server/ ./cmd/evener/ ./internal/appprojector/`
 Expected: PASS. A test asserting that a generic processing flip mints a
 `turn_<n>` is asserting the bug; delete it and note that in the commit.
-`cmd/serf/serve_state_test.go:139`'s `sessionControlIdentityServer.SetState`
+`cmd/evener/serve_state_test.go:139`'s `sessionControlIdentityServer.SetState`
 parks on `<-s.releaseProcessing`; nothing in this task moves that park point.
 
 - [ ] **Step 5: Commit**
@@ -758,7 +758,7 @@ git commit -m "fix(server): a processing flip no longer mints a turn id"
 `TestE2E_TurnControlReachesAGoalContinuationTurn` this task asked for.
 
 **Files:**
-- Modify: `cmd/serf-hub/e2e_turn_control_test.go`
+- Modify: `cmd/evener-hub/e2e_turn_control_test.go`
 
 **Interfaces:**
 - Consumes: `fakellm.Server`, `startHubStack`, `awaitActiveTurn`,
@@ -768,7 +768,7 @@ git commit -m "fix(server): a processing flip no longer mints a turn id"
 - [x] **Step 1: Write the failing test**
 
 Append `TestE2E_TurnControlReachesAGoalContinuationTurn` to
-`cmd/serf-hub/e2e_turn_control_test.go`. It mirrors the existing
+`cmd/evener-hub/e2e_turn_control_test.go`. It mirrors the existing
 `TestE2E_TurnControlReachesTheSession` exactly — same gating, same
 `startHubStack`, same `t.Cleanup` thread shutdown — and differs only in the
 middle:
@@ -797,19 +797,19 @@ middle:
 Check out the commit before Task 1 into a scratch worktree (never
 `git stash`), or simply run this step before implementing Tasks 1–2.
 
-Run: `go test ./cmd/serf-hub/ -run TestE2E_TurnControlReachesAGoalContinuationTurn -v`
+Run: `go test ./cmd/evener-hub/ -run TestE2E_TurnControlReachesAGoalContinuationTurn -v`
 Expected: FAIL — `turn/steer against the goal continuation turn "turn_2":
 ... turn is not active`.
 
 - [x] **Step 3: Run it against the fixed daemon**
 
-Run: `go test ./cmd/serf-hub/ -run TestE2E_TurnControl -v`
+Run: `go test ./cmd/evener-hub/ -run TestE2E_TurnControl -v`
 Expected: PASS, both tests in the family.
 
 - [x] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/e2e_turn_control_test.go
+git add cmd/evener-hub/e2e_turn_control_test.go
 git commit -m "test(e2e): pin steer and stop on an agent-started turn"
 ```
 

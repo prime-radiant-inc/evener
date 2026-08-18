@@ -1,26 +1,26 @@
 # M6 behavior-parity checklist — spawn, palette/search, notifications, theme
 
-- Source: `cmd/serf-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit `3ad5a682cf0a2a2a03a6bbf6e1d088ba238f2a8b` (2026-07-20).
+- Source: `cmd/evener-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit `3ad5a682cf0a2a2a03a6bbf6e1d088ba238f2a8b` (2026-07-20).
 - Purpose: enumerate every observable behavior of the legacy hand-rolled JS surfaces so a rewrite (workspace-shell) can be checked off item-by-item instead of eyeballed.
 - Every item cites `path:line` (or a line range) in the CURRENT implementation. Check a box only once you've confirmed the replacement does the same thing (or you've gotten explicit sign-off that the behavior is intentionally dropped/changed).
 
 ## Files read
 
 Primary (as requested):
-- `cmd/serf-hub/assets/spawn.js` (1949 lines, read in full)
-- `cmd/serf-hub/templates/partials/spawn.html` (126 lines, read in full)
-- `cmd/serf-hub/assets/search.js` (1094 lines, read in full)
-- `cmd/serf-hub/assets/notifications.js` (436 lines, read in full)
-- `cmd/serf-hub/assets/theme.js` (12 lines, read in full)
-- `cmd/serf-hub/assets/settings-appearance.js` (87 lines, read in full)
-- `cmd/serf-hub/assets/settings-display.js` (89 lines, read in full)
+- `cmd/evener-hub/assets/spawn.js` (1949 lines, read in full)
+- `cmd/evener-hub/templates/partials/spawn.html` (126 lines, read in full)
+- `cmd/evener-hub/assets/search.js` (1094 lines, read in full)
+- `cmd/evener-hub/assets/notifications.js` (436 lines, read in full)
+- `cmd/evener-hub/assets/theme.js` (12 lines, read in full)
+- `cmd/evener-hub/assets/settings-appearance.js` (87 lines, read in full)
+- `cmd/evener-hub/assets/settings-display.js` (89 lines, read in full)
 
 Pulled in because they're load-bearing for the requested behaviors (not optional reading — the requested files call straight into them):
-- `cmd/serf-hub/assets/dir-picker.js` (347 lines, read in full) — the working-dir chip in spawn.js is a thin wrapper around this; "recent-projects" behavior lives here, not in spawn.js.
-- `cmd/serf-hub/assets/settings-notifications.js` (110 lines, read in full) — the "settings coupling" half of notifications.js's contract.
-- Two 6-line inline `<script>` blocks in `cmd/serf-hub/templates/app.html:17-24` and `cmd/serf-hub/templates/thread.html:9-15` — the pre-paint FOUC-avoidance logic that `theme.js` itself does not contain.
-- `cmd/serf-hub/assets/style.css` (grepped, not read in full) — to confirm which theme-selector mechanism the CSS actually binds to (§4.2).
-- `cmd/serf-hub/templates/partials/settings/theme.html`, `.../settings/notifications.html`, `.../settings/display.html` (grepped for `name=`/`value=` pairs, not read in full) — to pin down the exact radio/checkbox value vocabularies the JS in scope reads and writes.
+- `cmd/evener-hub/assets/dir-picker.js` (347 lines, read in full) — the working-dir chip in spawn.js is a thin wrapper around this; "recent-projects" behavior lives here, not in spawn.js.
+- `cmd/evener-hub/assets/settings-notifications.js` (110 lines, read in full) — the "settings coupling" half of notifications.js's contract.
+- Two 6-line inline `<script>` blocks in `cmd/evener-hub/templates/app.html:17-24` and `cmd/evener-hub/templates/thread.html:9-15` — the pre-paint FOUC-avoidance logic that `theme.js` itself does not contain.
+- `cmd/evener-hub/assets/style.css` (grepped, not read in full) — to confirm which theme-selector mechanism the CSS actually binds to (§4.2).
+- `cmd/evener-hub/templates/partials/settings/theme.html`, `.../settings/notifications.html`, `.../settings/display.html` (grepped for `name=`/`value=` pairs, not read in full) — to pin down the exact radio/checkbox value vocabularies the JS in scope reads and writes.
 
 Not read (out of scope, referenced only where a call crosses into them): `composer-attachments.js`, `renderer.js`, `appwire.js`, `settings-pickers.js`, `launchconfig`/`LaunchConfigControls` client.
 
@@ -164,7 +164,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Clicking a recent-prompt row fills the textarea with the EXACT stored text, focuses it, and auto-expands (mobile only) (`spawn.js:1193-1201`)
 - [ ] Paste / drag-drop / file-picker attachment handling is wired through shared `window.SerfComposerAttachments` helpers keyed on a per-`<form>` `pendingState.items` array (`form.__composerPasteState`); if that global isn't loaded, none of the attachment wiring runs at all (`spawn.js:1221-1240`)
 - [ ] Submit is blocked with an inline error — "Image attachment is still processing." — if ANY pending attachment is still flagged `.pending` (`spawn.js:1257-1260`)
-- [x] ~~Submit is blocked with "Prompt is empty. Type something before spawning." only when BOTH the trimmed prompt text AND the attachment list are empty~~ — **INTENTIONALLY DROPPED (kata `ytpa`)**. The legacy guard (`spawn.js:1246-1265`) contradicted the form's own placeholder, which promises "Leave blank to start it dormant", and the daemon has always honoured that: `hubThreadStart` calls `StartTurn` only when `len(params.Input) > 0` (`cmd/serf-hub/app_threadlifecycle.go:183`). The rewrite lets a blank prompt through and starts a dormant session. The guard was originally added (commit `7743e7f`) to absorb an *accidental* empty submit — Enter bubbling out of the model-picker search into the form's implicit submit — whose root cause was fixed separately (kata `t13x`); the React pane has no `<form>` and no implicit submit at all, so the accident it guarded against can no longer happen. An attachment-only submission (no text) is still allowed through, unchanged.
+- [x] ~~Submit is blocked with "Prompt is empty. Type something before spawning." only when BOTH the trimmed prompt text AND the attachment list are empty~~ — **INTENTIONALLY DROPPED (kata `ytpa`)**. The legacy guard (`spawn.js:1246-1265`) contradicted the form's own placeholder, which promises "Leave blank to start it dormant", and the daemon has always honoured that: `hubThreadStart` calls `StartTurn` only when `len(params.Input) > 0` (`cmd/evener-hub/app_threadlifecycle.go:183`). The rewrite lets a blank prompt through and starts a dormant session. The guard was originally added (commit `7743e7f`) to absorb an *accidental* empty submit — Enter bubbling out of the model-picker search into the form's implicit submit — whose root cause was fixed separately (kata `t13x`); the React pane has no `<form>` and no implicit submit at all, so the accident it guarded against can no longer happen. An attachment-only submission (no text) is still allowed through, unchanged.
 - [ ] The prompt is trimmed only for that emptiness CHECK — the raw untrimmed text (newlines and leading whitespace intact) is what's actually sent in the payload (`spawn.js:1251, 1273-1275`) — **ONE TRANSFORMATION ADDED (kata `6nmz`)**: at submit, each `[image N]` attachment marker becomes `(attached image N: <name>)`, dropping the name clause when the staged attachment has none. That is the only edit the text gets; everything else still goes out byte-for-byte untrimmed. A raw marker misled a small model into reading it as a file path — haiku called `read_file("[image 1]")` while the real vision block sat beside it — and the wire loses the marker's position anyway (one text item, then the images as separate parts). The marker stays in the textarea as the tile's anchor. Both send paths share one helper (`frontend/src/stores/attachmentMarkers.ts`), applied by `stores/threads.ts`'s `composerMutationIntent` and by `panes/spawn/startThread.ts`.
 
 ### 1.13 Working-directory preflight
@@ -346,7 +346,7 @@ All from `search.js:326-517` unless noted:
 
 - [ ] Election uses the Web Locks API: `navigator.locks.request("serf-hub-os-leader", {ifAvailable:true}, cb)`. The FIRST tab to acquire the lock holds it forever (its callback returns a Promise that never resolves), so every subsequent tab's `ifAvailable` request fails immediately and self-identifies as a follower (`notifications.js:235-244`)
 - [ ] Environments without `navigator.locks` (or where the request itself throws/rejects) fall back to treating EVERY tab as leader — a duplicate alert is judged the lesser evil versus a silent one (`notifications.js:236, 241, 244`)
-- [ ] **No BroadcastChannel-based election exists anywhere in this codebase** — verified via a repo-wide grep for `BroadcastChannel` across `cmd/serf-hub/assets` and `cmd/serf-hub/templates` (zero hits, outside `node_modules`). Web Locks is the sole mechanism; do not expect (or feel obligated to reproduce) a BroadcastChannel counterpart
+- [ ] **No BroadcastChannel-based election exists anywhere in this codebase** — verified via a repo-wide grep for `BroadcastChannel` across `cmd/evener-hub/assets` and `cmd/evener-hub/templates` (zero hits, outside `node_modules`). Web Locks is the sole mechanism; do not expect (or feel obligated to reproduce) a BroadcastChannel counterpart
 
 ### 3.8 Settings coupling (`settings-notifications.js` ↔ `notifications.js`)
 
@@ -376,7 +376,7 @@ All from `search.js:326-517` unless noted:
 ### 4.2 Theme — FOUC avoidance (NOT in theme.js — inline per-document)
 
 - [ ] An inline `<script>` in `<head>`, placed BEFORE any stylesheet/font `<link>`, synchronously reads `localStorage["serf-hub.theme"]` and sets `data-theme` pre-paint. The identical 6-line block is duplicated verbatim in both the main app shell and the standalone thread-embed document (`templates/app.html:17-24`, `templates/thread.html:9-15`)
-- [ ] CSS is bound EXCLUSIVELY to `:root[data-theme="light"|"dark"]`; there is no CSS rule anywhere keyed off a `.light-theme`/`.dark-theme` class (`cmd/serf-hub/assets/style.css:1-2, 178, 204, 229-237`; confirmed via a repo-wide grep returning 0 hits for `.light-theme`/`.dark-theme` selectors)
+- [ ] CSS is bound EXCLUSIVELY to `:root[data-theme="light"|"dark"]`; there is no CSS rule anywhere keyed off a `.light-theme`/`.dark-theme` class (`cmd/evener-hub/assets/style.css:1-2, 178, 204, 229-237`; confirmed via a repo-wide grep returning 0 hits for `.light-theme`/`.dark-theme` selectors)
 
 ### 4.3 Theme — settings-page coupling (`settings-appearance.js`)
 

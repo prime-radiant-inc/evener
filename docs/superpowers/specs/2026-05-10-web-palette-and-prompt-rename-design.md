@@ -2,7 +2,7 @@
 
 **Status:** palette v1 shipped (commits `d22615c`, `31a55f0`, `e510319`); rename plan scoped, work tracked under kata #46 / #47.
 **Date:** 2026-05-10
-**Scope:** `cmd/serf-hub` web UI, plus a cross-cutting rename touching `cmd/serf`, `agent/`, `internal/hubapi`.
+**Scope:** `cmd/evener-hub` web UI, plus a cross-cutting rename touching `cmd/evener`, `agent/`, `internal/hubapi`.
 
 This document supersedes `2026-05-10-web-slash-commands-design.md` and incorporates the post-implementation learnings, the deferred-item roadmap (kata #42–#45), and the embedded sub-spec for the `task` → `prompt` rename (kata #46 / #47).
 
@@ -189,16 +189,16 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 ### Implementation surfaces
 
 **Modified files:**
-- `cmd/serf-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.SerfSearch.{open, close, openWith, Nav}`
-- `cmd/serf-hub/assets/style.css` — pill, command rows, args items, help-row layout
-- `cmd/serf-hub/assets/renderer.js` — `/` at start of empty textarea → `SerfSearch.openWith("/")`
-- `cmd/serf-hub/templates/app.html` — ARIA on the search dialog markup
-- `cmd/serf-hub/templates/partials/spawn.html` — textarea content pre-fill from `.DefaultTask`
-- `cmd/serf-hub/web.go` — `clear` action proxy; `handleIndex` forwards `?task`; `spawnViewData.DefaultTask`
-- `cmd/serf-hub/web_test.go` — `TestWeb_SessionAction_ClearForwards`, `TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery`, `TestWeb_Index_NewRouteForwardsTaskToWorkspace`
+- `cmd/evener-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.SerfSearch.{open, close, openWith, Nav}`
+- `cmd/evener-hub/assets/style.css` — pill, command rows, args items, help-row layout
+- `cmd/evener-hub/assets/renderer.js` — `/` at start of empty textarea → `SerfSearch.openWith("/")`
+- `cmd/evener-hub/templates/app.html` — ARIA on the search dialog markup
+- `cmd/evener-hub/templates/partials/spawn.html` — textarea content pre-fill from `.DefaultTask`
+- `cmd/evener-hub/web.go` — `clear` action proxy; `handleIndex` forwards `?task`; `spawnViewData.DefaultTask`
+- `cmd/evener-hub/web_test.go` — `TestWeb_SessionAction_ClearForwards`, `TestWeb_WorkspaceSpawn_PrefillsTaskFromQuery`, `TestWeb_Index_NewRouteForwardsTaskToWorkspace`
 
 **New test:**
-- `cmd/serf-hub/jstest/test-search-commands.js` — JSDOM coverage of every mode, scope filtering, the `/` textarea trigger, the args back-out, ARIA roles, and a per-command sweep covering all 18 dispatches.
+- `cmd/evener-hub/jstest/test-search-commands.js` — JSDOM coverage of every mode, scope filtering, the `/` textarea trigger, the args back-out, ARIA roles, and a per-command sweep covering all 18 dispatches.
 
 ### Test plan
 
@@ -258,9 +258,9 @@ Two domains share the word and only one is the rename target:
 ### Inventory (rename targets only)
 
 **Internal Go (safe — no external observers):**
-- `cmd/serf/run.go`: `runConfig.task string`, local vars
-- `cmd/serf/main.go`: usage line `<task>`, local vars
-- `cmd/serf-hub/web.go`: `spawnRequest.Task`, `RecentTasks []string`, schema entry `{Name:"task"}`, details-row label, `spawnViewData.DefaultTask`
+- `cmd/evener/run.go`: `runConfig.task string`, local vars
+- `cmd/evener/main.go`: usage line `<task>`, local vars
+- `cmd/evener-hub/web.go`: `spawnRequest.Task`, `RecentTasks []string`, schema entry `{Name:"task"}`, details-row label, `spawnViewData.DefaultTask`
 - `agent/snapshot.go`: `SessionMeta.OriginalTask` (Go field name)
 - `agent/session.go`, `agent/fork.go`, `agent/strategy_session_log.go`: `extractOriginalTask` helper, vars
 - All Go test files referencing the above

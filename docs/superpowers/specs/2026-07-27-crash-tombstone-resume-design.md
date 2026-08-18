@@ -38,6 +38,6 @@ reuses the errored entry and returns the stale-endpoint dial failure.
 
 ## Scope
 
-Only `cmd/serf-hub/app_threadlifecycle.go` and the focused regression in
-`cmd/serf-hub/app_rpc_test.go` change. The frontend websocket fixes and unrelated
+Only `cmd/evener-hub/app_threadlifecycle.go` and the focused regression in
+`cmd/evener-hub/app_rpc_test.go` change. The frontend websocket fixes and unrelated
 adversarial-review findings remain out of scope.

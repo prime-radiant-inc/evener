@@ -2,7 +2,7 @@
 
 **What this covers**: `POST /api/sessions/<ref>/rename` on both of its paths —
 the live-daemon path (`SetThreadName` through the source) and the ended
-meta-edit path (`cmd/serf-hub/web_api_rename.go:50-63` and `:94-124`) — the
+meta-edit path (`cmd/evener-hub/web_api_rename.go:50-63` and `:94-124`) — the
 rail's rename dialog, and the namer-suppression rule in
 `agent/session_namer.go`: once a session's name source is `"user"`, a later
 `"compaction"`-sourced suggestion must **not** overwrite it
@@ -140,7 +140,7 @@ optimistic overlay.
 - **Compaction on a short transcript can finish before your first poll.** Don't
   read "already done at poll #1" as "didn't run"; confirm via the
   `context_used` / `context_pressure` drop, or
-  `go run ./cmd/serf-doctor transcript <SID> --format outline`.
+  `go run ./cmd/evener-doctor transcript <SID> --format outline`.
 - **Don't stub `window.confirm`.** Nothing in the rail's rename or delete paths
   uses it; every confirmation is an in-app `Dialog`. A stub silently does
   nothing and makes a skipped interaction look handled.

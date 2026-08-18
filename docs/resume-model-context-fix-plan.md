@@ -21,11 +21,11 @@ ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 
 Relevant files/functions:
 
-- `cmd/serf/serve.go`
+- `cmd/evener/serve.go`
   - `buildInitialProfile(...)`
   - fresh `agent.SessionConfig{... ResolveProfile: ...}`
   - `agent.NewSession(...)`
-- `cmd/serf/run.go`
+- `cmd/evener/run.go`
   - fresh `agent.SessionConfig{... ResolveProfile: ...}`
 - `agent/session_init.go`
   - `NewSession(...)` stores `resolveProfile: cfg.ResolveProfile`
@@ -147,13 +147,13 @@ just like `NewSession` does.
 
 Affected call sites:
 
-- `cmd/serf/serve.go`
-- `cmd/serf/run.go`
+- `cmd/evener/serve.go`
+- `cmd/evener/run.go`
 - tests that call `RestoreSessionFromMeta`
 
 ### Step 3: Wire restore call sites with runtime resolver
 
-In `cmd/serf/serve.go`, build runtime restore config from the same runtime data fresh sessions use:
+In `cmd/evener/serve.go`, build runtime restore config from the same runtime data fresh sessions use:
 
 ```go
 restoreCfg := agent.SessionConfig{
@@ -165,7 +165,7 @@ restoreCfg := agent.SessionConfig{
 
 Then call the new restore API.
 
-Do the same in `cmd/serf/run.go`.
+Do the same in `cmd/evener/run.go`.
 
 Important: do not overwrite persisted config fields wholesale with CLI defaults. Runtime config should layer only non-persisted or explicitly overridden values.
 
@@ -219,7 +219,7 @@ Precedence:
 2. `resumeProvider/resumeModel`
 3. `envModel`
 
-Use it only in `cmd/serf/serve.go` and `cmd/serf/run.go` when resuming.
+Use it only in `cmd/evener/serve.go` and `cmd/evener/run.go` when resuming.
 
 #### Option B: Add a mode/boolean to `ResolveModelRef`
 
@@ -251,7 +251,7 @@ Optional but useful:
 
 Hub resume code:
 
-- `cmd/serf-hub/spawn.go`
+- `cmd/evener-hub/spawn.go`
   - `ResumeDaemon(...)` runs `serf serve --resume <sessionID>` and does not pass `--model`.
 
 With the changed precedence, hub resume should continue the persisted model regardless of `SERF_MODEL` in env.
@@ -259,7 +259,7 @@ With the changed precedence, hub resume should continue the persisted model rega
 Add/adjust tests around hub resume if practical:
 
 - Ensure `ResumeDaemon` does not pass `--model` by default.
-- Unit-test lower-level `cmd/serf/serve.go`/`cmdutil` behavior rather than spawning full daemons if full e2e is too heavy.
+- Unit-test lower-level `cmd/evener/serve.go`/`cmdutil` behavior rather than spawning full daemons if full e2e is too heavy.
 
 ### Step 8: Run verification
 
@@ -268,17 +268,17 @@ Minimum focused tests:
 ```sh
 go test ./agent -run 'Restore|ResolveProfile|ContextMetrics|LiveModelMetadata'
 go test ./cmdutil -run 'Resolve.*ModelRef|BuildResolveProfile'
-go test ./cmd/serf -run 'Resume|buildInitialProfile'
-go test ./cmd/serf-hub -run 'Resume'
+go test ./cmd/evener -run 'Resume|buildInitialProfile'
+go test ./cmd/evener-hub -run 'Resume'
 ```
 
 Then broader smoke:
 
 ```sh
-go test ./agent ./cmdutil ./cmd/serf ./cmd/serf-hub
+go test ./agent ./cmdutil ./cmd/evener ./cmd/evener-hub
 ```
 
-If full `cmd/serf-hub` has known local-environment failures, document exact failing tests and run focused coverage instead.
+If full `cmd/evener-hub` has known local-environment failures, document exact failing tests and run focused coverage instead.
 
 ## Non-goals
 
@@ -300,5 +300,5 @@ If full `cmd/serf-hub` has known local-environment failures, document exact fail
 
 1. `cmdutil`: add `ResolveResumeModelRef` and tests.
 2. `agent`: extend restore API/config; set `s.resolveProfile`; add restore resolver/context tests.
-3. `cmd/serf`: update `run.go` and `serve.go` resume call sites and model precedence; add tests.
-4. Optional `cmd/serf-hub`: add a small regression test or document that hub relies on `serf serve --resume` with no model override.
+3. `cmd/evener`: update `run.go` and `serve.go` resume call sites and model precedence; add tests.
+4. Optional `cmd/evener-hub`: add a small regression test or document that hub relies on `serf serve --resume` with no model override.

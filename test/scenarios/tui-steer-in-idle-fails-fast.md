@@ -3,14 +3,14 @@
 TUI counterpart of `web-steer-in-idle-fails-fast.md`. The production
 TUI intentionally does not drive Ctrl+S as a force-steer action in IDLE:
 `handleSessionForceSteer` returns early unless the composer is in queue
-mode (`cmd/serf-tui/hub_session_keys.go#handleSessionForceSteer`). That gate is correct. This scenario documents the deterministic
+mode (`cmd/evener-tui/hub_session_keys.go#handleSessionForceSteer`). That gate is correct. This scenario documents the deterministic
 falsification path for the underlying reject behavior without asking a
 live tmux driver to bypass production UI state.
 
 The behavior is covered by unit test:
 
 ```bash
-go test ./cmd/serf-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable
+go test ./cmd/evener-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable
 ```
 
 ## Expected
@@ -35,8 +35,8 @@ go test ./cmd/serf-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable
 - Web browser scenario:
   `test/scenarios/web-steer-in-idle-fails-fast.md`
 - Unit coverage:
-  `cmd/serf-tui/pending_test.go:TestHubModel_SteerFailsFastOnRPCUnavailable`
-  and `cmd/serf-tui/internal/pending/pending.go:53`
+  `cmd/evener-tui/pending_test.go:TestHubModel_SteerFailsFastOnRPCUnavailable`
+  and `cmd/evener-tui/internal/pending/pending.go:53`
   (exported `PendingCoordinator`; the package was extracted out of
-  `cmd/serf-tui/pending.go`)
+  `cmd/evener-tui/pending.go`)
 - Underlying daemon gate: kata `wymv`

@@ -10,21 +10,21 @@
 
 ## Global Constraints
 
-- All work happens in the `tasklist-checklist-card` worktree; frontend root is `cmd/serf-hub/frontend`.
+- All work happens in the `tasklist-checklist-card` worktree; frontend root is `cmd/evener-hub/frontend`.
 - Deterministic tests only (per `docs/testing.md`): no network, no provider credentials.
 - Icon grammar: 16x16 viewBox, `stroke="currentColor"`, strokeWidth 1.75, round caps/joins, `fill="none"`, square box, inline `display: block` style, `aria-hidden="true"`, `focusable="false"`.
 - Semantic color ONLY on checkbox glyphs (`--alive` done (the wave-2 token set's green; `--success` was removed), `--accent` started, `--ink-mid` added/cancelled); all text stays on the ink scale. This is a scoped, user-approved exception to the neutral-card rule documented in `taskcard.module.css`.
 - Every CSS class referenced from TSX must be wrapped in `requireClass(styles.X, "<module>", "X")`.
-- Tests run from `cmd/serf-hub/frontend`: `npx vitest run <path>`; typecheck `npm run typecheck`; lint `npm run lint`.
+- Tests run from `cmd/evener-hub/frontend`: `npx vitest run <path>`; typecheck `npm run typecheck`; lint `npm run lint`.
 
 ---
 
 ### Task 1: TaskCheck checkbox glyph component
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCheck.tsx`
-- Create: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcheck.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCheck.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCheck.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcheck.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCheck.test.tsx`
 
 **Interfaces:**
 - Consumes: `requireClass` from `../../../../widgets/internal/requireClass`.
@@ -62,7 +62,7 @@ test("the default box is 16px and a caller can override the size", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCheck.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCheck.test.tsx`
 Expected: FAIL — module `./taskCheck` does not exist.
 
 - [ ] **Step 3: Write the component and its styles**
@@ -167,27 +167,27 @@ export function TaskCheck({ touch, size = DEFAULT_SIZE }: { touch: TaskTouch; si
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCheck.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCheck.test.tsx`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Typecheck, lint, commit**
 
-Run: `cd cmd/serf-hub/frontend && npm run typecheck && npm run lint`
+Run: `cd cmd/evener-hub/frontend && npm run typecheck && npm run lint`
 Expected: both clean (Biome may reformat; run `npm run check` first if it complains about formatting).
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCheck.tsx \
-        cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcheck.module.css \
-        cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCheck.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCheck.tsx \
+        cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcheck.module.css \
+        cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCheck.test.tsx
 git commit -m "feat(web): TaskCheck per-touch checkbox glyph for the task card"
 ```
 
 ### Task 2: Checklist rows in the task card
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx` (CLASS map, `TouchedRow.touch` type, `TOUCH_BY_STATUS` type, `TaskCardRow`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css` (drop `.flag`; add `.rowText`, `.descStruck`, `.srOnly`; restructure `.row`, `.note`; new header comment)
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx` (CLASS map, `TouchedRow.touch` type, `TOUCH_BY_STATUS` type, `TaskCardRow`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css` (drop `.flag`; add `.rowText`, `.descStruck`, `.srOnly`; restructure `.row`, `.note`; new header comment)
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
 
 **Interfaces:**
 - Consumes: `TaskCheck`, `TaskTouch` from `./taskCheck` (Task 1).
@@ -273,7 +273,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
 Expected: FAIL — no `task-check` testid, no `descStruck`/`srOnly`/`rowText` classes yet.
 
 - [ ] **Step 3: Rework the row markup and styles**
@@ -396,26 +396,26 @@ In `taskcard.module.css`, replace the whole file with:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
 Expected: PASS — all pre-existing tests plus the 4 new ones (24 total). The pre-existing tests pass unchanged because the label span keeps its exact text content and `data-testid`/`data-touch` hooks.
 
 - [ ] **Step 5: Typecheck, lint, commit**
 
-Run: `cd cmd/serf-hub/frontend && npm run typecheck && npm run lint`
+Run: `cd cmd/evener-hub/frontend && npm run typecheck && npm run lint`
 Expected: both clean.
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx \
-        cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css \
-        cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx \
+        cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskcard.module.css \
+        cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
 git commit -m "feat(web): render task_list changes as a struck-through checklist"
 ```
 
 ### Task 3: One count, one bar — summary dedupe
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx` (`TaskCardBody` head text, descriptor `summary`)
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx` (`TaskCardBody` head text, descriptor `summary`)
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx`
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -455,7 +455,7 @@ test("the count appears exactly once - the tool-row summary is just 'Tasks'", ()
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
 Expected: FAIL — head still reads `3 / 3` and the summary still renders `Tasks · 3 / 3`.
 
 - [ ] **Step 3: Change the head copy and the summary**
@@ -476,17 +476,17 @@ and the descriptor summary to the constant (the count lives in the card head, wh
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/taskCard.test.tsx`
 Expected: PASS (25 tests).
 
 - [ ] **Step 5: Typecheck, lint, commit**
 
-Run: `cd cmd/serf-hub/frontend && npm run typecheck && npm run lint`
+Run: `cd cmd/evener-hub/frontend && npm run typecheck && npm run lint`
 Expected: both clean.
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx \
-        cmd/serf-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.tsx \
+        cmd/evener-hub/frontend/src/panes/session/transcript/tools/taskCard.test.tsx
 git commit -m "feat(web): single done-count beside the task card's progress bar"
 ```
 
@@ -494,7 +494,7 @@ git commit -m "feat(web): single done-count beside the task card's progress bar"
 
 ## Final Verification
 
-- [ ] Full frontend suite: `cd cmd/serf-hub/frontend && npx vitest run` — all green.
+- [ ] Full frontend suite: `cd cmd/evener-hub/frontend && npx vitest run` — all green.
 - [ ] `npm run typecheck` and `npm run lint` — clean.
 - [ ] From the repo root: `make test-web` — green (matches CI's entry point).
 - [ ] Manual smoke (optional): `npm run dev`, open a session with task_list mutations, confirm the checklist card renders per spec.

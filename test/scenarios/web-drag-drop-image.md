@@ -35,7 +35,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
 - `superpowers-chrome:browsing` available, with your own Chrome profile claimed
   via `set_profile` before the first `use_browser` call (kata `8ecz`).
 - The CSP must include `blob:` in `img-src`
-  (`cmd/serf-hub/internal/httpsec/httpsec.go:40`) — the re-encode pipeline
+  (`cmd/evener-hub/internal/httpsec/httpsec.go:40`) — the re-encode pipeline
   loads a `URL.createObjectURL(blob)` reference into an `Image`
   (`encodePng.ts:45,71`), and without it every drop fails decode. See Sharp
   edges.
@@ -101,7 +101,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
      [ "$s" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
    TS=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
    jq -r 'select(.turn.kind=="USER_INPUT") | .turn.message.content[]
           | select(.kind=="image")
@@ -162,7 +162,7 @@ daemon running, poisoning the next run's `idle` poll.
   fires, the promise rejects, `ingestFiles` strips the marker back out and
   toasts `Couldn't attach <name> (image decode failed)`
   (`useAttachments.ts:179-189`) for a perfectly valid PNG. The directive lives
-  at `cmd/serf-hub/internal/httpsec/httpsec.go:40`.
+  at `cmd/evener-hub/internal/httpsec/httpsec.go:40`.
 - **The spawn pane and the session composer stage attachments differently.**
   Spawn renders a `Chip` per item (`Spawn.tsx:570-577`); the session composer
   renders an `AttachmentTile` with a thumbnail

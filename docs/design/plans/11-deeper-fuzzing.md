@@ -162,7 +162,7 @@ provider wire-format drift the moment it ships. The decoders' deepest bugs come
 from *real* provider quirks (the anthropic finish-reason and gemini usage bugs
 were real shapes).
 
-**Mechanism.** Build on the existing harvester (`cmd/serf-fuzz-harvest/` —
+**Mechanism.** Build on the existing harvester (`cmd/evener-fuzz-harvest/` —
 `http.go`, `raw.go`, `transcript.go`, `sanitize.go`) and the recorders:
 
 - **Conformance corpus.** Capture real `(provider request, raw response)` pairs,

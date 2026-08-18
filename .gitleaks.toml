@@ -32,7 +32,7 @@ regexes = [
   '''observation/drains''',         # benign phrase mis-flagged in agent/job_delegate_send_test.go
   '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
   '''a\.eyJlbWFpbCI6ImpAZXhhbXBsZS5jb20ifQ\.sig''', # fake JWT ({"email":"j@example.com"}) in auth/openai fuzz seeds
-  '''att_02wMz5TxuyedWwYBSOAa[0-9a-z]*''', # deterministic attempt-id fixtures in cmd/serf-doctor/main_test.go, not keys
+  '''att_02wMz5TxuyedWwYBSOAa[0-9a-z]*''', # deterministic attempt-id fixtures in cmd/evener-doctor/main_test.go, not keys
 ]
 
 # The seed corpora are deliberately NOT path-allowlisted: that would make
@@ -53,7 +53,7 @@ paths = [
   '''agent/subagent_output_test\.go''',
   # This tracked frontend test uses a deterministic project identifier as a
   # fixture, not a credential; the generic API-key rule cannot distinguish it.
-  '''cmd/serf-hub/frontend/src/shell/rail/Rail\.test\.tsx''',
+  '''cmd/evener-hub/frontend/src/shell/rail/Rail\.test\.tsx''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
   # committed, but `make secret-scan` walks the whole working tree.

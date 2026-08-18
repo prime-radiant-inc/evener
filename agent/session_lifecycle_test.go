@@ -380,7 +380,7 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 }
 
 // TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd guards hazard #1
-// (kata hen0): a per-turn interrupt (modeled on cmd/serf/serve.go's POST
+// (kata hen0): a per-turn interrupt (modeled on cmd/evener/serve.go's POST
 // /interrupt — the outer context stays alive, only the turn context is
 // cancelled) already emits its own EventSessionEnd(Reason=interrupted). The
 // genuine-failure fix added by this kata sits in the same tail every
@@ -398,7 +398,7 @@ func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
+	// Per-turn cancel modeled on cmd/evener/serve.go: outer ctx stays alive,
 	// only the turn ctx is cancelled (same pattern as
 	// TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd).
 	// TRIPWIRE: blockingAdapter is an in-process fake, no real I/O; only fires

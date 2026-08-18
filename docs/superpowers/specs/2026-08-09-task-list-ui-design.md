@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-09
 **Status:** Approved direction; awaiting implementation plan
-**Scope:** `cmd/serf-hub/frontend/src/panes/session/chrome/` — the tasks Sheet and desktop pane (`TasksPanelBody`). The transcript's inline `task_list` cards (`transcript/tools/taskCard.tsx`) are out of scope.
+**Scope:** `cmd/evener-hub/frontend/src/panes/session/chrome/` — the tasks Sheet and desktop pane (`TasksPanelBody`). The transcript's inline `task_list` cards (`transcript/tools/taskCard.tsx`) are out of scope.
 
 ## Problem
 
@@ -82,7 +82,7 @@ The disclosure body holds four parts, in order. Omit a part when its data is abs
 
 ## Component structure
 
-All in `cmd/serf-hub/frontend/src/panes/session/chrome/`, styles in `taskspanel.module.css`:
+All in `cmd/evener-hub/frontend/src/panes/session/chrome/`, styles in `taskspanel.module.css`:
 
 - `taskData.ts` — `TaskRow` gains the three timestamp fields; parser carries them.
 - `taskTime.ts` (new) — `relativeTime`, `absoluteTime`. Pure, unit-tested.

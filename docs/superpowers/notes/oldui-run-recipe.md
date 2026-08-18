@@ -11,14 +11,14 @@ A binary is already at `/tmp/serf-hub-oldui`. To rebuild:
 
 ```
 cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf-hub-oldui ./cmd/serf-hub
+go build -o /tmp/serf-hub-oldui ./cmd/evener-hub
 ```
 
 Build A source = `.claude/worktrees/webui-workspace-shell`. Build with:
 
 ```
 cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell
-go build -o /tmp/serf-hub-newui ./cmd/serf-hub
+go build -o /tmp/serf-hub-newui ./cmd/evener-hub
 ```
 
 ## 2. Isolated HOME + credentials
@@ -87,7 +87,7 @@ Build A's hub does NOT have this bug — its own log line shows the real port co
 and do NOT use a Bearer header for browser navigation (that's for scripted/API clients
 only, per the hub's own log line: "use as Authorization: Bearer ... for scripted
 clients"). The real mechanism, identical in both builds (shared `hubedge` package,
-`cmd/serf-hub/internal/hubedge/auth_token.go`):
+`cmd/evener-hub/internal/hubedge/auth_token.go`):
 
 Navigate the browser to:
 

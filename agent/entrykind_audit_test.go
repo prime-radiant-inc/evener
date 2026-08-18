@@ -258,7 +258,7 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 	var promisedTurnID string
 	switch kind {
 	case EntryUserInput:
-		// The daemon's own path for a user turn (cmd/serf/serve.go): turn/start
+		// The daemon's own path for a user turn (cmd/evener/serve.go): turn/start
 		// reserves the identity durably and the drain loop claims it.
 		//
 		// This is the shape that carries an identity, not the only shape of the

@@ -84,7 +84,7 @@ func TestClassifySpawnFailureAsHub(t *testing.T) {
 		"websocket closed",
 		"stream failed to connect",
 		"source not found: xyz",
-		// The hub's own dial failure (cmd/serf-hub/internal/appsource) and the
+		// The hub's own dial failure (cmd/evener-hub/internal/appsource) and the
 		// wire error it raises. Both were classified "Serf error" until 3qb2 —
 		// telling the user to read the log of a daemon that may never have
 		// started, while the web client already called the same message a

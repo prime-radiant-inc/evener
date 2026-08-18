@@ -207,7 +207,7 @@ func TestGoalHoldsAwaiting_SetGoalArmsWithoutKick(t *testing.T) {
 // itself contains no kick call at all, confirmed by inspection: the only
 // production sink for a kick is server.Server.SubmitContinuation, invoked
 // solely through the Session.kickFunc callback wired by bridgeSession AFTER
-// restore returns, in cmd/serf/serve.go). This test additionally proves that
+// restore returns, in cmd/evener/serve.go). This test additionally proves that
 // even once the restored session has a genuinely pending ask_user question,
 // the same settleGoalOnIdle guard used elsewhere still refuses to kick a goal
 // that was merely loaded, not folded — so there is no distinct "startup kick"

@@ -417,7 +417,7 @@ for the daemon it is now CLOSED. Delivery discipline became a property of the
 consumer rather than of the channel: `Session.ConsumeEventsLossless` marks the
 session and starts the drain in one call, and is the only writer of that mark,
 so an attached authoritative consumer waits instead of dropping and "lossless
-with nobody reading" cannot be expressed. `cmd/serf/serve.go`'s bridge is the
+with nobody reading" cannot be expressed. `cmd/evener/serve.go`'s bridge is the
 single caller.
 
 The drop remains for everything else, and correctly: the same channel is a
@@ -485,7 +485,7 @@ What remains, precisely:
   `queuePersistMu`, `responseSideEffectsMu` (`TOOL_CALL_END` and its
   output-delta chunk loop) and `subagent.mu`. They used to be safe only because
   `liveThreadEnvelopeSource` does not take them, which was a property of one
-  file in `cmd/serf` rather than of `agent`. The envelope source now reaches the
+  file in `cmd/evener` rather than of `agent`. The envelope source now reaches the
   session as `agent.EnvelopeSampling`, so a facet cannot sample anything that
   interface does not declare, and `agent/session_envelope_sampling_test.go`
   calls every method it *does* declare while each of those locks is held — and

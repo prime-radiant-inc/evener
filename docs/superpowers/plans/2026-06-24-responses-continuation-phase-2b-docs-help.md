@@ -6,21 +6,21 @@
 
 **Architecture:** Keep the runtime setting as the same `openai_responses_continuation` session/launch field from Phase 2A. Add `SERF_OPENAI_RESPONSES_CONTINUATION` as a launch-time fallback when no CLI flag or hub launch arg supplies a value. Do not enable continuation, planner/storage eligibility, or provider-side storage.
 
-**Tech Stack:** Go, `envvars`, `cmd/serf`, `cmd/serf-hub/internal/launchconfig`, `docs/environment.md`.
+**Tech Stack:** Go, `envvars`, `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `docs/environment.md`.
 
 ---
 
 ## File Structure
 
 - `envvars/envvars.go`: add `SERFOpenAIResponsesContinuation` and include it in `allVars`.
-- `cmd/serf/run.go`: resolve `--openai-responses-continuation` over `SERF_OPENAI_RESPONSES_CONTINUATION`.
-- `cmd/serf/serve.go`: resolve the serve flag over `SERF_OPENAI_RESPONSES_CONTINUATION`.
-- `cmd/serf/openai_responses_continuation_config.go` (or nearby existing file): add a tiny resolver helper if needed to avoid duplicating precedence logic.
-- `cmd/serf/main.go`: list the env var in direct CLI help.
-- `cmd/serf/serve.go`: list the env var in serve help.
-- `cmd/serf/main_test.go` / `cmd/serf/serve_test.go`: add deterministic resolver/help tests.
-- `cmd/serf-hub/internal/launchconfig/schema.go`: mark the hub launch setting with the env fallback and document values, restore behavior, retention, and cost implications.
-- `cmd/serf-hub/internal/launchconfig/schema_test.go`: assert the schema advertises the env fallback.
+- `cmd/evener/run.go`: resolve `--openai-responses-continuation` over `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- `cmd/evener/serve.go`: resolve the serve flag over `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- `cmd/evener/openai_responses_continuation_config.go` (or nearby existing file): add a tiny resolver helper if needed to avoid duplicating precedence logic.
+- `cmd/evener/main.go`: list the env var in direct CLI help.
+- `cmd/evener/serve.go`: list the env var in serve help.
+- `cmd/evener/main_test.go` / `cmd/evener/serve_test.go`: add deterministic resolver/help tests.
+- `cmd/evener-hub/internal/launchconfig/schema.go`: mark the hub launch setting with the env fallback and document values, restore behavior, retention, and cost implications.
+- `cmd/evener-hub/internal/launchconfig/schema_test.go`: assert the schema advertises the env fallback.
 - `docs/environment.md`: document the env var, values, default, restore behavior, and retention/cost caveats.
 - `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md`: record evidence.
 
@@ -37,11 +37,11 @@
 
 **Files:**
 - Modify: `envvars/envvars.go`
-- Modify: `cmd/serf/run.go`
-- Modify: `cmd/serf/serve.go`
-- Add or modify: `cmd/serf/openai_responses_continuation_config.go`
-- Modify: `cmd/serf/main_test.go`
-- Modify: `cmd/serf/serve_test.go`
+- Modify: `cmd/evener/run.go`
+- Modify: `cmd/evener/serve.go`
+- Add or modify: `cmd/evener/openai_responses_continuation_config.go`
+- Modify: `cmd/evener/main_test.go`
+- Modify: `cmd/evener/serve_test.go`
 
 - [ ] **Step 1: Add failing resolver/help tests**
 
@@ -58,7 +58,7 @@ Keep assertions narrow: call the resolver and `printRunEnvVars` / `printServeEnv
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1
 ```
 
 Expected: FAIL because the env var row/resolver/help entries do not exist yet.
@@ -99,8 +99,8 @@ Add `envvars.SERFOpenAIResponsesContinuation` to both `printRunEnvVars` and `pri
 ### Task 2: Hub Schema and User Docs
 
 **Files:**
-- Modify: `cmd/serf-hub/internal/launchconfig/schema.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/schema_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema_test.go`
 - Modify: `docs/environment.md`
 - Add: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md`
 
@@ -117,7 +117,7 @@ if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFOpenAIResponses
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1
 ```
 
 Expected: FAIL until the schema advertises the env fallback.
@@ -150,8 +150,8 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md` w
 - [ ] **Step 1: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v
 GOCACHE=/tmp/serf-gocache go test . -run '^TestSupportedEnvVarsAreDocumented$' -count=1 -v
 git diff --check
 ```
@@ -160,7 +160,7 @@ git diff --check
 
 ```sh
 git status --short
-git add envvars/envvars.go cmd/serf/run.go cmd/serf/serve.go cmd/serf/openai_responses_continuation_config.go cmd/serf/main.go cmd/serf/main_test.go cmd/serf/serve_test.go cmd/serf-hub/internal/launchconfig/schema.go cmd/serf-hub/internal/launchconfig/schema_test.go docs/environment.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md
+git add envvars/envvars.go cmd/evener/run.go cmd/evener/serve.go cmd/evener/openai_responses_continuation_config.go cmd/evener/main.go cmd/evener/main_test.go cmd/evener/serve_test.go cmd/evener-hub/internal/launchconfig/schema.go cmd/evener-hub/internal/launchconfig/schema_test.go docs/environment.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md
 git commit -m "feat(cmd): document responses continuation env launch setting"
 ```
 

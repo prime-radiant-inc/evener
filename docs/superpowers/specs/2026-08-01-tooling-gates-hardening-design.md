@@ -88,7 +88,7 @@ Change `lint-generated` so its one `git diff --exit-code` pathspec contains
 both committed outputs:
 
 - `docs/appwire-protocol.md`
-- `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
+- `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 The failure message names both generated outputs and directs the operator to
 run `make generate` and commit the results. Update the adjacent Makefile and

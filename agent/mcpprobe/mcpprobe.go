@@ -1,6 +1,6 @@
 // Package mcpprobe checks whether configured MCP servers currently look
 // reachable, without registering them for real use. It replaces the
-// orphaned cmd/serf-hub/internal/mcpstatus, whose http/sse probe treated any
+// orphaned cmd/evener-hub/internal/mcpstatus, whose http/sse probe treated any
 // HTTP response — even a 400 or a 200 with a garbage body — as "available"
 // because it only ever did a HEAD-then-GET, never a real MCP handshake.
 // Probe fixes exactly that: for http/sse servers it runs the actual MCP

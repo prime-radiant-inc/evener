@@ -62,7 +62,7 @@ func main() {
 // listen binds addr ("127.0.0.1:0" lets the kernel pick a free port) and
 // returns the listener. The caller must read the real address back from
 // ln.Addr() — never from the string passed in. Uses net.ListenConfig (the
-// same pattern cmd/serf-hub/main.go's own "-addr 127.0.0.1:0" fix uses)
+// same pattern cmd/evener-hub/main.go's own "-addr 127.0.0.1:0" fix uses)
 // rather than the bare net.Listen so the call carries a context.
 func listen(addr string) (net.Listener, error) {
 	var lc net.ListenConfig

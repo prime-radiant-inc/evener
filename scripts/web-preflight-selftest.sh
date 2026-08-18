@@ -2,7 +2,7 @@
 # web-preflight-selftest.sh — offline, deterministic test of
 # scripts/web-preflight.sh (kata sf67), against synthetic frontend trees.
 #
-# The real cmd/serf-hub/frontend/node_modules is the fleet's ONE shared
+# The real cmd/evener-hub/frontend/node_modules is the fleet's ONE shared
 # install, which this test must never read as fixture state and must never
 # write to; SERF_WEB_FRONTEND_DIR exists so every scenario below runs against
 # a throwaway tree under $work instead.

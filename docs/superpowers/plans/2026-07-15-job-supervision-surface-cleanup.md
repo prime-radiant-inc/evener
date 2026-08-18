@@ -86,7 +86,7 @@ AppWire inspection found no job-control RPC or alternate tool-dispatch surface. 
 - Modify `agent/internal/tool/definitions_program_fuzz_test.go`
 - Modify `agent/internal/jobstore/output_test.go`
 - Modify `agent/profile_test.go`
-- Create `tools/tool-fluency/cmd/serf-fluency/job_supervision_probe_test.go`
+- Create `tools/tool-fluency/cmd/evener-fluency/job_supervision_probe_test.go`
 - Modify `agent/job_nested_test.go`
 - Modify `agent/job_watch_test.go`
 - Modify `agent/job_watch_loopguard_test.go`
@@ -1423,7 +1423,7 @@ delivery-mark failure without frame replay."
 - Modify: `agent/prompts/sections/background-jobs.md`
 - Modify: `agent/prompts/sections/delegation.md`
 - Modify: `agent/profile_test.go`
-- Create: `tools/tool-fluency/cmd/serf-fluency/job_supervision_probe_test.go`
+- Create: `tools/tool-fluency/cmd/evener-fluency/job_supervision_probe_test.go`
 - Modify: `tools/tool-fluency/probes/jobs_control.yaml`
 - Modify: `tools/tool-fluency/probes/job_watch.yaml`
 - Modify: `tools/tool-fluency/README.md`
@@ -1454,7 +1454,7 @@ Extend the existing background-job prompt test in `agent/profile_test.go`:
 	}
 ```
 
-Create `tools/tool-fluency/cmd/serf-fluency/job_supervision_probe_test.go` with an offline contract test over the real probe directory:
+Create `tools/tool-fluency/cmd/evener-fluency/job_supervision_probe_test.go` with an offline contract test over the real probe directory:
 
 ```go
 package main
@@ -1583,7 +1583,7 @@ Expected: tests PASS; `rg` exits 1 with no matches.
 
 ```bash
 git status --short
-git add agent/prompts/sections/background-jobs.md agent/prompts/sections/delegation.md agent/profile_test.go tools/tool-fluency/cmd/serf-fluency/job_supervision_probe_test.go tools/tool-fluency/probes/jobs_control.yaml tools/tool-fluency/probes/job_watch.yaml tools/tool-fluency/README.md
+git add agent/prompts/sections/background-jobs.md agent/prompts/sections/delegation.md agent/profile_test.go tools/tool-fluency/cmd/evener-fluency/job_supervision_probe_test.go tools/tool-fluency/probes/jobs_control.yaml tools/tool-fluency/probes/job_watch.yaml tools/tool-fluency/README.md
 git commit -m "docs(agent): teach notification-first job supervision
 
 Route orientation to job_status, evidence to bounded transcript cursors, and
@@ -1730,7 +1730,7 @@ and job_watch for future matches."
 Run:
 
 ```bash
-gofmt -w agent/internal/tool/definitions.go agent/session_tools_jobs.go agent/session_tools_transcript.go agent/session_tool_registry.go agent/job_watch.go agent/session_config.go agent/subagents.go agent/job_delegate.go agent/internal/jobstore/fold.go agent/internal/jobstore/output.go agent/jobs.go agent/job_output_digest.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/job_supervision_test.go agent/transcript_tools_test.go agent/job_notify_test.go agent/jobs_test.go agent/internal/jobstore/output_test.go agent/profile_test.go agent/job_nested_test.go agent/job_watch_test.go agent/job_watch_loopguard_test.go agent/root_watch_tree_program_fuzz_test.go agent/job_runtime_recovery_program_fuzz_test.go agent/session_tools_shell_test.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/session_tools_jobs_seed100_more_test.go agent/session_tools_jobs_seed100_range_a_test.go agent/session_tools_jobs_seed100_range_b_test.go agent/job_transcript_recovery_grant_fuzz_test.go agent/job_transcript_projection_seed_coverage_fuzz_test.go tools/tool-fluency/cmd/serf-fluency/job_supervision_probe_test.go
+gofmt -w agent/internal/tool/definitions.go agent/session_tools_jobs.go agent/session_tools_transcript.go agent/session_tool_registry.go agent/job_watch.go agent/session_config.go agent/subagents.go agent/job_delegate.go agent/internal/jobstore/fold.go agent/internal/jobstore/output.go agent/jobs.go agent/job_output_digest.go agent/internal/tool/definitions_test.go agent/internal/tool/definitions_program_fuzz_test.go agent/job_supervision_test.go agent/transcript_tools_test.go agent/job_notify_test.go agent/jobs_test.go agent/internal/jobstore/output_test.go agent/profile_test.go agent/job_nested_test.go agent/job_watch_test.go agent/job_watch_loopguard_test.go agent/root_watch_tree_program_fuzz_test.go agent/job_runtime_recovery_program_fuzz_test.go agent/session_tools_shell_test.go agent/session_tools_jobs_test.go agent/session_tools_jobs_list_test.go agent/session_tools_jobs_stop_delegate_test.go agent/session_tools_jobs_fuzz_test.go agent/session_tools_jobs_lifecycle_fuzz_test.go agent/session_tools_jobs_seed100_more_test.go agent/session_tools_jobs_seed100_range_a_test.go agent/session_tools_jobs_seed100_range_b_test.go agent/job_transcript_recovery_grant_fuzz_test.go agent/job_transcript_projection_seed_coverage_fuzz_test.go tools/tool-fluency/cmd/evener-fluency/job_supervision_probe_test.go
 gofmt -w agent/job_watch_timers_observe_fuzz_test.go agent/watch_grant_lifecycle_fuzz_test.go agent/jobs_seed100_fuzz_test.go agent/fuzz_fc2_dispatch_test.go agent/cov_s3_jobsfmt_test.go agent/cov_w2tail_jobs_helpers_test.go agent/shell_notify_digest_program_fuzz_test.go agent/session_tools_jobs_seed100_range_c_test.go agent/session_tools_jobs_seed100_range_d_test.go
 ```
 

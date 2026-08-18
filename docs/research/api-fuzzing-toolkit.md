@@ -68,15 +68,15 @@ here — see §3.
 | **appwire JSON-RPC protocol** | `appserver.Router.Dispatch(ctx, appwire.Request)` and the generic `HandleTyped[P,R]` (`internal/appserver/router.go:37,49`); frame decode `appwire.Message.UnmarshalJSON` (`appwire/jsonrpc.go:113`) | WS text frames → request/notification JSON; per-method `params` | **Yes** — declarative catalog `appwire.Methods` (`appwire/protocol.go:85`), 42 methods with Go `Params`/`Result` types; 79 `*Params`/`*Response` structs in `appwire/types.go`; already reflected into `docs/appwire-protocol.md` with a drift guard |
 | **Agent tool API** | `tool.Registry.ExecuteCall(ctx, env, llm.ToolCallData{Name, Arguments})` (`agent/internal/tool/registry.go:446`) | model-generated tool-call `Arguments json.RawMessage` (decoded to `map[string]any`) | **Yes** — every tool carries a hand-written JSON Schema in `Definition.Parameters` (`agent/internal/tool/definitions.go`), compiled via `santhosh-tekuri/jsonschema/v5` |
 | **LLM provider adapters** | `llm.ParseSSE` (`llm/sse.go:82`) + per-provider stream decoders, e.g. `openai.Adapter.decodeResponsesStream` (`llm/providers/openai/responses.go:217`), `fromResponses(raw map[string]any)` (:967); anthropic `response.go`/`request.go` | upstream provider SSE/JSON bytes (untrusted-by-posture) | Partial — implicit in each adapter's event switch; no formal schema |
-| **Hub HTTP API** | `WebServer.Handler()` route mux (`cmd/serf-hub/web.go:134`); per-handler `json.NewDecoder(r.Body).Decode(&T)` | HTTP bodies (`spawnRequest` etc., `web_types.go`), query params, path segments; same WS `/rpc` | Partial — `/api/spawn-schema` exists; bodies are Go structs, reflectable |
+| **Hub HTTP API** | `WebServer.Handler()` route mux (`cmd/evener-hub/web.go:134`); per-handler `json.NewDecoder(r.Body).Decode(&T)` | HTTP bodies (`spawnRequest` etc., `web_types.go`), query params, path segments; same WS `/rpc` | Partial — `/api/spawn-schema` exists; bodies are Go structs, reflectable |
 
 Test infrastructure I'd integrate with (surveyed):
 - **No Go native fuzzing exists today** — `grep "func Fuzz"` / `testing.F` / `testdata/fuzz` are all empty across the tree. Greenfield, no conflicting convention.
 - **No property-based libs** — no `rapid`/`gopter`/`testing/quick` in any `go.mod`/`go.sum`.
 - `make test` → `scripts/run-module-tests.sh -count=1` over modules **`.` `agent` `llm` `auth`** (two-wave: root alone, then `agent llm auth` concurrent). `envvars` is in `go.work` but *not* in the gate. CI runs `make test-race` (`-short`). go.work means `go test ./...` does **not** span modules — fuzz targets are picked up per-module automatically.
-- **jstest** (`cmd/serf-hub/jstest/`): ~100 plain-Node JSDOM scripts that eval the hub renderer bundle and assert on DOM. Run by `run-all.sh`; **not wired into Go tests, Makefile, or CI** (manual/agent-run).
+- **jstest** (`cmd/evener-hub/jstest/`): ~100 plain-Node JSDOM scripts that eval the hub renderer bundle and assert on DOM. Run by `run-all.sh`; **not wired into Go tests, Makefile, or CI** (manual/agent-run).
 - **92 scenario cards** (`test/scenarios/*.md`): English e2e cards executed by an agent (browser/tmux/Bash), guarded only by a stale-string lint (`scenario_docs_test.go`).
-- Golden tests are hand-frozen (`agent/snapshot_golden_test.go`, `cmd/serf-tui/tui_samples_test.go`); no `-update`/`goldie`/`cupaloy` convention.
+- Golden tests are hand-frozen (`agent/snapshot_golden_test.go`, `cmd/evener-tui/tui_samples_test.go`); no `-update`/`goldie`/`cupaloy` convention.
 
 ---
 

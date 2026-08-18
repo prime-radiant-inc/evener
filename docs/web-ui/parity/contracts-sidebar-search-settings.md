@@ -1,6 +1,6 @@
 # Behavior contracts: sidebar, search/palette, settings, credentials/device-flow, notifications, panes
 
-Mined from `cmd/serf-hub/jstest/`. Each line is a behavior a new Vitest suite must
+Mined from `cmd/evener-hub/jstest/`. Each line is a behavior a new Vitest suite must
 re-cover, tagged with the jstest file it currently comes from. CSS/token-only files
 (no runtime/DOM-interaction behavior, just regex assertions over `style.css`) are
 listed by name only, per instructions, in the final section.

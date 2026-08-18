@@ -228,7 +228,7 @@ Existing files touched, additive only:
 - `agent/mcp_config.go` — streamable-http alias, expansion additions
 - `agent/mcp_manager.go` — `CLAUDE_PROJECT_DIR` env injection on stdio
 - `agent/builtin_skills.go` — register SP-B
-- `cmd/serf/main.go`, `cmd/serf-tui/embedded.go`, `cmd/serf-hub/web.go`, `cmd/serfeval/main.go` — config loading + auto-discovery at session init
+- `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go`, `cmd/evenereval/main.go` — config loading + auto-discovery at session init
 - `agent/session.go` (or equivalent bootstrap) — fire new lifecycle events at correct integration points
 
 ## Open Questions

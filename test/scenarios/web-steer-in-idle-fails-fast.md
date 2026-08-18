@@ -145,7 +145,7 @@ HUB=http://127.0.0.1:$PORT
   omitted-`expectedTurnId` request is
   rejected with `InvalidParams` (code `-32602`) and the exact message
   `expectedTurnId is required` — refused twice on the way down, once by the
-  hub (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
+  hub (`cmd/evener-hub/app_rpc.go:381-383`) and once by the daemon
   (`server/appwire_runtime.go:597-599`). The stale-`expectedTurnId` request
   is rejected with `Conflict` (code `-32013`) and a message *containing*
   `turn is not active` (`agent/session_client_mutation_queue.go:325-328`,

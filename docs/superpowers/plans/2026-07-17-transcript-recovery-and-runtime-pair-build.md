@@ -24,11 +24,11 @@
 ### Task 1: Honest transcript application errors in the Hub renderer
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-renderer-connection-banner.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/jstest/test-renderer-connection-banner.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
-- Consumes: AppWire errors with an own `code` property, created by `cmd/serf-hub/assets/appwire.js:errorFromWire`.
+- Consumes: AppWire errors with an own `code` property, created by `cmd/evener-hub/assets/appwire.js:errorFromWire`.
 - Produces: `SerfRenderer.isAppwireApplicationError(err) bool` and `showConnectionBanner(level, detail)` support for `level === "unavailable"`.
 
 - [ ] **Step 1: Add the failing application-error behavior case**
@@ -62,7 +62,7 @@ pass(transcriptErrors(w3).length === 0, "application failure does not create a t
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-connection-banner.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
 ```
 
 Expected: exit 1 because the rejection is rendered as `Connection lost` and retried.
@@ -99,8 +99,8 @@ interpolate the server message into `innerHTML`.
 Run:
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/serf-hub/jstest/test-renderer-connection-banner.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/serf-hub/jstest/run-all.sh
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: both commands exit 0; the focused test reports application errors as unavailable while the existing amber-to-red transport behavior remains green.
@@ -108,7 +108,7 @@ Expected: both commands exit 0; the focused test reports application errors as u
 - [ ] **Step 5: Commit the renderer correction**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-connection-banner.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-connection-banner.js
 git commit -m "fix: surface transcript read application errors"
 ```
 
@@ -117,8 +117,8 @@ git commit -m "fix: surface transcript read application errors"
 ### Task 2: Strict recent-transcript v1-to-v2 upgrade command
 
 **Files:**
-- Create: `cmd/serf-transcript-v2-upgrade/main.go`
-- Create: `cmd/serf-transcript-v2-upgrade/main_test.go`
+- Create: `cmd/evener-transcript-v2-upgrade/main.go`
+- Create: `cmd/evener-transcript-v2-upgrade/main_test.go`
 
 **Interfaces:**
 - Consumes: `transcript.ReadLine`, `transcript.DecodeHeader`, and `transcript.DecodeEntry` from `primeradiant.com/evener/agent/transcript`.
@@ -167,7 +167,7 @@ no `.api.jsonl` fixture changes.
 Run:
 
 ```bash
-go test ./cmd/serf-transcript-v2-upgrade -count=1
+go test ./cmd/evener-transcript-v2-upgrade -count=1
 ```
 
 Expected: FAIL because the command implementation does not exist.
@@ -232,8 +232,8 @@ candidates, but return exit 1 if the final summary contains any errors.
 Run:
 
 ```bash
-go test ./cmd/serf-transcript-v2-upgrade -count=1
-go run ./cmd/serf-transcript-v2-upgrade --help
+go test ./cmd/evener-transcript-v2-upgrade -count=1
+go run ./cmd/evener-transcript-v2-upgrade --help
 ```
 
 Expected: tests pass; help shows required `--root`, default `--since 120h`, and
@@ -242,7 +242,7 @@ opt-in `--apply`.
 - [ ] **Step 7: Commit the upgrade command**
 
 ```bash
-git add cmd/serf-transcript-v2-upgrade/main.go cmd/serf-transcript-v2-upgrade/main_test.go
+git add cmd/evener-transcript-v2-upgrade/main.go cmd/evener-transcript-v2-upgrade/main_test.go
 git commit -m "tools: add bounded transcript v2 upgrader"
 ```
 
@@ -264,7 +264,7 @@ git commit -m "tools: add bounded transcript v2 upgrader"
 In `runtime_pair_build_test.go`, run the checked-in script with `cmd.Dir` set to
 a temporary repository fixture and `PATH` beginning with a fake `go` script.
 The fake compiler must parse `-o`, log its complete argument vector, optionally
-fail for `./cmd/serf-hub/`, and otherwise write the package path into the output.
+fail for `./cmd/evener-hub/`, and otherwise write the package path into the output.
 
 Add:
 
@@ -312,8 +312,8 @@ build_one() {
   fi
 }
 
-build_one serf ./cmd/serf/
-build_one serf-hub ./cmd/serf-hub/
+build_one serf ./cmd/evener/
+build_one serf-hub ./cmd/evener-hub/
 mv "$stage/serf" "$repo_root/serf"
 mv "$stage/serf-hub" "$repo_root/serf-hub"
 ```
@@ -378,10 +378,10 @@ git commit -m "build: rebuild serf runtime binaries as a pair"
 Run:
 
 ```bash
-go test ./cmd/serf-transcript-v2-upgrade -count=1
+go test ./cmd/evener-transcript-v2-upgrade -count=1
 go test . -run 'TestRuntimePairBuild|TestMakeRuntimeAliases' -count=1
-go test ./cmd/serf-hub -count=1
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/serf-hub/jstest/run-all.sh
+go test ./cmd/evener-hub -count=1
+NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh cmd/evener-hub/jstest/run-all.sh
 make test
 ```
 
@@ -393,7 +393,7 @@ Stop `com.primeradiant.serf-hub.codex` and confirm no managed `serf` writer
 processes remain. Then run:
 
 ```bash
-go run ./cmd/serf-transcript-v2-upgrade --root "$HOME/.local/state/serf/projects" --since 120h
+go run ./cmd/evener-transcript-v2-upgrade --root "$HOME/.local/state/serf/projects" --since 120h
 ```
 
 Expected: exit 0 with eligible/skipped/removal counts and no unexplained errors.

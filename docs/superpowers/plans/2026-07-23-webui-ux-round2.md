@@ -4,7 +4,7 @@
 
 **Goal:** Fix the twelve round-2 UX defects Jesse reported clicking around the built SPA (c8gt, 3w2p, vbh8, 4y12, yhmh, 9ct0, qb8e, yd16, tv5k, 677w, yt2q, zrzr) and add a deep foldable subagent tree to the sidebar.
 
-**Architecture:** Pure frontend work in `cmd/serf-hub/frontend` — the §4.3 reversal (spec, 2026-07-23) sources the subagent summary and live status from the child-transcript watch the card already opens, so there is **no Go/wire/codegen change and no generated-types chokepoint**. Work is partitioned into six file-disjoint streams that run in parallel, plus two small shared-infra prerequisites (a store-backed `Disclosure` widget, and a shared floating-popover primitive extracted from the existing Menu) that two streams depend on.
+**Architecture:** Pure frontend work in `cmd/evener-hub/frontend` — the §4.3 reversal (spec, 2026-07-23) sources the subagent summary and live status from the child-transcript watch the card already opens, so there is **no Go/wire/codegen change and no generated-types chokepoint**. Work is partitioned into six file-disjoint streams that run in parallel, plus two small shared-infra prerequisites (a store-backed `Disclosure` widget, and a shared floating-popover primitive extracted from the existing Menu) that two streams depend on.
 
 **Tech Stack:** React 19, TypeScript 6 (strict, `noUncheckedIndexedAccess`), Vite, vanilla-zustand stores, dockview, vitest + jsdom, biome. Design tokens in `src/styles/tokens.css` enforced by `src/styles/token-contract.test.ts`.
 
@@ -16,9 +16,9 @@
 - **New color token:** if ever added, it MUST appear in **both** the dark and light `:root` blocks of `tokens.css` (the contract test fails on dark/light drift). This plan adds none.
 - **Motion budget:** only `--motion-duration-attention` (200ms attention-onset color transition) and `--motion-duration-overlay` (120ms overlay fade-scale). No idle pulses, shimmer, or faked liveness. A "running" indicator shows honest state.
 - **Status widgets:** reuse `StatusDot` (`widgets/statusdot`, 8px dot, states `working|needs-you|failed|idle|ended`) and `Cadence` (`widgets/cadence`, props `{state, frameTimes: number[], now: number}` all required, pure render, 64×10 SVG) — never reinvent them.
-- **Test harness:** `npm run typecheck` (`tsc --noEmit`), `npm test` (`vitest run`), `npm run lint` (`biome ci src`). Run these from `cmd/serf-hub/frontend`. Tests wrap components manually (no shared render helper) and call `cleanup()` per file; use `requireClass` for CSS-module class access.
+- **Test harness:** `npm run typecheck` (`tsc --noEmit`), `npm test` (`vitest run`), `npm run lint` (`biome ci src`). Run these from `cmd/evener-hub/frontend`. Tests wrap components manually (no shared render helper) and call `cleanup()` per file; use `requireClass` for CSS-module class access.
 - **Testing posture (Jesse's steer this phase):** UI/vitest test failures are **not** merge blockers while the UX is being made right (baseline tracked in kata 4wgg). Compile gates — `tsc`, `biome`, `build` — **do** hold. New behavior still gets tests per TDD; the token-contract test in particular MUST stay green.
-- **No Go change:** this plan touches only `cmd/serf-hub/frontend/**`. If a task finds itself editing a `.go` file or `types.gen.ts`, stop — that means the §4.3 reversal was misread.
+- **No Go change:** this plan touches only `cmd/evener-hub/frontend/**`. If a task finds itself editing a `.go` file or `types.gen.ts`, stop — that means the §4.3 reversal was misread.
 
 ## Stream Map (parallelization)
 
@@ -45,11 +45,11 @@ Streams are file-disjoint and can run concurrently, with three ordering edges: *
 Disclosure open/closed state currently lives in component-local `useState` / uncontrolled `<details>` and dies when `VirtualList` unmounts an off-window row or dockview remounts the pane tree. This task builds a shared widget whose open/closed state lives in a module store keyed by a stable id, so it survives remount. It also carries the rotating-chevron affordance §4.1 needs.
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/widgets/disclosure/disclosureStore.ts`
-- Create: `cmd/serf-hub/frontend/src/widgets/disclosure/index.tsx`
-- Create: `cmd/serf-hub/frontend/src/widgets/disclosure/disclosure.module.css`
-- Test: `cmd/serf-hub/frontend/src/widgets/disclosure/disclosureStore.test.ts`
-- Test: `cmd/serf-hub/frontend/src/widgets/disclosure/disclosure.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore.ts`
+- Create: `cmd/evener-hub/frontend/src/widgets/disclosure/index.tsx`
+- Create: `cmd/evener-hub/frontend/src/widgets/disclosure/disclosure.module.css`
+- Test: `cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore.test.ts`
+- Test: `cmd/evener-hub/frontend/src/widgets/disclosure/disclosure.test.tsx`
 
 **Interfaces:**
 - Produces:
@@ -98,7 +98,7 @@ Note: `isDisclosureOpen` is a reactive hook (uses `useStore`), but its return is
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/disclosure/disclosureStore.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/widgets/disclosure/disclosureStore.test.ts`
 Expected: FAIL — module `./disclosureStore` does not exist.
 
 - [ ] **Step 3: Implement the store**
@@ -270,11 +270,11 @@ git commit -m "feat(disclosure): store-backed Disclosure widget surviving remoun
 §3.4 makes every combobox/picker an out-of-flow overlay that never reflows page content. The flip-then-clamp placement + portal already exist but are private to `widgets/menu/index.tsx` (`EDGE_MARGIN`, `TRIGGER_GAP`, `resolveAxis`, `computeMenuPosition`, `createPortal` to `document.body`). Extract the placement math into a shared module so the model combobox (Task 12) and the directory popover (Task 13) reuse the exact same behavior.
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/widgets/popover/computePosition.ts`
-- Create: `cmd/serf-hub/frontend/src/widgets/popover/index.tsx`
-- Create: `cmd/serf-hub/frontend/src/widgets/popover/popover.module.css`
-- Test: `cmd/serf-hub/frontend/src/widgets/popover/computePosition.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/widgets/menu/index.tsx` (re-import the extracted math instead of the local copies — behavior-preserving)
+- Create: `cmd/evener-hub/frontend/src/widgets/popover/computePosition.ts`
+- Create: `cmd/evener-hub/frontend/src/widgets/popover/index.tsx`
+- Create: `cmd/evener-hub/frontend/src/widgets/popover/popover.module.css`
+- Test: `cmd/evener-hub/frontend/src/widgets/popover/computePosition.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/widgets/menu/index.tsx` (re-import the extracted math instead of the local copies — behavior-preserving)
 
 **Interfaces:**
 - Produces:
@@ -369,9 +369,9 @@ git commit -m "feat(popover): shared floating-popover primitive extracted from M
 §4.2's Activity feed renders each child tool-call's **purpose**. The purpose already crosses the wire as `ThreadItem.description` (`types.gen.ts:841`, set server-side) but `wireItemToModel` drops it. Add it to `ItemModel` and copy it across. This is a one-field addition that Task 9 consumes.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/protocol/model.ts:15-62` (add `description?`)
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts:108-131` (`wireItemToModel`)
-- Test: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/model.ts:15-62` (add `description?`)
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts:108-131` (`wireItemToModel`)
+- Test: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
 
 **Interfaces:**
 - Produces: `ItemModel.description?: string` — the tool-call purpose, populated on every hydrate and live path (both fold through `wireItemToModel`).
@@ -407,7 +407,7 @@ Match the existing `testThread(...)` helper's exact shape in this file — read 
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts -t "carries the wire description"`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/protocol/reducer.test.ts -t "carries the wire description"`
 Expected: FAIL — `item.description` is `undefined`.
 
 - [ ] **Step 3: Add the field to `ItemModel`**
@@ -443,8 +443,8 @@ git commit -m "feat(reducer): carry tool-call description onto ItemModel (Activi
 On reload, `TurnsFromFile` mints one wire turn per transcript entry (`apptranscript.go:548`), so the tool CALL (from the assistant entry) and its RESULT (from the tool-results entry) arrive as **two items with the same `callId`, different ids, in separate turns** — rendered as two cards and two `TurnSeparator`s. The Go contract comment says "the client merges the two by call id"; the SPA never did. Fix it as a **cross-turn post-pass** over the assembled `TurnModel[]` in both hydrate paths — the merge cannot live in `wireToTurnModel`, which only ever sees one turn.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/protocol/reducer.ts` (new `mergeToolCallsByCallId` helper; call it in `hydrateThread:253` and `prependOlderTurns:277`)
-- Test: `cmd/serf-hub/frontend/src/protocol/reducer.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts` (new `mergeToolCallsByCallId` helper; call it in `hydrateThread:253` and `prependOlderTurns:277`)
+- Test: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
 
 **Interfaces:**
 - Consumes: `TurnModel`/`ItemModel` from `model.ts`; `wireToTurnModel` output.
@@ -599,11 +599,11 @@ git commit -m "fix(reducer): merge tool call+result by callId on reload (zrzr)"
 Drop the 1200px auto-collapse threshold; `auto` mode docks across the whole desktop range (≥900px, the first non-mobile pixel per `useIsMobile.ts`), matching an app.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/useSidebarMode.ts` (`WIDE_QUERY` at line 17 + doc comments at 8/10/30)
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailHost.test.tsx:54` (asserts `"min-width: 1200px"`; also test names/comments at 31/122/130)
-- Modify: `cmd/serf-hub/frontend/src/panes/settings/sections/theme.tsx:101` (user-facing help copy: "Auto collapses below 1200px and expands above it.")
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailHost.tsx:5,128` and `cmd/serf-hub/frontend/src/stores/prefs.ts:49` (doc comments citing 1200px)
-- Test: `cmd/serf-hub/frontend/src/shell/rail/useSidebarMode.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/useSidebarMode.ts` (`WIDE_QUERY` at line 17 + doc comments at 8/10/30)
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailHost.test.tsx:54` (asserts `"min-width: 1200px"`; also test names/comments at 31/122/130)
+- Modify: `cmd/evener-hub/frontend/src/panes/settings/sections/theme.tsx:101` (user-facing help copy: "Auto collapses below 1200px and expands above it.")
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailHost.tsx:5,128` and `cmd/evener-hub/frontend/src/stores/prefs.ts:49` (doc comments citing 1200px)
+- Test: `cmd/evener-hub/frontend/src/shell/rail/useSidebarMode.test.ts`
 
 **Interfaces:**
 - Consumes/Produces: unchanged `ResolvedSidebar { mode, collapsed }` shape; only the breakpoint value changes.
@@ -614,7 +614,7 @@ In `src/shell/rail/useSidebarMode.test.ts`, change the media-query the `FakeMedi
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/useSidebarMode.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/useSidebarMode.test.ts`
 Expected: FAIL — code still queries 1200px, so the 1000px case still collapses.
 
 - [ ] **Step 3: Change the breakpoint**
@@ -647,9 +647,9 @@ git commit -m "fix(shell): dock sidebar at >=900px, drop 1200px threshold (3w2p)
 The "missing header" is chrome that belongs **inside the sidebar**, not a full-width top bar. Add a header zone (brand + home, a full-width search field showing `⌘K` that opens the palette, a full-width "+ New session" primary button) and a pinned footer zone (identity + settings gear). No full-width row eats vertical space; content runs floor-to-ceiling.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx:303-384` (header/footer scaffold around the existing body)
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.module.css:3-49` (header/footer layout; `.body` already `flex:1 1 auto`)
-- Test: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:303-384` (header/footer scaffold around the existing body)
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.module.css:3-49` (header/footer layout; `.body` already `flex:1 1 auto`)
+- Test: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
 
 **Interfaces:**
 - Consumes: `openPalette` from `shell/palette/paletteController` (existing); the `[data-search-trigger]` global handler in `AppShell.tsx:164-189` already calls `openPalette()` on click of any element carrying that attribute — the new search field just needs `data-search-trigger`.
@@ -715,10 +715,10 @@ The auto-grouping `Needs you` `RailSection` lists a session that ALSO appears un
 > **Decision (Jesse, 2026-07-23):** drop **only** the `Needs you` auto-group; **keep** `Live`, `Pinned`, `Projects`, `Archived`, `Test runs`. Spec §2.2 named only "Needs you" as the duplication defect, so this removes exactly that. A *live* (`active`) session therefore still legitimately appears in both `Live` and its project — that residual duplication is accepted; only the needs-you double-listing is removed.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx:337-343` (delete only the `Needs you` `RailSection` block; keep `Live`/`Pinned`/`Projects`/`Archived`/`Test runs`)
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts` (add a `needsYouDescendantCount` pure helper; needs-you-first sort within a project's sessions)
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx:216-248` (`SessionRow`: derived amber count badge)
-- Test: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`, `RailRow.test.tsx`, `railNodes.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:337-343` (delete only the `Needs you` `RailSection` block; keep `Live`/`Pinned`/`Projects`/`Archived`/`Test runs`)
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts` (add a `needsYouDescendantCount` pure helper; needs-you-first sort within a project's sessions)
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx:216-248` (`SessionRow`: derived amber count badge)
+- Test: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`, `RailRow.test.tsx`, `railNodes.test.ts`
 
 **Interfaces:**
 - Consumes: `TreeProject.sessions[]`, `TreeNode.state`, `TreeNode.children[]` (`stores/tree.ts:28-50` — there is **no** per-session attn count field; only `TreeProject.rollup_attn`). `cadenceStateFor` (`RailRow.tsx:60`, already maps needs-you). `Badge`/`Cadence` (allowlisted).
@@ -744,7 +744,7 @@ Add to `Rail.test.tsx`: seed a tree where the same session appears in both `need
 
 - [ ] **Step 2: Run them, verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts src/shell/rail/Rail.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/railNodes.test.ts src/shell/rail/Rail.test.tsx`
 Expected: FAIL — `needsYouDescendantCount` undefined; the session renders twice.
 
 - [ ] **Step 3: Delete only the Needs-you auto-group**
@@ -801,9 +801,9 @@ git commit -m "fix(rail): inline attention, drop duplicate needs-you grouping (v
 **The recursion already exists:** `toSessionNode` (`railNodes.ts:52-60`) already maps `n.children` into `SessionRailNode.children`, and `SessionRow` already renders a `Chevron` when `info.hasChildren`, so a session's subagent subtree is **already** a deep, per-level-foldable tree today. This task adds the §2.3 row polish that is missing: a short **second activity line** (humanized status), a **right-aligned relative timestamp**, and an `--edge` **hairline guide rail** per nested level. Leaves already show no twisty (empty `children` → `hasChildren` false).
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx` (`SessionRow`: second activity line + relative timestamp; state dot is already honest via `cadenceStateFor`)
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.module.css` (the rail's single stylesheet — **there is no `tree.module.css`**; add `.activity`, `.time`, and a nested-level guide-rail rule)
-- Test: `cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx` (`SessionRow`: second activity line + relative timestamp; state dot is already honest via `cadenceStateFor`)
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.module.css` (the rail's single stylesheet — **there is no `tree.module.css`**; add `.activity`, `.time`, and a nested-level guide-rail rule)
+- Test: `cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx`
 
 **Interfaces:**
 - Consumes: `TreeNode.state` (real; humanized for the activity line), `TreeNode.age?: string` and `TreeNode.updated_at?: string` (real, `tree.ts:44-45` — carried but unused by the row today), `TreeNode.model?: string` (real, `tree.ts:46`). **There is no `agent_type` field** — do not reference one; the second line is built from `state` (and optionally `model`). `cadenceStateFor` (already maps needs-you). `needsYouDescendantCount` from Task 7 (to decide badge-vs-timestamp in the right slot).
@@ -830,7 +830,7 @@ Use the real field names (`state`, `age`, `children`). Confirm the file's harnes
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/shell/rail/RailRow.test.tsx -t "activity line"`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/shell/rail/RailRow.test.tsx -t "activity line"`
 Expected: FAIL — no activity line / timestamp rendered yet.
 
 - [ ] **Step 3: Render the second line + timestamp**
@@ -877,11 +877,11 @@ git commit -m "feat(rail): deep foldable subagent tree + activity line + timesta
 > The steps below are written for **Option B** (honors §4.2). If Jesse picks A, Step 3's `threads.ts` change collapses to flipping `watchReadParams` to `includeTurns:true` and deleting the upgrade logic. This touches the invariant-documented watch machinery, so it is a controller/Jesse call, not an implementer's.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts` (`watchReadParams(ref, includeTurns)`; `watchThread(ref, opts?)` + per-ref `watchIncludeTurns` upgrade-read; interface sig at :109; teardown clears the map)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts` (add `liveKind?: SubagentRowKind` to `SubagentRow`; preserve it across `upsertSubagentRow`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`rowKindFromChildStatus`; `SubagentModule` passes `turnId` to `SubagentRowView`; `SubagentRowView` passes `turnId`+`row.rowKey` to `WatchedChildIndicator`; pill `Chip` uses `row.liveKind ?? row.kind`)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/watchedChild.tsx` (props gain `turnId`+`rowKey`; effect-guarded status write-back)
-- Test: `cmd/serf-hub/frontend/src/stores/threads.test.ts` (includeTurns upgrade), `cmd/serf-hub/frontend/src/panes/session/transcript/tools/watchedChild.test.tsx` (write-back)
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts` (`watchReadParams(ref, includeTurns)`; `watchThread(ref, opts?)` + per-ref `watchIncludeTurns` upgrade-read; interface sig at :109; teardown clears the map)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts` (add `liveKind?: SubagentRowKind` to `SubagentRow`; preserve it across `upsertSubagentRow`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`rowKindFromChildStatus`; `SubagentModule` passes `turnId` to `SubagentRowView`; `SubagentRowView` passes `turnId`+`row.rowKey` to `WatchedChildIndicator`; pill `Chip` uses `row.liveKind ?? row.kind`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/watchedChild.tsx` (props gain `turnId`+`rowKey`; effect-guarded status write-back)
+- Test: `cmd/evener-hub/frontend/src/stores/threads.test.ts` (includeTurns upgrade), `cmd/evener-hub/frontend/src/panes/session/transcript/tools/watchedChild.test.tsx` (write-back)
 
 **Interfaces:**
 - Consumes: `updateSubagentRowIfExists(turnId, rowKey, patch: Partial<SubagentRowInput>)` (`subagentModuleStore.ts:106`); `cadenceStateForStatus(type): CadenceState` (`panes/session/liveness.ts:30`); the child `model.status.type` + `model.turns`.
@@ -898,7 +898,7 @@ In `watchedChild.test.tsx` (mirror its existing FakeClient watch harness): rende
 
 - [ ] **Step 2: Run them, verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/tools/watchedChild.test.tsx src/stores/threads.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/transcript/tools/watchedChild.test.tsx src/stores/threads.test.ts`
 Expected: FAIL — no `liveKind` write-back; the upgrade read is starved by the `.has(ref)` short-circuit.
 
 - [ ] **Step 3: Parameterize the watch read (Option B upgrade) + the store overlay field**
@@ -983,8 +983,8 @@ git commit -m "fix(subagent-card): live status overlay + includeTurns upgrade wa
 Give the subagent card a real disclosure (rotating chevron via the `Disclosure` widget) and, when expanded, a three-layer body: **Mandate** (the delegation `purpose`/task), **Activity** (a live feed of the child's tool-call `description`/purpose fields from the child transcript, latest highlighted while running), **Summary** (the child's final report — its last `agentMessage`). Collapsed stays a one-liner: title + status pill + step count. Depends on Task 9's `includeTurns` watch + status write-back.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`SubagentRowView` → use `Disclosure`; expanded body; pass `{ includeTurns: true }` to the watch)
-- Test: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`SubagentRowView` → use `Disclosure`; expanded body; pass `{ includeTurns: true }` to the watch)
+- Test: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`
 
 **Interfaces:**
 - Consumes: `Disclosure` (Task 1); `ItemModel.description` (Task 3); `watchThread(ref, { includeTurns: true })`, the `SubagentRow.liveKind` overlay, and `rowKindFromChildStatus` (all Task 9); the watched-thread `model.turns[].items[]` (`threadsStore.watchedThreads.get(ref)`); `SubagentRow` fields from `subagentModuleStore.ts`. **`SubagentRowView` already receives `turnId` as of Task 9** — reuse it, don't re-thread.
@@ -1026,8 +1026,8 @@ git commit -m "feat(subagent-card): disclosure + Mandate/Activity/Summary body (
 The child-transcript link works only when done; make it available while the subagent is still running (the opened pane watches the live child thread). And migrate the remaining component-local disclosures — the tool-call rows, the "+N more" fold, and the native `<details>` in `ThinkBlock`/`SteeringItem`/`SystemNotice` — onto the `Disclosure` store so open/closed state survives VirtualList re-windowing and dockview remounts.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`SubagentRowView`: show "Open transcript" while `kind === "running"` too)
-- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx:69-137` (drive `open` from `disclosureStore` keyed by `item.id` instead of local `useState`)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx` (`SubagentRowView`: show "Open transcript" while `kind === "running"` too)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx:69-137` (drive `open` from `disclosureStore` keyed by `item.id` instead of local `useState`)
 - Modify: `messages/ThinkBlock.tsx:85`, `messages/SteeringItem.tsx:50`, `messages/SystemNoticeItem.tsx:90,120` (replace raw `<details>` with `Disclosure`, keyed by `item.id` / first-item id for grouped)
 - Test: `ToolCallItem.test.tsx`, the three message tests
 
@@ -1074,8 +1074,8 @@ git commit -m "feat(transcript): store-backed disclosures + live transcript link
 Replace the read-only chip + separate "Change model" button with a single chip-as-button trigger that opens a floating combobox (never reflows). Fix the **shared closed-state** in `widgets/modelCatalog` so both consumers (spawn and Settings) inherit it. Mirror the in-session `ModelSwitch` trigger over the already-shared `ModelCatalogPanel`, floated via the Task 2 `Popover`.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/widgets/modelCatalog/index.tsx:220-239` (closed-state → chip-as-button trigger + `Popover`)
-- Test: `cmd/serf-hub/frontend/src/widgets/modelCatalog/*.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/modelCatalog/index.tsx:220-239` (closed-state → chip-as-button trigger + `Popover`)
+- Test: `cmd/evener-hub/frontend/src/widgets/modelCatalog/*.test.tsx`
 
 **Interfaces:**
 - Consumes: `Popover` (Task 2); `ModelCatalogPanel` (already extracted, props `{loading, error, catalog, onPick, onCancel}`); the `ModelSwitch.tsx:118-144` trigger shape (button → `Chip` + chevron) to mirror.
@@ -1087,7 +1087,7 @@ In the modelCatalog test: render the closed state; assert clicking the chip trig
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/modelCatalog`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/widgets/modelCatalog`
 Expected: FAIL — closed state still renders the read-only Chip + "Change model" Button inline.
 
 - [ ] **Step 3: Rebuild the closed state as a floating combobox**
@@ -1116,9 +1116,9 @@ git commit -m "feat(model-picker): click-the-chip floating combobox, shared by s
 Collapse the two directory inputs to a single working-directory field with a floating browse popover showing recents / `../` / subfolders. Remove the duplicate second path input and the redundant "Use this directory" button (Enter commits).
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/spawn/DirField.tsx:118-192` (single input; browse popover via `Popover`; drop the second input + button)
-- Modify: `cmd/serf-hub/frontend/src/panes/spawn/dirField.module.css` (popover now via `Popover`; drop the `position:absolute .popup` local float)
-- Test: `cmd/serf-hub/frontend/src/panes/spawn/DirField.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/spawn/DirField.tsx:118-192` (single input; browse popover via `Popover`; drop the second input + button)
+- Modify: `cmd/evener-hub/frontend/src/panes/spawn/dirField.module.css` (popover now via `Popover`; drop the `position:absolute .popup` local float)
+- Test: `cmd/evener-hub/frontend/src/panes/spawn/DirField.test.tsx`
 
 **Interfaces:**
 - Consumes: `Popover` (Task 2); the existing `handleType` (118-129) and commit-on-Enter behavior.
@@ -1158,10 +1158,10 @@ git commit -m "feat(spawn): single directory field with floating browse (yhmh)"
 - The only inner `max-height:280px; overflow:auto` is on `.resolved` (`advancedOptions.module.css:41-51`) — the "Show resolved config" `<pre>` JSON dump, not a wrapper of the form. Removing it there is what "remove the inner 280px scroller" means; the pane's outer scroll is `panescaffold.module.css .body` (`overflow-y:auto`).
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/spawn/AdvancedOptions.tsx:25-33,80-97` (add a `children?: React.ReactNode` prop to `AdvancedOptionsProps`; render it at the top of `.panel`, before the schema `Control`s)
-- Modify: `cmd/serf-hub/frontend/src/panes/spawn/Spawn.tsx:393-400,451-458` (move the Access-mode `FormRow` out of the top-level field grid and into `<AdvancedOptions>{…}</AdvancedOptions>` as children; render `AdvancedOptions` unconditionally instead of gating on `schemaOptions.length > 0`, passing `options={schemaOptions}` — empty is fine)
-- Modify: `cmd/serf-hub/frontend/src/panes/spawn/advancedOptions.module.css:41-51` (delete `max-height: 280px;` and `overflow: auto;` from `.resolved`)
-- Test: `cmd/serf-hub/frontend/src/panes/spawn/Spawn.test.tsx`, `cmd/serf-hub/frontend/src/panes/spawn/AdvancedOptions.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/spawn/AdvancedOptions.tsx:25-33,80-97` (add a `children?: React.ReactNode` prop to `AdvancedOptionsProps`; render it at the top of `.panel`, before the schema `Control`s)
+- Modify: `cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx:393-400,451-458` (move the Access-mode `FormRow` out of the top-level field grid and into `<AdvancedOptions>{…}</AdvancedOptions>` as children; render `AdvancedOptions` unconditionally instead of gating on `schemaOptions.length > 0`, passing `options={schemaOptions}` — empty is fine)
+- Modify: `cmd/evener-hub/frontend/src/panes/spawn/advancedOptions.module.css:41-51` (delete `max-height: 280px;` and `overflow: auto;` from `.resolved`)
+- Test: `cmd/evener-hub/frontend/src/panes/spawn/Spawn.test.tsx`, `cmd/evener-hub/frontend/src/panes/spawn/AdvancedOptions.test.tsx`
 
 **Interfaces:**
 - Consumes: existing `AdvancedOptions` (`{ options, onOverridesChange, validatePath, resolveConfig }`) + `ACCESS_MODE_OPTIONS` (`panes/spawn/accessMode.ts`) + the `Select`/`FormRow` widgets.
@@ -1173,7 +1173,7 @@ In `AdvancedOptions.test.tsx`: render `<AdvancedOptions options={[]} …>{<div d
 
 - [ ] **Step 2: Run them, verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/spawn/AdvancedOptions.test.tsx src/panes/spawn/Spawn.test.tsx -t "Advanced"`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/spawn/AdvancedOptions.test.tsx src/panes/spawn/Spawn.test.tsx -t "Advanced"`
 Expected: FAIL — `AdvancedOptions` ignores children; Access mode still renders at top level.
 
 - [ ] **Step 3: Add the children slot to `AdvancedOptions`**
@@ -1231,9 +1231,9 @@ git commit -m "fix(spawn): one scroll surface, Access mode inside Advanced (9ct0
 A pasted image is fully staged (base64 + decoded W×H) but renders as a text-only chip. Render each image attachment as a thumbnail tile — the actual image, dimensions overlaid, ✕ to remove — and clicking it opens the existing lightbox. Non-image attachments keep a labeled file tile.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx:551-564` (attachment preview → thumbnail tile)
-- Possibly Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/flow/ImageGallery.tsx` (only if the lightbox needs a dimensions overlay / ✕; otherwise reuse as-is via its `Dialog`)
-- Test: `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx:551-564` (attachment preview → thumbnail tile)
+- Possibly Modify: `cmd/evener-hub/frontend/src/panes/session/transcript/flow/ImageGallery.tsx` (only if the lightbox needs a dimensions overlay / ✕; otherwise reuse as-is via its `Dialog`)
+- Test: `cmd/evener-hub/frontend/src/panes/session/composer/Composer.test.tsx`
 
 **Interfaces:**
 - Consumes: `PendingAttachment { marker, name, mediaType, width?, height?, data?, pending }` from `attachments/useAttachments.ts` — build the `src` as `data:${mediaType};base64,${data}` (the stored `data` has no `data:` prefix); `removeItem(marker)` to drop. The existing lightbox is `flow/ImageGallery` (click-to-expand, prev/next, Esc/backdrop close via shared `Dialog`; props `{images: string[]}`; testids `image-gallery-thumb`, `image-gallery-lightbox-img`).
@@ -1245,7 +1245,7 @@ In `Composer.test.tsx` (use the existing `pastePngInto` + `installCanvasStubs` h
 
 - [ ] **Step 2: Run it, verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session -t "thumbnail"`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session -t "thumbnail"`
 Expected: FAIL — current preview is a text-only `<Chip>`.
 
 - [ ] **Step 3: Render the thumbnail tile**
@@ -1270,7 +1270,7 @@ git commit -m "feat(composer): pasted-image thumbnail tile + lightbox (677w)"
 ## Final integration gate (controller-owned, after all streams merge)
 
 - [ ] **Step 1: Merge every stream branch into the integration branch** (controller resolves the one expected `Rail.tsx` overlap between S2 and S3, and the `reducer.ts`/`model.ts` shared edits between Tasks 3 and 4 if they landed on separate branches).
-- [ ] **Step 2: Full typecheck** — `cd cmd/serf-hub/frontend && npm run typecheck`. Expected: clean.
+- [ ] **Step 2: Full typecheck** — `cd cmd/evener-hub/frontend && npm run typecheck`. Expected: clean.
 - [ ] **Step 3: Full lint** — `npm run lint`. Expected: clean (biome).
 - [ ] **Step 4: Full build** — `npm run build`. Expected: succeeds.
 - [ ] **Step 5: Full test run** — `npm test`. Record pass/fail; UI failures are not merge-blockers per the phase steer, but the **token-contract test MUST pass** and any NEW test written in this plan MUST pass. Triage new-vs-baseline failures against kata 4wgg.

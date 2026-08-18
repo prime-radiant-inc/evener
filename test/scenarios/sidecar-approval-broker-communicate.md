@@ -31,7 +31,7 @@ hand it back as an observer callback. Driving mechanism:
   serf-e2e-approval-broker-state-XXXXX)` before starting the hub to keep
   this run's sessions out of Jesse's real
   `~/.local/state/serf/projects` — this only relocates session storage
-  (`cmd/serf-hub/config.go`'s `DefaultStateGlob`), it has no effect on
+  (`cmd/evener-hub/config.go`'s `DefaultStateGlob`), it has no effect on
   the shared credentials/token/lock above. `rm -rf "$XDG_STATE_HOME"` in
   Cleanup.
 
@@ -102,14 +102,14 @@ hand it back as an observer callback. Driving mechanism:
 ## Doctor audit
 
 ```bash
-go run ./cmd/serf-doctor watches "$SID"
-go run ./cmd/serf-doctor tree "$SID" --observers
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$SID" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --count job_status
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
+go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$SID" --count job_list
+go run ./cmd/evener-doctor transcript "$SID" --count job_status
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Cleanup

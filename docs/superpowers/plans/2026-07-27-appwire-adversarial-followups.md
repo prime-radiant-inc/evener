@@ -35,7 +35,7 @@ test-contract improvements and should not require production changes.
 - Preserve the established reconnect backoff, manual retry, heartbeat cleanup,
   handler retirement, notification delivery, and `connect()` idempotency
   behavior outside the exact contract under test.
-- Run focused tests from `cmd/serf-hub/frontend`:
+- Run focused tests from `cmd/evener-hub/frontend`:
   `npx vitest run src/protocol/client.test.ts src/protocol/reconnect.test.ts --no-file-parallelism --maxWorkers=1`.
 - Commit each task independently with a detailed message. Never skip hooks.
 
@@ -43,8 +43,8 @@ test-contract improvements and should not require production changes.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/protocol/reconnect.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/client.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reconnect.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/client.ts`
 
 - [ ] Add a deterministic regression test for the exact reentrant sequence:
   a ready client receives close code `1006`; its `reconnecting` state listener
@@ -71,7 +71,7 @@ test-contract improvements and should not require production changes.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/protocol/reconnect.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reconnect.test.ts`
 
 - [ ] Add a deterministic regression test in which initialization rejects on
   one socket, a replacement socket reaches ready, and the rejected socket later
@@ -92,8 +92,8 @@ test-contract improvements and should not require production changes.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/protocol/client.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/protocol/client.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/client.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/client.ts`
 
 - [ ] Add a deterministic test that calls `close()` on a fresh client and then
   calls `connect()`. Choose and document through assertions the terminal
@@ -115,7 +115,7 @@ test-contract improvements and should not require production changes.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/protocol/reconnect.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reconnect.test.ts`
 
 - [ ] Replace the heartbeat cleanup assertion that requires
   `closeRequests === [undefined]` with a behavioral assertion that exactly one

@@ -35,10 +35,10 @@ shell-source or wording assertions.
 
 **Files:**
 
-- Modify: `cmd/serf-hub/main.go`
-- Modify: `cmd/serf-hub/frontend_hash.go`
+- Modify: `cmd/evener-hub/main.go`
+- Modify: `cmd/evener-hub/frontend_hash.go`
 - Modify: `runtime_pair_build_test.go`
-- Modify: `tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go`
+- Modify: `tools/tool-fluency/cmd/evener-fluency/offline_coverage_test.go`
 - Modify: `identifier/project.go`
 - Modify: `identifier/project_test.go`
 

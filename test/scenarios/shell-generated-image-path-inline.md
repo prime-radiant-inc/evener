@@ -5,7 +5,7 @@ shell command writes an image under the session cwd and prints its path; the
 **server** — never the frontend — scans that output text for image-looking
 paths, validates each against the cwd boundary and the four supported media
 types, and only then mints a descriptor the browser renders. The scan is
-`shellOutputImageCandidates` (`cmd/serf-hub/output_images.go#shellOutputImageCandidates`), reached
+`shellOutputImageCandidates` (`cmd/evener-hub/output_images.go#shellOutputImageCandidates`), reached
 only for `shell` / `exec_command` (`:66-69`); the frontend has no shell-output
 parser at all — `ImageGallery` renders `item.outputImages` and constructs no
 URLs of its own (`ImageGallery.tsx:1-16`). If path inference leaks to the

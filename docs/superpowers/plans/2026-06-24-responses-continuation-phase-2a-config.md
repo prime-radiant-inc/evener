@@ -6,7 +6,7 @@
 
 **Architecture:** Use the existing launch-config pattern: TOML layer field, appwire field, schema row, TUI display/edit support, direct CLI/serve flags, and session snapshot round trip. The setting stores a string because it is a launch/runtime policy enum, not a boolean; runtime selection still uses the disabled endpoint registry and sends no continuation handles.
 
-**Tech Stack:** Go, launchconfig, appwire, cmd/serf flags, agent session config snapshots, deterministic unit tests.
+**Tech Stack:** Go, launchconfig, appwire, cmd/evener flags, agent session config snapshots, deterministic unit tests.
 
 ---
 
@@ -15,10 +15,10 @@
 - `agent/session_config.go`: add `OpenAIResponsesContinuation string` and snapshot conversion.
 - `agent/schema/config_snapshot.go`: persist the setting on session metadata.
 - `agent/snapshot_golden_test.go`: keep snapshot converter fidelity covering the new field.
-- `cmd/serf/main.go` and `cmd/serf/serve.go`: add `--openai-responses-continuation` and thread into `SessionConfig`.
-- `cmd/serf-hub/internal/launchconfig/*.go`: add layered launch config, schema, appwire conversion, and args projection.
+- `cmd/evener/main.go` and `cmd/evener/serve.go`: add `--openai-responses-continuation` and thread into `SessionConfig`.
+- `cmd/evener-hub/internal/launchconfig/*.go`: add layered launch config, schema, appwire conversion, and args projection.
 - `appwire/types.go`: add the wire field.
-- `cmd/serf-tui/internal/launchconfig/*.go`: make the schema-driven TUI display and edit the enum.
+- `cmd/evener-tui/internal/launchconfig/*.go`: make the schema-driven TUI display and edit the enum.
 
 ## Non-Goals
 
@@ -61,8 +61,8 @@ Expected: PASS.
 ### Task 2: Add Direct CLI and Serve Flags
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf/serve.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener/serve.go`
 
 - [ ] **Step 1: Add flags**
 
@@ -77,7 +77,7 @@ Set `SessionConfig.OpenAIResponsesContinuation` from the flag on new sessions. F
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'Test' -count=1
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'Test' -count=1
 ```
 
 Expected: PASS.
@@ -86,12 +86,12 @@ Expected: PASS.
 
 **Files:**
 - Modify: `appwire/types.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/types.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/merge.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/wire.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/args.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/schema.go`
-- Modify: `cmd/serf-hub/internal/launchconfig/*_test.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/types.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/merge.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/wire.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/args.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/schema.go`
+- Modify: `cmd/evener-hub/internal/launchconfig/*_test.go`
 
 - [ ] **Step 1: Add failing tests**
 
@@ -111,7 +111,7 @@ Add the string field to TOML/appwire structs, merge logic, wire conversion, args
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run 'TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run 'TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs' -count=1 -v
 ```
 
 Expected: PASS.
@@ -119,9 +119,9 @@ Expected: PASS.
 ### Task 4: Add TUI Launch Config Support
 
 **Files:**
-- Modify: `cmd/serf-tui/internal/launchconfig/launch_schema.go`
-- Modify: `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go`
-- Modify: `cmd/serf-tui/internal/launchconfig/*_test.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/launch_schema.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/launch_settings_panel.go`
+- Modify: `cmd/evener-tui/internal/launchconfig/*_test.go`
 
 - [ ] **Step 1: Add failing TUI tests**
 
@@ -136,7 +136,7 @@ Add `openai_responses_continuation` to schema row value extraction, static fallb
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-tui/internal/launchconfig -run 'TestSchemaRows|TestLaunchSettings' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-tui/internal/launchconfig -run 'TestSchemaRows|TestLaunchSettings' -count=1 -v
 ```
 
 Expected: PASS.
@@ -151,7 +151,7 @@ Expected: PASS.
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/serf ./cmd/serf-hub/internal/launchconfig ./cmd/serf-tui/internal/launchconfig -run 'TestConfigSnapshot_ConverterFidelity|TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs|TestSchemaRows|TestLaunchSettings|Test' -count=1
+GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'TestConfigSnapshot_ConverterFidelity|TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs|TestSchemaRows|TestLaunchSettings|Test' -count=1
 git diff --check
 ```
 

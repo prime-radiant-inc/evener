@@ -2,7 +2,7 @@
 
 ## Context
 
-The desktop shell currently applies `padding: var(--space-4)` to the shared `.content` row in `cmd/serf-hub/frontend/src/shell/AppShell.module.css`. Because the desktop `RailHost` is the first flex child, that parent padding creates visible insets around the left sidebar on all four sides.
+The desktop shell currently applies `padding: var(--space-4)` to the shared `.content` row in `cmd/evener-hub/frontend/src/shell/AppShell.module.css`. Because the desktop `RailHost` is the first flex child, that parent padding creates visible insets around the left sidebar on all four sides.
 
 ## Design
 

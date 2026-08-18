@@ -21,7 +21,7 @@ A freshly built `serf-hub` and a seeded large *past* session, both in an
 isolated state dir (own `$HOME`/state, kernel-assigned port — see the Setup
 checklist in `docs/agentic-testing.md`; never touch a real hub):
 
-1. `go build -o "$run/serf-hub" ./cmd/serf-hub`
+1. `go build -o "$run/serf-hub" ./cmd/evener-hub`
 2. Seed `$run/state/projects/bigproj/sessions/<id>.{meta.json,transcript.jsonl}`
    with ~60 user/assistant pairs (120 appwire turns). Use a throwaway `main`
    that calls `schema.SaveSessionMeta` + `transcript.NewWriter` /

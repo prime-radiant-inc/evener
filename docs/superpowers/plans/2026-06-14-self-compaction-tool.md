@@ -6,7 +6,7 @@
 
 **Architecture:** The capability is strategy-independent. Agent-triggered compaction runs through `Manager.ForceCompact` (the shared `Manager` seam) at the tool-round tail. An agent-authored `note_to_self` is persisted in `SessionMeta` and re-stamped verbatim into history at every compaction via `runPreCompactHook` (the same once-per-compaction callback that preserves the goal objective). Optional `compaction_instructions` steer the summarizer prompt. A best-effort warning nudge and a raised auto-summary threshold cover the "agent never compacts" case.
 
-**Tech Stack:** Go. Packages: `agent`, `agent/internal/contextmgr`, `agent/schema`, `agent/internal/tool`, `cmd/serf-tui`. Test with `go test`.
+**Tech Stack:** Go. Packages: `agent`, `agent/internal/contextmgr`, `agent/schema`, `agent/internal/tool`, `cmd/evener-tui`. Test with `go test`.
 
 **Spec:** `docs/superpowers/specs/2026-06-14-self-compaction-tool-design.md` (read it; this plan implements it).
 
@@ -992,9 +992,9 @@ git commit -m "feat(agent): best-effort self-compact nudge; unify user warning o
 ### Task 10: TUI thresholds track config (no hardcoded 0.90)
 
 **Files:**
-- Modify: `cmd/serf-tui/statusbar.go` (`:13`, `:63`, `:65`)
-- Modify: `cmd/serf-tui/hub_status.go` (the `compactAt` computation)
-- Test: `cmd/serf-tui/statusbar_test.go` (if present) or add one
+- Modify: `cmd/evener-tui/statusbar.go` (`:13`, `:63`, `:65`)
+- Modify: `cmd/evener-tui/hub_status.go` (the `compactAt` computation)
+- Test: `cmd/evener-tui/statusbar_test.go` (if present) or add one
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1015,7 +1015,7 @@ func TestStatusBar_CompactColorTracksThreshold(t *testing.T) {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `go test ./cmd/serf-tui/ -run TestStatusBar_CompactColor -v`
+Run: `go test ./cmd/evener-tui/ -run TestStatusBar_CompactColor -v`
 Expected: FAIL — color band hardcoded at 0.90.
 
 - [ ] **Step 3: Source both thresholds from config/info, replace the literals**
@@ -1027,13 +1027,13 @@ Expected: FAIL — color band hardcoded at 0.90.
 
 - [ ] **Step 4: Run to verify green**
 
-Run: `go test ./cmd/serf-tui/ -v && go build ./...`
+Run: `go test ./cmd/evener-tui/ -v && go build ./...`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/statusbar.go cmd/serf-tui/hub_status.go cmd/serf-tui/statusbar_test.go
+git add cmd/evener-tui/statusbar.go cmd/evener-tui/hub_status.go cmd/evener-tui/statusbar_test.go
 git commit -m "fix(serf-tui): source compaction thresholds from config, drop hardcoded 0.90"
 ```
 
@@ -1129,7 +1129,7 @@ git commit -m "docs(context): document the agent-invoked self-compaction tool"
 
 ```bash
 go build ./...
-go test ./agent/... ./cmd/serf-tui/...
+go test ./agent/... ./cmd/evener-tui/...
 go test -race ./agent/ -run 'Compact|Nudge|PinnedNote'
 ```
 Expected: all PASS, clean build, no race. Test output PRISTINE (no stray error logs; intentional error paths assert their output).

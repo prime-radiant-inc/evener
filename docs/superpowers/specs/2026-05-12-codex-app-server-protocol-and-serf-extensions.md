@@ -45,13 +45,13 @@ Primary Serf evidence:
 - [`internal/appwire/ws_transport.go`](../../../internal/appwire/ws_transport.go)
 - [`internal/appsource/source.go`](../../../internal/appsource/source.go)
 - [`internal/appsource/codex_source.go`](../../../internal/appsource/codex_source.go)
-- [`cmd/serf-hub/app_rpc.go`](../../../cmd/serf-hub/app_rpc.go)
-- [`cmd/serf-hub/app_auth.go`](../../../cmd/serf-hub/app_auth.go)
-- [`cmd/serf-hub/config.go`](../../../cmd/serf-hub/config.go)
-- [`cmd/serf-hub/web.go`](../../../cmd/serf-hub/web.go)
-- [`cmd/serf-hub/assets/appwire.js`](../../../cmd/serf-hub/assets/appwire.js)
+- [`cmd/evener-hub/app_rpc.go`](../../../cmd/evener-hub/app_rpc.go)
+- [`cmd/evener-hub/app_auth.go`](../../../cmd/evener-hub/app_auth.go)
+- [`cmd/evener-hub/config.go`](../../../cmd/evener-hub/config.go)
+- [`cmd/evener-hub/web.go`](../../../cmd/evener-hub/web.go)
+- [`cmd/evener-hub/assets/appwire.js`](../../../cmd/evener-hub/assets/appwire.js)
 - [`internal/auth/openai`](../../../internal/auth/openai)
-- [`cmd/serf-tui/hub_model.go`](../../../cmd/serf-tui/hub_model.go)
+- [`cmd/evener-tui/hub_model.go`](../../../cmd/evener-tui/hub_model.go)
 
 ## Claim Types
 
@@ -236,7 +236,7 @@ Current Serf:
 - Hub fans source notifications out to app-server clients after starting a relay with `SubscribeThread`.
 - Web converts AppWire notifications to its SSE event vocabulary.
 - TUI applies AppWire notifications directly into its hub session model.
-- `cmd/serf-hub/assets/appwire.js` also contains a browser-side AppWire notification reducer.
+- `cmd/evener-hub/assets/appwire.js` also contains a browser-side AppWire notification reducer.
 
 Open questions:
 

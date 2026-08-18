@@ -77,7 +77,7 @@ Keep the CLI explicit but isolate auth internals from the LLM provider adapter.
 
 ### CLI surface
 
-Modify `cmd/serf/main.go` to dispatch a new top-level `openai` command family:
+Modify `cmd/evener/main.go` to dispatch a new top-level `openai` command family:
 
 - `serf openai login`
 - `serf openai logout`
@@ -231,13 +231,13 @@ The CLI auth commands should accept the same state-dir override behavior so user
 
 ### CLI
 
-- `cmd/serf/main.go`
+- `cmd/evener/main.go`
   - add `openai` subcommand dispatch
 
 - New command files, for example:
-  - `cmd/serf/openai_login.go`
-  - `cmd/serf/openai_logout.go`
-  - `cmd/serf/openai_status.go`
+  - `cmd/evener/openai_login.go`
+  - `cmd/evener/openai_logout.go`
+  - `cmd/evener/openai_status.go`
 
 ### Shared helpers
 
@@ -247,9 +247,9 @@ The CLI auth commands should accept the same state-dir override behavior so user
 
 ### Runtime
 
-- `cmd/serf/run.go`
-- `cmd/serf/serve.go`
-- `cmd/serf-tui/embedded.go`
+- `cmd/evener/run.go`
+- `cmd/evener/serve.go`
+- `cmd/evener-tui/embedded.go`
 
 These must construct runtime sessions so the OpenAI adapter can find the same state-dir-backed auth that the CLI commands write.
 

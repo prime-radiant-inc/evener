@@ -273,7 +273,7 @@ Only the narrative-summary gate is raised; all three configurable.
 **Knock-on changes the raise requires (do not omit):**
 - `agent/context_strategy_test.go` scaled-defaults assertion `0.45` → `0.475` (the clamped
   sibling at the same test stays `0.20`).
-- `cmd/serf-tui/statusbar.go` hardcodes the threshold in **two** places that both must change
+- `cmd/evener-tui/statusbar.go` hardcodes the threshold in **two** places that both must change
   (and ideally be sourced from config so neither can drift again): the `const compactThreshold
   = 0.90` (line 13, consumed by `hub_status.go` for the "tokens-to-compact" figure) **and** the
   independent literal `case ratio >= 0.90:` color band (line 63). The `0.75` band on the next
@@ -312,7 +312,7 @@ worst-case single-turn growth against the smallest supported window during imple
   history-scan approach.)
 - `agent/session_tool_registry.go`: `toolDeps` forwarders; register the non-read-only `compact`
   core tool.
-- `cmd/serf-tui/statusbar.go` (+ `hub_status.go`): replace **both** hardcoded `0.90` literals
+- `cmd/evener-tui/statusbar.go` (+ `hub_status.go`): replace **both** hardcoded `0.90` literals
   (the `compactThreshold` const at line 13 and the `case ratio >= 0.90` band at line 63), and
   the `0.75` band, with config-sourced values that track `SummarizeThreshold`/`WarnThreshold`.
 - `docs/design/context.md`: document the tool, the pinned note, the nudge, the threshold

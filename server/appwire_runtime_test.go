@@ -130,7 +130,7 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // Steer comes from `active` -- the reservation plus the processing flag, which
 // is also what the wire publishes as the thread's status. Interrupt came from
 // the ambient cancelFunc, which the session loop arms and clears once per turn,
-// and cmd/serf/serve.go's drain path (nextTurnCtx) published processing BEFORE
+// and cmd/evener/serve.go's drain path (nextTurnCtx) published processing BEFORE
 // arming it, where the other two arming sites do it the other way round. In
 // between, this set said steer=true interrupt=false -- and a composer applying
 // it draws Steer and Send with no Stop, which is the shape Jesse reported.
@@ -405,7 +405,7 @@ func TestAppTurnSnapshotReducesAssistantMessageReset(t *testing.T) {
 // authoritative state.
 //
 // The item shape must match the frontend reducer exactly
-// (cmd/serf-hub/frontend/src/protocol/reducer.ts:777-790), including the
+// (cmd/evener-hub/frontend/src/protocol/reducer.ts:777-790), including the
 // per-turn steering index in the ID, so a rejoin projects what the live pane
 // already rendered.
 func TestAppTurnSnapshotReducesSteeringIntoActiveTurn(t *testing.T) {

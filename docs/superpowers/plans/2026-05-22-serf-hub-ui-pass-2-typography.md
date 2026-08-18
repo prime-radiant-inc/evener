@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Switch every selector in `cmd/serf-hub/assets/style.css` that sets `font-size`, `font-family`, or `line-height` to use the typography tokens introduced in Pass 1. After this pass ships, all type in the hub is one of `Hanken Grotesk` (sans, inherited from `body`) or `JetBrains Mono` (explicit `var(--font-mono)`), sized from the `--text-*` scale, with leading from `--leading-*`.
+**Goal:** Switch every selector in `cmd/evener-hub/assets/style.css` that sets `font-size`, `font-family`, or `line-height` to use the typography tokens introduced in Pass 1. After this pass ships, all type in the hub is one of `Hanken Grotesk` (sans, inherited from `body`) or `JetBrains Mono` (explicit `var(--font-mono)`), sized from the `--text-*` scale, with leading from `--leading-*`.
 
 **Scope:** CSS only. No template, JS, or Go changes. Every literal font-size, system-font stack, or numeric line-height becomes a token. The single visual side effect is the actual font swap (system sans → Hanken; `ui-monospace` → JetBrains Mono) and a handful of tiny size rounds (`14.5` → `14`, `12.5` → `12`, `11.5` → `12`, `10.5` → `10`, `9` → `10` where the glyph allows).
 
@@ -91,13 +91,13 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## File structure
 
-- Modify `cmd/serf-hub/assets/style.css` — every section migrates one task at a time. No new files.
+- Modify `cmd/evener-hub/assets/style.css` — every section migrates one task at a time. No new files.
 
 ---
 
 ## Task 1: Switch body font-family to sans; add `.mono` utility
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 112–119 (`body` rule) and 248 (`body.app` rule). Append `.mono` utility class immediately after the `body.app` rule (around line 249).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 112–119 (`body` rule) and 248 (`body.app` rule). Append `.mono` utility class immediately after the `body.app` rule (around line 249).
 
 - [ ] **Step 1 — read context.** Confirm lines 112–119 and 248 still match the before-block below. Also confirm `--font-sans` and `--font-mono` are defined on `:root` from Pass 1 (search for `--font-sans:` in the file). If they are missing, stop and re-run Pass 1.
 
@@ -158,7 +158,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 2: Migrate page-header and workspace-header surfaces
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 120–147 (page-header + section.panel h2), 251–252 (`sidebar-loading`, `workspace-empty`), 333–358 (workspace header + meta + actions + rule-dot + status-pill + conversation rule).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 120–147 (page-header + section.panel h2), 251–252 (`sidebar-loading`, `workspace-empty`), 333–358 (workspace header + meta + actions + rule-dot + status-pill + conversation rule).
 
 - [ ] **Step 1 — read context.** Re-read lines 120–147 and 333–358. Note `.conversation` at line 357 has `font-size: 15px; line-height: 1.7;` — that's the conversation body. Per spec it sits at `--text-md / --leading-normal`. `.workspace-title .title` is 15px sans — becomes `--text-lg`. `.workspace-meta` is 11.5px (mono cluster per spec) — becomes `--text-xs` + mono.
 
@@ -262,7 +262,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 3: Migrate sidebar selectors
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 255–331 (sidebar root, sidebar-header, sidebar-action, section/project headers, rows, dots, meta, fork-original-banner).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 255–331 (sidebar root, sidebar-header, sidebar-action, section/project headers, rows, dots, meta, fork-original-banner).
 
 - [ ] **Step 1 — read context.** Re-read lines 255–331. Note: today there is no `.sb-row`; today's classes are `.session-row`, `.subagent-row`, `.fork-row`, `.live-row`. Pass 5 introduces `.sb-row`. In Pass 2 we just migrate the existing class typography. The sidebar root sets `font-size: 12px` and everything under it inherits — many child rules don't restate font-size. Per cheatsheet, **session title is sans `--text-base` (13)**, and meta lines are mono `--text-2xs`. We surface this by setting the body type on the row itself and explicit mono on meta.
 
@@ -370,7 +370,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 4: Migrate conversation tier — user pill, assistant body, system-line, steering, banner, diagnostic
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 446–466 (user pill, user message, image lightbox, assistant message + code + pre), 517–571 (subagent-reference + diagnostic + banner + system-line + task-system-detail), 578–585 (steering).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 446–466 (user pill, user message, image lightbox, assistant message + code + pre), 517–571 (subagent-reference + diagnostic + banner + system-line + task-system-detail), 578–585 (steering).
 
 - [ ] **Step 1 — read context.** Re-read lines 446–466 and 517–585. The user pill is sans 14.5 / 1.55 — rounds to `--text-md / --leading-snug`. The assistant body is sans 13 / 1.6 — becomes `--text-base / --leading-normal`, per cheatsheet conversation body. (Note: cheatsheet says `--text-md` for both, but assistant message also has `max-width: 680px`. We bump to `--text-md` to match the user pill and the A/B planned in §137 of the design language; if the live experiment lands on 13, a follow-up moves it back.)
 
@@ -550,7 +550,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 5: Migrate tool-call cluster — tool-call, diff-body, shell-output, cheap-tool-*, task-list-body, fetch/search-body
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 468–515.
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 468–515.
 
 - [ ] **Step 1 — read context.** Re-read lines 468–515. Every selector in this block carries mono content — tool calls, diffs, shell output, task ids, search bodies. Most explicitly declare `font-family: ui-monospace, ...`; some inherit from parent but the meaning is mono. Per cheatsheet, all of this is `--text-sm` mono (tool calls + diff body) with mono substitution.
 
@@ -680,7 +680,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 6: Migrate composer — input-card, message-input, queue-preview, attachments, input-controls, input-status
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 367–437 (queue-preview, attachment-chip, composer-attachment*, input-card, message-input, input-controls, running-indicator, input-btn*, input-chip, input-status, generic .context/.cost).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 367–437 (queue-preview, attachment-chip, composer-attachment*, input-card, message-input, input-controls, running-indicator, input-btn*, input-chip, input-status, generic .context/.cost).
 
 - [ ] **Step 1 — read context.** Re-read lines 367–437. Per cheatsheet, composer textarea is **sans `--text-md / 400`** (you're writing prose), and the bottom status row (cwd · branch · ctx · cost) is **mono `--text-xs / 400`**. Buttons inherit `font: inherit` from body, plus the explicit `font-size: 11.5px` rounding up to `--text-sm`.
 
@@ -801,7 +801,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 7: Migrate spawn surface — spawn-prompt, spawn-subtitle, chips, spawn-input, spawn-advanced, spawn-recent
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 599–663 (spawn-pane, spawn-form, spawn-prompt, spawn-subtitle, spawn-chips, chip + chip-label + chip-value + chip-caret + chip-mode + chip-picker + chip-picker-option, spawn-input-wrap, spawn-input, spawn-attach-row, spawn-attach-btn, spawn-advanced + descendants, spawn-actions, spawn-btn, spawn-recent + descendants, fork-confirm kbd).
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 599–663 (spawn-pane, spawn-form, spawn-prompt, spawn-subtitle, spawn-chips, chip + chip-label + chip-value + chip-caret + chip-mode + chip-picker + chip-picker-option, spawn-input-wrap, spawn-input, spawn-attach-row, spawn-attach-btn, spawn-advanced + descendants, spawn-actions, spawn-btn, spawn-recent + descendants, fork-confirm kbd).
 
 - [ ] **Step 1 — read context.** Re-read lines 599–663. Spawn prompt is the largest text in the app per cheatsheet — `--text-2xl / 600 / -0.018em`. Chips are mono key + value composition. Spawn input is sans (writing prose). Advanced section is mono labels.
 
@@ -936,7 +936,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 8: Migrate settings, credentials, fork dialog, search palette, pickers, panels, optimistic
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` lines 587–596 (fork-dialog* — note: lines re-anchor after Tasks 2–7; rely on selector context, not line numbers, when applying), 666–727 (chip-picker-wide, search palette + descendants, search-hit), 729–810 (settings page + descendants + status-pill variants + settings-launch-form + sp-* pickers + settings-add-row + settings-items-list), 813–823 (title-action, details-panel + descendants), 826–864 (conversation-empty, tasks-* panel), 989–1002 (credentials), 1011–1029 (optimistic-failed-reason, optimistic-retry). Skip the responsive `@media (max-width: 767px)` block — it gets re-checked in Task 9.
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` lines 587–596 (fork-dialog* — note: lines re-anchor after Tasks 2–7; rely on selector context, not line numbers, when applying), 666–727 (chip-picker-wide, search palette + descendants, search-hit), 729–810 (settings page + descendants + status-pill variants + settings-launch-form + sp-* pickers + settings-add-row + settings-items-list), 813–823 (title-action, details-panel + descendants), 826–864 (conversation-empty, tasks-* panel), 989–1002 (credentials), 1011–1029 (optimistic-failed-reason, optimistic-retry). Skip the responsive `@media (max-width: 767px)` block — it gets re-checked in Task 9.
 
 - [ ] **Step 1 — read context.** Re-read each block. Note: `.status-pill` variants under `.settings-row-title` should retain their colored backgrounds for Pass 2 (Pass 4 strips backgrounds and replaces the class with `.status-badge`); we just migrate type. Per cheatsheet, settings dt is sans 13/500, dd is mono 12/400, help is sans 11/350. Search palette result rows are sans body; cmd ids are mono 11.
 
@@ -1309,9 +1309,9 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 ## Task 9: Replace remaining line-height literals; sweep the responsive media query
 
-- [ ] **Files:** Modify `cmd/serf-hub/assets/style.css` — scan for every remaining numeric `line-height:` value (Tasks 2–8 handled the conversation cluster, diagnostic, banner, system-line, steering, message-input, spawn-input, spawn-advanced-textarea, search-help, task-row, task-prompt). Then sweep the `@media (max-width: 767px)` block at lines 875–986 for any font-size literals.
+- [ ] **Files:** Modify `cmd/evener-hub/assets/style.css` — scan for every remaining numeric `line-height:` value (Tasks 2–8 handled the conversation cluster, diagnostic, banner, system-line, steering, message-input, spawn-input, spawn-advanced-textarea, search-help, task-row, task-prompt). Then sweep the `@media (max-width: 767px)` block at lines 875–986 for any font-size literals.
 
-- [ ] **Step 1 — read context.** Run `grep -n "line-height:" cmd/serf-hub/assets/style.css` and `grep -n "font-size:" cmd/serf-hub/assets/style.css | grep -v "var(--text"`. Cross-check each hit against the changes already applied. Expected remaining literals:
+- [ ] **Step 1 — read context.** Run `grep -n "line-height:" cmd/evener-hub/assets/style.css` and `grep -n "font-size:" cmd/evener-hub/assets/style.css | grep -v "var(--text"`. Cross-check each hit against the changes already applied. Expected remaining literals:
   - `.settings-help { ... line-height: 1.6; }` — already updated in Task 8 to `--leading-snug`. (1.5 is closer than 1.6; the cheatsheet implies tight help text.)
   - `.settings-row-desc { line-height: 1.5; ... }` — updated in Task 8 to `--leading-snug`.
   - `.shell-output / .cheap-tool-args / .cheap-tool-output { line-height: 1.4; }` — updated in Task 5 to `--leading-tight` (1.3).
@@ -1368,8 +1368,8 @@ Voice-by-surface map (paste this on the side of your monitor):
   Then run the sweep:
 
   ```bash
-  grep -nE "font-size:\s*[0-9]" cmd/serf-hub/assets/style.css | grep -v "0\.85em" | grep -v "9px"
-  grep -nE "line-height:\s*1\.(4|45|5|55|6|7)" cmd/serf-hub/assets/style.css
+  grep -nE "font-size:\s*[0-9]" cmd/evener-hub/assets/style.css | grep -v "0\.85em" | grep -v "9px"
+  grep -nE "line-height:\s*1\.(4|45|5|55|6|7)" cmd/evener-hub/assets/style.css
   ```
 
   Both must come back empty except for:

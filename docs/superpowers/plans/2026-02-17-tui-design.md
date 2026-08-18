@@ -18,7 +18,7 @@ An interactive TUI for serf built as a daemon/client architecture. The serf agen
 │   serf-tui      │◄──── SSE events ─────►│   serf serve    │
 │  (Bubble Tea)   │──── REST input ──────►│  (HTTP server)  │
 │                 │                        │                 │
-│  cmd/serf-tui/  │                        │  cmd/serf/      │
+│  cmd/evener-tui/  │                        │  cmd/evener/      │
 └─────────────────┘                        └────────┬────────┘
                                                     │
                                            ┌────────▼────────┐
@@ -66,7 +66,7 @@ New package: `server/` (stdlib `net/http` only, no new dependencies).
 
 ## TUI Client
 
-New binary: `cmd/serf-tui/`. Bubble Tea application.
+New binary: `cmd/evener-tui/`. Bubble Tea application.
 
 ### Dependencies
 
@@ -143,7 +143,7 @@ server/
   server.go          Server struct, routes, lifecycle
   sse.go             SSE client management, ring buffer, fan-out
 
-cmd/serf-tui/
+cmd/evener-tui/
   main.go            CLI flags (--addr), connect, run
   model.go           Top-level Bubble Tea model
   viewport.go        Message stream / scrollable area
@@ -156,7 +156,7 @@ cmd/serf-tui/
 
 - `agent/` — no changes. Server consumes the existing Session API and Events() channel.
 - `llm/` — no changes.
-- `cmd/serf/` — gains a `serve` subcommand. Existing CLI behavior unchanged.
+- `cmd/evener/` — gains a `serve` subcommand. Existing CLI behavior unchanged.
 
 ## Design Decisions
 

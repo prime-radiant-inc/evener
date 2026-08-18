@@ -790,8 +790,8 @@ Resize to approximately 390×844 CSS pixels and verify the sidebar remains usabl
 
 ```bash
 rm -f /tmp/serf-subagent-sidebar-check.js
-git diff --name-only HEAD~2..HEAD -- cmd/serf-hub agent internal hubapi appwire
-test -z "$(git diff --name-only HEAD~2..HEAD -- cmd/serf-hub agent internal hubapi appwire)"
+git diff --name-only HEAD~2..HEAD -- cmd/evener-hub agent internal hubapi appwire
+test -z "$(git diff --name-only HEAD~2..HEAD -- cmd/evener-hub agent internal hubapi appwire)"
 ```
 
 Expected: the production-path diff is empty.

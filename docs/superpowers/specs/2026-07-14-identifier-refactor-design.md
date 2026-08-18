@@ -218,9 +218,9 @@ Git origin URLs no longer participate in project identity. Two clones at differe
 Replace these existing implementations and their callers:
 
 - runtime state bucket hashing in `agent/runtime_dir.go`;
-- launch-config hashing in `cmd/serf-hub/internal/launchconfig/paths.go`;
+- launch-config hashing in `cmd/evener-hub/internal/launchconfig/paths.go`;
 - managed-worktree project IDs in `agent/internal/worktree/name.go`;
-- hub project slugs in `cmd/serf-hub/internal/hubcore/tree.go`.
+- hub project slugs in `cmd/evener-hub/internal/hubcore/tree.go`.
 
 The implementation plan must search again from the target commit and include any new project-key producers added after this design.
 

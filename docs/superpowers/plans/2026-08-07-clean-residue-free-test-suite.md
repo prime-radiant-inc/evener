@@ -29,9 +29,9 @@
 ### Task 1: Give Every Frontend Test One Fast, Correct Runner
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/package.json`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs`
+- Modify: `cmd/evener-hub/frontend/package.json`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs`
 
 **Interfaces:**
 - Consumes: `probeBrowserCapability(spawnProcess)` and the existing `npm test` script.
@@ -72,7 +72,7 @@ a one-off wrapper that calls `spawnChromeThatNeverStarts()` and emits on its
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 node --test --test-name-pattern='includes Chrome binary path' scripts/layoutguard/cdp.test.mjs
 ```
 
@@ -111,7 +111,7 @@ must remain in that runner.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write package.json scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs
 node --test scripts/layoutguard/cdp.test.mjs
 npm test
@@ -135,7 +135,7 @@ lines and no internal debug output or stack trace.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/package.json cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs
+git add cmd/evener-hub/frontend/package.json cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs
 git commit -m "fix(webtest): isolate Node tests from Vitest"
 ```
 
@@ -149,7 +149,7 @@ used to verify it.
 - Modify: `identifier_audit_test.go`
 
 **Interfaces:**
-- Consumes: `identifierSHA256Inventory` and `frontendDistHash` in `cmd/serf-hub/frontend_hash.go`.
+- Consumes: `identifierSHA256Inventory` and `frontendDistHash` in `cmd/evener-hub/frontend_hash.go`.
 - Produces: an exact closed-world audit entry for `sha256.New()` in `frontendDistHash`; no hash implementation changes.
 
 - [ ] **Step 1: Verify the existing audit is red**
@@ -160,17 +160,17 @@ Run:
 go test . -run '^TestIdentifierAudit$' -count=1
 ```
 
-Expected: FAIL naming `cmd/serf-hub/frontend_hash.go`, the `crypto/sha256`
+Expected: FAIL naming `cmd/evener-hub/frontend_hash.go`, the `crypto/sha256`
 import, and its missing closed-world inventory entry.
 
 - [ ] **Step 2: Add the reviewed inventory entry**
 
-Add this entry beside the other `cmd/serf-hub` content hashes:
+Add this entry beside the other `cmd/evener-hub` content hashes:
 
 ```go
 	// Fingerprints the complete embedded frontend distribution so operators can
 	// identify deployed assets. The digest describes content; it is not a domain identifier.
-	"cmd/serf-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
+	"cmd/evener-hub/frontend_hash.go": {"frontendDistHash": {"New()": true}},
 ```
 
 Do not add backward compatibility or change the hash algorithm.
@@ -181,7 +181,7 @@ Run:
 
 ```bash
 go test . -run '^TestIdentifierAudit$' -count=1
-go test ./cmd/serf-hub -run '^TestFrontendDistHash' -count=1
+go test ./cmd/evener-hub -run '^TestFrontendDistHash' -count=1
 ```
 
 Expected: both commands pass.
@@ -199,7 +199,7 @@ than a Serf domain identifier and record the focused test evidence.
 ### Task 3: Remove the Dev-Tooling Test's Ambient Wall-Clock Assertion
 
 **Files:**
-- Modify: `cmd/serf-test-dev-tooling/wave_test.go`
+- Modify: `cmd/evener-test-dev-tooling/wave_test.go`
 
 **Interfaces:**
 - Consumes: `runWave`, injected `checkLeaksFn`, and `checkLeaksTimeout`.
@@ -210,7 +210,7 @@ than a Serf domain identifier and record the focused test evidence.
 Use the captured baseline as red evidence, then run the focused test once:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=1
+go test ./cmd/evener-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=1
 ```
 
 The captured canonical run failed with:
@@ -243,7 +243,7 @@ assertions. Do not widen either timeout.
 Run:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=50
+go test ./cmd/evener-test-dev-tooling -run '^TestWaveCompletesDespiteBlockedLeakCheck$' -count=50
 ```
 
 Expected: PASS 50 times with no wall-clock assertion.
@@ -253,7 +253,7 @@ Expected: PASS 50 times with no wall-clock assertion.
 Run:
 
 ```bash
-go test ./cmd/serf-test-dev-tooling -count=1
+go test ./cmd/evener-test-dev-tooling -count=1
 ```
 
 Expected: PASS.
@@ -261,7 +261,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-test-dev-tooling/wave_test.go
+git add cmd/evener-test-dev-tooling/wave_test.go
 git commit -m "test(wave): assert blocked leak behavior directly"
 ```
 
@@ -511,8 +511,8 @@ repository build/dependency outputs and reusable caches, expected under:
 ```text
 /work/serf/serf
 /work/serf/serf-hub
-/work/serf/cmd/serf-hub/frontend/dist
-/work/serf/cmd/serf-hub/frontend/node_modules
+/work/serf/cmd/evener-hub/frontend/dist
+/work/serf/cmd/evener-hub/frontend/node_modules
 /root/.cache/go-build
 /root/.npm
 /go/pkg/mod
@@ -616,15 +616,15 @@ handler remains, cleanup fails and retains the private profile as evidence.
 - Modify: `scripts/run-module-tests.sh`
 - Modify: `scripts/run-module-tests-selftest.sh`
 - Modify: `runtime_pair_build_test.go`
-- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/browserGuardProcess.test.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/cdp.test.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/layoutguard/run.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/overflowguard/run.mjs`
-- Modify: `cmd/serf-hub/frontend/scripts/spawnguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/browserGuardProcess.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/browserGuardProcess.test.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/cdp.test.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/layoutguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/overflowguard/run.mjs`
+- Modify: `cmd/evener-hub/frontend/scripts/spawnguard/run.mjs`
 - Modify: `cmd/llmcall/coverage_test.go`
-- Modify: `cmd/serf-tui/internal/clipboard/clipboard_paste_test.go`
+- Modify: `cmd/evener-tui/internal/clipboard/clipboard_paste_test.go`
 - Modify: `docs/testing.md`
 - Modify only in ignored audit evidence: `audit/Dockerfile`
 
@@ -722,7 +722,7 @@ manifest. Only a new comparison with zero undeclared paths may proceed to Task
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx biome check --write package.json scripts/browserGuardProcess.mjs scripts/browserGuardProcess.test.mjs scripts/layoutguard/cdp.mjs scripts/layoutguard/cdp.test.mjs scripts/layoutguard/run.mjs scripts/overflowguard/run.mjs scripts/spawnguard/run.mjs
 ```
 

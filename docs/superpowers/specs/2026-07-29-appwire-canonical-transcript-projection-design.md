@@ -245,7 +245,7 @@ eviction affects only reconnect replay outside the atomic snapshot contract.
 
 ## Deleted compatibility surface
 
-`cmd/serf-transcript-v2-upgrade` is removed. It cannot produce required v3
+`cmd/evener-transcript-v2-upgrade` is removed. It cannot produce required v3
 projection identity from v1 data without inventing grouping and item history,
 which would be a migration/compatibility project explicitly outside this
 flag-day change.

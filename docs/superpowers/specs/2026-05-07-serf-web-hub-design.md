@@ -45,7 +45,7 @@ Add `OriginalTask string` to `SessionMeta`. Populate it on the first `ProcessInp
 
 ### D-2. Fix `/clear` vs in-flight input race
 
-`cmd/serf/serve.go:225-261`. `SetClearFunc` swaps the session pointer under `currentMu` while the input goroutine may be mid-`ProcessInput` against the old session. Behavior under contention is undefined.
+`cmd/evener/serve.go:225-261`. `SetClearFunc` swaps the session pointer under `currentMu` while the input goroutine may be mid-`ProcessInput` against the old session. Behavior under contention is undefined.
 
 Fix: `/clear` returns 409 Conflict while `processing == true` (mirrors `/input`'s 409 in `server/server.go:434`). Document that the UI must interrupt before clearing if a turn is running.
 
@@ -62,7 +62,7 @@ Add `POST /shutdown` to `server.Server`. Triggers the same path as SIGINT (cance
 Daemon-side:
 
 - Rendezvous file does NOT carry `session_id` (which can change on `/clear`). It carries process and address only — see "Filesystem layout" below.
-- Removed via `defer` in `cmd/serf/serve.go` plus a SIGTERM handler.
+- Removed via `defer` in `cmd/evener/serve.go` plus a SIGTERM handler.
 
 Hub-side liveness check:
 
@@ -119,7 +119,7 @@ The browser's drive URL is keyed by **session_id**, not pid. PIDs reuse on long-
 - htmx for navigation and form submission of hub-served pages.
 - A small client-side `renderer.js` (vendored, no build pipeline) that:
   - Opens `EventSource('/live/<session_id>/events')` against the hub.
-  - Maintains the same coalescing state machines `serf-tui` already implements (`cmd/serf-tui/model.go:735-820`): per-message text delta append, per-call_id tool stream tracking, subagent grouping, communicate-tool elision, context-pressure derivation from `ASSISTANT_TEXT_END.usage`.
+  - Maintains the same coalescing state machines `serf-tui` already implements (`cmd/evener-tui/model.go:735-820`): per-message text delta append, per-call_id tool stream tracking, subagent grouping, communicate-tool elision, context-pressure derivation from `ASSISTANT_TEXT_END.usage`.
   - Renders into the transcript pane via direct DOM ops.
   - Sends user input via `fetch('/live/<session_id>/input', ...)` against the hub.
   - Renders markdown using a small client-side library (`marked.js` or `markdown-it`, vendored).
@@ -127,7 +127,7 @@ The browser's drive URL is keyed by **session_id**, not pid. PIDs reuse on long-
 
 The browser never learns the daemon address. All browser ↔ daemon traffic flows through the hub.
 
-### Hub (`serf-hub`, new sibling binary at `cmd/serf-hub/`)
+### Hub (`serf-hub`, new sibling binary at `cmd/evener-hub/`)
 
 Following the existing pattern in the repo (`serf-tui`, `serfeval`, `llmcall` are all sibling binaries; the `serf` binary stays focused on agent operations). The hub spawns `serf serve` subprocesses; it does not import the agent loop itself.
 

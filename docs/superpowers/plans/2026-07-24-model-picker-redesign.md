@@ -4,7 +4,7 @@
 
 **Goal:** Rebuild the web model picker as one always-expanded grouped list with a pre-filled/pre-selected search input, in-place dim unavailable-provider lines, no Cancel button, and no scroll-dismiss — identically on desktop and mobile.
 
-**Architecture:** Pure frontend work in `cmd/serf-hub/frontend`. `ModelCatalogPanel` stops composing the generic `Combobox` (whose contract is options-only rows and a popup that stays closed until you type) and owns its own ARIA-1.2 combobox input + grouped listbox. All row-shaping logic lands in a new pure module (`pickerRows.ts`) built on the existing `catalogView.ts` helpers, so the React component stays thin. `Popover` gains a `closeOnScroll` opt-out, and `ModelSwitch` drops its hand-rolled popover for the shared one — one popover implementation, two call sites.
+**Architecture:** Pure frontend work in `cmd/evener-hub/frontend`. `ModelCatalogPanel` stops composing the generic `Combobox` (whose contract is options-only rows and a popup that stays closed until you type) and owns its own ARIA-1.2 combobox input + grouped listbox. All row-shaping logic lands in a new pure module (`pickerRows.ts`) built on the existing `catalogView.ts` helpers, so the React component stays thin. `Popover` gains a `closeOnScroll` opt-out, and `ModelSwitch` drops its hand-rolled popover for the shared one — one popover implementation, two call sites.
 
 **Tech Stack:** React 19, TypeScript 6 (strict, `noUncheckedIndexedAccess`), Vite, vitest + jsdom, @testing-library/react + user-event, biome. Design tokens in `src/styles/tokens.css`, enforced by `src/styles/token-contract.test.ts`.
 
@@ -12,14 +12,14 @@
 
 ## Global Constraints
 
-- All paths below are relative to the repo root; **all commands run from `cmd/serf-hub/frontend`** unless stated otherwise.
+- All paths below are relative to the repo root; **all commands run from `cmd/evener-hub/frontend`** unless stated otherwise.
 - **Color:** every color resolves to `var(--…)` from `src/styles/tokens.css` — never a hex/rgb/hsl/oklch/oklab/lab/lch literal, **including inside comments** (`src/styles/token-contract.test.ts` greps raw file text). `color-mix()` over token vars is allowed. This plan adds no new token.
 - **Attention-hue allowlist:** `modelCatalog` is NOT in `SEMANTIC_USE_ALLOWLIST`, so its stylesheet may use only `--accent*`, `--surface-*`, `--ink-*`, `--edge`. Same for `panes/session/chrome/modelswitch.module.css`. Unavailable-provider lines use `--ink-low` (never `--danger`) — they are passive metadata, not an alarm.
 - **Motion budget:** no new animation. `Popover`'s existing 120ms `--motion-duration-overlay` fade-scale is the only motion in this feature.
 - **CSS-module class access:** never `styles.foo` in render — build a module-scope `CLASS` table through `requireClass(styles.foo, "<file>.module.css", "foo")`, matching every existing widget.
 - **Test harness:** `npm run typecheck` (`tsc --noEmit`), `npm test` (`vitest run`), `npm run lint` (`biome ci src`). Single-file runs use `npx vitest run <path>`. Tests wrap components manually (no shared render helper) and call `cleanup()` per file.
 - **Baseline is green:** the full vitest suite passes on this branch (3571 tests at the last gate). Every task below must leave `npm test` green — a newly-red unrelated test is a regression this plan caused, not pre-existing.
-- **No Go change:** this plan touches only `cmd/serf-hub/frontend/**` and the two docs. `/api/models?diagnostics=1` already carries models + `recent` + `diagnostics`; if a task finds itself editing a `.go` file or `types.gen.ts`, stop.
+- **No Go change:** this plan touches only `cmd/evener-hub/frontend/**` and the two docs. `/api/models?diagnostics=1` already carries models + `recent` + `diagnostics`; if a task finds itself editing a `.go` file or `types.gen.ts`, stop.
 - **Commit style:** one commit per task, imperative subject, no `--no-verify` ever (pre-commit hooks must run and pass).
 
 ## File Structure
@@ -48,8 +48,8 @@ Unchanged on purpose: `catalogView.ts` (its `toCatalogOptions`/`filterCatalog`/`
 `Popover` currently closes on any capture-phase window scroll and on resize (`src/widgets/popover/index.tsx:95-103`), which is defect #5: scrolling the picker's own list, or the page behind it, dismisses the picker. Menu-style popovers still want that behavior, so it becomes an opt-out rather than a removal.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/widgets/popover/index.tsx`
-- Test: `cmd/serf-hub/frontend/src/widgets/popover/popover.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/popover/index.tsx`
+- Test: `cmd/evener-hub/frontend/src/widgets/popover/popover.test.tsx`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
@@ -57,7 +57,7 @@ Unchanged on purpose: `catalogView.ts` (its `toCatalogOptions`/`filterCatalog`/`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `cmd/serf-hub/frontend/src/widgets/popover/popover.test.tsx`:
+Append to `cmd/evener-hub/frontend/src/widgets/popover/popover.test.tsx`:
 
 ```tsx
 // closeOnScroll: the model picker's own list scrolls, and a page scroll behind
@@ -105,7 +105,7 @@ Expected: the default-scroll test PASSES (today's behavior), and `closeOnScroll=
 
 - [ ] **Step 3: Implement the prop**
 
-In `cmd/serf-hub/frontend/src/widgets/popover/index.tsx`, add the prop to the interface right after `autoFocus`:
+In `cmd/evener-hub/frontend/src/widgets/popover/index.tsx`, add the prop to the interface right after `autoFocus`:
 
 ```tsx
   /** When false, neither a window scroll (capture-phase) nor a viewport
@@ -173,8 +173,8 @@ git commit -m "popover: add closeOnScroll opt-out for panels whose content scrol
 The redesigned panel renders one flat list of three row kinds: provider/Recent group heads, pickable model rows, and non-interactive unavailable-provider lines. All of that shaping is pure and belongs outside React, next to the existing `catalogView.ts` helpers it builds on.
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/widgets/modelCatalog/pickerRows.ts`
-- Test: `cmd/serf-hub/frontend/src/widgets/modelCatalog/pickerRows.test.ts`
+- Create: `cmd/evener-hub/frontend/src/widgets/modelCatalog/pickerRows.ts`
+- Test: `cmd/evener-hub/frontend/src/widgets/modelCatalog/pickerRows.test.ts`
 
 **Interfaces:**
 - Consumes: `CatalogOption`, `filterCatalog`, `toCatalogOptions`, `withGroupHeads`, `capabilityLabels`, `formatCost`, `contextWindowLabel` from `./catalogView`; `ModelCatalog`, `ModelCatalogDiagnostic`, `ModelCatalogEntry` types from `./index`.
@@ -193,7 +193,7 @@ The redesigned panel renders one flat list of three row kinds: provider/Recent g
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `cmd/serf-hub/frontend/src/widgets/modelCatalog/pickerRows.test.ts`:
+Create `cmd/evener-hub/frontend/src/widgets/modelCatalog/pickerRows.test.ts`:
 
 ```ts
 import { describe, expect, test } from "vitest";
@@ -335,7 +335,7 @@ Expected: FAIL — `Failed to resolve import "./pickerRows"`.
 
 - [ ] **Step 3: Implement the module**
 
-Create `cmd/serf-hub/frontend/src/widgets/modelCatalog/pickerRows.ts`:
+Create `cmd/evener-hub/frontend/src/widgets/modelCatalog/pickerRows.ts`:
 
 ```ts
 // The picker's list shape: one flat row array combining Recent, the
@@ -472,10 +472,10 @@ git commit -m "modelCatalog: pure row builder for the grouped picker list"
 The panel becomes an input over one always-expanded, internally-scrolling grouped list. This task lands every defect fix that lives in the widget: no Cancel, in-place unavailable lines, pre-filled + fully-selected input, list expanded on open, and `closeOnScroll={false}` at the `ModelCatalog` call site.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/widgets/modelCatalog/index.tsx`
-- Modify: `cmd/serf-hub/frontend/src/widgets/modelCatalog/modelCatalog.module.css`
-- Test: `cmd/serf-hub/frontend/src/widgets/modelCatalog/modelCatalog.test.tsx` (rewrite)
-- Test: `cmd/serf-hub/frontend/src/panes/spawn/ModelField.test.tsx` (replace its Cancel test)
+- Modify: `cmd/evener-hub/frontend/src/widgets/modelCatalog/index.tsx`
+- Modify: `cmd/evener-hub/frontend/src/widgets/modelCatalog/modelCatalog.module.css`
+- Test: `cmd/evener-hub/frontend/src/widgets/modelCatalog/modelCatalog.test.tsx` (rewrite)
+- Test: `cmd/evener-hub/frontend/src/panes/spawn/ModelField.test.tsx` (replace its Cancel test)
 
 **Interfaces:**
 - Consumes: `buildPickerRows`, `pickableRows`, `type PickerModelRow` from `./pickerRows` (Task 2); `Popover`'s `closeOnScroll` (Task 1).
@@ -495,7 +495,7 @@ The panel becomes an input over one always-expanded, internally-scrolling groupe
 
 - [ ] **Step 1: Write the failing test suite**
 
-Replace the whole contents of `cmd/serf-hub/frontend/src/widgets/modelCatalog/modelCatalog.test.tsx` with:
+Replace the whole contents of `cmd/evener-hub/frontend/src/widgets/modelCatalog/modelCatalog.test.tsx` with:
 
 ```tsx
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -941,7 +941,7 @@ Expected: FAIL. The pre-fill, expanded-list, unavailable-line, aria-selected, Ho
 
 - [ ] **Step 3: Rewrite the panel**
 
-Replace `cmd/serf-hub/frontend/src/widgets/modelCatalog/index.tsx` from its import block through the end of `ModelCatalogPanel` — keep the `ModelCatalogEntry` / `ModelCatalogDiagnostic` / `ModelCatalog` / `ModelCatalogProps` interfaces and `errorMessage` exactly as they are, and keep `ModelCatalog` below with the two edits in Step 4. The new file head and panel:
+Replace `cmd/evener-hub/frontend/src/widgets/modelCatalog/index.tsx` from its import block through the end of `ModelCatalogPanel` — keep the `ModelCatalogEntry` / `ModelCatalogDiagnostic` / `ModelCatalog` / `ModelCatalogProps` interfaces and `errorMessage` exactly as they are, and keep `ModelCatalog` below with the two edits in Step 4. The new file head and panel:
 
 ```tsx
 // The rich model catalog picker. A search input over ONE always-expanded,
@@ -1289,7 +1289,7 @@ Add `useRef` to the React import at the top of the file (Step 3's import line al
 
 - [ ] **Step 5: Restyle the panel**
 
-In `cmd/serf-hub/frontend/src/widgets/modelCatalog/modelCatalog.module.css`, keep `.trigger`, `.trigger:hover`, `.trigger:focus-visible`, `.chevron`, `.srOnly` unchanged. Replace everything from `.popoverPanel` to the end of the file with:
+In `cmd/evener-hub/frontend/src/widgets/modelCatalog/modelCatalog.module.css`, keep `.trigger`, `.trigger:hover`, `.trigger:focus-visible`, `.chevron`, `.srOnly` unchanged. Replace everything from `.popoverPanel` to the end of the file with:
 
 ```css
 /* The floating panel's own content padding/sizing - widgets/popover's shared
@@ -1419,7 +1419,7 @@ Expected: PASS — `modelCatalog.test.tsx` (28 tests), `pickerRows.test.ts`, `ca
 
 - [ ] **Step 7: Replace `ModelField`'s Cancel test**
 
-In `cmd/serf-hub/frontend/src/panes/spawn/ModelField.test.tsx`, replace the whole `test("Cancel returns to the closed display without changing the value", ...)` block (lines 64-75) with:
+In `cmd/evener-hub/frontend/src/panes/spawn/ModelField.test.tsx`, replace the whole `test("Cancel returns to the closed display without changing the value", ...)` block (lines 64-75) with:
 
 ```tsx
 test("Escape returns to the closed display without changing the value", async () => {
@@ -1468,10 +1468,10 @@ git commit -m "modelCatalog: one always-expanded grouped list, pre-filled input,
 `ModelSwitch` still hand-rolls its popover (`src/panes/session/chrome/ModelSwitch.tsx:89-103` plus `.anchor`/`.popover` CSS) and passes the deleted `onCancel`. This task collapses it onto the shared `Popover` with the same `closeOnScroll={false}` opt-out, so the in-session picker and the spawn picker are one interaction.
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` (one composition test)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx` (one composition test)
 
 **Interfaces:**
 - Consumes: `ModelCatalogPanel({ loading, error, catalog, value, onPick })` from Task 3; `Popover`'s `closeOnScroll` from Task 1; the existing `modelLabel(modelProvider, model)` from `./statusFormat`.
@@ -1479,7 +1479,7 @@ git commit -m "modelCatalog: one always-expanded grouped list, pre-filled input,
 
 - [ ] **Step 1: Update the tests to the new behavior**
 
-In `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`, make these five edits.
+In `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.test.tsx`, make these five edits.
 
 (a) The loading assertion (line ~115) — the panel now shows a `Skeleton` instead of a "Loading models…" chip:
 
@@ -1573,7 +1573,7 @@ test("closing returns focus to the trigger", async () => {
 });
 ```
 
-And in `cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx`, the composition test (`"wires the model-switch trigger in..."`, line ~118) types into the same pre-filled input; replace its `await user.type(combobox, "gpt");` with:
+And in `cmd/evener-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx`, the composition test (`"wires the model-switch trigger in..."`, line ~118) types into the same pre-filled input; replace its `await user.type(combobox, "gpt");` with:
 
 ```tsx
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
@@ -1588,7 +1588,7 @@ Expected: FAIL — `ModelSwitch` still renders its own popover and passes `onCan
 
 - [ ] **Step 3: Migrate the component**
 
-In `cmd/serf-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`:
+In `cmd/evener-hub/frontend/src/panes/session/chrome/ModelSwitch.tsx`:
 
 Replace the import block's React line and add `Popover` to the widgets import:
 
@@ -1687,7 +1687,7 @@ Finally, update this file's header comment so it stops describing a bespoke popo
 
 - [ ] **Step 4: Restyle**
 
-In `cmd/serf-hub/frontend/src/panes/session/chrome/modelswitch.module.css`, delete the `.anchor` rule, the `.popover` rule, the `@keyframes popoverFadeScale` block, and the `@media (prefers-reduced-motion: reduce)` block (widgets/popover owns all of that now). Keep `.trigger`, its `:hover`/`:focus-visible`/`:disabled` rules, `.chevron`, and `.srOnly`. Append:
+In `cmd/evener-hub/frontend/src/panes/session/chrome/modelswitch.module.css`, delete the `.anchor` rule, the `.popover` rule, the `@keyframes popoverFadeScale` block, and the `@media (prefers-reduced-motion: reduce)` block (widgets/popover owns all of that now). Keep `.trigger`, its `:hover`/`:focus-visible`/`:disabled` rules, `.chevron`, and `.srOnly`. Append:
 
 ```css
 /* The floating panel's own content padding/sizing - widgets/popover supplies
@@ -1743,7 +1743,7 @@ Expected: `tsc --noEmit` silent, `vitest run` reporting all files passed (baseli
 - [ ] **Step 2: Build the hub with the new SPA embedded**
 
 Run: `make build-web && make build-hub`
-Expected: both succeed; `git status --short` shows no stray change under `cmd/serf-hub/frontend/dist` (the Makefile restores `dist/PLACEHOLDER`).
+Expected: both succeed; `git status --short` shows no stray change under `cmd/evener-hub/frontend/dist` (the Makefile restores `dist/PLACEHOLDER`).
 
 - [ ] **Step 3: Start the hub and open the SPA**
 

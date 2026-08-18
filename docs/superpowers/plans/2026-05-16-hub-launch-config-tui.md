@@ -4,7 +4,7 @@
 
 **Goal:** Surface the launch-config and credentials RPCs in the TUI: `:settings` command opens a per-layer browser/editor, `:credentials` command opens a provider list with set/clear/OAuth actions, `Ctrl-L` in the composer opens a per-launch override modal applied to the next spawn. SSE notifications refresh open panels.
 
-**Architecture:** New `tea.Model`-shaped panels following the existing `pickerPanel` pattern in `cmd/serf-tui/picker_panel.go`. Each panel is constructed from RPC data, edited via key handlers, and persists back via `serf/launch/setLayer` / `serf/auth/apiKey/set`. The composer gains a small text-prompt sub-model for `Ctrl-L`.
+**Architecture:** New `tea.Model`-shaped panels following the existing `pickerPanel` pattern in `cmd/evener-tui/picker_panel.go`. Each panel is constructed from RPC data, edited via key handlers, and persists back via `serf/launch/setLayer` / `serf/auth/apiKey/set`. The composer gains a small text-prompt sub-model for `Ctrl-L`.
 
 **Tech Stack:** Bubble Tea (existing TUI framework), Lipgloss styles (existing). RPC via the existing `appwire.Client` already wired into the TUI.
 
@@ -18,40 +18,40 @@
 
 **New files**
 
-- `cmd/serf-tui/launchconfig_client.go` — thin wrappers `resolveLaunchConfig`, `getLayer`, `setLayer`, `trustRepo`, `authList`, `authApiKeySet`, `authLogout` returning `tea.Cmd`s for async calls
-- `cmd/serf-tui/credentials_panel.go` — `:credentials` panel (list view + actions)
-- `cmd/serf-tui/credentials_panel_test.go`
-- `cmd/serf-tui/launch_settings_panel.go` — `:settings` panel (tabbed: global, project, in-repo)
-- `cmd/serf-tui/launch_settings_panel_test.go`
-- `cmd/serf-tui/launch_overrides_modal.go` — `Ctrl-L` composer modal
-- `cmd/serf-tui/launch_overrides_modal_test.go`
-- `cmd/serf-tui/text_input_modal.go` — generic single-field text input (reused by credential set and override fields)
+- `cmd/evener-tui/launchconfig_client.go` — thin wrappers `resolveLaunchConfig`, `getLayer`, `setLayer`, `trustRepo`, `authList`, `authApiKeySet`, `authLogout` returning `tea.Cmd`s for async calls
+- `cmd/evener-tui/credentials_panel.go` — `:credentials` panel (list view + actions)
+- `cmd/evener-tui/credentials_panel_test.go`
+- `cmd/evener-tui/launch_settings_panel.go` — `:settings` panel (tabbed: global, project, in-repo)
+- `cmd/evener-tui/launch_settings_panel_test.go`
+- `cmd/evener-tui/launch_overrides_modal.go` — `Ctrl-L` composer modal
+- `cmd/evener-tui/launch_overrides_modal_test.go`
+- `cmd/evener-tui/text_input_modal.go` — generic single-field text input (reused by credential set and override fields)
 
 **Modified files**
 
-- `cmd/serf-tui/hub_command_registry.go` — register `:credentials` and `:settings`
-- `cmd/serf-tui/composer_panel.go` — handle `Ctrl-L`, surface override state in submit
-- `cmd/serf-tui/hub_appshell_test.go` and `tmux_e2e_test.go` — extend existing TUI tests
-- `cmd/serf-tui/sse_client.go` — subscribe to `serf/auth/updated`, `serf/launch/updated` and forward as tea.Msg
+- `cmd/evener-tui/hub_command_registry.go` — register `:credentials` and `:settings`
+- `cmd/evener-tui/composer_panel.go` — handle `Ctrl-L`, surface override state in submit
+- `cmd/evener-tui/hub_appshell_test.go` and `tmux_e2e_test.go` — extend existing TUI tests
+- `cmd/evener-tui/sse_client.go` — subscribe to `serf/auth/updated`, `serf/launch/updated` and forward as tea.Msg
 
 ---
 
 ## Task 1 — RPC client wrappers as `tea.Cmd`
 
 **Files:**
-- Create: `cmd/serf-tui/launchconfig_client.go`
+- Create: `cmd/evener-tui/launchconfig_client.go`
 
 - [ ] **Step 1: Inspect how the TUI currently calls RPCs**
 
 ```bash
-grep -n "hub\.Client\|appwire\.Client\|client\.Request\|client\.Call" cmd/serf-tui/sse_client.go cmd/serf-tui/hub_model.go | head -15
+grep -n "hub\.Client\|appwire\.Client\|client\.Request\|client\.Call" cmd/evener-tui/sse_client.go cmd/evener-tui/hub_model.go | head -15
 ```
 
 You'll see an `appwireClient` or similar field on the `model`/`appShell`. Use it.
 
 - [ ] **Step 2: Write the wrappers**
 
-`cmd/serf-tui/launchconfig_client.go`:
+`cmd/evener-tui/launchconfig_client.go`:
 
 ```go
 package main
@@ -172,13 +172,13 @@ func cmdAuthLogout(client *appwire.Client, provider string) tea.Cmd {
 - [ ] **Step 3: Build**
 
 ```bash
-go build ./cmd/serf-tui/...
+go build ./cmd/evener-tui/...
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/launchconfig_client.go
+git add cmd/evener-tui/launchconfig_client.go
 git commit -m "tui: launch-config RPC client wrappers"
 ```
 
@@ -187,8 +187,8 @@ git commit -m "tui: launch-config RPC client wrappers"
 ## Task 2 — Generic text-input modal
 
 **Files:**
-- Create: `cmd/serf-tui/text_input_modal.go`
-- Create: `cmd/serf-tui/text_input_modal_test.go`
+- Create: `cmd/evener-tui/text_input_modal.go`
+- Create: `cmd/evener-tui/text_input_modal_test.go`
 
 A small modal we'll reuse: shows a prompt, captures one line of input, returns it via a result message.
 
@@ -237,7 +237,7 @@ func TestTextInputModal_EscapeCancels(t *testing.T) {
 - [ ] **Step 2: Run (fails)**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestTextInputModal -v
+go test ./cmd/evener-tui/ -run TestTextInputModal -v
 ```
 
 - [ ] **Step 3: Implement**
@@ -309,13 +309,13 @@ func (m textInputModal) View() string {
 - [ ] **Step 4: Tests pass**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestTextInputModal -v
+go test ./cmd/evener-tui/ -run TestTextInputModal -v
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/text_input_modal.go cmd/serf-tui/text_input_modal_test.go
+git add cmd/evener-tui/text_input_modal.go cmd/evener-tui/text_input_modal_test.go
 git commit -m "tui: generic text input modal"
 ```
 
@@ -324,8 +324,8 @@ git commit -m "tui: generic text input modal"
 ## Task 3 — `:credentials` panel
 
 **Files:**
-- Create: `cmd/serf-tui/credentials_panel.go`
-- Create: `cmd/serf-tui/credentials_panel_test.go`
+- Create: `cmd/evener-tui/credentials_panel.go`
+- Create: `cmd/evener-tui/credentials_panel_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -385,12 +385,12 @@ func indexOf(s, sub string) int {
 - [ ] **Step 2: Run (fails)**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestCredentialsPanel -v
+go test ./cmd/evener-tui/ -run TestCredentialsPanel -v
 ```
 
 - [ ] **Step 3: Implement**
 
-`cmd/serf-tui/credentials_panel.go`:
+`cmd/evener-tui/credentials_panel.go`:
 
 ```go
 package main
@@ -503,13 +503,13 @@ func (p credentialsPanel) View() string {
 - [ ] **Step 4: Tests pass**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestCredentialsPanel -v
+go test ./cmd/evener-tui/ -run TestCredentialsPanel -v
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/credentials_panel.go cmd/serf-tui/credentials_panel_test.go
+git add cmd/evener-tui/credentials_panel.go cmd/evener-tui/credentials_panel_test.go
 git commit -m "tui: credentials panel"
 ```
 
@@ -518,12 +518,12 @@ git commit -m "tui: credentials panel"
 ## Task 4 — Wire `:credentials` command into the appshell
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_command_registry.go`
-- Modify: `cmd/serf-tui/app_shell.go`
+- Modify: `cmd/evener-tui/hub_command_registry.go`
+- Modify: `cmd/evener-tui/app_shell.go`
 
 - [ ] **Step 1: Register the command**
 
-In `cmd/serf-tui/hub_command_registry.go`, append to the registry:
+In `cmd/evener-tui/hub_command_registry.go`, append to the registry:
 
 ```go
 {
@@ -540,7 +540,7 @@ In `cmd/serf-tui/hub_command_registry.go`, append to the registry:
 
 - [ ] **Step 2: Handle the command in the appshell**
 
-In `cmd/serf-tui/app_shell.go`, find the existing command dispatch (search for `case commandPaletteCommand:`). Add:
+In `cmd/evener-tui/app_shell.go`, find the existing command dispatch (search for `case commandPaletteCommand:`). Add:
 
 ```go
 case "credentials":
@@ -582,7 +582,7 @@ Add `followupModal` and `activeModal` fields on the appShell type if not already
 
 - [ ] **Step 3: Add `cmdAuthLoginStart`**
 
-In `cmd/serf-tui/launchconfig_client.go`, add:
+In `cmd/evener-tui/launchconfig_client.go`, add:
 
 ```go
 type authLoginStartResultMsg struct {
@@ -650,7 +650,7 @@ case authApiKeySetResultMsg:
 
 Build and run TUI:
 ```bash
-go run ./cmd/serf-tui --hub-addr http://127.0.0.1:9180
+go run ./cmd/evener-tui --hub-addr http://127.0.0.1:9180
 ```
 
 In TUI:
@@ -662,7 +662,7 @@ In TUI:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_command_registry.go cmd/serf-tui/app_shell.go cmd/serf-tui/launchconfig_client.go
+git add cmd/evener-tui/hub_command_registry.go cmd/evener-tui/app_shell.go cmd/evener-tui/launchconfig_client.go
 git commit -m "tui: :credentials command wires panel + actions"
 ```
 
@@ -671,8 +671,8 @@ git commit -m "tui: :credentials command wires panel + actions"
 ## Task 5 — `:settings` launch settings panel (skeleton + tabs)
 
 **Files:**
-- Create: `cmd/serf-tui/launch_settings_panel.go`
-- Create: `cmd/serf-tui/launch_settings_panel_test.go`
+- Create: `cmd/evener-tui/launch_settings_panel.go`
+- Create: `cmd/evener-tui/launch_settings_panel_test.go`
 
 The panel has three tabs: Global, Project, In-Repo. Tab navigation with `←`/`→`, item navigation with `↑`/`↓`, edit with Enter, save with `Ctrl-S`, escape with Esc.
 
@@ -715,12 +715,12 @@ func TestLaunchSettingsPanel_LoadsGlobalFirst(t *testing.T) {
 - [ ] **Step 2: Implement (failure first)**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestLaunchSettingsPanel -v
+go test ./cmd/evener-tui/ -run TestLaunchSettingsPanel -v
 ```
 
 - [ ] **Step 3: Write the panel**
 
-`cmd/serf-tui/launch_settings_panel.go`:
+`cmd/evener-tui/launch_settings_panel.go`:
 
 ```go
 package main
@@ -932,13 +932,13 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 - [ ] **Step 4: Tests pass**
 
 ```bash
-go test ./cmd/serf-tui/ -run TestLaunchSettingsPanel -v
+go test ./cmd/evener-tui/ -run TestLaunchSettingsPanel -v
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/launch_settings_panel.go cmd/serf-tui/launch_settings_panel_test.go
+git add cmd/evener-tui/launch_settings_panel.go cmd/evener-tui/launch_settings_panel_test.go
 git commit -m "tui: launch settings panel chassis with tabs"
 ```
 
@@ -947,9 +947,9 @@ git commit -m "tui: launch settings panel chassis with tabs"
 ## Task 6 — `:settings` editing actions
 
 **Files:**
-- Modify: `cmd/serf-tui/launch_settings_panel.go`
-- Modify: `cmd/serf-tui/launch_settings_panel_test.go`
-- Modify: `cmd/serf-tui/app_shell.go`
+- Modify: `cmd/evener-tui/launch_settings_panel.go`
+- Modify: `cmd/evener-tui/launch_settings_panel_test.go`
+- Modify: `cmd/evener-tui/app_shell.go`
 
 The panel's `editCurrent` returns a text-input modal scoped by the field being edited. The appshell handles the `textInputResultMsg` to update the layer and call `cmdSetLayer`.
 
@@ -1162,7 +1162,7 @@ case launchSetLayerResultMsg:
 - [ ] **Step 5: Run tests + manual smoke**
 
 ```bash
-go test ./cmd/serf-tui/ -v
+go test ./cmd/evener-tui/ -v
 ```
 
 Then run TUI, `:settings`, edit `model`, save, reload, confirm.
@@ -1170,7 +1170,7 @@ Then run TUI, `:settings`, edit `model`, save, reload, confirm.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/launch_settings_panel.go cmd/serf-tui/launch_settings_panel_test.go cmd/serf-tui/app_shell.go
+git add cmd/evener-tui/launch_settings_panel.go cmd/evener-tui/launch_settings_panel_test.go cmd/evener-tui/app_shell.go
 git commit -m "tui: settings panel edits + saves layers"
 ```
 
@@ -1179,10 +1179,10 @@ git commit -m "tui: settings panel edits + saves layers"
 ## Task 7 — `Ctrl-L` per-launch override modal
 
 **Files:**
-- Create: `cmd/serf-tui/launch_overrides_modal.go`
-- Create: `cmd/serf-tui/launch_overrides_modal_test.go`
-- Modify: `cmd/serf-tui/composer_panel.go`
-- Modify: `cmd/serf-tui/app_shell.go`
+- Create: `cmd/evener-tui/launch_overrides_modal.go`
+- Create: `cmd/evener-tui/launch_overrides_modal_test.go`
+- Modify: `cmd/evener-tui/composer_panel.go`
+- Modify: `cmd/evener-tui/app_shell.go`
 
 When the composer is focused, `Ctrl-L` opens a small modal showing the per-launch overrides being prepared for the next spawn. The user toggles whether they want to set max_rounds / context_strategy / add skill+plugin dirs. On dismiss, the overrides are stashed on the composer state and submitted as `launchOverrides` on the next thread/start.
 
@@ -1238,7 +1238,7 @@ func ptrIntCM(v int) *int { return &v }
 
 - [ ] **Step 2: Implement**
 
-`cmd/serf-tui/launch_overrides_modal.go`:
+`cmd/evener-tui/launch_overrides_modal.go`:
 
 ```go
 package main
@@ -1332,7 +1332,7 @@ func (m launchOverridesModal) ApplyEdit(field, value string) (launchOverridesMod
 
 - [ ] **Step 3: Wire `Ctrl-L` in composer**
 
-In `cmd/serf-tui/composer_panel.go`, in the Update handler, intercept `Ctrl-L`:
+In `cmd/evener-tui/composer_panel.go`, in the Update handler, intercept `Ctrl-L`:
 
 ```go
 case tea.KeyMsg:
@@ -1343,7 +1343,7 @@ case tea.KeyMsg:
 
 Where `c.launchOverrides *appwire.LaunchConfigLayer` is a new field on the composer panel that stores the current overrides.
 
-In `cmd/serf-tui/app_shell.go`:
+In `cmd/evener-tui/app_shell.go`:
 
 ```go
 case launchOverridesOpenMsg:
@@ -1401,7 +1401,7 @@ Wherever the composer triggers `thread/start` (search `cmdThreadStart` or `Metho
 - [ ] **Step 5: Tests + manual smoke**
 
 ```bash
-go test ./cmd/serf-tui/ -v
+go test ./cmd/evener-tui/ -v
 ```
 
 Then in a running hub, `:new`, press `Ctrl-L`, set `max_rounds` to 50, `Ctrl-S` to confirm, type a prompt and submit. Verify (via hub logs or `:resolve` if you have such a debug command) that the spawn passed `--max-rounds 50`.
@@ -1409,7 +1409,7 @@ Then in a running hub, `:new`, press `Ctrl-L`, set `max_rounds` to 50, `Ctrl-S` 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/launch_overrides_modal.go cmd/serf-tui/launch_overrides_modal_test.go cmd/serf-tui/composer_panel.go cmd/serf-tui/app_shell.go
+git add cmd/evener-tui/launch_overrides_modal.go cmd/evener-tui/launch_overrides_modal_test.go cmd/evener-tui/composer_panel.go cmd/evener-tui/app_shell.go
 git commit -m "tui: Ctrl-L composer modal for per-launch overrides"
 ```
 
@@ -1418,12 +1418,12 @@ git commit -m "tui: Ctrl-L composer modal for per-launch overrides"
 ## Task 8 — SSE notification handling
 
 **Files:**
-- Modify: `cmd/serf-tui/sse_client.go`
-- Modify: `cmd/serf-tui/app_shell.go`
+- Modify: `cmd/evener-tui/sse_client.go`
+- Modify: `cmd/evener-tui/app_shell.go`
 
 - [ ] **Step 1: Subscribe to the new notifications**
 
-In `cmd/serf-tui/sse_client.go`, find the existing dispatch (the switch on `notification.Method`). Add:
+In `cmd/evener-tui/sse_client.go`, find the existing dispatch (the switch on `notification.Method`). Add:
 
 ```go
 case appwire.NotifySerfAuthUpdated:
@@ -1464,7 +1464,7 @@ Run one TUI + one web client. Set an API key via web; observe the TUI's `:creden
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/sse_client.go cmd/serf-tui/app_shell.go
+git add cmd/evener-tui/sse_client.go cmd/evener-tui/app_shell.go
 git commit -m "tui: refresh panels on serf/auth/updated and serf/launch/updated"
 ```
 
@@ -1475,7 +1475,7 @@ git commit -m "tui: refresh panels on serf/auth/updated and serf/launch/updated"
 - [ ] **Step 1: Run the full TUI test suite**
 
 ```bash
-go test ./cmd/serf-tui/ -v
+go test ./cmd/evener-tui/ -v
 ```
 
 - [ ] **Step 2: Manual smoke checklist**

@@ -5,7 +5,7 @@ Status: Design
 
 ## Goal
 
-Replace the current `cmd/serf-hub` UI with a quieter, denser, project-organized interface designed for 10–50 concurrent live sessions plus an open-ended history. Optimize for a mix of synchronous (drive an agent) and asynchronous (check in on running work) use. Remove ceremony around sessions: forks, subagents, and resume should feel like a single coherent surface.
+Replace the current `cmd/evener-hub` UI with a quieter, denser, project-organized interface designed for 10–50 concurrent live sessions plus an open-ended history. Optimize for a mix of synchronous (drive an agent) and asynchronous (check in on running work) use. Remove ceremony around sessions: forks, subagents, and resume should feel like a single coherent surface.
 
 ## Non-goals
 
@@ -19,7 +19,7 @@ Replace the current `cmd/serf-hub` UI with a quieter, denser, project-organized 
 
 ### Hub side
 
-The hub continues to be a sibling binary at `cmd/serf-hub` that proxies REST + SSE to discovered `serf serve` daemons. Subsystems mostly stay:
+The hub continues to be a sibling binary at `cmd/evener-hub` that proxies REST + SSE to discovered `serf serve` daemons. Subsystems mostly stay:
 
 - **Roster** (rendezvous discovery + status prober) — unchanged.
 - **PastIndex** (in-memory metadata search across `<state-dir>/projects/<sha>/sessions/*.meta.json`) — unchanged.

@@ -974,7 +974,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 		},
 	})
 
-	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
+	// Per-turn cancel modeled on cmd/evener/serve.go: outer ctx stays alive,
 	// only the turn ctx is cancelled.
 	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer outerCancel()

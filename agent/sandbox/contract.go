@@ -8,7 +8,7 @@ import (
 
 // TestingT is the subset of *testing.T the contract harness needs. Depending on
 // this interface instead of importing "testing" keeps package sandbox free of a
-// testing dependency in the production binaries (cmd/serf) that import it for
+// testing dependency in the production binaries (cmd/evener) that import it for
 // Resolve/ParseMode, while *testing.T satisfies it structurally in test code.
 type TestingT interface {
 	Helper()

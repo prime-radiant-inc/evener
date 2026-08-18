@@ -36,7 +36,7 @@ shipped workstreams live beside them and are the house style to imitate.
   runs miss naming violations. JSON/TOML keys are snake_case; deliberate
   camelCase (e.g. Claude Code plugin schema interop in internal/plugins/)
   takes a `// serf:naming-ignore: <reason>` line above the field.
-- jstest (cmd/serf-hub/jstest) is agent-run, not in CI:
+- jstest (cmd/evener-hub/jstest) is agent-run, not in CI:
   `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (one-time
   jsdom setup per its README).
 - agent/snapshot_golden_test.go pins meta.json byte-exactly; adding

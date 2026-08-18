@@ -1,10 +1,10 @@
 # sidebar-archived-testruns-reachability: Archived and Test-runs buckets round-trip (archive, unarchive, delete)
 
 **What this covers**: the server-side project classification in
-`cmd/serf-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
+`cmd/evener-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
 `:126-134,939-940`) and `/api/tree`'s projection of it into
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
-Archived (`navigationProjectBuckets`, `cmd/serf-hub/web_api_tree.go#navigationProjectBuckets`;
+Archived (`navigationProjectBuckets`, `cmd/evener-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
 the `SERF_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
 read once at fresh-session create in `agent/session_init.go:209`), and whole-
@@ -15,7 +15,7 @@ map there is the single place these hooks are maintained. This card used to
 drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
 `window.SerfSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
 All of that died with the vanilla frontend (`660376f78`); the rail is React
-(`cmd/serf-hub/frontend/src/shell/rail/`) and none of those handles exist.
+(`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
 
 **Two section shapes, and only one of them is a disclosure** — this is the
 biggest change from the card's old text:
@@ -175,7 +175,7 @@ a browser, and only assert what the rail renders.
   hub's own environment.** `agent/session_init.go:209` reads it from the
   *daemon's* process env at fresh-create time, which the hub controls
   per-spawn: `launchconfig.ToEnv` applies per-launch env last so it wins over
-  the inherited parent env (`cmd/serf-hub/internal/launchconfig/env.go#ToEnv`).
+  the inherited parent env (`cmd/evener-hub/internal/launchconfig/env.go#ToEnv`).
   Setting it in the hub's own environment would stamp `origin=test` onto every
   session the hub ever spawns.
 - **"Live" for the delete refusal means a registered daemon, not a running
@@ -185,7 +185,7 @@ a browser, and only assert what the rail renders.
   classification.
 - **The TestRuns-over-Archived overlap case is server-side only** and this
   card does not re-derive it live. The old text pointed at
-  `cmd/serf-hub/jstest/test-sidebar-testruns.js`; that directory no longer
+  `cmd/evener-hub/jstest/test-sidebar-testruns.js`; that directory no longer
   exists. The precedence itself is the `switch` at `web_api_tree.go:359-362`,
   and the classification feeding it is pinned by
   `internal/hubcore/tree_test.go:1730-1752`.

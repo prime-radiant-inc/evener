@@ -65,12 +65,12 @@ Project 2 deletes `transcript.APICall`, `appendModelAPICallFunc`, `llm.AdapterAt
 | `agent/fuzz_jdr_restore_lifecycle_test.go` | Keep the tagged delegate create/restore harness deterministic under strict explicit selection. |
 | `cmdutil/load_client.go` | Derive sorted configured provider-instance names from `providercfg.Config`, without consulting the client adapter registry. |
 | `cmdutil/load_client_test.go` | Pin trimming, deduplication, sorting, and config-only provenance of the instance-name helper. |
-| `cmd/serf/run.go` | Populate the runtime inventory for fresh and restored one-shot sessions. |
-| `cmd/serf/run_coverage_fuzz_test.go` | Capture fresh/restore configs and prove the provider inventory is forwarded. |
-| `cmd/serf/serve.go` | Populate the runtime inventory for fresh and restored serve sessions. |
-| `cmd/serf/serve_residual_fuzz_test.go` | Capture fresh/restore serve configs and prove the provider inventory is forwarded. |
-| `tools/tool-fluency/cmd/serf-fluency/main.go` | Populate the inventory for the production-like live tool-fluency session constructor. |
-| `tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go` | Capture the tool-fluency session config and prove config-derived instances are forwarded. |
+| `cmd/evener/run.go` | Populate the runtime inventory for fresh and restored one-shot sessions. |
+| `cmd/evener/run_coverage_fuzz_test.go` | Capture fresh/restore configs and prove the provider inventory is forwarded. |
+| `cmd/evener/serve.go` | Populate the runtime inventory for fresh and restored serve sessions. |
+| `cmd/evener/serve_residual_fuzz_test.go` | Capture fresh/restore serve configs and prove the provider inventory is forwarded. |
+| `tools/tool-fluency/cmd/evener-fluency/main.go` | Populate the inventory for the production-like live tool-fluency session constructor. |
+| `tools/tool-fluency/cmd/evener-fluency/coverage_program_fuzz_test.go` | Capture the tool-fluency session config and prove config-derived instances are forwarded. |
 
 ### Task 1: Add the Agent-Only Typed Model Preflight
 
@@ -82,12 +82,12 @@ Project 2 deletes `transcript.APICall`, `appendModelAPICallFunc`, `llm.AdapterAt
 - Modify: `agent/testkit_test.go:62-103`
 - Modify: `cmdutil/load_client.go`
 - Modify: `cmdutil/load_client_test.go`
-- Modify: `cmd/serf/run.go`
-- Modify: `cmd/serf/run_coverage_fuzz_test.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf/serve_residual_fuzz_test.go`
-- Modify: `tools/tool-fluency/cmd/serf-fluency/main.go`
-- Modify: `tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go`
+- Modify: `cmd/evener/run.go`
+- Modify: `cmd/evener/run_coverage_fuzz_test.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener/serve_residual_fuzz_test.go`
+- Modify: `tools/tool-fluency/cmd/evener-fluency/main.go`
+- Modify: `tools/tool-fluency/cmd/evener-fluency/coverage_program_fuzz_test.go`
 
 - [ ] **Step 0: Capture the pre-project base commit**
 
@@ -188,10 +188,10 @@ Production wiring uses the same config-derived value at every constructor:
 ```go
 configuredInstances := cmdutil.ConfiguredProviderInstanceNames(provCfg)
 
-// cmd/serf run and serve, fresh SessionConfig
+// cmd/evener run and serve, fresh SessionConfig
 ConfiguredProviderInstances: append([]string(nil), configuredInstances...),
 
-// cmd/serf run and serve, RestoreSessionConfig
+// cmd/evener run and serve, RestoreSessionConfig
 ConfiguredProviderInstances: append([]string(nil), configuredInstances...),
 
 // tools/tool-fluency live sessCfg
@@ -213,7 +213,7 @@ s.client.Register(&fakeAdapter{name: "client-only"})
 
 Require alternatives `[]string{"google", "openai", "work"}`: `openai` is the current base, while the registered-but-unconfigured `client-only` adapter must be absent. Add `TestConfiguredProviderInstances_ChildAndRestoreClone`: mutate a freshly prepared child's inventory and prove the parent's slice is unchanged, then restore a top-level session from meta and prove `RestoreSessionConfig.ConfiguredProviderInstances` survives `configFromSnapshot` without appearing in `Session.Meta().Config`. Task 3 extends this contract through runtime-lost delegate reconstruction and a grandchild; the top-level restore check alone is not sufficient.
 
-Add `TestRunPassesConfiguredProviderInstancesToFreshAndRestore` in `cmd/serf/run_coverage_fuzz_test.go` and `TestRunServePassesConfiguredProviderInstancesToFreshAndRestore` in `cmd/serf/serve_residual_fuzz_test.go`; use existing dependency injection to capture both `SessionConfig` and `RestoreSessionConfig` from a fake two-instance `providercfg.Config`, and require the same sorted two names on fresh and resume paths. Add `TestRunLiveProbePassesConfiguredProviderInstances` in `tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go`; capture `runnerNewSession` during a live probe and require the fake provider config's names. These tests check production construction, not UI or protocol output.
+Add `TestRunPassesConfiguredProviderInstancesToFreshAndRestore` in `cmd/evener/run_coverage_fuzz_test.go` and `TestRunServePassesConfiguredProviderInstancesToFreshAndRestore` in `cmd/evener/serve_residual_fuzz_test.go`; use existing dependency injection to capture both `SessionConfig` and `RestoreSessionConfig` from a fake two-instance `providercfg.Config`, and require the same sorted two names on fresh and resume paths. Add `TestRunLiveProbePassesConfiguredProviderInstances` in `tools/tool-fluency/cmd/evener-fluency/coverage_program_fuzz_test.go`; capture `runnerNewSession` during a live probe and require the fake provider config's names. These tests check production construction, not UI or protocol output.
 
 Add table-driven tests that assert `errors.As(err, &selectionErr)` and the exact `Code`, not just message fragments:
 
@@ -328,7 +328,7 @@ Run:
 
 ```bash
 go test ./agent -run 'Test(ResolveExplicitAgentModel|ValidateFrozenAgentModel|ModelSelectionError|ConfiguredProviderInstances)' -count=1
-go test ./cmdutil ./cmd/serf ./tools/tool-fluency/cmd/serf-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
+go test ./cmdutil ./cmd/evener ./tools/tool-fluency/cmd/evener-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
 ```
 
 Expected: FAIL with undefined `resolvedAgentModel`, `ModelSelectionError`, `resolveExplicitAgentModel`, `validateFrozenAgentModel`, the two nonserialized configured-instance fields, and `cmdutil.ConfiguredProviderInstanceNames`.
@@ -351,7 +351,7 @@ func (s *Session) listModelsForAgentSelection(ctx context.Context, profile *prov
 }
 ```
 
-Add the `ConfiguredProviderInstances []string` field with tag `json:"-"` to `SessionConfig`, and add the same runtime-only field to `RestoreSessionConfig`. Implement `cmdutil.ConfiguredProviderInstanceNames` directly from `providercfg.Config.Instances`, then populate it in `cmd/serf/run.go`, `cmd/serf/serve.go`, and the tool-fluency live constructor as shown above. Restore must reapply a defensive copy after `configFromSnapshot`; child config cloning must also take a defensive copy. Do not persist this inventory and do not use `Client.ProviderNames`: registered adapters are executable transports, not proof that an instance is configured for this session.
+Add the `ConfiguredProviderInstances []string` field with tag `json:"-"` to `SessionConfig`, and add the same runtime-only field to `RestoreSessionConfig`. Implement `cmdutil.ConfiguredProviderInstanceNames` directly from `providercfg.Config.Instances`, then populate it in `cmd/evener/run.go`, `cmd/evener/serve.go`, and the tool-fluency live constructor as shown above. Restore must reapply a defensive copy after `configFromSnapshot`; child config cloning must also take a defensive copy. Do not persist this inventory and do not use `Client.ProviderNames`: registered adapters are executable transports, not proof that an instance is configured for this session.
 
 Implement `configuredProviderInstances(base)` from a defensive copy of `s.cfg.ConfiguredProviderInstances` plus `base.ID()`. Use it only for `unknown_provider_instance` alternatives; model alternatives continue to come from the one enumerated provider list.
 
@@ -418,7 +418,7 @@ Run:
 
 ```bash
 go test ./agent -run 'Test(ResolveExplicitAgentModel|ValidateFrozenAgentModel|ModelSelectionError|ConfiguredProviderInstances)' -count=1
-go test ./cmdutil ./cmd/serf ./tools/tool-fluency/cmd/serf-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
+go test ./cmdutil ./cmd/evener ./tools/tool-fluency/cmd/evener-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
 ```
 
 Expected: PASS; every membership/capability case enumerates exactly once, an unresolved provider instance enumerates zero times, alternatives contain configured instances plus the current base only, and fresh/child/restore constructors retain the nonserialized inventory without slice aliasing.
@@ -426,7 +426,7 @@ Expected: PASS; every membership/capability case enumerates exactly once, an unr
 - [ ] **Step 6: Commit the typed preflight**
 
 ```bash
-git add agent/model_selection.go agent/model_selection_test.go agent/session_config.go agent/session_init.go agent/testkit_test.go agent/subagents.go cmdutil/load_client.go cmdutil/load_client_test.go cmd/serf/run.go cmd/serf/run_coverage_fuzz_test.go cmd/serf/serve.go cmd/serf/serve_residual_fuzz_test.go tools/tool-fluency/cmd/serf-fluency/main.go tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go
+git add agent/model_selection.go agent/model_selection_test.go agent/session_config.go agent/session_init.go agent/testkit_test.go agent/subagents.go cmdutil/load_client.go cmdutil/load_client_test.go cmd/evener/run.go cmd/evener/run_coverage_fuzz_test.go cmd/evener/serve.go cmd/evener/serve_residual_fuzz_test.go tools/tool-fluency/cmd/evener-fluency/main.go tools/tool-fluency/cmd/evener-fluency/coverage_program_fuzz_test.go
 git commit -m "feat(agent): validate explicit agent model selections
 
 Add typed, side-effect-free model selection errors and one bounded model-list
@@ -1384,7 +1384,7 @@ final configured error without adding another logger or fallback policy."
 ### Task 5: Run the Deterministic Acceptance Gate and Scope Audit
 
 **Files:**
-- Verify only: `agent/`, `agent/internal/jobstore/`, `cmdutil/`, `tools/tool-fluency/cmd/serf-fluency/`, existing model-switching tests in `server/`, `cmd/serf/`, `cmd/serf-hub/`, and `cmd/serf-tui/`
+- Verify only: `agent/`, `agent/internal/jobstore/`, `cmdutil/`, `tools/tool-fluency/cmd/evener-fluency/`, existing model-switching tests in `server/`, `cmd/evener/`, `cmd/evener-hub/`, and `cmd/evener-tui/`
 
 **Interfaces:**
 - Consumes all prior task contracts.
@@ -1396,7 +1396,7 @@ Run:
 
 ```bash
 go test ./agent ./agent/internal/jobstore -run '^(TestResolveExplicitAgentModel.*|TestValidateFrozenAgentModel.*|TestModelSelectionError.*|TestConfiguredProviderInstances_.*|TestCreateDelegate_.*Model.*|TestCreateDelegate_ExplicitCrossFamilyUsesSelectedRequestAndTools|TestDelegateRestore_.*|TestFallbackProvenance_.*|TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile|TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor)$' -count=1
-go test ./cmdutil ./cmd/serf ./tools/tool-fluency/cmd/serf-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
+go test ./cmdutil ./cmd/evener ./tools/tool-fluency/cmd/evener-fluency -run 'Test.*ConfiguredProviderInstances' -count=1
 ```
 
 Expected: PASS.
@@ -1406,7 +1406,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go test ./agent ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(SetModel|ModelSwitch|ThreadModelSet|ModelChanged)' -count=1
+go test ./agent ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui -run 'Test.*(SetModel|ModelSwitch|ThreadModelSet|ModelChanged)' -count=1
 ```
 
 Expected: PASS. In particular, active-turn rejection/no-partial-mutation tests remain green and `Session.SetModel` retains its existing switching-specific availability policy. If this command fails because the new agent validator changed `thread/model/set` behavior, revert that coupling rather than changing the switching contract.
@@ -1427,7 +1427,7 @@ Expected: PASS without provider credentials, network access, quota, or paid comp
 Run:
 
 ```bash
-gofmt -w agent/model_selection.go agent/model_selection_test.go agent/subagents.go agent/job_delegate.go agent/job_delegate_model_selection_test.go agent/job_delegate_create_test.go agent/job_delegate_send_test.go agent/job_delegate_model_echo_test.go agent/plugin_agents_integration_test.go agent/session_fallback_provenance_test.go agent/session_config.go agent/session_init.go agent/testkit_test.go agent/subagents_fuzz_test.go agent/fuzz_jdr_restore_lifecycle_test.go cmdutil/load_client.go cmdutil/load_client_test.go cmd/serf/run.go cmd/serf/run_coverage_fuzz_test.go cmd/serf/serve.go cmd/serf/serve_residual_fuzz_test.go tools/tool-fluency/cmd/serf-fluency/main.go tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go
+gofmt -w agent/model_selection.go agent/model_selection_test.go agent/subagents.go agent/job_delegate.go agent/job_delegate_model_selection_test.go agent/job_delegate_create_test.go agent/job_delegate_send_test.go agent/job_delegate_model_echo_test.go agent/plugin_agents_integration_test.go agent/session_fallback_provenance_test.go agent/session_config.go agent/session_init.go agent/testkit_test.go agent/subagents_fuzz_test.go agent/fuzz_jdr_restore_lifecycle_test.go cmdutil/load_client.go cmdutil/load_client_test.go cmd/evener/run.go cmd/evener/run_coverage_fuzz_test.go cmd/evener/serve.go cmd/evener/serve_residual_fuzz_test.go tools/tool-fluency/cmd/evener-fluency/main.go tools/tool-fluency/cmd/evener-fluency/coverage_program_fuzz_test.go
 git diff --check
 go test ./... -count=1
 ```
@@ -1441,11 +1441,11 @@ Run:
 ```bash
 base_ref=refs/serf-plan-bases/agent-model-selection-correctness
 git diff --name-only "$base_ref"..HEAD
-git diff "$base_ref"..HEAD -- docs/superpowers/specs docs/superpowers/plans agent/internal/tool appwire cmd/serf-hub cmd/serf-tui
+git diff "$base_ref"..HEAD -- docs/superpowers/specs docs/superpowers/plans agent/internal/tool appwire cmd/evener-hub cmd/evener-tui
 rg -n 'Complete\(|Stream\(' agent/model_selection.go
 rg -n 'fallback|price|latency|risk|escalat' agent/model_selection.go agent/subagents.go
-rg -n 'ProviderNames\(' agent/model_selection.go agent/subagents.go cmdutil/load_client.go cmd/serf/run.go cmd/serf/serve.go tools/tool-fluency/cmd/serf-fluency/main.go
-rg -n 'ConfiguredProviderInstances' agent/session_config.go agent/session_init.go agent/subagents.go agent/job_delegate.go cmdutil/load_client.go cmd/serf/run.go cmd/serf/serve.go tools/tool-fluency/cmd/serf-fluency/main.go
+rg -n 'ProviderNames\(' agent/model_selection.go agent/subagents.go cmdutil/load_client.go cmd/evener/run.go cmd/evener/serve.go tools/tool-fluency/cmd/evener-fluency/main.go
+rg -n 'ConfiguredProviderInstances' agent/session_config.go agent/session_init.go agent/subagents.go agent/job_delegate.go cmdutil/load_client.go cmd/evener/run.go cmd/evener/serve.go tools/tool-fluency/cmd/evener-fluency/main.go
 rg -n 'AppendAPICall|transcript\.APICall|appendModelAPICallFunc|AdapterAttemptRecord' agent/session_fallback_provenance_test.go
 ```
 

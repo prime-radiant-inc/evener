@@ -18,8 +18,8 @@ build_one() {
 	fi
 }
 
-build_one serf ./cmd/serf/
-build_one serf-hub ./cmd/serf-hub/
+build_one serf ./cmd/evener/
+build_one serf-hub ./cmd/evener-hub/
 
 mv "$stage/serf" "$repo_root/serf"
 mv "$stage/serf-hub" "$repo_root/serf-hub"

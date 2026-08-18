@@ -2,10 +2,10 @@
 
 **What this covers**: `llm/pricing.go` `GetPrice`/`EstimateCost` → `appwire.EstimateCost` →
 the three cost-bearing surfaces added in Track C: the input-strip status row
-(`cmd/serf-hub/web_workspace.go` `renderInputStrip`), the details panel
+(`cmd/evener-hub/web_workspace.go` `renderInputStrip`), the details panel
 (`tokensAndCostRows`/`detailsRow`, `data-row="cost"`), and the per-turn
-`.turn-meta` badge (`cmd/serf-hub/assets/renderer.js`). The Show-cost toggle
-(`cmd/serf-hub/assets/settings-display.js`, default ON) gates all three via a
+`.turn-meta` badge (`cmd/evener-hub/assets/renderer.js`). The Show-cost toggle
+(`cmd/evener-hub/assets/settings-display.js`, default ON) gates all three via a
 single CSS rule keyed on `body[data-show-cost="false"]` — no page reload, no
 server round trip.
 
@@ -60,7 +60,7 @@ server round trip.
 - The toggle is CSS-only by design (Track C, commit `4cf84591`): the server
   always renders all three cost markers regardless of the toggle state; only
   `body[data-show-cost]` + the stylesheet rule
-  (`cmd/serf-hub/assets/style.css:5199-5202`) decide visibility. Don't assert
+  (`cmd/evener-hub/assets/style.css:5199-5202`) decide visibility. Don't assert
   on server-side conditional rendering — there isn't any.
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session (`tabs_context_mcp` returned "Browser extension is
@@ -75,11 +75,11 @@ server round trip.
   - `GET /_partials/s/<id>/details` returned a `data-row="cost"` `<dt>`/`<dd>`
     pair with the same `~$0.07` — confirms step 2's details-panel assertion.
   - The CSS rule backing steps 3/4 was inspected directly in
-    `cmd/serf-hub/assets/style.css:5199-5202` and confirmed to gate exactly
+    `cmd/evener-hub/assets/style.css:5199-5202` and confirmed to gate exactly
     the three selectors named above with `display: none`, no page-reload
     mechanism involved.
   - The toggle's live JS behavior (localStorage write + `data-show-cost`
-    flip, no reload) is covered by `cmd/serf-hub/jstest/test-show-cost-gating.js`
+    flip, no reload) is covered by `cmd/evener-hub/jstest/test-show-cost-gating.js`
     (asserts the CSS rule text directly) — run as part of the `make lint`
     jstest gate and passing. It does not simulate a live click-toggle-observe
     loop; the CSS-rule assertion plus the manual style.css read above is the

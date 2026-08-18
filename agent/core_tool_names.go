@@ -19,7 +19,7 @@ var (
 // CoreToolNames returns the sorted names of the core tools that carry a compiled
 // argument schema — the exact ordered set FuzzToolArgsValidate indexes its table
 // by (nameIndex % len). It is the single source of truth a corpus harvester
-// (cmd/serf-fuzz-harvest) uses to map a recorded tool-call name to the fuzz
+// (cmd/evener-fuzz-harvest) uses to map a recorded tool-call name to the fuzz
 // target's index, so harvested toolargs seeds address the right tool's schema.
 //
 // It stands up a throwaway session over a temp directory (no network: an empty

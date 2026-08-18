@@ -28,7 +28,7 @@ only until M8/M9 land its replacement and M10 removes the original.
 Check an item once the new dockview/React implementation reproduces it (or the team has made a
 deliberate, documented decision not to).
 
-- **Source:** `cmd/serf-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit
+- **Source:** `cmd/evener-hub` in this worktree, branch `worktree-webui-workspace-shell`, commit
   `8974a0a679d2cc8d6883650d17ee4d15186f79d4` (2026-07-20) — the 5 primary files below were last
   touched at `9bae74070cd10979c32a5545fc0426642c305f1b` (2026-07-20), an ancestor of the cited HEAD.
   File:line references are exact as of this commit; re-verify after further edits before relying on
@@ -39,62 +39,62 @@ deliberate, documented decision not to).
 ## Files read
 
 Primary (as requested), read in full:
-- `cmd/serf-hub/doc_serve.go` (241 lines)
-- `cmd/serf-hub/web_workspace.go` (746 lines — focused on `handleThreadDocument`/
+- `cmd/evener-hub/doc_serve.go` (241 lines)
+- `cmd/evener-hub/web_workspace.go` (746 lines — focused on `handleThreadDocument`/
   `renderThreadDocument` and the data-flow feeding them; the send/fork/aside/session-action POST
   handlers in the same file are named for context but not itemized here, they're M5/M10 territory)
-- `cmd/serf-hub/templates/thread.html` (55 lines)
-- `cmd/serf-hub/assets/panes.js` (461 lines)
-- `cmd/serf-hub/web.go` (445 lines)
-- `cmd/serf-hub/internal/hubedge/auth_token.go` (221 lines)
-- `cmd/serf-hub/assets/manifest.webmanifest` (17 lines)
+- `cmd/evener-hub/templates/thread.html` (55 lines)
+- `cmd/evener-hub/assets/panes.js` (461 lines)
+- `cmd/evener-hub/web.go` (445 lines)
+- `cmd/evener-hub/internal/hubedge/auth_token.go` (221 lines)
+- `cmd/evener-hub/assets/manifest.webmanifest` (17 lines)
 
 Pulled in because they're load-bearing for the requested behaviors (not optional reading — the
 primary files call straight into them, or the design doc's M8 framing depends on them):
-- `cmd/serf-hub/internal/fspaths/paths.go` (151 lines, read in full) — `ResolveInRoot`'s exact
+- `cmd/evener-hub/internal/fspaths/paths.go` (151 lines, read in full) — `ResolveInRoot`'s exact
   two-layer containment algorithm backing `doc_serve.go`'s path guards.
-- `cmd/serf-hub/output_images.go` (partial: `supportedOutputImageMedia`, `readOutputImageFile`,
+- `cmd/evener-hub/output_images.go` (partial: `supportedOutputImageMedia`, `readOutputImageFile`,
   `outputImageSHA`, `outputImageMaxBytes`, the `resolveOutputImageFile`→`/doc/image` URL builder) —
   the media-type/size gate `handleDocImage` delegates to.
-- `cmd/serf-hub/internal/httpsec/httpsec.go` (38 lines, read in full) — the CSP wrapping every route
+- `cmd/evener-hub/internal/httpsec/httpsec.go` (38 lines, read in full) — the CSP wrapping every route
   in scope, including the `frame-ancestors` rule `panes.js`'s iframes depend on.
-- `cmd/serf-hub/webnext.go` (58 lines, read in full) and `cmd/serf-hub/embed.go` (77 lines, read in
+- `cmd/evener-hub/webnext.go` (58 lines, read in full) and `cmd/evener-hub/embed.go` (77 lines, read in
   full) — `newWebEnabled()`/`serveSPAIndex` (the SPA cutover switch each route either checks or
   conspicuously doesn't) and the asset/template embed plumbing.
-- `cmd/serf-hub/templates/app.html` (127 lines, read in full) — the host shell `panes.js` and the
+- `cmd/evener-hub/templates/app.html` (127 lines, read in full) — the host shell `panes.js` and the
   full (non-thread-document) workspace render into; needed to diff `thread.html`'s script subset and
   to confirm `#side-panes`/`#pane-splitter` sit outside `#workspace`.
-- `cmd/serf-hub/templates/partials/workspace.html` (116 lines, read in full) and
-  `cmd/serf-hub/templates/partials/input_strip.html` (16 lines, read in full) — the shared partial
+- `cmd/evener-hub/templates/partials/workspace.html` (116 lines, read in full) and
+  `cmd/evener-hub/templates/partials/input_strip.html` (16 lines, read in full) — the shared partial
   both `/s/{id}` and `/thread/{ref}` render, and its `ThreadDocumentMode` conditionals.
-- `cmd/serf-hub/web_types.go` (`WorkspaceData` struct, lines ~161-223) and
-  `cmd/serf-hub/web_api_tree.go` (`apiSessionState`, lines 845-903) — the data feeding the
+- `cmd/evener-hub/web_types.go` (`WorkspaceData` struct, lines ~161-223) and
+  `cmd/evener-hub/web_api_tree.go` (`apiSessionState`, lines 845-903) — the data feeding the
   thread-document fallback and its recurring status poll.
-- `cmd/serf-hub/assets/renderer.js` (targeted reads: `isInPane`/`openBeside`/`bindPaneParentLinks`/
+- `cmd/evener-hub/assets/renderer.js` (targeted reads: `isInPane`/`openBeside`/`bindPaneParentLinks`/
   `autoOpenObservers` ~120-405; `fileOpenBesideSpec`/`attachFileOpenBeside`/`attachImageOpenBeside`
   ~2160-2292; `makeOpenBesideButton`/`applyJobRefTarget` ~3980-4032; `bindSubagentEscapeToParent`
-  ~6922-6946 — NOT read in full at 7090 lines) and `cmd/serf-hub/assets/sidebar.js` (targeted:
+  ~6922-6946 — NOT read in full at 7090 lines) and `cmd/evener-hub/assets/sidebar.js` (targeted:
   the "Open beside" context-menu item and subagent-row `open-beside-btn` handler, ~276, ~1136-1160 —
   NOT read in full at 1390 lines) — every producer that calls into the `panes.js`/`openBeside`
   contract.
-- `cmd/serf-hub/assets/theme.js` (12 lines, read in full) — to check for (and rule out) any
+- `cmd/evener-hub/assets/theme.js` (12 lines, read in full) — to check for (and rule out) any
   cross-frame theme-sync mechanism the iframe-pane model might depend on.
-- `cmd/serf-hub/jstest/test-thread-document-bridge.js` (96 lines, read in full) — the executable spec
+- `cmd/evener-hub/jstest/test-thread-document-bridge.js` (96 lines, read in full) — the executable spec
   for the postMessage bridge; corroborates §3.5 line-for-line.
-- `cmd/serf-hub/web_test.go` (targeted: every `TestWeb_ThreadDocument_*` function, lines 2461-2760)
-  and `cmd/serf-hub/doc_serve_test.go` (targeted: every `TestDoc*` function) — corroborating evidence
+- `cmd/evener-hub/web_test.go` (targeted: every `TestWeb_ThreadDocument_*` function, lines 2461-2760)
+  and `cmd/evener-hub/doc_serve_test.go` (targeted: every `TestDoc*` function) — corroborating evidence
   for §1 and §2; cited inline as "verified by `Test...`" where a specific test pins the behavior.
-- `cmd/serf-hub/internal/hubedge/auth_token_test.go` — not read in full, but its 28 `check*`
+- `cmd/evener-hub/internal/hubedge/auth_token_test.go` — not read in full, but its 28 `check*`
   function names were enumerated and cross-checked against every §5 claim (all matched).
 - `docs/superpowers/specs/2026-07-20-webui-workspace-shell-rewrite-design.md` (324 lines, read in
   full) — the M8 mandate and target-architecture context quoted above and in §3/§4's framing notes.
 
-Not read (out of scope for this pass — flag before assuming): `cmd/serf-hub/frontend/src/**` (the
+Not read (out of scope for this pass — flag before assuming): `cmd/evener-hub/frontend/src/**` (the
 in-progress new SPA itself — this checklist deliberately only describes the OLD implementation so it
-can be diffed against whatever the new pass produces); `cmd/serf-hub/assets/style.css` beyond two
+can be diffed against whatever the new pass produces); `cmd/evener-hub/assets/style.css` beyond two
 targeted greps (`--side-panes-w`/`--sidebar-w` defaults, `.subagent-parent-up` rules);
-`cmd/serf-hub/assets/renderer-tools.js` / `renderer-panels.js` (grepped for `doc/file`/`doc/image`
-hits, found none — the affordances live in `renderer.js` itself); `cmd/serf-hub/main.go` (where
+`cmd/evener-hub/assets/renderer-tools.js` / `renderer-panels.js` (grepped for `doc/file`/`doc/image`
+hits, found none — the affordances live in `renderer.js` itself); `cmd/evener-hub/main.go` (where
 `LoadOrCreateAuthToken`/`AuthURLFor` actually get called and printed); `output_images.go`'s
 `handleSessionImage` (`/s/{id}/images/{sha}` handler — named only because `panes.js`'s safe-href
 check interacts with its URL shape, §3.8).

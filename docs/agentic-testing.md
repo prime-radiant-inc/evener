@@ -41,7 +41,7 @@ run=$(mktemp -d -t serf-e2e-XXXXXX)
 #    make build-web comes first because the hub SERVES the SPA out of its
 #    own binary: frontend/dist is not tracked (only a one-line
 #    PLACEHOLDER) and webnext.go embeds it at compile time
-#    (`//go:embed all:frontend/dist`), so a bare `go build ./cmd/serf-hub`
+#    (`//go:embed all:frontend/dist`), so a bare `go build ./cmd/evener-hub`
 #    in a fresh checkout or worktree embeds nothing and every page route
 #    answers `503 serf-hub web app not built: run 'make build-web' and
 #    rebuild`. /api/* still answers normally, so the first symptom is a
@@ -55,9 +55,9 @@ run=$(mktemp -d -t serf-e2e-XXXXXX)
 #    built from a different package-lock.json, see the rebuild matrix
 #    under "Falsification debugging".
 make build-web
-go build -o "$run/serf-hub" ./cmd/serf-hub
-go build -o "$run/serf" ./cmd/serf
-go build -o "$run/serf-tui" ./cmd/serf-tui
+go build -o "$run/serf-hub" ./cmd/evener-hub
+go build -o "$run/serf" ./cmd/evener
+go build -o "$run/serf-tui" ./cmd/evener-tui
 
 # 3. Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
 #    providers.toml, hub.lock, and session history off Jesse's real
@@ -215,7 +215,7 @@ sharing itself):
 - **Session history does not have to be shared even here.** Exporting
   `XDG_STATE_HOME` to a scratch directory before starting the hub
   relocates every session it spawns away from Jesse's real
-  `~/.local/state/serf/projects` (`cmd/serf-hub/config.go`'s
+  `~/.local/state/serf/projects` (`cmd/evener-hub/config.go`'s
   `DefaultStateGlob` prefers `XDG_STATE_HOME` over `$HOME/.local/state`
   when it's set) — with zero effect on the credentials/token/lock paths
   above, since those are keyed off `$HOME` directly (`DefaultHubStateRoot`),
@@ -315,7 +315,7 @@ appwire ref is `local:$SID`.
 The state vocabulary is fixed and shared by the web rail, the TUI, and
 this REST shim: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
-`cmd/serf-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
+`cmd/evener-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
 `appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
 **`active`**, never `processing` — `processing` is not a wire value at
 all, and `test/scenarios/scenario_docs_test.go`'s
@@ -343,7 +343,7 @@ flight once both the status flip and the turn id have landed
 
 There is exactly one session REST namespace now: `/api/sessions/<ref>`,
 where `<ref>` is the canonical `local:<SID>` form. The dispatcher is
-`handleAPISession` (`cmd/serf-hub/web_api_tree.go#handleAPISession`) and the
+`handleAPISession` (`cmd/evener-hub/web_api_tree.go#handleAPISession`) and the
 whole verb list is:
 
 | Route | Method | Notes |
@@ -417,12 +417,12 @@ For observer sidecar scenarios, do not trust the final scenario marker
 alone. Audit the parent and observer transcripts:
 
 ```bash
-go run ./cmd/serf-doctor tree "$SID" --state-dir "$state" --observers
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count read_transcript
-go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
-go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
+go run ./cmd/evener-doctor tree "$SID" --state-dir "$state" --observers
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --count job_list
+go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --count read_transcript
+go run ./cmd/evener-doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/evener-doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
 ```
 
 For the happy path, the parent should use the current delegate result,
@@ -471,7 +471,7 @@ The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use
 published `window.SerfRenderer` and `window.SerfAppwire` was deleted
 wholesale at commit `660376f78` (2026-07-22), and the React app that
 replaced it exposes nothing on `window` — the only `window.*` reference
-left in `cmd/serf-hub/frontend/src` outside tests is an `AudioContext`
+left in `cmd/evener-hub/frontend/src` outside tests is an `AudioContext`
 lookup (`notifications/channels.ts:45`). Anything in an older card that
 reads `window.SerfRenderer?.state` or calls `window.SerfAppwire.steer(…)`
 returns `undefined` / throws, and an `eval` that does so **fails open**:
@@ -574,7 +574,7 @@ matches a naive `=== "/s/local:<SID>"`. Compare
 
 Every hook below was read out of the current tree. Prefer these over
 inventing a CSS path; if you need one that isn't here, grep
-`data-testid` in `cmd/serf-hub/frontend/src` rather than guessing.
+`data-testid` in `cmd/evener-hub/frontend/src` rather than guessing.
 
 **Composer** (`panes/session/composer/Composer.tsx`):
 
@@ -825,14 +825,14 @@ TS=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
 META=$(find "$HOME/.local/state/serf/projects" -name "$SID.meta.json")
 
 # Locate the canonical files for a session selector.
-go run ./cmd/serf-doctor locate "$SID"
+go run ./cmd/evener-doctor locate "$SID"
 
 # Read a compact, typed turn outline instead of raw JSONL.
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
 
 # Count structural tool invocations. This does not confuse tool-name
 # mentions in prompts/API payloads with real tool calls.
-go run ./cmd/serf-doctor transcript "$SID" --count delegate_send
+go run ./cmd/evener-doctor transcript "$SID" --count delegate_send
 ```
 
 Useful when a scenario's web/TUI assertion is ambiguous. The on-disk
@@ -892,10 +892,10 @@ the captured pane / DOM, the next move is to add a stderr probe to
 the offending layer, rebuild, rerun, grep the log. The full pipeline
 has six rebuild points:
 
-1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o "$run/serf" ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
-2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/serf-hub" ./cmd/serf-hub && "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" & HUBPID=$!`.
-3. **Web UI** — `cmd/serf-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/serf-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
-4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o "$run/serf-tui" ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
+1. **Daemon** — `cmd/evener/` and `agent/`. Rebuild: `go build -o "$run/serf" ./cmd/evener`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
+2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/serf-hub" ./cmd/evener-hub && "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" & HUBPID=$!`.
+3. **Web UI** — `cmd/evener-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/evener-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
+4. **TUI** — `cmd/evener-tui/`. Rebuild: `go build -o "$run/serf-tui" ./cmd/evener-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
 5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`frontend/src/protocol/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
 6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
 
@@ -904,7 +904,7 @@ debug session — wanted to know whether the TUI's reconcile path was
 reaching `applyHubNotification`:
 
 ```go
-// In cmd/serf-tui/hub_model.go applyHubNotification
+// In cmd/evener-tui/hub_model.go applyHubNotification
 matched := m.notificationMatchesCurrentSession(notification)
 fmt.Fprintf(os.Stderr, "DEBUG applyHubNotification method=%s matched=%v detailRef=%q\n",
     notification.Method, matched, m.detail.Ref)
@@ -966,21 +966,21 @@ parsers:
 ```bash
 # Parent watch lifecycle, coalesced delivery counts, dropped sends, and
 # self-loop verdicts.
-go run ./cmd/serf-doctor watches "$SID"
+go run ./cmd/evener-doctor watches "$SID"
 
 # Parent/delegate/observer topology. Use observer transcript refs from
 # this output when you audit sidecar behavior.
-go run ./cmd/serf-doctor tree "$SID" --observers
+go run ./cmd/evener-doctor tree "$SID" --observers
 
 # Parent and observer turns. The observer transcript should show whether
 # a frame caused useful work, a no-op text response, or unwanted tool churn.
-go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 
 # Structural tool counts when the scenario cares about fluency.
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count job_list
 ```
 
 This matters when an observer calls `communicate(end_turn=true)`: the
@@ -1013,7 +1013,7 @@ For sidecar fluency, record these separately from pass/fail:
 A scenario can describe a behavior that production gating prevents.
 Example: `tui-steer-in-idle-fails-fast.md` documents what Ctrl+S in
 an IDLE session *should* look like — but `handleSessionForceSteer`
-in `cmd/serf-tui/hub_model.go` early-returns when the composer mode
+in `cmd/evener-tui/hub_model.go` early-returns when the composer mode
 isn't `queue`. So Ctrl+S in IDLE is a silent no-op, not a visible
 failure chip.
 

@@ -4,7 +4,7 @@
 
 **Goal:** Collapse all 14 settings sub-pages (plus credentials) onto two canonical primitives — `settings-table` and `settings-collection` — defined in §4.2 of the design language. After this pass every "label → value" page is a `<dl class="settings-table">` and every dynamic add/remove list is a `<section class="settings-collection">`, with one documented one-off (in-repo trust controls). `LaunchConfigControls.render()` is reworked to emit `settings-table` row markup; the JS API contract is preserved.
 
-**Architecture:** CSS + templates + one JS file. No Go changes. No new endpoints. All sub-pages keep their existing `hx-get` swap targets and `data-launch-*` attributes; only the visual markup changes. The 14 templates under `cmd/serf-hub/templates/partials/settings/`, plus `credentials.html`, are rewritten. `assets/launchconfig.js` is updated to emit the new row primitive. `assets/style.css` gets ~250 lines of new primitive CSS (and ~120 lines of legacy settings rules deleted after migration; the actual delete happens in Pass 8's CSS sweep, not here).
+**Architecture:** CSS + templates + one JS file. No Go changes. No new endpoints. All sub-pages keep their existing `hx-get` swap targets and `data-launch-*` attributes; only the visual markup changes. The 14 templates under `cmd/evener-hub/templates/partials/settings/`, plus `credentials.html`, are rewritten. `assets/launchconfig.js` is updated to emit the new row primitive. `assets/style.css` gets ~250 lines of new primitive CSS (and ~120 lines of legacy settings rules deleted after migration; the actual delete happens in Pass 8's CSS sweep, not here).
 
 **Tech Stack:** Go html/template, HTMX, vanilla browser JavaScript, CSS custom properties + grid.
 
@@ -16,14 +16,14 @@
 
 ## File Touch Map
 
-- Modify: `cmd/serf-hub/assets/style.css` — add `.settings-table`, `.settings-collection`, value-cell variants, section-header row variant, phone nav-as-page rules, settings-nav search input.
-- Modify: `cmd/serf-hub/assets/launchconfig.js` — rewrite the markup emitted by `render()` to produce `settings-table .row` (or `section-header` row) elements; rewrite list/env/mcp control wrappers to render as `settings-collection` blocks inside a row. Preserve every `data-launch-*` attribute name and every internal selector (validate/collect read `[data-launch-wire-field]`, `[data-launch-list]`, `[data-launch-env-list]`, `[data-launch-mcp-list]`, `[data-launch-explicit-empty]`, `[data-launch-validation-error]`, `[data-launch-invalid]`, `[data-launch-kind]`, `[data-launch-path-kind]`, `[data-launch-option]`, `[data-launch-mcp-command]`).
-- Modify: `cmd/serf-hub/templates/partials/settings.html` — add search filter `<input>` at top of `<nav class="settings-nav">` and a `<a class="settings-nav-back" hidden>` element used by phone nav-as-page.
-- Modify (rewrite content): every file in `cmd/serf-hub/templates/partials/settings/` (14 files).
-- Modify: `cmd/serf-hub/templates/partials/credentials.html` — rewrite JS to emit `settings-collection` markup.
-- Modify: `cmd/serf-hub/assets/settings.js` — add settings-nav search filter handler; add phone nav-as-page back-chevron handler; add `data-phone-density` body-attribute wiring for the new theme row.
-- Modify: `cmd/serf-hub/jstest/test-launchconfig-controls.js` — update the two `.settings-add-row` selectors (line 254–255) to `.settings-collection-add`. Existing `data-launch-*` selectors remain untouched.
-- Optional: scan `cmd/serf-hub/web_test.go` for any literal `.settings-list`, `.settings-form`, `.settings-rows`, `.settings-row-title`, `.settings-toggle`, `.settings-radio`, `.settings-launch-form`, `.settings-launch-row`, `.settings-launch-group`, `.spawn-advanced-row` references. None expected (typography + class names changed in Pass 2; Pass 7 finalizes the markup shape) but a `grep -n` is part of every template-touching task's verification.
+- Modify: `cmd/evener-hub/assets/style.css` — add `.settings-table`, `.settings-collection`, value-cell variants, section-header row variant, phone nav-as-page rules, settings-nav search input.
+- Modify: `cmd/evener-hub/assets/launchconfig.js` — rewrite the markup emitted by `render()` to produce `settings-table .row` (or `section-header` row) elements; rewrite list/env/mcp control wrappers to render as `settings-collection` blocks inside a row. Preserve every `data-launch-*` attribute name and every internal selector (validate/collect read `[data-launch-wire-field]`, `[data-launch-list]`, `[data-launch-env-list]`, `[data-launch-mcp-list]`, `[data-launch-explicit-empty]`, `[data-launch-validation-error]`, `[data-launch-invalid]`, `[data-launch-kind]`, `[data-launch-path-kind]`, `[data-launch-option]`, `[data-launch-mcp-command]`).
+- Modify: `cmd/evener-hub/templates/partials/settings.html` — add search filter `<input>` at top of `<nav class="settings-nav">` and a `<a class="settings-nav-back" hidden>` element used by phone nav-as-page.
+- Modify (rewrite content): every file in `cmd/evener-hub/templates/partials/settings/` (14 files).
+- Modify: `cmd/evener-hub/templates/partials/credentials.html` — rewrite JS to emit `settings-collection` markup.
+- Modify: `cmd/evener-hub/assets/settings.js` — add settings-nav search filter handler; add phone nav-as-page back-chevron handler; add `data-phone-density` body-attribute wiring for the new theme row.
+- Modify: `cmd/evener-hub/jstest/test-launchconfig-controls.js` — update the two `.settings-add-row` selectors (line 254–255) to `.settings-collection-add`. Existing `data-launch-*` selectors remain untouched.
+- Optional: scan `cmd/evener-hub/web_test.go` for any literal `.settings-list`, `.settings-form`, `.settings-rows`, `.settings-row-title`, `.settings-toggle`, `.settings-radio`, `.settings-launch-form`, `.settings-launch-row`, `.settings-launch-group`, `.spawn-advanced-row` references. None expected (typography + class names changed in Pass 2; Pass 7 finalizes the markup shape) but a `grep -n` is part of every template-touching task's verification.
 
 ---
 
@@ -93,7 +93,7 @@ Value cells:
 ## Task 1: Add settings-table primitive CSS
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1:** Locate the existing `/* ── Settings page ──── */` block in `style.css` (around line 729). Leave the `.settings-pane`, `.settings-nav`, `.settings-nav-section`, `.settings-nav-link`, `.settings-content`, `.settings-h2`, `.settings-help`, `.settings-h3` rules in place — they describe the shell. Append the new primitive immediately after `.settings-h3` and before the legacy `.settings-form` / `.settings-list` / `.settings-rows` block. The legacy block stays during the pass; Pass 8's CSS sweep removes it.
 
@@ -274,7 +274,7 @@ Value cells:
 ## Task 2: Add settings-collection primitive CSS
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1:** Immediately after the value-cell variants from Task 1, append:
 
@@ -376,7 +376,7 @@ Value cells:
 **Why:** `LaunchConfigControls.render()` currently emits `<fieldset><legend>` groupings; flat `settings-table` destroys this. The known-issues section of the responsive spec resolves this by permitting a row variant whose `<dd>` spans both columns and renders the fieldset header.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1:** Append immediately after the value-cell variants:
 
@@ -409,7 +409,7 @@ Value cells:
 ## Task 4: Migrate `general.html` (read-only definition list)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/general.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/general.html`
 
 - [ ] **Step 1:** Replace the entire file content with:
 
@@ -452,7 +452,7 @@ Value cells:
 ## Task 5: Migrate `hub.html` (read-only definition list)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/hub.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/hub.html`
 
 - [ ] **Step 1:** Replace the entire file content with:
 
@@ -481,7 +481,7 @@ Value cells:
 ## Task 6: Migrate `storage.html` (read-only definition list)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/storage.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/storage.html`
 
 - [ ] **Step 1:** Replace the entire file content with:
 
@@ -514,7 +514,7 @@ Value cells:
 ## Task 7: Migrate `agents.html` (row-per-agent)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/agents.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/agents.html`
 
 The agents page enumerates agents at runtime — each agent gets its own row in the table. `<dt>` is the agent name; `<dd>` is either a link to the agent's source file or a "built-in" annotation.
 
@@ -548,8 +548,8 @@ The agents page enumerates agents at runtime — each agent gets its own row in 
 ## Task 8: Migrate `theme.html` (radios + new phone-density + sidebar-mode rows)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/theme.html`
-- Modify: `cmd/serf-hub/assets/settings.js` (wire `data-phone-density` + sidebar-mode handlers)
+- Modify: `cmd/evener-hub/templates/partials/settings/theme.html`
+- Modify: `cmd/evener-hub/assets/settings.js` (wire `data-phone-density` + sidebar-mode handlers)
 
 The theme page picks up two new rows from §1.7 (Phone density) and §2.1 / Pass 5 (Sidebar mode). Both are radios, both are persisted to localStorage and applied as body data-attributes.
 
@@ -595,7 +595,7 @@ The theme page picks up two new rows from §1.7 (Phone density) and §2.1 / Pass
 {{end}}
 ```
 
-- [ ] **Step 2:** In `cmd/serf-hub/assets/settings.js`, locate the `data-theme-picker` initializer (it reads `localStorage["serf-hub.theme"]` and applies to `document.documentElement.dataset.theme`). Add two parallel handlers below it:
+- [ ] **Step 2:** In `cmd/evener-hub/assets/settings.js`, locate the `data-theme-picker` initializer (it reads `localStorage["serf-hub.theme"]` and applies to `document.documentElement.dataset.theme`). Add two parallel handlers below it:
 
 ```js
 // Phone density
@@ -642,7 +642,7 @@ The theme page picks up two new rows from §1.7 (Phone density) and §2.1 / Pass
 ## Task 9: Migrate `notifications.html` (toggles)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/notifications.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/notifications.html`
 
 - [ ] **Step 1:** Replace the entire file content with:
 
@@ -695,7 +695,7 @@ The theme page picks up two new rows from §1.7 (Phone density) and §2.1 / Pass
 {{end}}
 ```
 
-- [ ] **Step 2:** In `cmd/serf-hub/assets/settings.js`, find the notifications form handler (it queries `[data-notif-form] input[data-notif]`). Extend it so that on change it updates the sibling `.state` span text:
+- [ ] **Step 2:** In `cmd/evener-hub/assets/settings.js`, find the notifications form handler (it queries `[data-notif-form] input[data-notif]`). Extend it so that on change it updates the sibling `.state` span text:
 
 ```js
 function syncToggleState(input) {
@@ -711,7 +711,7 @@ Call `syncToggleState(input)` on initial load (after restoring stored value) and
 ## Task 10: Migrate `providers.html` (status badges)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/providers.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/providers.html`
 
 The page is rendered client-side from `launchconfig.authList()`. The script emits rows; replace the loop's HTML with `settings-table .row` markup, swapping `.status-pill` for `.status-badge` (the Pass 4 token-driven typographic badge — no background).
 
@@ -773,7 +773,7 @@ The page is rendered client-side from `launchconfig.authList()`. The script emit
 ## Task 11: Migrate `launch-codex.html` (read-only display)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/launch-codex.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-codex.html`
 
 The Codex launch page is read-only — one `<dl class="settings-table">` per configured launch entry, preceded by an `<h3>` for the entry's ID. The legacy `<table>` markup is dropped.
 
@@ -843,8 +843,8 @@ timeout     = "30s"</pre>
 ## Task 12: Update `LaunchConfigControls.render()` to emit settings-table row markup
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/launchconfig.js`
-- Modify: `cmd/serf-hub/jstest/test-launchconfig-controls.js`
+- Modify: `cmd/evener-hub/assets/launchconfig.js`
+- Modify: `cmd/evener-hub/jstest/test-launchconfig-controls.js`
 
 **Mandate:** The JS contract (`render(form, opts)`, `populate(form, current)`, `collect(form)`, `validate(form)`, `showBackendError(form, err)`) stays intact. The `data-launch-*` attribute names stay intact. The internal class names (`spawn-advanced-*`, `settings-launch-*`) change to settings-table primitive markup when `mode === "settings"`. Spawn mode (`mode === "spawn"`) keeps its current class names — Pass 6 already finished the composer/spawn pass, so we do not touch spawn output here.
 
@@ -917,7 +917,7 @@ The `<dt>` carries the label text (sans, weight 500); the `<dd>` carries the inp
 
 - [ ] **Step 7:** Add a top-level utility selector — replace any `font-weight: 500; color: var(--text)` on field labels with the existing `.row dt` rule (cascade handles it). For the `.row.section-header` + immediate-following `.row` case where the section-header `<dt>` is empty, the section header text lives in the `<dd>`.
 
-- [ ] **Step 8:** Update `cmd/serf-hub/jstest/test-launchconfig-controls.js` lines 254 and 255:
+- [ ] **Step 8:** Update `cmd/evener-hub/jstest/test-launchconfig-controls.js` lines 254 and 255:
 
 ```js
 const pendingPath = pluginWrap.querySelector(".settings-collection-add input");
@@ -926,7 +926,7 @@ const addPath = pluginWrap.querySelector(".settings-collection-add button");
 
   These are the only two literal class-name references in the test file. The rest of the test uses `data-launch-*` attribute selectors, which are preserved.
 
-- [ ] **Step 9:** Run `cmd/serf-hub/jstest/run-all.sh` (or the equivalent harness). All launchconfig-controls assertions must still pass: schema render coverage, prompt composite radio behavior, modelFallbacks explicit-empty checkbox, path-list validation, env-credential validation, spawn-mode exclusion of agent/model/reasoningEffort + explicit-empty. If any test fails, the cause is one of: a `data-launch-*` attribute was accidentally renamed; the wrap class branch was applied in spawn mode too; the explicit-empty checkbox got moved out of the `data-launch-wire-field` wrap.
+- [ ] **Step 9:** Run `cmd/evener-hub/jstest/run-all.sh` (or the equivalent harness). All launchconfig-controls assertions must still pass: schema render coverage, prompt composite radio behavior, modelFallbacks explicit-empty checkbox, path-list validation, env-credential validation, spawn-mode exclusion of agent/model/reasoningEffort + explicit-empty. If any test fails, the cause is one of: a `data-launch-*` attribute was accidentally renamed; the wrap class branch was applied in spawn mode too; the explicit-empty checkbox got moved out of the `data-launch-wire-field` wrap.
 
 - [ ] **Step 10:** Verify spawn mode renders identically pre- and post-pass. Open `/new` in the browser. The Advanced section should look exactly the same — confirm by comparing screenshots.
 
@@ -935,7 +935,7 @@ const addPath = pluginWrap.querySelector(".settings-collection-add button");
 ## Task 13: Migrate `launch-serf.html` (mixed inputs, schema-driven)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/launch-serf.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-serf.html`
 
 The page's JS body stays unchanged — it calls `launchconfig.schema()`, then `LaunchConfigControls.render(form, {mode: "settings", layer: "global", ...})`. Task 12 makes `render()` emit settings-table markup, so the only template change here is: the form root becomes a `<dl>` (semantics) wrapped with the form-action footer; the inline `style="margin:0"` is removed (deferred until Task 21).
 
@@ -1039,7 +1039,7 @@ The page's JS body stays unchanged — it calls `launchconfig.schema()`, then `L
 ## Task 14: Migrate `project.html` (mixed inputs, schema-driven)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/project.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/project.html`
 
 Same shape as launch-serf.html — schema-driven form via `LaunchConfigControls.render()` plus a project picker fallback when no CWD is selected.
 
@@ -1150,7 +1150,7 @@ Same shape as launch-serf.html — schema-driven form via `LaunchConfigControls.
 ## Task 15: Migrate `inrepo.html` (settings-table + custom trust controls)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/inrepo.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/inrepo.html`
 
 In-repo trust is the documented one-off. The page consists of:
 1. A working-dir `<input>` (rendered in a `settings-table` `.row.editable`).
@@ -1261,7 +1261,7 @@ If `.surface-inset` is already defined (Pass 4 + Pass 6 should have done so), `i
 ## Task 16: Migrate `plugins.html` (settings-collection)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins.html`
 
 - [ ] **Step 1:** Replace the entire file content with:
 
@@ -1400,7 +1400,7 @@ If `.surface-inset` is already defined (Pass 4 + Pass 6 should have done so), `i
 ## Task 17: Migrate `skills.html` (settings-collection)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/skills.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/skills.html`
 
 The skills page is structurally identical to plugins — only the field name (`skillsDirs`), the page title, and the help text differ.
 
@@ -1542,7 +1542,7 @@ The skills page is structurally identical to plugins — only the field name (`s
 ## Task 18: Migrate `mcp.html` (two settings-collections)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/mcp.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/mcp.html`
 
 The MCP page hosts two collections: "MCP config files" (paths) and "Inline MCP servers" (name + command + args).
 
@@ -1760,7 +1760,7 @@ The MCP page hosts two collections: "MCP config files" (paths) and "Inline MCP s
 ## Task 19: Migrate `credentials.html` (settings-collection with action buttons)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/credentials.html`
+- Modify: `cmd/evener-hub/templates/partials/credentials.html`
 
 Credentials is a settings-collection with per-row action buttons (Set/Replace, OAuth, Clear) and an inline editor form that opens below a row. The two source-layer presentation (file/env effective/shadowed) stays — it's domain-specific and informative.
 
@@ -2053,9 +2053,9 @@ Credentials is a settings-collection with per-row action buttons (Set/Replace, O
 ## Task 20: Settings-nav search filter + phone nav-as-page
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings.html`
-- Modify: `cmd/serf-hub/assets/settings.js`
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/templates/partials/settings.html`
+- Modify: `cmd/evener-hub/assets/settings.js`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1:** Update `settings.html` to add a search input at the top of `<nav class="settings-nav">` and a back link slot for phone nav-as-page:
 
@@ -2138,7 +2138,7 @@ Credentials is a settings-collection with per-row action buttons (Set/Replace, O
 }
 ```
 
-- [ ] **Step 3:** Append to `cmd/serf-hub/assets/settings.js`:
+- [ ] **Step 3:** Append to `cmd/evener-hub/assets/settings.js`:
 
 ```js
 // Settings-nav filter
@@ -2204,15 +2204,15 @@ Credentials is a settings-collection with per-row action buttons (Set/Replace, O
 ## Task 21: Remove inline `style="margin:0"` overrides
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/launch-serf.html` (already done in Task 13)
-- Modify: `cmd/serf-hub/templates/partials/settings/project.html` (already done in Task 14)
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/templates/partials/settings/launch-serf.html` (already done in Task 13)
+- Modify: `cmd/evener-hub/templates/partials/settings/project.html` (already done in Task 14)
+- Modify: `cmd/evener-hub/assets/style.css`
 
-- [ ] **Step 1:** Confirm Tasks 13 and 14 replaced `style="margin:0"` with `class="settings-form-status"`. Run `grep -rn 'style="margin:0"' cmd/serf-hub/templates/` — output should be empty.
+- [ ] **Step 1:** Confirm Tasks 13 and 14 replaced `style="margin:0"` with `class="settings-form-status"`. Run `grep -rn 'style="margin:0"' cmd/evener-hub/templates/` — output should be empty.
 
 - [ ] **Step 2:** Confirm `.settings-form-status` is defined in `style.css` (added in Task 13 Step 3). The rule sets `margin: 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--text-muted);` — combining the margin-zero override + the consistent help-text typography.
 
-- [ ] **Step 3:** Run `grep -rn 'style="' cmd/serf-hub/templates/` and confirm only data-driven inline styles remain (e.g., `style="width:{{.Pct}}%"` on context-fill or similar). Pre-existing data-driven inline styles are permitted per the spec; static-value inline styles are not.
+- [ ] **Step 3:** Run `grep -rn 'style="' cmd/evener-hub/templates/` and confirm only data-driven inline styles remain (e.g., `style="width:{{.Pct}}%"` on context-fill or similar). Pre-existing data-driven inline styles are permitted per the spec; static-value inline styles are not.
 
 ---
 
@@ -2236,12 +2236,12 @@ Credentials is a settings-collection with per-row action buttons (Set/Replace, O
 
 - [ ] **Step 8:** Type "launch" into the settings-nav filter. Confirm only the matching entries remain visible and the relevant section headers stay; non-matching section headers (e.g., "Daemon") hide.
 
-- [ ] **Step 9:** Run `cmd/serf-hub/jstest/run-all.sh`. All tests pass — particularly `test-launchconfig-controls.js` (verifies render + collect + validate end-to-end).
+- [ ] **Step 9:** Run `cmd/evener-hub/jstest/run-all.sh`. All tests pass — particularly `test-launchconfig-controls.js` (verifies render + collect + validate end-to-end).
 
 - [ ] **Step 10:** Run `make test` (Go) and `make lint-naming`. Both pass.
 
 - [ ] **Step 11:** Grep for any remaining legacy class names that the new primitives should have replaced. Expected output is empty in templates:
-  - `grep -rn 'settings-list\|settings-form\b\|settings-rows\|settings-row-title\|settings-row-meta\|settings-toggle\|settings-radio\|status-pill' cmd/serf-hub/templates/`
+  - `grep -rn 'settings-list\|settings-form\b\|settings-rows\|settings-row-title\|settings-row-meta\|settings-toggle\|settings-radio\|status-pill' cmd/evener-hub/templates/`
   - The settings-row* rules in `style.css` itself stay until Pass 8's sweep.
 
 - [ ] **Step 12:** A `prefers-reduced-motion: reduce` smoke test — set `chrome://flags/#prefers-reduced-motion` to `reduce` (or `system-ui` simulation), reload, confirm none of the new transitions runs visibly (they cap at 1ms per Pass 3's rule).
@@ -2264,7 +2264,7 @@ The pass is done when:
 1. All 14 settings sub-pages + credentials.html render via the new primitives.
 2. `LaunchConfigControls.render(form, {mode: "settings"})` produces `<div class="row">…</div>` markup inside a `<dl class="settings-table">` parent.
 3. Spawn-mode rendering (`/new` Advanced) is visually pixel-equivalent to pre-pass.
-4. `cmd/serf-hub/jstest/run-all.sh` and `make test` and `make lint-naming` all pass.
+4. `cmd/evener-hub/jstest/run-all.sh` and `make test` and `make lint-naming` all pass.
 5. No `style="margin:0"` (or any other static inline style) appears in the settings or credentials templates.
 6. Phone nav-as-page works: tap a settings entry, content swaps in with back chevron; tap back chevron, nav returns.
 7. Settings-nav search filter shows/hides links + their section headers based on the query.

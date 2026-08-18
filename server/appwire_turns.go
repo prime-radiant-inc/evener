@@ -315,7 +315,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			}
 			turn := &s.turns[idx]
 			// Index per turn, not globally, matching the frontend reducer
-			// (cmd/serf-hub/frontend/src/protocol/reducer.ts:777-790) and the
+			// (cmd/evener-hub/frontend/src/protocol/reducer.ts:777-790) and the
 			// transcript reload shape it mirrors.
 			steeringCount := 0
 			for i := range turn.Items {

@@ -102,7 +102,7 @@ can't do, and say which in the report). Gate: suite green.
 ### Task 6 (Go, parallel with 3-5, integration worktree via controller or its own stream):
 `serf/tree/changed` broadcast per spec §7.3: hub broadcasts an empty notification on roster
 refresh deltas, past-index change, archive/favorite/rename/project-delete. Files:
-`cmd/serf-hub/web_api_tree.go` + relevant mutation handlers + `appwire/protocol.go` catalog
+`cmd/evener-hub/web_api_tree.go` + relevant mutation handlers + `appwire/protocol.go` catalog
 entry + regenerate (docs + TS types) + Go tests (broadcast asserted via appserver test seams).
 Scope: ScopeHub notification, no params. TDD.
 

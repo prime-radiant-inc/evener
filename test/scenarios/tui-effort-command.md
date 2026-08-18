@@ -4,7 +4,7 @@
 web effort control both show only the current model's levels, and both
 surfaces display the current model AND current effort for a cold-attached
 client (no prior notification). Exercises `/effort`
-(`cmd/serf-tui/hub_command_registry.go:354-392`), the session header's
+(`cmd/evener-tui/hub_command_registry.go:354-392`), the session header's
 `effort` part (`hub_session_view.go:51-52`'s `addPart`), and — for the web half of
 the criterion — the status strip's `ReasoningEffortControl`
 (`panes/session/chrome/StatusRow.tsx:109-165`) plus the `⌘K`

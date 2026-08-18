@@ -39,7 +39,7 @@ that require full pane width).
 
 ## Current state
 
-- `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` — tab
+- `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` — tab
   header with aggregate counts.
 - `…/chrome/ActivityTree.tsx` — current tree of card rows.
 - `…/chrome/ActivityInspector.tsx` — right-hand "Select activity" detail pane

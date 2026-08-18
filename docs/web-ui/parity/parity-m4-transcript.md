@@ -1,7 +1,7 @@
 # Transcript renderer — behavior-parity checklist (M4)
 
-Scope: `cmd/serf-hub/assets/renderer-tools.js` (full file), `cmd/serf-hub/assets/renderer-format.js`
-(full file), and the item-rendering paths of `cmd/serf-hub/assets/renderer.js` (turn lifecycle,
+Scope: `cmd/evener-hub/assets/renderer-tools.js` (full file), `cmd/evener-hub/assets/renderer-format.js`
+(full file), and the item-rendering paths of `cmd/evener-hub/assets/renderer.js` (turn lifecycle,
 message/steering/system rendering, think blocks, tool-call rows, subagent module, images/lightbox,
 scroll stickiness, liveness, streaming tail, older-turn paging). Composer/queue chrome, the
 ask_user dock, task-sidebar panel, and diagnostics/escalation recovery actions are out of scope for

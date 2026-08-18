@@ -348,7 +348,7 @@ func (m *Manager) List() ([]ListItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Non-nil even when nothing is installed: callers (cmd/serf/plugincmd.go's
+	// Non-nil even when nothing is installed: callers (cmd/evener/plugincmd.go's
 	// `list --json`) JSON-encode this directly, and a nil slice would encode as
 	// `null` instead of `[]`.
 	out := []ListItem{}

@@ -48,7 +48,7 @@ agent/tool_args_fuzz_test.go                           # Phase 0 #4 (package age
 agent/registry_schemafuzz_test.go                      # Phase 1 #5 (same reason)
 internal/appserver/router_seqfuzz_test.go              # Phase 2 #6
 llm/providers/openai/responses_fuzz_test.go            # Phase 4 #7
-cmd/serf-hub/web_fuzz_test.go                           # Phase 4 #8
+cmd/evener-hub/web_fuzz_test.go                           # Phase 4 #8
 ```
 
 Rationale: `testing.F` targets must be in the package under test (they call unexported seams and their `testdata/fuzz/` corpus lives beside them). The `fuzz/` module holds only the *reusable* pieces (generator, promoter) that have no serf dependency — these become the skill's travelling tooling. `fuzz/` is added to `GO_MODULES` in the Makefile so it's gated.
@@ -169,7 +169,7 @@ Written next to the surface's tests (path from the Emit hook). Provenance traile
 
 - **Phase 1 — schema→generator (`fuzz/schemagen`).** `func FromJSONSchema(schema map[string]any) *rapid.Generator[any]` walking `type/properties/required/enum/additionalProperties`, producing schema-valid *and* schema-adjacent values. Fed by tool `Definition.Parameters` (`agent/internal/tool/definitions.go`) and reflected `appwire.Methods` params. Drives #5 (adversarial-but-valid tool args); the divergence oracle (validated-clean but handler misbehaves — research §3) is the payoff. ~400–700 LoC.
 - **Phase 2 — stateful appwire sequence (`router_seqfuzz_test.go`).** A `rapid` state machine modelling the session/turn/job lifecycle, driving `Router.Dispatch` (`internal/appserver/router.go`). Model = legal transitions (init→thread/start→turn/start→steer/interrupt/queue→clear). Oracles, weakest-first: never panic → never wedge → status monotonicity. Failures go through the Phase-3 promoter. The model is the hard part (research §10) — derive transitions from lifecycle docs; start with the thin invariants. ~500–900 LoC.
-- **Phase 4 — HTTP + provider metamorphic.** httptest-level fuzz of `WebServer.Handler()` (`cmd/serf-hub/web.go:134`) with `AuthToken` empty; oracle = never 5xx/panic, never path-escape. Provider metamorphic harness: split/reorder/whitespace SSE frames must not change the accumulated `llm.Response`. Optional OpenAPI-gen + schemathesis add-on (HTTP only, later). ~400–700 LoC.
+- **Phase 4 — HTTP + provider metamorphic.** httptest-level fuzz of `WebServer.Handler()` (`cmd/evener-hub/web.go:134`) with `AuthToken` empty; oracle = never 5xx/panic, never path-escape. Provider metamorphic harness: split/reorder/whitespace SSE frames must not change the accumulated `llm.Response`. Optional OpenAPI-gen + schemathesis add-on (HTTP only, later). ~400–700 LoC.
 
 ## 5. Generalization seam (the future skill)
 

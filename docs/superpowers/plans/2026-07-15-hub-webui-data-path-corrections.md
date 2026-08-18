@@ -32,16 +32,16 @@
 - Modify `server/appwire_runtime.go`: call bounded snapshot methods; update notification reducer when events are recorded.
 - Modify `server/appwire_turns_paging_test.go`: daemon response equivalence and bounded-work tests.
 - Modify `server/server.go`: own the notification reducer if a server field is required.
-- Modify `cmd/serf-hub/app_threadread.go`: use indexed bounded operations for saved local transcripts.
-- Modify `cmd/serf-hub/app_threadread_test.go`: saved-session window/page equivalence and work-bound regression.
-- Modify `cmd/serf-hub/web_workspace.go`: metadata-only workspace read and parent-owned child lifecycle projection.
-- Modify `cmd/serf-hub/web_test.go`: workspace read-parameter and child state/capability regressions.
-- Modify `cmd/serf-hub/assets/renderer.js`: let transcript replay proceed before task descriptions resolve.
-- Create `cmd/serf-hub/jstest/test-renderer-hydration-order.js`: unresolved-task deterministic first-paint regression.
-- Modify `cmd/serf-hub/jstest/run-all.sh`: include the new focused renderer test.
-- Create `cmd/serf-hub/app_relay.go`: supervised relay loop and retry-clock abstraction, extracted from `app_rpc.go`.
-- Modify `cmd/serf-hub/app_rpc.go`: construct/start/stop supervised relay handles through the existing registry.
-- Modify `cmd/serf-hub/app_rpc_test.go`: scripted upstream replacement, retry, cancellation, and deduplication tests.
+- Modify `cmd/evener-hub/app_threadread.go`: use indexed bounded operations for saved local transcripts.
+- Modify `cmd/evener-hub/app_threadread_test.go`: saved-session window/page equivalence and work-bound regression.
+- Modify `cmd/evener-hub/web_workspace.go`: metadata-only workspace read and parent-owned child lifecycle projection.
+- Modify `cmd/evener-hub/web_test.go`: workspace read-parameter and child state/capability regressions.
+- Modify `cmd/evener-hub/assets/renderer.js`: let transcript replay proceed before task descriptions resolve.
+- Create `cmd/evener-hub/jstest/test-renderer-hydration-order.js`: unresolved-task deterministic first-paint regression.
+- Modify `cmd/evener-hub/jstest/run-all.sh`: include the new focused renderer test.
+- Create `cmd/evener-hub/app_relay.go`: supervised relay loop and retry-clock abstraction, extracted from `app_rpc.go`.
+- Modify `cmd/evener-hub/app_rpc.go`: construct/start/stop supervised relay handles through the existing registry.
+- Modify `cmd/evener-hub/app_rpc_test.go`: scripted upstream replacement, retry, cancellation, and deduplication tests.
 
 ---
 
@@ -210,8 +210,8 @@ git commit -m "perf(appwire): index bounded transcript pages"
 - Modify: `server/appwire_runtime.go`
 - Modify: `server/server.go`
 - Modify: `server/appwire_turns_paging_test.go`
-- Modify: `cmd/serf-hub/app_threadread.go`
-- Modify: `cmd/serf-hub/app_threadread_test.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/app_threadread_test.go`
 
 **Interfaces:**
 - Consume: `TurnCache.LatestFromFile` and `TurnCache.PageFromFile` from Task 1.
@@ -268,7 +268,7 @@ In `app_threadread_test.go`, seed a persisted 200-turn local transcript and asse
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run 'TestPastThread(Read|TurnsList).*Bounded' -count=1 -v
 ```
 
@@ -281,9 +281,9 @@ In `app_threadread.go`, route `ThreadReadParams.TurnLimit` through `LatestFromFi
 - [ ] **Step 7: Run focused and package tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./server ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./server ./cmd/evener-hub \
   -run 'AppWire|Thread(Read|Turns)|PastThread' -count=1
-GOCACHE=/tmp/serf-gocache go test ./server ./internal/apptranscript ./cmd/serf-hub -count=1
+GOCACHE=/tmp/serf-gocache go test ./server ./internal/apptranscript ./cmd/evener-hub -count=1
 ```
 
 Expected: all pass; no response-shape or cursor changes.
@@ -293,7 +293,7 @@ Expected: all pass; no response-shape or cursor changes.
 ```bash
 git add server/appwire_turns.go server/appwire_runtime.go server/server.go \
   server/appwire_turns_paging_test.go \
-  cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go
+  cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go
 git commit -m "perf(hub): bound local transcript snapshots"
 ```
 
@@ -302,11 +302,11 @@ git commit -m "perf(hub): bound local transcript snapshots"
 ### Task 3: Remove First-Paint Hydration Gates
 
 **Files:**
-- Modify: `cmd/serf-hub/web_workspace.go`
-- Modify: `cmd/serf-hub/web_test.go`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Create: `cmd/serf-hub/jstest/test-renderer-hydration-order.js`
-- Modify: `cmd/serf-hub/jstest/run-all.sh`
+- Modify: `cmd/evener-hub/web_workspace.go`
+- Modify: `cmd/evener-hub/web_test.go`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Create: `cmd/evener-hub/jstest/test-renderer-hydration-order.js`
+- Modify: `cmd/evener-hub/jstest/run-all.sh`
 
 **Interfaces:**
 - Consume: existing `Thread.Serf.Capabilities`, `Thread.Serf.ActiveTurnID`, `hydrateDescriptions`, `readThread`, and buffered renderer event machinery.
@@ -324,7 +324,7 @@ if !caps.Send || activeTurnID != "turn_active" { t.Fatalf(...) }
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run '^TestLiveWorkspaceSnapshotSkipsTurns$' -count=1 -v
 ```
 
@@ -361,7 +361,7 @@ resolveTasks([{id: 1, description: "Indexed task", status: "in_progress"}]);
 
 ```bash
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-renderer-hydration-order.js
+  node cmd/evener-hub/jstest/test-renderer-hydration-order.js
 ```
 
 If JSDOM is absent, install it outside the repository once:
@@ -379,12 +379,12 @@ Start `hydrateDescriptions()` without using it to hold `descriptionsReady`. Set 
 - [ ] **Step 6: Run focused UI tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run '^TestLiveWorkspaceSnapshotSkipsTurns$' -count=1
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-renderer-hydration-order.js
+  node cmd/evener-hub/jstest/test-renderer-hydration-order.js
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  node cmd/serf-hub/jstest/test-renderer-liveness-selfheal.js
+  node cmd/evener-hub/jstest/test-renderer-liveness-selfheal.js
 ```
 
 Expected: all pass.
@@ -394,10 +394,10 @@ Expected: all pass.
 Add the new test to `run-all.sh`, then:
 
 ```bash
-git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go \
-  cmd/serf-hub/assets/renderer.js \
-  cmd/serf-hub/jstest/test-renderer-hydration-order.js \
-  cmd/serf-hub/jstest/run-all.sh
+git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go \
+  cmd/evener-hub/assets/renderer.js \
+  cmd/evener-hub/jstest/test-renderer-hydration-order.js \
+  cmd/evener-hub/jstest/run-all.sh
 git commit -m "perf(web): unblock initial transcript paint"
 ```
 
@@ -406,8 +406,8 @@ git commit -m "perf(web): unblock initial transcript paint"
 ### Task 4: Report Parent-Owned Child Lifecycle Correctly
 
 **Files:**
-- Modify: `cmd/serf-hub/web_workspace.go`
-- Modify: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/web_workspace.go`
+- Modify: `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 - Consume: `Roster.IsSubagentActive(sessionID string) bool`.
@@ -438,7 +438,7 @@ For the stopped case remove the child from `RunningSubagentIDs` and assert `ende
 - [ ] **Step 2: Run focused tests and verify red**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run 'Test(WorkspaceData|SessionState)Projects.*InProcessSubagent' \
   -count=1 -v
 ```
@@ -461,7 +461,7 @@ Use `state` for `State` and `StateLabel`. Leave `apiSessionCapabilities(id, fals
 - [ ] **Step 4: Run lifecycle, tree, and thread projection tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore \
   -run 'Subagent|SessionState|WorkspaceData|BuildTree' -count=1
 ```
 
@@ -470,7 +470,7 @@ Expected: new workspace tests and existing tree/past-thread active-child tests p
 - [ ] **Step 5: Commit lifecycle correction**
 
 ```bash
-git add cmd/serf-hub/web_workspace.go cmd/serf-hub/web_test.go
+git add cmd/evener-hub/web_workspace.go cmd/evener-hub/web_test.go
 git commit -m "fix(hub): preserve running subagent lifecycle"
 ```
 
@@ -479,10 +479,10 @@ git commit -m "fix(hub): preserve running subagent lifecycle"
 ### Task 5: Supervise Established Hub Relays
 
 **Files:**
-- Create: `cmd/serf-hub/app_relay.go`
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/app_rpc_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/config.go` only if the retry clock belongs in `WebConfig` rather than a package-private test seam.
+- Create: `cmd/evener-hub/app_relay.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/config.go` only if the retry clock belongs in `WebConfig` rather than a package-private test seam.
 
 **Interfaces:**
 - Consume: `appsource.Source.SubscribeThread`, `appserver.Server.Broadcast`, `SubscriberCount`, and existing `hubRelayHandle` registry semantics.
@@ -529,7 +529,7 @@ Use channels for every transition; timeouts serve only as deadlock guards.
 - [ ] **Step 2: Run the recovery test and verify red**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run '^TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose$' \
   -count=1 -v
 ```
@@ -586,9 +586,9 @@ Retain and run all existing relay lifecycle tests rather than replacing them.
 - [ ] **Step 5: Run relay tests with race detection**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub \
   -run 'Relay|Relays|SubscribeFailure|ReplaceSubscription' -count=1
-GOCACHE=/tmp/serf-gocache go test -race ./cmd/serf-hub \
+GOCACHE=/tmp/serf-gocache go test -race ./cmd/evener-hub \
   -run 'Relay|Relays|SubscribeFailure|ReplaceSubscription' -count=1
 ```
 
@@ -597,8 +597,8 @@ Expected: all pass; no duplicate relay or leaked retry loop.
 - [ ] **Step 6: Commit relay supervision**
 
 ```bash
-git add cmd/serf-hub/app_relay.go cmd/serf-hub/app_rpc.go \
-  cmd/serf-hub/app_rpc_test.go cmd/serf-hub/internal/hubcore/config.go
+git add cmd/evener-hub/app_relay.go cmd/evener-hub/app_rpc.go \
+  cmd/evener-hub/app_rpc_test.go cmd/evener-hub/internal/hubcore/config.go
 git commit -m "fix(hub): recover stalled daemon relays"
 ```
 
@@ -619,9 +619,9 @@ Omit `config.go` from the add command if no production config change was needed.
 
 ```bash
 GOCACHE=/tmp/serf-gocache go test ./internal/apptranscript ./server \
-  ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub -count=1
+  ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
 NODE_PATH=/tmp/serf-jstest-jsdom/node_modules \
-  timeout 180 sh cmd/serf-hub/jstest/run-all.sh
+  timeout 180 sh cmd/evener-hub/jstest/run-all.sh
 ```
 
 Read every failure and fix its root cause. Do not mute tests or reduce coverage.
@@ -629,8 +629,8 @@ Read every failure and fix its root cause. Do not mute tests or reduce coverage.
 - [ ] **Step 2: Run race and static checks**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test -race ./internal/apptranscript ./server ./cmd/serf-hub -count=1
-GOCACHE=/tmp/serf-gocache go vet ./internal/apptranscript ./server ./cmd/serf-hub
+GOCACHE=/tmp/serf-gocache go test -race ./internal/apptranscript ./server ./cmd/evener-hub -count=1
+GOCACHE=/tmp/serf-gocache go vet ./internal/apptranscript ./server ./cmd/evener-hub
 make lint
 ```
 

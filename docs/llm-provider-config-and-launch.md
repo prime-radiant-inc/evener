@@ -115,7 +115,7 @@ api_key = "sk-ant-..."
   rule holds for a second such provider with no edit here.
 
 The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.toml")`
-(`cmd/serf-hub/main.go`) and hands it to the spawner and the auth controller.
+(`cmd/evener-hub/main.go`) and hands it to the spawner and the auth controller.
 
 > Note: the UI copy and several code comments say keys live in
 > `~/.serf/credentials.toml` (e.g. the package doc at the top of `store.go`).
@@ -124,7 +124,7 @@ The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.tom
 > constructors derive the path as
 > `filepath.Join(filepath.Dir(stateDir), "credentials.toml")`
 > (`newHubAuthController` / `newHubAuthControllerWithStore` in
-> `cmd/serf-hub/app_auth.go`).
+> `cmd/evener-hub/app_auth.go`).
 
 ### Which key a lookup uses
 
@@ -165,14 +165,14 @@ cannot disagree about one instance:
 - `cmdutil.LoadProviderConfigAt` (`cmdutil/load_client.go`) injects the key the
   spawned process signs its requests with. It is the arbiter: the other three
   exist to describe or gate what it built.
-- `validateProviderCredentials` (`cmd/serf-hub/spawn.go`) gates the launch. It
+- `validateProviderCredentials` (`cmd/evener-hub/spawn.go`) gates the launch. It
   resolves the same layers `credentials.Store.ResolveKey` does — the instance
   name's, then the credential tag's — against the child's environment, and
   returns early for a behavior tag that `envvars.RequiresNoCredential` accepts.
 - `hubAuthController.instanceStatusFor` derives both tags and feeds
   `instanceStatus`, which serves `serf/auth/status` and
   `hubInstancesController.List`.
-- `instanceHasEffectiveCredential` (`cmd/serf-hub/app_credentials.go`) decides
+- `instanceHasEffectiveCredential` (`cmd/evener-hub/app_credentials.go`) decides
   whether `serf/auth/test` has anything to probe.
 
 `instanceIsOpenAI` (behind `requiresOpenAI`), `credentialRequired`,
@@ -182,7 +182,7 @@ chat-completions instance is still refused entry to the OpenAI login flow, and a
 stored OAuth record does not open the launch preflight for one.
 
 `TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends`
-(`cmd/serf-hub/app_credential_endpoint_agreement_test.go`) states that agreement
+(`cmd/evener-hub/app_credential_endpoint_agreement_test.go`) states that agreement
 as one invariant over the shapes rather than four per-site assertions.
 
 ---
@@ -264,13 +264,13 @@ to query a provider's `/models` endpoint for context-window sizing
 These are injected by the spawner (see below) — not provider credentials:
 `SERF_HUB_SPAWNED`, `SERF_RUN_DIR`, `SERF_STATE_DIR`, `SERF_HUB_TOKEN`
 (`launchconfig/env.go:54-63`). `serf serve` reads `SERF_HUB_SPAWNED` /
-`SERF_RUN_DIR` to label its rendezvous entry (`cmd/serf/serve.go:376-385`), and
+`SERF_RUN_DIR` to label its rendezvous entry (`cmd/evener/serve.go:376-385`), and
 `llm.NewFromEnv` reads `SERF_STATE_DIR` / `XDG_STATE_HOME` to locate the OpenAI
 OAuth record (`llm/env_registry.go:51-52`).
 
 ---
 
-## OpenAI OAuth (`internal/auth/openai/*`, `cmd/serf-hub/app_auth.go`)
+## OpenAI OAuth (`internal/auth/openai/*`, `cmd/evener-hub/app_auth.go`)
 
 OpenAI is the only provider with two backends, selected by *how* you are
 authenticated:
@@ -319,7 +319,7 @@ OpenAI API key in `credentials.toml` like any other provider — the standalone
 
 ### How a user signs in
 
-The hub auth controller (`hubAuthController` in `cmd/serf-hub/app_auth.go`)
+The hub auth controller (`hubAuthController` in `cmd/evener-hub/app_auth.go`)
 gates every OAuth RPC on the named instance's behavior tag being `openai`
 (`requiresOpenAI` → `instanceIsOpenAI`), and exposes:
 `Status` / `List` / `Logout` / `LoginStart` / `LoginComplete` / `DeviceStart` /
@@ -341,7 +341,7 @@ The web Credentials screen drives this (see Web/TUI surfaces below):
    URL back into `LoginComplete` (`app_auth.go:189`), which does the PKCE code
    exchange.
 
-The CLI equivalent is `serf openai login` (`cmd/serf/openai_login.go:51`),
+The CLI equivalent is `serf openai login` (`cmd/evener/openai_login.go:51`),
 which auto-selects browser vs. device flow based on whether a graphical session
 is detected (`SSH_CONNECTION`/`SSH_TTY`/`DISPLAY`/`WAYLAND_DISPLAY`, overridable
 with `SERF_LOGIN_HEADLESS`); subcommands `login` / `logout` / `status`. The CLI
@@ -363,7 +363,7 @@ This is the part most worth internalizing: **the hub orchestrates, separate
 ```
                         ┌──────────────────────────────────────────────┐
                         │  serf-hub process                            │
-                        │  (cmd/serf-hub)                              │
+                        │  (cmd/evener-hub)                              │
                         │                                              │
    credentials.toml ───▶│  credentials.Store (main.go:103)            │
    openai.json     ───▶│  hubAuthController (app_auth.go)             │
@@ -377,7 +377,7 @@ This is the part most worth internalizing: **the hub orchestrates, separate
               ┌─────────────────────────────┐   ┌─────────────────────────────┐
               │ serf launch-check           │   │ serf serve  (the daemon)    │
               │ (subprocess, short-lived)   │   │ (subprocess, long-lived)    │
-              │ cmd/serf/launch_check.go    │   │ cmd/serf/serve.go           │
+              │ cmd/evener/launch_check.go    │   │ cmd/evener/serve.go           │
               │                             │   │                             │
               │ cmdutil.LoadClient()        │   │ cmdutil.LoadClient()        │
               │ → ProviderNames / ListModels│   │ → runs the session          │
@@ -427,7 +427,7 @@ the per-instance `auth/<instance>.json` via its client builder using the injecte
 - Both have a timeout (`serfLaunchCheckTimeout`) and redact secrets out of error
   output via `redactEnvSecrets` (`spawn.go:655`).
 
-Inside the checker, `serf launch-check` (`cmd/serf/launch_check.go`) is
+Inside the checker, `serf launch-check` (`cmd/evener/launch_check.go`) is
 config-aware:
 
 - **Profile validation is credential-free.** `validateLaunchCheckProfile`
@@ -461,14 +461,14 @@ config-aware:
    (`spawn.go:276-277`), binding an ephemeral port (`--addr 127.0.0.1:0`,
    `spawn.go:247`), and wait for the daemon's rendezvous file to appear.
 
-`serf serve` (`cmd/serf/serve.go`) builds its client with `cmdutil.LoadClient`
+`serf serve` (`cmd/evener/serve.go`) builds its client with `cmdutil.LoadClient`
 (via the `serveLoadClient` test hook, `serve.go:39`), resolves the model with
 `cmdutil.ResolveModelRef` (`serve.go:155`) + `buildInitialProfile`
 (`serve.go:171,440`) — which always uses `ResolveProfileFromConfig` (config is
 always present after `LoadClient`) and re-applies the output-schema/decisions
 overrides — and on startup writes a rendezvous entry carrying `modelRef.Provider`
-(`serve.go:404`). The standalone `serf run` (`cmd/serf/run.go:127,138`) and the
-hub's own live-models endpoint behind `/api/models` (`cmd/serf-hub/web.go:2027`)
+(`serve.go:404`). The standalone `serf run` (`cmd/evener/run.go:127,138`) and the
+hub's own live-models endpoint behind `/api/models` (`cmd/evener-hub/web.go:2027`)
 likewise build via `cmdutil.LoadClient`, so all three see custom instances.
 
 `cmdutil.LoadClient` (`cmdutil/load_client.go:31`) is **always** `NewFromProviders`
@@ -477,7 +477,7 @@ environment via `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) when
 absent, then injects credentials via `credentials.Store.ResolveKey(name, typ)`
 (`internal/credentials/store.go`) into the in-memory config and calls
 `llm.NewFromProviders`. No disk write ever occurs in `LoadClient`; persisting
-`providers.toml` is the hub's responsibility. The hub (`cmd/serf-hub/main.go:120–131`)
+`providers.toml` is the hub's responsibility. The hub (`cmd/evener-hub/main.go:120–131`)
 materializes the file on startup when absent via
 `cmdutil.MaterializeProvidersConfig` (`cmdutil/materialize.go:54`) and passes the
 path to spawned children via `SERF_PROVIDERS_CONFIG`. `llm.NewFromEnv` is retained
@@ -493,7 +493,7 @@ only the registered instances.
   instance name (the type name by default, or a custom instance name when a
   `providers.toml` is in play). Written by `agent/snapshot.go` and
   `agent/transcript.go`.
-- On **hub resume**, `resumeRequestForConfig` (`cmd/serf-hub/app_rpc.go`) reads
+- On **hub resume**, `resumeRequestForConfig` (`cmd/evener-hub/app_rpc.go`) reads
   the past index entry and **passes the stored `ProfileID` through as the
   provider** (PRI-1880); it errors on an empty `ProfileID` rather than silently
   dropping it. The old hardcoded whitelist (which omitted `openai-compatible` and
@@ -502,8 +502,8 @@ only the registered instances.
   still resolves to the `google` adapter). The resolved provider + model then drive
   the spawn.
 - On **CLI resume**, the stored `meta.ProfileID` is fed into
-  `cmdutil.ResolveModelRef` → `buildInitialProfile` (`cmd/serf/serve.go`,
-  `cmd/serf/run.go`).
+  `cmdutil.ResolveModelRef` → `buildInitialProfile` (`cmd/evener/serve.go`,
+  `cmd/evener/run.go`).
 
 > A resume whose `ProfileID` names a custom instance relies on that instance still
 > being defined in `providers.toml`; a vanished instance surfaces the resolver's
@@ -516,11 +516,11 @@ only the registered instances.
 
 ### Two web settings screens (both render the same data)
 
-- **Providers** (`cmd/serf-hub/templates/partials/settings/providers.html`) —
+- **Providers** (`cmd/evener-hub/templates/partials/settings/providers.html`) —
   **read-only** status. It calls `launchconfig.authList()` and shows each
   provider's `activeSource` badge and auth modes (`providers.html:27`). It links
   out to the credentials page for edits.
-- **Credentials** (`cmd/serf-hub/templates/partials/credentials.html`) —
+- **Credentials** (`cmd/evener-hub/templates/partials/credentials.html`) —
   **read-write**. Same `authList()` source (`credentials.html:247`), plus buttons
   to set/replace an API key (`authApiKeySet`), clear credentials
   (`authLogout`), and the OpenAI OAuth device-code / paste-back flows
@@ -539,10 +539,10 @@ with one instance-aware CRUD screen — in the web hub **and** `serf-tui`.
 Model strings are always `provider/model`. Pickers group by provider. Display
 code strips a **hardcoded** provider-prefix allowlist before showing the model:
 
-- TUI: `abbreviateModel` (`cmd/serf-tui/model_display.go:7`) strips
+- TUI: `abbreviateModel` (`cmd/evener-tui/model_display.go:7`) strips
   `anthropic/`, `openai/`, `google/`, `openrouter/`, `openai-compatible/` and a
   trailing `-YYYYMMDD` suffix.
-- Web: `abbreviateModel` (`cmd/serf-hub/assets/spawn.js:291`) strips the same
+- Web: `abbreviateModel` (`cmd/evener-hub/assets/spawn.js:291`) strips the same
   prefixes **except** `openai-compatible/` (`spawn.js:295`), plus the date
   suffix.
 

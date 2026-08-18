@@ -14,8 +14,8 @@ import (
 //
 // It is the single knob that redirects all home-based serf state — the provider
 // config (providers.toml) and credentials. `serf run` / `serf serve`, tests,
-// sandboxed runs, and multi-instance setups all honor it, so cmd/serf and
-// cmd/serf-hub resolve the identical path.
+// sandboxed runs, and multi-instance setups all honor it, so cmd/evener and
+// cmd/evener-hub resolve the identical path.
 func DefaultStateRoot() string {
 	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
 		return dir

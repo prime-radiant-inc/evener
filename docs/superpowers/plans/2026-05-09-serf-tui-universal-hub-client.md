@@ -4,9 +4,9 @@
 
 **Goal:** Replace `serf-tui`'s embedded/direct single-session flow with a hub-backed dashboard client that auto-starts a local hub, lists sessions, drills into sessions, and drives write actions through hub APIs.
 
-**Architecture:** Add a small shared `internal/hubapi` package for JSON DTOs, refs, and a typed client. Extend `cmd/serf-hub` with JSON endpoints that wrap existing roster, past index, replay, send, spawn, and session action behavior. Replace `cmd/serf-tui/main.go` with hub startup and a new Bubble Tea app model that uses the hub client while reusing existing message rendering and reducer concepts.
+**Architecture:** Add a small shared `internal/hubapi` package for JSON DTOs, refs, and a typed client. Extend `cmd/evener-hub` with JSON endpoints that wrap existing roster, past index, replay, send, spawn, and session action behavior. Replace `cmd/evener-tui/main.go` with hub startup and a new Bubble Tea app model that uses the hub client while reusing existing message rendering and reducer concepts.
 
-**Tech Stack:** Go, Bubble Tea, existing `cmd/serf-hub` HTTP server, existing daemon REST/SSE API, TDD with `go test`.
+**Tech Stack:** Go, Bubble Tea, existing `cmd/evener-hub` HTTP server, existing daemon REST/SSE API, TDD with `go test`.
 
 ---
 
@@ -16,17 +16,17 @@
 - Create `internal/hubapi/refs.go`: local ref formatting, parsing, validation, and URL path escaping helpers.
 - Create `internal/hubapi/client.go`: typed HTTP client for TUI.
 - Modify `server/server.go`: add action capabilities to `/status`.
-- Modify `cmd/serf-hub/tree.go`: normalize `AWAITING_INPUT` and expose row IDs/project keys for API DTOs without breaking web templates.
-- Modify `cmd/serf-hub/spawn.go`: add resume request with `state_dir` and `working_dir`, pass explicit resume context.
-- Modify `cmd/serf-hub/web.go`: add hub JSON API routes and route them to existing hub logic.
-- Modify `cmd/serf-hub/web_test.go`: add red/green API coverage.
-- Create `cmd/serf-tui/hub_start.go`: hub address normalization, local detection, binary resolution, detached start, health wait.
-- Create `cmd/serf-tui/hub_model.go`: dashboard/session Bubble Tea model.
-- Create `cmd/serf-tui/hub_commands.go`: Bubble Tea commands backed by `hubapi.Client`.
-- Modify `cmd/serf-tui/main.go`: remove embedded/direct flags and launch hub model.
-- Modify `cmd/serf-tui/sse_client.go`: make parser spec-compliant and support URL streams with `Last-Event-ID`.
-- Modify `cmd/serf-tui/model.go`: extract or reuse event reducer behavior for session messages.
-- Modify `cmd/serf-tui/*_test.go`: update tests for hub-backed behavior and remove old resume/direct expectations.
+- Modify `cmd/evener-hub/tree.go`: normalize `AWAITING_INPUT` and expose row IDs/project keys for API DTOs without breaking web templates.
+- Modify `cmd/evener-hub/spawn.go`: add resume request with `state_dir` and `working_dir`, pass explicit resume context.
+- Modify `cmd/evener-hub/web.go`: add hub JSON API routes and route them to existing hub logic.
+- Modify `cmd/evener-hub/web_test.go`: add red/green API coverage.
+- Create `cmd/evener-tui/hub_start.go`: hub address normalization, local detection, binary resolution, detached start, health wait.
+- Create `cmd/evener-tui/hub_model.go`: dashboard/session Bubble Tea model.
+- Create `cmd/evener-tui/hub_commands.go`: Bubble Tea commands backed by `hubapi.Client`.
+- Modify `cmd/evener-tui/main.go`: remove embedded/direct flags and launch hub model.
+- Modify `cmd/evener-tui/sse_client.go`: make parser spec-compliant and support URL streams with `Last-Event-ID`.
+- Modify `cmd/evener-tui/model.go`: extract or reuse event reducer behavior for session messages.
+- Modify `cmd/evener-tui/*_test.go`: update tests for hub-backed behavior and remove old resume/direct expectations.
 
 ## Task 1: Shared Hub API Types And Refs
 
@@ -90,10 +90,10 @@ git commit -m "Add shared hub API DTOs"
 
 **Files:**
 - Modify: `server/server.go`
-- Modify: `cmd/serf-hub/web.go`
-- Modify: `cmd/serf-hub/tree.go`
-- Modify: `cmd/serf-hub/spawn.go`
-- Modify: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/web.go`
+- Modify: `cmd/evener-hub/tree.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Modify: `cmd/evener-hub/web_test.go`
 
 - [ ] **Step 1: Write failing API tests**
 
@@ -107,7 +107,7 @@ Add tests for:
 
 - [ ] **Step 2: Run red**
 
-Run: `go test ./cmd/serf-hub -run 'TestWeb_Api(Health|Tree|Session|SpawnSchema)|TestWeb_SessionAction_ClearReturnsRef'`
+Run: `go test ./cmd/evener-hub -run 'TestWeb_Api(Health|Tree|Session|SpawnSchema)|TestWeb_SessionAction_ClearReturnsRef'`
 
 Expected: fail with 404 or missing fields.
 
@@ -134,7 +134,7 @@ Extend spawner resume to accept a resolved `PastEntry`/resume request carrying `
 
 - [ ] **Step 6: Run green**
 
-Run: `go test ./cmd/serf-hub ./server -short`
+Run: `go test ./cmd/evener-hub ./server -short`
 
 Expected: pass.
 
@@ -143,17 +143,17 @@ Expected: pass.
 Run:
 
 ```bash
-git add server/server.go cmd/serf-hub cmd/serf-hub/web_test.go
+git add server/server.go cmd/evener-hub cmd/evener-hub/web_test.go
 git commit -m "Add hub JSON client API"
 ```
 
 ## Task 3: TUI Hub Startup And Client
 
 **Files:**
-- Create: `cmd/serf-tui/hub_start.go`
-- Create: `cmd/serf-tui/hub_commands.go`
-- Modify: `cmd/serf-tui/main.go`
-- Test: `cmd/serf-tui/hub_start_test.go`
+- Create: `cmd/evener-tui/hub_start.go`
+- Create: `cmd/evener-tui/hub_commands.go`
+- Modify: `cmd/evener-tui/main.go`
+- Test: `cmd/evener-tui/hub_start_test.go`
 
 - [ ] **Step 1: Write failing startup tests**
 
@@ -166,7 +166,7 @@ Add tests for:
 
 - [ ] **Step 2: Run red**
 
-Run: `go test ./cmd/serf-tui -run TestHub`
+Run: `go test ./cmd/evener-tui -run TestHub`
 
 Expected: fail because helpers do not exist.
 
@@ -180,7 +180,7 @@ Change `serf-tui` flags to `--hub-addr`, `--hub-bin`, `--no-auto-start-hub`, `--
 
 - [ ] **Step 5: Run green**
 
-Run: `go test ./cmd/serf-tui -run 'TestHub|TestMain'`
+Run: `go test ./cmd/evener-tui -run 'TestHub|TestMain'`
 
 Expected: pass after updating obsolete resume-hint tests.
 
@@ -189,18 +189,18 @@ Expected: pass after updating obsolete resume-hint tests.
 Run:
 
 ```bash
-git add cmd/serf-tui
+git add cmd/evener-tui
 git commit -m "Start serf-tui from hub"
 ```
 
 ## Task 4: TUI Dashboard And Session Drill-in
 
 **Files:**
-- Create: `cmd/serf-tui/hub_model.go`
-- Modify: `cmd/serf-tui/sse_client.go`
-- Modify: `cmd/serf-tui/model.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
-- Test: `cmd/serf-tui/sse_client_test.go`
+- Create: `cmd/evener-tui/hub_model.go`
+- Modify: `cmd/evener-tui/sse_client.go`
+- Modify: `cmd/evener-tui/model.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
+- Test: `cmd/evener-tui/sse_client_test.go`
 
 - [ ] **Step 1: Write failing model tests**
 
@@ -218,7 +218,7 @@ Add tests for multiline `data:`, fields without spaces after colon, final event 
 
 - [ ] **Step 3: Run red**
 
-Run: `go test ./cmd/serf-tui -run 'TestHubModel|TestParseSSE|TestStreamSSE'`
+Run: `go test ./cmd/evener-tui -run 'TestHubModel|TestParseSSE|TestStreamSSE'`
 
 Expected: fail on missing model/parser behavior.
 
@@ -236,7 +236,7 @@ Make parsing spec-compliant and add URL-based stream helper with optional `Last-
 
 - [ ] **Step 7: Run green**
 
-Run: `go test ./cmd/serf-tui -short`
+Run: `go test ./cmd/evener-tui -short`
 
 Expected: pass.
 
@@ -245,16 +245,16 @@ Expected: pass.
 Run:
 
 ```bash
-git add cmd/serf-tui
+git add cmd/evener-tui
 git commit -m "Add serf-tui hub dashboard"
 ```
 
 ## Task 5: TUI Write Actions
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Modify: `cmd/serf-tui/hub_commands.go`
-- Test: `cmd/serf-tui/hub_model_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Modify: `cmd/evener-tui/hub_commands.go`
+- Test: `cmd/evener-tui/hub_model_test.go`
 
 - [ ] **Step 1: Write failing action tests**
 
@@ -269,7 +269,7 @@ Add tests for:
 
 - [ ] **Step 2: Run red**
 
-Run: `go test ./cmd/serf-tui -run 'TestHubModel.*(Send|Tasks|Details|Interrupt|Compact|Clear|Model)'`
+Run: `go test ./cmd/evener-tui -run 'TestHubModel.*(Send|Tasks|Details|Interrupt|Compact|Clear|Model)'`
 
 Expected: fail until actions are wired.
 
@@ -279,7 +279,7 @@ Implement write actions through `hubapi.Client`; gate them on `SessionCapabiliti
 
 - [ ] **Step 4: Run green**
 
-Run: `go test ./cmd/serf-tui -short`
+Run: `go test ./cmd/evener-tui -short`
 
 Expected: pass.
 
@@ -288,7 +288,7 @@ Expected: pass.
 Run:
 
 ```bash
-git add cmd/serf-tui
+git add cmd/evener-tui
 git commit -m "Wire serf-tui hub actions"
 ```
 

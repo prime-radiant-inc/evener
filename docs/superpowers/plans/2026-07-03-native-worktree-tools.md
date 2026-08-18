@@ -33,7 +33,7 @@
 |---|---|
 | `agent/execenv/gitpath.go` (modify) | `ResolveMainRepoRoot` + kind-keyed cache |
 | `internal/gitpath/gitpath.go` (create) | `ResolveMainRepoRootLocal` for hub/CLI (no execenv dep) |
-| `cmd/serf/run.go`, `cmd/serf/serve.go` (modify) | RuntimeDir keyed off main root |
+| `cmd/evener/run.go`, `cmd/evener/serve.go` (modify) | RuntimeDir keyed off main root |
 | `agent/internal/worktree/name.go` (create) | name validation, projectid, %2F encoding |
 | `agent/internal/worktree/sidecar.go` (create) | sidecar type + O_EXCL codec + grace |
 | `agent/internal/worktree/marker.go` (create) | lock marker format/parse |
@@ -46,7 +46,7 @@
 | `agent/session.go`, `agent/session_tools.go`, etc. (modify) | `currentEnv()` accessor conversions, swap helper |
 | `agent/internal/schema` SessionMeta (modify) | worktree persistence fields |
 | `agent/session_init.go` (modify) | resume re-entry + init-inside locking |
-| `cmd/serf-hub/internal/hubcore/tree.go`, `cmd/serf-hub/app_threadlifecycle.go` (modify) | restore-root migration |
+| `cmd/evener-hub/internal/hubcore/tree.go`, `cmd/evener-hub/app_threadlifecycle.go` (modify) | restore-root migration |
 | `agent/internal/jobstore` (modify) | shell-job workdir, delegate `Isolation`, disposed flag |
 | `agent/job_delegate.go`, `agent/subagents.go` (modify) | isolation spawn/restore/revival |
 | `agent/session_lifecycle.go` (modify) | close-unlock + disposal hook |
@@ -88,7 +88,7 @@ func mainRootFromGitdirPointer(pointerContent, ancestorDir string) (string, bool
 
 ### Task 3: RuntimeDir + hub launch keying
 
-**Files:** Modify `cmd/serf/run.go` (~line 101), `cmd/serf/serve.go` (equivalent RuntimeDir call ~line 152), hub launch trust resolver (find via `grep -rn "RuntimeDir\|trust" cmd/serf-hub/internal/`); Tests beside each.
+**Files:** Modify `cmd/evener/run.go` (~line 101), `cmd/evener/serve.go` (equivalent RuntimeDir call ~line 152), hub launch trust resolver (find via `grep -rn "RuntimeDir\|trust" cmd/evener-hub/internal/`); Tests beside each.
 **Spec:** §1 "Runtime state keying at launch" + hub dual-root paragraph.
 - [ ] Failing test: origin-less repo, launch cwd inside a linked worktree → same state dir as launching from the main root (drive the run.go state-dir derivation function; extract it to a testable helper if currently inline).
 - [ ] Implement: pass `gitpath.ResolveMainRepoRootLocal(cfg.workDir)` (fallback `cfg.workDir`) as RuntimeDir's workDir arg in run.go + serve.go. Hub: trust/meta keyed off stable root, config content read from active root.
@@ -296,7 +296,7 @@ type WorktreeResult struct { Path, Branch, BaseSHA, MainRoot string }
 
 ### Task 19: hub consumer migration
 
-**Files:** Modify `cmd/serf-hub/internal/hubcore/tree.go` (~325-336), `cmd/serf-hub/app_threadlifecycle.go` (~246), `cmd/serf-hub/spawn.go` (~245); Tests beside each.
+**Files:** Modify `cmd/evener-hub/internal/hubcore/tree.go` (~325-336), `cmd/evener-hub/app_threadlifecycle.go` (~246), `cmd/evener-hub/spawn.go` (~245); Tests beside each.
 **Spec:** §7 "Hub consumers of the persisted working dir must migrate".
 - [ ] Failing tests: sidebar grouping uses restore root when worktree active (meta fixture with WorktreePath set → grouped under restore-root basename, not `dlg_01H…`); spawn prefill = restore root; resume args `--dir` = restore root (re-entry handles the rest).
 - [ ] Implement + green + gate + commit `feat(hub): read worktree-aware session meta via restore root`.

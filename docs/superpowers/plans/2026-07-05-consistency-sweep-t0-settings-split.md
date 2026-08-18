@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Split `cmd/serf-hub/assets/settings.js` — the monolithic event-delegation script behind the web settings pane — into per-section files, so that Track A (adds a `loudScope` control to the notifications section) and Track C (adds font-size, Enter-to-send, and Show-cost controls) edit disjoint files and never collide. **Pure refactor: no behavior change, no new controls, rendering byte-identical.** Lands on `consistency-sweep` before Tracks A/B/C fork.
+**Goal:** Split `cmd/evener-hub/assets/settings.js` — the monolithic event-delegation script behind the web settings pane — into per-section files, so that Track A (adds a `loudScope` control to the notifications section) and Track C (adds font-size, Enter-to-send, and Show-cost controls) edit disjoint files and never collide. **Pure refactor: no behavior change, no new controls, rendering byte-identical.** Lands on `consistency-sweep` before Tracks A/B/C fork.
 
-**Architecture:** The settings pane's **HTML templates are already split** per section (`cmd/serf-hub/templates/partials/settings/*.html` — one file per nav entry: `general.html`, `theme.html`, `notifications.html`, `transcript.html`, etc.), wired by a `settingsSections` slice and a per-section `*template.Template` map in `cmd/serf-hub/web.go`. The **JS side is not split**: `settings.js` is one file containing six independent IIFEs covering theme/phone-density/sidebar-mode (a "Theme" section concern), the four notification toggles (a "Notifications" section concern), transcript-status toggles (a "Transcript" section concern), the settings-nav filter + phone back-button (shell chrome, no section owns it), and — piggybacked in for no principled reason — workspace model-chip abbreviation (not a settings concern at all). This is the real collision surface: the design spec's Track A note ("Settings control uses the existing `data-notif` commit pattern (settings.js:49,115)") and Track C's three new controls would otherwise all edit the same delegated-listener file. This track decomposes `settings.js` into one file per existing HTML section (mirroring the already-split templates), plus one file for the unowned shell chrome and one for the unrelated model-display code, then deletes the empty original.
+**Architecture:** The settings pane's **HTML templates are already split** per section (`cmd/evener-hub/templates/partials/settings/*.html` — one file per nav entry: `general.html`, `theme.html`, `notifications.html`, `transcript.html`, etc.), wired by a `settingsSections` slice and a per-section `*template.Template` map in `cmd/evener-hub/web.go`. The **JS side is not split**: `settings.js` is one file containing six independent IIFEs covering theme/phone-density/sidebar-mode (a "Theme" section concern), the four notification toggles (a "Notifications" section concern), transcript-status toggles (a "Transcript" section concern), the settings-nav filter + phone back-button (shell chrome, no section owns it), and — piggybacked in for no principled reason — workspace model-chip abbreviation (not a settings concern at all). This is the real collision surface: the design spec's Track A note ("Settings control uses the existing `data-notif` commit pattern (settings.js:49,115)") and Track C's three new controls would otherwise all edit the same delegated-listener file. This track decomposes `settings.js` into one file per existing HTML section (mirroring the already-split templates), plus one file for the unowned shell chrome and one for the unrelated model-display code, then deletes the empty original.
 
-**Tech Stack:** Vanilla JS (event delegation on `document.body`, no build step), html/template (untouched — zero `.html` edits in this track), jstest (JSDOM, agent-run, `cmd/serf-hub/jstest/run-all.sh`).
+**Tech Stack:** Vanilla JS (event delegation on `document.body`, no build step), html/template (untouched — zero `.html` edits in this track), jstest (JSDOM, agent-run, `cmd/evener-hub/jstest/run-all.sh`).
 
 ---
 
@@ -34,10 +34,10 @@ Since Track A only ever touches `notifications.html`/`settings-notifications.js`
 
 ## Conventions used throughout this plan
 
-- All file paths are relative to `cmd/serf-hub/` unless given in full.
-- jstest (not in CI/Makefile; agent-run): `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node <file>.js` for one test, or `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` for the full suite (jsdom install per `jstest/README.md`). `run-all.sh` auto-discovers every `test-*.js` in the directory — a newly added test file needs no registration.
+- All file paths are relative to `cmd/evener-hub/` unless given in full.
+- jstest (not in CI/Makefile; agent-run): `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node <file>.js` for one test, or `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` for the full suite (jsdom install per `jstest/README.md`). `run-all.sh` auto-discovers every `test-*.js` in the directory — a newly added test file needs no registration.
 - Existing jstests load hand-written `assets/*.js` files into a JSDOM `window` via `fs.readFileSync` + `window.eval(src)`, then fire real DOM events and assert on the resulting DOM/localStorage — no framework, no mocking of the code under test. This plan follows the same pattern (see `test-settings.js`, `test-settings-dir-picker.js` for precedent).
-- **This track touches zero Go source and zero settings-pane `.html` templates.** The only non-JS file touched is `cmd/serf-hub/templates/app.html` (the `<script>` tag list) — verified after every task by running the `cmd/serf-hub` Go test package (a broken `app.html` fails `template.Must(...ParseFS(...))` inside `NewWebServer`, which many existing Go tests construct).
+- **This track touches zero Go source and zero settings-pane `.html` templates.** The only non-JS file touched is `cmd/evener-hub/templates/app.html` (the `<script>` tag list) — verified after every task by running the `cmd/evener-hub` Go test package (a broken `app.html` fails `template.Must(...ParseFS(...))` inside `NewWebServer`, which many existing Go tests construct).
 - **Guardrail (copied from the design spec, §Tracks / §1):** JSON/TOML keys stay snake_case; `namingcheck` runs at `make lint` (per-task `golangci-lint` misses it — run `make lint-naming` before the final commit as a cheap sanity check even though this track adds no Go identifiers). Test output must be pristine — no unexplained console noise from a passing jstest run.
 - Never `git add -A`. Stage only the exact paths listed in each task's commit step (after a `git status`).
 
@@ -46,25 +46,25 @@ Since Track A only ever touches `notifications.html`/`settings-notifications.js`
 ## File structure
 
 **Created:**
-- `cmd/serf-hub/assets/settings-shell.js` — settings-nav filter + phone nav-as-page/back-button wiring. Shell chrome; not owned by Track A or C.
-- `cmd/serf-hub/assets/settings-appearance.js` — theme / phone-density / sidebar-mode radios (commit + restore + on-load apply). Track C extends this for font-size.
-- `cmd/serf-hub/assets/settings-notifications.js` — the four `data-notif` checkboxes (commit, OS-permission flow, restore). Track A extends this for `loudScope`.
-- `cmd/serf-hub/assets/settings-transcript.js` — the four `data-transcript-status` checkboxes (commit + restore).
-- `cmd/serf-hub/assets/model-display.js` — workspace model-chip abbreviation wiring. Unrelated to the settings pane; extracted so `settings.js` can be deleted cleanly.
-- `cmd/serf-hub/jstest/test-settings-shell.js` — new characterization test (nav filter + back button had no prior coverage).
-- `cmd/serf-hub/jstest/test-settings-appearance.js` — new characterization test (theme/phone-density/sidebar-mode had no prior coverage).
-- `cmd/serf-hub/jstest/test-settings-notifications.js` — new characterization test (notif toggles + OS-permission flow had no prior coverage).
-- `cmd/serf-hub/jstest/test-model-display.js` — new characterization test (model-chip abbreviation wiring had no prior coverage — `test-abbreviate-model.js` only covers the pure `abbreviateModel` function in `spawn.js`, not this DOM-wiring loop).
+- `cmd/evener-hub/assets/settings-shell.js` — settings-nav filter + phone nav-as-page/back-button wiring. Shell chrome; not owned by Track A or C.
+- `cmd/evener-hub/assets/settings-appearance.js` — theme / phone-density / sidebar-mode radios (commit + restore + on-load apply). Track C extends this for font-size.
+- `cmd/evener-hub/assets/settings-notifications.js` — the four `data-notif` checkboxes (commit, OS-permission flow, restore). Track A extends this for `loudScope`.
+- `cmd/evener-hub/assets/settings-transcript.js` — the four `data-transcript-status` checkboxes (commit + restore).
+- `cmd/evener-hub/assets/model-display.js` — workspace model-chip abbreviation wiring. Unrelated to the settings pane; extracted so `settings.js` can be deleted cleanly.
+- `cmd/evener-hub/jstest/test-settings-shell.js` — new characterization test (nav filter + back button had no prior coverage).
+- `cmd/evener-hub/jstest/test-settings-appearance.js` — new characterization test (theme/phone-density/sidebar-mode had no prior coverage).
+- `cmd/evener-hub/jstest/test-settings-notifications.js` — new characterization test (notif toggles + OS-permission flow had no prior coverage).
+- `cmd/evener-hub/jstest/test-model-display.js` — new characterization test (model-chip abbreviation wiring had no prior coverage — `test-abbreviate-model.js` only covers the pure `abbreviateModel` function in `spawn.js`, not this DOM-wiring loop).
 
 **Modified:**
-- `cmd/serf-hub/templates/app.html` — replace the single `settings.js` `<script>` tag with five tags for the files above.
-- `cmd/serf-hub/jstest/test-settings.js` — retarget its `SRC` require from `../assets/settings.js` to `../assets/settings-transcript.js` (its assertions are, and remain, transcript-status-only — this is the one true "port," everything else is new coverage).
+- `cmd/evener-hub/templates/app.html` — replace the single `settings.js` `<script>` tag with five tags for the files above.
+- `cmd/evener-hub/jstest/test-settings.js` — retarget its `SRC` require from `../assets/settings.js` to `../assets/settings-transcript.js` (its assertions are, and remain, transcript-status-only — this is the one true "port," everything else is new coverage).
 
 **Deleted:**
-- `cmd/serf-hub/assets/settings.js` — once every IIFE has moved out, nothing settings-pane-shaped remains in it.
+- `cmd/evener-hub/assets/settings.js` — once every IIFE has moved out, nothing settings-pane-shaped remains in it.
 
 **Verified unchanged (zero edits, confirmed by `git diff --stat` in the final gate):**
-- `cmd/serf-hub/templates/partials/settings.html`, `cmd/serf-hub/templates/partials/settings/*.html`, `cmd/serf-hub/web.go`, `cmd/serf-hub/web_settings.go`, `cmd/serf-hub/embed.go` (its `assets/*` glob auto-covers new files; no glob edit needed).
+- `cmd/evener-hub/templates/partials/settings.html`, `cmd/evener-hub/templates/partials/settings/*.html`, `cmd/evener-hub/web.go`, `cmd/evener-hub/web_settings.go`, `cmd/evener-hub/embed.go` (its `assets/*` glob auto-covers new files; no glob edit needed).
 
 ---
 
@@ -72,7 +72,7 @@ Since Track A only ever touches `notifications.html`/`settings-notifications.js`
 
 Moves the two IIFEs (current `settings.js:169-192` nav-filter, `:194-243` phone-nav-as-page/back-button) that belong to neither Track A's nor Track C's sections. Untested today — this is new characterization coverage.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-settings-shell.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-settings-shell.js`:
   ```js
   const fs = require("fs");
   const { JSDOM } = require("jsdom");
@@ -142,8 +142,8 @@ Moves the two IIFEs (current `settings.js:169-192` nav-filter, `:194-243` phone-
     console.log("PASS — settings-nav filter and phone back-button wiring");
   })();
   ```
-  Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → expect **FAIL** (`ENOENT: no such file or directory, open '../assets/settings-shell.js'`).
-- [ ] **Implement** — create `cmd/serf-hub/assets/settings-shell.js` with exactly the two IIFEs currently at `settings.js:169-192` and `:194-243` (verbatim, no logic changes):
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → expect **FAIL** (`ENOENT: no such file or directory, open '../assets/settings-shell.js'`).
+- [ ] **Implement** — create `cmd/evener-hub/assets/settings-shell.js` with exactly the two IIFEs currently at `settings.js:169-192` and `:194-243` (verbatim, no logic changes):
   ```js
   // Settings-nav filter — delegated so it works after HTMX swaps the settings shell.
   (function () {
@@ -222,10 +222,10 @@ Moves the two IIFEs (current `settings.js:169-192` nav-filter, `:194-243` phone-
   })();
   ```
   Delete these two IIFEs (`settings.js:169-192`, `:194-243`) from `settings.js`.
-  In `cmd/serf-hub/templates/app.html`, insert `  <script src="/assets/settings-shell.js{{assetv}}"></script>` immediately **before** the existing `<script src="/assets/settings.js{{assetv}}"></script>` line (currently line 77).
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → pass.
-- [ ] **Run** the existing suite to confirm `settings.js`'s remaining IIFEs (appearance/notif/transcript/model-display) are unaffected: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. Also `go test ./cmd/serf-hub/... -count=1` (root module) → green — confirms `app.html` still parses.
-- [ ] **Commit** — `git add cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/settings-shell.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-settings-shell.js` → `refactor(hub-web): extract settings-nav filter + phone back-button into settings-shell.js`.
+  In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-shell.js{{assetv}}"></script>` immediately **before** the existing `<script src="/assets/settings.js{{assetv}}"></script>` line (currently line 77).
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-shell.js` → pass.
+- [ ] **Run** the existing suite to confirm `settings.js`'s remaining IIFEs (appearance/notif/transcript/model-display) are unaffected: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. Also `go test ./cmd/evener-hub/... -count=1` (root module) → green — confirms `app.html` still parses.
+- [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-shell.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-shell.js` → `refactor(hub-web): extract settings-nav filter + phone back-button into settings-shell.js`.
 
 ## Task 2 — Extract `settings-appearance.js` (theme / phone-density / sidebar-mode)
 
@@ -233,7 +233,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
 
 **Deviation, called out explicitly:** the original `applySettingsState` registration is double: `document.addEventListener("DOMContentLoaded", applySettingsState)`, then an unconditional `document.body.addEventListener("htmx:afterSwap", applySettingsState)`, then a *third*, redundant `document.addEventListener("DOMContentLoaded", () => { document.body.addEventListener("htmx:afterSwap", applySettingsState); })` — registering the same `afterSwap` listener twice. Since every restore function here is idempotent (it only sets `.checked`/`.value` from `localStorage`), the duplicate call has no observable effect on rendered output — it is dead redundancy, not a behavior difference. This plan drops the redundant third registration in each of the three split files (one clean `DOMContentLoaded` + one clean `htmx:afterSwap` registration per file) rather than tripling the wart across three new files. Flagging this for review since it is the one non-mechanical change in an otherwise byte-for-byte move.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-settings-appearance.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-settings-appearance.js`:
   ```js
   const fs = require("fs");
   const { JSDOM } = require("jsdom");
@@ -336,8 +336,8 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
     console.log("PASS — settings-appearance theme/phone-density/sidebar-mode commit, restore, and on-load apply");
   })();
   ```
-  Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → expect **FAIL** (ENOENT).
-- [ ] **Implement** — create `cmd/serf-hub/assets/settings-appearance.js`:
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → expect **FAIL** (ENOENT).
+- [ ] **Implement** — create `cmd/evener-hub/assets/settings-appearance.js`:
   ```js
   // Settings page interactivity — appearance: theme, phone density, and
   // sidebar mode. Uses event delegation on document.body so it works even
@@ -414,16 +414,16 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
   })();
   ```
   Delete the theme/phone-density/sidebar-mode branches from the `change` listener, the theme/phone-density/sidebar-mode blocks from `applySettingsState`, and the two standalone IIFEs (`settings.js:154-159`, `:161-167`) from `settings.js`.
-  In `cmd/serf-hub/templates/app.html`, insert `  <script src="/assets/settings-appearance.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → pass.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/settings-appearance.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-settings-appearance.js` → `refactor(hub-web): extract theme/phone-density/sidebar-mode into settings-appearance.js`.
+  In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-appearance.js{{assetv}}"></script>` immediately before the `settings.js` line.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-appearance.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-appearance.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-appearance.js` → `refactor(hub-web): extract theme/phone-density/sidebar-mode into settings-appearance.js`.
 
 ## Task 3 — Extract `settings-notifications.js` (the four `data-notif` toggles)
 
 Moves the `data-notif` branch of the `change` listener (including the async OS-permission flow) and the notif slice of `applySettingsState`, from the combined IIFE at `settings.js:4-152`. This is the file Track A will extend with `loudScope`. Untested today. Named to parallel `settings-appearance.js`/`settings-transcript.js` (mirrors the `notifications.html` section name) — distinct from the existing `assets/notifications.js`, which is unrelated runtime attention/badge/OS-alert logic that reads the same `serf-hub.notifications` localStorage key but is not part of the settings pane's DOM wiring and is untouched by this track.
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-settings-notifications.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-settings-notifications.js`:
   ```js
   const fs = require("fs");
   const { JSDOM } = require("jsdom");
@@ -510,8 +510,8 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     console.log("PASS — settings-notifications toggle commit, OS-permission flow, and restore");
   })();
   ```
-  Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → expect **FAIL** (ENOENT).
-- [ ] **Implement** — create `cmd/serf-hub/assets/settings-notifications.js`:
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → expect **FAIL** (ENOENT).
+- [ ] **Implement** — create `cmd/evener-hub/assets/settings-notifications.js`:
   ```js
   // Settings page interactivity — notification toggles (title bar count,
   // favicon dot, OS notification, sound). Uses event delegation on
@@ -605,16 +605,16 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
   })();
   ```
   Delete the `data-notif` branch from the `change` listener, the notif block from `applySettingsState`, and the (now-unused-elsewhere) `readNotifPrefs`/`writeNotifPrefs` helpers from `settings.js`. Leave `syncToggleState` in `settings.js` for now — Task 4 still needs it; it becomes a duplicate small helper in each of the two files that use it (deliberate: keeps `settings-notifications.js` and `settings-transcript.js` fully self-contained, no inter-file load-order dependency for a 4-line helper).
-  In `cmd/serf-hub/templates/app.html`, insert `  <script src="/assets/settings-notifications.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → pass.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/settings-notifications.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-settings-notifications.js` → `refactor(hub-web): extract notification toggles into settings-notifications.js`.
+  In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-notifications.js{{assetv}}"></script>` immediately before the `settings.js` line.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-notifications.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-notifications.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings-notifications.js` → `refactor(hub-web): extract notification toggles into settings-notifications.js`.
 
 ## Task 4 — Extract `settings-transcript.js`; port the existing `test-settings.js`
 
 Moves the `data-transcript-status` branch and its `applySettingsState` slice — the last piece of the original combined IIFE — into its own file. Unlike Tasks 1-3, this behavior **is** already tested (`test-settings.js`), so this task is the one true "port": retarget the existing test's require path rather than writing new assertions.
 
-- [ ] **Port the existing test first** — in `cmd/serf-hub/jstest/test-settings.js`, change line 4 from:
+- [ ] **Port the existing test first** — in `cmd/evener-hub/jstest/test-settings.js`, change line 4 from:
   ```js
   const SRC = fs.readFileSync("../assets/settings.js", "utf8");
   ```
@@ -622,8 +622,8 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
   ```js
   const SRC = fs.readFileSync("../assets/settings-transcript.js", "utf8");
   ```
-  (no other change to the file). Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → expect **FAIL** (ENOENT: `settings-transcript.js` doesn't exist yet).
-- [ ] **Implement** — create `cmd/serf-hub/assets/settings-transcript.js`:
+  (no other change to the file). Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → expect **FAIL** (ENOENT: `settings-transcript.js` doesn't exist yet).
+- [ ] **Implement** — create `cmd/evener-hub/assets/settings-transcript.js`:
   ```js
   // Settings page interactivity — transcript system-status toggles. Uses
   // event delegation on document.body so it works even when the settings
@@ -681,16 +681,16 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
   })();
   ```
   Delete the entire remaining combined IIFE (originally `settings.js:4-152`, now just the transcript-status branch/restore/helpers/`syncToggleState`/registration) from `settings.js` — after this, `settings.js` contains only the model-display IIFE (Task 5 handles that).
-  In `cmd/serf-hub/templates/app.html`, insert `  <script src="/assets/settings-transcript.js{{assetv}}"></script>` immediately before the `settings.js` line.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → pass.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/serf-hub/... -count=1` → green.
-- [ ] **Commit** — `git add cmd/serf-hub/assets/settings.js cmd/serf-hub/assets/settings-transcript.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-settings.js` → `refactor(hub-web): extract transcript-status toggles into settings-transcript.js; port test-settings.js to its new home`.
+  In `cmd/evener-hub/templates/app.html`, insert `  <script src="/assets/settings-transcript.js{{assetv}}"></script>` immediately before the `settings.js` line.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green.
+- [ ] **Commit** — `git add cmd/evener-hub/assets/settings.js cmd/evener-hub/assets/settings-transcript.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-settings.js` → `refactor(hub-web): extract transcript-status toggles into settings-transcript.js; port test-settings.js to its new home`.
 
 ## Task 5 — Extract `model-display.js`; delete `settings.js`; finalize `app.html`
 
 The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with the settings pane — it abbreviates the model chip in the **workspace** header/composer (`[data-model-display]` in `templates/partials/workspace.html`). It only ever lived in `settings.js` by historical accident. Moving it out lets `settings.js` be deleted entirely, leaving no file whose name promises settings-pane behavior it doesn't have. Untested today (`test-abbreviate-model.js` only covers the pure `abbreviateModel` function in `spawn.js`, not this DOM-wiring loop).
 
-- [ ] **Failing test** — create `cmd/serf-hub/jstest/test-model-display.js`:
+- [ ] **Failing test** — create `cmd/evener-hub/jstest/test-model-display.js`:
   ```js
   const fs = require("fs");
   const { JSDOM } = require("jsdom");
@@ -737,8 +737,8 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
     console.log("PASS — model-display abbreviation wiring survives extraction from settings.js");
   })();
   ```
-  Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → expect **FAIL** (ENOENT).
-- [ ] **Implement** — create `cmd/serf-hub/assets/model-display.js`:
+  Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → expect **FAIL** (ENOENT).
+- [ ] **Implement** — create `cmd/evener-hub/assets/model-display.js`:
   ```js
   // Workspace model chip abbreviation — shorten server-rendered full model IDs
   // (e.g. "anthropic/claude-haiku-4-5-20251001") to compact display names
@@ -784,8 +784,8 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
     }
   })();
   ```
-  Delete `cmd/serf-hub/assets/settings.js` entirely (it is now empty of content — the model-display IIFE was its last occupant).
-  In `cmd/serf-hub/templates/app.html`, replace the `<script src="/assets/settings.js{{assetv}}"></script>` line with `  <script src="/assets/model-display.js{{assetv}}"></script>`. The resulting five-line block (in order) is:
+  Delete `cmd/evener-hub/assets/settings.js` entirely (it is now empty of content — the model-display IIFE was its last occupant).
+  In `cmd/evener-hub/templates/app.html`, replace the `<script src="/assets/settings.js{{assetv}}"></script>` line with `  <script src="/assets/model-display.js{{assetv}}"></script>`. The resulting five-line block (in order) is:
   ```html
   <script src="/assets/settings-shell.js{{assetv}}"></script>
   <script src="/assets/settings-appearance.js{{assetv}}"></script>
@@ -793,18 +793,18 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
   <script src="/assets/settings-transcript.js{{assetv}}"></script>
   <script src="/assets/model-display.js{{assetv}}"></script>
   ```
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → pass.
-- [ ] **Run** `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/serf-hub/... -count=1` → green (confirms `app.html` still parses with `settings.js` gone).
-- [ ] **Commit** — `git rm cmd/serf-hub/assets/settings.js && git add cmd/serf-hub/assets/model-display.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-model-display.js` → `refactor(hub-web): extract model-display.js; delete now-empty settings.js`.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-model-display.js` → pass.
+- [ ] **Run** `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all `OK`. `go test ./cmd/evener-hub/... -count=1` → green (confirms `app.html` still parses with `settings.js` gone).
+- [ ] **Commit** — `git rm cmd/evener-hub/assets/settings.js && git add cmd/evener-hub/assets/model-display.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-model-display.js` → `refactor(hub-web): extract model-display.js; delete now-empty settings.js`.
 
 ## Task 6 — Full verification gate
 
-- [ ] **Run** the complete jstest suite: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → every test `OK`, output pristine (no unexplained stderr).
-- [ ] **Run** `grep -rn "assets/settings.js" cmd/serf-hub/` → expect **no matches** (confirms every reference moved to a `settings-*.js` name).
-- [ ] **Run** `git diff --stat main -- cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/templates/partials/settings/ cmd/serf-hub/web.go cmd/serf-hub/web_settings.go cmd/serf-hub/embed.go` (against the branch point) → expect **empty** (zero changes — the settings-pane's rendered HTML and Go wiring are untouched, so the pane renders byte-identical to before this track).
+- [ ] **Run** the complete jstest suite: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → every test `OK`, output pristine (no unexplained stderr).
+- [ ] **Run** `grep -rn "assets/settings.js" cmd/evener-hub/` → expect **no matches** (confirms every reference moved to a `settings-*.js` name).
+- [ ] **Run** `git diff --stat main -- cmd/evener-hub/templates/partials/settings.html cmd/evener-hub/templates/partials/settings/ cmd/evener-hub/web.go cmd/evener-hub/web_settings.go cmd/evener-hub/embed.go` (against the branch point) → expect **empty** (zero changes — the settings-pane's rendered HTML and Go wiring are untouched, so the pane renders byte-identical to before this track).
 - [ ] **Run** `go build ./... && go vet ./...` from repo root → green.
-- [ ] **Run** `go test ./cmd/serf-hub/... -count=1` (root module) → green.
-- [ ] **Run** `golangci-lint run ./cmd/serf-hub/...` → green.
+- [ ] **Run** `go test ./cmd/evener-hub/... -count=1` (root module) → green.
+- [ ] **Run** `golangci-lint run ./cmd/evener-hub/...` → green.
 - [ ] **Run** `make lint-naming` → green (this track adds no Go identifiers or wire fields, so this is a no-op confirmation, not a fix).
 - [ ] **Review** `git status` for stray files, then confirm the final file list matches the contract table above.
 
@@ -812,12 +812,12 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
 
 ## Handoff notes for Track A / Track C (not part of this track's tasks)
 
-- **Track A**: your `loudScope` control's settings-pane wiring goes in `cmd/serf-hub/assets/settings-notifications.js` (the `data-notif` commit pattern this track just extracted); its persisted-pref logic (`DEFAULT_PREFS`, `migratePrefs`) stays in the existing, untouched `cmd/serf-hub/assets/notifications.js` per the design spec.
-- **Track C** (font-size): add the fourth radio group to the existing `cmd/serf-hub/templates/partials/settings/theme.html` and its commit/restore branch to `cmd/serf-hub/assets/settings-appearance.js`.
+- **Track A**: your `loudScope` control's settings-pane wiring goes in `cmd/evener-hub/assets/settings-notifications.js` (the `data-notif` commit pattern this track just extracted); its persisted-pref logic (`DEFAULT_PREFS`, `migratePrefs`) stays in the existing, untouched `cmd/evener-hub/assets/notifications.js` per the design spec.
+- **Track C** (font-size): add the fourth radio group to the existing `cmd/evener-hub/templates/partials/settings/theme.html` and its commit/restore branch to `cmd/evener-hub/assets/settings-appearance.js`.
 - **Track C** (Enter-to-send, Show-cost): create the reserved-but-not-yet-existing "Display" section:
-  1. `cmd/serf-hub/templates/partials/settings/display.html` (new `{{define "settings-content"}}` partial, same shape as `theme.html`/`notifications.html`).
-  2. `cmd/serf-hub/assets/settings-display.js` (new file, same delegated-listener shape as `settings-appearance.js`/`settings-notifications.js`).
-  3. Add `"display"` to the `settingsSections` slice at `cmd/serf-hub/web.go:84` (also see the `settingsTmpls` loop just below it — no special-casing needed, `display` isn't `credentials` or `project`).
-  4. Add one `<a class="settings-nav-link" ...>` line to `cmd/serf-hub/templates/partials/settings.html`, labeled "Display", pointing at `/settings/display` / `/_partials/settings/display`.
-  5. Add `"display"` to `SECTION_LABELS` in `cmd/serf-hub/assets/notifications.js` (the section-label map some copy reads — currently already missing `transcript`, `plugins-manager`, and `credentials` from the shipped section list; worth fixing while there, or file as its own quick-win if out of scope for Track C).
-  6. Add the two `<script>` tags for `settings-display.js` (and any CSS) to `cmd/serf-hub/templates/app.html`, immediately after `settings-transcript.js` (or wherever Track C prefers in the by-then-current list).
+  1. `cmd/evener-hub/templates/partials/settings/display.html` (new `{{define "settings-content"}}` partial, same shape as `theme.html`/`notifications.html`).
+  2. `cmd/evener-hub/assets/settings-display.js` (new file, same delegated-listener shape as `settings-appearance.js`/`settings-notifications.js`).
+  3. Add `"display"` to the `settingsSections` slice at `cmd/evener-hub/web.go:84` (also see the `settingsTmpls` loop just below it — no special-casing needed, `display` isn't `credentials` or `project`).
+  4. Add one `<a class="settings-nav-link" ...>` line to `cmd/evener-hub/templates/partials/settings.html`, labeled "Display", pointing at `/settings/display` / `/_partials/settings/display`.
+  5. Add `"display"` to `SECTION_LABELS` in `cmd/evener-hub/assets/notifications.js` (the section-label map some copy reads — currently already missing `transcript`, `plugins-manager`, and `credentials` from the shipped section list; worth fixing while there, or file as its own quick-win if out of scope for Track C).
+  6. Add the two `<script>` tags for `settings-display.js` (and any CSS) to `cmd/evener-hub/templates/app.html`, immediately after `settings-transcript.js` (or wherever Track C prefers in the by-then-current list).

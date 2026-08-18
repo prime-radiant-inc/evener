@@ -32,7 +32,7 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // the daemon's authoritative consumer, whose feed now blocks its emitter rather
 // than dropping, so anything slow in here becomes a stall on the session loop.
 // The observer is called through a non-blocking tee for exactly this reason
-// (see cmd/serf's verboseEventTee); do not add an unbounded wait here.
+// (see cmd/evener's verboseEventTee); do not add an unbounded wait here.
 //
 // THE LOCK RULE, which is wider than "do not block" and is the part that will
 // bite someone: because the feed blocks its emitter, a session goroutine that
@@ -54,7 +54,7 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 //     projectionMu, deliveryMu and mu, plus Subscriptions.mu, Notifier.mu,
 //     Connection.sendMu and appTurnSnapshot.mu inside the commit. That is the
 //     bulk of the exposure, and it does not shrink by adding fewer facets.
-//   - Outside this package AND outside agent/: cmd/serf/serve.go's currentMu,
+//   - Outside this package AND outside agent/: cmd/evener/serve.go's currentMu,
 //     which every facet sample passes through because the envelope source
 //     resolves the live session per call. Anyone auditing from here alone will
 //     not see it.
@@ -99,7 +99,7 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // (persistQueuesSnapshot), responseSideEffectsMu (agent/session_tools.go's
 // TOOL_CALL_END and its output-delta chunk loop, the highest-volume emit in the
 // system) and subagent.mu (agent/job_delegate.go). They used to be safe only
-// because THIS consumer does not take them — a property of one file in cmd/serf,
+// because THIS consumer does not take them — a property of one file in cmd/evener,
 // invisible from agent and invisible from here.
 //
 // It is a property of a type now. The envelope source reaches the session as

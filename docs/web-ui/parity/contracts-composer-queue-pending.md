@@ -1,6 +1,6 @@
 # Behavior contracts: composer, queue, pending/optimistic, attachments, drafts, ask_user, escalations
 
-Mined from `cmd/serf-hub/jstest/`. Each line is a behavior a new Vitest suite must
+Mined from `cmd/evener-hub/jstest/`. Each line is a behavior a new Vitest suite must
 re-cover, tagged with the jstest file it currently comes from. CSS/template-token-only
 files (no runtime/DOM-interaction behavior, just regex assertions over `style.css` /
 `templates/`) are listed by name only, per instructions. Files matched on `ask` that

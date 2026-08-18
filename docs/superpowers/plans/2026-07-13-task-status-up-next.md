@@ -22,8 +22,8 @@
 ### Task 1: Label the current task and remove its queue count
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-renderer-plan.js:115-145`
-- Modify: `cmd/serf-hub/assets/renderer.js:4072-4104`
+- Modify: `cmd/evener-hub/jstest/test-renderer-plan.js:115-145`
+- Modify: `cmd/evener-hub/assets/renderer.js:4072-4104`
 
 **Interfaces:**
 - Consumes: `renderer.renderLivePlan(tasks)`, where each task has `id`, `description`, and `status`; `buildTaskRowLine(task)` returns the existing task row.
@@ -31,7 +31,7 @@
 
 - [ ] **Step 1: Write the failing current-task assertions**
 
-In the first mixed-state scenario in `cmd/serf-hub/jstest/test-renderer-plan.js`, replace the assertion that expects `3 up next` with assertions that identify the label, its adjacent active task, and the absent aggregate count:
+In the first mixed-state scenario in `cmd/evener-hub/jstest/test-renderer-plan.js`, replace the assertion that expects `3 up next` with assertions that identify the label, its adjacent active task, and the absent aggregate count:
 
 ```js
   const currentLabel = card.querySelector(".task-card-current-label");
@@ -55,11 +55,11 @@ Keep the existing `show all` assertion and the later expanded-body assertion for
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 ./run-one.sh test-renderer-plan.js
 ```
 
-If `run-one.sh` is unavailable, run the command documented by `cmd/serf-hub/jstest/README.md` for one test file.
+If `run-one.sh` is unavailable, run the command documented by `cmd/evener-hub/jstest/README.md` for one test file.
 
 Expected: `test-renderer-plan.js` fails because `.task-card-current-label` does not exist and the summary still contains `3 up next`.
 
@@ -92,7 +92,7 @@ Do not change the expanded-body condition or its `Up next · ${open.length}` hea
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 ./run-one.sh test-renderer-plan.js
 ```
 
@@ -103,7 +103,7 @@ Expected: `test-renderer-plan.js` passes. The current task has an `Up next` labe
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 ./run-all.sh
 ```
 
@@ -115,7 +115,7 @@ Run:
 
 ```bash
 git diff --check
-git diff -- cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-plan.js
+git diff -- cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-plan.js
 git status --short
 ```
 
@@ -124,15 +124,15 @@ Expected: no whitespace errors; only the renderer, its plan test, and the alread
 Commit:
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-plan.js docs/superpowers/plans/2026-07-13-task-status-up-next.md
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-renderer-plan.js docs/superpowers/plans/2026-07-13-task-status-up-next.md
 git commit -m "fix(hub): label current task as up next"
 ```
 
 ### Task 2: Verify and integrate the feature branch
 
 **Files:**
-- Verify: `cmd/serf-hub/assets/renderer.js`
-- Verify: `cmd/serf-hub/jstest/test-renderer-plan.js`
+- Verify: `cmd/evener-hub/assets/renderer.js`
+- Verify: `cmd/evener-hub/jstest/test-renderer-plan.js`
 - Verify: `docs/superpowers/specs/2026-07-13-task-status-up-next-design.md`
 - Verify: `docs/superpowers/plans/2026-07-13-task-status-up-next.md`
 
@@ -160,7 +160,7 @@ Expected: no unresolved correctness, scope, or test-coverage findings.
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 ./run-one.sh test-renderer-plan.js
 ./run-all.sh
 cd ../../..
@@ -186,7 +186,7 @@ Expected: merge succeeds without conflicts. Do not stage, modify, or delete pre-
 Run from the main checkout:
 
 ```bash
-cd cmd/serf-hub/jstest
+cd cmd/evener-hub/jstest
 ./run-one.sh test-renderer-plan.js
 ./run-all.sh
 cd ../../..

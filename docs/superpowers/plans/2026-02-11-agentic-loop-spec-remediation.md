@@ -1995,7 +1995,7 @@ This is a large but mechanical refactor. Every import path changes from `primera
 - Move: `internal/agent/` → `agent/`
 - Move: `internal/llm/` → `llm/`
 - Update: every `*.go` file's import paths
-- Update: `cmd/serf/main.go` imports
+- Update: `cmd/evener/main.go` imports
 - Update: all test files
 
 **Step 1: Write a test that verifies the package is importable**

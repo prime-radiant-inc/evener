@@ -99,7 +99,7 @@ before editing — they will drift as milestones land):
 - `resolve` `:1121` (read; passes absolute paths through today — M2 tightens);
   `resolveWrite` `:1136` → `ensureUnderRoot` `:1158` (write confinement today).
 - `SessionConfig` `agent/session_config.go:20` (add `Sandbox`/`SandboxNet` — M1).
-- Env construction sites: `cmd/serf/run.go:177`, `cmd/serf/serve.go:203` (M1).
+- Env construction sites: `cmd/evener/run.go:177`, `cmd/evener/serve.go:203` (M1).
 - `apply_patch` bypasses execenv today: `agent/session_tools_shell.go:233` →
   `tool.ApplyPatch(env.WorkingDirectory(), patch)` → `os.*` in
   `agent/internal/tool/apply_patch.go` (M2 refactors this).
@@ -112,7 +112,7 @@ before editing — they will drift as milestones land):
 - [x] M4 — subagent/worktree scoping (merged `fe0dff29`; roborev fixed fail-open
   worktree-switch High + probe fork-storm + cleanup ordering; go test green)
 - [x] M5 — flag goes live on Linux (branch `wip/sandbox-m5`): FeatureGate deleted;
-  --sandbox provisions an enforced env at construction (fresh: cmd/serf run/serve;
+  --sandbox provisions an enforced env at construction (fresh: cmd/evener run/serve;
   resume: RestoreSessionFromMetaWithConfig re-resolves the persisted mode, fail-closed
   reachable); EnforcementLine emitted from the resolved policy; flags surfaced in
   help; serve /clear re-provisions the shared env; escape suite green on this host

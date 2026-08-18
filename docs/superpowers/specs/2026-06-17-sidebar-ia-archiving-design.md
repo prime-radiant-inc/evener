@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-17
 **Status:** approved for planning (Jesse)
-**Area:** `cmd/serf-hub` web hub sidebar (navigation tree)
+**Area:** `cmd/evener-hub` web hub sidebar (navigation tree)
 
 ## Problem
 

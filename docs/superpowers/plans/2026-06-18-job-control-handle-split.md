@@ -28,7 +28,7 @@ This is one coupled plan because the model-facing API cutover depends on three s
 - Modify `agent/internal/tool/definitions.go`: rename model-facing `job_send_message` definition to `delegate_send`, add `job_watch.operation`, and update descriptions.
 - Modify `agent/provider/profile.go`, `agent/profile_test.go`, `agent/provider/profile_test.go`, `agent/session_tools.go`, `agent/session_outline.go`, and `agent/subagents_test.go`: replace model-facing tool names and root-only expectations.
 - Modify `agent/prompts/sections/background-jobs.md`, `agent/prompts/sections/delegation.md`, `docs/job-control.md`, `docs/tools/transcripts.md`, `test/scenarios/*.md`, and `agent/bundled_plugins/coordinator-workflow/agents/coordinator.md`: update public guidance.
-- Modify `agent/transcript_render.go`, `agent/transcript_render_test.go`, `agent/transcript_render_job_test.go`, `cmd/serf-tui/internal/msgrender/tool_renderers.go`, `cmd/serf-tui/internal/msgrender/tool_renderers_test.go`, `cmd/serf-hub/assets/renderer-tools.js`, and `cmd/serf-hub/jstest/test-tool-renderers.js`: add `delegate_send` rendering while preserving historical `job_send_message` transcript rendering.
+- Modify `agent/transcript_render.go`, `agent/transcript_render_test.go`, `agent/transcript_render_job_test.go`, `cmd/evener-tui/internal/msgrender/tool_renderers.go`, `cmd/evener-tui/internal/msgrender/tool_renderers_test.go`, `cmd/evener-hub/assets/renderer-tools.js`, and `cmd/evener-hub/jstest/test-tool-renderers.js`: add `delegate_send` rendering while preserving historical `job_send_message` transcript rendering.
 
 ---
 
@@ -2085,10 +2085,10 @@ git commit -m "feat(job-control): reject mixed job delegate and watch handles"
 - Modify: `agent/transcript_render.go`
 - Modify: `agent/transcript_render_test.go`
 - Modify: `agent/transcript_render_job_test.go`
-- Modify: `cmd/serf-tui/internal/msgrender/tool_renderers.go`
-- Modify: `cmd/serf-tui/internal/msgrender/tool_renderers_test.go`
-- Modify: `cmd/serf-hub/assets/renderer-tools.js`
-- Modify: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-tui/internal/msgrender/tool_renderers.go`
+- Modify: `cmd/evener-tui/internal/msgrender/tool_renderers_test.go`
+- Modify: `cmd/evener-hub/assets/renderer-tools.js`
+- Modify: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 - [ ] **Step 1: Update public guidance text**
 
@@ -2152,7 +2152,7 @@ func TestTranscriptRenderHistoricalJobSendMessageStillRenders(t *testing.T) {
 }
 ```
 
-In `cmd/serf-tui/internal/msgrender/tool_renderers_test.go`, add a `delegate_send` renderer assertion:
+In `cmd/evener-tui/internal/msgrender/tool_renderers_test.go`, add a `delegate_send` renderer assertion:
 
 ```go
 func TestDelegateSendRenderer(t *testing.T) {
@@ -2167,13 +2167,13 @@ func TestDelegateSendRenderer(t *testing.T) {
 }
 ```
 
-In `cmd/serf-hub/jstest/test-tool-renderers.js`, add a fixture with `tool_name: "delegate_send"` and assert the rendered detail contains `dlg_01` and `started`.
+In `cmd/evener-hub/jstest/test-tool-renderers.js`, add a fixture with `tool_name: "delegate_send"` and assert the rendered detail contains `dlg_01` and `started`.
 
 - [ ] **Step 4: Update renderers**
 
 In `agent/transcript_render.go`, add a `case "delegate_send"` next to the historical `case "job_send_message"`. Use the same lifecycle-card style but read `delegate_id`, `started_job_id`, and `latest_job_id`.
 
-In `cmd/serf-tui/internal/msgrender/tool_renderers.go`, register:
+In `cmd/evener-tui/internal/msgrender/tool_renderers.go`, register:
 
 ```go
 toolRenderers["delegate_send"] = jobControl("message")
@@ -2187,15 +2187,15 @@ toolRenderers["job_send_message"] = jobControl("message")
 
 for archived transcript rendering only.
 
-In `cmd/serf-hub/assets/renderer-tools.js`, add `delegate_send` to the same renderer family as the historical send card and map `to` as the primary target field.
+In `cmd/evener-hub/assets/renderer-tools.js`, add `delegate_send` to the same renderer family as the historical send card and map `to` as the primary target field.
 
 - [ ] **Step 5: Run docs/rendering checks**
 
 Run:
 
 ```bash
-go test ./agent ./cmd/serf-tui/internal/msgrender -run 'TestTranscriptRender.*Send|TestDelegateSendRenderer|Test.*Renderer' -count=1
-node cmd/serf-hub/jstest/test-tool-renderers.js
+go test ./agent ./cmd/evener-tui/internal/msgrender -run 'TestTranscriptRender.*Send|TestDelegateSendRenderer|Test.*Renderer' -count=1
+node cmd/evener-hub/jstest/test-tool-renderers.js
 rg -n 'job_send_message|send=\\{to:<observer job_id>|target=\"\\*\"|send\\.to=\"watched\"' agent/prompts docs/job-control.md docs/tools/transcripts.md test/scenarios agent/bundled_plugins/coordinator-workflow/agents/coordinator.md
 ```
 
@@ -2206,7 +2206,7 @@ Expected: Go and Node tests pass. `rg` returns only historical transcript docume
 Run:
 
 ```bash
-git add agent/prompts/sections/background-jobs.md agent/prompts/sections/delegation.md docs/job-control.md docs/tools/transcripts.md test/scenarios/job-watch-sidecar-observer.md test/scenarios/job-send-message-surface.md test/scenarios/subagent-cancel-runaway.md agent/bundled_plugins/coordinator-workflow/agents/coordinator.md agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go cmd/serf-tui/internal/msgrender/tool_renderers.go cmd/serf-tui/internal/msgrender/tool_renderers_test.go cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/jstest/test-tool-renderers.js
+git add agent/prompts/sections/background-jobs.md agent/prompts/sections/delegation.md docs/job-control.md docs/tools/transcripts.md test/scenarios/job-watch-sidecar-observer.md test/scenarios/job-send-message-surface.md test/scenarios/subagent-cancel-runaway.md agent/bundled_plugins/coordinator-workflow/agents/coordinator.md agent/transcript_render.go agent/transcript_render_test.go agent/transcript_render_job_test.go cmd/evener-tui/internal/msgrender/tool_renderers.go cmd/evener-tui/internal/msgrender/tool_renderers_test.go cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "docs(job-control): update handle split guidance and renderers"
 ```
 
@@ -2223,7 +2223,7 @@ git commit -m "docs(job-control): update handle split guidance and renderers"
 Run:
 
 ```bash
-go test ./agent/internal/jobstore ./agent/internal/tool ./agent/provider ./cmd/serf-tui/internal/msgrender -count=1
+go test ./agent/internal/jobstore ./agent/internal/tool ./agent/provider ./cmd/evener-tui/internal/msgrender -count=1
 ```
 
 Expected: pass.
@@ -2243,8 +2243,8 @@ Expected: pass with no race report.
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
-node cmd/serf-hub/jstest/test-subagents.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-subagents.js
 ```
 
 Expected: pass.

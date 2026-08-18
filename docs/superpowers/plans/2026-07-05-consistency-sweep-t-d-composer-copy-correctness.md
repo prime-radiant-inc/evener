@@ -8,11 +8,11 @@
 
 **Architecture:** Composer affordance is decided in three places that currently collapse `awaiting`==`active` in one line — the TUI `sessionTurnActionState` (composer_panel.go), the web `turnAcceptsActions` (renderer.js), and the server-rendered initial markup (workspace.html). Each learns to distinguish a rested `awaiting` (plain Send) from a running `active` (Stop/steer/queue). The `serf/task/updated` notification — defined in the appwire catalog but emitted by nothing — gets an emit site at the task-store mutation point in the agent (projected through the existing `EventQueueChanged`-style path), the web client subscribes the task-status row to it, and the 5s `startTaskBadgePoller` is retired. The remaining items are localized fixes to hub HTTP handlers, JS, CSS, Go comments, and one flaky MCP test.
 
-**Tech Stack:** Go (`cmd/serf-tui`, `cmd/serf-hub`, `agent`, `server`, `internal/appprojector`, `appwire`), JS (JSDOM jstest under `cmd/serf-hub/jstest`), CSS (`cmd/serf-hub/assets/style.css`), Go html/template (`cmd/serf-hub/templates`). Modules per `GO_MODULES` in Makefile (`.`, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`) — run tests per-module; `agent` is its own module.
+**Tech Stack:** Go (`cmd/evener-tui`, `cmd/evener-hub`, `agent`, `server`, `internal/appprojector`, `appwire`), JS (JSDOM jstest under `cmd/evener-hub/jstest`), CSS (`cmd/evener-hub/assets/style.css`), Go html/template (`cmd/evener-hub/templates`). Modules per `GO_MODULES` in Makefile (`.`, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`) — run tests per-module; `agent` is its own module.
 
 **Global Constraints (verbatim, apply to every task):**
 - Run Go tests per-module: `cd <module> && go test ./<pkg>/ -run <Name> -count=1`. The web/hub/server code is in the **repo-root** module (`.`); the agent code is in `agent`.
-- jstest: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
+- jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
 - `make lint` runs `serf-namingcheck`; per-task golangci misses it. Wire keys stay snake_case; do **not** rename any wire enum value (`active`, `awaiting` on the wire are the Codex-shaped contract). Deliberate camelCase takes a `// serf:naming-ignore:` line.
 - Test output MUST be pristine. Any intentional error output must be captured and asserted, never left printing.
 - Commit after every green task with the exact message given. NEVER `git add -A`; add the named files only.
@@ -23,10 +23,10 @@
 ## File Structure
 
 ```
-cmd/serf-tui/
+cmd/evener-tui/
   composer_panel.go              # sessionTurnActionState (~99), sessionComposerMode (~58), queue mode (~141) — Composer T1
   composer_panel_test.go         # (new/extend) TUI composer-at-rest units — Composer T1
-cmd/serf-hub/
+cmd/evener-hub/
   assets/renderer.js             # turnAcceptsActions (~436), syncTurnActionControls (~415), updateThreadState (~336),
                                  #   startTaskBadgePoller (~466), QUEUE_CHANGED handler (~1003) — Composer T2, Copy T3, Correctness T9
   assets/renderer-panels.js      # renderTasksInto (~285), updateTasksBadge (~358, "no tasks") — Copy T2
@@ -70,12 +70,12 @@ The three surfaces collapse `awaiting`==`active` into one predicate. A rested `a
 The TUI `sessionTurnActionState()` returns true for both `active` and `awaiting`, and `sessionComposerMode()` then routes an awaiting session into `hubComposerModeQueue` whenever `Capabilities.Queue` is set (composer_panel.go:58-75, 99-105). Split the composer-mode decision so only a genuinely running turn (`active`, or `session.processing`) takes the Queue/Stop path; a rested `awaiting` falls through to Send.
 
 **Files:**
-- Modify: `cmd/serf-tui/composer_panel.go`
-- Test: `cmd/serf-tui/composer_panel_test.go` (new)
+- Modify: `cmd/evener-tui/composer_panel.go`
+- Test: `cmd/evener-tui/composer_panel_test.go` (new)
 
 - [ ] **Step 1: Failing test — awaiting rests to Send even with Queue capability**
 
-Create `cmd/serf-tui/composer_panel_test.go` (`package main`). Build a model whose detail State is `"awaiting"` with `Capabilities.Queue` and `Capabilities.Send` both true and `session.processing` false, and assert the composer mode is Send, not Queue:
+Create `cmd/evener-tui/composer_panel_test.go` (`package main`). Build a model whose detail State is `"awaiting"` with `Capabilities.Queue` and `Capabilities.Send` both true and `session.processing` false, and assert the composer mode is Send, not Queue:
 
 ```go
 package main
@@ -110,7 +110,7 @@ func TestSessionComposerMode_ActiveStillQueues(t *testing.T) {
 
 - [ ] **Step 2: Run — fails** (awaiting currently routes to Queue when Capabilities.Queue is set)
 
-Run: `cd cmd/serf-tui && go test ./ -run TestSessionComposerMode -count=1`
+Run: `cd cmd/evener-tui && go test ./ -run TestSessionComposerMode -count=1`
 Expected: FAIL — `rested awaiting composer mode = ... want hubComposerModeSend`.
 
 - [ ] **Step 3: Implement — gate the Queue/Stop path on genuinely-running**
@@ -136,14 +136,14 @@ Then in `sessionComposerMode()` replace `if m.sessionTurnActionState() {` (the b
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-tui && go test ./ -run TestSessionComposerMode -count=1`
+Run: `cd cmd/evener-tui && go test ./ -run TestSessionComposerMode -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-tui && go vet ./ && go test ./ -count=1`
+Run: `cd cmd/evener-tui && go vet ./ && go test ./ -count=1`
 Commit:
-- `git add cmd/serf-tui/composer_panel.go cmd/serf-tui/composer_panel_test.go`
+- `git add cmd/evener-tui/composer_panel.go cmd/evener-tui/composer_panel_test.go`
 - `git commit -m "fix(tui): rested awaiting composer shows Send, not Queue/steer"`
 
 _~30 loc._
@@ -153,12 +153,12 @@ _~30 loc._
 `turnAcceptsActions(state)` returns `state === "active" || state === "awaiting"` (renderer.js:436-438). It gates the interrupt/steer buttons (`syncTurnActionControls`, ~415-434) and the send/queue capability flip (`updateThreadState`, ~386-401). A rested awaiting session shows Stop+steer and routes Enter into Queue. Split so the Stop/steer/queue affordances key on `active` alone while awaiting keeps its send path.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Test: `cmd/serf-hub/jstest/test-actions.js` (extend)
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Test: `cmd/evener-hub/jstest/test-actions.js` (extend)
 
 - [ ] **Step 1: Failing test — awaiting composer is plain Send**
 
-Append to `cmd/serf-hub/jstest/test-actions.js` (before the final pass/exit block). Drive the renderer's state to `awaiting` and assert the send button advertises send (not queue) and the interrupt button is disabled:
+Append to `cmd/evener-hub/jstest/test-actions.js` (before the final pass/exit block). Drive the renderer's state to `awaiting` and assert the send button advertises send (not queue) and the interrupt button is disabled:
 
 ```js
 // ── Composer-at-rest: a rested "awaiting" session shows plain Send ──────────
@@ -185,7 +185,7 @@ if (R && typeof R.updateThreadState === "function") {
 
 - [ ] **Step 2: Run — fails** (`turnAcceptsActions("awaiting")` is true, so awaiting flips to queue mode)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
 Expected: FAIL — awaiting put the send button in queue mode / advertised steer.
 
 - [ ] **Step 3: Implement — narrow the running-affordance predicate**
@@ -211,14 +211,14 @@ In `syncTurnActionControls()` replace the two `turnAcceptsActions` reads that ga
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-actions.js`
+- `git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-actions.js`
 - `git commit -m "fix(web): rested awaiting composer shows Send, not Stop/steer/queue"`
 
 _~25 loc._
@@ -228,12 +228,12 @@ _~25 loc._
 The initial workspace markup gates Stop and steer with `(and (ne .State "awaiting") (ne .State "active"))` — i.e. **enabled** for awaiting (workspace.html:88, 91). So the very first paint of a rested awaiting session shows an enabled Stop and steer until JS re-syncs. Tighten the inline gate to `active` only, matching Composer T2.
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Test: `cmd/serf-hub/web_test.go` (new test)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Test: `cmd/evener-hub/web_test.go` (new test)
 
 - [ ] **Step 1: Failing test — awaiting workspace renders Stop/steer disabled**
 
-Add to `cmd/serf-hub/web_test.go`. Render the workspace partial for an `awaiting` thread (adapt the existing `TestWeb_Workspace...` fixtures around line 370 that use `scriptedAppSource`) and assert Stop and steer carry `disabled`:
+Add to `cmd/evener-hub/web_test.go`. Render the workspace partial for an `awaiting` thread (adapt the existing `TestWeb_Workspace...` fixtures around line 370 that use `scriptedAppSource`) and assert Stop and steer carry `disabled`:
 
 ```go
 func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
@@ -272,7 +272,7 @@ func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
 
 - [ ] **Step 2: Run — fails** (awaiting currently enables Stop/steer inline)
 
-Run: `go test ./cmd/serf-hub/ -run TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer -count=1`
 Expected: FAIL — Stop/steer not disabled.
 
 - [ ] **Step 3: Implement — drop awaiting from the enable set**
@@ -293,14 +293,14 @@ Apply the identical change to the steer button (line ~91): replace its `(and (ne
 
 - [ ] **Step 4: Run — pass** (and confirm the active-session control test still green)
 
-Run: `go test ./cmd/serf-hub/ -run 'TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer|TestWeb_Workspace' -count=1`
+Run: `go test ./cmd/evener-hub/ -run 'TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer|TestWeb_Workspace' -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -count=1`
 Commit:
-- `git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/web_test.go`
+- `git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/web_test.go`
 - `git commit -m "fix(web): rested awaiting disables Stop/steer at first paint"`
 
 _~15 loc._
@@ -314,8 +314,8 @@ _~15 loc._
 The workspace's task-status value is server-rendered as `loading…` (workspace.html:65). On an ended session with no tasks the poller resolves it to `no tasks`, but if the tasks fetch never returns (ended source, transport gone) it spins on "loading…" forever. Seed the initial markup with a neutral em-dash placeholder so a session that never resolves reads as "no data", not "still loading". (The live resolution to `N/M` or `no tasks` is Copy T2 / Correctness T9.)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html`
-- Test: `cmd/serf-hub/web_test.go` (new)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html`
+- Test: `cmd/evener-hub/web_test.go` (new)
 
 - [ ] **Step 1: Failing test — initial task-status text is not "loading…"**
 
@@ -344,7 +344,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 
 - [ ] **Step 2: Run — fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestWeb_WorkspaceTaskStatusInitialIsNeutral -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_WorkspaceTaskStatusInitialIsNeutral -count=1`
 Expected: FAIL — body contains `data-task-status-text>loading…`.
 
 - [ ] **Step 3: Implement — neutral placeholder**
@@ -359,14 +359,14 @@ The em-dash reads as "no data yet" and is overwritten by `updateTasksBadge` the 
 
 - [ ] **Step 4: Run — pass**
 
-Run: `go test ./cmd/serf-hub/ -run TestWeb_WorkspaceTaskStatusInitialIsNeutral -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_WorkspaceTaskStatusInitialIsNeutral -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -count=1`
 Commit:
-- `git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/web_test.go`
+- `git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/web_test.go`
 - `git commit -m "fix(web): task-status starts neutral, not eternal loading…"`
 
 _~10 loc._
@@ -376,12 +376,12 @@ _~10 loc._
 The task-badge resting copy is the bare `"no tasks"` (renderer-panels.js:375), which reads as a terminal fact even mid-session. Align it with the panel's own empty-state title ("No tasks yet", renderer-panels.js:312): lowercase-in-the-status-row `"no tasks yet"` reads as "none so far", consistent with the panel.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-panels.js`
-- Test: `cmd/serf-hub/jstest/test-tasks-panel.js` (new, or extend an existing tasks jstest if one covers `updateTasksBadge`)
+- Modify: `cmd/evener-hub/assets/renderer-panels.js`
+- Test: `cmd/evener-hub/jstest/test-tasks-panel.js` (new, or extend an existing tasks jstest if one covers `updateTasksBadge`)
 
 - [ ] **Step 1: Failing test — badge text for zero tasks is "no tasks yet"**
 
-Create `cmd/serf-hub/jstest/test-tasks-panel.js` (JSDOM; mirror the bootstrap of a sibling renderer-panels jstest). Provide a `[data-tasks-trigger]` button containing a `[data-task-status-text]` span, call the exported `updateTasksBadge`/`renderTasksInto` accessor for an empty list, and assert:
+Create `cmd/evener-hub/jstest/test-tasks-panel.js` (JSDOM; mirror the bootstrap of a sibling renderer-panels jstest). Provide a `[data-tasks-trigger]` button containing a `[data-task-status-text]` span, call the exported `updateTasksBadge`/`renderTasksInto` accessor for an empty list, and assert:
 
 ```js
 const textEl = window.document.querySelector("[data-task-status-text]");
@@ -395,7 +395,7 @@ assert.strictEqual(textEl.textContent, "no tasks yet",
 
 - [ ] **Step 2: Run — fails** (current text is `"no tasks"`)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
 Expected: FAIL — got `"no tasks"`, want `"no tasks yet"`.
 
 - [ ] **Step 3: Implement**
@@ -408,14 +408,14 @@ In `renderer-panels.js` line 375, change `if (total === 0) textEl.textContent = 
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add cmd/serf-hub/assets/renderer-panels.js cmd/serf-hub/jstest/test-tasks-panel.js`
+- `git add cmd/evener-hub/assets/renderer-panels.js cmd/evener-hub/jstest/test-tasks-panel.js`
 - `git commit -m "fix(web): task badge reads 'no tasks yet', matching the panel"`
 
 _~5 loc._
@@ -425,8 +425,8 @@ _~5 loc._
 `startTaskBadgePoller()` re-fetches `/tasks` every 5s (renderer.js:466-483) to keep the badge fresh — the transport straggler the design calls out. Correctness T9 makes the badge event-driven via `serf/task/updated`. This task removes the interval; the initial hydrate fetch (`hydrateDescriptions`, kept) plus the T9 subscription cover freshness. **Sequence this AFTER Correctness T9** so the badge is never stale between removing the poll and wiring the event.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Test: `cmd/serf-hub/jstest/test-task-updated-subscription.js` (the T9 test also asserts no 5s interval is armed)
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Test: `cmd/evener-hub/jstest/test-task-updated-subscription.js` (the T9 test also asserts no 5s interval is armed)
 
 - [ ] **Step 1: Failing/guard test — no 5s poll interval after attach**
 
@@ -442,7 +442,7 @@ assert.ok(!intervals.includes(5000),
 
 - [ ] **Step 2: Run — fails** (the 5s poller is still armed)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: FAIL — intervals include 5000.
 
 - [ ] **Step 3: Implement — drop the interval, keep the one-shot hydrate**
@@ -451,14 +451,14 @@ In `renderer.js`, delete the `this.startTaskBadgePoller();` call (~241) and remo
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-task-updated-subscription.js`
+- `git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
 - `git commit -m "perf(web): retire the 5s task-badge poll (event-driven via serf/task/updated)"`
 
 _~15 loc._
@@ -468,12 +468,12 @@ _~15 loc._
 The 2-line `-webkit-line-clamp` for `.spawn-recent-row` lives only inside the phone media query (style.css:4122-4127, `@media (max-width:767px)` opened at :3782); the base rule (style.css:3128) has no clamp, so desktop renders full multi-line walls of prompt text. Move the clamp to the base rule so it applies on every width.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-spawn-recent-clamp.js` (new — asserts the base rule carries the clamp)
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-spawn-recent-clamp.js` (new — asserts the base rule carries the clamp)
 
 - [ ] **Step 1: Failing test — base .spawn-recent-row rule has the clamp**
 
-Create `cmd/serf-hub/jstest/test-spawn-recent-clamp.js`. Read `style.css` as text, isolate the **base** `.spawn-recent-row {` rule (the first occurrence, before the `@media (max-width: 767px)` block opened at the `3782`-area marker), and assert it contains `-webkit-line-clamp: 2`:
+Create `cmd/evener-hub/jstest/test-spawn-recent-clamp.js`. Read `style.css` as text, isolate the **base** `.spawn-recent-row {` rule (the first occurrence, before the `@media (max-width: 767px)` block opened at the `3782`-area marker), and assert it contains `-webkit-line-clamp: 2`:
 
 ```js
 const fs = require("fs");
@@ -490,7 +490,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run — fails** (clamp lives only in the phone block)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — clamp on the base rule**
@@ -505,14 +505,14 @@ In `style.css`, extend the base `.spawn-recent-row` rule (line 3128) with the cl
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-spawn-recent-clamp.js`
+- `git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-spawn-recent-clamp.js`
 - `git commit -m "fix(web): clamp recent-prompt rows to 2 lines on desktop too"`
 
 _~8 loc._
@@ -522,12 +522,12 @@ _~8 loc._
 The dark theme tints `.sb-row[data-state="awaiting|active|warning"]` with an explicit `[data-theme="light"]` override (style.css:211-214), but the **errored** row has no light-theme override — so a light-mode errored row falls through to the base 5%-error-mix (style.css:605-608) which reads too faint against the light `--bg`. Add the parallel light-theme errored tint.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-errored-light-tint.js` (new — asserts the light-theme errored override exists)
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-errored-light-tint.js` (new — asserts the light-theme errored override exists)
 
 - [ ] **Step 1: Failing test — light-theme errored override present**
 
-Create `cmd/serf-hub/jstest/test-errored-light-tint.js`:
+Create `cmd/evener-hub/jstest/test-errored-light-tint.js`:
 
 ```js
 const fs = require("fs");
@@ -542,7 +542,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run — fails**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — add the override**
@@ -557,14 +557,14 @@ In `style.css`, after the existing light-theme row overrides (line 214), add:
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-errored-light-tint.js`
+- `git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-errored-light-tint.js`
 - `git commit -m "fix(web): light-theme errored sidebar-row tint (WS1 leftover)"`
 
 _~5 loc._
@@ -574,8 +574,8 @@ _~5 loc._
 The `general.html` settings pane says the bearer token is "Rotated daily; ... regenerates the token on each daemon restart" (general.html:12), but the token is generated once and persisted at `$hub_state_root/auth-token`, invalidated only by deleting the file or `--rotate-auth-token` (auth_token.go:19-29, 43-77). It is **not** rotated daily, and it survives daemon restarts. Fix the literal stale copy. (The systemic vocabulary standardization is Track A; this is one wrong sentence.)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/general.html`
-- Test: `cmd/serf-hub/web_test.go` (new — renders the general settings partial, asserts the corrected copy)
+- Modify: `cmd/evener-hub/templates/partials/settings/general.html`
+- Test: `cmd/evener-hub/web_test.go` (new — renders the general settings partial, asserts the corrected copy)
 
 - [ ] **Step 1: Failing test — token help does not claim daily rotation**
 
@@ -602,7 +602,7 @@ func TestWeb_SettingsGeneralBearerTokenCopyIsAccurate(t *testing.T) {
 
 - [ ] **Step 2: Run — fails**
 
-Run: `go test ./cmd/serf-hub/ -run TestWeb_SettingsGeneralBearerTokenCopyIsAccurate -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_SettingsGeneralBearerTokenCopyIsAccurate -count=1`
 Expected: FAIL — body contains the stale strings.
 
 - [ ] **Step 3: Implement — accurate token help**
@@ -621,14 +621,14 @@ with copy that matches `auth_token.go`:
 
 - [ ] **Step 4: Run — pass**
 
-Run: `go test ./cmd/serf-hub/ -run TestWeb_SettingsGeneralBearerTokenCopyIsAccurate -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestWeb_SettingsGeneralBearerTokenCopyIsAccurate -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -count=1`
 Commit:
-- `git add cmd/serf-hub/templates/partials/settings/general.html cmd/serf-hub/web_test.go`
+- `git add cmd/evener-hub/templates/partials/settings/general.html cmd/evener-hub/web_test.go`
 - `git commit -m "fix(web/settings): bearer-token help matches actual token lifecycle"`
 
 _~5 loc._
@@ -642,8 +642,8 @@ _~5 loc._
 `apiSessionDetail` seeds Title from `workspaceData` (web_api_tree.go:673-704). For a live serf session `workspaceData` calls `liveTitle(id, le, s.cfg.Past)` (web_workspace.go:280), which prefers the persisted meta name; but a **live rename** goes through `SetThreadName` on the daemon and `refreshRenamedMeta` bumps the past index — yet the live-branch replacement in `apiSessionDetail` (the `hubDetailFromAppThread` path, ~714) overwrites Title from `thread.Name`/`thread.Preview`/`thread.SessionID`, and if the daemon thread's Name is empty the detail falls back to the raw session id, ignoring the freshly-renamed meta. Give the endpoint the same name resolution `/api/tree` uses: when the live thread carries no name, fall back to the past-index meta name (via `liveTitle`) before the raw id.
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_tree.go` (`apiSessionDetail`)
-- Test: `cmd/serf-hub/web_api_tree_test.go` (new)
+- Modify: `cmd/evener-hub/web_api_tree.go` (`apiSessionDetail`)
+- Test: `cmd/evener-hub/web_api_tree_test.go` (new)
 
 - [ ] **Step 1: Failing test — renamed meta wins over the raw id in session-detail**
 
@@ -691,7 +691,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 
 - [ ] **Step 2: Run — fails** (live branch overwrites Title with the raw id when the thread name is empty)
 
-Run: `go test ./cmd/serf-hub/ -run TestAPISessionDetailHonorsRenamedMetaForLiveThread -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestAPISessionDetailHonorsRenamedMetaForLiveThread -count=1`
 Expected: FAIL — `Title="01RENAMED"`.
 
 - [ ] **Step 3: Implement — meta-name fallback after the live replacement**
@@ -716,14 +716,14 @@ If a `liveEntryForRoute` helper does not already exist, inline the roster lookup
 
 - [ ] **Step 4: Run — pass**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestAPISessionDetailHonorsRenamedMetaForLiveThread|TestAPISessionDetail' -count=1`
+Run: `go test ./cmd/evener-hub/ -run 'TestAPISessionDetailHonorsRenamedMetaForLiveThread|TestAPISessionDetail' -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -count=1`
 Commit:
-- `git add cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go`
+- `git add cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go`
 - `git commit -m "fix(hub): session-detail endpoint honors a live rename (WS3 T25 Bug 2)"`
 
 _~20 loc._
@@ -810,8 +810,8 @@ _~20 loc._
 `handleAPIArchive`, on un-archiving a project, fires `s.cfg.Archive.Delete("project", filepath.Base(body.ID))` to drop a legacy basename row (web_api_archive.go:43-48). When `body.ID` has no path separator (the common non-migration case), `filepath.Base(id) == id`, so this deletes the very row just written by `Set` above — behaviorally inert only because `Set(archived=false)` already cleared it, but the comment claims it targets a "legacy basename row". Gate the Delete on the id actually differing from its basename, so it only runs when there's a genuine distinct legacy key.
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_archive.go`
-- Test: `cmd/serf-hub/web_api_archive_test.go` (new)
+- Modify: `cmd/evener-hub/web_api_archive.go`
+- Test: `cmd/evener-hub/web_api_archive_test.go` (new)
 
 - [ ] **Step 1: Failing test — a basename-shaped id does not trigger the legacy Delete**
 
@@ -847,7 +847,7 @@ func TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID(t *testing.T) {
 
 - [ ] **Step 2: Run — fails or is inconclusive** — first confirm current behavior; if it already passes green, the fix is comment-honesty + the gate (still commit, since the gate removes the misleading no-op).
 
-Run: `go test ./cmd/serf-hub/ -run TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID -count=1`
 
 - [ ] **Step 3: Implement — gate the legacy Delete on a distinct basename**
 
@@ -868,14 +868,14 @@ In `web_api_archive.go`, replace the unconditional legacy Delete (lines 43-48) w
 
 - [ ] **Step 4: Run — pass** (and the existing `TestArchiveEndpointProjectKind` path-shaped case still green)
 
-Run: `go test ./cmd/serf-hub/ -run 'TestArchive' -count=1`
+Run: `go test ./cmd/evener-hub/ -run 'TestArchive' -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -run TestArchive -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -run TestArchive -count=1`
 Commit:
-- `git add cmd/serf-hub/web_api_archive.go cmd/serf-hub/web_api_archive_test.go`
+- `git add cmd/evener-hub/web_api_archive.go cmd/evener-hub/web_api_archive_test.go`
 - `git commit -m "fix(hub): gate un-archive legacy Delete on a real distinct basename (WS3 T8)"`
 
 _~10 loc._
@@ -885,8 +885,8 @@ _~10 loc._
 In the ended-rename path, a session that races back to live is handled by a `Roster.Find` re-check that routes through the daemon; but if the daemon `SetThreadName` fails, the code **silently falls through** to editing the persisted meta directly (web_api_rename.go:53-88), which the next autosave from the now-live session can revert — an atomic-but-lost write. Make the live-race branch hard-fail on daemon error instead of falling through to the meta edit.
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_rename.go`
-- Test: `cmd/serf-hub/web_api_rename_test.go` (new or extend)
+- Modify: `cmd/evener-hub/web_api_rename.go`
+- Test: `cmd/evener-hub/web_api_rename_test.go` (new or extend)
 
 - [ ] **Step 1: Failing test — a live-race daemon failure returns an error, not a silent meta edit**
 
@@ -932,7 +932,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 
 - [ ] **Step 2: Run — fails** (current code falls through and edits the meta, returning 204)
 
-Run: `go test ./cmd/serf-hub/ -run TestRenameLiveRaceDaemonFailureHardFails -count=1`
+Run: `go test ./cmd/evener-hub/ -run TestRenameLiveRaceDaemonFailureHardFails -count=1`
 Expected: FAIL — status 204 and/or meta.Name == "new".
 
 - [ ] **Step 3: Implement — hard-fail the live-race branch**
@@ -963,14 +963,14 @@ In `web_api_rename.go`, change the ended-path live-race block (lines 55-66) so a
 
 - [ ] **Step 4: Run — pass**
 
-Run: `go test ./cmd/serf-hub/ -run 'TestRename' -count=1`
+Run: `go test ./cmd/evener-hub/ -run 'TestRename' -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && go test ./cmd/serf-hub/ -run TestRename -count=1`
+Run: `go vet ./cmd/evener-hub/ && go test ./cmd/evener-hub/ -run TestRename -count=1`
 Commit:
-- `git add cmd/serf-hub/web_api_rename.go cmd/serf-hub/web_api_rename_test.go`
+- `git add cmd/evener-hub/web_api_rename.go cmd/evener-hub/web_api_rename_test.go`
 - `git commit -m "fix(hub): ended-rename hard-fails on a live-race daemon error (WS3 T18)"`
 
 _~15 loc._
@@ -980,8 +980,8 @@ _~15 loc._
 `projectMenuItems` chooses Archive vs Unarchive from `p.__archived` (sidebar.js:171-183), a marker stamped only inside `pushArchivedSection` (sidebar.js:348-350). A project that is **both** test-run and archived is routed by the server into the Test-runs bucket (TestRuns wins, web_api_tree.go:54-68), where `pushTestRunsSection` passes `null` for the mark (sidebar.js:352) — so its menu offers "Archive" even though the project is archived. The existing `test-sidebar-testruns.js` actually *asserts* plain "Archive" for a test-run project (test-sidebar-testruns.js:137-142) on the rationale that a test-runs project "was never in the archived bucket". That rationale is the bug when the project is genuinely archived: archiving again is an idempotent no-op and hides that it can be un-archived. Fix: drive the menu verb off the server-supplied archived state carried on the wire node, not off which section stamped it.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/sidebar.js` (`projectMenuItems`), `hubapi/types.go` (add `IsArchived` to `TreeProject`), `cmd/serf-hub/web_api_tree.go` (populate it)
-- Test: `cmd/serf-hub/jstest/test-sidebar-menu.js` (extend) + update `test-sidebar-testruns.js`'s stale assertion
+- Modify: `cmd/evener-hub/assets/sidebar.js` (`projectMenuItems`), `hubapi/types.go` (add `IsArchived` to `TreeProject`), `cmd/evener-hub/web_api_tree.go` (populate it)
+- Test: `cmd/evener-hub/jstest/test-sidebar-menu.js` (extend) + update `test-sidebar-testruns.js`'s stale assertion
 
 - [ ] **Step 1: Failing test — an archived test-run project offers Unarchive**
 
@@ -1001,7 +1001,7 @@ if (!items.some((t) => /^Unarchive$/.test(t))) throw new Error("archived test-ru
 
 - [ ] **Step 2: Run — fails** (menu offers Archive; `is_archived` is neither on the wire nor consulted)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — carry `is_archived` on the wire and read it in the menu**
@@ -1012,7 +1012,7 @@ In `hubapi/types.go`, add to `TreeProject`:
 	IsArchived      bool       `json:"is_archived,omitempty"`
 ```
 
-In `cmd/serf-hub/web_api_tree.go` `apiTreeProject` (line 507-520), set it from the core project: `IsArchived: p.IsArchived,`. In `sidebar.js` `projectMenuItems`, replace `var archived = !!p.__archived;` with a read that prefers the server flag and falls back to the section stamp:
+In `cmd/evener-hub/web_api_tree.go` `apiTreeProject` (line 507-520), set it from the core project: `IsArchived: p.IsArchived,`. In `sidebar.js` `projectMenuItems`, replace `var archived = !!p.__archived;` with a read that prefers the server flag and falls back to the section stamp:
 
 ```js
     var archived = (typeof p.is_archived === "boolean") ? p.is_archived : !!p.__archived;
@@ -1022,14 +1022,14 @@ Then update the now-stale `test-sidebar-testruns.js` assertion (lines 137-142): 
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js && node test-sidebar-testruns.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js && node test-sidebar-testruns.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/serf-hub/ && cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `go vet ./cmd/evener-hub/ && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
-- `git add hubapi/types.go cmd/serf-hub/web_api_tree.go cmd/serf-hub/assets/sidebar.js cmd/serf-hub/jstest/test-sidebar-menu.js cmd/serf-hub/jstest/test-sidebar-testruns.js`
+- `git add hubapi/types.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-menu.js cmd/evener-hub/jstest/test-sidebar-testruns.js`
 - `git commit -m "fix(hub): row-menu Unarchive tracks server archived state, not bucket (WS3 R2)"`
 
 _~15 loc._
@@ -1039,11 +1039,11 @@ _~15 loc._
 The sidebar builds project-menu hrefs with `encodeURIComponent(p.working_dir)` for both New-session and Settings (sidebar.js:176-177). Correct but untested. Add a jstest pinning that a `working_dir` with characters needing escaping (spaces, `&`, `#`) is percent-encoded into the navigated URL.
 
 **Files:**
-- Test: `cmd/serf-hub/jstest/test-sidebar-workingdir-escape.js` (new)
+- Test: `cmd/evener-hub/jstest/test-sidebar-workingdir-escape.js` (new)
 
 - [ ] **Step 1: Failing test — special chars in working_dir are percent-encoded**
 
-Create `cmd/serf-hub/jstest/test-sidebar-workingdir-escape.js` (JSDOM; mirror `test-sidebar-menu.js`'s bootstrap). Stub navigation by capturing `window.location.href` assignments, render a project whose `working_dir` is `/w/a b&c#d`, open the menu, click "New session", and assert the captured URL contains the encoded path:
+Create `cmd/evener-hub/jstest/test-sidebar-workingdir-escape.js` (JSDOM; mirror `test-sidebar-menu.js`'s bootstrap). Stub navigation by capturing `window.location.href` assignments, render a project whose `working_dir` is `/w/a b&c#d`, open the menu, click "New session", and assert the captured URL contains the encoded path:
 
 ```js
 const w = boot();
@@ -1062,7 +1062,7 @@ console.log("PASS: working_dir is encodeURIComponent-escaped");
 
 - [ ] **Step 2: Run — pass immediately** (this pins existing-correct behavior against regression; the escaping already exists)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-workingdir-escape.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-workingdir-escape.js`
 Expected: PASS. If the harness plumbing (menu-open, location stub) needs adjusting, fix the harness until it passes — the assertion contract (encoded URL) is fixed.
 
 - [ ] **Step 3: (no impl change) — regression pin only**
@@ -1071,13 +1071,13 @@ No source change: the test locks in the current correct escaping so a future ref
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Expected: PASS (all jstests).
 
 - [ ] **Step 5: Commit**
 
 Commit:
-- `git add cmd/serf-hub/jstest/test-sidebar-workingdir-escape.js`
+- `git add cmd/evener-hub/jstest/test-sidebar-workingdir-escape.js`
 - `git commit -m "test(hub): pin encodeURIComponent escaping for working_dir hrefs (WS3 T23)"`
 
 _~40 loc (test only)._
@@ -1197,8 +1197,8 @@ _~15 loc._
 - Modify: `agent/events/events.go` (+ `EventTaskUpdated` kind), `agent/events/payloads.go` (+ `TaskUpdatedData`)
 - Modify: `internal/appprojector/appwire_projection.go` (project `EventTaskUpdated` → `NotifySerfTaskUpdated`, mirroring the `EventQueueChanged` case at ~588)
 - Modify: `appwire/types.go` (+ `TaskUpdatedParams`), `appwire/protocol.go` (add the `Notifications` catalog entry; drop `NotifySerfTaskUpdated` from the "intentionally absent" prose)
-- Modify: `cmd/serf-hub/assets/appwire.js` (`eventsFromNotification`: map `serf/task/updated` → a `TASKS_CHANGED` client event), `cmd/serf-hub/assets/renderer.js` (handle it → refresh the badge)
-- Test: `agent/session_tools_task_test.go` (emit), `internal/appprojector/*_test.go` (projection), `cmd/serf-hub/jstest/test-task-updated-subscription.js` (client)
+- Modify: `cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`: map `serf/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
+- Test: `agent/session_tools_task_test.go` (emit), `internal/appprojector/*_test.go` (projection), `cmd/evener-hub/jstest/test-task-updated-subscription.js` (client)
 
 - [ ] **Step 1: Failing test (agent) — updating a task emits EventTaskUpdated**
 
@@ -1313,7 +1313,7 @@ Expected: PASS; `make generate` updates `docs/appwire-protocol.md` to list `serf
 
 - [ ] **Step 9: Failing test (client) — a serf/task/updated notification refreshes the badge, no 5s poll**
 
-Create `cmd/serf-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `SerfAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `serf/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
+Create `cmd/evener-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `SerfAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `serf/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
 
 ```js
 const intervals = [];
@@ -1327,7 +1327,7 @@ assert.ok(!intervals.includes(5000), "no 5s task poll after wiring the event");
 
 - [ ] **Step 10: Run — fails** (no client mapping/handler yet; and the 5s poll still armed until Copy T3)
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: FAIL.
 
 - [ ] **Step 11: Implement (client mapping + handler)**
@@ -1362,14 +1362,14 @@ In `renderer.js`'s `handleData` switch (alongside `QUEUE_CHANGED`, ~1003), add:
 
 - [ ] **Step 12: Run — pass**
 
-Run: `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: PASS (the no-5s-interval assertion still fails until Copy T3 — sequence Copy T3 immediately after this task; if you want this task self-green, drop the interval assertion here and let Copy T3 add it).
 
 - [ ] **Step 13: Full gates + commit**
 
-Run: `cd agent && go test ./ -run 'Task' -count=1 && cd .. && go test ./internal/appprojector/ ./appwire/ ./cmd/serf-hub/ -count=1 && cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd agent && go test ./ -run 'Task' -count=1 && cd .. && go test ./internal/appprojector/ ./appwire/ ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
 Commit (one commit — wire+emit+projector+client together, since the notification threads all hops):
-- `git add agent/events/events.go agent/events/payloads.go agent/session_tools_task.go agent/session_tools_task_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/serf-hub/assets/appwire.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-task-updated-subscription.js`
+- `git add agent/events/events.go agent/events/payloads.go agent/session_tools_task.go agent/session_tools_task_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
 - `git commit -m "feat(tasks): emit serf/task/updated on task-status change; subscribe the status row"`
 
 _~90 loc._
@@ -1432,7 +1432,7 @@ These two are **observation tasks**: run the built app live and gather evidence.
 
 WS3 pinned project ordering to `LastActivity` (the max `OrderUpdatedAt` across a project's top-level sessions; tree.go:597-601 sorts active projects `LastActivity` desc). WS2 landed honest `CreatedAt`. The question: does the sidebar's project order *feel* right now — most-recently-touched project on top — or does a stale/quiet project float above a just-active one?
 
-**Files:** none expected (investigation). If evidence shows a wrong-order case, the fix folds into `cmd/serf-hub/internal/hubcore/tree.go` ordering.
+**Files:** none expected (investigation). If evidence shows a wrong-order case, the fix folds into `cmd/evener-hub/internal/hubcore/tree.go` ordering.
 
 - [ ] **Step 1: Build + launch a fresh hub against an isolated fake `$HOME`**
 
@@ -1458,7 +1458,7 @@ _~0–40 loc._
 
 WS5 removed the main MCP-fatal cause of buried-stderr HTTP 500s on spawn (a dead MCP server no longer kills the session). Re-check what spawn-failure surfaces remain now: does a genuinely bad spawn (missing binary, un-writable cwd, bad model id) surface a *legible* error in the web spawn flow, or does a raw 500 / silent hang still leak through?
 
-**Files:** none expected. Any fix folds into the spawn error path (`cmd/serf-hub/web_spawn.go` / the spawn handler) as a small follow-up.
+**Files:** none expected. Any fix folds into the spawn error path (`cmd/evener-hub/web_spawn.go` / the spawn handler) as a small follow-up.
 
 - [ ] **Step 1: Provoke the failure classes live**
 
@@ -1492,7 +1492,7 @@ _~0–40 loc._
 
 - [ ] `make test-short` and `make test-race` green across `GO_MODULES`.
 - [ ] `make lint` green (namingcheck included — verify any new field/const passes; the `TaskUpdatedParams`/`TaskUpdatedData` additions are snake_case on the wire, PascalCase in Go, no camelCase wire keys).
-- [ ] `cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` green.
+- [ ] `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` green.
 - [ ] `make generate` leaves `docs/appwire-protocol.md` unchanged (the T9 catalog entry already regenerated + committed).
 - [ ] Re-grep the repo for conflict markers and `go vet` the touched packages after the Track A rebase.
 - [ ] Both Investigate verdicts recorded (even if "no change").

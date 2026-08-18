@@ -136,7 +136,7 @@ must resolve and inject credentials before adapter construction:
 - `cmdutil.LoadClient`: load-or-seed; inject resolved credentials into the in-memory
   `Config`; always `NewFromProviders` (`hasConfig` always true). (1b already routes
   serve/run/launch-check/`/api/models` through `LoadClient`, so they inherit this.)
-- `cmd/serf-hub/main.go`: materialize `providers.toml` on startup when absent.
+- `cmd/evener-hub/main.go`: materialize `providers.toml` on startup when absent.
 - `internal/credentials`: `ResolveKey(name, type)` (name-first, type-env fallback);
   type-keyed file entries still work for default instances.
 - `llm/providers/openai/adapter.go`: instance factory restores org/project/chatgpt

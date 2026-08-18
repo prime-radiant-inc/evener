@@ -20,7 +20,7 @@ const (
 // audit passes as soon as CI invokes the aggregate `make lint`, which is what
 // the fix does; it still accepts a CI that names every family individually
 // through make, so the shape stays free while the list stays single-sourced.
-// A family whose command CI inlines by hand (`go run ./cmd/serf-namingcheck`
+// A family whose command CI inlines by hand (`go run ./cmd/evener-namingcheck`
 // instead of `make lint-naming`) counts as missing on purpose: an inlined copy
 // is the same silent drift one layer down. Kata wcch.
 func TestCIRunsEveryFamilyOfTheLintGate(t *testing.T) {

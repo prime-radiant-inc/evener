@@ -25,19 +25,19 @@ internal/appwire/optimistic_test.go               new     unit tests for the wra
 internal/appwire/appwiretest/scripted_transport.go    new     exported ScriptedTransport for external-package tests
 internal/appwire/appwiretest/scripted_transport_test.go  new  smoke test
 
-cmd/serf-tui/pending.go                           new     pendingCoordinator + pendingEntry; spinner glue; Msg types
-cmd/serf-tui/pending_test.go                      new     coordinator behavior unit tests
-cmd/serf-tui/hub_transcript_reducer.go            modify  chatMessage gets Pending/Failed/FailedReason + per-entry spinner reference
-cmd/serf-tui/composer_panel.go                    modify  render Pending/Failed states inline
-cmd/serf-tui/hub_model.go                         modify  wire pendingCoordinator to client; applyHubNotification → tryReconcile after reducer apply
-cmd/serf-tui/optimistic_test.go                   new     end-to-end wrapper unit tests (using ScriptedTransport)
+cmd/evener-tui/pending.go                           new     pendingCoordinator + pendingEntry; spinner glue; Msg types
+cmd/evener-tui/pending_test.go                      new     coordinator behavior unit tests
+cmd/evener-tui/hub_transcript_reducer.go            modify  chatMessage gets Pending/Failed/FailedReason + per-entry spinner reference
+cmd/evener-tui/composer_panel.go                    modify  render Pending/Failed states inline
+cmd/evener-tui/hub_model.go                         modify  wire pendingCoordinator to client; applyHubNotification → tryReconcile after reducer apply
+cmd/evener-tui/optimistic_test.go                   new     end-to-end wrapper unit tests (using ScriptedTransport)
 
-cmd/serf-hub/assets/style.css                     modify  .optimistic-pending / .optimistic-failed / .optimistic-retry / @keyframes optimistic-pulse
-cmd/serf-hub/assets/appwire.js                    modify  optimisticCall helper + SerfAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
-cmd/serf-hub/assets/pending.js                    new     SerfAppwirePending registry (DOM render + tryReconcile) — own IIFE module loaded before renderer
-cmd/serf-hub/assets/renderer.js                   modify  register pending registry with SerfAppwire; deliverNotification calls pending.tryReconcile after reducer dispatch
-cmd/serf-hub/templates/partials/workspace.html    modify  load assets/pending.js before renderer.js
-cmd/serf-hub/jstest/test-optimistic-rendering.js  new     wrapper unit tests with injected fake transport
+cmd/evener-hub/assets/style.css                     modify  .optimistic-pending / .optimistic-failed / .optimistic-retry / @keyframes optimistic-pulse
+cmd/evener-hub/assets/appwire.js                    modify  optimisticCall helper + SerfAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
+cmd/evener-hub/assets/pending.js                    new     SerfAppwirePending registry (DOM render + tryReconcile) — own IIFE module loaded before renderer
+cmd/evener-hub/assets/renderer.js                   modify  register pending registry with SerfAppwire; deliverNotification calls pending.tryReconcile after reducer dispatch
+cmd/evener-hub/templates/partials/workspace.html    modify  load assets/pending.js before renderer.js
+cmd/evener-hub/jstest/test-optimistic-rendering.js  new     wrapper unit tests with injected fake transport
 
 test/scenarios/web-steer-in-idle-fails-fast.md         new
 test/scenarios/web-steer-success-reconciles.md         new
@@ -159,7 +159,7 @@ EOF
 - Create: `internal/appwire/appwiretest/scripted_transport.go`
 - Create: `internal/appwire/appwiretest/scripted_transport_test.go`
 
-The package `internal/appwire` already has a private `memoryTransport` in its own `client_test.go`. We need an exported equivalent so `cmd/serf-tui` external-package tests can drive the client through a fake transport. Leaves the private fake alone.
+The package `internal/appwire` already has a private `memoryTransport` in its own `client_test.go`. We need an exported equivalent so `cmd/evener-tui` external-package tests can drive the client through a fake transport. Leaves the private fake alone.
 
 - [ ] **Step 1: Write the failing smoke test**
 
@@ -225,7 +225,7 @@ Create `internal/appwire/appwiretest/scripted_transport.go`:
 ```go
 // Package appwiretest exposes test helpers for driving appwire.Client
 // from external packages. The private memoryTransport in
-// internal/appwire's own _test.go cannot be reused from cmd/serf-tui,
+// internal/appwire's own _test.go cannot be reused from cmd/evener-tui,
 // so this package provides an equivalent with an exported API.
 package appwiretest
 
@@ -338,7 +338,7 @@ git add internal/appwire/appwiretest/
 git commit -m "$(cat <<'EOF'
 appwire: exported ScriptedTransport test helper
 
-External-package tests (cmd/serf-tui, cmd/serf-hub) need to drive
+External-package tests (cmd/evener-tui, cmd/evener-hub) need to drive
 appwire.Client through a fake transport. The private memoryTransport
 in client_test.go is package-scoped. Add an exported equivalent in
 internal/appwire/appwiretest with DeliverResponse, DeliverError, and
@@ -795,8 +795,8 @@ EOF
 ## Task 5: TUI `pendingCoordinator` (state + spinner + timeout)
 
 **Files:**
-- Create: `cmd/serf-tui/pending.go`
-- Create: `cmd/serf-tui/pending_test.go`
+- Create: `cmd/evener-tui/pending.go`
+- Create: `cmd/evener-tui/pending_test.go`
 
 The coordinator holds pending state and exposes:
 - `Register(method, text) PendingHandle` (satisfies `appwire.PendingCoordinator`)
@@ -806,7 +806,7 @@ The coordinator holds pending state and exposes:
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `cmd/serf-tui/pending_test.go`:
+Create `cmd/evener-tui/pending_test.go`:
 
 ```go
 package main
@@ -1013,14 +1013,14 @@ func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 - [ ] **Step 2: Run tests to confirm RED**
 
 ```bash
-go test ./cmd/serf-tui -run TestPendingCoordinator -count=1 -v
+go test ./cmd/evener-tui -run TestPendingCoordinator -count=1 -v
 ```
 
 Expected: FAIL — the package has no `pending.go` yet.
 
 - [ ] **Step 3: Implement the coordinator**
 
-Create `cmd/serf-tui/pending.go`:
+Create `cmd/evener-tui/pending.go`:
 
 ```go
 package main
@@ -1177,7 +1177,7 @@ func normalizePendingText(s string) string {
 - [ ] **Step 4: Run tests to confirm GREEN**
 
 ```bash
-go test ./cmd/serf-tui -run TestPendingCoordinator -count=1 -v
+go test ./cmd/evener-tui -run TestPendingCoordinator -count=1 -v
 ```
 
 Expected: PASS.
@@ -1185,7 +1185,7 @@ Expected: PASS.
 - [ ] **Step 5: Vet**
 
 ```bash
-go vet ./cmd/serf-tui/...
+go vet ./cmd/evener-tui/...
 ```
 
 Expected: clean.
@@ -1193,7 +1193,7 @@ Expected: clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/pending.go cmd/serf-tui/pending_test.go
+git add cmd/evener-tui/pending.go cmd/evener-tui/pending_test.go
 git commit -m "$(cat <<'EOF'
 tui: pendingCoordinator (state, timeouts, reconcile)
 
@@ -1214,13 +1214,13 @@ EOF
 ## Task 6: TUI: extend `chatMessage` + render pending/failed states
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_transcript_reducer.go`
-- Modify: `cmd/serf-tui/composer_panel.go` (only if pending visuals belong here — check first)
+- Modify: `cmd/evener-tui/hub_transcript_reducer.go`
+- Modify: `cmd/evener-tui/composer_panel.go` (only if pending visuals belong here — check first)
 
 - [ ] **Step 1: Find current chatMessage definition**
 
 ```bash
-grep -n "type chatMessage\|chatMessage struct" cmd/serf-tui/*.go
+grep -n "type chatMessage\|chatMessage struct" cmd/evener-tui/*.go
 ```
 
 Expected output identifies the file and line. The fields will look like `Kind`, `Text`, `ItemID`, `TurnIndex`, `Tool`. We're adding three:
@@ -1231,7 +1231,7 @@ Expected output identifies the file and line. The fields will look like `Kind`, 
 
 - [ ] **Step 2: Write the failing test**
 
-Append to `cmd/serf-tui/pending_test.go`:
+Append to `cmd/evener-tui/pending_test.go`:
 
 ```go
 func TestHubReducer_RendersPendingChatMessage(t *testing.T) {
@@ -1288,7 +1288,7 @@ func TestHubReducer_RemovesPendingOnConfirm(t *testing.T) {
 - [ ] **Step 3: Confirm RED**
 
 ```bash
-go test ./cmd/serf-tui -run TestHubReducer_RendersPendingChatMessage -count=1 -v
+go test ./cmd/evener-tui -run TestHubReducer_RendersPendingChatMessage -count=1 -v
 ```
 
 Expected: FAIL — Pending/Failed/Reason fields and helper methods don't exist.
@@ -1296,14 +1296,14 @@ Expected: FAIL — Pending/Failed/Reason fields and helper methods don't exist.
 - [ ] **Step 4: Find msgSteering constant or add it**
 
 ```bash
-grep -n "msgUser\|msgAssistant\|msgTool\|messageKind" cmd/serf-tui/*.go
+grep -n "msgUser\|msgAssistant\|msgTool\|messageKind" cmd/evener-tui/*.go
 ```
 
 If `msgSteering` doesn't exist (likely — STEERING is rendered differently today), add it to the existing `messageKind` enum. Locate the iota block and append `msgSteering`.
 
 - [ ] **Step 5: Extend chatMessage struct**
 
-Find the `chatMessage` struct (likely in `cmd/serf-tui/model.go` or similar) and add:
+Find the `chatMessage` struct (likely in `cmd/evener-tui/model.go` or similar) and add:
 
 ```go
 type chatMessage struct {
@@ -1327,7 +1327,7 @@ type chatMessage struct {
 
 - [ ] **Step 6: Add reducer helpers**
 
-Append to `cmd/serf-tui/hub_transcript_reducer.go`:
+Append to `cmd/evener-tui/hub_transcript_reducer.go`:
 
 ```go
 // appendPendingSteering renders an optimistic STEERING placeholder
@@ -1408,7 +1408,7 @@ The `fmt` import needs to be added if not present.
 - [ ] **Step 7: Confirm GREEN**
 
 ```bash
-go test ./cmd/serf-tui -run TestHubReducer_ -count=1 -v
+go test ./cmd/evener-tui -run TestHubReducer_ -count=1 -v
 ```
 
 Expected: PASS for all three new tests.
@@ -1418,7 +1418,7 @@ Expected: PASS for all three new tests.
 Find where chatMessage is rendered for the conversation pane (`composer_panel.go` is likely the wrong file; check `hub_render.go` or `model.go`):
 
 ```bash
-grep -n "msg.Kind == msgUser\|case msgUser\|msgAssistant.*Text\|Render.*chatMessage" cmd/serf-tui/*.go
+grep -n "msg.Kind == msgUser\|case msgUser\|msgAssistant.*Text\|Render.*chatMessage" cmd/evener-tui/*.go
 ```
 
 In the message-rendering switch statement, for each kind branch, wrap the visible text with the pending/failed prefix:
@@ -1443,8 +1443,8 @@ Run the TUI manually to eyeball it before moving on — though Task 12's scenari
 - [ ] **Step 9: Vet + tests**
 
 ```bash
-go vet ./cmd/serf-tui/...
-go test ./cmd/serf-tui -count=1
+go vet ./cmd/evener-tui/...
+go test ./cmd/evener-tui -count=1
 ```
 
 Expected: all pass.
@@ -1452,7 +1452,7 @@ Expected: all pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_transcript_reducer.go cmd/serf-tui/<the-render-file>.go cmd/serf-tui/pending_test.go cmd/serf-tui/model.go
+git add cmd/evener-tui/hub_transcript_reducer.go cmd/evener-tui/<the-render-file>.go cmd/evener-tui/pending_test.go cmd/evener-tui/model.go
 git commit -m "$(cat <<'EOF'
 tui: chatMessage gains Pending/Failed/Reason + reducer helpers
 
@@ -1473,12 +1473,12 @@ EOF
 ## Task 7: TUI: wire pendingCoordinator into hubModel + reconcile on notifications
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Modify: `cmd/serf-tui/pending_test.go` (add end-to-end test)
+- Modify: `cmd/evener-tui/hub_model.go`
+- Modify: `cmd/evener-tui/pending_test.go` (add end-to-end test)
 
 - [ ] **Step 1: Write the failing end-to-end test**
 
-Append to `cmd/serf-tui/pending_test.go` (or split into `cmd/serf-tui/optimistic_test.go`):
+Append to `cmd/evener-tui/pending_test.go` (or split into `cmd/evener-tui/optimistic_test.go`):
 
 ```go
 func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
@@ -1526,19 +1526,19 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 }
 ```
 
-If `triggerSteerForTest` doesn't exist, add it as a small test-only helper in `cmd/serf-tui/pending_test.go` that drives the same call hubModel.handleSessionForceSteer would issue.
+If `triggerSteerForTest` doesn't exist, add it as a small test-only helper in `cmd/evener-tui/pending_test.go` that drives the same call hubModel.handleSessionForceSteer would issue.
 
 - [ ] **Step 2: Confirm RED**
 
 ```bash
-go test ./cmd/serf-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable -count=1 -v
+go test ./cmd/evener-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable -count=1 -v
 ```
 
 Expected: FAIL — `m.pending` field doesn't exist; `client.SetPendingCoordinator` isn't called by hubModel; `triggerSteerForTest` may also be missing.
 
 - [ ] **Step 3: Add `pending` field to hubModel**
 
-Edit `cmd/serf-tui/hub_model.go`. Find the `hubModel` struct (around line 100-160) and add:
+Edit `cmd/evener-tui/hub_model.go`. Find the `hubModel` struct (around line 100-160) and add:
 
 ```go
 	// pending coordinates optimistic-rendering placeholders for
@@ -1660,7 +1660,7 @@ The exact event names and payload shapes must match what the hub emits. Verify b
 - [ ] **Step 7: Run the failing test**
 
 ```bash
-go test ./cmd/serf-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable -count=1 -v
+go test ./cmd/evener-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable -count=1 -v
 ```
 
 Expected: PASS.
@@ -1668,7 +1668,7 @@ Expected: PASS.
 - [ ] **Step 8: Run full TUI suite**
 
 ```bash
-go test ./cmd/serf-tui -count=1 -timeout 60s
+go test ./cmd/evener-tui -count=1 -timeout 60s
 ```
 
 Expected: all pass.
@@ -1676,7 +1676,7 @@ Expected: all pass.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/pending.go cmd/serf-tui/pending_test.go cmd/serf-tui/hub_root.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/pending.go cmd/evener-tui/pending_test.go cmd/evener-tui/hub_root.go
 git commit -m "$(cat <<'EOF'
 tui: wire pendingCoordinator into hubModel + reconcile pass
 
@@ -1700,19 +1700,19 @@ EOF
 ## Task 8: Web: CSS pulse + failed primitives + keyframe
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
+- Modify: `cmd/evener-hub/assets/style.css`
 
 - [ ] **Step 1: Eyeball — locate existing message styles**
 
 ```bash
-grep -n "\.user-message\|\.steering\|@keyframes search-hit-flash" cmd/serf-hub/assets/style.css
+grep -n "\.user-message\|\.steering\|@keyframes search-hit-flash" cmd/evener-hub/assets/style.css
 ```
 
 Note line numbers; the new rules go right after the search-hit-flash keyframe (~line 680) so they live with other animation primitives.
 
 - [ ] **Step 2: Add the CSS block**
 
-Append to `cmd/serf-hub/assets/style.css`:
+Append to `cmd/evener-hub/assets/style.css`:
 
 ```css
 /* Optimistic rendering: applied to any conversation entry that has
@@ -1754,7 +1754,7 @@ Append to `cmd/serf-hub/assets/style.css`:
 
 ```bash
 # CSS has no formal linter in the repo; eyeball the file:
-grep -n "optimistic" cmd/serf-hub/assets/style.css
+grep -n "optimistic" cmd/evener-hub/assets/style.css
 ```
 
 Expected: 7 matches (5 selectors + 1 keyframe name + 1 keyframe use inside `.optimistic-pending`).
@@ -1762,7 +1762,7 @@ Expected: 7 matches (5 selectors + 1 keyframe name + 1 keyframe use inside `.opt
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 hub-web: CSS primitives for optimistic-pending / -failed / -retry
 
@@ -1781,13 +1781,13 @@ EOF
 ## Task 9: Web: `SerfAppwirePending` registry module
 
 **Files:**
-- Create: `cmd/serf-hub/assets/pending.js`
-- Modify: `cmd/serf-hub/templates/partials/workspace.html` (load pending.js before renderer.js)
-- Create: `cmd/serf-hub/jstest/test-pending-registry.js`
+- Create: `cmd/evener-hub/assets/pending.js`
+- Modify: `cmd/evener-hub/templates/partials/workspace.html` (load pending.js before renderer.js)
+- Create: `cmd/evener-hub/jstest/test-pending-registry.js`
 
 - [ ] **Step 1: Write the failing jstest**
 
-Create `cmd/serf-hub/jstest/test-pending-registry.js`:
+Create `cmd/evener-hub/jstest/test-pending-registry.js`:
 
 ```js
 const fs = require("fs");
@@ -1887,14 +1887,14 @@ console.log("PASS test-pending-registry.js");
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
 ```
 
 Expected: FAIL — `pending.js` doesn't exist.
 
 - [ ] **Step 3: Implement pending.js**
 
-Create `cmd/serf-hub/assets/pending.js`:
+Create `cmd/evener-hub/assets/pending.js`:
 
 ```js
 // pending.js — optimistic-rendering registry for the web hub
@@ -2014,10 +2014,10 @@ Create `cmd/serf-hub/assets/pending.js`:
 
 - [ ] **Step 4: Load pending.js before renderer.js**
 
-Find the template that loads renderer.js (probably `cmd/serf-hub/templates/partials/workspace.html` or a layout partial):
+Find the template that loads renderer.js (probably `cmd/evener-hub/templates/partials/workspace.html` or a layout partial):
 
 ```bash
-grep -rn "renderer.js\|appwire.js" cmd/serf-hub/templates/ | head
+grep -rn "renderer.js\|appwire.js" cmd/evener-hub/templates/ | head
 ```
 
 Add `<script src="/assets/pending.js"></script>` before `<script src="/assets/renderer.js"></script>`.
@@ -2025,7 +2025,7 @@ Add `<script src="/assets/pending.js"></script>` before `<script src="/assets/re
 - [ ] **Step 5: Confirm GREEN**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
 ```
 
 Expected: all four `ok` lines, ending with `PASS test-pending-registry.js`.
@@ -2033,7 +2033,7 @@ Expected: all four `ok` lines, ending with `PASS test-pending-registry.js`.
 - [ ] **Step 6: Run full jstest suite**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all existing tests still pass.
@@ -2041,7 +2041,7 @@ Expected: all existing tests still pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/pending.js cmd/serf-hub/jstest/test-pending-registry.js cmd/serf-hub/templates/
+git add cmd/evener-hub/assets/pending.js cmd/evener-hub/jstest/test-pending-registry.js cmd/evener-hub/templates/
 git commit -m "$(cat <<'EOF'
 hub-web: SerfAppwirePending registry (DOM + reconcile)
 
@@ -2063,12 +2063,12 @@ EOF
 ## Task 10: Web: `optimisticCall` in SerfAppwire + wire the four methods
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/appwire.js`
-- Create: `cmd/serf-hub/jstest/test-optimistic-rendering.js`
+- Modify: `cmd/evener-hub/assets/appwire.js`
+- Create: `cmd/evener-hub/jstest/test-optimistic-rendering.js`
 
 - [ ] **Step 1: Write the failing wrapper unit test**
 
-Create `cmd/serf-hub/jstest/test-optimistic-rendering.js`:
+Create `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
 
 ```js
 const fs = require("fs");
@@ -2147,14 +2147,14 @@ function respondErrorTo(sock, id, code, message) {
 - [ ] **Step 2: Confirm RED**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: FAIL — `SerfAppwire.setPendingRegistry` doesn't exist.
 
 - [ ] **Step 3: Add optimisticCall + setPendingRegistry**
 
-Edit `cmd/serf-hub/assets/appwire.js`. Inside the IIFE, after the existing `request` function:
+Edit `cmd/evener-hub/assets/appwire.js`. Inside the IIFE, after the existing `request` function:
 
 ```js
   // Optimistic-rendering hook. The renderer registers a registry via
@@ -2226,7 +2226,7 @@ Add `setPendingRegistry` to the public exports at the bottom:
 - [ ] **Step 4: Confirm GREEN**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: PASS.
@@ -2234,7 +2234,7 @@ Expected: PASS.
 - [ ] **Step 5: Full jstest suite**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all pass.
@@ -2242,7 +2242,7 @@ Expected: all pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/appwire.js cmd/serf-hub/jstest/test-optimistic-rendering.js
+git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/jstest/test-optimistic-rendering.js
 git commit -m "$(cat <<'EOF'
 hub-web: optimisticCall wrap in SerfAppwire for start/steer/queue/drain
 
@@ -2262,12 +2262,12 @@ EOF
 ## Task 11: Web: `tryReconcile` inside `deliverNotification` + drain-special
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/jstest/test-optimistic-rendering.js` (add success-then-event, timeout, drain tests)
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/jstest/test-optimistic-rendering.js` (add success-then-event, timeout, drain tests)
 
 - [ ] **Step 1: Add failing tests**
 
-Append to `cmd/serf-hub/jstest/test-optimistic-rendering.js`:
+Append to `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
 
 ```js
 (async function test_steer_success_then_event_reconciles() {
@@ -2314,7 +2314,7 @@ Append to `cmd/serf-hub/jstest/test-optimistic-rendering.js`:
 - [ ] **Step 2: Confirm RED**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: PASS for the new tests (since tryReconcile is being called directly in the test). This actually confirms the registry works; the renderer-side hook is the missing piece.
@@ -2420,7 +2420,7 @@ function removeEntry(id) {
 - [ ] **Step 4: Confirm GREEN**
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: all PASS.
@@ -2428,7 +2428,7 @@ Expected: all PASS.
 - [ ] **Step 5: Full jstest run**
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: all pass.
@@ -2436,7 +2436,7 @@ Expected: all pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/pending.js cmd/serf-hub/jstest/test-optimistic-rendering.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/pending.js cmd/evener-hub/jstest/test-optimistic-rendering.js
 git commit -m "$(cat <<'EOF'
 hub-web: deliverNotification reconciles pending + drain-special
 

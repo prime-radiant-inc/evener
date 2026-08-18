@@ -42,24 +42,24 @@ linked worktree, net=on — the sole cell Landlock serves). Live feel-testing us
 the **`verify`** and **`e2e-scenario-testing`** skills. Escape-suite tests
 follow the repo's integration-gate convention (skip under `-short`; skip with a
 legible message when bwrap/kernel prerequisites are absent) — see
-`cmd/serf-hub/e2e_test.go:21-33`.
+`cmd/evener-hub/e2e_test.go:21-33`.
 
 **Anchors** (re-verify against the **post-M4 tree** before editing — M1–M4 have
 already added the flags, the config carrier, and the enforcement reads; these
 lines *will* have drifted):
-- `cmd/serf/main.go:168-198` `newRunFlagSet` (the `--sandbox`/`--sandbox-net`
+- `cmd/evener/main.go:168-198` `newRunFlagSet` (the `--sandbox`/`--sandbox-net`
   registrations land among these); `:200-204` `fs.Usage`; `:206` `printRunUsage`;
   `:235` `printLongFlagDefaults` — **auto-lists every registered flag via
   `fs.VisitAll`, so the flags already render in `serf --help`; M5 finalizes their
   usage strings, it does not add them to a curated list**; `:248`
   `printRunEnvVars` (add any `SERF_SANDBOX*` env var here if one exists).
-- `cmd/serf/serve.go:64-103` serve flag registrations; `:105-110` `fs.Usage` →
+- `cmd/evener/serve.go:64-103` serve flag registrations; `:105-110` `fs.Usage` →
   `fs.PrintDefaults()` (same auto-list); `:528` `printServeEnvVars`.
-- `cmd/serf/run.go:177` `env := execenv.NewLocalExecutionEnvironment(cfg.workDir)`
-  and `cmd/serf/serve.go:203` `env := execenv.NewLocalExecutionEnvironment(wd)` —
+- `cmd/evener/run.go:177` `env := execenv.NewLocalExecutionEnvironment(cfg.workDir)`
+  and `cmd/evener/serve.go:203` `env := execenv.NewLocalExecutionEnvironment(wd)` —
   the CLI→enforcement seam. Whatever guard M1–M4 used to keep the resolved policy
   from engaging on this live path is the single point M5 flips.
-- `cmd/serf-hub/sandbox_test.go:22-25` — the containment-invariant **tripwire
+- `cmd/evener-hub/sandbox_test.go:22-25` — the containment-invariant **tripwire
   pattern** (`sandboxOutOfRootSecret` planted above the allowed root; finding it
   in any output = a path-escape defect). The escape suite extends this idea.
 - Startup enforcement line: emitted by M3e (grep the post-M4 tree for the "one
@@ -96,10 +96,10 @@ to main after his sign-off.
 
 ## File Structure
 
-- `cmd/serf/main.go` (modify) — finalize `--sandbox`/`--sandbox-net` usage
+- `cmd/evener/main.go` (modify) — finalize `--sandbox`/`--sandbox-net` usage
   strings in `newRunFlagSet`; add any sandbox env var to `printRunEnvVars`.
-- `cmd/serf/serve.go` (modify) — same for the serve flag set + `printServeEnvVars`.
-- `cmd/serf/run.go` + `cmd/serf/serve.go` (modify, tiny) — the single live-flip
+- `cmd/evener/serve.go` (modify) — same for the serve flag set + `printServeEnvVars`.
+- `cmd/evener/run.go` + `cmd/evener/serve.go` (modify, tiny) — the single live-flip
   at the env-construction seam (`run.go:177` / `serve.go:203`).
 - `agent/sandbox/escape_test.go` (new, real-host-gated) — **the named
   adversarial escape deliverable**: drives a real sandboxed session end-to-end
@@ -126,7 +126,7 @@ to main after his sign-off.
 
 ## Task 1 — Expose the flags + the single live-flip
 
-**Files:** `cmd/serf/main.go`, `cmd/serf/serve.go`, `cmd/serf/run.go`.
+**Files:** `cmd/evener/main.go`, `cmd/evener/serve.go`, `cmd/evener/run.go`.
 (Land this **after** Tasks 2–4 are green and Jesse has signed off — exposure is
 the last thing to move.)
 

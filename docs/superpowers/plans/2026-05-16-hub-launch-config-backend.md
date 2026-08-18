@@ -4,9 +4,9 @@
 
 **Goal:** Build the hub-side layered launch-config resolver, credentials store, RPC surface, and spawn integration so that hub-launched `serf serve` daemons pick up the merged config from disk and per-launch overrides. UI work is in separate plans.
 
-**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.serf/credentials.toml`. The hub wires `serf/launch/*` and extends `serf/auth/*` to surface both via JSON-RPC. `cmd/serf-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[serf_launch]` shape.
+**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.serf/credentials.toml`. The hub wires `serf/launch/*` and extends `serf/auth/*` to surface both via JSON-RPC. `cmd/evener-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[serf_launch]` shape.
 
-**Tech Stack:** Go 1.21+, `github.com/BurntSushi/toml`, existing `internal/appwire` JSON-RPC framework, existing `cmd/serf-hub/appserver.HandleTyped` registration pattern.
+**Tech Stack:** Go 1.21+, `github.com/BurntSushi/toml`, existing `internal/appwire` JSON-RPC framework, existing `cmd/evener-hub/appserver.HandleTyped` registration pattern.
 
 **Spec:** `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
 
@@ -33,12 +33,12 @@
 **Modified files**
 
 - `internal/appwire/types.go` — add `LaunchConfigLayer`, `LaunchConfigResolved`, `RepoLaunchConfigStatus`, `LaunchConfigDiagnostic`, `MCPServerSpec`, `AuthListResponse`, `AuthApiKeySetParams`; extend `AuthStatusResponse` with `AuthModes`; add `Method*` and `Notify*` constants
-- `cmd/serf-hub/spawn.go` — `SpawnRequest`/`ResumeRequest` carry `Resolved`; `buildSpawnArgs` delegates to `launchconfig.ToArgs`; env via `launchconfig.ToEnv`; credential validation via `credentials.Resolver`
-- `cmd/serf-hub/app_rpc.go` — register `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`; thread `LaunchOverrides` through `ThreadStart`
-- `cmd/serf-hub/app_auth.go` — `hubAuthController` gains `List`, `ApiKeySet`, gains `credentials.Store` dependency, `Status`/`Logout` become provider-generic
-- `cmd/serf-hub/config.go` — drop `SerfLaunchConfig` and `Env` map; introduce `LaunchConfigGlobalPath` etc. accessors
-- `cmd/serf-hub/main.go` — construct `credentials.Store` + thread into hub config
-- `cmd/serf-hub/e2e_test.go` — exercise the resolved config end-to-end
+- `cmd/evener-hub/spawn.go` — `SpawnRequest`/`ResumeRequest` carry `Resolved`; `buildSpawnArgs` delegates to `launchconfig.ToArgs`; env via `launchconfig.ToEnv`; credential validation via `credentials.Resolver`
+- `cmd/evener-hub/app_rpc.go` — register `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`; thread `LaunchOverrides` through `ThreadStart`
+- `cmd/evener-hub/app_auth.go` — `hubAuthController` gains `List`, `ApiKeySet`, gains `credentials.Store` dependency, `Status`/`Logout` become provider-generic
+- `cmd/evener-hub/config.go` — drop `SerfLaunchConfig` and `Env` map; introduce `LaunchConfigGlobalPath` etc. accessors
+- `cmd/evener-hub/main.go` — construct `credentials.Store` + thread into hub config
+- `cmd/evener-hub/e2e_test.go` — exercise the resolved config end-to-end
 
 ---
 
@@ -2512,12 +2512,12 @@ git commit -m "launchconfig: wire-type adapters"
 ## Task 12 — Hub-side `serf/launch/*` RPC handlers
 
 **Files:**
-- Create: `cmd/serf-hub/app_launch.go`
-- Create: `cmd/serf-hub/app_launch_test.go`
+- Create: `cmd/evener-hub/app_launch.go`
+- Create: `cmd/evener-hub/app_launch_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
-`cmd/serf-hub/app_launch_test.go`:
+`cmd/evener-hub/app_launch_test.go`:
 
 ```go
 package main
@@ -2615,12 +2615,12 @@ func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 - [ ] **Step 2: Run (fails)**
 
 ```bash
-go test ./cmd/serf-hub/ -run TestLaunchController -v
+go test ./cmd/evener-hub/ -run TestLaunchController -v
 ```
 
 - [ ] **Step 3: Implement the controller**
 
-`cmd/serf-hub/app_launch.go`:
+`cmd/evener-hub/app_launch.go`:
 
 ```go
 package main
@@ -2757,7 +2757,7 @@ func IsCredentialEnvKey(key string) bool { return isCredentialEnvKey(key) }
 - [ ] **Step 4: Run tests**
 
 ```bash
-go test ./cmd/serf-hub/ -run TestLaunchController -v
+go test ./cmd/evener-hub/ -run TestLaunchController -v
 ```
 
 Expected: PASS.
@@ -2765,7 +2765,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_launch.go cmd/serf-hub/app_launch_test.go internal/launchconfig/merge.go
+git add cmd/evener-hub/app_launch.go cmd/evener-hub/app_launch_test.go internal/launchconfig/merge.go
 git commit -m "serf-hub: launch-config RPC handlers"
 ```
 
@@ -2774,20 +2774,20 @@ git commit -m "serf-hub: launch-config RPC handlers"
 ## Task 13 — Extend `serf/auth/*` with list + apiKey/set
 
 **Files:**
-- Modify: `cmd/serf-hub/app_auth.go`
-- Modify: `cmd/serf-hub/app_auth_test.go`
+- Modify: `cmd/evener-hub/app_auth.go`
+- Modify: `cmd/evener-hub/app_auth_test.go`
 
 - [ ] **Step 1: Inspect the existing controller signature**
 
 ```bash
-grep -n "newHubAuthController\|hubAuthController struct" cmd/serf-hub/app_auth.go
+grep -n "newHubAuthController\|hubAuthController struct" cmd/evener-hub/app_auth.go
 ```
 
 You'll see `newHubAuthController(launchEnv ...map[string]string)`. We'll add a `creds *credentials.Store` dependency.
 
 - [ ] **Step 2: Write the failing tests**
 
-Append to `cmd/serf-hub/app_auth_test.go`:
+Append to `cmd/evener-hub/app_auth_test.go`:
 
 ```go
 import (
@@ -2857,12 +2857,12 @@ func TestAuth_Status_AnthropicViaStore(t *testing.T) {
 - [ ] **Step 3: Run tests (fail)**
 
 ```bash
-go test ./cmd/serf-hub/ -run "TestAuth_List|TestAuth_ApiKeySet|TestAuth_Status_Anthropic" -v
+go test ./cmd/evener-hub/ -run "TestAuth_List|TestAuth_ApiKeySet|TestAuth_Status_Anthropic" -v
 ```
 
 - [ ] **Step 4: Extend the controller**
 
-In `cmd/serf-hub/app_auth.go`, replace the existing `hubAuthController` struct and constructor:
+In `cmd/evener-hub/app_auth.go`, replace the existing `hubAuthController` struct and constructor:
 
 ```go
 type hubAuthController struct {
@@ -3031,7 +3031,7 @@ Run `grep -n EmptyParams internal/appwire/types.go` first; only add if missing.
 - [ ] **Step 5: Run tests**
 
 ```bash
-go test ./cmd/serf-hub/ -v
+go test ./cmd/evener-hub/ -v
 ```
 
 Expected: PASS.
@@ -3039,7 +3039,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/app_auth.go cmd/serf-hub/app_auth_test.go internal/appwire/types.go
+git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go internal/appwire/types.go
 git commit -m "serf-hub: auth controller manages credentials store"
 ```
 
@@ -3048,13 +3048,13 @@ git commit -m "serf-hub: auth controller manages credentials store"
 ## Task 14 — Register new RPC handlers + emit notifications
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/main.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/main.go`
 
 - [ ] **Step 1: Find the dispatcher registration block**
 
 ```bash
-grep -n "MethodSerfAuthLogout\|MethodSerfAuthStatus" cmd/serf-hub/app_rpc.go
+grep -n "MethodSerfAuthLogout\|MethodSerfAuthStatus" cmd/evener-hub/app_rpc.go
 ```
 
 You'll see four `appserver.HandleTyped(...)` calls registering the existing serf/auth methods.
@@ -3126,7 +3126,7 @@ appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(c
 
 - [ ] **Step 3: Implement the notify helpers**
 
-At the bottom of `cmd/serf-hub/app_rpc.go`:
+At the bottom of `cmd/evener-hub/app_rpc.go`:
 
 ```go
 func notifyAuthUpdated(server appServerLike, provider, activeSource string) {
@@ -3146,14 +3146,14 @@ func notifyLaunchUpdated(server appServerLike, cwd, layer string) {
 
 `appServerLike` interface must include `Broadcast(method string, params any)` — add this near the existing dispatcher type if not present:
 ```bash
-grep -n "type appServerLike\|interface.*Broadcast" cmd/serf-hub/app_rpc.go
+grep -n "type appServerLike\|interface.*Broadcast" cmd/evener-hub/app_rpc.go
 ```
 If missing, add (or extend) the interface to surface `Broadcast`. If the existing server type already has Broadcast on it, no new interface needed — call `server.Broadcast(...)` directly with `server`'s concrete type.
 
 - [ ] **Step 4: Wire the credentials Store into main.go**
 
 ```bash
-grep -n "newHubAuthController" cmd/serf-hub/main.go cmd/serf-hub/app_rpc.go
+grep -n "newHubAuthController" cmd/evener-hub/main.go cmd/evener-hub/app_rpc.go
 ```
 
 At the construction site, switch to `newHubAuthControllerWithStore`:
@@ -3167,12 +3167,12 @@ if err != nil {
 authController := newHubAuthControllerWithStore(cfg.HubStateRoot, credsStore)
 ```
 
-(`cfg.HubStateRoot` is a new field — add it to `Config` in `cmd/serf-hub/config.go` defaulting to `$HOME/.serf`.)
+(`cfg.HubStateRoot` is a new field — add it to `Config` in `cmd/evener-hub/config.go` defaulting to `$HOME/.serf`.)
 
 - [ ] **Step 5: Run tests**
 
 ```bash
-go test ./cmd/serf-hub/ -v
+go test ./cmd/evener-hub/ -v
 ```
 
 Expected: PASS. Plus full build:
@@ -3183,7 +3183,7 @@ go build ./...
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/app_rpc.go cmd/serf-hub/main.go cmd/serf-hub/config.go
+git add cmd/evener-hub/app_rpc.go cmd/evener-hub/main.go cmd/evener-hub/config.go
 git commit -m "serf-hub: register launch + auth RPCs and notifications"
 ```
 
@@ -3192,18 +3192,18 @@ git commit -m "serf-hub: register launch + auth RPCs and notifications"
 ## Task 15 — Rewrite `spawn.go` to consume `launchconfig.Resolved`
 
 **Files:**
-- Modify: `cmd/serf-hub/spawn.go`
-- Modify: `cmd/serf-hub/spawn_test.go`
+- Modify: `cmd/evener-hub/spawn.go`
+- Modify: `cmd/evener-hub/spawn_test.go`
 
 - [ ] **Step 1: Inspect existing flow**
 
 ```bash
-grep -n "buildSpawnArgs\|buildSerfChildEnv\|validateProviderCredentials" cmd/serf-hub/spawn.go
+grep -n "buildSpawnArgs\|buildSerfChildEnv\|validateProviderCredentials" cmd/evener-hub/spawn.go
 ```
 
 - [ ] **Step 2: Write the failing test**
 
-Append to `cmd/serf-hub/spawn_test.go`:
+Append to `cmd/evener-hub/spawn_test.go`:
 
 ```go
 func TestBuildSpawnArgs_FromResolved(t *testing.T) {
@@ -3233,12 +3233,12 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 - [ ] **Step 3: Run (fails — SpawnRequest.Resolved doesn't exist)**
 
 ```bash
-go test ./cmd/serf-hub/ -run TestBuildSpawnArgs_FromResolved -v
+go test ./cmd/evener-hub/ -run TestBuildSpawnArgs_FromResolved -v
 ```
 
 - [ ] **Step 4: Rewrite SpawnRequest, ResumeRequest, buildSpawnArgs**
 
-Replace the existing types and functions in `cmd/serf-hub/spawn.go`:
+Replace the existing types and functions in `cmd/evener-hub/spawn.go`:
 
 ```go
 // SpawnRequest carries everything needed to spawn one `serf serve` child.
@@ -3355,7 +3355,7 @@ func validateProviderCredentials(provider string, store *credentials.Store) erro
 - [ ] **Step 6: Run tests + build**
 
 ```bash
-go test ./cmd/serf-hub/ -v
+go test ./cmd/evener-hub/ -v
 go build ./...
 ```
 
@@ -3364,7 +3364,7 @@ Expected: PASS + clean build.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/spawn.go cmd/serf-hub/spawn_test.go
+git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
 git commit -m "serf-hub: spawn.go consumes launchconfig.Resolved"
 ```
 
@@ -3373,20 +3373,20 @@ git commit -m "serf-hub: spawn.go consumes launchconfig.Resolved"
 ## Task 16 — Thread `LaunchOverrides` through ThreadStart
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go`
-- Modify: `cmd/serf-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
 
 - [ ] **Step 1: Find the ThreadStart handler**
 
 ```bash
-grep -n "Spawn(ctx, SpawnRequest{" cmd/serf-hub/app_rpc.go
+grep -n "Spawn(ctx, SpawnRequest{" cmd/evener-hub/app_rpc.go
 ```
 
 Around line 1268 you'll see the existing call.
 
 - [ ] **Step 2: Write the failing test**
 
-Append to `cmd/serf-hub/app_rpc_test.go`:
+Append to `cmd/evener-hub/app_rpc_test.go`:
 
 ```go
 func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
@@ -3466,7 +3466,7 @@ entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
 - [ ] **Step 4: Run tests**
 
 ```bash
-go test ./cmd/serf-hub/ -v
+go test ./cmd/evener-hub/ -v
 ```
 
 Expected: PASS.
@@ -3474,7 +3474,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/app_rpc.go cmd/serf-hub/app_rpc_test.go
+git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
 git commit -m "serf-hub: ThreadStart honors launchOverrides via Resolve"
 ```
 
@@ -3483,19 +3483,19 @@ git commit -m "serf-hub: ThreadStart honors launchOverrides via Resolve"
 ## Task 17 — Drop the old `[serf_launch]` schema and clean up config
 
 **Files:**
-- Modify: `cmd/serf-hub/config.go`
-- Modify: `cmd/serf-hub/config_test.go`
-- Modify: `cmd/serf-hub/main.go`
+- Modify: `cmd/evener-hub/config.go`
+- Modify: `cmd/evener-hub/config_test.go`
+- Modify: `cmd/evener-hub/main.go`
 
 - [ ] **Step 1: Find the obsolete fields**
 
 ```bash
-grep -n "SerfLaunchConfig\|SerfLaunch\b\|sse_ring_size" cmd/serf-hub/config.go
+grep -n "SerfLaunchConfig\|SerfLaunch\b\|sse_ring_size" cmd/evener-hub/config.go
 ```
 
 - [ ] **Step 2: Remove `SerfLaunchConfig` from `Config`**
 
-In `cmd/serf-hub/config.go`, remove the `SerfLaunchConfig` struct and the `SerfLaunch SerfLaunchConfig` field. Add the new `HubStateRoot` field:
+In `cmd/evener-hub/config.go`, remove the `SerfLaunchConfig` struct and the `SerfLaunch SerfLaunchConfig` field. Add the new `HubStateRoot` field:
 
 ```go
 type Config struct {
@@ -3530,7 +3530,7 @@ if cfg.HubStateRoot == "" {
 
 Run:
 ```bash
-go test ./cmd/serf-hub/ -run TestLoadConfig -v
+go test ./cmd/evener-hub/ -run TestLoadConfig -v
 ```
 
 Update any test that referenced `[serf_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.serf/launch.toml` and assert via the resolver.
@@ -3538,7 +3538,7 @@ Update any test that referenced `[serf_launch]` or `cfg.SerfLaunch.Env`. If thos
 - [ ] **Step 4: Update main.go to use HubStateRoot for everything**
 
 ```bash
-grep -n "newHubAuthController\|HubSpawner\|cfg\.SerfLaunch" cmd/serf-hub/main.go
+grep -n "newHubAuthController\|HubSpawner\|cfg\.SerfLaunch" cmd/evener-hub/main.go
 ```
 
 Wire `HubSpawner.StateRoot = cfg.HubStateRoot` and `HubSpawner.Creds = credsStore`.
@@ -3555,7 +3555,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/config.go cmd/serf-hub/config_test.go cmd/serf-hub/main.go
+git add cmd/evener-hub/config.go cmd/evener-hub/config_test.go cmd/evener-hub/main.go
 git commit -m "serf-hub: drop legacy [serf_launch] config, add hub_state_root"
 ```
 
@@ -3564,7 +3564,7 @@ git commit -m "serf-hub: drop legacy [serf_launch] config, add hub_state_root"
 ## Task 18 — End-to-end test
 
 **Files:**
-- Modify: `cmd/serf-hub/e2e_test.go`
+- Modify: `cmd/evener-hub/e2e_test.go`
 
 - [ ] **Step 1: Plan the e2e scenario**
 
@@ -3572,7 +3572,7 @@ A real hub instance with: a global launch.toml, a project hub-side launch.toml, 
 
 - [ ] **Step 2: Write the test**
 
-Append to `cmd/serf-hub/e2e_test.go`:
+Append to `cmd/evener-hub/e2e_test.go`:
 
 ```go
 func TestE2E_LayeredLaunchConfig(t *testing.T) {
@@ -3654,7 +3654,7 @@ context_strategy = "ooda"
 - [ ] **Step 3: Run**
 
 ```bash
-go test ./cmd/serf-hub/ -run TestE2E_LayeredLaunchConfig -v
+go test ./cmd/evener-hub/ -run TestE2E_LayeredLaunchConfig -v
 ```
 
 Expected: PASS.
@@ -3662,7 +3662,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/e2e_test.go
+git add cmd/evener-hub/e2e_test.go
 git commit -m "serf-hub: e2e test for layered launch config"
 ```
 
@@ -3671,11 +3671,11 @@ git commit -m "serf-hub: e2e test for layered launch config"
 ## Task 19 — Final cleanup and CHANGELOG / docs
 
 **Files:**
-- Modify: `cmd/serf-hub/README.md`
+- Modify: `cmd/evener-hub/README.md`
 
 - [ ] **Step 1: Update the README**
 
-In `cmd/serf-hub/README.md`, remove the section describing `[serf_launch]` and `[serf_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.serf/launch.toml`, `<project>/.serf/launch.toml`, `~/.serf/projects/<id>/launch.toml`, and `~/.serf/credentials.toml`. Reference the spec for details.
+In `cmd/evener-hub/README.md`, remove the section describing `[serf_launch]` and `[serf_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.serf/launch.toml`, `<project>/.serf/launch.toml`, `~/.serf/projects/<id>/launch.toml`, and `~/.serf/credentials.toml`. Reference the spec for details.
 
 Replace the existing example `hub.toml`:
 
@@ -3699,7 +3699,7 @@ go test ./... && go build ./...
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/README.md
+git add cmd/evener-hub/README.md
 git commit -m "serf-hub: README points at new launch-config layout"
 ```
 

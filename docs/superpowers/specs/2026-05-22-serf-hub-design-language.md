@@ -959,9 +959,9 @@ Per surface where layout depends on container width (not viewport), use containe
 - All token additions go in `style.css` `:root` blocks. Legacy aliases stay until migration completes.
 - Components live in `style.css`. No separate stylesheets — the file is large but readable, and HTMX swap targets benefit from a single cascade source.
 - Inline `style="..."` in templates is forbidden except for data-driven values (e.g., `.context-fill width:{{.X}}%`). Today's two `style="margin:0"` overrides are removed.
-- Naming follows existing conventions: kebab-case classes, camelCase/snake_case `data-*` attributes per the lint rules in `cmd/serf-namingcheck`.
+- Naming follows existing conventions: kebab-case classes, camelCase/snake_case `data-*` attributes per the lint rules in `cmd/evener-namingcheck`.
 - New components are added to this document **before** being implemented. This document is checked in alongside the implementation.
-- Both fonts are loaded from Google Fonts. If offline operation is needed, vendor the WOFF2 files into `cmd/serf-hub/assets/fonts/` and add `@font-face` declarations to `style.css` — the Google import is then a fallback.
+- Both fonts are loaded from Google Fonts. If offline operation is needed, vendor the WOFF2 files into `cmd/evener-hub/assets/fonts/` and add `@font-face` declarations to `style.css` — the Google import is then a fallback.
 
 ---
 

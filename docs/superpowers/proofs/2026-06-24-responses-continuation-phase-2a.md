@@ -11,10 +11,10 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 ## Evidence
 
 - `GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestConfigSnapshot_ConverterFidelity$' -count=1 -v`
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run '^$' -count=1`
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run '^(TestLaunchOptionSchema|TestMerge_ScalarPrecedence|TestLayerTOMLRoundTrip|TestFromWire|TestToWire|TestToArgs_AllFields)$' -count=1 -v`
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-tui/internal/launchconfig -run '^(TestApplyEdit_NewSchemaFields|TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable)$' -count=1 -v`
-- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-tui/internal/launchconfig -run '^TestSchemaRows' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run '^$' -count=1`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^(TestLaunchOptionSchema|TestMerge_ScalarPrecedence|TestLayerTOMLRoundTrip|TestFromWire|TestToWire|TestToArgs_AllFields)$' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener-tui/internal/launchconfig -run '^(TestApplyEdit_NewSchemaFields|TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable)$' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/evener-tui/internal/launchconfig -run '^TestSchemaRows' -count=1 -v`
 - `GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory' -count=1 -v`
 - `git diff --check`
 

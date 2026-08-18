@@ -2,7 +2,7 @@
 
 Date: 2026-06-17
 Status: Draft for Jesse's review. **No implementation** — this is a design/feasibility doc.
-Scope: the Serf web hub (`cmd/serf-hub`).
+Scope: the Serf web hub (`cmd/evener-hub`).
 
 ## What we're trying to do
 
@@ -58,7 +58,7 @@ realistic implementation options, and recommends a phased plan.
 important fact for this design.
 
 - It is a plain object literal, not a class:
-  `const SerfRenderer = { init(conversationEl) { ... } }` — `cmd/serf-hub/assets/renderer.js:64`,
+  `const SerfRenderer = { init(conversationEl) { ... } }` — `cmd/evener-hub/assets/renderer.js:64`,
   exported once as `window.SerfRenderer = SerfRenderer;` — `renderer.js:3596`.
 - Its session state lives directly on that one object: `this.conversation = conversationEl;
   this.sessionId = conversationEl.dataset.sessionId;` — `renderer.js:96-97`. A second `init()`
@@ -84,10 +84,10 @@ the renderer singleton is the *only* hard blocker to running two sessions on one
 ### Routing / page model
 - `/s/<id>` (no `HX-Request`) serves the **full app shell**, parameterizing the workspace region:
   `ExecuteTemplate(w, "app", {"WorkspaceURL": "/_partials/s/" + id + "/workspace"})` —
-  `cmd/serf-hub/web_workspace.go:44` (inside `handleSession`, the `/s/<id>` router at
+  `cmd/evener-hub/web_workspace.go:44` (inside `handleSession`, the `/s/<id>` router at
   `web_workspace.go:23`). So a session URL = app shell + the one workspace partial.
 - The app shell has exactly **one** workspace region: `<main id="workspace" hx-get="{{.WorkspaceURL}}"
-  hx-trigger="load" hx-swap="innerHTML">` — `cmd/serf-hub/templates/app.html:29-33`.
+  hx-trigger="load" hx-swap="innerHTML">` — `cmd/evener-hub/templates/app.html:29-33`.
 - The workspace partial renders a single conversation: `<div class="conversation" id="conversation"
   data-session-id="{{.ID}}" data-cwd="{{.WorkingDir}}" data-home="{{.HomeDir}}">` —
   `templates/partials/workspace.html:37-43`.
@@ -97,10 +97,10 @@ the renderer singleton is the *only* hard blocker to running two sessions on one
   subagent variant is at `sidebar.html:188-197`). This is the **single seam** through which all
   sessions are opened today.
 - All internal partials are served under `/_partials/` and gated to `HX-Request: true` so they
-  can't be navigated to directly — `cmd/serf-hub/web.go:181-210`.
+  can't be navigated to directly — `cmd/evener-hub/web.go:181-210`.
 
 ### Layout / CSS
-- `body.app` is **flexbox row**: `display: flex` — `cmd/serf-hub/assets/style.css:474`. Two
+- `body.app` is **flexbox row**: `display: flex` — `cmd/evener-hub/assets/style.css:474`. Two
   children: `#sidebar { width: 260px; flex-shrink: 0 }` — `style.css:477` and
   `#workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex;
   flex-direction: column; overflow: hidden }` — `style.css:478`.
@@ -117,7 +117,7 @@ the renderer singleton is the *only* hard blocker to running two sessions on one
   divider would be net-new (mousedown/move/up handler, persisted width).
 
 ### Realtime transport (already multi-session-capable)
-- **One WebSocket per page.** Module-level `let ws = null` — `cmd/serf-hub/assets/appwire.js:26`;
+- **One WebSocket per page.** Module-level `let ws = null` — `cmd/evener-hub/assets/appwire.js:26`;
   opened once via `new WebSocket(rpcURL())` — `appwire.js:46`; `rpcURL()` points at `/rpc`
   — `appwire.js:39`. Server route `mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)` —
   `web.go:115`; one `Connection` per socket — `internal/appserver/websocket.go:31`.
@@ -129,7 +129,7 @@ the renderer singleton is the *only* hard blocker to running two sessions on one
   `appwire.js:313-314`; wire fields `Subscribe` / `ReplaceSubscription` on `ThreadReadParams` —
   `appwire/types.go:381-382`. The server honors **both**: `if subscribeParams.ReplaceSubscription
   { appserver.ReplaceSubscriptions(...) } else { appserver.Subscribe(...) }` —
-  `cmd/serf-hub/app_rpc.go:145-148` and `:170-173`.
+  `cmd/evener-hub/app_rpc.go:145-148` and `:170-173`.
 - **Notifications are tagged by thread and fan out to all handlers.** Server
   `Broadcast(threadID, method, params)` to every subscribed connection —
   `internal/appserver/server.go:62-74`; client dispatches each notification to every registered
@@ -165,7 +165,7 @@ singleton + its global UI state.
 ### Documents — what's reachable today vs. needs building
 | Document type | Status today | Evidence |
 |---|---|---|
-| **User-submitted image** (from a session transcript) | **Reachable** | `/s/<id>/images/<sha>` serves sha-addressed image bytes by re-scanning the transcript — `cmd/serf-hub/image_serve.go:29-57`, routed in `handleSession` at `web_workspace.go:95-97`. Full-screen lightbox already exists — `renderer-format.js:142-220`. |
+| **User-submitted image** (from a session transcript) | **Reachable** | `/s/<id>/images/<sha>` serves sha-addressed image bytes by re-scanning the transcript — `cmd/evener-hub/image_serve.go:29-57`, routed in `handleSession` at `web_workspace.go:95-97`. Full-screen lightbox already exists — `renderer-format.js:142-220`. |
 | **Diff** (from an edit/write/apply_patch tool call) | **Reachable as tool output** | Client diff renderer `renderDiff()` / `diffRenderer()` with `+N −N` stats and expand — `renderer-tools.js:22-43`, `:457-541`. There is **no** "diff an arbitrary pair of files" path. |
 | **Markdown** (assistant text) | **Reachable as message content** | `window.marked.parse(...)` renders assistant text — `renderer.js` (marked usage), engine `assets/marked.min.js`. There is **no** "render an arbitrary `.md` file" path. |
 | **Arbitrary repo file** (`.go`, `.md`, etc. from the session cwd) | **Needs building** | `data-cwd`/`data-home` are on `#conversation` — `workspace.html:42-43` — but **no HTTP endpoint serves repo files.** `/assets/` only serves embedded UI assets — `web.go:112`. Needs a new `/doc` route (and, for **remote** sessions, a file-read RPC — see below). |
@@ -256,7 +256,7 @@ document-global state (below) live in **separate `document` contexts** and never
   `hubedge.AuthGuard` at `web.go:146`. Same-origin iframes inherit cookies, so auth "just works"
   for same-origin.
 - **⚠ HARD PREREQUISITE — CSP currently forbids ALL framing.** The CSP middleware sets
-  `frame-ancestors 'none'` — `cmd/serf-hub/internal/httpsec/httpsec.go:35` (asserted by
+  `frame-ancestors 'none'` — `cmd/evener-hub/internal/httpsec/httpsec.go:35` (asserted by
   `httpsec_test.go:41`), and there is **no** `frame-src`/`child-src` directive (so framed
   sub-resources fall back to `default-src 'self'`). `frame-ancestors 'none'` means the hub's own
   pages **cannot be embedded in any iframe, including same-origin** — so **Option A does not work
@@ -326,7 +326,7 @@ but everything in the list above must be re-scoped to a root element/namespace.
 
 **Effort/risk:** large. Realistically **~1500–2500 LOC** across renderer.js, renderer-panels.js,
 renderer-format.js, plus a layout/composer rework and a big test pass (the jstest suite asserts
-much of this singleton behavior — `cmd/serf-hub/jstest/test-renderer*.js`,
+much of this singleton behavior — `cmd/evener-hub/jstest/test-renderer*.js`,
 `test-appwire-*.js`). High regression risk on the most-used surface. Not an MVP.
 
 ### Option C — document-only / read-only reference pane (lightest)

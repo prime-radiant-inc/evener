@@ -66,7 +66,7 @@ type threadEnvelope struct {
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
-// reports. cmd/serf/serve.go implements it over the running agent.Session.
+// reports. cmd/evener/serve.go implements it over the running agent.Session.
 //
 // The bridge samples it at the moments those values change -- never on a read.
 // That is the whole point of the interface: it collapses sixteen separately
@@ -78,7 +78,7 @@ type threadEnvelope struct {
 // sampling runs on the authoritative consumer's drain goroutine, so a sample
 // that waits on a lock a session emitter holds wedges both (BridgeEvent's LOCK
 // RULE note has the full argument). What stops that is the type on the other
-// side of the seam: cmd/serf's implementation reaches the session as
+// side of the seam: cmd/evener's implementation reaches the session as
 // agent.EnvelopeSampling, so a new value has to be declared there, where the
 // rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {

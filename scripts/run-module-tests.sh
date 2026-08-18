@@ -40,7 +40,7 @@ ROOT_FULL=${ROOT_FULL:-0}
 # the frontend directory is absent so this script still works in a checkout
 # without it.
 WEB=${WEB:-1}
-WEB_DIR=${WEB_DIR:-cmd/serf-hub/frontend}
+WEB_DIR=${WEB_DIR:-cmd/evener-hub/frontend}
 [ -d "$WEB_DIR" ] || WEB=0
 
 if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
@@ -92,7 +92,7 @@ done
 # user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time
 # doubles in scheduler churn — and at 32 a test's reported elapsed becomes mostly
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
-# cost ranking derived from it useless. See cmd/serf-dev/agentshards.go.
+# cost ranking derived from it useless. See cmd/evener-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
@@ -119,7 +119,7 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 # SERF_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
 # (merge-approval-gate's preflight) when it classified a sandbox capability as
 # blocked. Applied to the ROOT module ONLY: the known test-name patterns
-# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/serf-hub and cmd/serf-tui,
+# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/evener-hub and cmd/evener-tui,
 # both part of root, and agent/session_escalation_e2e_test.go has unrelated
 # TestE2E_*-named tests of its own - unioning the pattern into every module
 # would silently skip those too. See gate-surface-lib.sh's
@@ -299,7 +299,7 @@ run_module() {
 		run_root_package_list "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
-				primeradiant.com/evener/cmd/serf-fuzzcov|primeradiant.com/evener/cmd/serf-fuzz-harvest)
+				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
 					continue
 					;;
 			esac
@@ -332,7 +332,7 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/serf-dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do

@@ -1,7 +1,7 @@
 # tui-goal-set-and-complete: set a /goal from the TUI and watch it drive to completion
 
 **What this covers**: the `/goal` objective engine on the serf-tui surface
-(branch `goal-objective-engine`; `cmd/serf-tui/hub_commands.go` `runHubGoal`,
+(branch `goal-objective-engine`; `cmd/evener-tui/hub_commands.go` `runHubGoal`,
 command registered in `hub_command_registry.go` as `/goal`, header chip in
 `hub_session_view.go:60`). The TUI counterpart to
 `web-goal-set-and-complete.md`. Verifies:
@@ -28,9 +28,9 @@ command and the header chip are wired to it.
   Setup checklist:
   ```bash
   run=$(mktemp -d -t serf-e2e-goaltui-XXXXXX)
-  go build -o "$run/serf-hub" ./cmd/serf-hub
-  go build -o "$run/serf"     ./cmd/serf
-  go build -o "$run/serf-tui" ./cmd/serf-tui
+  go build -o "$run/serf-hub" ./cmd/evener-hub
+  go build -o "$run/serf"     ./cmd/evener
+  go build -o "$run/serf-tui" ./cmd/evener-tui
   "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do

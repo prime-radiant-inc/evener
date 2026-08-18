@@ -129,7 +129,7 @@ bottom composer).
 ### 6.1 Layout
 
 ```
-cmd/serf-hub/frontend/
+cmd/evener-hub/frontend/
   package.json  package-lock.json  vite.config.ts  tsconfig.json
   index.html
   src/
@@ -276,12 +276,12 @@ Everything else — relay, subscriptions, methods, notifications, REST keep-list
 
 ## 10. Deletion wave (the last milestone, one commit series)
 
-Delete: `cmd/serf-hub/templates/` (all), `cmd/serf-hub/assets/*.js` (all, including vendored
-htmx/marked), `assets/style.css`, `cmd/serf-hub/jstest/`, the htmx fragment routes
+Delete: `cmd/evener-hub/templates/` (all), `cmd/evener-hub/assets/*.js` (all, including vendored
+htmx/marked), `assets/style.css`, `cmd/evener-hub/jstest/`, the htmx fragment routes
 (`/_partials/*`), the `/s/{id}/send|steer|queue|drain-as-steer|promote-queued|cancel-queued`
 form-POST handlers (browser uses AppWire; `/api/sessions/{ref}/send` stays for the TUI), the
 inline-script CSP exemption, `SERF_HUB_ASSETS_DIR`, and every `web_*.go` block that existed only
-to render or serve the above. Update `docs/serf-hub-web-routing.md`, `cmd/serf-hub/README.md`,
+to render or serve the above. Update `docs/serf-hub-web-routing.md`, `cmd/evener-hub/README.md`,
 `docs/web-ui/*` to describe the new world. `git grep htmx` returns nothing when this lands.
 
 ## 11. Risks

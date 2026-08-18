@@ -1,7 +1,7 @@
 # ask-tui-answer: TUI attaches to an awaiting session — chip, keypress-only overlay, prose also answers
 
 **What this covers**: spec §8 row `ask-tui-answer.md` — the TUI's "lens rule" (§6.2): every
-overlay in `cmd/serf-tui/` opens from a keypress and never auto-traps focus, `Esc` defers
+overlay in `cmd/evener-tui/` opens from a keypress and never auto-traps focus, `Esc` defers
 without discarding answers, and — because the composer is never put into a special
 answer-vs-steer mode — typing an ordinary reply resolves the question exactly like
 submitting through the overlay does.
@@ -25,7 +25,7 @@ submitting through the overlay does.
 - This card adds `serf-tui` to that recipe's binaries — into the same run directory, never
   a fixed `/tmp` name a second concurrent build would overwrite mid-run (kata `k2rx`):
   ```bash
-  go build -o "$run/serf-tui" ./cmd/serf-tui
+  go build -o "$run/serf-tui" ./cmd/evener-tui
   ```
 - `tmux` available.
 
@@ -125,7 +125,7 @@ submitting through the overlay does.
    done
    echo "state=$state"
    tmux capture-pane -t serf-ask-tui -p | grep -E "question waiting" && echo "STILL WAITING (unexpected)" || echo "chip cleared"
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:4
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:4
    ```
 
 ## Expected

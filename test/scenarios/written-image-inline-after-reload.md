@@ -5,9 +5,9 @@
 thumbnail inline under its own row while the turn is live, and the SAME
 thumbnail is reconstructed after a reload — because the hub re-derives the
 file-backed descriptor from the call's own `file_path` argument on both paths:
-live via `enrichOutputImageNotification` (`cmd/serf-hub/output_images.go#enrichOutputImageNotification`)
+live via `enrichOutputImageNotification` (`cmd/evener-hub/output_images.go#enrichOutputImageNotification`)
 and on reload via `enrichThreadFileBackedOutputImages`
-(`cmd/serf-hub/app_threadread.go#enrichThreadFileBackedOutputImages`, called from `app_rpc.go:210`). If
+(`cmd/evener-hub/app_threadread.go#enrichThreadFileBackedOutputImages`, called from `app_rpc.go:210`). If
 either half regresses, the image appears once and never again — the exact
 regression this card exists for.
 

@@ -62,10 +62,10 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 	},
 	"scripts/gate-surface-lib.sh": {
 		// A comment naming where the fixed path actually lives —
-		// cmd/serf-gate-probe's own default — to explain why the git-cache
+		// cmd/evener-gate-probe's own default — to explain why the git-cache
 		// skip pattern is empty (kata 5gvk's capability preflight). This
 		// script neither names the path for a run to use nor creates it.
-		"/tmp/git-cache path is cmd/serf-gate-probe's own default, which the",
+		"/tmp/git-cache path is cmd/evener-gate-probe's own default, which the",
 	},
 	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
 	// script has no prose to warn in: this is a script ABOUT the debris in
@@ -244,7 +244,7 @@ func scenarioNamesAFixedTmpPath(line string) bool {
 // for).
 func TestScenarioFixedTmpPathPatternMatchesTheShapesItClaims(t *testing.T) {
 	fixed := []string{
-		"- Built serf binary (`go build -o /tmp/serf ./cmd/serf` if absent).",
+		"- Built serf binary (`go build -o /tmp/serf ./cmd/evener` if absent).",
 		"   (`cp \"$JOBS\" /tmp/jobs-before-restart.jsonl`) and note the last",
 		`   /tmp/serf-doctor jobs "$SID" --state-dir "$SCR"`,
 		`   tmux capture-pane -t "$TMUX_SESSION" -p > /tmp/pane-pending.txt`,
@@ -258,7 +258,7 @@ func TestScenarioFixedTmpPathPatternMatchesTheShapesItClaims(t *testing.T) {
 	}
 	perRun := []string{
 		"run=$(mktemp -d -t serf-e2e-XXXXXX)",
-		`go build -o "$run/serf-doctor" ./cmd/serf-doctor`,
+		`go build -o "$run/serf-doctor" ./cmd/evener-doctor`,
 		"WORK=$(mktemp -d /tmp/serf-hook-scenario.XXXXXX)",
 		"  `read /tmp/serf-tui-imgpath-XXXX: is a directory`; a harmless",
 		"- The run directory mktemp made under /tmp holds every artifact.",

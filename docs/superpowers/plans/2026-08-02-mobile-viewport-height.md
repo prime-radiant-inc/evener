@@ -18,19 +18,19 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/frontend/src/shell/AppShell.module.css`: own the shared viewport-height correction.
-- Modify `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`: pin fallback and override ordering in a deterministic source-level test.
-- Create `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/case.json`: define a mobile browser case and loaded styles.
-- Create `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/harness.html`: reproduce the complete shared height chain with session and non-session fixtures.
-- Create `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/assert.mjs`: assert shell, pane, footer, and document bottoms stay within the viewport.
+- Modify `cmd/evener-hub/frontend/src/shell/AppShell.module.css`: own the shared viewport-height correction.
+- Modify `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`: pin fallback and override ordering in a deterministic source-level test.
+- Create `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/case.json`: define a mobile browser case and loaded styles.
+- Create `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/harness.html`: reproduce the complete shared height chain with session and non-session fixtures.
+- Create `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/assert.mjs`: assert shell, pane, footer, and document bottoms stay within the viewport.
 
 ---
 
 ### Task 1: Pin and Implement the Shared Shell Height
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx:1134-1148`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.module.css:1-6`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx:1134-1148`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.module.css:1-6`
 
 **Interfaces:**
 - Consumes: the existing `.shell` CSS-module class rendered by `AppShell.tsx`.
@@ -59,7 +59,7 @@ test("mobile: the shared shell follows the visible viewport while retaining a vh
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/AppShell.test.tsx -t "shared shell follows the visible viewport"
 ```
 
@@ -86,7 +86,7 @@ Add a short comment explaining that `100vh` is the fallback and `100dvh` follows
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/AppShell.test.tsx -t "shared shell follows the visible viewport"
 ```
 
@@ -97,7 +97,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npx vitest run src/shell/AppShell.test.tsx
 ```
 
@@ -106,9 +106,9 @@ Expected: PASS with no failed tests.
 ### Task 2: Add a Full-Height Browser Regression Guard
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/case.json`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/harness.html`
-- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/assert.mjs`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/case.json`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/harness.html`
+- Create: `cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height/assert.mjs`
 
 **Interfaces:**
 - Consumes: the `.shell` and `.content` rules from `AppShell.module.css`, `.host`/`.body` rules from `StackHost.module.css`, and `.pane`/`.body`/`.footer` rules from `panescaffold.module.css`.
@@ -170,7 +170,7 @@ Return the result shape required by the existing layoutguard runner.
 Temporarily remove `height: 100dvh` from `AppShell.module.css`, run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard -- mobile-shell-viewport-height
 ```
 
@@ -181,7 +181,7 @@ Expected: FAIL naming the document, shell, pane, or footer bottom. Restore `heig
 Run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm run layoutguard -- mobile-shell-viewport-height
 ```
 
@@ -199,7 +199,7 @@ Expected: PASS for both session and non-session fixtures.
 - [ ] **Step 1: Run frontend verification**
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm test
 npm run layoutguard
 npm run spawnguard
@@ -213,9 +213,9 @@ Expected: every command exits 0. Read and fix all warnings or failures.
 
 ```bash
 git diff --check
-git diff -- cmd/serf-hub/frontend/src/shell/AppShell.module.css \
-  cmd/serf-hub/frontend/src/shell/AppShell.test.tsx \
-  cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height
+git diff -- cmd/evener-hub/frontend/src/shell/AppShell.module.css \
+  cmd/evener-hub/frontend/src/shell/AppShell.test.tsx \
+  cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height
 ```
 
 Confirm the change stays within the approved scope and does not alter composer, StackHost, PaneScaffold, or document overflow rules.
@@ -224,9 +224,9 @@ Confirm the change stays within the approved scope and does not alter composer, 
 
 ```bash
 git add \
-  cmd/serf-hub/frontend/src/shell/AppShell.module.css \
-  cmd/serf-hub/frontend/src/shell/AppShell.test.tsx \
-  cmd/serf-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height
+  cmd/evener-hub/frontend/src/shell/AppShell.module.css \
+  cmd/evener-hub/frontend/src/shell/AppShell.test.tsx \
+  cmd/evener-hub/frontend/scripts/layoutguard/cases/mobile-shell-viewport-height
 git commit -m "fix(webui): fit mobile shell to visible viewport"
 ```
 
@@ -235,7 +235,7 @@ git commit -m "fix(webui): fit mobile shell to visible viewport"
 Inspect running processes and repository documentation or scripts:
 
 ```bash
-pgrep -af 'serf-hub|cmd/serf-hub'
+pgrep -af 'serf-hub|cmd/evener-hub'
 rg -n "restart.*hub|serf-hub.*restart|launchctl|systemctl" README.md docs Makefile scripts cmd -g '!**/node_modules/**'
 ```
 

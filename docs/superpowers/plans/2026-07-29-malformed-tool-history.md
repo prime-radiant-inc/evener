@@ -581,7 +581,7 @@ no tool or result can follow a failed assistant append."
 Run:
 
 ```bash
-go build -o /tmp/serf-doctor-malformed-tool-history ./cmd/serf-doctor
+go build -o /tmp/serf-doctor-malformed-tool-history ./cmd/evener-doctor
 /tmp/serf-doctor-malformed-tool-history locate 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34'
 /tmp/serf-doctor-malformed-tool-history transcript 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --format outline --range 3068-3073
 /tmp/serf-doctor-malformed-tool-history apilog 'proj:Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa:033wtttaNuBna9dXsZMO34' --errors
@@ -643,7 +643,7 @@ Expected: both files have the same line count; doctor parses the complete transc
 Run the patched branch directly against the repaired bucket:
 
 ```bash
-go run ./cmd/serf --resume 033wtttaNuBna9dXsZMO34 --state-dir /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa --dir /Users/jesse/prime-radiant/toil-suite/serf 'Continue from the latest user request.'
+go run ./cmd/evener --resume 033wtttaNuBna9dXsZMO34 --state-dir /Users/jesse/.local/state/serf/projects/Users-jesse-prime-radiant-toil-suite-serf-uo4YId7isa --dir /Users/jesse/prime-radiant/toil-suite/serf 'Continue from the latest user request.'
 ```
 
 Expected: the session accepts the message without `tool_call_id is not found`. Re-run:

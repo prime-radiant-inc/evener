@@ -10,14 +10,14 @@ of waiting for the next one. This scenario exercises the queue
 + drain round trip against a real model.
 
 The wiring lives in:
-- `cmd/serf-tui/composer_panel.go:hubComposerModeQueue` —
+- `cmd/evener-tui/composer_panel.go:hubComposerModeQueue` —
   footer hint advertises `ctrl+s: send as steer` whenever the
   source also has the `Steer` capability.
-- `cmd/serf-tui/hub_model.go:handleSessionForceSteer` — picks
+- `cmd/evener-tui/hub_model.go:handleSessionForceSteer` — picks
   one of three branches: (a) drain only, (b) drain + composer
   via `sendHubQueueThenDrain`, or (c) no-op banner when both
   queue and composer are empty.
-- `cmd/serf-tui/queue_send.go:sendHubQueueThenDrain` — chains
+- `cmd/evener-tui/queue_send.go:sendHubQueueThenDrain` — chains
   `client.TurnQueue` then `client.TurnDrainAsSteer` inside one
   Bubble Tea command so the daemon sees them strictly in order.
 

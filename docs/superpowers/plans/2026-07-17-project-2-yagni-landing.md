@@ -245,9 +245,9 @@ and why provider behavior is unchanged.
 - Test: `llm/apilog_lock_test.go`
 - Modify: `cmdutil/api_logging.go`
 - Test: `cmdutil/api_logging_test.go`
-- Modify only resume attachment seams in: `cmd/serf/run.go`,
-  `cmd/serf/serve.go`
-- Test: `cmd/serf/run_test.go`, `cmd/serf/serve_test.go`, and a narrowly named
+- Modify only resume attachment seams in: `cmd/evener/run.go`,
+  `cmd/evener/serve.go`
+- Test: `cmd/evener/run_test.go`, `cmd/evener/serve_test.go`, and a narrowly named
   resume-ownership integration test if needed
 
 **Scope lock:** This task owns file open/lock/recovery/append/close and eager
@@ -326,7 +326,7 @@ existing session, attempt `--resume`, and assert:
 Run:
 
 ```sh
-go test ./cmd/serf -run 'Test(Run|Serve).*Resume.*Running|Test.*ResumeWith.*Lock' -count=1
+go test ./cmd/evener -run 'Test(Run|Serve).*Resume.*Running|Test.*ResumeWith.*Lock' -count=1
 ```
 
 Confirm RED because attachment cannot reserve a session today.
@@ -343,8 +343,8 @@ Confirm RED because attachment cannot reserve a session today.
 Run focused tests until GREEN, then:
 
 ```sh
-go test ./cmd/serf ./cmdutil ./llm -count=1
-go test -race ./cmd/serf ./cmdutil ./llm -count=1
+go test ./cmd/evener ./cmdutil ./llm -count=1
+go test -race ./cmd/evener ./cmdutil ./llm -count=1
 GOOS=linux GOARCH=amd64 go test ./llm ./cmdutil -run '^$'
 ```
 
@@ -355,7 +355,7 @@ git status --short
 git add llm/apilog.go llm/apilog_open_unix.go \
   llm/apilog_append_test.go llm/apilog_lock_test.go \
   cmdutil/api_logging.go cmdutil/api_logging_test.go \
-  cmd/serf/run.go cmd/serf/serve.go cmd/serf/run_test.go cmd/serf/serve_test.go
+  cmd/evener/run.go cmd/evener/serve.go cmd/evener/run_test.go cmd/evener/serve_test.go
 git diff --cached --check
 git commit -m 'Lock and synchronously persist resumed session API logs'
 ```
@@ -461,10 +461,10 @@ git commit -m 'Capture only provider adapter HTTP evidence'
 - Modify: `agent/apilog_read.go`
 - Test: `agent/apilog_read_test.go`
 - Modify/test only the already-scoped doctor files under `agent/doctor/` and
-  `cmd/serf-doctor/`
-- Modify/test exact-session deletion under `cmd/serf-hub/`
-- Modify: `cmd/serf-hub/spawn.go`
-- Test: `cmd/serf-hub/spawn_test.go`
+  `cmd/evener-doctor/`
+- Modify/test exact-session deletion under `cmd/evener-hub/`
+- Modify: `cmd/evener-hub/spawn.go`
+- Test: `cmd/evener-hub/spawn_test.go`
 - Modify only compile/truth-field fallout in accepted transcript/grouping/fuzz
   files already on this branch
 - Delete obsolete raw API-call carrier or transcript-production code only when
@@ -513,7 +513,7 @@ records, and must not reconstruct body-derived error text.
 Run focused tests until GREEN, then:
 
 ```sh
-go test ./agent ./agent/doctor ./cmd/serf-doctor ./cmd/serf-hub -count=1
+go test ./agent ./agent/doctor ./cmd/evener-doctor ./cmd/evener-hub -count=1
 ```
 
 **Step 3: Write and implement the Hub credential-source test.**
@@ -522,10 +522,10 @@ Add a table test proving a nonempty configured `CredentialHeaders` map satisfies
 Hub launch credential validation, while ordinary `Headers.Authorization` does
 not. Keep API keys and existing supported sources unchanged.
 
-Run RED, implement the smallest condition in `cmd/serf-hub/spawn.go`, then run:
+Run RED, implement the smallest condition in `cmd/evener-hub/spawn.go`, then run:
 
 ```sh
-go test ./cmd/serf-hub -run 'Test.*Credential' -count=1
+go test ./cmd/evener-hub -run 'Test.*Credential' -count=1
 ```
 
 **Step 4: Audit and remove obsolete production paths.**
@@ -544,12 +544,12 @@ Delete production residue only when unused; do not refactor adjacent code.
 **Step 5: Run affected suites and commit Task 4.**
 
 ```sh
-go test ./agent ./agent/transcript ./agent/doctor ./internal/apptranscript ./cmd/serf-doctor ./cmd/serf-hub ./server -count=1
-go test -race ./agent ./internal/apptranscript ./cmd/serf-hub -count=1
-go vet ./agent/... ./internal/apptranscript ./cmd/serf-doctor ./cmd/serf-hub ./server
+go test ./agent ./agent/transcript ./agent/doctor ./internal/apptranscript ./cmd/evener-doctor ./cmd/evener-hub ./server -count=1
+go test -race ./agent ./internal/apptranscript ./cmd/evener-hub -count=1
+go vet ./agent/... ./internal/apptranscript ./cmd/evener-doctor ./cmd/evener-hub ./server
 git status --short
-git add agent/apilog_read.go agent/apilog_read_test.go agent/doctor cmd/serf-doctor \
-  cmd/serf-hub internal/apptranscript agent/transcript server
+git add agent/apilog_read.go agent/apilog_read_test.go agent/doctor cmd/evener-doctor \
+  cmd/evener-hub internal/apptranscript agent/transcript server
 git diff --cached --check
 git commit -m 'Finish explicit bounded API-log consumers'
 ```
@@ -566,15 +566,15 @@ affected gates. Do not add excluded architecture to satisfy a reviewer.
 ```sh
 go test ./llm/apilog ./llm ./llm/providers/internal/transport \
   ./llm/providers/anthropic ./llm/providers/google ./llm/providers/openai \
-  ./llm/providers/openaicompat ./llm/providers/kimi ./cmdutil ./cmd/serf \
+  ./llm/providers/openaicompat ./llm/providers/kimi ./cmdutil ./cmd/evener \
   ./agent ./agent/transcript ./agent/doctor ./internal/apptranscript \
-  ./cmd/serf-doctor ./cmd/serf-hub ./server -count=1
+  ./cmd/evener-doctor ./cmd/evener-hub ./server -count=1
 ```
 
 **Step 2: Race, vet, lint, and full deterministic tests.**
 
 ```sh
-go test -race ./llm/apilog ./llm ./llm/providers/internal/transport ./cmdutil ./cmd/serf ./agent ./internal/apptranscript ./cmd/serf-hub -count=1
+go test -race ./llm/apilog ./llm ./llm/providers/internal/transport ./cmdutil ./cmd/evener ./agent ./internal/apptranscript ./cmd/evener-hub -count=1
 go vet ./...
 make lint
 make test
@@ -585,7 +585,7 @@ git status --short
 **Step 3: Supported-platform compilation.**
 
 ```sh
-GOOS=linux GOARCH=amd64 go test ./llm ./llm/apilog ./llm/providers/internal/transport ./cmdutil ./cmd/serf -run '^$'
+GOOS=linux GOARCH=amd64 go test ./llm ./llm/apilog ./llm/providers/internal/transport ./cmdutil ./cmd/evener -run '^$'
 ```
 
 Do not add or claim Windows support in Project 2.

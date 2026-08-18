@@ -153,7 +153,7 @@ git commit -m "test(execenv): keep cleanup trap process alive" -m "Background th
 ### Task 3: Bound the Offline Fake CLI Without a Load Race
 
 **Files:**
-- Modify: `tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go:263`
+- Modify: `tools/tool-fluency/cmd/evener-fluency/offline_coverage_test.go:263`
 
 **Interfaces:**
 - Consumes: `runConfig.timeout` as the per-probe context deadline.
@@ -184,8 +184,8 @@ timeout: 5 * time.Second
 Run:
 
 ```bash
-gofmt -w tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go
-go test ./tools/tool-fluency/cmd/serf-fluency -run '^TestRunProbeOfflineStates$' -count=20
+gofmt -w tools/tool-fluency/cmd/evener-fluency/offline_coverage_test.go
+go test ./tools/tool-fluency/cmd/evener-fluency -run '^TestRunProbeOfflineStates$' -count=20
 ```
 
 Expected: PASS for all twenty repetitions.
@@ -195,7 +195,7 @@ Expected: PASS for all twenty repetitions.
 Run `git status --short`, then:
 
 ```bash
-git add tools/tool-fluency/cmd/serf-fluency/offline_coverage_test.go
+git add tools/tool-fluency/cmd/evener-fluency/offline_coverage_test.go
 git commit -m "test(fluency): tolerate loaded fake probe startup" -m "Give the offline result-classification fixture the repository-standard five-second subprocess guard. The prior one-second deadline killed an otherwise immediate fake CLI under concurrent module load; explicit timeout classification remains covered separately by immediate cancellation."
 ```
 

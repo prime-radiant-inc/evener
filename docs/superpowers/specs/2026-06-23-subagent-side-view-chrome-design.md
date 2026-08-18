@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: Revised after adversarial review; approved design pending implementation planning
-Scope: Serf web hub (`cmd/serf-hub`)
+Scope: Serf web hub (`cmd/evener-hub`)
 
 ## Problem
 

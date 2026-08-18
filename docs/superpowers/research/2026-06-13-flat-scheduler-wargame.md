@@ -12,7 +12,7 @@ A session takes a "turn" (an LLM call via `Session.ProcessInputKind`, `agent/ses
 
 Two asymmetric owners exist today:
 
-- **Root.** `serve.go` is a permanent, long-lived owner. The input loop at `cmd/serf/serve.go:376-414` parks on `srv.InputCh()` and runs `sess.ProcessInputKind` whenever a message arrives. The wake is wired by `SetNotifyFunc(func() { srv.SubmitNotification() })` (`serve.go:304`), which pushes a text-less `EntryNotification` onto the 1-slot `inputCh` (`server/server.go:490`). The root is therefore genuinely inbox-driven: its inbox wakes its own permanent loop.
+- **Root.** `serve.go` is a permanent, long-lived owner. The input loop at `cmd/evener/serve.go:376-414` parks on `srv.InputCh()` and runs `sess.ProcessInputKind` whenever a message arrives. The wake is wired by `SetNotifyFunc(func() { srv.SubmitNotification() })` (`serve.go:304`), which pushes a text-less `EntryNotification` onto the 1-slot `inputCh` (`server/server.go:490`). The root is therefore genuinely inbox-driven: its inbox wakes its own permanent loop.
 
 - **Subagents.** A child has **no** long-lived loop. It is spawned (`launchSubagentRun`, `agent/subagents.go:709`), `sub.run` calls `ProcessInput` to completion (`:761`), the goroutine exits, the child goes idle. An idle child cannot hear its own inbox.
 
@@ -67,7 +67,7 @@ So "fold the root in" really means: **the root's loop is the prototype the child
 
 A flat scheduler unifies these: every session's `notify` kicks *its own* inbox/loop. The child wiring at `subagents.go:533` would change from "call parent.drive" to "push onto my own inbox," and the parent's `driveChildrenWithUndeliveredAttention` (`job_watch.go:2606`) would be **deleted** — the child no longer needs anyone to drive it.
 
-But note the subtlety that makes "fold the root in" not free: the root's loop lives in `cmd/serf` and uses `server`. The agent module **must not import server** (stated repeatedly: `serve.go:298`, `session.go:197`, `:273`). So the child's per-session loop must live *inside* package `agent` and must be wired with callbacks, not direct server calls. You cannot literally reuse `serve.go`'s loop; you reimplement its shape in `agent`, which means re-deriving the per-turn cancellable-context dance (`serve.go:386-407`) and the `EntryContinuation` kick handling inside the agent module. That is net-new agent-module code that today does not exist, and it duplicates logic that currently lives correctly in `cmd/serf`.
+But note the subtlety that makes "fold the root in" not free: the root's loop lives in `cmd/evener` and uses `server`. The agent module **must not import server** (stated repeatedly: `serve.go:298`, `session.go:197`, `:273`). So the child's per-session loop must live *inside* package `agent` and must be wired with callbacks, not direct server calls. You cannot literally reuse `serve.go`'s loop; you reimplement its shape in `agent`, which means re-deriving the per-turn cancellable-context dance (`serve.go:386-407`) and the `EntryContinuation` kick handling inside the agent module. That is net-new agent-module code that today does not exist, and it duplicates logic that currently lives correctly in `cmd/evener`.
 
 ---
 
@@ -201,8 +201,8 @@ Where the flat design breaks:
 - `agent/session_lifecycle.go` `close()` (the teardown handshake — **the dangerous one**) — heavy.
 - `agent/subagent_manager.go` (close/quiesce coordination with the scheduler) — heavy.
 - New: `agent/scheduler.go` (the scheduler itself) — net-new, moderate (shape a) to heavy (shape b).
-- New per-session loop in `agent` reproducing `serve.go:376-414`'s per-turn context dance — net-new, moderate, and a **duplication** of correct cmd/serf code.
-- `cmd/serf/serve.go` — light (root may keep its loop or delegate to the scheduler).
+- New per-session loop in `agent` reproducing `serve.go:376-414`'s per-turn context dance — net-new, moderate, and a **duplication** of correct cmd/evener code.
+- `cmd/evener/serve.go` — light (root may keep its loop or delegate to the scheduler).
 - Restore path (`agent/session_init.go`) — re-derive scheduler tickets from durable inboxes — moderate, and a new correctness-critical step.
 - Tests: the entire drive-down test suite (`job_delegate_drivedown_test.go`, `job_watch_deadlock_test.go`, `job_supervision_test.go`, `job_nested_test.go`, the depth-3 agenttest trees from spec §9) must be re-anchored. Many assert "parent drives child" semantics that are deleted.
 
@@ -242,7 +242,7 @@ Until A, B, or C is concretely observed: keep drive-down, ship recursion dark be
 
 ## Appendix: key symbols cited
 
-- Root loop & wake: `cmd/serf/serve.go:304` (`SetNotifyFunc`→`SubmitNotification`), `:376-414` (input loop + per-turn ctx).
+- Root loop & wake: `cmd/evener/serve.go:304` (`SetNotifyFunc`→`SubmitNotification`), `:376-414` (input loop + per-turn ctx).
 - Server wake sends: `server/server.go:477` (`SubmitContinuation`), `:490` (`SubmitNotification`, 1-slot drop-if-full).
 - Turn engine: `agent/session_lifecycle.go:260` (`ProcessInputKind`), `:295-471` (drain-loop gate), `:821` (`acceptNotificationInput`).
 - Inbox substrate: `agent/session.go:124` (`pendingJobNotifs`), `:232-297` (enqueue/notify/SetNotifyFunc), `:253` (`drainJobNotifications` FIFO), `:265` (`peekNotifications`).

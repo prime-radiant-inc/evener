@@ -11,7 +11,7 @@
 # The gap between the two tracks is structural rather than incidental. This repo
 # keeps whole families of behavioural checks in `check*` functions that only a
 # serffuzz-tagged "program" fuzz target calls, so packages using that pattern
-# read far lower on the test track than they are — cmd/serf-hub/internal/appsource
+# read far lower on the test track than they are — cmd/evener-hub/internal/appsource
 # is 66.4% there and 83.1% under its own program target. Read the rows below
 # rather than either track alone, and before writing a test to raise a low
 # number, check that it does not already exist under the other build tag.

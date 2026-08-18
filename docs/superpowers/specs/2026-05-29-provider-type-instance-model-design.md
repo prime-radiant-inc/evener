@@ -200,7 +200,7 @@ cycle):
   `NameToTag` (from cfg) to key llm-layer logic.
 - **`cmdutil`**: `SelectProfile` becomes a thin wrapper over
   `agent.ResolveProfileFromConfig` + the schema/decisions wrappers (for the CLI).
-- **`cmd/serf`, `cmd/serf-hub`**: load the config once, call `NewFromProviders`,
+- **`cmd/evener`, `cmd/evener-hub`**: load the config once, call `NewFromProviders`,
   and pass the `Config` into `SessionConfig` so the session can re-resolve
   (§4.5). No closure injection; no `agent→cmdutil` cycle.
 
@@ -360,7 +360,7 @@ instance keeps `auth/openai.json`. Thread instance name + `cfg.StateHome` throug
 adapter recipe (`openai/adapter.go:80`), the hub auth controller
 (`app_auth.go`'s `openai` branches), the TUI (`serf-tui/auth.go:26,27,80` —
 `authStatus` gains the tag), `validateProviderCredentials` (`spawn.go:466`), and
-**`cmd/serf/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
+**`cmd/evener/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
 param). **`AuthRecord.Validate()` drops the `Provider == "openai"` check**
 (`storage.go:142-143`) — it's a method on the record alone and can't see the tag;
 the per-instance filename scopes the record and OAuth is gated to behavior tag
@@ -371,8 +371,8 @@ only for tag `openai`.
 
 - **`$hubStateRoot/providers.toml`** (default **`~/.serf/providers.toml`**,
   `config.go:51`; `chmod 600`), read by **both** the hub and standalone `serf`.
-  The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/serf-hub`
-  `package main`) **moves to `internal/providerconfig`** so `cmd/serf` can resolve
+  The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/evener-hub`
+  `package main`) **moves to `internal/providerconfig`** so `cmd/evener` can resolve
   the identical path. OAuth stays under `$XDG_STATE_HOME/serf` (§3.5) — separate
   root, unchanged. Format: `schema`, `default` (instance name),
   `[instances.<name>]` with `type`, `base_url`, `api_style`, inline `api_key`
@@ -534,7 +534,7 @@ git history. v6 **validated the architecture**; these are the folded refinements
 - **`AuthRecord.Validate` can't see the tag** → §4.9 drop the `openai` check.
 - **Provider-conditional tools not re-run on switch** (gemini `web_search`) →
   §4.5 `SetModel` re-runs the registration.
-- **`hubStateRoot` resolver unreachable from `cmd/serf`** → §4.10 move it to
+- **`hubStateRoot` resolver unreachable from `cmd/evener`** → §4.10 move it to
   `internal/providerconfig`; custom-root + direct `serf run` documented (§9).
 - **Same-instance rebuild needs the tag** → §4.4 thread name + tag through the
   rebuild constructor.

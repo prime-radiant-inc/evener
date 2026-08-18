@@ -6,9 +6,9 @@ buried-stderr HTTP 500s on spawn. This card re-checks, live, the three
 remaining named failure classes: a bogus model id, a working dir that
 doesn't exist, and a harness binary the hub can't execute — against the
 real `POST /api/spawn` handler (`handleApiSpawn`,
-`cmd/serf-hub/web_spawn.go#handleApiSpawn` → `hubThreadStart` in
-`cmd/serf-hub/app_threadlifecycle.go` → `HubSpawner.Spawn` in
-`cmd/serf-hub/spawn.go`).
+`cmd/evener-hub/web_spawn.go#handleApiSpawn` → `hubThreadStart` in
+`cmd/evener-hub/app_threadlifecycle.go` → `HubSpawner.Spawn` in
+`cmd/evener-hub/spawn.go`).
 
 **Surface**: this card is **fully browser-free** — every assertion is a
 `curl` against `/api/spawn` and a read of the JSON body. It needs no
@@ -37,7 +37,7 @@ longer on it".
    HTTP 503
    {"error":"model provider is not reported by the Serf launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
    ```
-   Rejected in `validateSerfLaunchModel` (`cmd/serf-hub/app_models.go#validateSerfLaunchModel`,
+   Rejected in `validateSerfLaunchModel` (`cmd/evener-hub/app_models.go#validateSerfLaunchModel`,
    message at `:122`) before any subprocess is spawned. Legible, named,
    structured JSON.
 
@@ -48,7 +48,7 @@ longer on it".
    HTTP 503
    {"error":"model is not configured for Serf launch: ollama/does-not-exist-blah-9999","code":-32014,"serf_error_info":"hubLaunch"}
    ```
-   Same gate, message at `cmd/serf-hub/app_models.go:124`. Legible.
+   Same gate, message at `cmd/evener-hub/app_models.go:124`. Legible.
 
 3. **(b) Working dir that doesn't exist** — `working_dir:
    "/does/not/exist/proj-nonexistent-xyz"`:
@@ -58,7 +58,7 @@ longer on it".
    ```
    Caught in `hubThreadStart`'s `hubCanonicalizeDir` call — the
    `fspaths.CanonicalizeDir` seam at
-   `cmd/serf-hub/app_threadlifecycle.go:23`, invoked at `:71-77` — before
+   `cmd/evener-hub/app_threadlifecycle.go:23`, invoked at `:71-77` — before
    any subprocess spawn is attempted. Legible: the raw OS `lstat` error
    is preserved but wrapped in a structured, addressed message
    (`"cwd: ..."`), not dumped as a stack trace.
@@ -71,7 +71,7 @@ longer on it".
    {"error":"serf launch-check failed: fork/exec /nonexistent/path/to/serf-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
-   (`cmd/serf-hub/spawn.go:741-774`, message at `:762`), which execs
+   (`cmd/evener-hub/spawn.go:741-774`, message at `:762`), which execs
    `<serf-binary> launch-check --protocol <v> --json` before ever
    attempting the real daemon spawn. The Go `exec` error (`fork/exec
    ...: no such file or directory`) surfaces verbatim inside the
@@ -88,8 +88,8 @@ status appropriate to the failure kind — 400 for caller input errors via
 `appwire.CodeInvalidParams` (`-32602`), 503 for launch/environment-side
 failures via `appwire.CodeUnavailable` (`-32014`), both in
 `appwire/errors.go:7,10`. The mapping is `writeSpawnError`
-(`cmd/serf-hub/web_spawn.go#writeSpawnError`) → `writeAPIWireError`
-(`cmd/serf-hub/web_api.go#writeAPIWireError`), with the `serf_error_info` string
+(`cmd/evener-hub/web_spawn.go#writeSpawnError`) → `writeAPIWireError`
+(`cmd/evener-hub/web_api.go#writeAPIWireError`), with the `serf_error_info` string
 lifted off the wire error's data by `serfErrorInfoFromData`
 (`web_api.go#serfErrorInfoFromData`; the values are `appwire.ErrorInvalidParams` /
 `ErrorHubLaunch`, `appwire/errors.go:16,22`). WS5's fix holds: no
@@ -120,11 +120,11 @@ response). Neither was observed.
   hatch matching the no-config branch's `credentials.SourceNone` case.
   Commit `1b717fe72` added one: the branch now returns nil for any
   instance whose *behavior tag* declares auth mode `none`
-  (`cmd/serf-hub/spawn.go:569-574`, `envvars.RequiresNoCredential`,
+  (`cmd/evener-hub/spawn.go:569-574`, `envvars.RequiresNoCredential`,
   `envvars/providers.go#RequiresNoCredential`; ollama's `AuthModes: []string{"none"}`
   at `envvars/providers.go:155-161`), and the rule is pinned by
   `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
-  (`cmd/serf-hub/spawn_test.go:1437`), which also checks that the
+  (`cmd/evener-hub/spawn_test.go:1437`), which also checks that the
   bypass keys off the type and not the instance *name*. The old
   workaround for isolating test (c) — `mv providers.toml
   providers.toml.bak` after the fake hub's first launch, or seeding a
@@ -134,7 +134,7 @@ response). Neither was observed.
   card's known ground.
 - `validateSerfLaunchModel` **fails open** when the harness binary
   can't even be executed to enumerate models
-  (`cmd/serf-hub/app_models.go:106-108`, `//nolint:nilerr // fail
+  (`cmd/evener-hub/app_models.go:106-108`, `//nolint:nilerr // fail
   open`) — so a missing-binary hub does NOT reject at the model-check
   stage; the real, correct rejection happens one step later inside
   `HubSpawner.Spawn`'s own `validateSerfLaunchContract` call. Both
@@ -149,6 +149,6 @@ response). Neither was observed.
   over-counted image payload is rejected by `validateAppWireInputItems`
   with a plain-text **413** before `hubThreadStart` is called at all
   (`web_spawn.go:74-77`, limits in
-  `cmd/serf-hub/internal/hubcore/types.go:12-14`), and a malformed JSON
+  `cmd/evener-hub/internal/hubcore/types.go:12-14`), and a malformed JSON
   body is a plain-text **400** from the decoder (`web_spawn.go:70-73`).
   Both are `http.Error`, not the structured envelope.

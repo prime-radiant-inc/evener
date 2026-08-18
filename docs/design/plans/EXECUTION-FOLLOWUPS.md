@@ -22,7 +22,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
 ## Tooling ergonomics (from item tool-efficacy notes)
 - **Shared fuzz route allowlist.** *(DONE.)* Extracted to the package
   `internal/fuzzroutes` (`ReadOnly`), now imported by both `web_fuzz_test.go` and
-  the harvester (`cmd/serf-fuzz-harvest/http.go`) instead of a duplicated test
+  the harvester (`cmd/evener-fuzz-harvest/http.go`) instead of a duplicated test
   literal.
 - **gitleaks in the dev image.** The secret-scan gate + the harvester's write-time
   barrier skip when gitleaks isn't installed; install it so the gate is exercised
@@ -64,7 +64,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   (stub gocache, asserts dedup + both caps).
 
 ## Pre-existing flake (surfaced during Phase 7 Wave 1, NOT caused by it)
-- `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/serf-tui) is a
+- `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/evener-tui) is a
   timing-based tmux end-to-end test that fails ~1 in 3 runs. Unrelated to the
   parse fixes in Wave 1 (it exercises Ctrl-C / alt-screen restore, no parse path).
   *(DONE.)* Root-caused to a detached dying tmux pane dropping serf-tui's final

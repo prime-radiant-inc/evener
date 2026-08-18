@@ -21,41 +21,41 @@
 
 | Path | Responsibility |
 |------|----------------|
-| `cmd/serf-tui/tokens.go` | `Theme` struct, theme registry (`themes` map), `setTheme`, `activeTheme`, helpers like `Tints()`. |
-| `cmd/serf-tui/primitives.go` | Rendering primitives: `StateBar`, `FocusedStateBar`, `StatusBadge`, `SectionDivider`, `KbdHint`, `Overlay`, `DotLeader`. |
-| `cmd/serf-tui/primitives_test.go` | Unit tests for primitives. |
-| `cmd/serf-tui/tool_renderers.go` | The `ToolRenderer` struct + `toolRenderers` map + per-tool renderer functions. |
-| `cmd/serf-tui/tool_renderers_test.go` | Unit tests per renderer per state. |
-| `cmd/serf-tui/tool_bodies.go` | Body renderers: `diffBody`, `fileBody`, `taskListBody`, `subagentBody`, `shellBody`, `webSearchBody`. |
-| `cmd/serf-tui/tool_bodies_test.go` | Body-renderer tests. |
-| `cmd/serf-tui/mcp_fallback.go` | MCP/unknown-tool fallback renderers. |
-| `cmd/serf-tui/dashboard_render.go` | Dashboard-row/section/footer renderers (extracted from `hub_model.go`). |
-| `cmd/serf-tui/session_render.go` | Session header / meta-strip / conversation-row renderers (extracted from `hub_model.go`). |
-| `cmd/serf-tui/composer_render.go` | Composer chip-strip + mode-chip renderers (companion to `composer_panel.go`). |
-| `cmd/serf-tui/focus_trap.go` | `topmostOverlay` helper + key-routing rules. |
-| `cmd/serf-tui/focus_trap_test.go` | Per-overlay trap tests. |
+| `cmd/evener-tui/tokens.go` | `Theme` struct, theme registry (`themes` map), `setTheme`, `activeTheme`, helpers like `Tints()`. |
+| `cmd/evener-tui/primitives.go` | Rendering primitives: `StateBar`, `FocusedStateBar`, `StatusBadge`, `SectionDivider`, `KbdHint`, `Overlay`, `DotLeader`. |
+| `cmd/evener-tui/primitives_test.go` | Unit tests for primitives. |
+| `cmd/evener-tui/tool_renderers.go` | The `ToolRenderer` struct + `toolRenderers` map + per-tool renderer functions. |
+| `cmd/evener-tui/tool_renderers_test.go` | Unit tests per renderer per state. |
+| `cmd/evener-tui/tool_bodies.go` | Body renderers: `diffBody`, `fileBody`, `taskListBody`, `subagentBody`, `shellBody`, `webSearchBody`. |
+| `cmd/evener-tui/tool_bodies_test.go` | Body-renderer tests. |
+| `cmd/evener-tui/mcp_fallback.go` | MCP/unknown-tool fallback renderers. |
+| `cmd/evener-tui/dashboard_render.go` | Dashboard-row/section/footer renderers (extracted from `hub_model.go`). |
+| `cmd/evener-tui/session_render.go` | Session header / meta-strip / conversation-row renderers (extracted from `hub_model.go`). |
+| `cmd/evener-tui/composer_render.go` | Composer chip-strip + mode-chip renderers (companion to `composer_panel.go`). |
+| `cmd/evener-tui/focus_trap.go` | `topmostOverlay` helper + key-routing rules. |
+| `cmd/evener-tui/focus_trap_test.go` | Per-overlay trap tests. |
 
 ### Modified files
 
 | Path | Why |
 |------|-----|
-| `cmd/serf-tui/styles.go` | Style globals become getter functions reading from `activeTheme()`. ~20 globals migrated. |
-| `cmd/serf-tui/hub_model.go` | Dashboard + session view functions delegate to new render files. |
-| `cmd/serf-tui/message.go` | `renderToolCall` consumes the new registry. `markdownRenderer` invalidates on `setTheme`. |
-| `cmd/serf-tui/tool_summary.go` | Switch deleted; remaining helpers (`unifiedDiff`, `highlightLine`) retained and exported for `tool_bodies.go`. |
-| `cmd/serf-tui/composer_panel.go` | Uses new `composer_render.go` primitives for the chip strip + mode chip. |
-| `cmd/serf-tui/statusbar.go` | Rewritten using primitives + ghost-dim chrome + threshold-colored ctx usage. |
-| `cmd/serf-tui/model_picker.go` | Adopts `Overlay` primitive. |
-| `cmd/serf-tui/theme_picker.go` | Adopts `Overlay` primitive. |
-| `cmd/serf-tui/command_palette.go` | Adopts `Overlay` primitive + slash-command item format. |
-| `cmd/serf-tui/credentials_panel.go` | Adopts `Overlay` primitive + status badges. |
-| `cmd/serf-tui/launch_settings_panel.go` | Adopts `Overlay` primitive. |
-| `cmd/serf-tui/launch_overrides_modal.go` | Adopts `Overlay` primitive. |
-| `cmd/serf-tui/text_input_modal.go` | Adopts `Overlay` primitive. |
-| `cmd/serf-tui/notice_panel.go` | Diagnostic voice (state-colored left bar + key/value lines). |
-| `cmd/serf-tui/details_drawer.go` | Section labels + status badge + ghost chrome. |
-| `cmd/serf-tui/tui_samples.go` | `tuiSampleRender` gains `Theme string` field. |
-| `cmd/serf-tui/tui_samples_test.go` | `runWithTheme` helper; goldens iterate dark+light. |
+| `cmd/evener-tui/styles.go` | Style globals become getter functions reading from `activeTheme()`. ~20 globals migrated. |
+| `cmd/evener-tui/hub_model.go` | Dashboard + session view functions delegate to new render files. |
+| `cmd/evener-tui/message.go` | `renderToolCall` consumes the new registry. `markdownRenderer` invalidates on `setTheme`. |
+| `cmd/evener-tui/tool_summary.go` | Switch deleted; remaining helpers (`unifiedDiff`, `highlightLine`) retained and exported for `tool_bodies.go`. |
+| `cmd/evener-tui/composer_panel.go` | Uses new `composer_render.go` primitives for the chip strip + mode chip. |
+| `cmd/evener-tui/statusbar.go` | Rewritten using primitives + ghost-dim chrome + threshold-colored ctx usage. |
+| `cmd/evener-tui/model_picker.go` | Adopts `Overlay` primitive. |
+| `cmd/evener-tui/theme_picker.go` | Adopts `Overlay` primitive. |
+| `cmd/evener-tui/command_palette.go` | Adopts `Overlay` primitive + slash-command item format. |
+| `cmd/evener-tui/credentials_panel.go` | Adopts `Overlay` primitive + status badges. |
+| `cmd/evener-tui/launch_settings_panel.go` | Adopts `Overlay` primitive. |
+| `cmd/evener-tui/launch_overrides_modal.go` | Adopts `Overlay` primitive. |
+| `cmd/evener-tui/text_input_modal.go` | Adopts `Overlay` primitive. |
+| `cmd/evener-tui/notice_panel.go` | Diagnostic voice (state-colored left bar + key/value lines). |
+| `cmd/evener-tui/details_drawer.go` | Section labels + status badge + ghost chrome. |
+| `cmd/evener-tui/tui_samples.go` | `tuiSampleRender` gains `Theme string` field. |
+| `cmd/evener-tui/tui_samples_test.go` | `runWithTheme` helper; goldens iterate dark+light. |
 
 ---
 
@@ -66,13 +66,13 @@ Establishes the `Theme` struct, hardcoded `dark` and `light` entries, and the `a
 ### Task 1.1: Define `Theme` struct
 
 **Files:**
-- Create: `cmd/serf-tui/tokens.go`
-- Test: `cmd/serf-tui/tokens_test.go`
+- Create: `cmd/evener-tui/tokens.go`
+- Test: `cmd/evener-tui/tokens_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/tokens_test.go
+// cmd/evener-tui/tokens_test.go
 package main
 
 import (
@@ -109,13 +109,13 @@ func TestThemeStructFieldsPopulated(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestTheme -v`
+Run: `go test ./cmd/evener-tui -run TestTheme -v`
 Expected: FAIL with "Themes undefined"
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```go
-// cmd/serf-tui/tokens.go
+// cmd/evener-tui/tokens.go
 package main
 
 import "github.com/charmbracelet/lipgloss"
@@ -229,26 +229,26 @@ var lightThemeV2 = Theme{
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestTheme -v`
+Run: `go test ./cmd/evener-tui -run TestTheme -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/tokens.go cmd/serf-tui/tokens_test.go
+git add cmd/evener-tui/tokens.go cmd/evener-tui/tokens_test.go
 git commit -m "feat(tui): add Theme struct and dark+light registry (wave 1 task 1.1)"
 ```
 
 ### Task 1.2: `activeTheme()` + `setTheme()` accessors with markdown-renderer invalidation hook
 
 **Files:**
-- Modify: `cmd/serf-tui/tokens.go`
-- Test: `cmd/serf-tui/tokens_test.go`
+- Modify: `cmd/evener-tui/tokens.go`
+- Test: `cmd/evener-tui/tokens_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tokens_test.go
+// append to cmd/evener-tui/tokens_test.go
 
 func TestSetThemeChangesActiveTheme(t *testing.T) {
 	t.Cleanup(func() { setThemeV2("dark") })
@@ -290,13 +290,13 @@ func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSetTheme -v`
+Run: `go test ./cmd/evener-tui -run TestSetTheme -v`
 Expected: FAIL with "activeThemeV2 undefined"
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```go
-// append to cmd/serf-tui/tokens.go
+// append to cmd/evener-tui/tokens.go
 
 var activeThemeName = "dark"
 
@@ -329,26 +329,26 @@ func setThemeV2(name string) bool {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestSetTheme -v`
+Run: `go test ./cmd/evener-tui -run TestSetTheme -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/tokens.go cmd/serf-tui/tokens_test.go
+git add cmd/evener-tui/tokens.go cmd/evener-tui/tokens_test.go
 git commit -m "feat(tui): add activeTheme + setTheme with markdown invalidator hook (wave 1 task 1.2)"
 ```
 
 ### Task 1.3: Wire markdownInvalidator from message.go
 
 **Files:**
-- Modify: `cmd/serf-tui/message.go`
-- Test: `cmd/serf-tui/tokens_test.go`
+- Modify: `cmd/evener-tui/message.go`
+- Test: `cmd/evener-tui/tokens_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tokens_test.go
+// append to cmd/evener-tui/tokens_test.go
 
 func TestMarkdownInvalidatorIsWired(t *testing.T) {
 	// After init, markdownInvalidator must NOT be the placeholder counter only.
@@ -370,16 +370,16 @@ func TestMarkdownInvalidatorIsWired(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestMarkdownInvalidatorIsWired -v`
+Run: `go test ./cmd/evener-tui -run TestMarkdownInvalidatorIsWired -v`
 Expected: FAIL with "markdownRendererCached undefined" or similar
 
 - [ ] **Step 3: Find current markdownRenderer caching code**
 
-Run: `grep -n "markdownRenderer\|glamour" cmd/serf-tui/message.go`
+Run: `grep -n "markdownRenderer\|glamour" cmd/evener-tui/message.go`
 
 You should see a package-level `markdownRenderer` var and `renderMarkdown` function. Expose a test helper and wire the invalidator.
 
-- [ ] **Step 4: Modify `cmd/serf-tui/message.go`**
+- [ ] **Step 4: Modify `cmd/evener-tui/message.go`**
 
 Add near the top of `message.go` (after imports):
 
@@ -403,18 +403,18 @@ func init() {
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestMarkdownInvalidator -v`
+Run: `go test ./cmd/evener-tui -run TestMarkdownInvalidator -v`
 Expected: PASS
 
 - [ ] **Step 6: Run the whole test suite to confirm no regression**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS (matching the current baseline)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/message.go cmd/serf-tui/tokens_test.go
+git add cmd/evener-tui/message.go cmd/evener-tui/tokens_test.go
 git commit -m "feat(tui): wire markdown renderer invalidator from setTheme (wave 1 task 1.3)"
 ```
 
@@ -423,13 +423,13 @@ git commit -m "feat(tui): wire markdown renderer invalidator from setTheme (wave
 The existing `setTheme(name)` in `styles.go` mutates a different theme struct (`activeTheme colorTheme`). Bridge so that the existing function ALSO updates the new registry.
 
 **Files:**
-- Modify: `cmd/serf-tui/styles.go`
-- Test: `cmd/serf-tui/tokens_test.go`
+- Modify: `cmd/evener-tui/styles.go`
+- Test: `cmd/evener-tui/tokens_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tokens_test.go
+// append to cmd/evener-tui/tokens_test.go
 
 func TestLegacySetThemeAlsoUpdatesV2(t *testing.T) {
 	t.Cleanup(func() {
@@ -445,10 +445,10 @@ func TestLegacySetThemeAlsoUpdatesV2(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestLegacySetThemeAlsoUpdatesV2 -v`
+Run: `go test ./cmd/evener-tui -run TestLegacySetThemeAlsoUpdatesV2 -v`
 Expected: FAIL (legacy `setTheme` does not touch the new registry)
 
-- [ ] **Step 3: Modify `cmd/serf-tui/styles.go`**
+- [ ] **Step 3: Modify `cmd/evener-tui/styles.go`**
 
 Find the existing `setTheme(name string)` function. At the bottom, before the final `return true`, add:
 
@@ -460,18 +460,18 @@ Find the existing `setTheme(name string)` function. At the bottom, before the fi
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestLegacySetThemeAlsoUpdatesV2 -v`
+Run: `go test ./cmd/evener-tui -run TestLegacySetThemeAlsoUpdatesV2 -v`
 Expected: PASS
 
 - [ ] **Step 5: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/styles.go cmd/serf-tui/tokens_test.go
+git add cmd/evener-tui/styles.go cmd/evener-tui/tokens_test.go
 git commit -m "feat(tui): bridge legacy setTheme to new theme registry (wave 1 task 1.4)"
 ```
 
@@ -480,12 +480,12 @@ git commit -m "feat(tui): bridge legacy setTheme to new theme registry (wave 1 t
 Verify no token is empty + no value collides obviously (`Bg != Text`).
 
 **Files:**
-- Test: `cmd/serf-tui/tokens_test.go`
+- Test: `cmd/evener-tui/tokens_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tokens_test.go
+// append to cmd/evener-tui/tokens_test.go
 
 func TestNoTokenIsEmpty(t *testing.T) {
 	for name, th := range Themes() {
@@ -538,13 +538,13 @@ import (
 
 - [ ] **Step 3: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestNoTokenIsEmpty|TestBgNotEqualText" -v`
+Run: `go test ./cmd/evener-tui -run "TestNoTokenIsEmpty|TestBgNotEqualText" -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tokens_test.go
+git add cmd/evener-tui/tokens_test.go
 git commit -m "test(tui): add token-isolation tests (wave 1 task 1.5)"
 ```
 
@@ -557,19 +557,19 @@ Adds `Theme string` field to `tuiSampleRender`, the `runWithTheme` helper, and r
 ### Task 1.5.1: Add `Theme string` field to `tuiSampleRender`
 
 **Files:**
-- Modify: `cmd/serf-tui/tui_samples.go`
-- Modify: `cmd/serf-tui/tui_samples_test.go`
+- Modify: `cmd/evener-tui/tui_samples.go`
+- Modify: `cmd/evener-tui/tui_samples_test.go`
 
 - [ ] **Step 1: Find the current struct**
 
-Run: `grep -n "type tuiSampleRender struct" cmd/serf-tui/tui_samples.go`
+Run: `grep -n "type tuiSampleRender struct" cmd/evener-tui/tui_samples.go`
 
 You should see a 4-field struct: `Name`, `Width`, `View`, `Contains`.
 
 - [ ] **Step 2: Modify the struct**
 
 ```go
-// cmd/serf-tui/tui_samples.go
+// cmd/evener-tui/tui_samples.go
 type tuiSampleRender struct {
 	Name     string
 	Theme    string // new field: "dark" or "light"; empty defaults to dark
@@ -597,30 +597,30 @@ func renderSample(name string, width int, view string, contains ...string) tuiSa
 
 - [ ] **Step 4: Run build**
 
-Run: `go build ./cmd/serf-tui/...`
+Run: `go build ./cmd/evener-tui/...`
 Expected: success (the struct addition + default-value population should not break callers).
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/tui_samples.go
+git add cmd/evener-tui/tui_samples.go
 git commit -m "test(tui): add Theme field to tuiSampleRender (wave 1.5 task 1.5.1)"
 ```
 
 ### Task 1.5.2: Add `runWithTheme` helper + theme baseline tests
 
 **Files:**
-- Modify: `cmd/serf-tui/tui_samples_test.go`
+- Modify: `cmd/evener-tui/tui_samples_test.go`
 
 - [ ] **Step 1: Add the helper**
 
 ```go
-// near the top of cmd/serf-tui/tui_samples_test.go
+// near the top of cmd/evener-tui/tui_samples_test.go
 
 // runWithTheme switches the active theme for the duration of body() and
 // restores it afterward. NOT safe for parallel tests — theme is a global.
@@ -638,7 +638,7 @@ func runWithTheme(t *testing.T, name string, body func()) {
 - [ ] **Step 2: Write a baseline test that confirms both themes render**
 
 ```go
-// append to cmd/serf-tui/tui_samples_test.go
+// append to cmd/evener-tui/tui_samples_test.go
 
 func TestSampleRenders_EachThemeProducesNonEmptyView(t *testing.T) {
 	corpus := newHubTUISampleCorpus()
@@ -656,13 +656,13 @@ func TestSampleRenders_EachThemeProducesNonEmptyView(t *testing.T) {
 
 - [ ] **Step 3: Run test**
 
-Run: `go test ./cmd/serf-tui -run TestSampleRenders_EachTheme -v`
+Run: `go test ./cmd/evener-tui -run TestSampleRenders_EachTheme -v`
 Expected: PASS (because the corpus is statically built, the same View string is returned; we'll re-generate per-theme in a later step).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tui_samples_test.go
+git add cmd/evener-tui/tui_samples_test.go
 git commit -m "test(tui): add runWithTheme helper + baseline coverage (wave 1.5 task 1.5.2)"
 ```
 
@@ -675,13 +675,13 @@ Ships `StateBar`, `FocusedStateBar`, `StatusBadge`, `SectionDivider`, `KbdHint`,
 ### Task 2.1: `StateBar` + `FocusedStateBar`
 
 **Files:**
-- Create: `cmd/serf-tui/primitives.go`
-- Create: `cmd/serf-tui/primitives_test.go`
+- Create: `cmd/evener-tui/primitives.go`
+- Create: `cmd/evener-tui/primitives_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/primitives_test.go
+// cmd/evener-tui/primitives_test.go
 package main
 
 import (
@@ -709,13 +709,13 @@ func TestFocusedStateBarReturnsDoubleGlyph(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestStateBar -v`
+Run: `go test ./cmd/evener-tui -run TestStateBar -v`
 Expected: FAIL with "StateBar undefined"
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```go
-// cmd/serf-tui/primitives.go
+// cmd/evener-tui/primitives.go
 package main
 
 import "github.com/charmbracelet/lipgloss"
@@ -736,26 +736,26 @@ func FocusedStateBar(state lipgloss.Color) string {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestStateBar -v`
+Run: `go test ./cmd/evener-tui -run TestStateBar -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/primitives.go cmd/serf-tui/primitives_test.go
+git add cmd/evener-tui/primitives.go cmd/evener-tui/primitives_test.go
 git commit -m "feat(tui): add StateBar + FocusedStateBar primitives (wave 2 task 2.1)"
 ```
 
 ### Task 2.2: `StatusBadge`
 
 **Files:**
-- Modify: `cmd/serf-tui/primitives.go`
-- Modify: `cmd/serf-tui/primitives_test.go`
+- Modify: `cmd/evener-tui/primitives.go`
+- Modify: `cmd/evener-tui/primitives_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/primitives_test.go
+// append to cmd/evener-tui/primitives_test.go
 
 func TestStatusBadgeContainsLabelAndDot(t *testing.T) {
 	out := StatusBadge(lipgloss.Color("#f7768e"), "AWAITING")
@@ -782,10 +782,10 @@ func TestStatusBadgeIsBoldUppercase(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestStatusBadge -v`
+Run: `go test ./cmd/evener-tui -run TestStatusBadge -v`
 Expected: FAIL with "StatusBadge undefined"
 
-- [ ] **Step 3: Add to `cmd/serf-tui/primitives.go`**
+- [ ] **Step 3: Add to `cmd/evener-tui/primitives.go`**
 
 ```go
 import (
@@ -807,26 +807,26 @@ func StatusBadge(state lipgloss.Color, label string) string {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./cmd/serf-tui -run TestStatusBadge -v`
+Run: `go test ./cmd/evener-tui -run TestStatusBadge -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/primitives.go cmd/serf-tui/primitives_test.go
+git add cmd/evener-tui/primitives.go cmd/evener-tui/primitives_test.go
 git commit -m "feat(tui): add StatusBadge primitive (wave 2 task 2.2)"
 ```
 
 ### Task 2.3: `SectionDivider`
 
 **Files:**
-- Modify: `cmd/serf-tui/primitives.go`
-- Modify: `cmd/serf-tui/primitives_test.go`
+- Modify: `cmd/evener-tui/primitives.go`
+- Modify: `cmd/evener-tui/primitives_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/primitives_test.go
+// append to cmd/evener-tui/primitives_test.go
 
 func TestSectionDividerEmitsLeftRight(t *testing.T) {
 	out := SectionDivider(60, "SERF / SESSION", "12 turns")
@@ -860,10 +860,10 @@ func TestSectionDividerTruncatesAtNarrowWidth(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSectionDivider -v`
+Run: `go test ./cmd/evener-tui -run TestSectionDivider -v`
 Expected: FAIL with "SectionDivider undefined"
 
-- [ ] **Step 3: Add to `cmd/serf-tui/primitives.go`**
+- [ ] **Step 3: Add to `cmd/evener-tui/primitives.go`**
 
 ```go
 // SectionDivider renders "─ LEFT ──…────── RIGHT ┄" filling middle with
@@ -893,26 +893,26 @@ func SectionDivider(width int, left, right string) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestSectionDivider -v`
+Run: `go test ./cmd/evener-tui -run TestSectionDivider -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/primitives.go cmd/serf-tui/primitives_test.go
+git add cmd/evener-tui/primitives.go cmd/evener-tui/primitives_test.go
 git commit -m "feat(tui): add SectionDivider primitive (wave 2 task 2.3)"
 ```
 
 ### Task 2.4: `KbdHint` + `DotLeader`
 
 **Files:**
-- Modify: `cmd/serf-tui/primitives.go`
-- Modify: `cmd/serf-tui/primitives_test.go`
+- Modify: `cmd/evener-tui/primitives.go`
+- Modify: `cmd/evener-tui/primitives_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/primitives_test.go
+// append to cmd/evener-tui/primitives_test.go
 
 func TestKbdHintFormatsKeyAndAction(t *testing.T) {
 	out := KbdHint("enter", "send")
@@ -948,10 +948,10 @@ func TestDotLeaderHandlesOverflow(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run "TestKbdHint|TestDotLeader" -v`
+Run: `go test ./cmd/evener-tui -run "TestKbdHint|TestDotLeader" -v`
 Expected: FAIL with "KbdHint undefined"
 
-- [ ] **Step 3: Add to `cmd/serf-tui/primitives.go`**
+- [ ] **Step 3: Add to `cmd/evener-tui/primitives.go`**
 
 ```go
 // KbdHint renders "<reverse-key> action" — key in reverse video,
@@ -992,30 +992,30 @@ func DotLeader(left, right string, width int) string {
 }
 ```
 
-(If `truncateText` does not exist yet in the package, this code assumes it does — it does, in `hub_model.go`. Confirm by `grep -n "func truncateText" cmd/serf-tui/*.go`.)
+(If `truncateText` does not exist yet in the package, this code assumes it does — it does, in `hub_model.go`. Confirm by `grep -n "func truncateText" cmd/evener-tui/*.go`.)
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestKbdHint|TestDotLeader" -v`
+Run: `go test ./cmd/evener-tui -run "TestKbdHint|TestDotLeader" -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/primitives.go cmd/serf-tui/primitives_test.go
+git add cmd/evener-tui/primitives.go cmd/evener-tui/primitives_test.go
 git commit -m "feat(tui): add KbdHint + DotLeader primitives (wave 2 task 2.4)"
 ```
 
 ### Task 2.5: `Overlay` primitive
 
 **Files:**
-- Modify: `cmd/serf-tui/primitives.go`
-- Modify: `cmd/serf-tui/primitives_test.go`
+- Modify: `cmd/evener-tui/primitives.go`
+- Modify: `cmd/evener-tui/primitives_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/primitives_test.go
+// append to cmd/evener-tui/primitives_test.go
 
 func TestOverlayContainsTitleBodyFooter(t *testing.T) {
 	out := Overlay(OverlayOpts{
@@ -1043,10 +1043,10 @@ func TestOverlayDrawsRoundedBorder(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestOverlay -v`
+Run: `go test ./cmd/evener-tui -run TestOverlay -v`
 Expected: FAIL with "Overlay undefined"
 
-- [ ] **Step 3: Add to `cmd/serf-tui/primitives.go`**
+- [ ] **Step 3: Add to `cmd/evener-tui/primitives.go`**
 
 ```go
 type OverlayOpts struct {
@@ -1088,13 +1088,13 @@ func Overlay(opts OverlayOpts) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestOverlay -v`
+Run: `go test ./cmd/evener-tui -run TestOverlay -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/primitives.go cmd/serf-tui/primitives_test.go
+git add cmd/evener-tui/primitives.go cmd/evener-tui/primitives_test.go
 git commit -m "feat(tui): add Overlay primitive (wave 2 task 2.5)"
 ```
 
@@ -1107,13 +1107,13 @@ Adopts primitives in the dashboard render path. Drops tree connectors, adds stat
 ### Task 3.1: Section divider replaces existing dashboardHeader
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_appshell_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_appshell_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/hub_appshell_test.go
+// append to cmd/evener-tui/hub_appshell_test.go
 
 func TestDashboardHeaderUsesSectionDivider(t *testing.T) {
 	got := dashboardHeader("http://hub.test", 3, 100)
@@ -1127,12 +1127,12 @@ func TestDashboardHeaderUsesSectionDivider(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestDashboardHeaderUsesSectionDivider -v`
+Run: `go test ./cmd/evener-tui -run TestDashboardHeaderUsesSectionDivider -v`
 Expected: FAIL (existing dashboardHeader does not use ┄)
 
 - [ ] **Step 3: Find current `dashboardHeader`**
 
-Run: `grep -n "func dashboardHeader" cmd/serf-tui/hub_model.go`
+Run: `grep -n "func dashboardHeader" cmd/evener-tui/hub_model.go`
 (Around line 3400 per spec exploration.)
 
 - [ ] **Step 4: Replace `dashboardHeader`**
@@ -1146,36 +1146,36 @@ func dashboardHeader(hubURL string, liveCount int, width int) string {
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestDashboardHeader|TestDashboard" -v`
+Run: `go test ./cmd/evener-tui -run "TestDashboardHeader|TestDashboard" -v`
 Expected: PASS for the new test; existing tests may need updating to match the new header format.
 
 - [ ] **Step 6: Update existing tests that expected the old header**
 
-Run: `grep -n "serf live  http://hub.test" cmd/serf-tui/*_test.go`
+Run: `grep -n "serf live  http://hub.test" cmd/evener-tui/*_test.go`
 Update those expectations to match the new SectionDivider output (or assert via `strings.Contains`).
 
 - [ ] **Step 7: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/hub_appshell_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_appshell_test.go
 git commit -m "feat(tui): dashboard header uses SectionDivider (wave 3 task 3.1)"
 ```
 
 ### Task 3.2: Drop tree connectors `├─`/`└─` from session rows
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_model_test.go` (or wherever session-row tests live; check with `grep -l "dashboardSessionBranch\|renderDashboardSessionRow" cmd/serf-tui/*_test.go`)
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_model_test.go` (or wherever session-row tests live; check with `grep -l "dashboardSessionBranch\|renderDashboardSessionRow" cmd/evener-tui/*_test.go`)
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// in an appropriate test file; e.g. cmd/serf-tui/dashboard_rows_test.go (create if needed)
+// in an appropriate test file; e.g. cmd/evener-tui/dashboard_rows_test.go (create if needed)
 package main
 
 import (
@@ -1199,12 +1199,12 @@ func TestSessionRowsHaveNoTreeConnectors(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSessionRowsHaveNoTreeConnectors -v`
+Run: `go test ./cmd/evener-tui -run TestSessionRowsHaveNoTreeConnectors -v`
 Expected: FAIL (existing code uses `├─`/`└─`)
 
 - [ ] **Step 3: Find `dashboardSessionBranch`**
 
-Run: `grep -n "func dashboardSessionBranch\|func renderDashboardSessionRow" cmd/serf-tui/hub_model.go`
+Run: `grep -n "func dashboardSessionBranch\|func renderDashboardSessionRow" cmd/evener-tui/hub_model.go`
 
 - [ ] **Step 4: Replace `renderDashboardSessionRow` marker**
 
@@ -1245,35 +1245,35 @@ func stateColor(state string) lipgloss.Color {
 
 - [ ] **Step 5: Delete `dashboardSessionBranch`**
 
-It's no longer called. Confirm with `grep dashboardSessionBranch cmd/serf-tui/`. Remove the function and any tests for it.
+It's no longer called. Confirm with `grep dashboardSessionBranch cmd/evener-tui/`. Remove the function and any tests for it.
 
 - [ ] **Step 6: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestSessionRowsHaveNoTreeConnectors -v`
+Run: `go test ./cmd/evener-tui -run TestSessionRowsHaveNoTreeConnectors -v`
 Expected: PASS
 
 - [ ] **Step 7: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS (golden tests may need updating — accept the new output as authoritative)
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/dashboard_rows_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/dashboard_rows_test.go
 git commit -m "feat(tui): drop tree connectors from dashboard rows; use StateBar (wave 3 task 3.2)"
 ```
 
 ### Task 3.3: Dashboard footer uses KbdHint chips
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_appshell_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_appshell_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/hub_appshell_test.go
+// append to cmd/evener-tui/hub_appshell_test.go
 
 func TestDashboardFooterContainsKbdHintChrome(t *testing.T) {
 	got := dashboardFooter(100)
@@ -1286,7 +1286,7 @@ func TestDashboardFooterContainsKbdHintChrome(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestDashboardFooterContainsKbdHintChrome -v`
+Run: `go test ./cmd/evener-tui -run TestDashboardFooterContainsKbdHintChrome -v`
 Expected: FAIL (existing footer is plain text)
 
 - [ ] **Step 3: Find and rewrite `dashboardFooter`**
@@ -1308,30 +1308,30 @@ func dashboardFooter(width int) string {
 
 - [ ] **Step 4: Update other callers of the old footer string**
 
-Run: `grep -n "up/down select\|enter open/toggle" cmd/serf-tui/*.go`
+Run: `grep -n "up/down select\|enter open/toggle" cmd/evener-tui/*.go`
 Replace any tests that assert the old plain-text format.
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/hub_appshell_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/hub_appshell_test.go
 git commit -m "feat(tui): dashboard footer uses KbdHint chips (wave 3 task 3.3)"
 ```
 
 ### Task 3.4: Dashboard rows show state via row text color (not just dot)
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
+- Modify: `cmd/evener-tui/hub_model.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/dashboard_rows_test.go
+// append to cmd/evener-tui/dashboard_rows_test.go
 
 func TestSessionRowAwaitingHasStateColor(t *testing.T) {
 	row := hubRow{kind: hubRowSession, project: "serf", title: "X", state: "awaiting"}
@@ -1347,7 +1347,7 @@ func TestSessionRowAwaitingHasStateColor(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSessionRowAwaitingHasStateColor -v`
+Run: `go test ./cmd/evener-tui -run TestSessionRowAwaitingHasStateColor -v`
 Expected: FAIL (rows render plain text + only dot is colored)
 
 - [ ] **Step 3: Tint the row body**
@@ -1364,18 +1364,18 @@ In `renderDashboardSessionRow`, after building the row text but before returning
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestSessionRowAwaitingHasStateColor -v`
+Run: `go test ./cmd/evener-tui -run TestSessionRowAwaitingHasStateColor -v`
 Expected: PASS
 
 - [ ] **Step 5: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS (existing tests may need golden updates)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/dashboard_rows_test.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/dashboard_rows_test.go
 git commit -m "feat(tui): dashboard rows tint by state color (wave 3 task 3.4)"
 ```
 
@@ -1386,13 +1386,13 @@ git commit -m "feat(tui): dashboard rows tint by state color (wave 3 task 3.4)"
 ### Task 4.1: 3-line session header with SectionDivider + StatusBadge
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
-- Test: `cmd/serf-tui/hub_appshell_test.go` (new test file `cmd/serf-tui/session_header_test.go` if simpler)
+- Modify: `cmd/evener-tui/hub_model.go`
+- Test: `cmd/evener-tui/hub_appshell_test.go` (new test file `cmd/evener-tui/session_header_test.go` if simpler)
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/session_header_test.go
+// cmd/evener-tui/session_header_test.go
 package main
 
 import (
@@ -1439,12 +1439,12 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSessionHeader -v`
+Run: `go test ./cmd/evener-tui -run TestSessionHeader -v`
 Expected: FAIL (existing header is 5-line key:value dump)
 
 - [ ] **Step 3: Find and rewrite `sessionHeaderLines`**
 
-Run: `grep -n "func.*sessionHeaderLines" cmd/serf-tui/hub_model.go`
+Run: `grep -n "func.*sessionHeaderLines" cmd/evener-tui/hub_model.go`
 
 ```go
 func (m hubModel) sessionHeaderLines() []string {
@@ -1487,12 +1487,12 @@ func (m hubModel) sessionHeaderLines() []string {
 
 You may need an `abbreviateModel(s string) string` and `abbreviatePath(s string, max int) string`. Check first:
 
-Run: `grep -n "func abbreviateModel\|func abbreviatePath" cmd/serf-tui/*.go`
+Run: `grep -n "func abbreviateModel\|func abbreviatePath" cmd/evener-tui/*.go`
 
-If `abbreviateModel` does not exist in serf-tui yet (it exists in the web's `spawn.js`), port it as part of this task. Add it to a new `cmd/serf-tui/model_display.go`:
+If `abbreviateModel` does not exist in serf-tui yet (it exists in the web's `spawn.js`), port it as part of this task. Add it to a new `cmd/evener-tui/model_display.go`:
 
 ```go
-// cmd/serf-tui/model_display.go
+// cmd/evener-tui/model_display.go
 package main
 
 import "strings"
@@ -1548,12 +1548,12 @@ func abbreviatePath(p string, max int) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestSessionHeader -v`
+Run: `go test ./cmd/evener-tui -run TestSessionHeader -v`
 Expected: PASS
 
 - [ ] **Step 5: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS (golden tests for `session-*` will likely fail — accept the new format)
 
 - [ ] **Step 6: Update existing session-related golden samples**
@@ -1563,20 +1563,20 @@ Look at `tui_samples.go` `sampleRenderFromRealWidget`. Re-run with `DUMP_RENDER=
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/hub_model.go cmd/serf-tui/session_header_test.go cmd/serf-tui/model_display.go
+git add cmd/evener-tui/hub_model.go cmd/evener-tui/session_header_test.go cmd/evener-tui/model_display.go
 git commit -m "feat(tui): rewrite session header with SectionDivider + StatusBadge (wave 4 task 4.1)"
 ```
 
 ### Task 4.2: Persistent statusbar with health dot + ctx threshold colors
 
 **Files:**
-- Modify: `cmd/serf-tui/statusbar.go`
-- Test: `cmd/serf-tui/statusbar_test.go` (new)
+- Modify: `cmd/evener-tui/statusbar.go`
+- Test: `cmd/evener-tui/statusbar_test.go` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/statusbar_test.go
+// cmd/evener-tui/statusbar_test.go
 package main
 
 import (
@@ -1618,13 +1618,13 @@ func TestStatusBarCtxWarningThreshold(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestStatusBar -v`
+Run: `go test ./cmd/evener-tui -run TestStatusBar -v`
 Expected: FAIL (renderStatusBar undefined or has different signature)
 
-- [ ] **Step 3: Rewrite `cmd/serf-tui/statusbar.go`**
+- [ ] **Step 3: Rewrite `cmd/evener-tui/statusbar.go`**
 
 First check current contents:
-Run: `cat cmd/serf-tui/statusbar.go`
+Run: `cat cmd/evener-tui/statusbar.go`
 
 Replace with:
 
@@ -1721,7 +1721,7 @@ func formatTokenCount(n int) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestStatusBar -v`
+Run: `go test ./cmd/evener-tui -run TestStatusBar -v`
 Expected: PASS
 
 - [ ] **Step 5: Wire `renderStatusBar` into `sessionView`**
@@ -1730,13 +1730,13 @@ In `hub_model.go` `sessionView`, after the existing kbd footer, prepend a call t
 
 - [ ] **Step 6: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/statusbar.go cmd/serf-tui/statusbar_test.go cmd/serf-tui/hub_model.go
+git add cmd/evener-tui/statusbar.go cmd/evener-tui/statusbar_test.go cmd/evener-tui/hub_model.go
 git commit -m "feat(tui): persistent statusbar with health dot + ctx threshold colors (wave 4 task 4.2)"
 ```
 
@@ -1745,14 +1745,14 @@ git commit -m "feat(tui): persistent statusbar with health dot + ctx threshold c
 Covers spec §5.2. Adds `┄` divider between turn clusters, user-turn `┃` (Accent) bar, assistant-turn `▍` (session-state) bar.
 
 **Files:**
-- Modify: `cmd/serf-tui/message.go` (`renderMessage` per-kind)
-- Modify: `cmd/serf-tui/hub_model.go` (`sessionView` adds separator between turns)
-- Create: `cmd/serf-tui/conversation_render_test.go`
+- Modify: `cmd/evener-tui/message.go` (`renderMessage` per-kind)
+- Modify: `cmd/evener-tui/hub_model.go` (`sessionView` adds separator between turns)
+- Create: `cmd/evener-tui/conversation_render_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/conversation_render_test.go
+// cmd/evener-tui/conversation_render_test.go
 package main
 
 import (
@@ -1779,11 +1779,11 @@ func TestAssistantMessageGetsStateBar(t *testing.T) {
 
 - [ ] **Step 2: Run test, expect FAIL**
 
-Run: `go test ./cmd/serf-tui -run "TestUserMessage|TestAssistantMessage" -v`
+Run: `go test ./cmd/evener-tui -run "TestUserMessage|TestAssistantMessage" -v`
 
 - [ ] **Step 3: Modify `renderMessage`**
 
-In `cmd/serf-tui/message.go`:
+In `cmd/evener-tui/message.go`:
 
 ```go
 func renderMessage(msg chatMessage, width int, focused bool) string {
@@ -1827,10 +1827,10 @@ In `hub_model.go` `sessionView`, between message renders:
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 
 ```bash
-git add cmd/serf-tui/message.go cmd/serf-tui/hub_model.go cmd/serf-tui/conversation_render_test.go
+git add cmd/evener-tui/message.go cmd/evener-tui/hub_model.go cmd/evener-tui/conversation_render_test.go
 git commit -m "feat(tui): turn separators + user/assistant left bars (wave 4 task 4.3)"
 ```
 
@@ -1839,7 +1839,7 @@ git commit -m "feat(tui): turn separators + user/assistant left bars (wave 4 tas
 Covers spec §5.3 (selected turn double-bar) and §5.4 (fork-draft section divider).
 
 **Files:**
-- Modify: `cmd/serf-tui/hub_model.go`
+- Modify: `cmd/evener-tui/hub_model.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1891,12 +1891,12 @@ func forkDraftHeader(branch string, divergeTurn int, width int) string {
 }
 ```
 
-Use `forkDraftHeader` where the existing fork-mode UI surfaces (find with `grep -n "fork draft\|fork:" cmd/serf-tui/hub_model.go composer_panel.go`).
+Use `forkDraftHeader` where the existing fork-mode UI surfaces (find with `grep -n "fork draft\|fork:" cmd/evener-tui/hub_model.go composer_panel.go`).
 
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/message.go cmd/serf-tui/hub_model.go cmd/serf-tui/conversation_render_test.go
+git add cmd/evener-tui/message.go cmd/evener-tui/hub_model.go cmd/evener-tui/conversation_render_test.go
 git commit -m "feat(tui): scroll-browse double-bar + fork-draft section divider (wave 4 task 4.4)"
 ```
 
@@ -1907,13 +1907,13 @@ git commit -m "feat(tui): scroll-browse double-bar + fork-draft section divider 
 ### Task 5.1: Define `ToolRenderer` struct + registry skeleton
 
 **Files:**
-- Create: `cmd/serf-tui/tool_renderers.go`
-- Create: `cmd/serf-tui/tool_renderers_test.go`
+- Create: `cmd/evener-tui/tool_renderers.go`
+- Create: `cmd/evener-tui/tool_renderers_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/tool_renderers_test.go
+// cmd/evener-tui/tool_renderers_test.go
 package main
 
 import (
@@ -1962,13 +1962,13 @@ func TestRendererRegistryMCPFallback(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestRendererRegistry -v`
+Run: `go test ./cmd/evener-tui -run TestRendererRegistry -v`
 Expected: FAIL (ToolRenderer + lookupToolRenderer undefined)
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```go
-// cmd/serf-tui/tool_renderers.go
+// cmd/evener-tui/tool_renderers.go
 package main
 
 import (
@@ -2106,13 +2106,13 @@ Remove the broken `fmtIntPlural`, `formatInt`, `fmt2`. Use stdlib `strconv`.
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestRendererRegistry -v`
+Run: `go test ./cmd/evener-tui -run TestRendererRegistry -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): tool renderer registry skeleton + read_file (wave 5 task 5.1)"
 ```
 
@@ -2121,13 +2121,13 @@ git commit -m "feat(tui): tool renderer registry skeleton + read_file (wave 5 ta
 Each one a small TDD increment.
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_renderers.go`
-- Modify: `cmd/serf-tui/tool_renderers_test.go`
+- Modify: `cmd/evener-tui/tool_renderers.go`
+- Modify: `cmd/evener-tui/tool_renderers_test.go`
 
 - [ ] **Step 1: Add tests for each tool**
 
 ```go
-// append to cmd/serf-tui/tool_renderers_test.go
+// append to cmd/evener-tui/tool_renderers_test.go
 
 func TestShellRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("shell")
@@ -2177,7 +2177,7 @@ func TestListDirRenderer(t *testing.T) {
 
 - [ ] **Step 2: Add renderer implementations**
 
-In `cmd/serf-tui/tool_renderers.go`, append inside `init()`:
+In `cmd/evener-tui/tool_renderers.go`, append inside `init()`:
 
 ```go
 func init() {
@@ -2258,13 +2258,13 @@ func init() {
 
 - [ ] **Step 3: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestShell|TestGrep|TestGlob|TestListDir" -v`
+Run: `go test ./cmd/evener-tui -run "TestShell|TestGrep|TestGlob|TestListDir" -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): shell/grep/glob/list_dir renderers (wave 5 task 5.2)"
 ```
 
@@ -2273,7 +2273,7 @@ git commit -m "feat(tui): shell/grep/glob/list_dir renderers (wave 5 task 5.2)"
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-// append to cmd/serf-tui/tool_renderers_test.go
+// append to cmd/evener-tui/tool_renderers_test.go
 
 func TestEditFileRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("edit_file")
@@ -2375,13 +2375,13 @@ func diffResultText(_ ToolArgs, output, errStr string, _ time.Duration) string {
 
 - [ ] **Step 3: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestEditFile|TestWriteFile|TestApplyPatch" -v`
+Run: `go test ./cmd/evener-tui -run "TestEditFile|TestWriteFile|TestApplyPatch" -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): edit/write/apply_patch renderers (wave 5 task 5.3)"
 ```
 
@@ -2390,7 +2390,7 @@ git commit -m "feat(tui): edit/write/apply_patch renderers (wave 5 task 5.3)"
 - [ ] **Step 1: Write the failing tests** (one per renderer)
 
 ```go
-// append to cmd/serf-tui/tool_renderers_test.go
+// append to cmd/evener-tui/tool_renderers_test.go
 
 func TestWebFetchRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("web_fetch")
@@ -2557,25 +2557,25 @@ func shortID(id string) string {
 
 - [ ] **Step 3: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestWebFetch|TestWebSearch|TestSpawnAgent|TestResumeAgent|TestWaitRenderer|TestCloseAgent|TestTaskList|TestUseSkill" -v`
+Run: `go test ./cmd/evener-tui -run "TestWebFetch|TestWebSearch|TestSpawnAgent|TestResumeAgent|TestWaitRenderer|TestCloseAgent|TestTaskList|TestUseSkill" -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): web/spawn/control/task_list/skill renderers (wave 5 task 5.4)"
 ```
 
 ### Task 5.5: Wire registry into `renderToolCall`
 
 **Files:**
-- Modify: `cmd/serf-tui/message.go`
+- Modify: `cmd/evener-tui/message.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/message_test.go (create if needed; or use existing)
+// cmd/evener-tui/message_test.go (create if needed; or use existing)
 package main
 
 import (
@@ -2607,13 +2607,13 @@ func TestRenderToolCallUsesRegistry(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails or passes existing behavior**
 
-Run: `go test ./cmd/serf-tui -run TestRenderToolCall -v`
+Run: `go test ./cmd/evener-tui -run TestRenderToolCall -v`
 
 If it passes with old behavior, the new behavior just enriches it. If it fails, you need to migrate.
 
 - [ ] **Step 3: Replace `renderToolCall` to consume registry**
 
-Find `func renderToolCall` in `cmd/serf-tui/message.go`. Rewrite the header line to use the registry:
+Find `func renderToolCall` in `cmd/evener-tui/message.go`. Rewrite the header line to use the registry:
 
 ```go
 func renderToolCall(tc toolCallInfo, width int, focused bool) string {
@@ -2711,49 +2711,49 @@ func argsJSONFromDescription(s string) string {
 }
 ```
 
-Inspect `toolCallInfo` struct (`grep -n "type toolCallInfo" cmd/serf-tui/message.go`). If there's already a field for raw args (like `RawArgs string`), use it directly. If not, you need to add one — but that's a bigger change deferred to a follow-up kata. For now, the description-fallback works for tests.
+Inspect `toolCallInfo` struct (`grep -n "type toolCallInfo" cmd/evener-tui/message.go`). If there's already a field for raw args (like `RawArgs string`), use it directly. If not, you need to add one — but that's a bigger change deferred to a follow-up kata. For now, the description-fallback works for tests.
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestRenderToolCall|TestRenderer" -v`
+Run: `go test ./cmd/evener-tui -run "TestRenderToolCall|TestRenderer" -v`
 Expected: PASS
 
 - [ ] **Step 5: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS (golden samples may need updating)
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/message.go cmd/serf-tui/message_test.go
+git add cmd/evener-tui/message.go cmd/evener-tui/message_test.go
 git commit -m "feat(tui): renderToolCall consumes registry; new layout with DotLeader (wave 5 task 5.5)"
 ```
 
 ### Task 5.6: Delete `tool_summary.go` switch; keep helper exports
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_summary.go`
+- Modify: `cmd/evener-tui/tool_summary.go`
 
 - [ ] **Step 1: Find what still imports `summarizeTool`**
 
-Run: `grep -rn "summarizeTool" cmd/serf-tui/`
+Run: `grep -rn "summarizeTool" cmd/evener-tui/`
 
 If nothing else imports it, delete `summarizeTool` and the per-tool switch cases. Keep `unifiedDiff`, `highlightDiff`, and any other helpers that wave 6 will reuse.
 
 - [ ] **Step 2: Delete the switch and `summarizeTool`**
 
-Replace `tool_summary.go` with a leaner file holding just the diff/highlight helpers. Move the helpers to `cmd/serf-tui/tool_diff.go` (clearer name).
+Replace `tool_summary.go` with a leaner file holding just the diff/highlight helpers. Move the helpers to `cmd/evener-tui/tool_diff.go` (clearer name).
 
 - [ ] **Step 3: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_summary.go cmd/serf-tui/tool_diff.go
+git add cmd/evener-tui/tool_summary.go cmd/evener-tui/tool_diff.go
 git commit -m "refactor(tui): replace summarizeTool switch with renderer registry (wave 5 task 5.6)"
 ```
 
@@ -2764,13 +2764,13 @@ git commit -m "refactor(tui): replace summarizeTool switch with renderer registr
 ### Task 6.1: `diffBody` — green/red bg tints + chroma syntax
 
 **Files:**
-- Create: `cmd/serf-tui/tool_bodies.go`
-- Create: `cmd/serf-tui/tool_bodies_test.go`
+- Create: `cmd/evener-tui/tool_bodies.go`
+- Create: `cmd/evener-tui/tool_bodies_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/tool_bodies_test.go
+// cmd/evener-tui/tool_bodies_test.go
 package main
 
 import (
@@ -2802,13 +2802,13 @@ func TestDiffBodyHandlesEmptyInput(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestDiffBody -v`
+Run: `go test ./cmd/evener-tui -run TestDiffBody -v`
 Expected: FAIL (diffBody undefined)
 
 - [ ] **Step 3: Implement**
 
 ```go
-// cmd/serf-tui/tool_bodies.go
+// cmd/evener-tui/tool_bodies.go
 package main
 
 import (
@@ -2850,12 +2850,12 @@ func diffBody(_ ToolArgs, output string, width int) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestDiffBody -v`
+Run: `go test ./cmd/evener-tui -run TestDiffBody -v`
 Expected: PASS
 
 - [ ] **Step 5: Wire `diffBody` into edit_file/write_file/apply_patch renderers**
 
-In `cmd/serf-tui/tool_renderers.go`, set `Body: diffBody` on those three renderers.
+In `cmd/evener-tui/tool_renderers.go`, set `Body: diffBody` on those three renderers.
 
 ```go
 	editFileRenderer.Body = diffBody
@@ -2872,26 +2872,26 @@ In `cmd/serf-tui/tool_renderers.go`, set `Body: diffBody` on those three rendere
 
 - [ ] **Step 6: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_bodies.go cmd/serf-tui/tool_bodies_test.go cmd/serf-tui/tool_renderers.go
+git add cmd/evener-tui/tool_bodies.go cmd/evener-tui/tool_bodies_test.go cmd/evener-tui/tool_renderers.go
 git commit -m "feat(tui): diffBody with state-tinted +/- lines (wave 6 task 6.1)"
 ```
 
 ### Task 6.2: `fileBody` — chroma-highlight + truncation
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_bodies.go`
-- Modify: `cmd/serf-tui/tool_bodies_test.go`
+- Modify: `cmd/evener-tui/tool_bodies.go`
+- Modify: `cmd/evener-tui/tool_bodies_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tool_bodies_test.go
+// append to cmd/evener-tui/tool_bodies_test.go
 
 func TestFileBodyShowsFirstLines(t *testing.T) {
 	lines := []string{}
@@ -2911,13 +2911,13 @@ func TestFileBodyShowsFirstLines(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestFileBody -v`
+Run: `go test ./cmd/evener-tui -run TestFileBody -v`
 Expected: FAIL (fileBody undefined)
 
 - [ ] **Step 3: Implement**
 
 ```go
-// append to cmd/serf-tui/tool_bodies.go
+// append to cmd/evener-tui/tool_bodies.go
 
 const fileBodyPreviewLines = 5
 
@@ -2991,26 +2991,26 @@ func highlightBlockByFilename(text, filename string) string {
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestFileBody -v`
+Run: `go test ./cmd/evener-tui -run TestFileBody -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_bodies.go cmd/serf-tui/tool_bodies_test.go cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_diff.go
+git add cmd/evener-tui/tool_bodies.go cmd/evener-tui/tool_bodies_test.go cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_diff.go
 git commit -m "feat(tui): fileBody with chroma highlight + truncation (wave 6 task 6.2)"
 ```
 
 ### Task 6.3: `taskListBody` — per-task rows with state glyphs
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_bodies.go`
-- Modify: `cmd/serf-tui/tool_bodies_test.go`
+- Modify: `cmd/evener-tui/tool_bodies.go`
+- Modify: `cmd/evener-tui/tool_bodies_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tool_bodies_test.go
+// append to cmd/evener-tui/tool_bodies_test.go
 
 func TestTaskListBodyRendersPerTaskRows(t *testing.T) {
 	// task_list output is JSON-shaped: array of {name, status}.
@@ -3030,13 +3030,13 @@ func TestTaskListBodyRendersPerTaskRows(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestTaskListBody -v`
+Run: `go test ./cmd/evener-tui -run TestTaskListBody -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement**
 
 ```go
-// append to cmd/serf-tui/tool_bodies.go
+// append to cmd/evener-tui/tool_bodies.go
 
 import "encoding/json"
 
@@ -3087,26 +3087,26 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestTaskListBody -v`
+Run: `go test ./cmd/evener-tui -run TestTaskListBody -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_bodies.go cmd/serf-tui/tool_bodies_test.go cmd/serf-tui/tool_renderers.go
+git add cmd/evener-tui/tool_bodies.go cmd/evener-tui/tool_bodies_test.go cmd/evener-tui/tool_renderers.go
 git commit -m "feat(tui): taskListBody renders per-task rows (wave 6 task 6.3)"
 ```
 
 ### Task 6.4: `subagentBody` with depth cap + width floor
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_bodies.go`
-- Modify: `cmd/serf-tui/tool_bodies_test.go`
+- Modify: `cmd/evener-tui/tool_bodies.go`
+- Modify: `cmd/evener-tui/tool_bodies_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tool_bodies_test.go
+// append to cmd/evener-tui/tool_bodies_test.go
 
 func TestSubagentBodyShowsSummaryWhenChildUnavailable(t *testing.T) {
 	args := ToolArgs{"agent_id": "01NONEXISTENT", "turns_used": float64(3)}
@@ -3127,13 +3127,13 @@ func TestSubagentBodyHandlesNarrowWidth(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestSubagentBody -v`
+Run: `go test ./cmd/evener-tui -run TestSubagentBody -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement**
 
 ```go
-// append to cmd/serf-tui/tool_bodies.go
+// append to cmd/evener-tui/tool_bodies.go
 
 func subagentBody(args ToolArgs, _ string, width int) string {
 	th := activeThemeV2()
@@ -3172,7 +3172,7 @@ func subagentBody(args ToolArgs, _ string, width int) string {
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestSubagentBody -v`
+Run: `go test ./cmd/evener-tui -run TestSubagentBody -v`
 Expected: PASS
 
 - [ ] **Step 6: File follow-up kata for full nested subagent rendering**
@@ -3188,20 +3188,20 @@ kata create "subagent body: nested inline rendering with depth cap" \
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_bodies.go cmd/serf-tui/tool_bodies_test.go cmd/serf-tui/tool_renderers.go
+git add cmd/evener-tui/tool_bodies.go cmd/evener-tui/tool_bodies_test.go cmd/evener-tui/tool_renderers.go
 git commit -m "feat(tui): subagentBody summary line with width guard (wave 6 task 6.4)"
 ```
 
 ### Task 6.5: `shellBody` + `webSearchBody`
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_bodies.go`
-- Modify: `cmd/serf-tui/tool_bodies_test.go`
+- Modify: `cmd/evener-tui/tool_bodies.go`
+- Modify: `cmd/evener-tui/tool_bodies_test.go`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-// append to cmd/serf-tui/tool_bodies_test.go
+// append to cmd/evener-tui/tool_bodies_test.go
 
 func TestShellBodyHighlightsOutput(t *testing.T) {
 	got := shellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
@@ -3279,13 +3279,13 @@ func highlightBlock(text, lang string) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestShellBody|TestWebSearchBody" -v`
+Run: `go test ./cmd/evener-tui -run "TestShellBody|TestWebSearchBody" -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_bodies.go cmd/serf-tui/tool_bodies_test.go cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_diff.go
+git add cmd/evener-tui/tool_bodies.go cmd/evener-tui/tool_bodies_test.go cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_diff.go
 git commit -m "feat(tui): shellBody + webSearchBody (wave 6 task 6.5)"
 ```
 
@@ -3296,14 +3296,14 @@ git commit -m "feat(tui): shellBody + webSearchBody (wave 6 task 6.5)"
 ### Task 7.1: Composer chip strip (display only)
 
 **Files:**
-- Modify: `cmd/serf-tui/composer_panel.go`
-- Create: `cmd/serf-tui/composer_render.go`
-- Create: `cmd/serf-tui/composer_render_test.go`
+- Modify: `cmd/evener-tui/composer_panel.go`
+- Create: `cmd/evener-tui/composer_render.go`
+- Create: `cmd/evener-tui/composer_render_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/composer_render_test.go
+// cmd/evener-tui/composer_render_test.go
 package main
 
 import (
@@ -3340,13 +3340,13 @@ func TestComposerChipStripIncludesModeChip(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestComposerChipStrip -v`
+Run: `go test ./cmd/evener-tui -run TestComposerChipStrip -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement**
 
 ```go
-// cmd/serf-tui/composer_render.go
+// cmd/evener-tui/composer_render.go
 package main
 
 import (
@@ -3406,7 +3406,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestComposerChipStrip -v`
+Run: `go test ./cmd/evener-tui -run TestComposerChipStrip -v`
 Expected: PASS
 
 - [ ] **Step 5: Wire into composer panel View**
@@ -3415,13 +3415,13 @@ In `composer_panel.go` `View()`, prepend `renderComposerChipStrip(ctx)` to the e
 
 - [ ] **Step 6: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/composer_render.go cmd/serf-tui/composer_render_test.go cmd/serf-tui/composer_panel.go
+git add cmd/evener-tui/composer_render.go cmd/evener-tui/composer_render_test.go cmd/evener-tui/composer_panel.go
 git commit -m "feat(tui): composer chip strip + mode chip (wave 7 task 7.1)"
 ```
 
@@ -3430,13 +3430,13 @@ git commit -m "feat(tui): composer chip strip + mode chip (wave 7 task 7.1)"
 Covers spec §7.3 (textarea prefix in Accent, cursor in Accent) and §7.4 (mode-dependent hint sets).
 
 **Files:**
-- Modify: `cmd/serf-tui/composer_panel.go`
-- Modify: `cmd/serf-tui/composer_render.go`
+- Modify: `cmd/evener-tui/composer_panel.go`
+- Modify: `cmd/evener-tui/composer_render.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/composer_render_test.go
+// append to cmd/evener-tui/composer_render_test.go
 
 func TestComposerFooterHintsAreModeAware(t *testing.T) {
 	compose := composerFooterHints("compose", 100)
@@ -3461,7 +3461,7 @@ func TestComposerFooterHintsAreModeAware(t *testing.T) {
 - [ ] **Step 3: Implement**
 
 ```go
-// append to cmd/serf-tui/composer_render.go
+// append to cmd/evener-tui/composer_render.go
 
 func composerFooterHints(mode string, width int) string {
 	switch mode {
@@ -3508,7 +3508,7 @@ Replace the existing footer string with `composerFooterHints(currentMode, width)
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/composer_render.go cmd/serf-tui/composer_render_test.go cmd/serf-tui/composer_panel.go
+git add cmd/evener-tui/composer_render.go cmd/evener-tui/composer_render_test.go cmd/evener-tui/composer_panel.go
 git commit -m "feat(tui): composer footer hints are mode-aware (wave 7 task 7.2)"
 ```
 
@@ -3521,12 +3521,12 @@ One task per overlay. Each adopts the `Overlay` primitive.
 ### Task 8.1: `model_picker` adopts Overlay
 
 **Files:**
-- Modify: `cmd/serf-tui/model_picker.go`
-- Test: `cmd/serf-tui/model_picker_test.go` (find existing or create)
+- Modify: `cmd/evener-tui/model_picker.go`
+- Test: `cmd/evener-tui/model_picker_test.go` (find existing or create)
 
 - [ ] **Step 1: Find existing model picker test**
 
-Run: `grep -ln "modelPicker\|ModelPicker" cmd/serf-tui/*_test.go`
+Run: `grep -ln "modelPicker\|ModelPicker" cmd/evener-tui/*_test.go`
 
 - [ ] **Step 2: Write the failing test**
 
@@ -3551,10 +3551,10 @@ func TestModelPickerUsesOverlayBorder(t *testing.T) {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestModelPickerUsesOverlay -v`
+Run: `go test ./cmd/evener-tui -run TestModelPickerUsesOverlay -v`
 Expected: FAIL (existing picker may use different border style)
 
-- [ ] **Step 4: Modify `cmd/serf-tui/model_picker.go`'s `View()` to delegate to `Overlay`**
+- [ ] **Step 4: Modify `cmd/evener-tui/model_picker.go`'s `View()` to delegate to `Overlay`**
 
 ```go
 func (m modelPicker) View() string {
@@ -3574,20 +3574,20 @@ Extract the existing body-rendering into `renderBody`.
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestModelPicker -v`
+Run: `go test ./cmd/evener-tui -run TestModelPicker -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-tui/model_picker.go cmd/serf-tui/model_picker_test.go
+git add cmd/evener-tui/model_picker.go cmd/evener-tui/model_picker_test.go
 git commit -m "feat(tui): model_picker adopts Overlay primitive (wave 8 task 8.1)"
 ```
 
 ### Task 8.2: `theme_picker` adopts Overlay
 
 **Files:**
-- Modify: `cmd/serf-tui/theme_picker.go`
+- Modify: `cmd/evener-tui/theme_picker.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3602,7 +3602,7 @@ func TestThemePickerUsesOverlayBorder(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**: `go test ./cmd/serf-tui -run TestThemePicker -v`
+- [ ] **Step 2: Run test to verify it fails**: `go test ./cmd/evener-tui -run TestThemePicker -v`
 
 - [ ] **Step 3: Implement** — wrap existing body in `Overlay`:
 
@@ -3617,15 +3617,15 @@ func (p themePicker) View() string {
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-go test ./cmd/serf-tui/...
-git add cmd/serf-tui/theme_picker.go cmd/serf-tui/theme_picker_test.go
+go test ./cmd/evener-tui/...
+git add cmd/evener-tui/theme_picker.go cmd/evener-tui/theme_picker_test.go
 git commit -m "feat(tui): theme_picker adopts Overlay primitive (wave 8 task 8.2)"
 ```
 
 ### Task 8.3: `command_palette` adopts Overlay + slash-command items
 
 **Files:**
-- Modify: `cmd/serf-tui/command_palette.go`
+- Modify: `cmd/evener-tui/command_palette.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3678,14 +3678,14 @@ func (p commandPalette) View() string {
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/command_palette.go cmd/serf-tui/command_palette_test.go
+git add cmd/evener-tui/command_palette.go cmd/evener-tui/command_palette_test.go
 git commit -m "feat(tui): command_palette adopts Overlay + slash items (wave 8 task 8.3)"
 ```
 
 ### Task 8.4: `credentials_panel` adopts Overlay + status badges
 
 **Files:**
-- Modify: `cmd/serf-tui/credentials_panel.go`
+- Modify: `cmd/evener-tui/credentials_panel.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3739,14 +3739,14 @@ func (p credentialsPanel) View() string {
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/credentials_panel.go cmd/serf-tui/credentials_panel_test.go
+git add cmd/evener-tui/credentials_panel.go cmd/evener-tui/credentials_panel_test.go
 git commit -m "feat(tui): credentials_panel adopts Overlay + status badges (wave 8 task 8.4)"
 ```
 
 ### Task 8.5: `launch_settings_panel` adopts Overlay
 
 **Files:**
-- Modify: `cmd/serf-tui/launch_settings_panel.go`
+- Modify: `cmd/evener-tui/launch_settings_panel.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3775,14 +3775,14 @@ func (p launchSettingsPanel) View() string {
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/launch_settings_panel.go cmd/serf-tui/launch_settings_panel_test.go
+git add cmd/evener-tui/launch_settings_panel.go cmd/evener-tui/launch_settings_panel_test.go
 git commit -m "feat(tui): launch_settings_panel adopts Overlay (wave 8 task 8.5)"
 ```
 
 ### Task 8.6: `launch_overrides_modal` adopts Overlay
 
 **Files:**
-- Modify: `cmd/serf-tui/launch_overrides_modal.go`
+- Modify: `cmd/evener-tui/launch_overrides_modal.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3811,14 +3811,14 @@ func (m launchOverridesModal) View() string {
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/launch_overrides_modal.go cmd/serf-tui/launch_overrides_modal_test.go
+git add cmd/evener-tui/launch_overrides_modal.go cmd/evener-tui/launch_overrides_modal_test.go
 git commit -m "feat(tui): launch_overrides_modal adopts Overlay (wave 8 task 8.6)"
 ```
 
 ### Task 8.7: `text_input_modal` adopts Overlay (smaller width)
 
 **Files:**
-- Modify: `cmd/serf-tui/text_input_modal.go`
+- Modify: `cmd/evener-tui/text_input_modal.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3855,7 +3855,7 @@ func (m textInputModal) View() string {
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-tui/text_input_modal.go cmd/serf-tui/text_input_modal_test.go
+git add cmd/evener-tui/text_input_modal.go cmd/evener-tui/text_input_modal_test.go
 git commit -m "feat(tui): text_input_modal adopts Overlay primitive (wave 8 task 8.7)"
 ```
 
@@ -3864,7 +3864,7 @@ git commit -m "feat(tui): text_input_modal adopts Overlay primitive (wave 8 task
 Covers spec §8.2 notice_panel. Diagnostic voice = state-colored ▍ left bar, three indented lines (`summary`, key/value cause + next).
 
 **Files:**
-- Modify: `cmd/serf-tui/notice_panel.go`
+- Modify: `cmd/evener-tui/notice_panel.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3924,7 +3924,7 @@ func (np noticePanel) View() string {
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/notice_panel.go cmd/serf-tui/notice_panel_test.go
+git add cmd/evener-tui/notice_panel.go cmd/evener-tui/notice_panel_test.go
 git commit -m "feat(tui): notice_panel diagnostic voice with state bar (wave 8 task 8.8)"
 ```
 
@@ -3933,7 +3933,7 @@ git commit -m "feat(tui): notice_panel diagnostic voice with state bar (wave 8 t
 Covers spec §8.2 details_drawer.
 
 **Files:**
-- Modify: `cmd/serf-tui/details_drawer.go`
+- Modify: `cmd/evener-tui/details_drawer.go`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3961,7 +3961,7 @@ In `details_drawer.go` `View()`, add section labels via `lipgloss.NewStyle().For
 - [ ] **Step 4: Run tests and commit**
 
 ```bash
-git add cmd/serf-tui/details_drawer.go cmd/serf-tui/details_drawer_test.go
+git add cmd/evener-tui/details_drawer.go cmd/evener-tui/details_drawer_test.go
 git commit -m "feat(tui): details_drawer adopts section labels + status badge (wave 8 task 8.9)"
 ```
 
@@ -3972,14 +3972,14 @@ git commit -m "feat(tui): details_drawer adopts section labels + status badge (w
 ### Task 9.1: `topmostOverlay` helper + key routing
 
 **Files:**
-- Create: `cmd/serf-tui/focus_trap.go`
-- Create: `cmd/serf-tui/focus_trap_test.go`
-- Modify: `cmd/serf-tui/hub_model.go`
+- Create: `cmd/evener-tui/focus_trap.go`
+- Create: `cmd/evener-tui/focus_trap_test.go`
+- Modify: `cmd/evener-tui/hub_model.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// cmd/serf-tui/focus_trap_test.go
+// cmd/evener-tui/focus_trap_test.go
 package main
 
 import (
@@ -4022,17 +4022,17 @@ func TestCtrlOEscapesAllOverlays(t *testing.T) {
 }
 ```
 
-(`newHubModelForTest` and `newCredentialsPanelForTest` are test helpers you may need to add or already exist in the repo. Check first with `grep -n "newHubModelForTest\|newCredentialsPanelForTest" cmd/serf-tui/*_test.go`.)
+(`newHubModelForTest` and `newCredentialsPanelForTest` are test helpers you may need to add or already exist in the repo. Check first with `grep -n "newHubModelForTest\|newCredentialsPanelForTest" cmd/evener-tui/*_test.go`.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `go test ./cmd/serf-tui -run "TestCmdP|TestEscClosesTopmost|TestCtrlOEscapes" -v`
+Run: `go test ./cmd/evener-tui -run "TestCmdP|TestEscClosesTopmost|TestCtrlOEscapes" -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement focus_trap.go**
 
 ```go
-// cmd/serf-tui/focus_trap.go
+// cmd/evener-tui/focus_trap.go
 package main
 
 import (
@@ -4113,18 +4113,18 @@ func (m hubModel) dispatchOverlayKey(name string, msg tea.KeyMsg) (tea.Model, te
 
 - [ ] **Step 5: Run tests**
 
-Run: `go test ./cmd/serf-tui -run "TestCmdP|TestEscClosesTopmost|TestCtrlOEscapes|TestFocusTrap" -v`
+Run: `go test ./cmd/evener-tui -run "TestCmdP|TestEscClosesTopmost|TestCtrlOEscapes|TestFocusTrap" -v`
 Expected: PASS
 
 - [ ] **Step 6: Run full suite**
 
-Run: `go test ./cmd/serf-tui/...`
+Run: `go test ./cmd/evener-tui/...`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-tui/focus_trap.go cmd/serf-tui/focus_trap_test.go cmd/serf-tui/hub_model.go
+git add cmd/evener-tui/focus_trap.go cmd/evener-tui/focus_trap_test.go cmd/evener-tui/hub_model.go
 git commit -m "feat(tui): focus-trap helper + key routing (wave 9 task 9.1)"
 ```
 
@@ -4137,13 +4137,13 @@ Wave 5 task 5.1 already registered an MCP fallback returning `provider` verb + `
 ### Task 10.1: Enrich MCP fallback target with first args
 
 **Files:**
-- Modify: `cmd/serf-tui/tool_renderers.go`
-- Modify: `cmd/serf-tui/tool_renderers_test.go`
+- Modify: `cmd/evener-tui/tool_renderers.go`
+- Modify: `cmd/evener-tui/tool_renderers_test.go`
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-// append to cmd/serf-tui/tool_renderers_test.go
+// append to cmd/evener-tui/tool_renderers_test.go
 
 func TestMCPFallbackTargetIncludesFirstArgs(t *testing.T) {
 	r, _ := lookupToolRenderer("linear__search")
@@ -4160,7 +4160,7 @@ func TestMCPFallbackTargetIncludesFirstArgs(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./cmd/serf-tui -run TestMCPFallback -v`
+Run: `go test ./cmd/evener-tui -run TestMCPFallback -v`
 Expected: FAIL (current target is just the operation name)
 
 - [ ] **Step 3: Enhance `mcpFallbackRenderer`**
@@ -4230,13 +4230,13 @@ func jsonBody(_ ToolArgs, output string, width int) string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./cmd/serf-tui -run TestMCPFallback -v`
+Run: `go test ./cmd/evener-tui -run TestMCPFallback -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): MCP fallback includes first args + jsonBody (wave 10 task 10.1)"
 ```
 
@@ -4272,7 +4272,7 @@ func unknownToolRenderer(tool string) ToolRenderer {
 - [ ] **Step 3: Run + commit**
 
 ```bash
-git add cmd/serf-tui/tool_renderers.go cmd/serf-tui/tool_renderers_test.go
+git add cmd/evener-tui/tool_renderers.go cmd/evener-tui/tool_renderers_test.go
 git commit -m "feat(tui): unknown-tool fallback gets jsonBody (wave 10 task 10.2)"
 ```
 
@@ -4283,7 +4283,7 @@ git commit -m "feat(tui): unknown-tool fallback gets jsonBody (wave 10 task 10.2
 ### Task F.1: Golden corpus runs against dark + light
 
 **Files:**
-- Modify: `cmd/serf-tui/tui_samples_test.go`
+- Modify: `cmd/evener-tui/tui_samples_test.go`
 
 - [ ] **Step 1: Update the golden runner**
 
@@ -4316,8 +4316,8 @@ func TestGoldenRendersAcrossThemes(t *testing.T) {
 - [ ] **Step 2: Run + commit**
 
 ```bash
-go test ./cmd/serf-tui -run TestGoldenRendersAcrossThemes -v
-git add cmd/serf-tui/tui_samples_test.go
+go test ./cmd/evener-tui -run TestGoldenRendersAcrossThemes -v
+git add cmd/evener-tui/tui_samples_test.go
 git commit -m "test(tui): golden corpus runs against dark+light (final wave task F.1)"
 ```
 
@@ -4326,7 +4326,7 @@ git commit -m "test(tui): golden corpus runs against dark+light (final wave task
 - [ ] **Step 1: Build the binary**
 
 ```bash
-go build -o /tmp/serf-tui-final ./cmd/serf-tui
+go build -o /tmp/serf-tui-final ./cmd/evener-tui
 ```
 
 - [ ] **Step 2: Run smoke tests**

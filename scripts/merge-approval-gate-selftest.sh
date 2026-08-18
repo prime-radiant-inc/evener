@@ -114,7 +114,7 @@ expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "a blocked capability still runs every feasible phase, in order"
 assert_has "$work/blocked-loopback.out" "BLOCKED loopback-bind" "the blocked capability is named in the structured summary"
-assert_has "$work/blocked-loopback.out" "go run ./cmd/serf-gate-probe -only=loopback-bind" "the summary carries an exact reprobe command"
+assert_has "$work/blocked-loopback.out" "go run ./cmd/evener-gate-probe -only=loopback-bind" "the summary carries an exact reprobe command"
 assert_has "$work/blocked-loopback.out" "rerun once fixed" "the summary carries an exact rerun command for the skipped tests"
 blocked_lines="$(grep -c 'BLOCKED loopback-bind' "$work/blocked-loopback.out" 2>/dev/null || echo 0)"
 assert_eq "$blocked_lines" "1" "the capability is classified once, not once per phase"
@@ -152,7 +152,7 @@ make_case="$work/make-wiring"
 make_repo="$make_case/repo"
 make_state="$make_case/state"
 make_bin="$make_case/bin"
-mkdir -p "$make_repo/scripts" "$make_repo/cmd/serf-hub/frontend" "$make_state" "$make_bin"
+mkdir -p "$make_repo/scripts" "$make_repo/cmd/evener-hub/frontend" "$make_state" "$make_bin"
 for module in agent llm auth envvars invariant identifier fuzz; do
 	mkdir -p "$make_repo/$module"
 done

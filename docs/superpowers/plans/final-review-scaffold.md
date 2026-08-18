@@ -116,7 +116,7 @@ has silently changed and that the ratified ones stayed ratified — it does **no
 4. **Confirm the M9 evidence** supports the two ratified-by-default items (§8) and that no M9 finding
    was left unadjudicated.
 5. **Re-run all gates** independently (tsc → vitest with file-count check, biome, build+PLACEHOLDER,
-   `go build ./...`, `make lint`, `go test ./cmd/serf-hub/...`).
+   `go build ./...`, `make lint`, `go test ./cmd/evener-hub/...`).
 6. **Sweep stale prose** (§ carried from last review's Duty 4 — see §8 note).
 
 ---

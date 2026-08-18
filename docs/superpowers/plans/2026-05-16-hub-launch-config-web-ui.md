@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go html/template (existing), HTMX 1.x (existing), vanilla JS (existing). No new dependencies.
 
-**Prerequisite:** Backend plan landed — `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`, and the two notifications are wired in `cmd/serf-hub/app_rpc.go`.
+**Prerequisite:** Backend plan landed — `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`, and the two notifications are wired in `cmd/evener-hub/app_rpc.go`.
 
 **Spec:** `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
 
@@ -18,44 +18,44 @@
 
 **New files**
 
-- `cmd/serf-hub/assets/launchconfig.js` — RPC helper: `resolve`, `getLayer`, `setLayer`, `trustRepo`, `authList`, `authApiKeySet`, `authLogout`
-- `cmd/serf-hub/templates/partials/settings/launch.html` — global / project / in-repo tab combined
-- `cmd/serf-hub/templates/partials/credentials.html` — credentials route
-- `cmd/serf-hub/web_launchconfig.go` — HTTP handlers for the new partials and JSON endpoints (`/api/launch/*`, `/api/credentials/*` thin wrappers around RPCs)
-- `cmd/serf-hub/web_launchconfig_test.go` — Go-side HTTP tests
-- `cmd/serf-hub/jstest/launchconfig.spec.js` — JS form-render tests (if jstest harness is present)
+- `cmd/evener-hub/assets/launchconfig.js` — RPC helper: `resolve`, `getLayer`, `setLayer`, `trustRepo`, `authList`, `authApiKeySet`, `authLogout`
+- `cmd/evener-hub/templates/partials/settings/launch.html` — global / project / in-repo tab combined
+- `cmd/evener-hub/templates/partials/credentials.html` — credentials route
+- `cmd/evener-hub/web_launchconfig.go` — HTTP handlers for the new partials and JSON endpoints (`/api/launch/*`, `/api/credentials/*` thin wrappers around RPCs)
+- `cmd/evener-hub/web_launchconfig_test.go` — Go-side HTTP tests
+- `cmd/evener-hub/jstest/launchconfig.spec.js` — JS form-render tests (if jstest harness is present)
 
 **Modified files**
 
-- `cmd/serf-hub/web.go` — add routes, extend `spawnRequest` with `launch_overrides`, register new partial handlers
-- `cmd/serf-hub/templates/partials/spawn.html` — add Advanced disclosure
-- `cmd/serf-hub/templates/partials/settings.html` — add Launch and In-Repo nav entries; mark Plugins/Skills/MCP entries as launch-config sub-views
-- `cmd/serf-hub/templates/partials/settings/plugins.html` — replace stub with editable plugin_dirs form
-- `cmd/serf-hub/templates/partials/settings/skills.html` — replace stub with editable skills_dirs form
-- `cmd/serf-hub/templates/partials/settings/mcp.html` — replace stub with editable mcps + mcp_configs form
-- `cmd/serf-hub/templates/partials/settings/providers.html` — show provider rows with auth modes, add `/credentials` link
-- `cmd/serf-hub/assets/spawn.js` — extend new-thread form to read Advanced fields and submit them as `launch_overrides`
-- `cmd/serf-hub/assets/style.css` — minor additions for the new forms
-- `cmd/serf-hub/assets/notifications.js` — handle `serf/auth/updated` and `serf/launch/updated` to refresh open partials
+- `cmd/evener-hub/web.go` — add routes, extend `spawnRequest` with `launch_overrides`, register new partial handlers
+- `cmd/evener-hub/templates/partials/spawn.html` — add Advanced disclosure
+- `cmd/evener-hub/templates/partials/settings.html` — add Launch and In-Repo nav entries; mark Plugins/Skills/MCP entries as launch-config sub-views
+- `cmd/evener-hub/templates/partials/settings/plugins.html` — replace stub with editable plugin_dirs form
+- `cmd/evener-hub/templates/partials/settings/skills.html` — replace stub with editable skills_dirs form
+- `cmd/evener-hub/templates/partials/settings/mcp.html` — replace stub with editable mcps + mcp_configs form
+- `cmd/evener-hub/templates/partials/settings/providers.html` — show provider rows with auth modes, add `/credentials` link
+- `cmd/evener-hub/assets/spawn.js` — extend new-thread form to read Advanced fields and submit them as `launch_overrides`
+- `cmd/evener-hub/assets/style.css` — minor additions for the new forms
+- `cmd/evener-hub/assets/notifications.js` — handle `serf/auth/updated` and `serf/launch/updated` to refresh open partials
 
 ---
 
 ## Task 1 — JS RPC helper module
 
 **Files:**
-- Create: `cmd/serf-hub/assets/launchconfig.js`
+- Create: `cmd/evener-hub/assets/launchconfig.js`
 
 - [ ] **Step 1: Inspect the existing appwire RPC pattern**
 
 ```bash
-grep -n "appwireRequest\|callRPC\|fetchRPC\|function call" cmd/serf-hub/assets/appwire.js | head -10
+grep -n "appwireRequest\|callRPC\|fetchRPC\|function call" cmd/evener-hub/assets/appwire.js | head -10
 ```
 
 You should find an exported `appwire.request(method, params)` or similar JSON-RPC sender. Use it.
 
 - [ ] **Step 2: Write the module**
 
-`cmd/serf-hub/assets/launchconfig.js`:
+`cmd/evener-hub/assets/launchconfig.js`:
 
 ```js
 // launchconfig.js — thin wrappers around serf/launch/* and serf/auth/*
@@ -83,7 +83,7 @@ You should find an exported `appwire.request(method, params)` or similar JSON-RP
 
 - [ ] **Step 3: Add `<script src="/assets/launchconfig.js">` to `app.html`**
 
-`cmd/serf-hub/templates/app.html`: after the existing `<script src="/assets/appwire.js"></script>` line, add:
+`cmd/evener-hub/templates/app.html`: after the existing `<script src="/assets/appwire.js"></script>` line, add:
 
 ```html
 <script src="/assets/launchconfig.js"></script>
@@ -100,7 +100,7 @@ Expected: a promise resolving to `{providers: [...]}`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/launchconfig.js cmd/serf-hub/templates/app.html
+git add cmd/evener-hub/assets/launchconfig.js cmd/evener-hub/templates/app.html
 git commit -m "web: launchconfig.js RPC helper"
 ```
 
@@ -109,19 +109,19 @@ git commit -m "web: launchconfig.js RPC helper"
 ## Task 2 — `/credentials` route
 
 **Files:**
-- Modify: `cmd/serf-hub/web.go`
-- Create: `cmd/serf-hub/templates/partials/credentials.html`
+- Modify: `cmd/evener-hub/web.go`
+- Create: `cmd/evener-hub/templates/partials/credentials.html`
 
 - [ ] **Step 1: Add the route**
 
-In `cmd/serf-hub/web.go` (next to the existing `/settings/` route registration):
+In `cmd/evener-hub/web.go` (next to the existing `/settings/` route registration):
 
 ```go
 mux.HandleFunc("/credentials", s.handleCredentials)
 mux.HandleFunc("/_partials/credentials", s.handleCredentialsPartial)
 ```
 
-Implement the handlers (new file `cmd/serf-hub/web_launchconfig.go`):
+Implement the handlers (new file `cmd/evener-hub/web_launchconfig.go`):
 
 ```go
 package main
@@ -149,7 +149,7 @@ Wire `credsTmpl` into the `WebServer` struct similarly to `spawnTmpl`. Look at h
 
 - [ ] **Step 2: Write the partial template**
 
-`cmd/serf-hub/templates/partials/credentials.html`:
+`cmd/evener-hub/templates/partials/credentials.html`:
 
 ```html
 {{define "credentials"}}
@@ -229,7 +229,7 @@ Wire `credsTmpl` into the `WebServer` struct similarly to `spawnTmpl`. Look at h
 
 - [ ] **Step 3: Add CSS hooks (minimal)**
 
-Append to `cmd/serf-hub/assets/style.css`:
+Append to `cmd/evener-hub/assets/style.css`:
 
 ```css
 .credentials-pane { padding: 1rem 1.25rem; }
@@ -241,7 +241,7 @@ Append to `cmd/serf-hub/assets/style.css`:
 
 - [ ] **Step 4: Write a smoke test**
 
-`cmd/serf-hub/web_launchconfig_test.go`:
+`cmd/evener-hub/web_launchconfig_test.go`:
 
 ```go
 package main
@@ -285,8 +285,8 @@ func TestWeb_CredentialsPartial(t *testing.T) {
 - [ ] **Step 5: Run and commit**
 
 ```bash
-go test ./cmd/serf-hub/ -run TestWeb_Credentials -v
-git add cmd/serf-hub/web.go cmd/serf-hub/web_launchconfig.go cmd/serf-hub/templates/partials/credentials.html cmd/serf-hub/assets/style.css cmd/serf-hub/web_launchconfig_test.go
+go test ./cmd/evener-hub/ -run TestWeb_Credentials -v
+git add cmd/evener-hub/web.go cmd/evener-hub/web_launchconfig.go cmd/evener-hub/templates/partials/credentials.html cmd/evener-hub/assets/style.css cmd/evener-hub/web_launchconfig_test.go
 git commit -m "web: /credentials route and partial"
 ```
 
@@ -295,7 +295,7 @@ git commit -m "web: /credentials route and partial"
 ## Task 3 — Replace the Providers settings tab content
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/providers.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/providers.html`
 
 The existing partial reads from server-side `.Providers` data. We replace it with a JS-driven view that calls `launchconfig.authList()` directly so the panel reflects credential state, not just configured model lists.
 
@@ -337,7 +337,7 @@ Start hub, navigate to `/settings/providers`, confirm rows render with status pi
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/providers.html
+git add cmd/evener-hub/templates/partials/settings/providers.html
 git commit -m "web: providers settings tab reads auth/list"
 ```
 
@@ -346,9 +346,9 @@ git commit -m "web: providers settings tab reads auth/list"
 ## Task 4 — Plugins, Skills, MCP settings tabs read+write launch config
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/plugins.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/skills.html`
-- Modify: `cmd/serf-hub/templates/partials/settings/mcp.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/plugins.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/skills.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/mcp.html`
 
 All three share the same form pattern: read `serf/launch/getLayer` for the global layer, render a list of values with add/remove controls, persist with `serf/launch/setLayer`. The plan repeats the structure for each so the implementer doesn't have to cross-reference.
 
@@ -476,7 +476,7 @@ Open `/settings/plugins`, `/settings/skills`, `/settings/mcp`. Add, remove, refr
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/{plugins,skills,mcp}.html
+git add cmd/evener-hub/templates/partials/settings/{plugins,skills,mcp}.html
 git commit -m "web: plugins/skills/mcp tabs edit global launch config"
 ```
 
@@ -485,13 +485,13 @@ git commit -m "web: plugins/skills/mcp tabs edit global launch config"
 ## Task 5 — New "Launch" settings tab for scalars (model defaults, max-rounds, etc.)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings.html`
-- Create: `cmd/serf-hub/templates/partials/settings/launch.html`
-- Modify: `cmd/serf-hub/web.go` (to register the new section in `validSettingsSections`)
+- Modify: `cmd/evener-hub/templates/partials/settings.html`
+- Create: `cmd/evener-hub/templates/partials/settings/launch.html`
+- Modify: `cmd/evener-hub/web.go` (to register the new section in `validSettingsSections`)
 
 - [ ] **Step 1: Add the new nav entry**
 
-In `cmd/serf-hub/templates/partials/settings.html`, after the existing `Theme` entry and before `Notifications`:
+In `cmd/evener-hub/templates/partials/settings.html`, after the existing `Theme` entry and before `Notifications`:
 
 ```html
 <a class="settings-nav-link {{if eq .Active "launch"}}active{{end}}" href="/settings/launch" hx-get="/_partials/settings/launch" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/launch">Launch defaults</a>
@@ -500,14 +500,14 @@ In `cmd/serf-hub/templates/partials/settings.html`, after the existing `Theme` e
 - [ ] **Step 2: Register the section**
 
 ```bash
-grep -n "validSettingsSections\|knownSections\|\"general\"" cmd/serf-hub/web.go
+grep -n "validSettingsSections\|knownSections\|\"general\"" cmd/evener-hub/web.go
 ```
 
 Add `"launch"` to the list/map.
 
 - [ ] **Step 3: Write the partial**
 
-`cmd/serf-hub/templates/partials/settings/launch.html`:
+`cmd/evener-hub/templates/partials/settings/launch.html`:
 
 ```html
 {{define "settings-content"}}
@@ -581,7 +581,7 @@ Open `/settings/launch`, edit values, submit, reload — values persist.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/templates/partials/settings/launch.html cmd/serf-hub/web.go
+git add cmd/evener-hub/templates/partials/settings.html cmd/evener-hub/templates/partials/settings/launch.html cmd/evener-hub/web.go
 git commit -m "web: Launch defaults settings tab"
 ```
 
@@ -590,9 +590,9 @@ git commit -m "web: Launch defaults settings tab"
 ## Task 6 — In-Repo tab with trust prompt
 
 **Files:**
-- Create: `cmd/serf-hub/templates/partials/settings/inrepo.html`
-- Modify: `cmd/serf-hub/templates/partials/settings.html`
-- Modify: `cmd/serf-hub/web.go`
+- Create: `cmd/evener-hub/templates/partials/settings/inrepo.html`
+- Modify: `cmd/evener-hub/templates/partials/settings.html`
+- Modify: `cmd/evener-hub/web.go`
 
 The In-Repo tab needs a `cwd` parameter — the user picks a project to inspect. For v1, we read the most-recently-viewed cwd from `localStorage` (set by the workspace and spawn flows).
 
@@ -608,7 +608,7 @@ Register `"inrepo"` in the valid-sections list in `web.go`.
 
 - [ ] **Step 2: Write the partial**
 
-`cmd/serf-hub/templates/partials/settings/inrepo.html`:
+`cmd/evener-hub/templates/partials/settings/inrepo.html`:
 
 ```html
 {{define "settings-content"}}
@@ -668,7 +668,7 @@ Create a `.serf/launch.toml` in some directory, point the cwd field at it, obser
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/inrepo.html cmd/serf-hub/templates/partials/settings.html cmd/serf-hub/web.go
+git add cmd/evener-hub/templates/partials/settings/inrepo.html cmd/evener-hub/templates/partials/settings.html cmd/evener-hub/web.go
 git commit -m "web: in-repo trust tab"
 ```
 
@@ -677,13 +677,13 @@ git commit -m "web: in-repo trust tab"
 ## Task 7 — Advanced disclosure on `/new`
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/spawn.html`
-- Modify: `cmd/serf-hub/assets/spawn.js`
-- Modify: `cmd/serf-hub/web.go`
+- Modify: `cmd/evener-hub/templates/partials/spawn.html`
+- Modify: `cmd/evener-hub/assets/spawn.js`
+- Modify: `cmd/evener-hub/web.go`
 
 - [ ] **Step 1: Add the disclosure block to the template**
 
-In `cmd/serf-hub/templates/partials/spawn.html` (somewhere near the bottom of the existing form, before the submit button):
+In `cmd/evener-hub/templates/partials/spawn.html` (somewhere near the bottom of the existing form, before the submit button):
 
 ```html
 <details class="spawn-advanced">
@@ -772,7 +772,7 @@ document.getElementById("ovr-show-resolved").addEventListener("click", async () 
 
 - [ ] **Step 3: Extend `spawnRequest` server-side**
 
-In `cmd/serf-hub/web.go`, extend `spawnRequest`:
+In `cmd/evener-hub/web.go`, extend `spawnRequest`:
 
 ```go
 type spawnRequest struct {
@@ -809,7 +809,7 @@ Open `/new`, expand Advanced, add a skill dir, click "Show resolved config" — 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/spawn.html cmd/serf-hub/assets/spawn.js cmd/serf-hub/web.go
+git add cmd/evener-hub/templates/partials/spawn.html cmd/evener-hub/assets/spawn.js cmd/evener-hub/web.go
 git commit -m "web: Advanced disclosure for per-launch overrides on /new"
 ```
 
@@ -818,12 +818,12 @@ git commit -m "web: Advanced disclosure for per-launch overrides on /new"
 ## Task 8 — Wire SSE notifications
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/notifications.js`
+- Modify: `cmd/evener-hub/assets/notifications.js`
 
 - [ ] **Step 1: Inspect existing notification handling**
 
 ```bash
-grep -n "notification\|onNotify\|EventSource\|onmessage" cmd/serf-hub/assets/notifications.js
+grep -n "notification\|onNotify\|EventSource\|onmessage" cmd/evener-hub/assets/notifications.js
 ```
 
 - [ ] **Step 2: Add handlers for the two new methods**
@@ -866,7 +866,7 @@ Open `/credentials` in tab A, `/credentials` in tab B; set an API key in A; veri
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/notifications.js cmd/serf-hub/templates/partials/credentials.html
+git add cmd/evener-hub/assets/notifications.js cmd/evener-hub/templates/partials/credentials.html
 git commit -m "web: SSE handlers for serf/auth/updated and serf/launch/updated"
 ```
 
@@ -877,7 +877,7 @@ git commit -m "web: SSE handlers for serf/auth/updated and serf/launch/updated"
 The settings tabs in tasks 4–5 edit the **global** layer. We now add a per-project section to each tab.
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/settings/{plugins,skills,mcp,launch}.html`
+- Modify: `cmd/evener-hub/templates/partials/settings/{plugins,skills,mcp,launch}.html`
 
 - [ ] **Step 1: Add a cwd selector + project section to each tab**
 
@@ -916,7 +916,7 @@ Open `/settings/plugins`, enter a cwd, add a project-only plugin dir, switch to 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/settings/
+git add cmd/evener-hub/templates/partials/settings/
 git commit -m "web: per-project layer editor in plugins/skills/mcp/launch tabs"
 ```
 
@@ -927,7 +927,7 @@ git commit -m "web: per-project layer editor in plugins/skills/mcp/launch tabs"
 - [ ] **Step 1: Run all Go tests**
 
 ```bash
-go test ./cmd/serf-hub/ -v
+go test ./cmd/evener-hub/ -v
 ```
 
 - [ ] **Step 2: Manual smoke through every route**

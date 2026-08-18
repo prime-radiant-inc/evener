@@ -13,7 +13,7 @@ Tech Stack: GNU/BSD make, Bash selftests, Go 1.25 workspace/module tooling, Go Y
 - Read and follow docs/testing.md; default verification is deterministic and offline.
 - Preserve published gate coverage and ROOT_FULL=1 semantics.
 - merge-approval-gate runs lint, build, and ROOT_FULL=1 test serially and never runs fuzzing.
-- lint-generated validates both docs/appwire-protocol.md and cmd/serf-hub/frontend/src/protocol/types.gen.ts.
+- lint-generated validates both docs/appwire-protocol.md and cmd/evener-hub/frontend/src/protocol/types.gen.ts.
 - Missing gitleaks remains warning-plus-zero unless SERF_GITLEAKS_REQUIRED=1; only CI scan steps set that variable.
 - fdhx changes only the root primeradiant.com/evener/identifier v0.0.0 requirement; do not align x/sys or x/text.
 - Tests exercise real target behavior at external boundaries, not rendered recipe text or mock existence.
@@ -151,7 +151,7 @@ Expected: nonzero from the new stale-TypeScript case, with the diagnostic explai
 Change lint-generated to run one git diff --exit-code over these exact paths:
 
     docs/appwire-protocol.md
-    cmd/serf-hub/frontend/src/protocol/types.gen.ts
+    cmd/evener-hub/frontend/src/protocol/types.gen.ts
 
 Use a diagnostic that names both outputs and says to run make generate and commit. Update the adjacent generate comments and docs/conventions/go-workspace.md so both outputs are described as generated and gated.
 
@@ -159,7 +159,7 @@ Use a diagnostic that names both outputs and says to run make generate and commi
 
 Change the existing run-module-lint-selftest expected family line to:
 
-    git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
+    git diff --exit-code -- docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
 
 Run scripts/run-module-lint-selftest.sh. Expected: exit 0, including the stale-TypeScript fixture, all prior lint-family assertions, and warning preservation.
 

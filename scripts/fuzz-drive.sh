@@ -38,8 +38,8 @@
 #   -h, --help             this help
 #
 # Binary overrides (advanced use):
-#   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/serf)
-#   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/serf-fuzz-harvest)
+#   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/evener)
+#   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/evener-fuzz-harvest)
 #   SERF_FUZZ_GH           gh binary         (default: gh)
 #   SERF_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
@@ -109,7 +109,7 @@ done < <(find "$tasks_dir" -maxdepth 1 -type f \( -name '*.txt' -o -name '*.md' 
 if [ -z "$serf_bin" ]; then
 	serf_bin="$state_dir/serf"
 	note "building serf -> $serf_bin"
-	( cd "$repo_root" && go build -o "$serf_bin" ./cmd/serf ) || die "go build ./cmd/serf failed"
+	( cd "$repo_root" && go build -o "$serf_bin" ./cmd/evener ) || die "go build ./cmd/evener failed"
 fi
 
 # --- the drive loop ----------------------------------------------------------
@@ -207,7 +207,7 @@ harvest_log="$state_dir/harvest.log"
 if [ -n "$harvest_bin" ]; then
 	harvest_cmd=("$harvest_bin")
 else
-	harvest_cmd=(go run ./cmd/serf-fuzz-harvest)
+	harvest_cmd=(go run ./cmd/evener-fuzz-harvest)
 fi
 if ! ( cd "$repo_root" && "${harvest_cmd[@]}" \
 		--state-dir "$state_dir" --out-root "$repo_root" --log "$harvest_log" ); then

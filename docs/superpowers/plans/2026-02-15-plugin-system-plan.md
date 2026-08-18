@@ -259,10 +259,10 @@ git commit -m "feat(plugin): add plugin directory loading and duplicate detectio
 ### Task 3: CLI Flag and SessionConfig Plumbing
 
 **Files:**
-- Modify: `cmd/serf/main.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/main.go`
+- Modify: `cmd/evener/run.go`
 - Modify: `agent/session.go` (add PluginDirs to SessionConfig)
-- Modify: `cmd/serf/run_test.go` (if flag parsing tests exist)
+- Modify: `cmd/evener/run_test.go` (if flag parsing tests exist)
 
 **Context:** Wire `--plugin-dir` from CLI through to SessionConfig.
 
@@ -1188,7 +1188,7 @@ git commit -m "feat(plugin): include plugin agents in system prompt"
 
 **Files:**
 - Modify: `agent/events.go`
-- Modify: `cmd/serf/run.go`
+- Modify: `cmd/evener/run.go`
 
 **Context:** Add event types for plugin lifecycle and hook execution. Update the
 human-readable event formatter.

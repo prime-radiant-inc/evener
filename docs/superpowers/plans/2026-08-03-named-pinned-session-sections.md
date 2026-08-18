@@ -29,28 +29,28 @@
 
 **Create**
 
-- `cmd/serf-hub/internal/hubcore/pin_section.go` — SQLite schema, Unicode name normalization, section CRUD, assignment CRUD, transactional migration, and typed store errors.
-- `cmd/serf-hub/internal/hubcore/pin_section_test.go` — deterministic store, migration, concurrency, and foreign-key tests.
-- `cmd/serf-hub/web_api_pin_section.go` — section-list, assign/move/create-or-reuse, unpin, rename, and delete handlers.
-- `cmd/serf-hub/web_api_pin_section_test.go` — REST status/body/validation/no-op/notification tests.
-- `cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.tsx` — accessible pin/move picker and new-section name step.
-- `cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx` — picker loading, selection, current marker, name validation, reuse, and failure tests.
+- `cmd/evener-hub/internal/hubcore/pin_section.go` — SQLite schema, Unicode name normalization, section CRUD, assignment CRUD, transactional migration, and typed store errors.
+- `cmd/evener-hub/internal/hubcore/pin_section_test.go` — deterministic store, migration, concurrency, and foreign-key tests.
+- `cmd/evener-hub/web_api_pin_section.go` — section-list, assign/move/create-or-reuse, unpin, rename, and delete handlers.
+- `cmd/evener-hub/web_api_pin_section_test.go` — REST status/body/validation/no-op/notification tests.
+- `cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.tsx` — accessible pin/move picker and new-section name step.
+- `cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx` — picker loading, selection, current marker, name validation, reuse, and failure tests.
 
 **Modify**
 
-- `cmd/serf-hub/internal/hubcore/config.go` — add `PinSections *PinSectionStore` to `WebConfig`.
-- `cmd/serf-hub/main.go` — construct the pin store from `index.db` and pass it into `WebConfig`.
-- `cmd/serf-hub/web.go` — register `/api/pin-sections`, `/api/pin-sections/`, and `/api/session-pin`.
-- `cmd/serf-hub/web_api_favorite.go` and `web_api_favorite_test.go` — retain project mutations and reject session mutations.
-- `cmd/serf-hub/web_api_tree.go`, `web_api_tree_test.go`, and `web_api_tree_favorite_revalidation_test.go` — migrate legacy pins with the request’s authority snapshot, project named sections, preserve dormant assignments, and remove session favorites projection.
+- `cmd/evener-hub/internal/hubcore/config.go` — add `PinSections *PinSectionStore` to `WebConfig`.
+- `cmd/evener-hub/main.go` — construct the pin store from `index.db` and pass it into `WebConfig`.
+- `cmd/evener-hub/web.go` — register `/api/pin-sections`, `/api/pin-sections/`, and `/api/session-pin`.
+- `cmd/evener-hub/web_api_favorite.go` and `web_api_favorite_test.go` — retain project mutations and reject session mutations.
+- `cmd/evener-hub/web_api_tree.go`, `web_api_tree_test.go`, and `web_api_tree_favorite_revalidation_test.go` — migrate legacy pins with the request’s authority snapshot, project named sections, preserve dormant assignments, and remove session favorites projection.
 - `hubapi/types.go` and `hubapi/client_test.go` — add REST wire types and replace `favorites` with `pin_sections`.
-- `cmd/serf-hub/web_api_session_delete.go`, `web_api_session_delete_test.go`, `web_api_project_delete.go`, and `web_api_project_delete_test.go` — clean assignments for deleted sessions only and surface pin-store decision errors.
-- `cmd/serf-hub/frontend/src/stores/tree.ts` and `tree.test.ts` — mirror/normalize `pin_sections` and `pin_section_id`.
-- `cmd/serf-hub/frontend/src/shell/rail/actions.ts` and `actions.test.ts` — typed section and assignment requests; leave project `setFavorite` intact.
-- `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts` and `railNodes.test.ts` — section node projection and stable section disclosure IDs.
-- `cmd/serf-hub/frontend/src/shell/rail/railPending.ts` and `railPending.test.ts` — optimistic pin, move, unpin, rename, and delete projections.
-- `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx` and `RailRow.test.tsx` — replace binary session favorite action with pin/move requests while preserving project favorite actions.
-- `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`, `Rail.test.tsx`, and `Rail.module.css` — section rendering, picker/dialog state, heading overflow controls, collapse state, rename, delete confirmation, and mutation orchestration.
+- `cmd/evener-hub/web_api_session_delete.go`, `web_api_session_delete_test.go`, `web_api_project_delete.go`, and `web_api_project_delete_test.go` — clean assignments for deleted sessions only and surface pin-store decision errors.
+- `cmd/evener-hub/frontend/src/stores/tree.ts` and `tree.test.ts` — mirror/normalize `pin_sections` and `pin_section_id`.
+- `cmd/evener-hub/frontend/src/shell/rail/actions.ts` and `actions.test.ts` — typed section and assignment requests; leave project `setFavorite` intact.
+- `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts` and `railNodes.test.ts` — section node projection and stable section disclosure IDs.
+- `cmd/evener-hub/frontend/src/shell/rail/railPending.ts` and `railPending.test.ts` — optimistic pin, move, unpin, rename, and delete projections.
+- `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx` and `RailRow.test.tsx` — replace binary session favorite action with pin/move requests while preserving project favorite actions.
+- `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`, `Rail.test.tsx`, and `Rail.module.css` — section rendering, picker/dialog state, heading overflow controls, collapse state, rename, delete confirmation, and mutation orchestration.
 - `test/scenarios/sidebar-favorite-pinned-across-reload.md` — replace the binary favorite scenario with named-section durability, reuse, move, hidden-empty, delete, and project-favorite checks.
 
 **Delete after replacement tests pass**
@@ -62,10 +62,10 @@
 ### Task 1: Build the durable pin-section store and migration
 
 **Files:**
-- Create: `cmd/serf-hub/internal/hubcore/pin_section.go`
-- Create: `cmd/serf-hub/internal/hubcore/pin_section_test.go`
-- Modify: `cmd/serf-hub/internal/hubcore/config.go:58-60`
-- Modify: `cmd/serf-hub/main.go:180-195,330-345`
+- Create: `cmd/evener-hub/internal/hubcore/pin_section.go`
+- Create: `cmd/evener-hub/internal/hubcore/pin_section_test.go`
+- Modify: `cmd/evener-hub/internal/hubcore/config.go:58-60`
+- Modify: `cmd/evener-hub/main.go:180-195,330-345`
 
 **Interfaces:**
 - Consumes: `ArchiveKey`, `FavoriteDecisionClassification`, and `FavoriteDecisionState` from `hubcore`.
@@ -171,7 +171,7 @@ Also add named tests for:
 - [ ] **Step 2: Run the focused tests and verify RED**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'TestNormalizePinSectionName|TestPinSectionStore' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run 'TestNormalizePinSectionName|TestPinSectionStore' -count=1
 ```
 
 Expected: compile failure because `PinSectionStore` and its types do not exist.
@@ -266,9 +266,9 @@ Pass `PinSections: pinSections` in `WebConfig`. Tests constructing `WebConfig` m
 Run:
 
 ```bash
-gofmt -w cmd/serf-hub/internal/hubcore/pin_section.go cmd/serf-hub/internal/hubcore/pin_section_test.go cmd/serf-hub/internal/hubcore/config.go cmd/serf-hub/main.go
-go test ./cmd/serf-hub/internal/hubcore -run 'PinSection|MigrateLegacy' -count=1
-go test ./cmd/serf-hub -run 'TestMain' -count=1
+gofmt -w cmd/evener-hub/internal/hubcore/pin_section.go cmd/evener-hub/internal/hubcore/pin_section_test.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/main.go
+go test ./cmd/evener-hub/internal/hubcore -run 'PinSection|MigrateLegacy' -count=1
+go test ./cmd/evener-hub -run 'TestMain' -count=1
 git diff --check
 ```
 
@@ -277,7 +277,7 @@ Expected: all focused tests pass.
 - [ ] **Step 7: Commit Task 1**
 
 ```bash
-git add cmd/serf-hub/internal/hubcore/pin_section.go cmd/serf-hub/internal/hubcore/pin_section_test.go cmd/serf-hub/internal/hubcore/config.go cmd/serf-hub/main.go
+git add cmd/evener-hub/internal/hubcore/pin_section.go cmd/evener-hub/internal/hubcore/pin_section_test.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/main.go
 git commit -m "feat(hub): persist named session pin sections"
 ```
 
@@ -286,11 +286,11 @@ git commit -m "feat(hub): persist named session pin sections"
 ### Task 2: Add the REST mutation and section-list contracts
 
 **Files:**
-- Create: `cmd/serf-hub/web_api_pin_section.go`
-- Create: `cmd/serf-hub/web_api_pin_section_test.go`
-- Modify: `cmd/serf-hub/web.go:157-173`
-- Modify: `cmd/serf-hub/web_api_favorite.go:14-55`
-- Modify: `cmd/serf-hub/web_api_favorite_test.go`
+- Create: `cmd/evener-hub/web_api_pin_section.go`
+- Create: `cmd/evener-hub/web_api_pin_section_test.go`
+- Modify: `cmd/evener-hub/web.go:157-173`
+- Modify: `cmd/evener-hub/web_api_favorite.go:14-55`
+- Modify: `cmd/evener-hub/web_api_favorite_test.go`
 - Modify: `hubapi/types.go`
 - Modify: `hubapi/client_test.go`
 
@@ -376,7 +376,7 @@ Keep project-kind success tests unchanged.
 - [ ] **Step 2: Run the API tests and verify RED**
 
 ```bash
-go test ./cmd/serf-hub -run 'TestAPIPinSection|TestAPISessionPin|TestAPIFavoriteRejectsSession' -count=1
+go test ./cmd/evener-hub -run 'TestAPIPinSection|TestAPISessionPin|TestAPIFavoriteRejectsSession' -count=1
 ```
 
 Expected: compile failures for missing handlers and Hub API types.
@@ -425,11 +425,11 @@ for `kind="session"`.
 - [ ] **Step 5: Verify API behavior and commit**
 
 ```bash
-gofmt -w cmd/serf-hub/web_api_pin_section.go cmd/serf-hub/web_api_pin_section_test.go cmd/serf-hub/web.go cmd/serf-hub/web_api_favorite.go cmd/serf-hub/web_api_favorite_test.go hubapi/types.go hubapi/client_test.go
-go test ./cmd/serf-hub -run 'TestAPIPinSection|TestAPISessionPin|TestAPIFavorite' -count=1
+gofmt -w cmd/evener-hub/web_api_pin_section.go cmd/evener-hub/web_api_pin_section_test.go cmd/evener-hub/web.go cmd/evener-hub/web_api_favorite.go cmd/evener-hub/web_api_favorite_test.go hubapi/types.go hubapi/client_test.go
+go test ./cmd/evener-hub -run 'TestAPIPinSection|TestAPISessionPin|TestAPIFavorite' -count=1
 go test ./hubapi -count=1
 git diff --check
-git add cmd/serf-hub/web_api_pin_section.go cmd/serf-hub/web_api_pin_section_test.go cmd/serf-hub/web.go cmd/serf-hub/web_api_favorite.go cmd/serf-hub/web_api_favorite_test.go hubapi/types.go hubapi/client_test.go
+git add cmd/evener-hub/web_api_pin_section.go cmd/evener-hub/web_api_pin_section_test.go cmd/evener-hub/web.go cmd/evener-hub/web_api_favorite.go cmd/evener-hub/web_api_favorite_test.go hubapi/types.go hubapi/client_test.go
 git commit -m "feat(hub): expose named session pin APIs"
 ```
 
@@ -438,14 +438,14 @@ git commit -m "feat(hub): expose named session pin APIs"
 ### Task 3: Project named sections into the tree and preserve lifecycle integrity
 
 **Files:**
-- Modify: `cmd/serf-hub/web_api_tree.go`
-- Modify: `cmd/serf-hub/web_api_tree_test.go`
-- Modify: `cmd/serf-hub/web_api_tree_favorite_revalidation_test.go`
+- Modify: `cmd/evener-hub/web_api_tree.go`
+- Modify: `cmd/evener-hub/web_api_tree_test.go`
+- Modify: `cmd/evener-hub/web_api_tree_favorite_revalidation_test.go`
 - Modify: `hubapi/types.go`
-- Modify: `cmd/serf-hub/web_api_session_delete.go`
-- Modify: `cmd/serf-hub/web_api_session_delete_test.go`
-- Modify: `cmd/serf-hub/web_api_project_delete.go`
-- Modify: `cmd/serf-hub/web_api_project_delete_test.go`
+- Modify: `cmd/evener-hub/web_api_session_delete.go`
+- Modify: `cmd/evener-hub/web_api_session_delete_test.go`
+- Modify: `cmd/evener-hub/web_api_project_delete.go`
+- Modify: `cmd/evener-hub/web_api_project_delete_test.go`
 
 **Interfaces:**
 - Consumes: `PinSectionStore.Assignments`, `Sections`, and `MigrateLegacy`; Task 2 API wire types.
@@ -510,7 +510,7 @@ Add tests for:
 - [ ] **Step 2: Run tree tests and verify RED**
 
 ```bash
-go test ./cmd/serf-hub -run 'TestAPITree.*PinSection|TestAPITreeProjectsNamedPinSections|TestAPITree.*Dormant' -count=1
+go test ./cmd/evener-hub -run 'TestAPITree.*PinSection|TestAPITreeProjectsNamedPinSections|TestAPITree.*Dormant' -count=1
 go test ./hubapi -run 'Test.*Tree' -count=1
 ```
 
@@ -594,11 +594,11 @@ Do not call `notifyMutation` from cleanup: session/project deletion already owns
 - [ ] **Step 7: Verify backend replacement and commit**
 
 ```bash
-gofmt -w cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go cmd/serf-hub/web_api_tree_favorite_revalidation_test.go hubapi/types.go cmd/serf-hub/web_api_session_delete.go cmd/serf-hub/web_api_session_delete_test.go cmd/serf-hub/web_api_project_delete.go cmd/serf-hub/web_api_project_delete_test.go
-go test ./cmd/serf-hub -run 'TestAPITree|TestAPISessionDelete|TestAPIProjectDelete' -count=1
+gofmt -w cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go cmd/evener-hub/web_api_tree_favorite_revalidation_test.go hubapi/types.go cmd/evener-hub/web_api_session_delete.go cmd/evener-hub/web_api_session_delete_test.go cmd/evener-hub/web_api_project_delete.go cmd/evener-hub/web_api_project_delete_test.go
+go test ./cmd/evener-hub -run 'TestAPITree|TestAPISessionDelete|TestAPIProjectDelete' -count=1
 go test ./hubapi -count=1
 git diff --check
-git add cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_test.go cmd/serf-hub/web_api_tree_favorite_revalidation_test.go hubapi/types.go cmd/serf-hub/web_api_session_delete.go cmd/serf-hub/web_api_session_delete_test.go cmd/serf-hub/web_api_project_delete.go cmd/serf-hub/web_api_project_delete_test.go
+git add cmd/evener-hub/web_api_tree.go cmd/evener-hub/web_api_tree_test.go cmd/evener-hub/web_api_tree_favorite_revalidation_test.go hubapi/types.go cmd/evener-hub/web_api_session_delete.go cmd/evener-hub/web_api_session_delete_test.go cmd/evener-hub/web_api_project_delete.go cmd/evener-hub/web_api_project_delete_test.go
 git commit -m "feat(hub): project named pin sections in navigation"
 ```
 
@@ -607,14 +607,14 @@ git commit -m "feat(hub): project named pin sections in navigation"
 ### Task 4: Add frontend tree mirrors, requests, and optimistic projections
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/tree.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/tree.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/actions.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/actions.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railPending.ts`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/railPending.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/tree.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/tree.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/actions.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/actions.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railPending.ts`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/railPending.test.ts`
 
 **Interfaces:**
 - Consumes: Task 2 REST endpoints and Task 3 tree JSON.
@@ -682,7 +682,7 @@ Also assert encoded DELETE/PATCH URLs, same-origin credentials, successful respo
 - [ ] **Step 2: Run focused tests and verify RED**
 
 ```bash
-npm --prefix cmd/serf-hub/frontend test -- src/stores/tree.test.ts src/shell/rail/actions.test.ts
+npm --prefix cmd/evener-hub/frontend test -- src/stores/tree.test.ts src/shell/rail/actions.test.ts
 ```
 
 Expected: TypeScript or assertion failures for missing pin-section types and actions.
@@ -737,11 +737,11 @@ In `applyPending`, centralize duplicate annotation with a recursive function key
 - [ ] **Step 6: Verify and commit frontend data layer**
 
 ```bash
-npm --prefix cmd/serf-hub/frontend test -- src/stores/tree.test.ts src/shell/rail/actions.test.ts src/shell/rail/railNodes.test.ts src/shell/rail/railPending.test.ts
-npm --prefix cmd/serf-hub/frontend run typecheck
-npm --prefix cmd/serf-hub/frontend run lint
+npm --prefix cmd/evener-hub/frontend test -- src/stores/tree.test.ts src/shell/rail/actions.test.ts src/shell/rail/railNodes.test.ts src/shell/rail/railPending.test.ts
+npm --prefix cmd/evener-hub/frontend run typecheck
+npm --prefix cmd/evener-hub/frontend run lint
 git diff --check
-git add cmd/serf-hub/frontend/src/stores/tree.ts cmd/serf-hub/frontend/src/stores/tree.test.ts cmd/serf-hub/frontend/src/shell/rail/actions.ts cmd/serf-hub/frontend/src/shell/rail/actions.test.ts cmd/serf-hub/frontend/src/shell/rail/railNodes.ts cmd/serf-hub/frontend/src/shell/rail/railNodes.test.ts cmd/serf-hub/frontend/src/shell/rail/railPending.ts cmd/serf-hub/frontend/src/shell/rail/railPending.test.ts
+git add cmd/evener-hub/frontend/src/stores/tree.ts cmd/evener-hub/frontend/src/stores/tree.test.ts cmd/evener-hub/frontend/src/shell/rail/actions.ts cmd/evener-hub/frontend/src/shell/rail/actions.test.ts cmd/evener-hub/frontend/src/shell/rail/railNodes.ts cmd/evener-hub/frontend/src/shell/rail/railNodes.test.ts cmd/evener-hub/frontend/src/shell/rail/railPending.ts cmd/evener-hub/frontend/src/shell/rail/railPending.test.ts
 git commit -m "feat(webui): model named pin sections"
 ```
 
@@ -750,13 +750,13 @@ git commit -m "feat(webui): model named pin sections"
 ### Task 5: Build the pin/move picker and named-section rail UX
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.tsx`
-- Create: `cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/Rail.module.css`
+- Create: `cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.tsx`
+- Create: `cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/Rail.module.css`
 
 **Interfaces:**
 - Consumes: Task 4 action functions, types, `PendingOp`, and existing `Dialog`, `Input`, `Button`, `Menu`, `Tree`, `Chevron`, and toast primitives.
@@ -801,7 +801,7 @@ Use `userEvent` and role/name queries; do not assert CSS class strings.
 - [ ] **Step 2: Run picker tests and verify RED**
 
 ```bash
-npm --prefix cmd/serf-hub/frontend test -- src/shell/rail/PinSectionPicker.test.tsx
+npm --prefix cmd/evener-hub/frontend test -- src/shell/rail/PinSectionPicker.test.tsx
 ```
 
 Expected: import failure because `PinSectionPicker.tsx` does not exist.
@@ -889,12 +889,12 @@ Add only focused CSS classes for the section heading row, heading action, picker
 - [ ] **Step 7: Verify UX tests and commit**
 
 ```bash
-npm --prefix cmd/serf-hub/frontend test -- src/shell/rail/PinSectionPicker.test.tsx src/shell/rail/RailRow.test.tsx src/shell/rail/Rail.test.tsx
-npm --prefix cmd/serf-hub/frontend run typecheck
-npm --prefix cmd/serf-hub/frontend run lint
-npm --prefix cmd/serf-hub/frontend run build
+npm --prefix cmd/evener-hub/frontend test -- src/shell/rail/PinSectionPicker.test.tsx src/shell/rail/RailRow.test.tsx src/shell/rail/Rail.test.tsx
+npm --prefix cmd/evener-hub/frontend run typecheck
+npm --prefix cmd/evener-hub/frontend run lint
+npm --prefix cmd/evener-hub/frontend run build
 git diff --check
-git add cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.tsx cmd/serf-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx cmd/serf-hub/frontend/src/shell/rail/RailRow.tsx cmd/serf-hub/frontend/src/shell/rail/RailRow.test.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.test.tsx cmd/serf-hub/frontend/src/shell/rail/Rail.module.css
+git add cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.tsx cmd/evener-hub/frontend/src/shell/rail/PinSectionPicker.test.tsx cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx cmd/evener-hub/frontend/src/shell/rail/RailRow.test.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.test.tsx cmd/evener-hub/frontend/src/shell/rail/Rail.module.css
 git commit -m "feat(webui): organize pinned sessions into named sections"
 ```
 
@@ -903,18 +903,18 @@ git commit -m "feat(webui): organize pinned sessions into named sections"
 ### Task 6: Replace legacy coverage, document the deterministic scenario, and run final gates
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/App.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/notifications/attention.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/notifications/index.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/welcome/Welcome.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/AppShell.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/DockRegion.test.tsx`
-- Modify: `cmd/serf-hub/frontend/src/shell/rail/RailHost.test.tsx`
-- Modify: `cmd/serf-hub/cov_final_session_tree_fuzz_test.go`
-- Modify: `cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go`
-- Modify: `cmd/serf-hub/cov_exact_lifecycle_tree_fuzz_test.go`
-- Modify: `cmd/serf-hub/cov_session_tree_pass6_fuzz_test.go`
-- Modify: `cmd/serf-hub/cov_web_core_api_test.go`
+- Modify: `cmd/evener-hub/frontend/src/App.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/notifications/attention.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/notifications/index.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/welcome/Welcome.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/AppShell.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/DockRegion.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/shell/rail/RailHost.test.tsx`
+- Modify: `cmd/evener-hub/cov_final_session_tree_fuzz_test.go`
+- Modify: `cmd/evener-hub/cov_session_residue_pass5_fuzz_test.go`
+- Modify: `cmd/evener-hub/cov_exact_lifecycle_tree_fuzz_test.go`
+- Modify: `cmd/evener-hub/cov_session_tree_pass6_fuzz_test.go`
+- Modify: `cmd/evener-hub/cov_web_core_api_test.go`
 - Modify: `test/scenarios/sidebar-favorite-pinned-across-reload.md`
 - Verify: all files changed by Tasks 1–5.
 
@@ -927,7 +927,7 @@ git commit -m "feat(webui): organize pinned sessions into named sections"
 Run:
 
 ```bash
-rg -n 'setFavorite\("session"|kind["'"']?:[[:space:]]*["'"']session|tree\.favorites|favorites:' cmd/serf-hub hubapi test --glob '*.{go,ts,tsx,md}'
+rg -n 'setFavorite\("session"|kind["'"']?:[[:space:]]*["'"']session|tree\.favorites|favorites:' cmd/evener-hub hubapi test --glob '*.{go,ts,tsx,md}'
 ```
 
 Classify every hit:
@@ -974,13 +974,13 @@ Use a raw API request plus hard reload for durability assertions so optimistic U
 - [ ] **Step 4: Run focused package and frontend suites**
 
 ```bash
-go test ./cmd/serf-hub/internal/hubcore -run 'PinSection|Favorite' -count=1
-go test ./cmd/serf-hub -run 'TestAPI(PinSection|SessionPin|Tree|SessionDelete|ProjectDelete|Favorite)' -count=1
+go test ./cmd/evener-hub/internal/hubcore -run 'PinSection|Favorite' -count=1
+go test ./cmd/evener-hub -run 'TestAPI(PinSection|SessionPin|Tree|SessionDelete|ProjectDelete|Favorite)' -count=1
 go test ./hubapi -count=1
-npm --prefix cmd/serf-hub/frontend test -- src/stores/tree.test.ts src/shell/rail
-npm --prefix cmd/serf-hub/frontend run typecheck
-npm --prefix cmd/serf-hub/frontend run lint
-npm --prefix cmd/serf-hub/frontend run build
+npm --prefix cmd/evener-hub/frontend test -- src/stores/tree.test.ts src/shell/rail
+npm --prefix cmd/evener-hub/frontend run typecheck
+npm --prefix cmd/evener-hub/frontend run lint
+npm --prefix cmd/evener-hub/frontend run build
 ```
 
 Expected: every command exits zero. Read and fix all warnings and failures; do not weaken assertions or skip tests.
@@ -998,8 +998,8 @@ git status --short
 If the rail CSS changes geometry beyond existing unit coverage, also run:
 
 ```bash
-npm --prefix cmd/serf-hub/frontend run layoutguard
-npm --prefix cmd/serf-hub/frontend run overflowguard
+npm --prefix cmd/evener-hub/frontend run layoutguard
+npm --prefix cmd/evener-hub/frontend run overflowguard
 ```
 
 Expected: all commands exit zero. `git status --short` may still show only the pre-existing unrelated deletion plus intended Task 6 changes before commit.
@@ -1010,18 +1010,18 @@ Stage files explicitly from the stale-caller audit plus the scenario; never use 
 
 ```bash
 git add \
-  cmd/serf-hub/frontend/src/App.test.tsx \
-  cmd/serf-hub/frontend/src/notifications/attention.test.ts \
-  cmd/serf-hub/frontend/src/notifications/index.test.ts \
-  cmd/serf-hub/frontend/src/panes/welcome/Welcome.test.tsx \
-  cmd/serf-hub/frontend/src/shell/AppShell.test.tsx \
-  cmd/serf-hub/frontend/src/shell/DockRegion.test.tsx \
-  cmd/serf-hub/frontend/src/shell/rail/RailHost.test.tsx \
-  cmd/serf-hub/cov_final_session_tree_fuzz_test.go \
-  cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go \
-  cmd/serf-hub/cov_exact_lifecycle_tree_fuzz_test.go \
-  cmd/serf-hub/cov_session_tree_pass6_fuzz_test.go \
-  cmd/serf-hub/cov_web_core_api_test.go \
+  cmd/evener-hub/frontend/src/App.test.tsx \
+  cmd/evener-hub/frontend/src/notifications/attention.test.ts \
+  cmd/evener-hub/frontend/src/notifications/index.test.ts \
+  cmd/evener-hub/frontend/src/panes/welcome/Welcome.test.tsx \
+  cmd/evener-hub/frontend/src/shell/AppShell.test.tsx \
+  cmd/evener-hub/frontend/src/shell/DockRegion.test.tsx \
+  cmd/evener-hub/frontend/src/shell/rail/RailHost.test.tsx \
+  cmd/evener-hub/cov_final_session_tree_fuzz_test.go \
+  cmd/evener-hub/cov_session_residue_pass5_fuzz_test.go \
+  cmd/evener-hub/cov_exact_lifecycle_tree_fuzz_test.go \
+  cmd/evener-hub/cov_session_tree_pass6_fuzz_test.go \
+  cmd/evener-hub/cov_web_core_api_test.go \
   test/scenarios/sidebar-favorite-pinned-across-reload.md
 git diff --cached --name-only
 git commit -m "test(webui): cover named pinned session sections"

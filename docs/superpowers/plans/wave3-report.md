@@ -135,7 +135,7 @@ live-reproduced via a CDP-driven back against a built hub, not by inspection).
 ## Verification
 
 ```
-cmd/serf-hub/frontend:
+cmd/evener-hub/frontend:
   npx vitest run   → EXIT=0  (873 passed, 61 files; 2 full reruns, identical both times)
   npx tsc --noEmit → EXIT=0  (no output)
   npx eslint src    → EXIT=0  (no output)
@@ -143,7 +143,7 @@ cmd/serf-hub/frontend:
                                 500kB warning threshold; no chunk-size warning, down from Task
                                 2's original ~637kB single bundle)
 
-go test ./cmd/serf-hub/...  → EXIT=0  (all packages ok; re-run with -count=1 to bypass the
+go test ./cmd/evener-hub/...  → EXIT=0  (all packages ok; re-run with -count=1 to bypass the
                                         build cache for a genuine second execution, identical)
 ```
 

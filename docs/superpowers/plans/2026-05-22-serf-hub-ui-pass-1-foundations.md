@@ -4,18 +4,18 @@
 
 **Goal:** Add the full token foundation (spacing, type, leading, radius, motion, z-index, tap-min, noise, fonts, new theme tokens) to `style.css`, load Hanken Grotesk + JetBrains Mono via Google Fonts, allow those font hosts in CSP, and refresh light-mode palette values — while preserving today's pixel-exact rendering through legacy aliases.
 
-**Architecture:** Additive-only token migration. Every new token lives alongside the existing color tokens at the top of `cmd/serf-hub/assets/style.css`. Legacy aliases (`--pad`, `--panel-2`, `--accent-2`, `--panel`, `--border`, `--muted`, `--tool`, `--user`, `--error`) keep their values so unmigrated rules below the token block keep rendering identically. New theme tokens (`--surface-secondary`, `--accent-secondary`, `--btn-primary-text`) get defined in all four theme variants. Fonts load from `fonts.googleapis.com` / `fonts.gstatic.com`; CSP is updated to allow these origins via a new `font-src` directive and an extension to `style-src`.
+**Architecture:** Additive-only token migration. Every new token lives alongside the existing color tokens at the top of `cmd/evener-hub/assets/style.css`. Legacy aliases (`--pad`, `--panel-2`, `--accent-2`, `--panel`, `--border`, `--muted`, `--tool`, `--user`, `--error`) keep their values so unmigrated rules below the token block keep rendering identically. New theme tokens (`--surface-secondary`, `--accent-secondary`, `--btn-primary-text`) get defined in all four theme variants. Fonts load from `fonts.googleapis.com` / `fonts.gstatic.com`; CSP is updated to allow these origins via a new `font-src` directive and an extension to `style-src`.
 
-**Tech Stack:** CSS custom properties on `:root` and `[data-theme="*"]` blocks; HTML `<link rel="preconnect|stylesheet">` in `templates/app.html`; Go `net/http` middleware in `cmd/serf-hub/security.go`; Go `testing` for CSP assertions in `cmd/serf-hub/security_test.go`. Build via `make build-hub`. Tests via `go test ./cmd/serf-hub/`.
+**Tech Stack:** CSS custom properties on `:root` and `[data-theme="*"]` blocks; HTML `<link rel="preconnect|stylesheet">` in `templates/app.html`; Go `net/http` middleware in `cmd/evener-hub/security.go`; Go `testing` for CSP assertions in `cmd/evener-hub/security_test.go`. Build via `make build-hub`. Tests via `go test ./cmd/evener-hub/`.
 
 ---
 
 ## Files touched in this pass
 
-- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — add token block extensions to `:root`, `@media (prefers-color-scheme: light)`, `[data-theme="dark"]`, `[data-theme="light"]`; add `prefers-reduced-motion` global rule.
-- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/templates/app.html` — add Google Fonts preconnect + stylesheet link in `<head>`.
-- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security.go` — extend `style-src`, add `font-src`.
-- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security_test.go` — assert new `style-src` value and new `font-src` directive.
+- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — add token block extensions to `:root`, `@media (prefers-color-scheme: light)`, `[data-theme="dark"]`, `[data-theme="light"]`; add `prefers-reduced-motion` global rule.
+- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/templates/app.html` — add Google Fonts preconnect + stylesheet link in `<head>`.
+- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security.go` — extend `style-src`, add `font-src`.
+- **Modify:** `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security_test.go` — assert new `style-src` value and new `font-src` directive.
 
 No new files are created in this pass. No JavaScript changes. No template changes other than `app.html`.
 
@@ -24,13 +24,13 @@ No new files are created in this pass. No JavaScript changes. No template change
 ## Task 1: Add spacing, type, leading scale tokens to `:root`
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css:4-34`
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css:4-34`
 
 This task extends the default `:root` block (currently lines 4–34) by inserting the spacing scale (`--space-0` … `--space-9`), the type-size scale (`--text-2xs` … `--text-2xl`), and the leading scale (`--leading-tight/-snug/-normal/-relaxed`) immediately after the existing legacy alias block. The legacy `--pad: 12px` alias stays — it remains the source of truth for unmigrated rules until those rules are migrated in Pass 3.
 
 - [ ] **Step 1: Verify current state of the `:root` block**
 
-Run: `sed -n '4,34p' /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `sed -n '4,34p' /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: the block ends with `  --pad: 12px;` on line 33 and a closing `}` on line 34. If different, stop and re-read the file before editing.
 
@@ -74,7 +74,7 @@ Replace the exact text `  --pad: 12px;\n}` (lines 33–34) with the following bl
 
 - [ ] **Step 3: Verify the tokens parse**
 
-Run: `head -70 /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | tail -45`
+Run: `head -70 /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | tail -45`
 
 Expected: every new token line is present, indentation matches the surrounding two-space style, the final `}` closes the `:root` block exactly once.
 
@@ -88,7 +88,7 @@ Expected: build succeeds, produces `./serf-hub` binary. The Go build does not pa
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: add spacing, type, leading scale tokens to :root
 
 First step of Pass 1 token foundation. Adds --space-0..9, --text-2xs..2xl,
@@ -105,7 +105,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-responsive-ui-design.md §Pass 
 ## Task 2: Add radius, motion, z-index, tap-min, noise tokens to `:root`
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — extend the `:root` block again with the remaining structural tokens.
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — extend the `:root` block again with the remaining structural tokens.
 
 This task adds radius (`--radius-sm/-md/-lg/-xl/-pill/-full`), motion (`--motion-fast/-base/-slow` and the semantic `--pulse-cycle`/`--flash-cycle`), z-index (`--z-sticky` through `--z-toast`), `--tap-min` (with desktop default), and the paper-grain `--noise` SVG data URI at 5% white opacity per design language §1.9. These all go inside the same `:root` block, after the leading scale that Task 1 added.
 
@@ -163,15 +163,15 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 3: Verify the additions**
 
-Run: `grep -n "^  --radius-pill:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "^  --radius-pill:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: one match, line number near the top of the file, value `14px;`.
 
-Run: `grep -n "^  --z-modal:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "^  --z-modal:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: one match with value `1000;`.
 
-Run: `grep -c "^  --noise:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "^  --noise:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `1`.
 
@@ -185,7 +185,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: add radius, motion, z-index, tap-min, noise tokens to :root
 
 Second step of Pass 1 token foundation. Adds --radius-sm/-md/-lg/-xl/-pill/-full,
@@ -202,7 +202,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.4 §1.5 
 ## Task 3: Add font tokens + prefers-reduced-motion global rule
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — add `--font-sans` / `--font-mono` to `:root`; insert the `prefers-reduced-motion` global rule after the four theme blocks.
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — add `--font-sans` / `--font-mono` to `:root`; insert the `prefers-reduced-motion` global rule after the four theme blocks.
 
 Two changes in this task:
 
@@ -232,11 +232,11 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 2: Verify font tokens land in :root only (not duplicated into theme overrides)**
 
-Run: `grep -n "^  --font-sans:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "^  --font-sans:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: exactly one match.
 
-Run: `grep -n "^  --font-mono:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "^  --font-mono:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: exactly one match.
 
@@ -244,7 +244,7 @@ Expected: exactly one match.
 
 The `[data-theme="light"]` block ends just before the line `* { box-sizing: border-box; }`. Today that closing `}` and the `*` rule are at lines 111–112. After Task 1 and Task 2 they will be later in the file (the added tokens lengthened the file). The reduced-motion rule goes between the close of `[data-theme="light"]` and `* { box-sizing: border-box; }`.
 
-Run: `grep -n "^\* { box-sizing:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "^\* { box-sizing:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: one match. Note the line number for context; you do not need it for the Edit because the unique `old_string` anchors it.
 
@@ -275,11 +275,11 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 5: Verify the reduced-motion rule is present once**
 
-Run: `grep -c "prefers-reduced-motion: reduce" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "prefers-reduced-motion: reduce" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `1`.
 
-Run: `grep -c "!important" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "!important" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `3` — the three `!important` lines inside the new rule (`animation-duration`, `animation-iteration-count`, `transition-duration`). These are the only `!important` uses allowed in the codebase per design language §1.5.
 
@@ -293,7 +293,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: add font tokens and prefers-reduced-motion rule
 
 Adds --font-sans (Hanken Grotesk + system fallback) and --font-mono
@@ -312,7 +312,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.2 §1.5"
 ## Task 4: Refresh `[data-theme="light"]` palette per design language §1.1
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — replace literal hex values inside `[data-theme="light"]` and `@media (prefers-color-scheme: light)` blocks to match the design-language §1.1 table.
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — replace literal hex values inside `[data-theme="light"]` and `@media (prefers-color-scheme: light)` blocks to match the design-language §1.1 table.
 
 The design language §1.1 table specifies these dark→light pairings; today's code uses slightly different light values. Update both light-palette blocks (`@media (prefers-color-scheme: light)` and `[data-theme="light"]`) so they mirror each other and match the spec exactly.
 
@@ -462,24 +462,24 @@ Use the Edit tool. `old_string`:
 
 Run:
 ```
-diff <(grep -E "^    --(bg|bg-raised|text|text-muted|text-dim|rule|accent|state-|panel|border|muted|tool|user|error)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | sed -n '12,33p' | sed 's/^  //') <(grep -E "^  --(bg|bg-raised|text|text-muted|text-dim|rule|accent|state-|panel|border|muted|tool|user|error)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | sed -n '23,44p')
+diff <(grep -E "^    --(bg|bg-raised|text|text-muted|text-dim|rule|accent|state-|panel|border|muted|tool|user|error)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | sed -n '12,33p' | sed 's/^  //') <(grep -E "^  --(bg|bg-raised|text|text-muted|text-dim|rule|accent|state-|panel|border|muted|tool|user|error)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | sed -n '23,44p')
 ```
 
 If that diff is too fragile, instead spot-check by running:
 
-Run: `grep -n "#2e58b8" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "#2e58b8" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: at least four matches — `--accent` and `--state-processing` in each of the two light blocks.
 
-Run: `grep -n "#7a7a82" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "#7a7a82" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: exactly two matches — `--state-ended` in each light block.
 
-Run: `grep -c "#3b6fc9" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "#3b6fc9" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `0` — the old light accent is fully replaced.
 
-Run: `grep -c "#c43755" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "#c43755" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `0` — the old light awaiting is fully replaced.
 
@@ -493,7 +493,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: refresh light palette per design language §1.1
 
 Aligns both light-mode blocks (@media prefers-color-scheme: light and
@@ -515,7 +515,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.1"
 ## Task 5: Add `--surface-secondary` + `--accent-secondary` tokens to all four theme blocks
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — add the two new canonical tokens to `:root`, `@media (prefers-color-scheme: light)`, `[data-theme="dark"]`, and `[data-theme="light"]`. Re-point the legacy `--panel-2` and `--accent-2` aliases to reference the new tokens.
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — add the two new canonical tokens to `:root`, `@media (prefers-color-scheme: light)`, `[data-theme="dark"]`, and `[data-theme="light"]`. Re-point the legacy `--panel-2` and `--accent-2` aliases to reference the new tokens.
 
 `--surface-secondary` is the "inset surface within a panel" and replaces the dark-mode hex literal that `--panel-2` carries today. `--accent-secondary` is the "subagent / secondary highlight" and replaces today's `--accent-2` literal. Both tokens must exist in every theme variant. The legacy aliases stay defined (so unmigrated rules keep working) but are re-pointed via `var()` so changing the canonical token automatically updates them.
 
@@ -679,31 +679,31 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 6: Verify counts**
 
-Run: `grep -c "^  --surface-secondary:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "^  --surface-secondary:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `2` (the two top-level blocks `:root` and `[data-theme="dark"]`/`[data-theme="light"]`; the `@media` block's indent is 4 spaces).
 
-Run: `grep -c "  --surface-secondary:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "  --surface-secondary:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `4` — once per theme variant.
 
-Run: `grep -c "  --accent-secondary:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "  --accent-secondary:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `4` — once per theme variant.
 
-Run: `grep -c "  --panel-2: var(--surface-secondary)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "  --panel-2: var(--surface-secondary)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `4`.
 
-Run: `grep -c "  --accent-2: var(--accent-secondary)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "  --accent-2: var(--accent-secondary)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `4`.
 
-Run: `grep -n "panel-2: #" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "panel-2: #" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: no matches (every `--panel-2` is now `var(--surface-secondary)`).
 
-Run: `grep -n "accent-2: #" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "accent-2: #" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: no matches.
 
@@ -717,7 +717,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: add --surface-secondary and --accent-secondary to all four theme blocks
 
 Pulls the inset-surface and subagent-highlight values into the theme
@@ -736,7 +736,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.1"
 ## Task 6: Add `--btn-primary-text` token to dark + light theme blocks
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` — add `--btn-primary-text` to all four theme blocks per design language §1.1 + §3.1.
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` — add `--btn-primary-text` to all four theme blocks per design language §1.1 + §3.1.
 
 `--btn-primary-text` is the foreground color of `.btn-primary`. In dark mode the primary button is `--accent` (`#7aa2f7`) with near-black text (`var(--bg)` = `#0a0a0e`) — pairing carries WCAG-AA. In light mode the primary button is `--accent` (`#2e58b8`) with cream text (`#fafafa`) — same logic, inverted. Defining it as a token keeps the button rule theme-agnostic when introduced in Pass 4.
 
@@ -824,15 +824,15 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 5: Verify counts**
 
-Run: `grep -c "btn-primary-text" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -c "btn-primary-text" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: `4` — one per theme block.
 
-Run: `grep -n "btn-primary-text: var(--bg)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "btn-primary-text: var(--bg)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: two matches (default `:root` and `[data-theme="dark"]`).
 
-Run: `grep -n "btn-primary-text: #fafafa" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css`
+Run: `grep -n "btn-primary-text: #fafafa" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css`
 
 Expected: two matches (`@media (prefers-color-scheme: light)` and `[data-theme="light"]`).
 
@@ -846,7 +846,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/assets/style.css && \
+git add cmd/evener-hub/assets/style.css && \
 git commit -m "ui: add --btn-primary-text token to all four theme blocks
 
 Foreground color for .btn-primary, defined per theme so WCAG-AA contrast
@@ -862,7 +862,7 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.1 §3.1"
 ## Task 7: Add Google Fonts preconnect + stylesheet link to `app.html`
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/templates/app.html:5-17`
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/templates/app.html:5-17`
 
 Load Hanken Grotesk (sans, weights 100–900 italic + roman) and JetBrains Mono (mono, weights 100–800 italic + roman) from Google Fonts. Preconnect to both `fonts.googleapis.com` (the CSS host) and `fonts.gstatic.com` (the WOFF2 host) so the browser starts the TCP+TLS handshake in parallel with the stylesheet download.
 
@@ -889,15 +889,15 @@ Use the Edit tool. `old_string`:
 
 - [ ] **Step 2: Verify the insertion**
 
-Run: `grep -c "fonts.googleapis.com" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/templates/app.html`
+Run: `grep -c "fonts.googleapis.com" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/templates/app.html`
 
 Expected: `2` — one preconnect, one stylesheet href.
 
-Run: `grep -c "fonts.gstatic.com" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/templates/app.html`
+Run: `grep -c "fonts.gstatic.com" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/templates/app.html`
 
 Expected: `1` — the crossorigin preconnect.
 
-Run: `grep -n "rel=\"preconnect\"" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/templates/app.html`
+Run: `grep -n "rel=\"preconnect\"" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/templates/app.html`
 
 Expected: two lines, adjacent.
 
@@ -911,7 +911,7 @@ Expected: build succeeds. Templates are embedded via Go's `embed` package; a suc
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/templates/app.html && \
+git add cmd/evener-hub/templates/app.html && \
 git commit -m "ui: load Hanken Grotesk and JetBrains Mono via Google Fonts
 
 Adds preconnect to fonts.googleapis.com + fonts.gstatic.com (the latter
@@ -932,8 +932,8 @@ Refs: docs/superpowers/specs/2026-05-22-serf-hub-design-language.md §1.2"
 ## Task 8: Update CSP to allow fonts.googleapis.com (style) and fonts.gstatic.com (font); update test
 
 **Files:**
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security.go:17-29`
-- Modify: `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security_test.go:25-37`
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security.go:17-29`
+- Modify: `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security_test.go:25-37`
 
 Two directive changes:
 
@@ -946,7 +946,7 @@ We follow TDD: update the test first to assert the new state, watch it fail, the
 
 - [ ] **Step 1: Update `security_test.go` to assert the new directives (failing test)**
 
-Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security_test.go`. `old_string`:
+Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security_test.go`. `old_string`:
 
 ```go
 	for _, want := range []string{
@@ -995,7 +995,7 @@ Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security_t
 
 - [ ] **Step 2: Run the test — expect failure**
 
-Run: `cd /home/jesse/git/prime-radiant/serf && go test -run TestCSPMiddleware_SetsStrictDefault ./cmd/serf-hub/`
+Run: `cd /home/jesse/git/prime-radiant/serf && go test -run TestCSPMiddleware_SetsStrictDefault ./cmd/evener-hub/`
 
 Expected: FAIL with two `CSP missing ...` errors — one for the new `style-src` value (the existing CSP has the shorter form without `https://fonts.googleapis.com`) and one for the new `font-src` directive. The exact assertion message will look like:
 
@@ -1009,7 +1009,7 @@ If the test passes, the middleware was already updated or the test edit didn't l
 
 - [ ] **Step 3: Update `security.go` to satisfy the test**
 
-Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security.go`. `old_string`:
+Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/evener-hub/security.go`. `old_string`:
 
 ```go
 // CSPMiddleware sets a Content-Security-Policy that limits resource origins to
@@ -1019,7 +1019,7 @@ Use the Edit tool on `/home/jesse/git/prime-radiant/serf/cmd/serf-hub/security.g
 //
 // `img-src` allows `https:` for remote AppWire replay images, and `blob:` so
 // the composer-attachments helper
-// (cmd/serf-hub/assets/composer-attachments.js:reencodeToPng) can decode a
+// (cmd/evener-hub/assets/composer-attachments.js:reencodeToPng) can decode a
 // pasted / dropped / picked image by loading a `URL.createObjectURL(blob)`
 // reference into an `Image` element before re-encoding to PNG (kata 1pgw —
 // without `blob:` here every image attachment surface renders "Not an image"
@@ -1050,7 +1050,7 @@ func CSPMiddleware(next http.Handler) http.Handler {
 //
 // `img-src` allows `https:` for remote AppWire replay images, and `blob:` so
 // the composer-attachments helper
-// (cmd/serf-hub/assets/composer-attachments.js:reencodeToPng) can decode a
+// (cmd/evener-hub/assets/composer-attachments.js:reencodeToPng) can decode a
 // pasted / dropped / picked image by loading a `URL.createObjectURL(blob)`
 // reference into an `Image` element before re-encoding to PNG (kata 1pgw —
 // without `blob:` here every image attachment surface renders "Not an image"
@@ -1079,13 +1079,13 @@ func CSPMiddleware(next http.Handler) http.Handler {
 
 - [ ] **Step 4: Run the test — expect pass**
 
-Run: `cd /home/jesse/git/prime-radiant/serf && go test -run TestCSPMiddleware_SetsStrictDefault ./cmd/serf-hub/`
+Run: `cd /home/jesse/git/prime-radiant/serf && go test -run TestCSPMiddleware_SetsStrictDefault ./cmd/evener-hub/`
 
-Expected: PASS. Output ends with `ok  	github.com/...cmd/serf-hub	<elapsed>`.
+Expected: PASS. Output ends with `ok  	github.com/...cmd/evener-hub	<elapsed>`.
 
 - [ ] **Step 5: Run the full package test suite to confirm nothing else regressed**
 
-Run: `cd /home/jesse/git/prime-radiant/serf && go test -count=1 ./cmd/serf-hub/`
+Run: `cd /home/jesse/git/prime-radiant/serf && go test -count=1 ./cmd/evener-hub/`
 
 Expected: PASS. All existing tests in the package still pass.
 
@@ -1099,7 +1099,7 @@ Expected: build succeeds.
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf && \
-git add cmd/serf-hub/security.go cmd/serf-hub/security_test.go && \
+git add cmd/evener-hub/security.go cmd/evener-hub/security_test.go && \
 git commit -m "ui: allow Google Fonts in CSP (style-src + font-src)
 
 Extends style-src to allow fonts.googleapis.com so app.html can load the
@@ -1141,7 +1141,7 @@ Expected: build succeeds in a few seconds; `./serf-hub` exists.
 
 Run: `cd /home/jesse/git/prime-radiant/serf && ./serf-hub` in a separate terminal (or background it with `&`). Note the address it logs (typically `127.0.0.1:9180`).
 
-Expected: log output includes a line like `serving on 127.0.0.1:9180` (or similar; the exact format is in `cmd/serf-hub/main.go`). No panic, no startup error.
+Expected: log output includes a line like `serving on 127.0.0.1:9180` (or similar; the exact format is in `cmd/evener-hub/main.go`). No panic, no startup error.
 
 - [ ] **Step 3: Open the hub URL in Chrome (or Firefox) with DevTools open**
 
@@ -1200,7 +1200,7 @@ Expected: clean shutdown, prompt returns.
 
 Run: `cd /home/jesse/git/prime-radiant/serf && go test -count=1 ./...`
 
-Expected: `ok` for every package. If any package fails — particularly anything in `cmd/serf-hub/...` — investigate. The Pass 1 changes are CSS, an HTML template, and the security middleware; no other package should be affected.
+Expected: `ok` for every package. If any package fails — particularly anything in `cmd/evener-hub/...` — investigate. The Pass 1 changes are CSS, an HTML template, and the security middleware; no other package should be affected.
 
 - [ ] **Step 10: No commit — verification step only**
 

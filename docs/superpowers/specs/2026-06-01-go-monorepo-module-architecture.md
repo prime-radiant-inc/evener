@@ -6,7 +6,7 @@ Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **curr
 ## 1a. Execution status & decisions (living)
 
 **Phases** (see §7 for detail):
-- **M1 — de-mix `internal/`** ✅ merged. Promoted `appwire`,`hubapi` → top-level contracts; sank `appsource`,`launchconfig` → `cmd/serf-hub/internal/`. `internal/` went 12 → 8 packages.
+- **M1 — de-mix `internal/`** ✅ merged. Promoted `appwire`,`hubapi` → top-level contracts; sank `appsource`,`launchconfig` → `cmd/evener-hub/internal/`. `internal/` went 12 → 8 packages.
 - **M2 — carve `llm`** ✅ merged. Carved **`auth`** and **`llm`** into their own modules; established the go.work workspace.
 - **M3 — carve `agent`** ⏳ in progress. agent decoupled from the app (now self-contained); module carve next.
 - **M4** (root = app module; relocate the remaining `internal/` travelers) and **M5** (per-module hygiene) — pending.
@@ -44,9 +44,9 @@ This makes "what goes where" **compiler-enforced**: the app module physically ca
 | --- | --- | --- | --- |
 | `llm` | LLM client library (providers, request/response, streaming) | — | (lowest layer) |
 | `agent` | Agent engine + **public persistence schema** (`SessionMeta`, `Turn`, `TranscriptHeader`, `Task`, …) | `llm` | direct |
-| `cmd/serf` | **Engine** binary — runs `agent.Session`, serves per-session AppWire/HTTP | agent, llm | direct |
-| `cmd/serf-hub` | **Supervisor** — **spawns `serf` subprocesses**, persists metadata, serves clients | serf (spawn), agent (schema only) | **AppWire protocol** + agent schema |
-| `cmd/serf-tui` | **Client** — terminal UI | serf-hub | **hubapi** (HTTP) + agent schema |
+| `cmd/evener` | **Engine** binary — runs `agent.Session`, serves per-session AppWire/HTTP | agent, llm | direct |
+| `cmd/evener-hub` | **Supervisor** — **spawns `serf` subprocesses**, persists metadata, serves clients | serf (spawn), agent (schema only) | **AppWire protocol** + agent schema |
+| `cmd/evener-tui` | **Client** — terminal UI | serf-hub | **hubapi** (HTTP) + agent schema |
 
 Verified: serf-hub does `exec.Command(serfBinary, …, "--protocol", appwire.ProtocolVersion)`
 (spawn.go) — it does **not** embed the engine; its `agent` usage is schema types only
@@ -106,7 +106,7 @@ primeradiant.com/evener/                      (repo root)
 - `agent` (module) cannot import the app module → the engine library can never depend on
   serf-app glue. An attempt won't compile.
 - The app module imports `agent` + `llm` as **versioned dependencies** (local via `go.work`).
-- `cmd/serf-hub/internal/...` is importable only by `cmd/serf-hub` → hub-private code can't
+- `cmd/evener-hub/internal/...` is importable only by `cmd/evener-hub` → hub-private code can't
   leak into the tui or the engine.
 - `appwire` / `hubapi` are ordinary (non-internal) packages in the app module → all three
   binaries import them as the shared contract; they are the one thing legitimately shared.
@@ -122,7 +122,7 @@ gets its own copy under `cmd/<bin>/internal/`). This keeps every product self-co
 inter-product util dependency.
 
 - **`frontmatter`** (generic YAML frontmatter parser) — used by `agent` (skills.go) and
-  `cmd/serf-hub` → duplicate. **Caveat:** it's a parser the engine and the hub must *agree* on;
+  `cmd/evener-hub` → duplicate. **Caveat:** it's a parser the engine and the hub must *agree* on;
   if the copies ever drift (the hub displaying skill metadata that differs from what the engine
   loads), fold it into `agent`'s public surface instead (the apps already depend on `agent`).
 - **`diagnostic`** — used by `agent` (diagnostics.go) and apps → duplicate.
@@ -135,7 +135,7 @@ inter-product util dependency.
 ## 7. Migration plan (behavior-preserving, staged, each phase independently gated + mergeable)
 
 **Prerequisite — land the in-flight refactors first** (so the migration moves a quiescent tree):
-the tui/hub modularize workflow (carving `cmd/serf-{hub,tui}/internal/<pkg>`) and the surface-min
+the tui/hub modularize workflow (carving `cmd/evener-{hub,tui}/internal/<pkg>`) and the surface-min
 cleanup batch. The per-product `internal/` carving is itself part of this architecture.
 
 - **M1 — App-side `internal/` de-mix.** Move each app-only top-level `internal/` package into its

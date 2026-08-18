@@ -1,7 +1,7 @@
 # Serf Web Hub — Design System & Style Guide (v2)
 
 Status: **current**. This is the wave-2 rewrite's design system: tokens, fonts, and a widget
-library under `cmd/serf-hub/frontend/src/widgets/`, built as React function components + CSS
+library under `cmd/evener-hub/frontend/src/widgets/`, built as React function components + CSS
 Modules, with a living gallery (`/dev/widgets`, dev builds only) showing every widget in every
 documented state, in both themes.
 
@@ -19,7 +19,7 @@ what the implementation actually shipped.
 **Visual language provenance.** As of the 2026-08-13 re-theme, the palette, type, shape,
 elevation, and motion described below (§2 onward) are adapted from
 [Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine — full
-license text at `cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`. Beautiful UI ships as React +
+license text at `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`. Beautiful UI ships as React +
 Tailwind components; nothing is copy-pasted from it — every value and structure is translated
 into serf's own CSS-module + token system, which is why the token-contract machinery in §4
 continues to hold unchanged. See

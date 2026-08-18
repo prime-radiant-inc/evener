@@ -83,7 +83,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
 7. **[browser-free] Regression guard on the two-row agreement** — the
    property step 2 samples once, pinned for every tier builder:
    ```bash
-   go test ./cmd/serf-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+   go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
    ```
 
 ## Expected
@@ -105,7 +105,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   `ask_pending:true`; every rail row's activity text contains
   `question waiting`; the TUI header badge reads `● QUESTION WAITING`; and
   the TUI dashboard row for this session carries the `◆` marker
-  (`cmd/serf-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
+  (`cmd/evener-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
   still reads "your move" while another says "question waiting".
 - **Step 6**: the deterministic mapping includes
   `StateWord("errored", false) == "Error"` (`hubapi/attention.go:58-79`).
@@ -113,7 +113,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   `errored` state.
 - **Step 7**: `fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState` and
   `fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk` pass
-  (`cmd/serf-hub/internal/hubcore/tree_live_agreement_test.go:47,96`,
+  (`cmd/evener-hub/internal/hubcore/tree_live_agreement_test.go:47,96`,
   registered at `scenarios_fuzz_test.go:32-33`).
 - **Falsification (whole card)**: if a rail row's word and the TUI
   header-badge word ever disagree for the same underlying state (e.g. the
@@ -137,14 +137,14 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   ask-pending, and that the hub-proxied TUI dashboard dropped the bit
   entirely. Neither holds against current source. `buildTree` resolves the
   marker through one shared closure, `askPendingFor`
-  (`cmd/serf-hub/internal/hubcore/tree.go:622-627`), whose own comment
+  (`cmd/evener-hub/internal/hubcore/tree.go:622-627`), whose own comment
   requires **every** TreeNode builder to use it; all three builders do
   (`:792`, `:996`, `:1094`). On the TUI side, `LocalDaemonEntry` now carries
   `PendingAsk` and `threadFromEntry` sets `SerfThread.AskPending` from it
-  (`cmd/serf-hub/internal/appsource/local_daemon.go:38-47,799`), so the
+  (`cmd/evener-hub/internal/appsource/local_daemon.go:38-47,799`), so the
   dashboard's per-row `◆` works through the hub, not just on a direct daemon
   attach. `SetPendingAskFunc` no longer exists at all; the live bit comes
-  from a direct `sess.HasPendingAsk()` call (`cmd/serf/serve.go:967`). Step 7
+  from a direct `sess.HasPendingAsk()` call (`cmd/evener/serve.go:967`). Step 7
   pins the agreement property so it cannot silently regress again.
 - **There is no separate "needs you" section in the rail.** The auto-grouped
   NeedsYou tier was deliberately removed (`Rail.tsx:563-573`, kata `vbh8`

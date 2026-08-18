@@ -68,22 +68,22 @@ This spec does not:
 | `internal/appprojector/appwire_projection.go` | Project `events.JobFinishedData` exhaustion fields into live AppWire job-finished notifications. |
 | `internal/appprojector/appwire_projection_test.go` | Prove the live job-finished event projection preserves exhaustion facts. |
 | `server/server.go` | Carry exhaustion through `server.JobStatusInfo`. |
-| `cmd/serf/serve.go` | Convert `agent.JobStatusInfo` exhaustion fields into `server.JobStatusInfo`. |
-| `cmd/serf/serve_test.go` | Prove the agent-to-server diagnostics conversion preserves exhaustion facts. |
+| `cmd/evener/serve.go` | Convert `agent.JobStatusInfo` exhaustion fields into `server.JobStatusInfo`. |
+| `cmd/evener/serve_test.go` | Prove the agent-to-server diagnostics conversion preserves exhaustion facts. |
 | `server/appwire_runtime.go` | Convert `server.JobStatusInfo` exhaustion fields into diagnostic `SerfJobInfo`. |
 | `server/appwire_runtime_test.go` | Prove the server-to-AppWire diagnostic projection preserves exhaustion facts. |
-| `cmd/serf-hub/app_threadread.go` | Treat `exhausted` as terminal in historical Hub jobs. |
-| `cmd/serf-hub/app_threadread_test.go` | Prove an exhausted historical delegate is terminal and not shown as running. |
-| `cmd/serf-hub/assets/renderer-format.js` | Render exhausted notifications as a non-success warning/error tone. |
-| `cmd/serf-hub/jstest/test-renderer-notifications.js` | Prove exhausted notifications are not assigned success or neutral tone. |
-| `cmd/serf-hub/assets/renderer.js` | Classify live exhausted subagent rails as terminal non-success rows. |
-| `cmd/serf-hub/jstest/test-subagents.js` | Prove live exhausted rails stop spinning and never use success styling. |
-| `cmd/serf-tui/hub_notifications.go` | Treat exhausted delegate runs as stopped. |
-| `cmd/serf-tui/hub_notifications_test.go` | Prove exhausted runs do not remain live in TUI state. |
-| `cmd/serf-tui/internal/transcript/reducer.go` | Treat exhausted transcript subagents as terminal. |
-| `cmd/serf-tui/internal/transcript/reducer_test.go` | Prove exhausted transcript jobs are terminal. |
-| `cmd/serf-tui/internal/msgrender/tool_bodies.go` | Render exhausted delegate rails as non-success. |
-| `cmd/serf-tui/internal/msgrender/tool_bodies_test.go` | Prove exhausted rails cannot use completed styling. |
+| `cmd/evener-hub/app_threadread.go` | Treat `exhausted` as terminal in historical Hub jobs. |
+| `cmd/evener-hub/app_threadread_test.go` | Prove an exhausted historical delegate is terminal and not shown as running. |
+| `cmd/evener-hub/assets/renderer-format.js` | Render exhausted notifications as a non-success warning/error tone. |
+| `cmd/evener-hub/jstest/test-renderer-notifications.js` | Prove exhausted notifications are not assigned success or neutral tone. |
+| `cmd/evener-hub/assets/renderer.js` | Classify live exhausted subagent rails as terminal non-success rows. |
+| `cmd/evener-hub/jstest/test-subagents.js` | Prove live exhausted rails stop spinning and never use success styling. |
+| `cmd/evener-tui/hub_notifications.go` | Treat exhausted delegate runs as stopped. |
+| `cmd/evener-tui/hub_notifications_test.go` | Prove exhausted runs do not remain live in TUI state. |
+| `cmd/evener-tui/internal/transcript/reducer.go` | Treat exhausted transcript subagents as terminal. |
+| `cmd/evener-tui/internal/transcript/reducer_test.go` | Prove exhausted transcript jobs are terminal. |
+| `cmd/evener-tui/internal/msgrender/tool_bodies.go` | Render exhausted delegate rails as non-success. |
+| `cmd/evener-tui/internal/msgrender/tool_bodies_test.go` | Prove exhausted rails cannot use completed styling. |
 
 ## Task 1: Make Session Budget Accounting Explicit and Restorable
 
@@ -945,22 +945,22 @@ Expected: one surface-contract commit with no unrelated paths staged.
 - Modify: `internal/appprojector/appwire_projection.go`
 - Modify: `internal/appprojector/appwire_projection_test.go`
 - Modify: `server/server.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf/serve_test.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener/serve_test.go`
 - Modify: `server/appwire_runtime.go`
 - Modify: `server/appwire_runtime_test.go`
-- Modify: `cmd/serf-hub/app_threadread.go`
-- Modify: `cmd/serf-hub/app_threadread_test.go`
-- Modify: `cmd/serf-hub/assets/renderer-format.js`
-- Modify: `cmd/serf-hub/jstest/test-renderer-notifications.js`
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/jstest/test-subagents.js`
-- Modify: `cmd/serf-tui/hub_notifications.go`
-- Create: `cmd/serf-tui/hub_notifications_test.go`
-- Modify: `cmd/serf-tui/internal/transcript/reducer.go`
-- Modify: `cmd/serf-tui/internal/transcript/reducer_test.go`
-- Modify: `cmd/serf-tui/internal/msgrender/tool_bodies.go`
-- Modify: `cmd/serf-tui/internal/msgrender/tool_bodies_test.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/app_threadread_test.go`
+- Modify: `cmd/evener-hub/assets/renderer-format.js`
+- Modify: `cmd/evener-hub/jstest/test-renderer-notifications.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/jstest/test-subagents.js`
+- Modify: `cmd/evener-tui/hub_notifications.go`
+- Create: `cmd/evener-tui/hub_notifications_test.go`
+- Modify: `cmd/evener-tui/internal/transcript/reducer.go`
+- Modify: `cmd/evener-tui/internal/transcript/reducer_test.go`
+- Modify: `cmd/evener-tui/internal/msgrender/tool_bodies.go`
+- Modify: `cmd/evener-tui/internal/msgrender/tool_bodies_test.go`
 
 - [ ] **Step 1: Add failing tests for both real AppWire data paths**
 
@@ -995,13 +995,13 @@ The runtime diagnostic tests must cover the actual chain independently:
 ```text
 jobstore.JobRecord
   -> agent.JobStatusInfo
-  -> agentToServerDetailedStatus (cmd/serf/serve.go)
+  -> agentToServerDetailedStatus (cmd/evener/serve.go)
   -> server.JobStatusInfo
   -> appDiagnosticsFromDetailedStatus (server/appwire_runtime.go)
   -> appwire.SerfJobInfo
 ```
 
-In `agent/status_test.go`, seed an exhausted `JobRecord` and assert `Session.DetailedStatus().Jobs`. In `cmd/serf/serve_test.go`, feed an `agent.JobStatusInfo` into `agentToServerDetailedStatus`. In `server/appwire_runtime_test.go`, feed a `server.JobStatusInfo` into `appDiagnosticsFromDetailedStatus`. Do not name or add a nonexistent direct `JobRecord`-to-AppWire projector.
+In `agent/status_test.go`, seed an exhausted `JobRecord` and assert `Session.DetailedStatus().Jobs`. In `cmd/evener/serve_test.go`, feed an `agent.JobStatusInfo` into `agentToServerDetailedStatus`. In `server/appwire_runtime_test.go`, feed a `server.JobStatusInfo` into `appDiagnosticsFromDetailedStatus`. Do not name or add a nonexistent direct `JobRecord`-to-AppWire projector.
 
 - [ ] **Step 2: Add failing Hub and TUI terminal/rendering tests**
 
@@ -1028,9 +1028,9 @@ if got := subagentRailClass("exhausted"); got != "failed" {
 }
 ```
 
-In `cmd/serf-hub/jstest/test-renderer-notifications.js`, add an exhausted notification case and assert its tone is neither success nor neutral.
+In `cmd/evener-hub/jstest/test-renderer-notifications.js`, add an exhausted notification case and assert its tone is neither success nor neutral.
 
-In `cmd/serf-hub/jstest/test-subagents.js`, add this live rail scenario using a real `JOB_STARTED` followed by `JOB_FINISHED`:
+In `cmd/evener-hub/jstest/test-subagents.js`, add this live rail scenario using a real `JOB_STARTED` followed by `JOB_FINISHED`:
 
 ```js
 await scenario("exhausted child is terminal non-success without spinner", [
@@ -1058,8 +1058,8 @@ await scenario("exhausted child is terminal non-success without spinner", [
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent ./appwire ./internal/appprojector ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui/... -run 'Exhaust' -count=1 -v
-bash cmd/serf-hub/jstest/run-all.sh
+GOCACHE=/tmp/serf-gocache go test ./agent ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'Exhaust' -count=1 -v
+bash cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: FAIL because both AppWire paths drop exhaustion metadata and the newly added full-suite Hub/TUI cases do not recognize `exhausted` as a terminal non-success state.
@@ -1085,7 +1085,7 @@ Resumable        *bool  `json:"resumable,omitempty"`
 Update these actual converters, copying fields directly at each boundary:
 
 - `projectJobStatusInfos` in `agent/status.go`: `jobstore.JobRecord -> agent.JobStatusInfo`.
-- `agentToServerDetailedStatus` in `cmd/serf/serve.go`: `agent.JobStatusInfo -> server.JobStatusInfo`.
+- `agentToServerDetailedStatus` in `cmd/evener/serve.go`: `agent.JobStatusInfo -> server.JobStatusInfo`.
 - `appDiagnosticsFromDetailedStatus` in `server/appwire_runtime.go`: `server.JobStatusInfo -> appwire.SerfJobInfo`.
 - the `events.EventJobFinished` arm in `internal/appprojector/appwire_projection.go`: `events.JobFinishedData -> appwire.SerfJobInfo`.
 
@@ -1093,11 +1093,11 @@ The live event path receives the fields from Task 4's `events.JobFinishedData`; 
 
 - [ ] **Step 5: Mark exhaustion terminal in Hub history and non-success in Hub notifications**
 
-In `cmd/serf-hub/app_threadread.go`, add `exhausted` to `isTerminalHistoricalJobStatus` without mapping it to another status. Keep the raw status available to the renderer.
+In `cmd/evener-hub/app_threadread.go`, add `exhausted` to `isTerminalHistoricalJobStatus` without mapping it to another status. Keep the raw status available to the renderer.
 
-In `cmd/serf-hub/assets/renderer-format.js`, give `attrs.status === "exhausted"` the existing warning/error tone used by unsuccessful terminal notifications. Do not assign the completed/success tone and do not relabel the status.
+In `cmd/evener-hub/assets/renderer-format.js`, give `attrs.status === "exhausted"` the existing warning/error tone used by unsuccessful terminal notifications. Do not assign the completed/success tone and do not relabel the status.
 
-In `cmd/serf-hub/assets/renderer.js`, update the live rail classifier:
+In `cmd/evener-hub/assets/renderer.js`, update the live rail classifier:
 
 ```js
 if (s === "failed" || s === "errored" || s === "error" || s === "exhausted") return "failed";
@@ -1107,11 +1107,11 @@ This reuses the existing terminal non-success glyph/class, removes the running s
 
 - [ ] **Step 6: Mark exhaustion terminal in TUI state and rendering**
 
-In `cmd/serf-tui/hub_notifications.go`, make `runStillRunning("exhausted")` return false.
+In `cmd/evener-tui/hub_notifications.go`, make `runStillRunning("exhausted")` return false.
 
-In `cmd/serf-tui/internal/transcript/reducer.go`, include `exhausted` in `subagentTerminalStatus`.
+In `cmd/evener-tui/internal/transcript/reducer.go`, include `exhausted` in `subagentTerminalStatus`.
 
-In `cmd/serf-tui/internal/msgrender/tool_bodies.go`, add exhausted to the existing failed/non-success rail class while leaving completed/cancelled/stopped styling unchanged:
+In `cmd/evener-tui/internal/msgrender/tool_bodies.go`, add exhausted to the existing failed/non-success rail class while leaving completed/cancelled/stopped styling unchanged:
 
 ```go
 case "failed", "error", "exhausted":
@@ -1127,9 +1127,9 @@ Keep the literal `exhausted` status/reason text in the body so lifetime and tool
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./appwire ./internal/appprojector ./server ./cmd/serf-hub ./cmd/serf-tui/... -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/serf -count=1
-bash cmd/serf-hub/jstest/run-all.sh
+GOCACHE=/tmp/serf-gocache go test ./appwire ./internal/appprojector ./server ./cmd/evener-hub ./cmd/evener-tui/... -count=1
+GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/evener -count=1
+bash cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: PASS. Both AppWire paths preserve the same fields; exhausted jobs remain exhausted, terminal, and visibly non-successful in historical and live Hub rendering and TUI. The full Hub JavaScript suite passes, not only the two new files.
@@ -1140,7 +1140,7 @@ Run:
 
 ```bash
 git status --short
-git add agent/status.go agent/status_test.go appwire/types.go appwire/types_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go server/server.go cmd/serf/serve.go cmd/serf/serve_test.go server/appwire_runtime.go server/appwire_runtime_test.go cmd/serf-hub/app_threadread.go cmd/serf-hub/app_threadread_test.go cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/jstest/test-renderer-notifications.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-subagents.js cmd/serf-tui/hub_notifications.go cmd/serf-tui/hub_notifications_test.go cmd/serf-tui/internal/transcript/reducer.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/msgrender/tool_bodies.go cmd/serf-tui/internal/msgrender/tool_bodies_test.go
+git add agent/status.go agent/status_test.go appwire/types.go appwire/types_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go server/server.go cmd/evener/serve.go cmd/evener/serve_test.go server/appwire_runtime.go server/appwire_runtime_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-hub/assets/renderer-format.js cmd/evener-hub/jstest/test-renderer-notifications.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-subagents.js cmd/evener-tui/hub_notifications.go cmd/evener-tui/hub_notifications_test.go cmd/evener-tui/internal/transcript/reducer.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/msgrender/tool_bodies.go cmd/evener-tui/internal/msgrender/tool_bodies_test.go
 git commit -m "feat(ui): render exhausted jobs as terminal" -m "Carry exhaustion through live job-finished events and the complete runtime diagnostics chain. Teach Hub history, live rails, notifications, and TUI reducers/renderers that exhausted is a distinct non-success terminal state."
 ```
 
@@ -1170,8 +1170,8 @@ Expected: the delegate default remains 500; no goal iteration/continuation const
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/... ./appwire ./internal/appprojector ./server ./cmd/serf ./cmd/serf-hub ./cmd/serf-tui/... -run 'TurnBudgetWarning|MaxTurns|MaxToolRounds|Exhausted|BudgetExhaustion' -count=1 -v
-bash cmd/serf-hub/jstest/run-all.sh
+GOCACHE=/tmp/serf-gocache go test ./agent/... ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'TurnBudgetWarning|MaxTurns|MaxToolRounds|Exhausted|BudgetExhaustion' -count=1 -v
+bash cmd/evener-hub/jstest/run-all.sh
 ```
 
 Expected: PASS with evidence for warning timing/restore/accounting, the unchanged `TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent` contract, lifetime non-resumability, tool-round resumability, partial evidence, durable status, cross-surface agreement, and crash replay.

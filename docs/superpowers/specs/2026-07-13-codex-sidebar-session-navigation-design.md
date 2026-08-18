@@ -82,7 +82,7 @@ Add a deterministic jsdom test around the real sidebar `buildRow` behavior. The 
 - The row-menu **Open** action uses the same canonical route.
 - Active-row matching and reveal logic recognize the qualified Codex route.
 
-Run the existing Go tests that exercise source-qualified Codex workspace rendering and controls, then run the full `cmd/serf-hub` package tests. No test may require credentials, network access, a live Codex binary, or wall-clock races.
+Run the existing Go tests that exercise source-qualified Codex workspace rendering and controls, then run the full `cmd/evener-hub` package tests. No test may require credentials, network access, a live Codex binary, or wall-clock races.
 
 ## E2E scenario cards
 

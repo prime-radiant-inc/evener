@@ -67,8 +67,8 @@ invocations are unchanged. Direct runner callers and ordinary `make test`
 remain backward-compatible because the default stays disabled; the optimized
 gate opts in explicitly.
 
-The root package list continues to omit `cmd/serf-fuzzcov` and
-`cmd/serf-fuzz-harvest`. Their ordinary unit tests are fuzz coverage by policy
+The root package list continues to omit `cmd/evener-fuzzcov` and
+`cmd/evener-fuzz-harvest`. Their ordinary unit tests are fuzz coverage by policy
 and remain explicitly run by `make fuzz`; `ROOT_FULL` does not change that
 ownership boundary.
 
@@ -145,8 +145,8 @@ The legacy validation cycle ran `make lint`, `make build`, `make test`, and
 four captured logs were pristine. The optimized stack preserves the intended
 non-fuzz root, non-root module, script self-test, and frontend merge-gate
 coverage. The command selections are not exactly equivalent: standalone
-`go test ./...` also ran the ordinary tests in `cmd/serf-fuzzcov` and
-`cmd/serf-fuzz-harvest`. Those tests remain explicitly owned and run by
+`go test ./...` also ran the ordinary tests in `cmd/evener-fuzzcov` and
+`cmd/evener-fuzz-harvest`. Those tests remain explicitly owned and run by
 `make fuzz`, rather than by the post-merge gate.
 
 Three optimized cycles ran only after an idle-box check returned exit 1 with no

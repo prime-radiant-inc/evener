@@ -14,7 +14,7 @@ This is a live end-to-end test against a real provider API (billed).
 - A `serf` binary from this branch, built into a unique run directory —
   never a fixed `/tmp/serf-wt` that a card running beside this one would
   overwrite mid-run (kata `k2rx`):
-  `run=$(mktemp -d -t serf-e2e-XXXXXX); go build -o "$run/serf" ./cmd/serf`.
+  `run=$(mktemp -d -t serf-e2e-XXXXXX); go build -o "$run/serf" ./cmd/evener`.
 - A hermetic git repo with at least one commit (the working dir).
 - An isolated `SERF_STATE_DIR` with `providers.toml`/`credentials.toml`/
   `auth-token` symlinked from `~/.serf` (read-only config, isolated mutable

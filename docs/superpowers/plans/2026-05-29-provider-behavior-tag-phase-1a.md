@@ -31,8 +31,8 @@
 - **Modify** `llm/client.go` — `Client` holds `NameToTag`; central error-provider+tag stamping in `Complete`/`Stream` (wrap `Events()`); drop the `gemini`→`google` rewrite in `normalizeProviderName`.
 - **Modify** `llm/classify.go` — `isEndpointFallbackSignal` keys on the error's behavior tag.
 - **Modify** `llm/model_catalog.go` — drop the `:67` lookup alias (keep `:243` ingest normalization).
-- **Modify** `internal/diagnostic/diagnostic.go` + `cmd/serf-hub/assets/diagnostics.js` — classify on the structured error, not the message string.
-- **Modify** `cmd/serf/launch_check.go`, `cmd/serf-hub/web.go`, `cmd/serf-hub/app_rpc.go` — picker/launch behavior filters + `launchProviderAllowsUnreportedModels` via `NameToTag`; resume by lookup.
+- **Modify** `internal/diagnostic/diagnostic.go` + `cmd/evener-hub/assets/diagnostics.js` — classify on the structured error, not the message string.
+- **Modify** `cmd/evener/launch_check.go`, `cmd/evener-hub/web.go`, `cmd/evener-hub/app_rpc.go` — picker/launch behavior filters + `launchProviderAllowsUnreportedModels` via `NameToTag`; resume by lookup.
 - **Create** `agent/provider_instance_integration_test.go` — the renamed-instance backstop (Task 2).
 
 ---
@@ -140,7 +140,7 @@ func NameToTag(cfg Config) map[string]string {
 }
 
 // DefaultStateRoot returns $hubStateRoot (default ~/.serf), relocated here so
-// cmd/serf and cmd/serf-hub resolve the identical path.
+// cmd/evener and cmd/evener-hub resolve the identical path.
 func DefaultStateRoot() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".serf")
@@ -260,7 +260,7 @@ Per spec §4.2 rows for `profile.go`. Each is `switch p.id`→`switch p.behavior
 ## Task 7: Re-key `llm` routing/classify/catalog + `diagnostic`
 
 **Files:**
-- Modify: `llm/client.go:236` (`normalizeProviderName` drop gemini→google, keep lower/trim); `llm/classify.go:114` (tag); `llm/model_catalog.go:67` (drop lookup alias, keep `:243`); `internal/diagnostic/diagnostic.go` + `cmd/serf-hub/assets/diagnostics.js`
+- Modify: `llm/client.go:236` (`normalizeProviderName` drop gemini→google, keep lower/trim); `llm/classify.go:114` (tag); `llm/model_catalog.go:67` (drop lookup alias, keep `:243`); `internal/diagnostic/diagnostic.go` + `cmd/evener-hub/assets/diagnostics.js`
 - Test: `llm/*_test.go`, `internal/diagnostic/*_test.go`
 
 - [ ] **Step 1: Write failing tests:** `isEndpointFallbackSignal` true for an error with behavior tag `openai` regardless of provider name `work`; `normalizeProviderName("gemini")=="gemini"` (no rewrite); `diagnostic.Classify` of a `work`-provider structured `llm.Error` is `SourceProvider`.
@@ -275,7 +275,7 @@ Per spec §4.2 rows for `profile.go`. Each is `switch p.id`→`switch p.behavior
 
 **Files:**
 - Create: `agent/resolve.go`
-- Modify: `agent/session.go` (`SetModel:1271`, fallback guard `:4139` + execution `:2706`, provider-conditional tool re-registration), `agent/subagents.go:159,163`, `cmdutil/cmdutil.go` (`SelectProfile` wraps the resolver), `cmd/serf/serve.go`/`run.go` (pass the env-derived single-instance config + identity NameToTag into `SessionConfig`)
+- Modify: `agent/session.go` (`SetModel:1271`, fallback guard `:4139` + execution `:2706`, provider-conditional tool re-registration), `agent/subagents.go:159,163`, `cmdutil/cmdutil.go` (`SelectProfile` wraps the resolver), `cmd/evener/serve.go`/`run.go` (pass the env-derived single-instance config + identity NameToTag into `SessionConfig`)
 - Test: `agent/session_*_test.go`, `agent/resolve_test.go`
 
 - [ ] **Step 1: Write failing tests:** `SetModel("work2/gpt-5")` on a session whose config has `work`+`work2` (both openai) swaps to `work2` and preserves a `WithCommunicateOutputSchema` override; a subagent override to a different instance resolves via the resolver; a cross-*tag* `model_fallbacks` entry errors, a same-tag cross-instance one is allowed; switching to a `google` instance adds the gemini `web_search` tool.
@@ -289,13 +289,13 @@ Per spec §4.2 rows for `profile.go`. Each is `switch p.id`→`switch p.behavior
 ## Task 9: Resume by lookup; launch/picker behavior filters via `NameToTag`
 
 **Files:**
-- Modify: `cmd/serf-hub/app_rpc.go` (`resumeProviderFromProfileID:1735` → lookup; `resumeRequestForConfig:1717` returns an error; `launchProviderAllowsUnreportedModels:1526` via `NameToTag`), `cmd/serf/launch_check.go:104,222`, `cmd/serf-hub/web.go:2038,2064`
-- Test: `cmd/serf-hub/app_rpc_test.go`, `cmd/serf/launch_check_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go` (`resumeProviderFromProfileID:1735` → lookup; `resumeRequestForConfig:1717` returns an error; `launchProviderAllowsUnreportedModels:1526` via `NameToTag`), `cmd/evener/launch_check.go:104,222`, `cmd/evener-hub/web.go:2038,2064`
+- Test: `cmd/evener-hub/app_rpc_test.go`, `cmd/evener/launch_check_test.go`
 
 - [ ] **Step 1: Write failing tests:** resume of a session whose `Meta.ProfileID=="work"` reconstructs the ref via config lookup (and errors on a vanished instance); the openrouter tools-filter / `openrouter-anthropic` skip fire for a renamed openrouter instance via `NameToTag`.
 - [ ] **Step 2: Run, verify fail.**
 - [ ] **Step 3: Implement.** Replace the resume allowlist with a `cfg` lookup; thread an error out of `resumeRequestForConfig`. Pass `NameToTag` to the launch-check subprocess output / web picker; re-key `:104/:222/:2038/:2064/:1526` on the tag.
-- [ ] **Step 4: Run** `go test ./cmd/serf-hub/ ./cmd/serf/ -v`.
+- [ ] **Step 4: Run** `go test ./cmd/evener-hub/ ./cmd/evener/ -v`.
 - [ ] **Step 5: Commit.**
 
 ---

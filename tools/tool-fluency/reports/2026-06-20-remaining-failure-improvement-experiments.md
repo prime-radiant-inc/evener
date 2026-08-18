@@ -87,8 +87,8 @@ Kimi block separately below.
 The runner and CLI binary were built once for the campaign:
 
 ```sh
-go build -o /tmp/serf-fluency-exp-serf ./cmd/serf
-go build -o /tmp/serf-fluency-runner ./tools/tool-fluency/cmd/serf-fluency
+go build -o /tmp/serf-fluency-exp-serf ./cmd/evener
+go build -o /tmp/serf-fluency-runner ./tools/tool-fluency/cmd/evener-fluency
 ```
 
 Each result directory is `/tmp/serf-fluency-improve-eNN`.

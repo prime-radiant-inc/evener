@@ -73,7 +73,7 @@ A new package `internal/launchconfig` becomes the single source of truth for
                        └──────────────────────────────┘
                                        │
                                        ▼
-                        cmd/serf-hub/spawn.go
+                        cmd/evener-hub/spawn.go
                         (buildSpawnArgs delegates here)
 ```
 
@@ -89,7 +89,7 @@ Layer precedence, most-general to most-specific:
 4. **Per-launch overrides**: passed in `ThreadStartParams.launchOverrides`.
    Ephemeral; never written to disk.
 
-RPCs in `cmd/serf-hub/app_rpc.go` are added under the existing `serf/` prefix
+RPCs in `cmd/evener-hub/app_rpc.go` are added under the existing `serf/` prefix
 that already houses serf-specific extensions to the Codex-shaped baseline
 (see `2026-05-12-codex-app-server-protocol-and-serf-extensions.md`). Launch
 config gets a new sub-namespace `serf/launch/...`; credentials reuse and
@@ -368,7 +368,7 @@ set everything through `launchOverrides`.
 
 ### 5.5 Hub-internal types
 
-`SpawnRequest` and `ResumeRequest` (in `cmd/serf-hub/spawn.go`) are rewritten
+`SpawnRequest` and `ResumeRequest` (in `cmd/evener-hub/spawn.go`) are rewritten
 to carry a `Resolved LaunchConfigResolved` rather than the current ad-hoc
 scalar list. `buildSpawnArgs` becomes `launchconfig.ToArgs(resolved)`; the
 child env construction in `buildSerfChildEnv` is replaced by
@@ -437,7 +437,7 @@ Source labels (`env`, `file`, `oauth`, `absent`, `none`) come straight from
 
 ### 6.2 TUI
 
-The TUI already has a command palette (`cmd/serf-tui/command_palette.go`).
+The TUI already has a command palette (`cmd/evener-tui/command_palette.go`).
 Two new commands:
 
 - **`:settings`** — opens a modal panel with the same three tabs as the web
@@ -498,22 +498,22 @@ call and on each spawn. Cheap; avoids fs watchers in v1.
   (scalar / list / map), credential-blocklist enforcement, in-repo `..` path
   rejection, TOFU hash stability across whitespace-only edits, `ToArgs()`
   snapshot tests covering every flag combination.
-- **`cmd/serf-hub` RPC tests**: each new RPC gets happy-path, invalid-cwd,
+- **`cmd/evener-hub` RPC tests**: each new RPC gets happy-path, invalid-cwd,
   permission-denied, and concurrent-write coverage. Follows the existing
   pattern in `app_rpc_test.go`.
-- **`cmd/serf-hub/spawn_test.go` updates**: assert the spawned `serf serve`
+- **`cmd/evener-hub/spawn_test.go` updates**: assert the spawned `serf serve`
   argv matches the merged config; credentials are injected in the
   priority order in §4.5; rejected in-repo trust skips the layer; provider
   credential validation honors `credentials.toml`.
-- **End-to-end** (`cmd/serf-hub/e2e_test.go` pattern): temp `HOME` with
+- **End-to-end** (`cmd/evener-hub/e2e_test.go` pattern): temp `HOME` with
   global + hub-side + in-repo configs, spawn a real `serf launch-check`
   through the hub, assert the resolved config matches what `serf` sees via
   `launch-check --json`.
-- **TUI** (`cmd/serf-tui/`): extend `tmux_e2e_test.go` and panel tests for
+- **TUI** (`cmd/evener-tui/`): extend `tmux_e2e_test.go` and panel tests for
   `:settings`, `:credentials`, and `Ctrl-L`. Use the existing
   `embedded_test.go` pattern of pointing the TUI at an in-process hub
   fixture.
-- **Web** (`cmd/serf-hub/web_test.go` + `jstest/`): add tests for the
+- **Web** (`cmd/evener-hub/web_test.go` + `jstest/`): add tests for the
   Advanced panel, Settings tabs, and Credentials route. Mock the SSE
   channel to verify `credentials/updated` reloads the panel.
 

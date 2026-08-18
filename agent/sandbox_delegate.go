@@ -184,7 +184,7 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 }
 
 // provisionRestoredSandbox engages enforcement on a RESUMED root session's env from
-// its PERSISTED mode, the resume-path counterpart to cmd/serf.provisionSandbox for a
+// its PERSISTED mode, the resume-path counterpart to cmd/evener.provisionSandbox for a
 // fresh session. Off/empty skips the host probe and restores byte-identically. A
 // non-off mode re-resolves the persisted request against freshly-probed host facts
 // and the restored cwd (never replaying stored roots), then builds the enforced env

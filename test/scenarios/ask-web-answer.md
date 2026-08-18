@@ -12,7 +12,7 @@ it" for the endpoints, "Driving the web UI with superpowers-chrome:browsing" for
 it used to say:
 
 - The answering surface is the **composer's ask dock**
-  (`cmd/serf-hub/frontend/src/panes/session/composer/askDock/`), not a form inside the
+  (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`), not a form inside the
   transcript. The transcript's own `ask_user` row is deliberately read-only and says so
   (`panes/session/transcript/tools/askUser.tsx:16-21`, `:105`).
 - Every `[data-ask-card]` / `[data-ask-option]` / `.ask-question-header` /
@@ -33,8 +33,8 @@ gesture.
   directory names everything:
   ```bash
   run=$(mktemp -d -t serf-e2e-ask-web-XXXXXX)
-  go build -o "$run/serf"     ./cmd/serf
-  go build -o "$run/serf-hub" ./cmd/serf-hub
+  go build -o "$run/serf"     ./cmd/evener
+  go build -o "$run/serf-hub" ./cmd/evener-hub
   ```
 - Export credentials from the MAIN checkout (not this worktree):
   ```bash
@@ -180,7 +180,7 @@ gesture.
    ```
 8. **(browser-free)** Confirm the round trip on disk:
    ```bash
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:6
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:6
    ```
 
 ## Expected
@@ -261,7 +261,7 @@ leaves the daemon running, which then poisons the next run's state poll.
   outline read is the actual proof, independent of whether this loop observed the
   transition.
 - The hub's roster refresh (which feeds `/api/tree` and the rail) ticks every 5s
-  (`cmd/serf-hub/internal/hubcore/roster.go:451`); the direct `/api/sessions/local:<SID>`
+  (`cmd/evener-hub/internal/hubcore/roster.go:451`); the direct `/api/sessions/local:<SID>`
   call talks to the live daemon and reflects `awaiting` sooner. Don't confuse the two
   cadences — see `ask-cross-session-notify.md` for the roster-level path.
 - Answering is an ordinary `turn/start`; nothing about the daemon changes because the

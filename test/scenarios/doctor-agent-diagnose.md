@@ -37,10 +37,10 @@ PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini \
 ```
 
 (The prompt is a bare trailing positional: `serf` has no `run` subcommand
-and no `--prompt` flag — `cmd/serf/main.go:359-372` dispatches only
+and no `--prompt` flag — `cmd/evener/main.go:359-372` dispatches only
 `serve`/`launch-check`/`openai`/`upgrade`/`plugin`, and unrecognised
 leading words would be silently joined into the prompt text by
-`cliprompt.Read` (`cmd/serf/main.go:166`) rather than erroring.)
+`cliprompt.Read` (`cmd/evener/main.go:166`) rather than erroring.)
 
 ASSERT the doctor:
 - invokes `serf-doctor watches <SID> --json` (and/or `--self-loops`) via the shell

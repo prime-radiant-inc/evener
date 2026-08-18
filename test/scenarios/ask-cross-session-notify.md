@@ -14,7 +14,7 @@ it", and "Driving the web UI with superpowers-chrome:browsing" for the selector 
 **"Seeding preferences before the first load"**, which this card depends on completely.
 Four facts that invert what this card used to say:
 
-- **The notification engine is `cmd/serf-hub/frontend/src/notifications/*.ts`**, not
+- **The notification engine is `cmd/evener-hub/frontend/src/notifications/*.ts`**, not
   `assets/notifications.js` (deleted at `660376f78`). It reads `treeStore` +
   `prefsStore` and is started once by `AppShell` (`shell/AppShell.tsx:43,48`).
 - **All four notification prefs default OFF** (`stores/prefs.ts:268-273`) and are flat
@@ -128,7 +128,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    ```
 4. **(browser)** From Session B's tab — never navigated away, this is the "different
    session's viewport" — wait out the hub's attention watcher (it ticks every 5 s,
-   `cmd/serf-hub/main_background.go:50`) plus the client's 250 ms refetch debounce, then
+   `cmd/evener-hub/main_background.go:50`) plus the client's 250 ms refetch debounce, then
    read all three channels:
    ```
    sleep 8
@@ -152,7 +152,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    ```
 5. **(browser-free)** Read the tier itself from the hub, independent of any client-side
    refresh timing. `/api/tree` accepts the same Bearer token as every other API route
-   (`cmd/serf-hub/internal/hubedge/auth_token.go:113-120`):
+   (`cmd/evener-hub/internal/hubedge/auth_token.go:113-120`):
    ```bash
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" | jq --arg sid "$SIDA" '{
      summary: .attentionSummary,
@@ -255,8 +255,8 @@ gone and 404s silently, leaving the daemon running to poison the next run's stat
   `window.__asked`, the `Notification` stub, and the `hasFocus` override. Re-run the
   arming `eval` immediately after any navigation, before the wait.
 - **Two cadences, not one.** The hub's attention watcher ticks every 5 s
-  (`cmd/serf-hub/main_background.go:50`) and its first tick seeds silently so a hub restart
-  never re-notifies (`cmd/serf-hub/internal/hubcore/attention.go:113-133`); the client then
+  (`cmd/evener-hub/main_background.go:50`) and its first tick seeds silently so a hub restart
+  never re-notifies (`cmd/evener-hub/internal/hubcore/attention.go:113-133`); the client then
   debounces its refetch by 250 ms (`stores/tree.ts:453`). `sleep 8` covers both with
   margin. There is no client poll loop any more.
 - **The title count is not a fixed digit.** *Every* `awaiting` session counts toward

@@ -105,7 +105,7 @@ to its group's stats; it is not the stats' only carrier.)
 
 **Now:** `MODEL_RETRY` fires only in `OnRetry` (before the backoff sleep);
 both UIs clear the chip on the first delta
-(`cmd/serf-tui/hub_notifications.go:580`, web reducer clear-on-any-frame).
+(`cmd/evener-tui/hub_notifications.go:580`, web reducer clear-on-any-frame).
 
 **Change (minimal):**
 

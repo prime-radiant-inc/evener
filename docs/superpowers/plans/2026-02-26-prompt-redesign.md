@@ -562,7 +562,7 @@ Expected: All PASS. Fix any failures.
 **Step 2: Build binary**
 
 ```bash
-go build ./cmd/serf/
+go build ./cmd/evener/
 ```
 
 Expected: Clean build.
@@ -586,7 +586,7 @@ Verify it responds sensibly and submit_result works.
 **Step 1: Cross-compile for Linux**
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/serf/
+GOOS=linux GOARCH=amd64 go build -o serf-linux-amd64 ./cmd/evener/
 ```
 
 **Step 2: Deploy to flower-garden**

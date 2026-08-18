@@ -385,24 +385,24 @@ git commit -m "feat: read exact local job transcripts"
 - Delete: agent/observer_grants.go
 - Modify or rename: agent/cov_s1_observer_grants_test.go, retaining only historical-record tests
 - Delete: agent/observer_grants_test.go
-- Modify: cmd/serf-hub/internal/hubcore/past.go
-- Delete: cmd/serf-hub/internal/hubcore/past_observers_test.go
-- Modify: cmd/serf-hub/web_workspace.go
-- Modify: cmd/serf-hub/web_test.go
+- Modify: cmd/evener-hub/internal/hubcore/past.go
+- Delete: cmd/evener-hub/internal/hubcore/past_observers_test.go
+- Modify: cmd/evener-hub/web_workspace.go
+- Modify: cmd/evener-hub/web_test.go
 - Modify: identifier/job.go
 - Modify: identifier/job_test.go
-- Modify: cmd/serf-tui/hub_status.go
-- Modify: cmd/serf-tui/hub_status_test.go
-- Modify: cmd/serf-tui/internal/msgrender/tool_renderers.go
-- Modify: cmd/serf-tui/internal/msgrender/tool_renderers_test.go
-- Modify: cmd/serf-tui/internal/msgrender/tool_bodies.go
-- Modify: cmd/serf-tui/internal/msgrender/tool_bodies_test.go
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/helpers.ts
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/helpers.test.ts
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/readTranscript.tsx
-- Modify: cmd/serf-hub/frontend/src/panes/session/transcript/tools/readTranscript.test.tsx
+- Modify: cmd/evener-tui/hub_status.go
+- Modify: cmd/evener-tui/hub_status_test.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_renderers.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_renderers_test.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_bodies.go
+- Modify: cmd/evener-tui/internal/msgrender/tool_bodies_test.go
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/helpers.ts
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/helpers.test.ts
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.tsx
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/jobTools.test.tsx
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/readTranscript.tsx
+- Modify: cmd/evener-hub/frontend/src/panes/session/transcript/tools/readTranscript.test.tsx
 
 **Interfaces:**
 
@@ -443,9 +443,9 @@ In identifier/job_test.go, prove AbbreviateJobID leaves short strings unchanged 
 - [ ] **Step 2: Confirm frontend RED and pin forward metadata GREEN**
 
 ~~~bash
-go test ./cmd/serf-hub -run 'TestWeb_WorkspaceData_.*Observer' -count=1
-go test ./identifier ./cmd/serf-tui ./cmd/serf-tui/internal/msgrender -run 'Test.*Job.*Abbreviat|Test.*Job.*Suffix' -count=1
-(cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
+go test ./cmd/evener-hub -run 'TestWeb_WorkspaceData_.*Observer' -count=1
+go test ./identifier ./cmd/evener-tui ./cmd/evener-tui/internal/msgrender -run 'Test.*Job.*Abbreviat|Test.*Job.*Suffix' -count=1
+(cd cmd/evener-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
 ~~~
 
 Expected: suffix assertions fail because the TUI and job tools use prefix clipping and read_transcript does not abbreviate its job-log target. Forward ObservedBy tests should already pass and protect the source being retained.
@@ -478,10 +478,10 @@ Use it for job_status, job_stop, and read_transcript's job-log target summary. D
 
 ~~~bash
 go test ./agent -run 'TestS1Cov_LoadSessionHistoricalJobRecords' -count=1
-go test ./cmd/serf-hub/internal/hubcore -count=1
-go test ./cmd/serf-hub -run 'TestWeb_WorkspaceData_.*Observer' -count=1
-go test ./identifier ./cmd/serf-tui ./cmd/serf-tui/internal/msgrender -run 'Test.*Job.*Abbreviat|Test.*Job.*Suffix' -count=1
-(cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
+go test ./cmd/evener-hub/internal/hubcore -count=1
+go test ./cmd/evener-hub -run 'TestWeb_WorkspaceData_.*Observer' -count=1
+go test ./identifier ./cmd/evener-tui ./cmd/evener-tui/internal/msgrender -run 'Test.*Job.*Abbreviat|Test.*Job.*Suffix' -count=1
+(cd cmd/evener-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
 ~~~
 
 Temporarily restore head-only job clipping in each shared Go/TypeScript helper and confirm the corresponding suffix tests fail; restore. Temporarily ignore ObservedBy and confirm the forward-source test fails; restore.
@@ -609,7 +609,7 @@ go test -tags serffuzz ./agent -run '^$'
 Remove the event kind/field, FoldGrants, Store.LoadGrants, and grant arms from mixed fuzz models. Delete grant-only fuzz targets rather than translating them into compatibility tests. Preserve unrelated cases in mixed fuzz programs.
 
 ~~~bash
-rg -n 'watch_read_grant|EventWatchReadGrant|ObserverSessionID|FoldGrants|LoadGrants|LoadSessionObserverGrants|parentGrantedJobRead|grantedJobRead|lookupGrantedJobRead|jobStatusDeniedError|appendWatchReadGrant|mintWatchSendReadGrant|watchReadGrantObserver|watchGrantableJob|appendWatchFrameGrantedRead|grantsMinted|watchGrantKey' agent cmd/serf-hub --glob '*.go'
+rg -n 'watch_read_grant|EventWatchReadGrant|ObserverSessionID|FoldGrants|LoadGrants|LoadSessionObserverGrants|parentGrantedJobRead|grantedJobRead|lookupGrantedJobRead|jobStatusDeniedError|appendWatchReadGrant|mintWatchSendReadGrant|watchReadGrantObserver|watchGrantableJob|appendWatchFrameGrantedRead|grantsMinted|watchGrantKey' agent cmd/evener-hub --glob '*.go'
 ~~~
 
 Expected: no output and exit 1.
@@ -708,7 +708,7 @@ Any failure is a product defect to root-cause. Do not weaken assertions or add w
 ~~~bash
 go test -tags serffuzz ./agent -run '^$'
 go test -tags eval ./agent -run '^$'
-rg -n 'watch_read_grant|EventWatchReadGrant|ObserverSessionID|FoldGrants|LoadGrants|LoadSessionObserverGrants|parentGrantedJobRead|grantedJobRead|lookupGrantedJobRead|jobStatusDeniedError|appendWatchReadGrant|mintWatchSendReadGrant|watchReadGrantObserver|watchGrantableJob|appendWatchFrameGrantedRead|grantsMinted|watchGrantKey' agent cmd/serf-hub --glob '*.go'
+rg -n 'watch_read_grant|EventWatchReadGrant|ObserverSessionID|FoldGrants|LoadGrants|LoadSessionObserverGrants|parentGrantedJobRead|grantedJobRead|lookupGrantedJobRead|jobStatusDeniedError|appendWatchReadGrant|mintWatchSendReadGrant|watchReadGrantObserver|watchGrantableJob|appendWatchFrameGrantedRead|grantsMinted|watchGrantKey' agent cmd/evener-hub --glob '*.go'
 rg -n 'NewJobID\(\)|MustNewJobID\(\)' --glob '*.go'
 ~~~
 
@@ -717,8 +717,8 @@ Both searches must produce no output and exit 1. Review remaining comments for s
 - [ ] **Step 4: Enforce the production code budget**
 
 ~~~bash
-git diff --numstat 8be010b2d -- identifier agent cmd/serf-tui cmd/serf-hub/internal/hubcore cmd/serf-hub/web_workspace.go cmd/serf-hub/frontend/src/panes/session/transcript/tools ':!**/*_test.go' ':!**/*_fuzz_test.go'
-git diff --stat 8be010b2d -- identifier agent cmd/serf-tui cmd/serf-hub/internal/hubcore cmd/serf-hub/web_workspace.go cmd/serf-hub/frontend/src/panes/session/transcript/tools ':!**/*_test.go' ':!**/*_fuzz_test.go'
+git diff --numstat 8be010b2d -- identifier agent cmd/evener-tui cmd/evener-hub/internal/hubcore cmd/evener-hub/web_workspace.go cmd/evener-hub/frontend/src/panes/session/transcript/tools ':!**/*_test.go' ':!**/*_fuzz_test.go'
+git diff --stat 8be010b2d -- identifier agent cmd/evener-tui cmd/evener-hub/internal/hubcore cmd/evener-hub/web_workspace.go cmd/evener-hub/frontend/src/panes/session/transcript/tools ':!**/*_test.go' ':!**/*_fuzz_test.go'
 ~~~
 
 Deletion must substantially exceed addition. New production code is limited to IDs/allocation and their abbreviation helpers, bounded lookup, read-only snapshot, and direct observer stamps. If not, stop and report the exact excess to Jesse.
@@ -728,15 +728,15 @@ Deletion must substantially exceed addition. New production code is limited to I
 Run gofmt only on exact modified Go filenames. Do not stage or format directories.
 
 ~~~bash
-(cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/transcript/tools/helpers.ts src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
+(cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/transcript/tools/helpers.ts src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.tsx src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
 go test ./identifier -count=1
 go test ./agent/internal/jobstore -count=1
 go test ./agent -count=1
-go test ./cmd/serf-tui -count=1
-go test ./cmd/serf-tui/internal/msgrender -count=1
-go test ./cmd/serf-hub/internal/hubcore -count=1
-go test ./cmd/serf-hub -count=1
-(cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
+go test ./cmd/evener-tui -count=1
+go test ./cmd/evener-tui/internal/msgrender -count=1
+go test ./cmd/evener-hub/internal/hubcore -count=1
+go test ./cmd/evener-hub -count=1
+(cd cmd/evener-hub/frontend && npm test -- src/panes/session/transcript/tools/helpers.test.ts src/panes/session/transcript/tools/jobTools.test.tsx src/panes/session/transcript/tools/readTranscript.test.tsx)
 ~~~
 
 Do not run make fuzz as part of default checks.

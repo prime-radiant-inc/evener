@@ -4,7 +4,7 @@
 launch config (web Settings or TUI launch panel) is merged into the effective
 launch layer and rendered into the spawned `serf serve`'s argv, so a hub-spawned
 session enforces the configured box. Exercises the `Sandbox`/`SandboxNet` fields
-threaded through `cmd/serf-hub/internal/launchconfig/` (`types.go`, `merge.go`,
+threaded through `cmd/evener-hub/internal/launchconfig/` (`types.go`, `merge.go`,
 `wire.go`, `args.go`, `schema.go`) plus the TUI schema/apply switches. The one
 load-bearing gap this closes: before Workstream A, `ToArgs` did NOT emit the
 sandbox flags, so a launch-config choice never reached the spawned session.
@@ -37,7 +37,7 @@ script.
 3. Start a new session from the hub. The hub resolves the layer stack
    (`resolver.go`), merges to an effective layer (`merge.go`), and renders it into
    the spawned `serf serve` argv via `ToArgs` (`args.go`).
-4. The spawned `serf serve` parses `--sandbox restricted` (`cmd/serf/main.go:203`,
+4. The spawned `serf serve` parses `--sandbox restricted` (`cmd/evener/main.go:203`,
    `flags.sandbox`) and provisions the enforced env.
 
 ## Expected + Falsification (live, when a hub is stood up)
@@ -54,7 +54,7 @@ script.
 
 ## Backstop (Go, run 2026-07-09 — PASS)
 The plumbing gap this workstream closes is asserted by
-`cmd/serf-hub/internal/launchconfig/args_test.go` `TestToArgs_Sandbox`:
+`cmd/evener-hub/internal/launchconfig/args_test.go` `TestToArgs_Sandbox`:
 
 | effective layer | emitted argv |
 |---|---|
@@ -75,8 +75,8 @@ Companion backstops (all PASS):
   `select`/`boolean`, `PerLaunch:true`, and the expected choice set.
 
 ```
-$ go test ./cmd/serf-hub/internal/launchconfig/ -run 'TestToArgs_Sandbox|TestMerge_Sandbox|TestWire_SandboxRoundTrips|TestLaunchOptionSchema_Sandbox'
-ok  primeradiant.com/evener/cmd/serf-hub/internal/launchconfig
+$ go test ./cmd/evener-hub/internal/launchconfig/ -run 'TestToArgs_Sandbox|TestMerge_Sandbox|TestWire_SandboxRoundTrips|TestLaunchOptionSchema_Sandbox'
+ok  primeradiant.com/evener/cmd/evener-hub/internal/launchconfig
 ```
 
 ## Sharp edges

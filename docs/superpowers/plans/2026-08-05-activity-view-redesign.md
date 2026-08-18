@@ -6,15 +6,15 @@
 
 **Architecture:** Small additive Go wire change (`lastOutputAt` on activity jobs, `usage` on activity delegates) feeding a rewritten React tree: a pure `buildActivityRows` row-model builder, format helpers, dense rows with fold rows, and an inline detail strip. The right-hand inspector pane is deleted.
 
-**Tech Stack:** Go (agent, appwire, internal/apptranscript), React + TypeScript + CSS modules (cmd/serf-hub/frontend), Vitest, Biome.
+**Tech Stack:** Go (agent, appwire, internal/apptranscript), React + TypeScript + CSS modules (cmd/evener-hub/frontend), Vitest, Biome.
 
 Spec: `docs/superpowers/specs/2026-08-05-activity-view-redesign-design.md`
 
 ## Global Constraints
 
 - Default tests deterministic: no provider credentials, network, or live model behavior (`docs/testing.md`).
-- Frontend gates: `npx biome check --write` on touched frontend files, then `make test-web`; on this Chrome-capable host also `make test-web-browser`. Run from repo root unless noted; frontend commands run in `cmd/serf-hub/frontend`.
-- Every color is a token from `cmd/serf-hub/frontend/src/styles/tokens.css` (or a `color-mix()` of one). No hex/rgb/hsl literals elsewhere — `token-contract.test.ts` fails CI. Hue semantics: `--alive` = working, `--danger` = failure, `--attention` = needs-human only, `--accent` = selection/focus.
+- Frontend gates: `npx biome check --write` on touched frontend files, then `make test-web`; on this Chrome-capable host also `make test-web-browser`. Run from repo root unless noted; frontend commands run in `cmd/evener-hub/frontend`.
+- Every color is a token from `cmd/evener-hub/frontend/src/styles/tokens.css` (or a `color-mix()` of one). No hex/rgb/hsl literals elsewhere — `token-contract.test.ts` fails CI. Hue semantics: `--alive` = working, `--danger` = failure, `--attention` = needs-human only, `--accent` = selection/focus.
 - IBM Plex Mono (`var(--font-mono)`) for numbers/timings/paths; IBM Plex Sans (`var(--font-sans)`) for labels. 4px space grid (`var(--space-N)`).
 - Avoid `noNonNullAssertion` and array-index-key violations (Biome).
 - After editing `appwire/types.go`, regenerate with `make generate`; `make lint-generated` must pass.
@@ -28,7 +28,7 @@ Spec: `docs/superpowers/specs/2026-08-05-activity-view-redesign-design.md`
 - `agent/jobs_activity_past.go` — `loadHistoricalActivityBase` fills snapshot usage from the retained transcript via a memoizing `apptranscript.TurnCache`.
 - `agent/jobs_activity_test.go`, `agent/jobs_activity_usage_test.go` (new) — tests.
 
-**Frontend (`cmd/serf-hub/frontend/src`):**
+**Frontend (`cmd/evener-hub/frontend/src`):**
 - `protocol/types.gen.ts` — regenerated (Task 2), never hand-edited.
 - `panes/session/chrome/activityData.ts` — parse `lastOutputAt` + `usage`; export `ActivityUsage`.
 - `panes/session/chrome/activityFormat.ts` (new) — pure meta/quiet/tokens formatters.
@@ -184,7 +184,7 @@ git commit -m "feat(agent): stamp lastOutputAt and delegate usage on activity wi
 **Files:**
 - Modify: `agent/jobs_activity_past.go` (imports :3-12, `loadHistoricalActivityBase` at :39-85)
 - Create: `agent/jobs_activity_usage_test.go`
-- Modify (generated): `cmd/serf-hub/frontend/src/protocol/types.gen.ts`
+- Modify (generated): `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
 - Consumes: `apptranscript.NewTurnCache()`, `(*TurnCache).UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.SerfUsage, error)`; `sessionsSubdir = "sessions"` (`agent/session.go:1298`); `transcriptJSONLMaxLineBytes` (`agent/transcript_read.go:15`); `schema.SessionMeta.DivergenceTurn`.
@@ -287,15 +287,15 @@ Expected: PASS
 
 Run: `make generate`
 Then: `make lint-generated`
-Expected: both exit 0; `git status` shows `cmd/serf-hub/frontend/src/protocol/types.gen.ts` modified, containing `lastOutputAt?: string` on `JobActivityJob` and `usage?: SerfUsage` on `JobActivityDelegate`. Verify with:
+Expected: both exit 0; `git status` shows `cmd/evener-hub/frontend/src/protocol/types.gen.ts` modified, containing `lastOutputAt?: string` on `JobActivityJob` and `usage?: SerfUsage` on `JobActivityDelegate`. Verify with:
 
-Run: `rg -n "lastOutputAt|usage" cmd/serf-hub/frontend/src/protocol/types.gen.ts | head`
+Run: `rg -n "lastOutputAt|usage" cmd/evener-hub/frontend/src/protocol/types.gen.ts | head`
 Expected: hits on both fields.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add agent/jobs_activity_past.go agent/jobs_activity_usage_test.go cmd/serf-hub/frontend/src/protocol/types.gen.ts
+git add agent/jobs_activity_past.go agent/jobs_activity_usage_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts
 git commit -m "feat(agent): historical delegate usage; regen appwire ts types"
 ```
 
@@ -304,8 +304,8 @@ git commit -m "feat(agent): historical delegate usage; regen appwire ts types"
 ### Task 3: TS — parse `lastOutputAt` and `usage`
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts` (ActivityJob :18-37, parseJob :161-224, ActivityDelegate :55-63, parseDelegate :255-304)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts` (ActivityJob :18-37, parseJob :161-224, ActivityDelegate :55-63, parseDelegate :255-304)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts`
 
 **Interfaces:**
 - Produces: `ActivityUsage { inputTokens: number; outputTokens: number; cacheReadTokens?: number; totalTokens?: number }`; `ActivityJob.lastOutputAt?: string`; `ActivityDelegate.usage?: ActivityUsage`. Parse failures on malformed-but-present fields make the containing node parse as incomplete (same contract as existing optional fields).
@@ -412,7 +412,7 @@ test("rejects malformed usage (non-numeric inputTokens) as incomplete", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
 Expected: FAIL — `lastOutputAt`/`usage` undefined in parse output.
 
 - [ ] **Step 3: Implement**
@@ -468,13 +468,13 @@ In `parseDelegate`, after the mandate block:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityData.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/activityData.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityData.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/chrome/activityData.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityData.test.ts
 git commit -m "feat(web): parse lastOutputAt and delegate usage in activityData"
 ```
 
@@ -483,8 +483,8 @@ git commit -m "feat(web): parse lastOutputAt and delegate usage in activityData"
 ### Task 4: TS — format helpers (`activityFormat.ts`)
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/activityFormat.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/activityFormat.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/activityFormat.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/activityFormat.test.ts`
 
 **Interfaces:**
 - Consumes: `ActivityJob`, `ActivityUsage` from `activityData.ts`; `formatTokenCount` from `../transcript/messages/format` (whole-k rounding: 41200 → "41k").
@@ -550,7 +550,7 @@ test("isFailedStatus matches the danger set", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityFormat.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityFormat.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement**
@@ -621,13 +621,13 @@ export function jobStatusDotState(status: string, terminal?: boolean): "idle" | 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityFormat.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityFormat.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/activityFormat.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityFormat.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/chrome/activityFormat.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityFormat.test.ts
 git commit -m "feat(web): activity row format helpers"
 ```
 
@@ -636,8 +636,8 @@ git commit -m "feat(web): activity row format helpers"
 ### Task 5: TS — row model builder (`activityRows.ts`)
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.ts`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.test.ts`
 
 **Interfaces:**
 - Consumes: `ActivityTree`, `ActivitySessionNode`, `ActivityEntry`, `ActivityJob`, `ActivityDelegate`, `activityNodeID` from `activityData.ts`; `isFailedStatus` from `activityFormat.ts`.
@@ -790,7 +790,7 @@ test("no terminal entries renders no fold row", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityRows.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityRows.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement**
@@ -929,13 +929,13 @@ export function buildActivityRows(tree: ActivityTree, collapsedFolds: ReadonlySe
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/activityRows.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/activityRows.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/serf-hub/frontend/src/panes/session/chrome/activityRows.test.ts
+git add cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.ts cmd/evener-hub/frontend/src/panes/session/chrome/activityRows.test.ts
 git commit -m "feat(web): buildActivityRows with inactive folding"
 ```
 
@@ -944,8 +944,8 @@ git commit -m "feat(web): buildActivityRows with inactive folding"
 ### Task 6: TS — fold state in the activity panel store
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/stores/activityPanel.ts` (ActivityPanelEntry :24-32, EMPTY_ACTIVITY_PANEL_ENTRY :56-62, newEntry :66-74, store interface :41-48)
-- Test: `cmd/serf-hub/frontend/src/stores/activityPanel.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/activityPanel.ts` (ActivityPanelEntry :24-32, EMPTY_ACTIVITY_PANEL_ENTRY :56-62, newEntry :66-74, store interface :41-48)
+- Test: `cmd/evener-hub/frontend/src/stores/activityPanel.test.ts`
 
 **Interfaces:**
 - Produces: `ActivityPanelEntry.collapsedFoldIDs: string[]`; store action `toggleFold(ref: string, foldID: string): void` (adds the id when absent, removes when present).
@@ -970,7 +970,7 @@ test("toggleFold flips fold membership per session ref", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/stores/activityPanel.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/stores/activityPanel.test.ts`
 Expected: FAIL — `toggleFold` is not a function.
 
 - [ ] **Step 3: Implement**
@@ -995,13 +995,13 @@ In `activityPanel.ts`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/stores/activityPanel.test.ts`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/stores/activityPanel.test.ts`
 Expected: PASS (whole file — the new field must not break existing entry-shape assertions; if an existing test asserts exact `EMPTY_ACTIVITY_PANEL_ENTRY` shape, add `collapsedFoldIDs: []` to its expectation).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/frontend/src/stores/activityPanel.ts cmd/serf-hub/frontend/src/stores/activityPanel.test.ts
+git add cmd/evener-hub/frontend/src/stores/activityPanel.ts cmd/evener-hub/frontend/src/stores/activityPanel.test.ts
 git commit -m "feat(web): fold state in activity panel store"
 ```
 
@@ -1010,9 +1010,9 @@ git commit -m "feat(web): fold state in activity panel store"
 ### Task 7: TS — dense `ActivityTree` rewrite
 
 **Files:**
-- Rewrite: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css` (add classes below)
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` (rewrite)
+- Rewrite: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css` (add classes below)
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx` (rewrite)
 
 **Interfaces:**
 - Consumes: `buildActivityRows`, `ActivityRow` (Task 5); `formatUsagePair`, `formatQuietAge`, `quietAnchorMillis`, `jobStatusDotState`, `isFailedStatus` (Task 4); `openTranscript` from `../transcript/openTranscript` (signature `openTranscript(ref: string, parentRef?: string): void`); `StatusDot`, `Chevron`, `Button` from `../../../widgets`; `requireClass`.
@@ -1181,7 +1181,7 @@ Rewrite `ActivityTree.test.tsx` around the new contract (keep the file's existin
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTree.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTree.test.tsx`
 Expected: FAIL — prop/type errors against the old component.
 
 - [ ] **Step 3: Implement the rewrite + CSS**
@@ -1190,14 +1190,14 @@ Per the skeleton and behavior contract above. Delete `ActivitySelectionNode`, `f
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTree.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityTree.test.tsx`
 Expected: PASS
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/chrome/activitypanel.module.css
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityTree.tsx src/panes/session/chrome/ActivityTree.test.tsx src/panes/session/chrome/activitypanel.module.css
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css
 git commit -m "feat(web): dense activity tree rows with fold + inline detail"
 ```
 
@@ -1206,8 +1206,8 @@ git commit -m "feat(web): dense activity tree rows with fold + inline detail"
 ### Task 8: TS — `ActivityRowDetail` inline strip
 
 **Files:**
-- Create: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.test.tsx`
+- Create: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityRowDetail.test.tsx`
 
 **Interfaces:**
 - Consumes: `ActivityJobRow`/`ActivityDelegateRow` (Task 5); `OpenTranscriptButton` from `../transcript/openTranscript` (props `{ transcriptRef: string; parentRef?: string; label?: string }`); `formatQuietAge` (Task 4).
@@ -1230,21 +1230,21 @@ Content: mono `code` line — `job.command ?? job.task ?? job.description` for j
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityRowDetail.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityRowDetail.test.tsx`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement** per the contract, using the `detailStrip`/`detailCommand`/`detailMeta`/`detailActions` classes from Task 7's CSS.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityRowDetail.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityRowDetail.test.tsx`
 Expected: PASS
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityRowDetail.tsx src/panes/session/chrome/ActivityRowDetail.test.tsx
-git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx cmd/serf-hub/frontend/src/panes/session/chrome/ActivityRowDetail.test.tsx
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityRowDetail.tsx src/panes/session/chrome/ActivityRowDetail.test.tsx
+git add cmd/evener-hub/frontend/src/panes/session/chrome/ActivityRowDetail.tsx cmd/evener-hub/frontend/src/panes/session/chrome/ActivityRowDetail.test.tsx
 git commit -m "feat(web): inline activity row detail strip"
 ```
 
@@ -1253,9 +1253,9 @@ git commit -m "feat(web): inline activity row detail strip"
 ### Task 9: TS — `ActivityPanel` single-column rewiring
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` (body render :225-327)
-- Delete: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx`
-- Test: `cmd/serf-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.tsx` (body render :225-327)
+- Delete: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityInspector.tsx`
+- Test: `cmd/evener-hub/frontend/src/panes/session/chrome/ActivityPanel.test.tsx`
 
 **Interfaces:**
 - Consumes: new `ActivityTreeProps` (Task 7); `activityPanelStore.getState().toggleFold` (Task 6).
@@ -1267,7 +1267,7 @@ In `ActivityPanel.test.tsx`: replace inspector assertions (`activity-inspector` 
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx`
 Expected: FAIL — inspector gone/new props.
 
 - [ ] **Step 3: Implement**
@@ -1294,14 +1294,14 @@ In `ActivityPanelBody`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/SessionChrome.test.tsx`
+Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/SessionChrome.test.tsx`
 Expected: PASS
 
 - [ ] **Step 5: Biome + commit**
 
 ```bash
-cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityPanel.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/activitypanel.module.css
-git add -u cmd/serf-hub/frontend/src/panes/session/chrome/
+cd cmd/evener-hub/frontend && npx biome check --write src/panes/session/chrome/ActivityPanel.tsx src/panes/session/chrome/ActivityPanel.test.tsx src/panes/session/chrome/activitypanel.module.css
+git add -u cmd/evener-hub/frontend/src/panes/session/chrome/
 git commit -m "feat(web): activity panel drops inspector for dense tree"
 ```
 
@@ -1310,11 +1310,11 @@ git commit -m "feat(web): activity panel drops inspector for dense tree"
 ### Task 10: Cleanup + full gates
 
 **Files:**
-- Modify: `cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css` (remove now-unreferenced inspector classes: `inspector`, `inspectorHeader`, `inspectorTitle`, `inspectorSection`, `inspectorMeta`, `detailList`, `detailRow`, `detailLabel`, `detailValue`, `prompt`, `turnsList`, `turnRow`, and any others `rg` shows unreferenced)
+- Modify: `cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css` (remove now-unreferenced inspector classes: `inspector`, `inspectorHeader`, `inspectorTitle`, `inspectorSection`, `inspectorMeta`, `detailList`, `detailRow`, `detailLabel`, `detailValue`, `prompt`, `turnsList`, `turnRow`, and any others `rg` shows unreferenced)
 
 - [ ] **Step 1: Remove dead CSS**
 
-For each candidate class: `rg -n "styles\.<name>|\"<name>\"" cmd/serf-hub/frontend/src --glob '*.tsx' --glob '*.ts'` — delete from the module only when unreferenced. `requireClass` throws on missing classes, so a wrong deletion fails loudly in tests (that's the safety net, not a reason to skip the grep).
+For each candidate class: `rg -n "styles\.<name>|\"<name>\"" cmd/evener-hub/frontend/src --glob '*.tsx' --glob '*.ts'` — delete from the module only when unreferenced. `requireClass` throws on missing classes, so a wrong deletion fails loudly in tests (that's the safety net, not a reason to skip the grep).
 
 - [ ] **Step 2: Frontend unit + typecheck + Biome gate**
 
@@ -1339,7 +1339,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -u cmd/serf-hub/frontend/src/panes/session/chrome/activitypanel.module.css
+git add -u cmd/evener-hub/frontend/src/panes/session/chrome/activitypanel.module.css
 git commit -m "chore(web): drop dead activity inspector styles"
 ```
 

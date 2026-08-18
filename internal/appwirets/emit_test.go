@@ -639,7 +639,7 @@ func TestEmitCatalogEmitsRuntimeNotificationNames(t *testing.T) {
 // `make lint-generated`.
 func TestGeneratedFileCurrent(t *testing.T) {
 	want := EmitCatalog()
-	got, err := os.ReadFile("../../cmd/serf-hub/frontend/src/protocol/types.gen.ts")
+	got, err := os.ReadFile("../../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
 	if err != nil || string(got) != want {
 		t.Fatal("types.gen.ts stale: run `make generate`")
 	}

@@ -44,13 +44,13 @@ outnumber codex. This rev backs off.
 |---|---|---|
 | Codex AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (codex requirement) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
-| Hub REST/SSE JSON | `cmd/serf-hub/`, `internal/hubapi/`, `server/` | snake_case |
+| Hub REST/SSE JSON | `cmd/evener-hub/`, `internal/hubapi/`, `server/` | snake_case |
 | Rendezvous files (`~/.serf/run/*.json`) | `rendezvous/` | snake_case |
 | Session save files | `agent/session.go`, `agent/transcript.go` | snake_case |
-| Hub config (`~/.serf/hub.toml`) | `cmd/serf-hub/config.go` | snake_case |
+| Hub config (`~/.serf/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
 | Launch config (`~/.serf/launch.toml`, `.serf/launch.toml`) | `internal/launchconfig/` | snake_case |
 | Project meta (`~/.serf/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
-| `serf` CLI flags | `cmd/serf/`, `cmd/serf-hub/`, `cmd/serf-tui/`, `cmd/llmcall/`, `cmd/serfeval/` | kebab-case |
+| `serf` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/evener-tui/`, `cmd/llmcall/`, `cmd/evenereval/` | kebab-case |
 
 Go struct tags follow the rule directly: `json:"snake_case"` and
 `toml:"snake_case"`. Field names in Go source stay idiomatic Go
@@ -137,7 +137,7 @@ correctly.
 
 ## Enforcement
 
-`cmd/serf-namingcheck` walks the AST and checks every `json:"..."`
+`cmd/evener-namingcheck` walks the AST and checks every `json:"..."`
 and `toml:"..."` struct tag plus every TOML key. The linter enforces
 the snake-default rule and applies the path carve-outs above
 (appwire-adjacent code — `internal/appwire/`, `internal/appsource/`,
@@ -150,7 +150,7 @@ comment explaining why.
 Run locally:
 
 ```bash
-go run ./cmd/serf-namingcheck ./...
+go run ./cmd/evener-namingcheck ./...
 # or
 make lint-naming
 ```
@@ -177,7 +177,7 @@ When you add a new TOML config file, JSON payload, or CLI flag:
   (`reasoning_effort`, `max_rounds`, `app_replay_size`).
 - `internal/appwire/types.go` — camelCase JSON examples for the codex
   carve-out (`clientInfo`, `protocolVersion`, `pluginDirs`).
-- `cmd/serf/main.go` — kebab-case CLI flag examples
+- `cmd/evener/main.go` — kebab-case CLI flag examples
   (`--reasoning-effort`, `--max-rounds`).
 
 ## Migration status

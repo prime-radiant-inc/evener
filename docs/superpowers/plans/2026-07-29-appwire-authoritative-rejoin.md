@@ -61,7 +61,7 @@ The planning worktree starts at design commit `7f5bc135d`, whose parent is
 Focused Go baseline:
 
 ```bash
-go test ./server ./internal/appserver ./cmd/serf-hub/internal/appsource -count=1
+go test ./server ./internal/appserver ./cmd/evener-hub/internal/appsource -count=1
 ```
 
 Expected: PASS.
@@ -70,7 +70,7 @@ The frontend checkout initially has no `node_modules`; `npm test` reports
 `vitest: command not found`. Before frontend RED/GREEN work, run:
 
 ```bash
-cd cmd/serf-hub/frontend
+cd cmd/evener-hub/frontend
 npm ci
 ```
 
@@ -80,10 +80,10 @@ flag-day consistency failures:
 
 - root `TestIdentifierAudit` does not yet inventory two `crypto/sha256`
   imports;
-- `cmd/serf/internal/launchcheck` still expects AppWire v1 in one test;
-- `cmd/serf-tui` callers do not yet supply required `clientMutationId` values;
+- `cmd/evener/internal/launchcheck` still expects AppWire v1 in one test;
+- `cmd/evener-tui` callers do not yet supply required `clientMutationId` values;
   and
-- `cmd/serf-tui/internal/hubstart` has stale v1/v2 fuzz expectations.
+- `cmd/evener-tui/internal/hubstart` has stale v1/v2 fuzz expectations.
 
 Those failures predate this design and are not authorization to expand this
 plan into TUI or identifier-audit cleanup. Record whether their exact shape
@@ -106,15 +106,15 @@ changes, and report them separately at handoff.
 **Files brought in by existing commits:**
 
 - Modify:
-  `cmd/serf-hub/internal/appsource/relay_session_test.go`
+  `cmd/evener-hub/internal/appsource/relay_session_test.go`
 - Modify:
-  `cmd/serf-hub/internal/appsource/relay_session.go`
+  `cmd/evener-hub/internal/appsource/relay_session.go`
 - Modify:
-  `cmd/serf-hub/internal/appsource/codex_source_test.go`
+  `cmd/evener-hub/internal/appsource/codex_source_test.go`
 - Modify:
-  `cmd/serf-hub/internal/appsource/codex_live_thread.go`
+  `cmd/evener-hub/internal/appsource/codex_live_thread.go`
 - Modify:
-  `cmd/serf-hub/internal/appsource/codex_source.go`
+  `cmd/evener-hub/internal/appsource/codex_source.go`
 
 **Reviewed commits, in required order:**
 
@@ -147,7 +147,7 @@ changes, and report them separately at handoff.
 
   ```bash
   git cherry-pick 619b894fae3b2ee36c910d14b287e174f0f170f4
-  go test ./cmd/serf-hub/internal/appsource \
+  go test ./cmd/evener-hub/internal/appsource \
     -run 'TestRelaySession(SnapshotCutWaitsForQueuedPreCaptureNotification|EOFBeforeConnectionInstallForcesNextReadToRedial)$' \
     -count=1
   ```
@@ -162,10 +162,10 @@ changes, and report them separately at handoff.
 
   ```bash
   git cherry-pick f0c3770e59f5d9f229392d2c02d8961a87300a6e
-  go test ./cmd/serf-hub/internal/appsource \
+  go test ./cmd/evener-hub/internal/appsource \
     -run 'TestRelaySession(SnapshotCutWaitsForQueuedPreCaptureNotification|EOFBeforeConnectionInstallForcesNextReadToRedial)$' \
     -count=100
-  go test -race ./cmd/serf-hub/internal/appsource \
+  go test -race ./cmd/evener-hub/internal/appsource \
     -run 'TestRelaySession(SnapshotCutWaitsForQueuedPreCaptureNotification|EOFBeforeConnectionInstallForcesNextReadToRedial)$' \
     -count=20
   ```
@@ -179,7 +179,7 @@ changes, and report them separately at handoff.
 
   ```bash
   git cherry-pick 291342018561ae8254f6d584a5ace2a203f1c137
-  go test ./cmd/serf-hub/internal/appsource \
+  go test ./cmd/evener-hub/internal/appsource \
     -run '^TestCodexDirtyCacheIsNotAuthoritativeWhileRefreshRetries$' \
     -count=1
   ```
@@ -193,13 +193,13 @@ changes, and report them separately at handoff.
 
   ```bash
   git cherry-pick 2969c4233c7f0beaf863bc1919f31c284a341829
-  go test ./cmd/serf-hub/internal/appsource \
+  go test ./cmd/evener-hub/internal/appsource \
     -run '^TestCodexDirtyCacheIsNotAuthoritativeWhileRefreshRetries$' \
     -count=100
-  go test -race ./cmd/serf-hub/internal/appsource \
+  go test -race ./cmd/evener-hub/internal/appsource \
     -run '^TestCodexDirtyCacheIsNotAuthoritativeWhileRefreshRetries$' \
     -count=20
-  go test ./cmd/serf-hub/internal/appsource -count=1
+  go test ./cmd/evener-hub/internal/appsource -count=1
   ```
 
   Expected: PASS.
@@ -228,9 +228,9 @@ changes, and report them separately at handoff.
 - Modify: `agent/session_client_mutation_queue_test.go`
 - Verify: `agent/session_client_mutation_persist_test.go`
 - Verify:
-  `cmd/serf-hub/frontend/src/stores/mutationDispatcher.test.ts`
+  `cmd/evener-hub/frontend/src/stores/mutationDispatcher.test.ts`
 - Verify:
-  `cmd/serf-hub/frontend/src/stores/mutationOutbox.test.ts`
+  `cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts`
 
 **Interfaces:**
 
@@ -322,7 +322,7 @@ The serialized response and durable record must receive the same
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm test -- \
     src/stores/mutationDispatcher.test.ts \
     src/stores/mutationOutbox.test.ts
@@ -490,8 +490,8 @@ retained-window storage and switches every read path to the reducer.
 - Modify: `server/appwire_rejoin_test.go`
 - Modify: `server/appwire_server_test.go`
 - Modify: `server/server_surface_fuzz_test.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf/serve_residual_fuzz_test.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener/serve_residual_fuzz_test.go`
 
 **Interfaces:**
 
@@ -679,7 +679,7 @@ helper, but production serve must use `PrepareAppIdentity` and
   go test -race ./server ./internal/appserver \
     -run 'Test(ServerAppWire|AtomicRejoin|PreparedAppIdentity|AppTurnSnapshot|SnapshotCut)' \
     -count=10
-  go test ./cmd/serf -run 'TestServe|TestRunServe' -count=1
+  go test ./cmd/evener -run 'TestServe|TestRunServe' -count=1
   ```
 
   Expected: PASS.
@@ -706,10 +706,10 @@ helper, but production serve must use `PrepareAppIdentity` and
 - Modify: `server/bridge_test.go`
 - Modify: `server/appwire_runtime.go`
 - Modify: `server/appwire_rejoin_test.go`
-- Modify: `cmd/serf/serve.go`
-- Modify: `cmd/serf/serve_state_test.go`
-- Modify: `cmd/serf/serve_residual_fuzz_test.go`
-- Modify: `cmd/serf/serve_test.go`
+- Modify: `cmd/evener/serve.go`
+- Modify: `cmd/evener/serve_state_test.go`
+- Modify: `cmd/evener/serve_residual_fuzz_test.go`
+- Modify: `cmd/evener/serve_test.go`
 
 - [ ] **Step 1: Add a metadata-before-notification RED.**
 
@@ -762,7 +762,7 @@ helper, but production serve must use `PrepareAppIdentity` and
   Run:
 
   ```bash
-  go test ./cmd/serf ./server \
+  go test ./cmd/evener ./server \
     -run 'Test(RunServeClear|BridgeUpdatesSessionMetadataBeforeProjectionCommit)' \
     -count=1
   ```
@@ -807,10 +807,10 @@ helper, but production serve must use `PrepareAppIdentity` and
   Run:
 
   ```bash
-  go test ./server ./cmd/serf \
+  go test ./server ./cmd/evener \
     -run 'Test(RunServeClear|Bridge|PreparedAppIdentity|AtomicRejoin)' \
     -count=50
-  go test -race ./server ./cmd/serf \
+  go test -race ./server ./cmd/evener \
     -run 'Test(RunServeClear|Bridge|PreparedAppIdentity|AtomicRejoin)' \
     -count=10
   ```
@@ -829,8 +829,8 @@ helper, but production serve must use `PrepareAppIdentity` and
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/stores/connection.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/connection.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
 
 - [ ] **Step 1: Add the old-client callback RED.**
 
@@ -854,7 +854,7 @@ helper, but production serve must use `PrepareAppIdentity` and
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm test -- src/stores/threads.test.ts \
     -t "a replaced client's later state cannot overwrite the current client"
   ```
@@ -904,13 +904,13 @@ helper, but production serve must use `PrepareAppIdentity` and
 
 **Files:**
 
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.ts`
-- Modify: `cmd/serf-hub/frontend/src/stores/threads.test.ts`
-- Modify: `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.tsx`
 - Verify:
-  `cmd/serf-hub/frontend/src/stores/mutationDispatcher.test.ts`
+  `cmd/evener-hub/frontend/src/stores/mutationDispatcher.test.ts`
 - Verify:
-  `cmd/serf-hub/frontend/src/stores/mutationOutbox.test.ts`
+  `cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts`
 
 **Module-private interface:**
 
@@ -977,7 +977,7 @@ directly.
   Run:
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm test -- src/stores/threads.test.ts \
     -t "same-ready|release cancels scheduled hydration|client swap fences|concurrent owners share|pinned mutation rejoin"
   ```
@@ -1077,7 +1077,7 @@ directly.
 - [ ] **Step 1: Run focused Go suites.**
 
   ```bash
-  go test ./agent ./appwire ./internal/appserver ./server ./cmd/serf ./cmd/serf-hub/internal/appsource -count=1
+  go test ./agent ./appwire ./internal/appserver ./server ./cmd/evener ./cmd/evener-hub/internal/appsource -count=1
   ```
 
   Expected: PASS.
@@ -1085,10 +1085,10 @@ directly.
 - [ ] **Step 2: Run focused Go stress and races.**
 
   ```bash
-  go test ./agent ./server ./cmd/serf-hub/internal/appsource \
+  go test ./agent ./server ./cmd/evener-hub/internal/appsource \
     -run 'Test(ClientMutation|AppTurnSnapshot|ServerAppWire|AtomicRejoin|Bridge|RelaySession|CodexDirty)' \
     -count=100
-  go test -race ./agent ./internal/appserver ./server ./cmd/serf-hub/internal/appsource \
+  go test -race ./agent ./internal/appserver ./server ./cmd/evener-hub/internal/appsource \
     -run 'Test(ClientMutation|AppTurnSnapshot|ServerAppWire|AtomicRejoin|SnapshotCut|Bridge|RelaySession|CodexDirty)' \
     -count=20
   ```
@@ -1098,7 +1098,7 @@ directly.
 - [ ] **Step 3: Run full frontend verification.**
 
   ```bash
-  cd cmd/serf-hub/frontend
+  cd cmd/evener-hub/frontend
   npm test
   npm run typecheck
   npm run lint
@@ -1112,8 +1112,8 @@ directly.
   From the repository root:
 
   ```bash
-  go vet ./agent ./appwire ./internal/appserver ./server ./cmd/serf ./cmd/serf-hub/internal/appsource
-  golangci-lint run ./agent ./appwire ./internal/appserver ./server ./cmd/serf ./cmd/serf-hub/internal/appsource
+  go vet ./agent ./appwire ./internal/appserver ./server ./cmd/evener ./cmd/evener-hub/internal/appsource
+  golangci-lint run ./agent ./appwire ./internal/appserver ./server ./cmd/evener ./cmd/evener-hub/internal/appsource
   make build
   git diff --check
   ```

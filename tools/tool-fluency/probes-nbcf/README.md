@@ -20,8 +20,8 @@ worktree (kata rule: no live LLM API calls from an implementer).
   *symptom* only. The model must diagnose the root cause, write one
   regression test, apply the smallest fix, and verify, then report a
   `DIAGNOSIS_COMPLETE` token.
-- `../cmd/serf-fluency/nbcf_probe_test.go` — an offline, deterministic test
-  (`go test ./tools/tool-fluency/cmd/serf-fluency/ -run
+- `../cmd/evener-fluency/nbcf_probe_test.go` — an offline, deterministic test
+  (`go test ./tools/tool-fluency/cmd/evener-fluency/ -run
   TestNBCFSeededConfigPathProbeLoadsAndValidates`) proving the manifest
   parses, the fixture ships the bug (not the fix), and the pass/fail gate
   actually discriminates a stalled transcript from a completed one. This is
@@ -63,17 +63,17 @@ A/B needs two `serf` builds.
 #    worktree at this kata's base commit. Do not touch other worktrees;
 #    this creates a new one.
 git worktree add /tmp/nbcf-baseline-wt ea6cc396d
-(cd /tmp/nbcf-baseline-wt && go build -o /tmp/nbcf-baseline-serf ./cmd/serf)
+(cd /tmp/nbcf-baseline-wt && go build -o /tmp/nbcf-baseline-serf ./cmd/evener)
 
 # 2. Build the candidate from this branch (kata/uq-nbcf, or wherever this
 #    landed on main).
-go build -o /tmp/nbcf-candidate-serf ./cmd/serf
+go build -o /tmp/nbcf-candidate-serf ./cmd/evener
 
 # 3. Run the probe against both binaries, for each model below. Repeat
 #    --repetitions 3+ per arm; single-shot runs are not comparable.
 for arm in baseline candidate; do
   bin=/tmp/nbcf-$arm-serf
-  go run ./tools/tool-fluency/cmd/serf-fluency run \
+  go run ./tools/tool-fluency/cmd/evener-fluency run \
     --serf-bin "$bin" \
     --model <provider/model> \
     --probes-dir tools/tool-fluency/probes-nbcf \
@@ -118,7 +118,7 @@ converging on the wrong fix.
 This scaffold deliberately stops short of full kata nbcf acceptance:
 
 1. **The runner does not yet compute phase-transition metrics.**
-   `probeFile.Metrics` (`tools/tool-fluency/cmd/serf-fluency/main.go:161`)
+   `probeFile.Metrics` (`tools/tool-fluency/cmd/evener-fluency/main.go:161`)
    is parsed from YAML but never read — `grep '\.Metrics\b'` in that
    package has zero hits. The probe's `metrics:` block names the fields
    kata nbcf's acceptance wants (`wants_investigative_call_count`,

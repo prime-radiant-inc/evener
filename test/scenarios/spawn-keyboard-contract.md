@@ -46,7 +46,7 @@ card names only `spawn-prompt-card`, `spawn-submit`, the picker's ARIA
 roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 `role="option"`), and the trigger's own screen-reader text
 (`— change model`, `modelCatalog/index.tsx:405`). Anything else, grep
-`data-testid` in `cmd/serf-hub/frontend/src` rather than inventing one.
+`data-testid` in `cmd/evener-hub/frontend/src` rather than inventing one.
 
 ## Pre-state
 
@@ -74,7 +74,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    implicitly submit, and that the one form the pane can reach is the
    Advanced-options add row and nothing else:
    ```bash
-   cd cmd/serf-hub/frontend/src
+   cd cmd/evener-hub/frontend/src
    # (a) the two files this card drives own no form and no submit handler
    grep -n "<form\|onSubmit" panes/spawn/Spawn.tsx widgets/modelCatalog/index.tsx
    # (b) nothing under either directory renders a <form> of its own

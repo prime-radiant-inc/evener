@@ -96,7 +96,7 @@ new_case() {
 	repo="$case_dir/repo"
 	state="$case_dir/state"
 	bin="$case_dir/bin"
-	mkdir -p "$repo/scripts" "$repo/cmd/serf-hub/frontend" "$state" "$bin"
+	mkdir -p "$repo/scripts" "$repo/cmd/evener-hub/frontend" "$state" "$bin"
 	mkdir -p "$case_dir/ambient-home" "$case_dir/ambient-xdg-config/go" "$case_dir/ambient-xdg-cache" "$case_dir/ambient-xdg-state"
 	printf 'SERF_SELFTEST_GOENV=preserved\n' >"$case_dir/ambient-xdg-config/go/env"
 	write_fake_mktemp "$bin"
@@ -256,7 +256,7 @@ run_tests() {
 		env -u WAVE1 -u WAVE2 TMPDIR="${CASE_TMPDIR:-$case_dir}" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -277,7 +277,7 @@ run_tests_async() {
 			env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 				HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 				GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+				MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 			runner_status="$?"
 			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
 			exit "$runner_status"
@@ -285,7 +285,7 @@ run_tests_async() {
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
 }
@@ -298,7 +298,7 @@ run_tests_default_modules() {
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			HOME="$case_dir/ambient-home" GOENV="$case_dir/ambient-xdg-config/go/env" XDG_CONFIG_HOME="$case_dir/ambient-xdg-config" XDG_CACHE_HOME="$case_dir/ambient-xdg-cache" XDG_STATE_HOME="$case_dir/ambient-xdg-state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
-			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
+			AGENT_SHARDS=0 WEB=1 WEB_DIR="$repo/cmd/evener-hub/frontend" MAKE="$bin/make" "$@" "${runner_command[@]}" -short -count=1
 	) >"$output" 2>&1
 }
 

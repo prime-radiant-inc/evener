@@ -8,9 +8,9 @@ Reduce visual noise in the Serf web transcript by visually hiding task/tool timi
 
 ## Context
 
-The web UI renders transcript annotation rows in `cmd/serf-hub/assets/renderer*.js` and styles them in `cmd/serf-hub/assets/style.css`. Tool and task-related rows can include clock/runtime metadata such as event time and duration. These details are useful for inspection but distract from the main transcript when always visible.
+The web UI renders transcript annotation rows in `cmd/evener-hub/assets/renderer*.js` and styles them in `cmd/evener-hub/assets/style.css`. Tool and task-related rows can include clock/runtime metadata such as event time and duration. These details are useful for inspection but distract from the main transcript when always visible.
 
-The existing formatting helpers in `cmd/serf-hub/assets/renderer-format.js` include:
+The existing formatting helpers in `cmd/evener-hub/assets/renderer-format.js` include:
 
 - `toolEventTime`
 - `toolDuration`
@@ -49,7 +49,7 @@ The metadata remains in the DOM and must not be hidden with CSS that removes it 
 
 - Add or update a deterministic CSS contract test for the hover/focus reveal rules.
 - Run the relevant web UI CSS/JS test command if available.
-- Run `go test ./cmd/serf-hub -count=1` to ensure the hub package still passes.
+- Run `go test ./cmd/evener-hub -count=1` to ensure the hub package still passes.
 
 ## Scope
 

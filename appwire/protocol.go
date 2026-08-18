@@ -86,7 +86,7 @@ type NotificationSpec struct {
 
 // Methods is the AppWire request-method catalog. Order matches the Method*
 // constants in types.go. Keep an entry here for every routed method; the
-// cross-check tests (cmd/serf-hub, server) fail if a routed method is
+// cross-check tests (cmd/evener-hub, server) fail if a routed method is
 // registered without a matching catalog entry or vice versa.
 var Methods = []MethodSpec{
 	{MethodInitialize, InitializeParams{}, InitializeResponse{}, ScopeConnection, "Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set."},

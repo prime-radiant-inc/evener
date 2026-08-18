@@ -13,7 +13,7 @@ the bug, not the contract: `hubapi.ParseRef` has always required
 `<host>:<session>`, the frontend accepted a bare id anyway, and the two forms
 compare as different panes — so the same session could occupy two panes at
 once. `urlToPane` now matches a qualified ref only (`isRef`,
-`cmd/serf-hub/frontend/src/shell/routing.ts:29-32`) and the palette dropped
+`cmd/evener-hub/frontend/src/shell/routing.ts:29-32`) and the palette dropped
 its bare-id fallback. Jesse's call was no back-compat for the old form.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — rail rows
@@ -66,7 +66,7 @@ is no `.sb-row` class and no `data-ref` attribute.
   session pane. Falsify: the bare id resolves to a session pane — back-compat
   has crept back in, and step 3's double-pane bug is reachable again.
   Note this is a **client-side** 404: `/s/` serves the SPA shell for any id
-  (`cmd/serf-hub/web_workspace.go:38-39`), so `curl -o /dev/null -w '%{http_code}'`
+  (`cmd/evener-hub/web_workspace.go:38-39`), so `curl -o /dev/null -w '%{http_code}'`
   returns 200 here. Assert the rendered text, never the status code.
 
 ## Cleanup

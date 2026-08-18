@@ -51,7 +51,7 @@ The audit produced a list of behavioral contracts the visual pass must not break
 ## Architecture
 
 The pass is a **CSS + templates** migration. No Go changes except:
-- A new `cmd/serf-hub/assets/style.css` (the existing file rewritten in passes).
+- A new `cmd/evener-hub/assets/style.css` (the existing file rewritten in passes).
 - Template tweaks (sidebar partial restructure, settings partials normalized to two patterns, hamburger moves into header).
 - One or two small JS additions (`window.SerfToast`, sidebar rail toggle persistence, body `data-phone-density` from settings).
 - CSP allowlist for fonts.googleapis.com / fonts.gstatic.com (if not already permitted).
@@ -59,7 +59,7 @@ The pass is a **CSS + templates** migration. No Go changes except:
 ### File touch map
 
 ```
-cmd/serf-hub/
+cmd/evener-hub/
   assets/
     style.css                       ← full rewrite (1037 lines → ~1400 lines with new components + tokens)
     fonts.css                       ← (optional) vendored @font-face fallbacks
@@ -98,10 +98,10 @@ Goal: add the token scale, load fonts, update CSP. No visual changes yet — exi
 
 - Add `--space-*`, `--text-*`, `--leading-*`, `--radius-*`, `--motion-*`, `--z-*`, `--noise`, `--tap-min`, `--font-sans`, `--font-mono`, `--btn-primary-text` tokens to `:root` and theme overrides.
 - Add Hanken Grotesk + JetBrains Mono `<link>` preconnect + `@import` to `app.html` (or `style.css`).
-- **CSP update (required)** — `cmd/serf-hub/security.go` currently sets `default-src 'self'` with explicit `script-src`, `style-src`, `img-src`, `connect-src`, no `font-src`. Add:
+- **CSP update (required)** — `cmd/evener-hub/security.go` currently sets `default-src 'self'` with explicit `script-src`, `style-src`, `img-src`, `connect-src`, no `font-src`. Add:
   - `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`
   - `font-src 'self' https://fonts.gstatic.com`
-  - Update `cmd/serf-hub/security_test.go` to assert the new directives.
+  - Update `cmd/evener-hub/security_test.go` to assert the new directives.
 - Add `--surface-secondary` and `--accent-secondary` tokens; old `--panel-2` and `--accent-2` retain values via aliases.
 - Refresh light palette tokens (`--accent: #2e58b8`, `--state-ended: #7a7a82`, awaiting/idle/warning state color adjustments).
 
@@ -160,7 +160,7 @@ Goal: implement the 2-line sidebar row, the rail-mode toggle, the workspace head
 - `⌘B` keyboard shortcut toggles rail (persist to `localStorage["serf-hub.sidebar.rail"]`).
 - Mobile drawer behavior preserved; `data-sidebar-open` triggers slide-in.
 - Container queries: `@container sidebar (max-width: 80px)` hides text columns.
-- **Wire `data-active`**: extend `sidebar.js` to listen for the htmx `htmx:afterSwap` event on `#workspace`. On swap, parse the new URL (`/s/<id>` or `/new`); find the matching `.sb-row[href$="<id>"]`; set `data-active` on it and clear from all others. Add to `cmd/serf-hub/jstest/test-sidebar-active.js`.
+- **Wire `data-active`**: extend `sidebar.js` to listen for the htmx `htmx:afterSwap` event on `#workspace`. On swap, parse the new URL (`/s/<id>` or `/new`); find the matching `.sb-row[href$="<id>"]`; set `data-active` on it and clear from all others. Add to `cmd/evener-hub/jstest/test-sidebar-active.js`.
 
 **Workspace header:**
 - Hamburger renders inside `.workspace-header` (mobile only, hidden on desktop).
@@ -169,11 +169,11 @@ Goal: implement the 2-line sidebar row, the rail-mode toggle, the workspace head
 - Status pill → status badge.
 
 **Slide-over focus management (drawer + sidebar mobile + modal):**
-- New helper `cmd/serf-hub/assets/focus-trap.js` (~80 LOC) exposing `window.SerfFocusTrap.activate(el, returnFocusTo)` and `.deactivate()`. On activate: stores `document.activeElement` as restore target; adds `inert` to all root siblings of `el`; binds a Tab-key handler that cycles focus within `el`. On deactivate: restores focus, removes `inert`, unbinds handler.
+- New helper `cmd/evener-hub/assets/focus-trap.js` (~80 LOC) exposing `window.SerfFocusTrap.activate(el, returnFocusTo)` and `.deactivate()`. On activate: stores `document.activeElement` as restore target; adds `inert` to all root siblings of `el`; binds a Tab-key handler that cycles focus within `el`. On deactivate: restores focus, removes `inert`, unbinds handler.
 - `renderer.js` calls `SerfFocusTrap.activate(panelEl, triggerEl)` when opening tasks/details panels. Calls `.deactivate()` on close.
 - `sidebar.js` calls the same for mobile sidebar (`#sidebar` activated by the hamburger).
 - `search.js` migrates from the existing implicit `<dialog>` focus to the explicit helper for consistency (search palette already uses native `<dialog>` so focus trap is already free — but tested for consistency).
-- Adds `cmd/serf-hub/jstest/test-focus-trap.js` covering: open captures activeElement, Tab cycles, Esc restores focus to trigger.
+- Adds `cmd/evener-hub/jstest/test-focus-trap.js` covering: open captures activeElement, Tab cycles, Esc restores focus to trigger.
 - Per the design language: status dot pulse + indicator pulse animations get an explicit `prefers-reduced-motion` fallback that uses `border-left` or `outline` instead of opacity animation.
 
 **Verify:** sidebar titles like "refactor auth middleware to use the new session token store" are fully readable. Project chevron is keyboard-accessible. Rail mode collapses cleanly. Mobile hamburger no longer overlaps partials. Tab from the search button into the search palette, around the results, and Esc — focus lands back on the search button. Same for tasks/details panels.
@@ -308,7 +308,7 @@ This is a CSS/markup pass. Verification is primarily visual + interactive.
 
 - `make test` (Go) — no regressions.
 - `make lint-naming` — passes (no new violations).
-- Existing JS smoke tests (in `cmd/serf-hub/jstest/`) — pass.
+- Existing JS smoke tests (in `cmd/evener-hub/jstest/`) — pass.
 - `serf-hub` builds clean.
 
 ### Visual verification

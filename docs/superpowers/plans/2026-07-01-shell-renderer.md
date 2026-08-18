@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing no-bundler renderer split, but make `renderer.js` own a shared expandable row contract and make `renderer-tools.js` supply standardized body variants. Shell-like tools become a terminal variant: collapsed rows use `$`, expanded bodies repeat the full command with pre-wrapped output and an exit/runtime footer.
 
-**Tech Stack:** Browser JavaScript loaded from `cmd/serf-hub/assets/*.js`, CSS in `cmd/serf-hub/assets/style.css`, deterministic JSDOM tests in `cmd/serf-hub/jstest`, Go/HTML templates only if renderer asset loading changes.
+**Tech Stack:** Browser JavaScript loaded from `cmd/evener-hub/assets/*.js`, CSS in `cmd/evener-hub/assets/style.css`, deterministic JSDOM tests in `cmd/evener-hub/jstest`, Go/HTML templates only if renderer asset loading changes.
 
 ## Global Constraints
 
@@ -22,35 +22,35 @@
 
 ## File structure
 
-- Modify `cmd/serf-hub/assets/renderer.js`
+- Modify `cmd/evener-hub/assets/renderer.js`
   - Tool row construction in `beginToolCall`.
   - Shared disclosure placement and `aria-expanded` initialization.
   - Empty body cleanup after `bodyEnd`.
   - Metadata visibility/placement hooks.
-- Modify `cmd/serf-hub/assets/renderer-tools.js`
+- Modify `cmd/evener-hub/assets/renderer-tools.js`
   - Add body helper return fields/classes used by standardized body containers.
   - Change shell renderer identity to `$`.
   - Add terminal body DOM and update shell body delta/end handling.
-- Modify `cmd/serf-hub/assets/renderer-panels.js`
+- Modify `cmd/evener-hub/assets/renderer-panels.js`
   - Keep delegated expand/collapse behavior working with the renamed/standardized disclosure button.
   - Update toggle code to sync `aria-expanded` directly.
-- Modify `cmd/serf-hub/assets/style.css`
+- Modify `cmd/evener-hub/assets/style.css`
   - Shared row layout: action left, inline disclosure, metadata right.
   - Standardized body container variants.
   - Terminal body styling and pre-wrap output.
   - Mobile/compact pane rules that avoid horizontal overflow.
-- Modify `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify `cmd/evener-hub/jstest/test-tool-renderers.js`
   - Contract tests for shell row, terminal body, shared disclosure, preview/diff body variants, cheap clusters, and special suppressions.
-- Modify `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js` and `cmd/serf-hub/jstest/test-mobile-css.js` if they assert the old hover-only metadata or right-side caret CSS.
+- Modify `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js` and `cmd/evener-hub/jstest/test-mobile-css.js` if they assert the old hover-only metadata or right-side caret CSS.
 
 ---
 
 ### Task 1: Pin the shared row/disclosure contract in tests
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-tool-renderers.js`
-- Modify if needed after running tests: `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
-- Modify if needed after running tests: `cmd/serf-hub/jstest/test-mobile-css.js`
+- Modify: `cmd/evener-hub/jstest/test-tool-renderers.js`
+- Modify if needed after running tests: `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`
+- Modify if needed after running tests: `cmd/evener-hub/jstest/test-mobile-css.js`
 
 **Interfaces:**
 - Consumes: current renderer events `TOOL_CALL_START`, `TOOL_CALL_END`, `TOOL_CALL_OUTPUT_DELTA`.
@@ -58,7 +58,7 @@
 
 - [ ] **Step 1: Add failing assertions for shell row identity and inline disclosure**
 
-In `cmd/serf-hub/jstest/test-tool-renderers.js`, replace the existing scenario name and assertions beginning at the comment `// shell — collapsible details body, exit code result.` with this updated scenario body. Keep the event sequence shape; replace only the check function content for that scenario.
+In `cmd/evener-hub/jstest/test-tool-renderers.js`, replace the existing scenario name and assertions beginning at the comment `// shell — collapsible details body, exit code result.` with this updated scenario body. Keep the event sequence shape; replace only the check function content for that scenario.
 
 ```js
 // shell — standardized row, terminal body, exit code footer.
@@ -142,7 +142,7 @@ await scenario("tool disclosure is inline, visible, and not a separate right-sid
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: FAIL for assertions mentioning `$ verb`, `.tool-disclosure`, `.tool-body--terminal`, or old `tool-expand-btn order:3`. Existing unrelated scenarios should still run.
@@ -150,7 +150,7 @@ Expected: FAIL for assertions mentioning `$ verb`, `.tool-disclosure`, `.tool-bo
 - [ ] **Step 5: Commit the failing tests**
 
 ```bash
-git add cmd/serf-hub/jstest/test-tool-renderers.js cmd/serf-hub/jstest/test-pane-and-sidebar-css.js cmd/serf-hub/jstest/test-mobile-css.js
+git add cmd/evener-hub/jstest/test-tool-renderers.js cmd/evener-hub/jstest/test-pane-and-sidebar-css.js cmd/evener-hub/jstest/test-mobile-css.js
 git commit -m "test(hub): pin standardized tool disclosure contract"
 ```
 
@@ -161,10 +161,10 @@ If `test-pane-and-sidebar-css.js` or `test-mobile-css.js` were not modified, omi
 ### Task 2: Implement shared inline disclosure row mechanics
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/renderer-panels.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/renderer-panels.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 **Interfaces:**
 - Consumes: failing tests from Task 1.
@@ -226,7 +226,7 @@ btn.setAttribute("aria-expanded", next ? "true" : "false");
 
 - [ ] **Step 3: Replace right-column caret CSS with inline disclosure CSS**
 
-In `cmd/serf-hub/assets/style.css`, replace the `.tool-expand-btn` block with:
+In `cmd/evener-hub/assets/style.css`, replace the `.tool-expand-btn` block with:
 
 ```css
 /* Inline expandable-tool disclosure. The chevron belongs to the action text it
@@ -278,7 +278,7 @@ Remove the now-redundant `.tool-call:hover .tool-meta, .tool-call:focus-within .
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: row/disclosure assertions from Task 1 pass, shell terminal body assertions still fail until Task 3.
@@ -286,7 +286,7 @@ Expected: row/disclosure assertions from Task 1 pass, shell terminal body assert
 - [ ] **Step 6: Commit shared disclosure mechanics**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/renderer-panels.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-pane-and-sidebar-css.js cmd/serf-hub/jstest/test-mobile-css.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/renderer-panels.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-pane-and-sidebar-css.js cmd/evener-hub/jstest/test-mobile-css.js
 git commit -m "feat(hub): standardize inline tool disclosure"
 ```
 
@@ -297,9 +297,9 @@ If the CSS test files were not modified, omit them from `git add`.
 ### Task 3: Implement shell terminal body variant
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-tools.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-hub/assets/renderer-tools.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 **Interfaces:**
 - Consumes: shared disclosure mechanics from Task 2.
@@ -307,7 +307,7 @@ If the CSS test files were not modified, omit them from `git add`.
 
 - [ ] **Step 1: Add shell terminal body helper**
 
-In `cmd/serf-hub/assets/renderer-tools.js`, just before `const shellRenderer = {`, add:
+In `cmd/evener-hub/assets/renderer-tools.js`, just before `const shellRenderer = {`, add:
 
 ```js
 function shellCommandText(args) {
@@ -444,7 +444,7 @@ Keep `.tool-body` generic rules for other tools.
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: shell row, terminal command, output, and footer assertions pass. If the old `nonzero exit shows 'exit N'; clean exit shows nothing` scenario still passes for row result semantics, keep it. If it fails because footer now includes `exit 0`, adjust only assertions that inspect terminal footer vs row `.result-detail`.
@@ -452,7 +452,7 @@ Expected: shell row, terminal command, output, and footer assertions pass. If th
 - [ ] **Step 5: Commit terminal body implementation**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-tool-renderers.js
+git add cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "feat(hub): render shell tools as terminal transcripts"
 ```
 
@@ -461,9 +461,9 @@ git commit -m "feat(hub): render shell tools as terminal transcripts"
 ### Task 4: Standardize body variant classes for preview and diff tools
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-tools.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-hub/assets/renderer-tools.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 **Interfaces:**
 - Consumes: shared `.tool-body` contract from Tasks 2-3.
@@ -503,7 +503,7 @@ if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "pa
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: FAIL messages mention missing `tool-body--preview` or `tool-body--diff`.
@@ -613,7 +613,7 @@ Keep existing concrete classes (`.cheap-tool-output`, `.diff-body`, `.search-bod
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: PASS for added variant assertions and existing renderer behavior.
@@ -621,7 +621,7 @@ Expected: PASS for added variant assertions and existing renderer behavior.
 - [ ] **Step 6: Commit body variant standardization**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-tool-renderers.js
+git add cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "refactor(hub): standardize tool body variants"
 ```
 
@@ -630,9 +630,9 @@ git commit -m "refactor(hub): standardize tool body variants"
 ### Task 5: Preserve empty-body, cheap-cluster, and special-tool behavior
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer.js`
-- Modify: `cmd/serf-hub/assets/style.css`
-- Modify: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-hub/assets/renderer.js`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Modify: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 **Interfaces:**
 - Consumes: standardized row/body behavior from Tasks 2-4.
@@ -673,7 +673,7 @@ If the scenario already clicks `summary` later, remove the duplicate later click
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: If Task 2 already preserved empty-body cleanup and cluster ARIA, this may pass. If it fails, continue to Step 4.
@@ -707,7 +707,7 @@ Do not replace the existing `bindDisclosureToggle(summary, cluster)`; it already
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: PASS.
@@ -715,7 +715,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit regressions/fixes**
 
 ```bash
-git add cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-tool-renderers.js
+git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "test(hub): preserve tool disclosure edge cases"
 ```
 
@@ -726,10 +726,10 @@ If `style.css` was not modified, omit it from `git add`.
 ### Task 6: Final CSS/mobile compatibility and full verification
 
 **Files:**
-- Modify if needed: `cmd/serf-hub/assets/style.css`
-- Modify if needed: `cmd/serf-hub/jstest/test-mobile-css.js`
-- Modify if needed: `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
-- No changes expected outside `cmd/serf-hub` unless a test reveals a template/server issue.
+- Modify if needed: `cmd/evener-hub/assets/style.css`
+- Modify if needed: `cmd/evener-hub/jstest/test-mobile-css.js`
+- Modify if needed: `cmd/evener-hub/jstest/test-pane-and-sidebar-css.js`
+- No changes expected outside `cmd/evener-hub` unless a test reveals a template/server issue.
 
 **Interfaces:**
 - Consumes: all implementation tasks.
@@ -740,7 +740,7 @@ If `style.css` was not modified, omit it from `git add`.
 Run:
 
 ```bash
-cd cmd/serf-hub && ./jstest/run-all.sh
+cd cmd/evener-hub && ./jstest/run-all.sh
 ```
 
 Expected: exit 0. If failures mention old `.tool-meta` hover-only expectations or `.tool-expand-btn`, update those tests to assert the new contract from the spec: metadata readable, disclosure inline, notification-card disclosures unchanged.
@@ -750,8 +750,8 @@ Expected: exit 0. If failures mention old `.tool-meta` hover-only expectations o
 Run:
 
 ```bash
-node cmd/serf-hub/jstest/test-mobile-css.js
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/evener-hub/jstest/test-mobile-css.js
+node cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected: exit 0 for both. Fix only assertions/rules related to the new disclosure/metadata contract. Preserve existing mobile overflow guard: `.tool-call.has-purpose .tool-command` must avoid margin-induced horizontal overflow.
@@ -761,7 +761,7 @@ Expected: exit 0 for both. Fix only assertions/rules related to the new disclosu
 If only JS/CSS changed, this is optional but recommended before handoff. Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -772,7 +772,7 @@ Run:
 
 ```bash
 git status --short
-git diff -- cmd/serf-hub/assets/renderer.js cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/assets/renderer-panels.js cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-tool-renderers.js cmd/serf-hub/jstest/test-mobile-css.js cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+git diff -- cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/assets/renderer-panels.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-tool-renderers.js cmd/evener-hub/jstest/test-mobile-css.js cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 ```
 
 Expected: only intentional renderer/test/CSS changes. Do not stage pre-existing untracked files such as `kimi-jobs-ux-cleanup.md`.
@@ -782,7 +782,7 @@ Expected: only intentional renderer/test/CSS changes. Do not stage pre-existing 
 If Step 1-3 required changes, commit them:
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-mobile-css.js cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-mobile-css.js cmd/evener-hub/jstest/test-pane-and-sidebar-css.js
 git commit -m "fix(hub): verify tool renderer responsive contract"
 ```
 

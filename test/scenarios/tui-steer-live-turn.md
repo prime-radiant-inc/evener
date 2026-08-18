@@ -11,16 +11,16 @@ behaviour this scenario originally covered — the user now presses
 When the queue is empty and the composer has text, this is the
 direct equivalent of the old "type a steer, press Enter" path —
 just bound to a different key. The wiring lives in:
-- `cmd/serf-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
+- `cmd/evener-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
   sets the `queue` label and `CanSteer`. The footer a live session
   actually renders comes from `composerFooterHints`
-  (`cmd/serf-tui/composer_render.go#composerFooterHints`) via `tuiprim.KbdHint`,
+  (`cmd/evener-tui/composer_render.go#composerFooterHints`) via `tuiprim.KbdHint`,
   which joins key and action with a space — `enter queue  ctrl+s steer
   …`, no colons. `composer_panel.go`'s colon'd `Keys` strings are only
   the fallback for a panel built without a `ChipContext`
   (`composer_panel.go:264-273`), i.e. unit fixtures, never a live pane.
-- `cmd/serf-tui/hub_session_keys.go#handleSessionForceSteer` (`handleSessionForceSteer`).
-- `cmd/serf-tui/queue_send.go#sendHubDrainAsSteer` (`sendHubDrainAsSteer`) — the composer
+- `cmd/evener-tui/hub_session_keys.go#handleSessionForceSteer` (`handleSessionForceSteer`).
+- `cmd/evener-tui/queue_send.go#sendHubDrainAsSteer` (`sendHubDrainAsSteer`) — the composer
   text rides directly on ONE `turn/drainAsSteer` call. There is no
   `sendHubQueueThenDrain` two-RPC chain any more.
 
@@ -101,7 +101,7 @@ For the queue-only and queue+composer drain paths, see
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    A `Force-steer sent.` system line appears (per
-   `cmd/serf-tui/hub_update.go:233` `hubDrainAsSteerMsg` handler,
+   `cmd/evener-tui/hub_update.go:233` `hubDrainAsSteerMsg` handler,
    message text at `:272`). The
    composer clears. Because the queue was empty when Ctrl+S
    fired, `handleSessionForceSteer` took the "queue composer

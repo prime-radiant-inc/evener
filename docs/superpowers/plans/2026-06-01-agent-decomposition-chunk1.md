@@ -51,7 +51,7 @@ modules). `goimports` available; **never** `gofmt -r` on type names.
 - Modify: every file referencing `ExecutionEnvironment`, `LocalExecutionEnvironment`,
   `NewLocalExecutionEnvironment`, `ExecResult`, `DirEntry`, `EnvVarPolicy`,
   `EnvPolicy*` (compiler enumerates; spans `package agent` + root-module
-  `cmd/serf/run.go`, `cmd/serf/serve.go`, and others).
+  `cmd/evener/run.go`, `cmd/evener/serve.go`, and others).
 
 **The full type closure to move** (verified — env.go imports only `context`;
 env_local.go imports only stdlib + `github.com/bmatcuk/doublestar`): the
@@ -95,7 +95,7 @@ embeds `WorkspaceInfo` — out of scope).
 - Delete: `agent/turns.go` (contents moved)
 - Modify: every file referencing `Turn`, `TurnKind`, the `Turn*` kind consts, or
   `NewTurn` (compiler enumerates; ~53 in-module + ~9 cross-module consumer files —
-  `cmd/serf-hub`, `cmd/serf-tui`, `internal/apptranscript`, `server`).
+  `cmd/evener-hub`, `cmd/evener-tui`, `internal/apptranscript`, `server`).
 
 **Move** (verified — turns.go imports only `time` + `llm`): `Turn`, `TurnKind`, the
 `Turn*` kind constants, `NewTurn`, and any other decl in `turns.go`. Nothing else

@@ -24,8 +24,8 @@ palette as soon as the turn starts.
   `docs/agentic-testing.md`). Token at
   `$HOME/.serf/auth-token` (`./serf-hub` launches it; web-only auth).
 - `./serf-tui` and `./serf-hub` built and present in the repo root
-  (`go build -o serf-tui ./cmd/serf-tui && go build -o serf-hub
-  ./cmd/serf-hub`).
+  (`go build -o serf-tui ./cmd/evener-tui && go build -o serf-hub
+  ./cmd/evener-hub`).
 - OpenAI OAuth signed in (`./serf openai status` shows
   `source=oauth`). The slow-turn prompt needs the model to actually
   call `exec_command`; `openai/gpt-5.4-mini` does so reliably.

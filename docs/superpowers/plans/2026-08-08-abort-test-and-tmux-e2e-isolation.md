@@ -37,7 +37,7 @@ load-sensitive tmux e2e flakiness, landing in a harness fix.
 
 Single parallel wave, worktree-isolated: Task 1 touches only a new file
 `agent/abort_error_test.go`. Task 2 touches only
-`cmd/serf-tui/tmux_e2e_test.go`. Fully disjoint packages and files.
+`cmd/evener-tui/tmux_e2e_test.go`. Fully disjoint packages and files.
 
 ---
 
@@ -125,7 +125,7 @@ touch nothing outside `agent/abort_error_test.go`.
 
 ## Task 2: tmux e2e flakiness under heavy concurrent load
 
-**File:** `cmd/serf-tui/tmux_e2e_test.go` (package `main`, `cmd/serf-tui`).
+**File:** `cmd/evener-tui/tmux_e2e_test.go` (package `main`, `cmd/evener-tui`).
 
 **Reported symptoms (two independent sightings, both under heavy concurrent
 load — e.g. this file's suite running alongside other CPU-hungry test
@@ -166,7 +166,7 @@ what's already solved:
 1410, `Capture`/`CaptureHistory` lines 1197/1206, `Close` line 1175,
 `waitForTmuxPaneSize` line 1161) — connects to tmux with **no `-L`
 (socket name) or `-S` (socket path) flag anywhere in this file** (confirm:
-`grep -n '"-L"\|"-S"' cmd/serf-tui/tmux_e2e_test.go`). Every one of these
+`grep -n '"-L"\|"-S"' cmd/evener-tui/tmux_e2e_test.go`). Every one of these
 processes therefore talks to the **same single default tmux server**
 (the one at tmux's default socket, `$TMUX_TMPDIR` or
 `/tmp/tmux-$UID/default`) — unique session names give each test its own
@@ -188,14 +188,14 @@ take this brief's word for it):
 - Get direct evidence the server is shared: run two of this file's e2e
   tests concurrently (e.g. `go test -run
   'TestTUITmuxE2E_DashboardProjectAndSpawn|TestTUITmuxE2E_BrowseAndFork'
-  -count=1 ./cmd/serf-tui/` while they're both mid-run) and, from another
+  -count=1 ./cmd/evener-tui/` while they're both mid-run) and, from another
   shell, run plain `tmux ls` (no `-L`) — if it lists sessions from both
   tests at once on the one default server, that confirms the shared-server
   hypothesis directly.
 - Search for any other repo artifact that might narrow down the actual
   segfault (it is not documented in `docs/testing.md`,
   `docs/agentic-testing.md`, or anywhere else in the tracked repo, per an
-  earlier grep) — check `git log --all --oneline -- cmd/serf-tui/tmux_e2e_test.go`
+  earlier grep) — check `git log --all --oneline -- cmd/evener-tui/tmux_e2e_test.go`
   and any `.superpowers/sdd/**` reports touching this file for prior
   mentions, in case there's more context than this brief has. If you find
   something that changes the diagnosis, follow the evidence, not this
@@ -257,13 +257,13 @@ that this is hardening-without-confirmed-root-cause, not a proven fix.
 **Verify:**
 
 ```
-go test -run 'TestTUITmuxE2E_FailedForkPreservesDraft' -count=5 ./cmd/serf-tui/
+go test -run 'TestTUITmuxE2E_FailedForkPreservesDraft' -count=5 ./cmd/evener-tui/
 ```
 
 Then the full file, once, to confirm no regression:
 
 ```
-go test -run TestTUITmuxE2E ./cmd/serf-tui/ -count=1
+go test -run TestTUITmuxE2E ./cmd/evener-tui/ -count=1
 ```
 
 Then, if you can arrange artificial concurrent load (e.g. a background `go
@@ -288,5 +288,5 @@ targeted `-race` on the touched packages:
 
 ```
 go test -race ./agent/... -run TestIsAbortError -count=1
-go test -race -run TestTUITmuxE2E ./cmd/serf-tui/ -count=1
+go test -race -run TestTUITmuxE2E ./cmd/evener-tui/ -count=1
 ```

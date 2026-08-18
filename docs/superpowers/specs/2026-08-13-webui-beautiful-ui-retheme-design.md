@@ -10,7 +10,7 @@ honest liveness) is retained; the visual language is replaced.
 
 Design language adapted from **Beautiful UI** (https://www.beautifului.dev),
 MIT License, Copyright (c) 2026 Shane Levine. The license text ships at
-`cmd/serf-hub/frontend/LICENSES/beautiful-ui.txt`; `tokens.css` and any
+`cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`; `tokens.css` and any
 widget whose structure is ported from a Beautiful UI component carry a
 one-line attribution comment. Their components are React + Tailwind; nothing
 is copy-pasted — every value and structure is translated into serf's

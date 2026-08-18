@@ -294,7 +294,7 @@ func buildSerf(outDir string) (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(binDir, "serf")
-	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "./cmd/serf")
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "./cmd/evener")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

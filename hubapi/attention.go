@@ -1,8 +1,8 @@
 // Package hubapi's attention.go is the single shared source of truth for
 // attention-state ranking and display words, imported by both the hub
-// (cmd/serf-hub/internal/hubcore, which cannot be imported directly by the
-// TUI because it is an `internal` package scoped to cmd/serf-hub) and the
-// TUI (cmd/serf-tui). Previously AttentionRank and rollupRank were
+// (cmd/evener-hub/internal/hubcore, which cannot be imported directly by the
+// TUI because it is an `internal` package scoped to cmd/evener-hub) and the
+// TUI (cmd/evener-tui). Previously AttentionRank and rollupRank were
 // duplicated in hubcore, and the TUI carried a third copy
 // (attentionRankLabel) — this file is the one place that ordering logic
 // lives now.
@@ -50,7 +50,7 @@ func RollupRank(state string) int {
 }
 
 // StateWord returns the unified display word for a normalized attention
-// state — one word, shared verbatim by the web (cmd/serf-hub's stateLabel)
+// state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
 // and the TUI (displayWord) so the two surfaces can never independently
 // drift on vocabulary (Track A §1). askPending selects between the two
 // needs-you bands (Track A §2 ask-tiering) and is ignored for every other

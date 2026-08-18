@@ -1087,7 +1087,7 @@ Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`inter
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+go build -o /tmp/serf ./cmd/evener
 . "$PWD/.env"
 # In a scratch dir, run serf with a real model (--model oai-work/<model>) and ask it to:
 #  1. delegate a task that itself starts a background shell job (e.g. "delegate: start a background `sleep 60` shell job and report its job_id");

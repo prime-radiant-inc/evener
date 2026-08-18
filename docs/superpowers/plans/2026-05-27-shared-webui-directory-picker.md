@@ -4,7 +4,7 @@
 
 **Goal:** Make every serf-hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
 
-**Architecture:** Extract the existing canonical directory picker behavior from `cmd/serf-hub/assets/spawn.js` into a shared `window.SerfDirPicker.open(options)` helper in a new `cmd/serf-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
+**Architecture:** Extract the existing canonical directory picker behavior from `cmd/evener-hub/assets/spawn.js` into a shared `window.SerfDirPicker.open(options)` helper in a new `cmd/evener-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
 
 **Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing serf-hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
 
@@ -12,20 +12,20 @@
 
 ## File Structure
 
-- Create: `cmd/serf-hub/assets/dir-picker.js`
+- Create: `cmd/evener-hub/assets/dir-picker.js`
   - Owns the single directory picker implementation.
   - Exports `window.SerfDirPicker.open(options)`.
   - Contains the canonical popup behavior currently in `spawn.js:openDirPicker`: `.chip-picker-dir`, `.chip-picker-search`, `.chip-picker-results`, git tag rendering, Tab completion, Enter exact-match-vs-literal semantics, initial fetch, click-outside dismissal.
 
-- Modify: `cmd/serf-hub/templates/app.html`
+- Modify: `cmd/evener-hub/templates/app.html`
   - Include `/assets/dir-picker.js` before scripts that use it (`settings-pickers.js` and `spawn.js`).
 
-- Modify: `cmd/serf-hub/assets/spawn.js`
+- Modify: `cmd/evener-hub/assets/spawn.js`
   - Replace the body of the local `openDirPicker(chip)` function with a call to `window.SerfDirPicker.open(...)`.
   - Keep top-screen behavior unchanged from the user's perspective.
   - Continue setting `serf-hub.spawn-defaults.global.last-working-dir` when a value is accepted.
 
-- Modify: `cmd/serf-hub/assets/settings-pickers.js`
+- Modify: `cmd/evener-hub/assets/settings-pickers.js`
   - Remove the advanced/settings-only directory picker and datalist implementation.
   - Keep existing selectors:
     - `button[data-settings-dir-picker]`
@@ -33,14 +33,14 @@
   - Wire both selector families to `window.SerfDirPicker.open(...)`.
   - For settings inputs, accepted values must set `input.value` and dispatch both `input` and `change` events with `{ bubbles: true }`.
 
-- Create: `cmd/serf-hub/jstest/test-dir-picker.js`
+- Create: `cmd/evener-hub/jstest/test-dir-picker.js`
   - Unit-test the shared helper directly.
 
-- Modify: `cmd/serf-hub/jstest/test-spawn.js`
+- Modify: `cmd/evener-hub/jstest/test-spawn.js`
   - Load `dir-picker.js` before `spawn.js`.
   - Add/keep assertions that opening the top working-dir chip uses the shared picker behavior.
 
-- Create: `cmd/serf-hub/jstest/test-settings-dir-picker.js`
+- Create: `cmd/evener-hub/jstest/test-settings-dir-picker.js`
   - Unit-test `settings-pickers.js` integration for inline settings path inputs and picker buttons.
 
 ---
@@ -48,12 +48,12 @@
 ### Task 1: Add the shared directory picker helper and direct tests
 
 **Files:**
-- Create: `cmd/serf-hub/assets/dir-picker.js`
-- Create: `cmd/serf-hub/jstest/test-dir-picker.js`
+- Create: `cmd/evener-hub/assets/dir-picker.js`
+- Create: `cmd/evener-hub/jstest/test-dir-picker.js`
 
 - [ ] **Step 1: Write the failing direct helper test**
 
-Create `cmd/serf-hub/jstest/test-dir-picker.js` with this content:
+Create `cmd/evener-hub/jstest/test-dir-picker.js` with this content:
 
 ```javascript
 const fs = require("fs");
@@ -181,14 +181,14 @@ function deferred() {
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
 ```
 
 Expected: FAIL or file-read error for missing `../assets/dir-picker.js`.
 
 - [ ] **Step 3: Implement `dir-picker.js` by extracting the canonical behavior**
 
-Create `cmd/serf-hub/assets/dir-picker.js` with this content:
+Create `cmd/evener-hub/assets/dir-picker.js` with this content:
 
 ```javascript
 // dir-picker.js — shared directory picker used by all serf-hub web UI path controls.
@@ -345,7 +345,7 @@ Create `cmd/serf-hub/assets/dir-picker.js` with this content:
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-dir-picker.js
 ```
 
 Expected: `PASS test-dir-picker`.
@@ -355,7 +355,7 @@ Expected: `PASS test-dir-picker`.
 Run:
 
 ```bash
-git add cmd/serf-hub/assets/dir-picker.js cmd/serf-hub/jstest/test-dir-picker.js
+git add cmd/evener-hub/assets/dir-picker.js cmd/evener-hub/jstest/test-dir-picker.js
 git commit -m "feat: add shared hub directory picker"
 ```
 
@@ -364,13 +364,13 @@ git commit -m "feat: add shared hub directory picker"
 ### Task 2: Load the shared helper and migrate the top spawn picker
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/app.html`
-- Modify: `cmd/serf-hub/assets/spawn.js`
-- Modify: `cmd/serf-hub/jstest/test-spawn.js`
+- Modify: `cmd/evener-hub/templates/app.html`
+- Modify: `cmd/evener-hub/assets/spawn.js`
+- Modify: `cmd/evener-hub/jstest/test-spawn.js`
 
 - [ ] **Step 1: Write the failing spawn integration test update**
 
-In `cmd/serf-hub/jstest/test-spawn.js`, add this near the existing source reads at the top:
+In `cmd/evener-hub/jstest/test-spawn.js`, add this near the existing source reads at the top:
 
 ```javascript
 const dirPickerSrc = fs.readFileSync(path.resolve(__dirname, "../assets/dir-picker.js"), "utf8");
@@ -422,14 +422,14 @@ If `test-spawn.js` is not already inside an async function where this block is i
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
 ```
 
 Expected: failure until `spawn.js` calls the shared helper or test loading is corrected.
 
 - [ ] **Step 3: Include `dir-picker.js` in the app template**
 
-In `cmd/serf-hub/templates/app.html`, locate the script includes for assets. Add the shared helper before both `settings-pickers.js` and `spawn.js`:
+In `cmd/evener-hub/templates/app.html`, locate the script includes for assets. Add the shared helper before both `settings-pickers.js` and `spawn.js`:
 
 ```html
 <script src="/assets/dir-picker.js"></script>
@@ -448,7 +448,7 @@ Do not reorder unrelated scripts unless required by the current template structu
 
 - [ ] **Step 4: Replace `spawn.js` local directory picker body with shared helper call**
 
-In `cmd/serf-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` function body with:
+In `cmd/evener-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` function body with:
 
 ```javascript
   function openDirPicker(chip) {
@@ -481,7 +481,7 @@ This deliberately keeps the existing top-screen behavior:
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-spawn.js
 ```
 
 Expected: existing test output remains passing and the new shared-picker assertions pass.
@@ -491,7 +491,7 @@ Expected: existing test output remains passing and the new shared-picker asserti
 Run:
 
 ```bash
-git add cmd/serf-hub/templates/app.html cmd/serf-hub/assets/spawn.js cmd/serf-hub/jstest/test-spawn.js
+git add cmd/evener-hub/templates/app.html cmd/evener-hub/assets/spawn.js cmd/evener-hub/jstest/test-spawn.js
 git commit -m "refactor: use shared directory picker for spawn cwd"
 ```
 
@@ -500,12 +500,12 @@ git commit -m "refactor: use shared directory picker for spawn cwd"
 ### Task 3: Migrate advanced/settings path inputs to the shared picker
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/settings-pickers.js`
-- Create: `cmd/serf-hub/jstest/test-settings-dir-picker.js`
+- Modify: `cmd/evener-hub/assets/settings-pickers.js`
+- Create: `cmd/evener-hub/jstest/test-settings-dir-picker.js`
 
 - [ ] **Step 1: Write the failing settings picker integration test**
 
-Create `cmd/serf-hub/jstest/test-settings-dir-picker.js` with this content:
+Create `cmd/evener-hub/jstest/test-settings-dir-picker.js` with this content:
 
 ```javascript
 const fs = require("fs");
@@ -596,14 +596,14 @@ function assert(cond, msg) {
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
 ```
 
 Expected: failure because current `settings-pickers.js` creates a datalist for `data-settings-dir-input` and has its own `buildDirPicker`.
 
 - [ ] **Step 3: Replace settings-only directory picker code with shared helper wiring**
 
-In `cmd/serf-hub/assets/settings-pickers.js`:
+In `cmd/evener-hub/assets/settings-pickers.js`:
 
 1. Remove the old `buildDirPicker(anchorBtn, input)` function.
 2. Remove the old datalist-based `wireDirInput(input)` function.
@@ -672,7 +672,7 @@ The updated button section should be:
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-settings-dir-picker.js
 ```
 
 Expected: `PASS test-settings-dir-picker`.
@@ -682,7 +682,7 @@ Expected: `PASS test-settings-dir-picker`.
 Run:
 
 ```bash
-git add cmd/serf-hub/assets/settings-pickers.js cmd/serf-hub/jstest/test-settings-dir-picker.js
+git add cmd/evener-hub/assets/settings-pickers.js cmd/evener-hub/jstest/test-settings-dir-picker.js
 git commit -m "refactor: use shared directory picker in settings"
 ```
 
@@ -691,11 +691,11 @@ git commit -m "refactor: use shared directory picker in settings"
 ### Task 4: Confirm generated launch path controls use the migrated settings wiring
 
 **Files:**
-- Modify: `cmd/serf-hub/jstest/test-launchconfig-controls.js`
+- Modify: `cmd/evener-hub/jstest/test-launchconfig-controls.js`
 
 - [ ] **Step 1: Add an assertion that generated path controls keep the settings-dir marker**
 
-In `cmd/serf-hub/jstest/test-launchconfig-controls.js`, after the existing trace file assertions:
+In `cmd/evener-hub/jstest/test-launchconfig-controls.js`, after the existing trace file assertions:
 
 ```javascript
   assert(root.querySelector('[data-launch-wire-field="traceFile"]').dataset.settingsDirInput === "true",
@@ -716,7 +716,7 @@ These assertions avoid testing `settings-pickers.js` twice while protecting the 
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-launchconfig-controls.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-launchconfig-controls.js
 ```
 
 Expected: PASS.
@@ -726,7 +726,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git add cmd/serf-hub/jstest/test-launchconfig-controls.js
+git add cmd/evener-hub/jstest/test-launchconfig-controls.js
 git commit -m "test: cover launch path picker wiring"
 ```
 
@@ -742,7 +742,7 @@ git commit -m "test: cover launch path picker wiring"
 Run:
 
 ```bash
-rg "datalist|setAttribute\(\"list\"|data-settings-dir-input.*datalist|buildDirPicker|/api/dirs" cmd/serf-hub/assets cmd/serf-hub/templates cmd/serf-hub/jstest
+rg "datalist|setAttribute\(\"list\"|data-settings-dir-input.*datalist|buildDirPicker|/api/dirs" cmd/evener-hub/assets cmd/evener-hub/templates cmd/evener-hub/jstest
 ```
 
 Expected:
@@ -756,13 +756,13 @@ Expected:
 Run:
 
 ```bash
-cd cmd/serf-hub/jstest && ./run-all.sh
+cd cmd/evener-hub/jstest && ./run-all.sh
 ```
 
 Expected: every `test-*.js` exits successfully. If `NODE_PATH` is missing in the local environment, run:
 
 ```bash
-cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules ./run-all.sh
 ```
 
 - [ ] **Step 3: Run targeted Go tests for hub web/static routing**
@@ -770,7 +770,7 @@ cd cmd/serf-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules ./run-al
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run 'Test.*(Web|Launch|Path|RPC|Config)' 
+go test ./cmd/evener-hub -run 'Test.*(Web|Launch|Path|RPC|Config)' 
 ```
 
 Expected: PASS. This should catch missing embedded asset/template issues if `app.html` or asset embedding expectations changed.
@@ -780,7 +780,7 @@ Expected: PASS. This should catch missing embedded asset/template issues if `app
 Run:
 
 ```bash
-go test ./cmd/serf-hub
+go test ./cmd/evener-hub
 ```
 
 Expected: PASS. If a known live/real integration test is skipped by default, leave it skipped; do not weaken tests.
@@ -790,7 +790,7 @@ Expected: PASS. If a known live/real integration test is skipped by default, lea
 Run:
 
 ```bash
-git diff -- cmd/serf-hub/assets/dir-picker.js cmd/serf-hub/assets/settings-pickers.js cmd/serf-hub/assets/spawn.js cmd/serf-hub/templates/app.html cmd/serf-hub/jstest/test-dir-picker.js cmd/serf-hub/jstest/test-settings-dir-picker.js cmd/serf-hub/jstest/test-spawn.js cmd/serf-hub/jstest/test-launchconfig-controls.js
+git diff -- cmd/evener-hub/assets/dir-picker.js cmd/evener-hub/assets/settings-pickers.js cmd/evener-hub/assets/spawn.js cmd/evener-hub/templates/app.html cmd/evener-hub/jstest/test-dir-picker.js cmd/evener-hub/jstest/test-settings-dir-picker.js cmd/evener-hub/jstest/test-spawn.js cmd/evener-hub/jstest/test-launchconfig-controls.js
 ```
 
 Expected:
@@ -805,7 +805,7 @@ Expected:
 If Task 5 required fixes after the prior commits, commit them:
 
 ```bash
-git add cmd/serf-hub/assets cmd/serf-hub/templates cmd/serf-hub/jstest
+git add cmd/evener-hub/assets cmd/evener-hub/templates cmd/evener-hub/jstest
 git commit -m "test: verify shared directory picker integration"
 ```
 
@@ -831,6 +831,6 @@ If there were no additional changes, do not create an empty commit.
 
 - Generated launch config path controls remain wired through `data-settings-dir-input`.
 
-- `cmd/serf-hub/jstest/run-all.sh` passes.
+- `cmd/evener-hub/jstest/run-all.sh` passes.
 
-- `go test ./cmd/serf-hub` passes or any failure is investigated and explained with concrete evidence.
+- `go test ./cmd/evener-hub` passes or any failure is investigated and explained with concrete evidence.

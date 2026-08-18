@@ -67,7 +67,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 budget_file="${repo_root}/testing-budget.json"
 modules=". agent llm auth envvars invariant identifier"
-web_dir="${repo_root}/cmd/serf-hub/frontend"
+web_dir="${repo_root}/cmd/evener-hub/frontend"
 web=true
 check=false
 bless=false
@@ -188,7 +188,7 @@ else
 			pkgs=()
 			while IFS= read -r pkg; do
 				case "$pkg" in
-					*/cmd/serf-fuzzcov|*/cmd/serf-fuzz-harvest) continue ;;
+					*/cmd/evener-fuzzcov|*/cmd/evener-fuzz-harvest) continue ;;
 				esac
 				pkgs+=("$pkg")
 			done < <(cd "$repo_root/$m" && go list ./... 2>/dev/null)

@@ -78,7 +78,7 @@ gate auth modes (OAuth only for the `openai` tag) and to write `auth/<name>.json
   keybindings, dispatching create/edit/remove/set-default messages (the existing
   set-key / oauth flows are reused, now keyed by instance name).
 - **Pickers display by instance name:** `abbreviateModel` in `assets/spawn.js` and
-  `cmd/serf-tui/model_display.go` — the model string is already `instanceName/model`
+  `cmd/evener-tui/model_display.go` — the model string is already `instanceName/model`
   (1b); ensure the display strips/labels by the configured instance set rather than the
   hardcoded type allowlist.
 

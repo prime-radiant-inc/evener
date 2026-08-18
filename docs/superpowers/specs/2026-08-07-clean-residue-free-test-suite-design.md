@@ -64,7 +64,7 @@ before residue can be measured on a successful cycle:
 
 - Vitest collects `scripts/layoutguard/cdp.test.mjs`, although that file uses
   `node:test` and is also executed explicitly by Node.
-- `cmd/serf-hub/frontend_hash.go` uses `crypto/sha256` without an entry in the
+- `cmd/evener-hub/frontend_hash.go` uses `crypto/sha256` without an entry in the
   repository's closed-world identifier audit.
 - `TestWaveCompletesDespiteBlockedLeakCheck` uses a wall-clock completion bound
   and flakes under load instead of awaiting the behavior it intends to prove.

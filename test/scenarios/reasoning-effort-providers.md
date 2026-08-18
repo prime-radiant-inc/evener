@@ -28,7 +28,7 @@ credentials and makes billed calls.
 
   ```sh
   run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/serf
+  go build -o "$run/serf" ./cmd/evener
   ```
 
 - An isolated provider config so the live `~/.serf/providers.toml` is untouched.

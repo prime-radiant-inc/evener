@@ -1,7 +1,7 @@
 # search-finds-content-across-sessions: ⌘K overlay queries transcripts
 
 **What this covers**: regression baseline for the full-text search
-overlay (`cmd/serf-hub/assets/search.js` + server-side
+overlay (`cmd/evener-hub/assets/search.js` + server-side
 `/api/search`). Validates the overlay opens, queries return
 recently-matching transcripts, and clicking through navigates to
 the session.

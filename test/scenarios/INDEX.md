@@ -443,7 +443,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 
 ## serf-doctor & forensics
 
-The read-only inspector (`cmd/serf-doctor` over `agent/doctor`) and the
+The read-only inspector (`cmd/evener-doctor` over `agent/doctor`) and the
 `doctor` agent type that drives it. The watch/provenance material these
 cards read is produced by the `job-watch-*` cards above.
 
@@ -468,7 +468,7 @@ cards read is produced by the `job-watch-*` cards above.
 ## Sidebar (rebuilt)
 
 Live end-to-end coverage for the rebuilt client-rendered sidebar
-(`cmd/serf-hub/assets/sidebar.js` + `/api/tree`): needs-you, favorites/Pinned,
+(`cmd/evener-hub/assets/sidebar.js` + `/api/tree`): needs-you, favorites/Pinned,
 top-level active-project session rows, and the row menu. Each card was
 verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 
@@ -626,7 +626,7 @@ model to do the right thing, so they are also where model tiers separate.
 - `6bdb` — serf-hub doesn't find sibling serf binary either
   (same shape as a4w6, sharp edge).
 - `k7t8` — workspace interrupt button is non-functional
-  (`cancelFunc` never wired in `cmd/serf/serve.go`); covered by
+  (`cancelFunc` never wired in `cmd/evener/serve.go`); covered by
   `workspace-title-bar-actions.md`.
 - `4yvd` — serf-tui palette gates `/interrupt` on stale
   capabilities cached at session-open; needs a `/status` refresh
@@ -641,7 +641,7 @@ model to do the right thing, so they are also where model tiers separate.
   `reencodeToPng`; every web paste / drop / file-picker rendered
   "Not an image: <name>" until the fix. Discovered while writing
   the `web-*-image.md` scenarios (kata `2frx`). Fix: add `blob:`
-  to `cmd/serf-hub/security.go:CSPMiddleware`. The jstest harness
+  to `cmd/evener-hub/security.go:CSPMiddleware`. The jstest harness
   stubs `Image` so unit tests miss this; only live browser
   verification catches it.
 

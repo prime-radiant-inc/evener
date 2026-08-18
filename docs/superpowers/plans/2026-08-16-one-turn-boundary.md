@@ -55,7 +55,7 @@ forces every present and future `EntryKind` to declare how its turn opens.
 closed and opened, but not advertised as active. See `8d9767d9e`.)
 
 **Tech Stack:** Go 1.25 multi-module workspace (`agent` module, root module's
-`internal/appprojector` / `server` / `cmd/serf-hub`), `appwire` JSON-RPC.
+`internal/appprojector` / `server` / `cmd/evener-hub`), `appwire` JSON-RPC.
 
 **Spec:** this document.
 
@@ -80,7 +80,7 @@ the data-loss precedent for two minters sharing a turn-id namespace.
   `agent/session_client_mutation_turn_namespace_test.go` pins only that
   reserved ids stay outside the transcript entry-index namespace.)
 - **Nothing names a turn out of band.** The projector consumes events on its
-  own goroutine (`agent/session_events.go:95`, `cmd/serf/serve.go:190-195`),
+  own goroutine (`agent/session_events.go:95`, `cmd/evener/serve.go:190-195`),
   so a side-channel announcement races the stream.
 - **Every minted id must be released on every path.** The mint writes durable
   state that gates all later turns; a leak wedges the session for the life of
@@ -143,7 +143,7 @@ Neither opens a turn.
 Three live defects:
 
 **1. Idle wake → an id no client can name.** `SubmitNotification`
-(`server/server.go:755`) wakes an idle session. `cmd/serf/serve.go:1014` calls
+(`server/server.go:755`) wakes an idle session. `cmd/evener/serve.go:1014` calls
 `srv.SetProcessing(true)`, and `setProcessingLocked` reserves `turn_<n>` and
 publishes it as `appActiveTurnID` **before the session goroutine runs**
 (`server/server.go:712-716`); `startTurn` then consumes that reservation
@@ -161,7 +161,7 @@ design (`server/appwire_runtime.go:396-406`: "a client applying both fields of
 one notification can never hold a status and a capability set that
 disagree"), so the client keeps `steer:false, interrupt:false`. The composer
 gates on it — `isTurnActive` requires `statusType === "active"`
-(`cmd/serf-hub/frontend/src/panes/session/composer/submitRouting.ts:47-49`),
+(`cmd/evener-hub/frontend/src/panes/session/composer/submitRouting.ts:47-49`),
 and `showSteer`/`showStop` require `busy`
 (`.../composer/Composer.tsx:516,531-532`). **Stop and Steer are not even
 rendered.** Naming the turn without fixing this delivers nothing.
@@ -299,7 +299,7 @@ Task 5 must wait past it rather than pretend it is closed.
 | `internal/appprojector/turn_boundary_test.go` (create) | Boundary coverage. |
 | `server/thread_envelope.go` (modify) | Facet row. |
 | `server/thread_envelope_test.go` (modify) | The freshness case for that row. |
-| `cmd/serf-hub/e2e_turn_control_test.go` (modify) | Live-stack regression. |
+| `cmd/evener-hub/e2e_turn_control_test.go` (modify) | Live-stack regression. |
 
 ---
 
@@ -508,7 +508,7 @@ boundary.
 - [x] **Step 4: watch them pass. Mutations:** drop the `reservedTurnID`
       assignment → test 1 fails; drop `threadStatus` → test 2 fails; drop
       `closeActiveTurn` → tests 3 and 4 fail.
-- [x] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/serf/`.
+- [x] **Step 5:** `go test ./internal/appprojector/ ./server/ ./cmd/evener/`.
       The `closeActiveTurn` factoring must change no existing test; if one
       moves, the factoring changed behaviour — stop and say so.
 - [x] **Step 6: facet row.** `server/thread_envelope.go:149-162` calls turn
@@ -574,7 +574,7 @@ func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
 
 ### Task 5: Live-stack regression
 
-**Files:** `cmd/serf-hub/e2e_turn_control_test.go`.
+**Files:** `cmd/evener-hub/e2e_turn_control_test.go`.
 
 - [x] **Step 1: failing test**, `TestE2E_TurnControlReachesANotificationTurn`.
 

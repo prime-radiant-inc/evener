@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `#workspace` as the app-shell flex item and apply the max-width behavior to its existing child content sections. Add one named CSS custom property on `#workspace` and a shared width/margin rule for `.workspace-header`, `.conversation`, and `.workspace-input`.
 
-**Tech Stack:** Go `html/template` embedded assets, CSS in `cmd/serf-hub/assets/style.css`, Go tests via `go test ./cmd/serf-hub`.
+**Tech Stack:** Go `html/template` embedded assets, CSS in `cmd/evener-hub/assets/style.css`, Go tests via `go test ./cmd/evener-hub`.
 
 ## Global Constraints
 
@@ -21,16 +21,16 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/assets/style.css`: define `--workspace-content-max-w` on `#workspace` and apply shared `width: min(100%, var(--workspace-content-max-w))` plus `margin-inline: auto` to `.workspace-header`, `.conversation`, and `.workspace-input`.
-- Modify `cmd/serf-hub/web_test.go`: add a deterministic static asset contract test that reads the embedded CSS asset and asserts the cap/centering rules exist. This test is intentionally narrow because the behavior is CSS-only and there is no browser layout test harness in the default suite.
+- Modify `cmd/evener-hub/assets/style.css`: define `--workspace-content-max-w` on `#workspace` and apply shared `width: min(100%, var(--workspace-content-max-w))` plus `margin-inline: auto` to `.workspace-header`, `.conversation`, and `.workspace-input`.
+- Modify `cmd/evener-hub/web_test.go`: add a deterministic static asset contract test that reads the embedded CSS asset and asserts the cap/centering rules exist. This test is intentionally narrow because the behavior is CSS-only and there is no browser layout test harness in the default suite.
 
 ---
 
 ### Task 1: CSS content-column cap
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css`
-- Test: `cmd/serf-hub/web_test.go`
+- Modify: `cmd/evener-hub/assets/style.css`
+- Test: `cmd/evener-hub/web_test.go`
 
 **Interfaces:**
 - Consumes: existing `#workspace`, `.workspace-header`, `.conversation`, and `.workspace-input` selectors.
@@ -38,7 +38,7 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Add this test near the other web rendering/static tests in `cmd/serf-hub/web_test.go`:
+Add this test near the other web rendering/static tests in `cmd/evener-hub/web_test.go`:
 
 ```go
 func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
@@ -67,14 +67,14 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run TestWebWorkspaceContentColumnCSSContract -count=1
+go test ./cmd/evener-hub -run TestWebWorkspaceContentColumnCSSContract -count=1
 ```
 
 Expected: FAIL with a message like `style.css missing "--workspace-content-max-w: 832px;"`.
 
 - [ ] **Step 3: Add the CSS custom property and shared rule**
 
-In `cmd/serf-hub/assets/style.css`, replace the existing single-line `#workspace` rule around the app shell section:
+In `cmd/evener-hub/assets/style.css`, replace the existing single-line `#workspace` rule around the app shell section:
 
 ```css
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -106,7 +106,7 @@ with this expanded rule and shared content-column rule immediately after it:
 Run:
 
 ```bash
-go test ./cmd/serf-hub -run TestWebWorkspaceContentColumnCSSContract -count=1
+go test ./cmd/evener-hub -run TestWebWorkspaceContentColumnCSSContract -count=1
 ```
 
 Expected: PASS.
@@ -116,7 +116,7 @@ Expected: PASS.
 Run:
 
 ```bash
-go test ./cmd/serf-hub -count=1
+go test ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -126,7 +126,7 @@ Expected: PASS.
 Run:
 
 ```bash
-git diff -- cmd/serf-hub/assets/style.css cmd/serf-hub/web_test.go
+git diff -- cmd/evener-hub/assets/style.css cmd/evener-hub/web_test.go
 ```
 
 Expected: only the CSS content-column contract test and the CSS cap/centering rules changed.
@@ -136,7 +136,7 @@ Expected: only the CSS content-column contract test and the CSS cap/centering ru
 Run:
 
 ```bash
-git add cmd/serf-hub/assets/style.css cmd/serf-hub/web_test.go
+git add cmd/evener-hub/assets/style.css cmd/evener-hub/web_test.go
 git commit -m "fix(web): center capped workspace content"
 ```
 
@@ -148,4 +148,4 @@ Expected: commit succeeds and includes only those two files.
 
 - Spec coverage: Task 1 implements the CSS-only approach from the design: `#workspace` remains full-width, the three child content sections get a shared cap and auto margins, and thread document behavior is inherited through shared CSS.
 - Placeholder scan: no placeholder tasks or unspecified implementation steps remain.
-- Type/name consistency: the plan uses exact existing selector names from `cmd/serf-hub/templates/partials/workspace.html` and the custom property name is consistent in test and CSS.
+- Type/name consistency: the plan uses exact existing selector names from `cmd/evener-hub/templates/partials/workspace.html` and the custom property name is consistent in test and CSS.

@@ -18,7 +18,7 @@ hypothetical:
    (one JSON object per line; see `agent/transcript/transcript.go:54`), a
    `communicate` call is a *tool call* nested at
    `entry.turn.message.content[].tool_call` with `name == "communicate"` (the
-   default result-tool name, `cmd/serf/main.go:170`), and a steering turn is
+   default result-tool name, `cmd/evener/main.go:170`), and a steering turn is
    `entry.turn.kind == "STEERING"` — one level deeper than the parser looked.
    Any external parser rots the instant the schema shifts. **This is lesson #1:
    doctoring tools must read serf's OWN canonical types, never re-guess them.**
@@ -66,7 +66,7 @@ The throughline: serf already has typed structs and fold logic that produce the
 ## Form-factor decision
 
 **Recommendation: a first-class `serf doctor <subcommand>` CLI, implemented as a
-thin `cmd/serf` dispatch over a new exported facade in the `agent` package. Not
+thin `cmd/evener` dispatch over a new exported facade in the `agent` package. Not
 standalone scripts.**
 
 Three options were on the table:
@@ -80,13 +80,13 @@ Three options were on the table:
 ### The hard constraint that decides the wiring
 
 `agent/internal/jobstore` is an **`internal/` package**. Go's rule: it is importable
-only by code rooted at `agent/` (the directory containing `internal/`). `cmd/serf`
-is rooted at the module root, **not** under `agent/`, so **`cmd/serf` cannot import
+only by code rooted at `agent/` (the directory containing `internal/`). `cmd/evener`
+is rooted at the module root, **not** under `agent/`, so **`cmd/evener` cannot import
 `jobstore` directly** (verified: no file under `cmd/` or `server/` imports it today).
 
 This is load-bearing, not a footnote. It means the doctoring logic *must* live inside
 package `agent` (or a sibling under `agent/`) and be reached through **exported**
-functions; `cmd/serf` only does flag parsing and calls them. Concretely:
+functions; `cmd/evener` only does flag parsing and calls them. Concretely:
 
 - New file `agent/doctor.go` (package `agent`) holds the exported entry points:
   `DoctorTranscript(...)`, `DoctorWatches(...)`, `DoctorTree(...)`, `DoctorLocate(...)`.
@@ -94,8 +94,8 @@ functions; `cmd/serf` only does flag parsing and calls them. Concretely:
   (`agent/transcript_render.go`), the outline renderer (`agent/session_outline.go`),
   `resolveTranscript`/`enumerateBuckets` (`agent/transcript_lookup.go`), and
   `jobstore.Store.Load*()` (which package `agent` is already allowed to call).
-- New file `cmd/serf/doctor.go` adds a `doctor` case to `dispatchCLICommand`
-  (`cmd/serf/main.go:248`), with one `flag.FlagSet` per subcommand — matching the
+- New file `cmd/evener/doctor.go` adds a `doctor` case to `dispatchCLICommand`
+  (`cmd/evener/main.go:248`), with one `flag.FlagSet` per subcommand — matching the
   existing `serve` / `launch-check` / `openai` dispatch pattern exactly.
 
 This keeps the canonical fold/parse logic on one side of the `internal` wall and the

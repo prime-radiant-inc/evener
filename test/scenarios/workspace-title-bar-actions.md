@@ -1,7 +1,7 @@
 # workspace-title-bar-actions: interrupt, compact, shutdown end-to-end
 
 **What this covers**: kata `gx92`. The session actions (interrupt, compact,
-shutdown) hit `handleSessionAction` in `cmd/serf-hub/web_session.go#handleSessionAction`,
+shutdown) hit `handleSessionAction` in `cmd/evener-hub/web_session.go#handleSessionAction`,
 which forwards to the daemon via appwire (`TurnInterruptParams`,
 `ThreadCompactStartParams`, `ThreadShutdownParams`). This scenario is the
 server-side counterpart to `SessionActionsMenu.test.tsx`: did the daemon
@@ -82,7 +82,7 @@ settles back to idle, the daemon's outer ProcessInput loop pops the queue
 head and runs it as a fresh user turn.
 
    **There is no REST route for queue.** `handleAPISession`'s verb list
-   (`cmd/serf-hub/web_api_tree.go#handleAPISession`) has no `queue` case, and the
+   (`cmd/evener-hub/web_api_tree.go#handleAPISession`) has no `queue` case, and the
    old `/s/<id>/queue` shim died with the vanilla frontend. `turn/queue`
    lives only on the AppWire WebSocket (`appwire/types.go:26`), so this leg
    needs one of:
@@ -142,7 +142,7 @@ head and runs it as a fresh user turn.
    # the interrupted turn's cancellation marker. Use serf-doctor rather than
    # hand-parsing JSONL (see docs/agentic-testing.md, "Inspecting transcript
    # and meta on disk"):
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
    ```
 
    **Expected**: `queue_cap=True` mid-turn (kata `111a` capability
@@ -192,7 +192,7 @@ head and runs it as a fresh user turn.
      [ "$state" = "idle" ] && break
      sleep 1
    done
-   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:5
+   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:5
    ```
 
 5. **[browser-free] Shutdown**. Capture pre-state (daemon pid via rendezvous,
@@ -276,7 +276,7 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ## Sharp edges
 
 - **Interrupt wiring** (kata `k7t8`) — **confirmed still fixed; this step is
-  a regression guard, not a repro.** `cmd/serf/serve.go` wraps each turn in a
+  a regression guard, not a repro.** `cmd/evener/serve.go` wraps each turn in a
   per-turn `context.WithCancel(ctx)` and registers the cancel via
   `srv.SetCancelFunc` for the duration of the turn (`:957`, `:965`, `:977`),
   clearing it on completion (`:986`). This means `capabilities.interrupt` is
@@ -287,7 +287,7 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
 - **Interrupt semantics** (kata `0ax1`, fixed). A successful
   interrupt cancels the in-flight turn but keeps the session
   alive. State transitions `active → idle` (NOT `closed`),
-  the outer session loop in `cmd/serf/serve.go` remains ready for
+  the outer session loop in `cmd/evener/serve.go` remains ready for
   the next input, and the user can immediately follow up
   with another message. The transcript records a `STEERING` turn
   with a `<SYSTEM-REMINDER>` so the model sees on its next turn

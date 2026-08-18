@@ -143,7 +143,7 @@ func CommunicateMessageFromArguments(raw json.RawMessage) string {
 // surfaces that display bare assistant text: the live projector
 // (matchesLastAssistantMessage in internal/appprojector), the reload path
 // below in ProjectTurn, and the non-interactive CLI printer (drainEventsHuman
-// in cmd/serf). Turn scoping is the projector's own state, not part of this
+// in cmd/evener). Turn scoping is the projector's own state, not part of this
 // comparison.
 func EchoesAssistantText(shown, message string) bool {
 	shown = strings.TrimSpace(shown)

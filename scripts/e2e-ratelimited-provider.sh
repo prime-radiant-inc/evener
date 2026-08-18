@@ -105,15 +105,15 @@ go build -o "$run/fake429" "$repo_root/test/e2e/fake429" || {
 	echo "build fake429 failed" >&2
 	exit 1
 }
-go build -o "$run/serf" "$repo_root/cmd/serf" || {
+go build -o "$run/serf" "$repo_root/cmd/evener" || {
 	echo "build serf failed" >&2
 	exit 1
 }
-go build -o "$run/serf-hub" "$repo_root/cmd/serf-hub" || {
+go build -o "$run/serf-hub" "$repo_root/cmd/evener-hub" || {
 	echo "build serf-hub failed" >&2
 	exit 1
 }
-go build -o "$run/serf-tui" "$repo_root/cmd/serf-tui" || {
+go build -o "$run/serf-tui" "$repo_root/cmd/evener-tui" || {
 	echo "build serf-tui failed" >&2
 	exit 1
 }

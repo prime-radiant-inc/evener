@@ -100,7 +100,7 @@ func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *t
 // mutation's authority.
 //
 // Before the fix, onRunnable was never called on the steering-only branch, so
-// cmd/serf/serve.go never installed the daemon's cancellation callback for it
+// cmd/evener/serve.go never installed the daemon's cancellation callback for it
 // -- an interrupt would return Applied without cancelling anything. This test
 // drives a real in-flight model call (blockingAdapter) and a real
 // InterruptClientMutation, and checks the id ProcessPendingUserInput reports

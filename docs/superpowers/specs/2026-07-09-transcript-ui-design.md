@@ -29,11 +29,11 @@ The work is intentionally a presentation pass. It must not alter transcript tran
 
 The change remains within the current Hub rendering and styling boundaries:
 
-- `cmd/serf-hub/assets/style.css` supplies shared tokens and transcript/message styles.
-- `cmd/serf-hub/assets/renderer.js` renders conversation entries and applies their semantic classes.
-- `cmd/serf-hub/assets/renderer-tools.js` renders tool summaries, structured arguments, expandable output, diffs, and source-truncation/binary notices.
-- `cmd/serf-hub/templates/partials/settings/transcript.html` provides transcript-preference markup.
-- `cmd/serf-hub/assets/settings-transcript.js` owns localStorage persistence, checkbox state restoration, and change events.
+- `cmd/evener-hub/assets/style.css` supplies shared tokens and transcript/message styles.
+- `cmd/evener-hub/assets/renderer.js` renders conversation entries and applies their semantic classes.
+- `cmd/evener-hub/assets/renderer-tools.js` renders tool summaries, structured arguments, expandable output, diffs, and source-truncation/binary notices.
+- `cmd/evener-hub/templates/partials/settings/transcript.html` provides transcript-preference markup.
+- `cmd/evener-hub/assets/settings-transcript.js` owns localStorage persistence, checkbox state restoration, and change events.
 
 No server, AppWire, transcript-projection, or preference-key contract changes are required.
 
@@ -156,7 +156,7 @@ No new data flow is introduced:
 
 1. Update deterministic Hub JavaScript tests around renderer/tool DOM output to verify prose/summary versus machine-output class/element boundaries and preserve tool disclosure behavior.
 2. Retain and extend the Go settings-render test only if markup hooks/classes change; assert all four controls and their accessible labels remain present.
-3. Run the relevant Hub Go tests and the affected `cmd/serf-hub/jstest` tests.
+3. Run the relevant Hub Go tests and the affected `cmd/evener-hub/jstest` tests.
 4. Add deterministic CSS/markup contract coverage for `@media (max-width: 900px) and (max-height: 560px)`, verifying the off-canvas sidebar/pane rules, compact workspace chrome, primary control retention, and status-field demotion without requiring a live viewport.
 5. Inspect the static WebUI golden and hard-case examples against the shared typography, spacing, and short-landscape selectors as a manual UI review; this is a design check, not a network-dependent CI test.
 6. Verify the working tree and staged diff contain only focused transcript/settings/short-landscape styling, rendering, and corresponding deterministic tests when implementation begins.

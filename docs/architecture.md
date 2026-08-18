@@ -32,9 +32,9 @@ importing each other's Go code.
 
 | Binary | `cmd/` | Role | Talks to | via |
 | --- | --- | --- | --- | --- |
-| `serf` | `cmd/serf` | **engine** — runs an `agent.Session` | agent, llm | direct |
-| `serf-hub` | `cmd/serf-hub` | **supervisor** — spawns `serf` subprocesses, serves clients | serf (spawn), agent (schema) | **AppWire** + schema |
-| `serf-tui` | `cmd/serf-tui` | **client** — terminal dashboard | serf-hub | **hubapi** (HTTP) |
+| `serf` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
+| `serf-hub` | `cmd/evener-hub` | **supervisor** — spawns `serf` subprocesses, serves clients | serf (spawn), agent (schema) | **AppWire** + schema |
+| `serf-tui` | `cmd/evener-tui` | **client** — terminal dashboard | serf-hub | **hubapi** (HTTP) |
 
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the engine↔hub↔tui wire protocol) and `hubapi/` (the hub's HTTP API).
@@ -93,7 +93,7 @@ single module, shared code in `internal/` is the correct Go idiom; *duplicating*
 binary would be worse. The "no glue drawer" goal was about **not mixing library and app
 code** — and that is fully resolved: the libraries are separate modules, so the app's
 `internal/` now holds only app code. (`appprojector` and `httpguard` are engine-`server/`-
-only and could later sink to `cmd/serf/internal/` alongside `server/`.) Relaxing the
+only and could later sink to `cmd/evener/internal/` alongside `server/`.) Relaxing the
 migration's original "zero top-level `internal/`" target is the **decided end-state**:
 per-binary duplication would be strictly worse, and the real goal — no library/app code
 mixing — is already met by the module carve.

@@ -1,6 +1,6 @@
 # turn-meta-badge-always-visible: the per-turn duration/tokens/cost badge renders always-visible, not hover/focus-reveal
 
-**What this covers**: the `.turn-meta` badge `cmd/serf-hub/assets/renderer.js`
+**What this covers**: the `.turn-meta` badge `cmd/evener-hub/assets/renderer.js`
 attaches to the assistant message that closes a turn, once `turn/completed`
 lands over appwire. ⚠️ Plan correction (already applied before Phase T ran,
 commit `09ead1c4`): earlier spec drafts described this badge as
@@ -50,14 +50,14 @@ is in the DOM and visually rendered at rest.
 - Do **not** write or assert a hover-to-reveal or focus-to-reveal transition
   here — per the Y2 task brief's plan correction, there is none. If a future
   spec draft resurfaces that wording, it is stale; defer to commit `09ead1c4`
-  and the CSS comment at `cmd/serf-hub/assets/style.css` immediately above
+  and the CSS comment at `cmd/evener-hub/assets/style.css` immediately above
   `.assistant-message .turn-meta`.
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session (three failed `tabs_context_mcp` attempts), so
   steps 2-3 (live DOM + computed-style inspection in a real browser) were
   **not driven live**. Substituted evidence, all against real shipped
   artifacts (not simulated):
-  - `cmd/serf-hub/assets/style.css` around `.assistant-message .turn-meta`
+  - `cmd/evener-hub/assets/style.css` around `.assistant-message .turn-meta`
     was read directly. The rule is:
     ```css
     /* Per-turn duration/tokens/cost badge: always-visible and subtle, mirroring
@@ -74,7 +74,7 @@ is in the DOM and visually rendered at rest.
     No `:hover`/`:focus`/`opacity`/`visibility` present anywhere the
     selector is referenced (the only other rule touching `.turn-meta` is the
     Show-cost gate on `.turn-meta .cost`, unrelated to at-rest visibility).
-  - `cmd/serf-hub/jstest/test-turn-meta-badge.js` loads the actual
+  - `cmd/evener-hub/jstest/test-turn-meta-badge.js` loads the actual
     `renderer.js` (not a mock) in JSDOM, drives a real
     `TURN_STARTED` → `ASSISTANT_TEXT_*` → `TURN_COMPLETED` event sequence,
     and asserts the resulting `.assistant-message[data-turn-id]` gains a

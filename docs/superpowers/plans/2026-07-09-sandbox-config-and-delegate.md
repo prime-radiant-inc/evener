@@ -63,7 +63,7 @@ the system default, the launch layer is the per-spawn override. One schema entry
 surfaces all four surfaces. The one load-bearing gap: `ToArgs` does not emit the
 sandbox flags today, so a launch-config choice never reaches the spawned session.
 
-Files (all under `cmd/serf-hub/internal/launchconfig/` unless noted):
+Files (all under `cmd/evener-hub/internal/launchconfig/` unless noted):
 
 1. **`types.go`** `Layer`: add `Sandbox string \`toml:"sandbox,omitempty"\`` and
    `SandboxNet *bool \`toml:"sandbox_net,omitempty"\`` (string uses ""-means-unset
@@ -90,11 +90,11 @@ Files (all under `cmd/serf-hub/internal/launchconfig/` unless noted):
    - `sandbox_net` → `LaunchControlBoolean`, same group/layers/PerLaunch,
      WireField `sandboxNet`. Description: "Allow network egress when sandboxed.
      Default on."
-7. **TUI** `cmd/serf-tui/internal/launchconfig/launch_schema.go` `launchOptionValue`
+7. **TUI** `cmd/evener-tui/internal/launchconfig/launch_schema.go` `launchOptionValue`
    (~line 101 switch): add `case "sandbox"` (display the string, like
    `context_strategy`) and `case "sandbox_net"` (display via `ptrBoolStr`, like
    `no_project_prompts`).
-8. **TUI** `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go` `applyEdit`
+8. **TUI** `cmd/evener-tui/internal/launchconfig/launch_settings_panel.go` `applyEdit`
    (~line 324 switch): `case "sandbox"` sets `layer.Sandbox = strings.TrimSpace(value)`
    (like `context_strategy`); `case "sandbox_net"` sets `layer.SandboxNet =
    parseOptionalBool(value)` (like `no_project_prompts`). Without these two cases

@@ -4,7 +4,7 @@
 
 **Goal:** Tighten the serf-hub conversation transcript (less padding, snugger line-height, smaller gaps, scrollable diff bodies) and declutter the composer (one attachment rail, three-zone controls row, mono single-line status row).
 
-**Architecture:** All work lives in `cmd/serf-hub/assets/style.css`, `cmd/serf-hub/templates/partials/workspace.html`, `cmd/serf-hub/templates/partials/input_strip.html`, and minor verification touches in `cmd/serf-hub/assets/renderer.js` + `cmd/serf-hub/jstest/test-input-area.js`. The conversation becomes a container-query host (`#workspace`) so phone-density rules narrow tool-cluster indent without re-asserting media queries. The composer's two attachment rails collapse to one container that the paste handler renders into. The controls row gets explicit `.controls-left / .controls-center / .controls-right` zones so layout intent matches markup.
+**Architecture:** All work lives in `cmd/evener-hub/assets/style.css`, `cmd/evener-hub/templates/partials/workspace.html`, `cmd/evener-hub/templates/partials/input_strip.html`, and minor verification touches in `cmd/evener-hub/assets/renderer.js` + `cmd/evener-hub/jstest/test-input-area.js`. The conversation becomes a container-query host (`#workspace`) so phone-density rules narrow tool-cluster indent without re-asserting media queries. The composer's two attachment rails collapse to one container that the paste handler renders into. The controls row gets explicit `.controls-left / .controls-center / .controls-right` zones so layout intent matches markup.
 
 **Tech Stack:** Plain HTML templates (Go `html/template`), vanilla CSS with custom properties + container queries, vanilla JS (no framework). The design tokens (`--space-N`, `--leading-snug`, `--text-md`, `surface-inset`) introduced by Passes 1–3 are prerequisites — this plan assumes they exist as documented in `/home/jesse/git/prime-radiant/serf/docs/superpowers/specs/2026-05-22-serf-hub-design-language.md` §1.3, §1.2, §2.2.
 
@@ -14,7 +14,7 @@
 
 ## File Structure
 
-- Modify `cmd/serf-hub/assets/style.css`:
+- Modify `cmd/evener-hub/assets/style.css`:
   - Conversation block (~line 357) — padding, line-height, gaps.
   - User pill (`.user-message .pill`, ~line 446) — `max-width: min(62%, 540px)`, `line-height: var(--leading-snug)`.
   - Assistant body (`.assistant-message`, ~line 463) — line-height + bottom margin.
@@ -27,19 +27,19 @@
   - Composer status row (~line 422) — restyle as mono single line with `.status-key` / `.status-value` semantics.
   - Queue preview (~line 367) — drop the inline kbd hint chrome; introduce `.queue-preview-help` glyph with native `title` tooltip.
 
-- Modify `cmd/serf-hub/templates/partials/workspace.html`:
+- Modify `cmd/evener-hub/templates/partials/workspace.html`:
   - Composer markup: single attachment container, queue-preview hint as `?` glyph, three-zone controls layout.
 
-- Modify `cmd/serf-hub/templates/partials/input_strip.html`:
+- Modify `cmd/evener-hub/templates/partials/input_strip.html`:
   - Wrap each metric in `.status-key` / `.status-value` spans; drop the running-indicator (now in `.controls-center` zone of the controls row).
 
-- Modify `cmd/serf-hub/assets/renderer.js`:
+- Modify `cmd/evener-hub/assets/renderer.js`:
   - Verify the paste container query selector still resolves (it does — same `[data-composer-attachments]` attribute). No behavior change, but check the comment block above line 1675 references the merged container, not "alongside the legacy file-picker pipeline".
 
-- Modify `cmd/serf-hub/jstest/test-input-area.js`:
+- Modify `cmd/evener-hub/jstest/test-input-area.js`:
   - Adjust the JSDOM shell at line 28–42 to match the new workspace.html composer markup (one attachment container, three-zone controls).
 
-- Modify `cmd/serf-hub/jstest/test-queue-and-drain.js`:
+- Modify `cmd/evener-hub/jstest/test-queue-and-drain.js`:
   - Same shell adjustment (line ~25).
 
 ---
@@ -47,10 +47,10 @@
 ## Task 1: Tighten Conversation Padding, Line-Height, and Inter-Turn Gaps
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:357` (`.conversation`)
-- Modify: `cmd/serf-hub/assets/style.css:445-446` (`.user-message`, `.user-message .pill`)
-- Modify: `cmd/serf-hub/assets/style.css:463` (`.assistant-message`)
-- Modify: `cmd/serf-hub/assets/style.css:469` (`.tool-call-cluster`)
+- Modify: `cmd/evener-hub/assets/style.css:357` (`.conversation`)
+- Modify: `cmd/evener-hub/assets/style.css:445-446` (`.user-message`, `.user-message .pill`)
+- Modify: `cmd/evener-hub/assets/style.css:463` (`.assistant-message`)
+- Modify: `cmd/evener-hub/assets/style.css:469` (`.tool-call-cluster`)
 
 - [ ] **Step 1: Tighten `.conversation` block padding and line-height**
 
@@ -129,7 +129,7 @@ Bottom margin from `12px` to `var(--space-4)` (also 12 — same value, but token
 Run:
 
 ```bash
-go build ./cmd/serf-hub && ./serf-hub --help >/dev/null
+go build ./cmd/evener-hub && ./serf-hub --help >/dev/null
 ```
 
 Expected: no build errors. Then launch a hub locally and open a session with at least 3 user/assistant turns. Eyeball it: the transcript should breathe less between turns, line-height is noticeably tighter, but text doesn't read as cramped. The user pill caps at 540px even when the workspace is wide.
@@ -137,7 +137,7 @@ Expected: no build errors. Then launch a hub locally and open a session with at 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "ui: tighten conversation padding, leading, and turn gaps (pass 6)"
 ```
 
@@ -146,17 +146,17 @@ git commit -m "ui: tighten conversation padding, leading, and turn gaps (pass 6)
 ## Task 2: Add `--tool-indent` Custom Property and Container Query for Narrow Conversation
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:357` (`.conversation` — already a container from Task 1)
-- Modify: `cmd/serf-hub/assets/style.css:471` (`.tool-call .tool-status`)
-- Modify: `cmd/serf-hub/assets/style.css:488` (`.diff-body`)
-- Modify: `cmd/serf-hub/assets/style.css:494` (`.tool-body`)
-- Modify: `cmd/serf-hub/assets/style.css:507` (`.task-list-body`)
-- Modify: `cmd/serf-hub/assets/style.css:514` (`.fetch-body`)
-- Modify: `cmd/serf-hub/assets/style.css:515` (`.search-body`)
-- Modify: `cmd/serf-hub/assets/style.css:517` (`.subagent-reference` — uses 22px, see step 3)
-- Modify: `cmd/serf-hub/assets/style.css:520` (`.diagnostic`)
-- Modify: `cmd/serf-hub/assets/style.css:554` (`.banner`)
-- Modify: `cmd/serf-hub/assets/style.css:982-986` (phone media query block)
+- Modify: `cmd/evener-hub/assets/style.css:357` (`.conversation` — already a container from Task 1)
+- Modify: `cmd/evener-hub/assets/style.css:471` (`.tool-call .tool-status`)
+- Modify: `cmd/evener-hub/assets/style.css:488` (`.diff-body`)
+- Modify: `cmd/evener-hub/assets/style.css:494` (`.tool-body`)
+- Modify: `cmd/evener-hub/assets/style.css:507` (`.task-list-body`)
+- Modify: `cmd/evener-hub/assets/style.css:514` (`.fetch-body`)
+- Modify: `cmd/evener-hub/assets/style.css:515` (`.search-body`)
+- Modify: `cmd/evener-hub/assets/style.css:517` (`.subagent-reference` — uses 22px, see step 3)
+- Modify: `cmd/evener-hub/assets/style.css:520` (`.diagnostic`)
+- Modify: `cmd/evener-hub/assets/style.css:554` (`.banner`)
+- Modify: `cmd/evener-hub/assets/style.css:982-986` (phone media query block)
 
 - [ ] **Step 1: Declare `--tool-indent` on `.conversation`**
 
@@ -331,7 +331,7 @@ Keep `.user-message .pill { max-width: 90%; }` in the phone block — that's a w
 - [ ] **Step 7: Build + verify glyph alignment at both widths**
 
 ```bash
-go build ./cmd/serf-hub
+go build ./cmd/evener-hub
 ```
 
 Resize the workspace pane in the browser. The tool-call status glyph should sit in the gutter and shift inward as the pane narrows below 600px. Diff bodies should sit on the inset surface (slightly darker than the page bg), with horizontal scrollbars appearing when a single line exceeds the pane width.
@@ -339,7 +339,7 @@ Resize the workspace pane in the browser. The tool-call status glyph should sit 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "ui: token-driven --tool-indent + container query for narrow conversation (pass 6)"
 ```
 
@@ -348,7 +348,7 @@ git commit -m "ui: token-driven --tool-indent + container query for narrow conve
 ## Task 3: Verify Diff Body Surface-Inset Migration and Horizontal Scroll
 
 **Files:**
-- Verify: `cmd/serf-hub/assets/style.css` `.diff-body` rule (already updated in Task 2 Step 2)
+- Verify: `cmd/evener-hub/assets/style.css` `.diff-body` rule (already updated in Task 2 Step 2)
 
 This task is verification-only. The substantive change happened in Task 2 Step 2 because the diff-body indent and the diff-body surface migration share a single CSS rule and editing the same selector twice invites drift.
 
@@ -368,10 +368,10 @@ Toggle the theme (`data-theme="light"` / `data-theme="dark"`) via the existing t
 
 - [ ] **Step 4: No commit needed (verification-only task)**
 
-If a problem is found, fix the offending rule in `cmd/serf-hub/assets/style.css` and commit:
+If a problem is found, fix the offending rule in `cmd/evener-hub/assets/style.css` and commit:
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "ui: fix diff-body surface-inset rendering (pass 6 follow-up)"
 ```
 
@@ -380,18 +380,18 @@ git commit -m "ui: fix diff-body surface-inset rendering (pass 6 follow-up)"
 ## Task 4: Merge `.input-attachments` and `.composer-attachments` Into One Rail
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:37-39` (composer header)
-- Modify: `cmd/serf-hub/assets/style.css:360-391` (attachment CSS rules)
-- Modify: `cmd/serf-hub/jstest/test-input-area.js:29-30` (JSDOM shell)
-- Modify: `cmd/serf-hub/jstest/test-queue-and-drain.js:25` (JSDOM shell)
-- Verify: `cmd/serf-hub/assets/composer-attachments.js` (no change — selector still resolves)
-- Verify: `cmd/serf-hub/assets/renderer.js:1684-1698` (no change — selectors still resolve)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:37-39` (composer header)
+- Modify: `cmd/evener-hub/assets/style.css:360-391` (attachment CSS rules)
+- Modify: `cmd/evener-hub/jstest/test-input-area.js:29-30` (JSDOM shell)
+- Modify: `cmd/evener-hub/jstest/test-queue-and-drain.js:25` (JSDOM shell)
+- Verify: `cmd/evener-hub/assets/composer-attachments.js` (no change — selector still resolves)
+- Verify: `cmd/evener-hub/assets/renderer.js:1684-1698` (no change — selectors still resolve)
 
 The legacy `.input-attachments[data-attachments]` div sits in workspace.html but is unused at runtime — comments in `composer-attachments.js` and `jstest/test-input-area.js` already note "now unused". The renderer only ever queries `[data-composer-attachments]`. So the merge is: delete the legacy div from the template; collapse the two CSS rules into one; verify selectors still resolve.
 
 - [ ] **Step 1: Update workspace.html — replace two attachment divs with one**
 
-Edit `cmd/serf-hub/templates/partials/workspace.html`. The change spans lines 37–39.
+Edit `cmd/evener-hub/templates/partials/workspace.html`. The change spans lines 37–39.
 
 Old (lines 37–39):
 ```html
@@ -410,7 +410,7 @@ Keeping `data-attachments` on the same element preserves any historical selector
 
 - [ ] **Step 2: Collapse the two CSS rules into one in style.css**
 
-Edit `cmd/serf-hub/assets/style.css`. The current rules span lines 360–391 (two separate blocks: `.input-attachments` at 360–361, `.composer-attachments` + chip styles at 386–391). The `.attachment-chip / .att-thumb / .att-remove` block at lines 377–380 is leftover legacy chrome from the now-retired file-picker pipeline (verified: no JS or template references at runtime; only stale CSS).
+Edit `cmd/evener-hub/assets/style.css`. The current rules span lines 360–391 (two separate blocks: `.input-attachments` at 360–361, `.composer-attachments` + chip styles at 386–391). The `.attachment-chip / .att-thumb / .att-remove` block at lines 377–380 is leftover legacy chrome from the now-retired file-picker pipeline (verified: no JS or template references at runtime; only stale CSS).
 
 Delete these blocks entirely (lines 360–361 and 377–391):
 
@@ -477,7 +477,7 @@ Insert the merged block in their place (single source of truth for attachment ch
 
 - [ ] **Step 3: Update jstest JSDOM shells**
 
-Edit `cmd/serf-hub/jstest/test-input-area.js`. At line 29–30 (the JSDOM shell template literal), replace:
+Edit `cmd/evener-hub/jstest/test-input-area.js`. At line 29–30 (the JSDOM shell template literal), replace:
 
 ```js
     <div class="input-attachments" data-attachments></div>
@@ -490,11 +490,11 @@ with:
     <div class="composer-attachments" data-composer-attachments data-attachments></div>
 ```
 
-Edit `cmd/serf-hub/jstest/test-queue-and-drain.js`. At line ~25 (same JSDOM shell pattern), make the equivalent replacement.
+Edit `cmd/evener-hub/jstest/test-queue-and-drain.js`. At line ~25 (same JSDOM shell pattern), make the equivalent replacement.
 
 - [ ] **Step 4: Update the explanatory comment in renderer.js**
 
-The comment block at `cmd/serf-hub/assets/renderer.js:1675-1683` references "the (now unused) legacy data-attachments div" and "the legacy addFiles / FileReader / data-URL pipeline". The legacy div is gone now. Update the comment to reflect the merged container:
+The comment block at `cmd/evener-hub/assets/renderer.js:1675-1683` references "the (now unused) legacy data-attachments div" and "the legacy addFiles / FileReader / data-URL pipeline". The legacy div is gone now. Update the comment to reflect the merged container:
 
 Find the block starting at line 1675:
 
@@ -524,7 +524,7 @@ Replace with:
 - [ ] **Step 5: Run jstest suite to confirm no selector breakage**
 
 ```bash
-cd cmd/serf-hub/jstest && npm test
+cd cmd/evener-hub/jstest && npm test
 ```
 
 Expected: all input-area and queue-and-drain tests pass. If a test fails because it relied on the duplicate `data-attachments` div, update the test selector to use `[data-composer-attachments]` (the canonical hook).
@@ -536,7 +536,7 @@ Launch the hub locally, open a session, focus the composer textarea, and paste a
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-input-area.js cmd/serf-hub/jstest/test-queue-and-drain.js cmd/serf-hub/assets/renderer.js
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-input-area.js cmd/evener-hub/jstest/test-queue-and-drain.js cmd/evener-hub/assets/renderer.js
 git commit -m "ui: merge composer attachment rails into single container (pass 6)"
 ```
 
@@ -545,16 +545,16 @@ git commit -m "ui: merge composer attachment rails into single container (pass 6
 ## Task 5: Refactor Composer Controls Into Three Zones (Left / Center / Right)
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:50-68` (`.input-controls` block)
-- Modify: `cmd/serf-hub/assets/style.css:405-417` (`.input-controls`, `.controls-spacer`, button variants)
-- Modify: `cmd/serf-hub/jstest/test-input-area.js:35-39` (JSDOM shell controls block)
-- Modify: `cmd/serf-hub/jstest/test-queue-and-drain.js` (JSDOM shell controls block, if present)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:50-68` (`.input-controls` block)
+- Modify: `cmd/evener-hub/assets/style.css:405-417` (`.input-controls`, `.controls-spacer`, button variants)
+- Modify: `cmd/evener-hub/jstest/test-input-area.js:35-39` (JSDOM shell controls block)
+- Modify: `cmd/evener-hub/jstest/test-queue-and-drain.js` (JSDOM shell controls block, if present)
 
 The current row uses a single flex container with a `.controls-spacer` div between left controls and right buttons. The new layout uses three named zones, with the center zone taking remaining space (via `flex: 1`) and holding the running indicator. This change is purely structural — no button is added, removed, or rebound.
 
 - [ ] **Step 1: Rewrite the composer controls block in workspace.html**
 
-Edit `cmd/serf-hub/templates/partials/workspace.html`. Replace the entire `.input-controls` block (lines 50–68) with three explicit zones.
+Edit `cmd/evener-hub/templates/partials/workspace.html`. Replace the entire `.input-controls` block (lines 50–68) with three explicit zones.
 
 Old (lines 50–68):
 ```html
@@ -611,7 +611,7 @@ Note the running-indicator stays in `.controls-center` only when state is `activ
 
 - [ ] **Step 2: Rewrite `.input-controls` CSS to use three zones**
 
-Edit `cmd/serf-hub/assets/style.css`. Replace the `.input-controls` and `.controls-spacer` rules (lines 405–406) with the three-zone layout. Keep the button rules (`.input-btn`, `.input-btn-stop`, etc.) but rename `.input-btn-stop` semantics in step 3.
+Edit `cmd/evener-hub/assets/style.css`. Replace the `.input-controls` and `.controls-spacer` rules (lines 405–406) with the three-zone layout. Keep the button rules (`.input-btn`, `.input-btn-stop`, etc.) but rename `.input-btn-stop` semantics in step 3.
 
 ```css
 .input-controls {
@@ -697,7 +697,7 @@ Two diffs from today's code:
 
 - [ ] **Step 4: Update jstest JSDOM shells to match three-zone markup**
 
-Edit `cmd/serf-hub/jstest/test-input-area.js`. Replace the controls block (lines 35–39):
+Edit `cmd/evener-hub/jstest/test-input-area.js`. Replace the controls block (lines 35–39):
 
 Old:
 ```js
@@ -722,13 +722,13 @@ New:
     </div>
 ```
 
-Make the equivalent change in `cmd/serf-hub/jstest/test-queue-and-drain.js` if its shell includes the `.input-controls` block. If it doesn't, no change needed.
+Make the equivalent change in `cmd/evener-hub/jstest/test-queue-and-drain.js` if its shell includes the `.input-controls` block. If it doesn't, no change needed.
 
 - [ ] **Step 5: Build + run jstest**
 
 ```bash
-go build ./cmd/serf-hub
-cd cmd/serf-hub/jstest && npm test
+go build ./cmd/evener-hub
+cd cmd/evener-hub/jstest && npm test
 ```
 
 Expected: all tests pass. The shape of the controls row changed but no JS selector references `.controls-spacer` (verified by grep — only the CSS rule used it).
@@ -742,7 +742,7 @@ Resize to phone width (< 768px). The row should wrap such that the send button s
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-input-area.js cmd/serf-hub/jstest/test-queue-and-drain.js
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-input-area.js cmd/evener-hub/jstest/test-queue-and-drain.js
 git commit -m "ui: split composer controls into left/center/right zones (pass 6)"
 ```
 
@@ -751,14 +751,14 @@ git commit -m "ui: split composer controls into left/center/right zones (pass 6)
 ## Task 6: Reduce Queue Preview Visual Weight
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/workspace.html:40-46` (queue-preview block)
-- Modify: `cmd/serf-hub/assets/style.css:367-376` (queue-preview rules)
+- Modify: `cmd/evener-hub/templates/partials/workspace.html:40-46` (queue-preview block)
+- Modify: `cmd/evener-hub/assets/style.css:367-376` (queue-preview rules)
 
 Today the queue-preview header carries a long inline hint that includes a `kbd` chip explaining `⇧↵`. The hint dominates the strip visually. Replace it with a small `?` glyph that opens a native browser tooltip (`title` attribute) — same information, much less ink.
 
 - [ ] **Step 1: Update workspace.html queue-preview markup**
 
-Edit `cmd/serf-hub/templates/partials/workspace.html`. Replace the block at lines 40–46:
+Edit `cmd/evener-hub/templates/partials/workspace.html`. Replace the block at lines 40–46:
 
 Old:
 ```html
@@ -789,7 +789,7 @@ The button is keyboard-focusable so the hint is accessible via keyboard hover (f
 
 - [ ] **Step 2: Update queue-preview CSS**
 
-Edit `cmd/serf-hub/assets/style.css`. Replace the queue-preview rules (lines 367–376):
+Edit `cmd/evener-hub/assets/style.css`. Replace the queue-preview rules (lines 367–376):
 
 Old:
 ```css
@@ -881,7 +881,7 @@ The old `.queue-preview-hint` rule (with its `kbd` styling) is gone — no more 
 - [ ] **Step 3: Build + verify the queue preview by queuing during an active turn**
 
 ```bash
-go build ./cmd/serf-hub
+go build ./cmd/evener-hub
 ```
 
 Open a session, start a turn, then type a message and press ⌘↵. The message queues. The queue preview strip should show `queued 1` on the left, the `?` glyph on the right (or just after the label), and the queued items below. Hover the `?` — the browser tooltip should show the explanation. Tab to the `?` with the keyboard — it should focus visibly via `:focus-visible`.
@@ -889,7 +889,7 @@ Open a session, start a turn, then type a message and press ⌘↵. The message 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/workspace.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/style.css
 git commit -m "ui: reduce queue preview to label + ? glyph (pass 6)"
 ```
 
@@ -898,14 +898,14 @@ git commit -m "ui: reduce queue preview to label + ? glyph (pass 6)"
 ## Task 7: Restyle Composer Status Row as Mono Single Line With Semantic Key/Value Spans
 
 **Files:**
-- Modify: `cmd/serf-hub/templates/partials/input_strip.html` (full file)
-- Modify: `cmd/serf-hub/assets/style.css:422-430` (`.input-status` rules)
+- Modify: `cmd/evener-hub/templates/partials/input_strip.html` (full file)
+- Modify: `cmd/evener-hub/assets/style.css:422-430` (`.input-status` rules)
 
 The status row today reads `[cwd] · [branch] · [running] · [context bar] · [cost]`, with the running indicator duplicated from the controls row above. The spec wants a single mono line of `cwd · branch · ctx · cost` with explicit `.status-key` (dim) + `.status-value` (text) spans, and running stays only in the controls row (Task 5's center zone).
 
 - [ ] **Step 1: Rewrite the input_status template**
 
-Edit `cmd/serf-hub/templates/partials/input_strip.html`. Replace the entire `{{define "input_status"}}` block:
+Edit `cmd/evener-hub/templates/partials/input_strip.html`. Replace the entire `{{define "input_status"}}` block:
 
 Old:
 ```html
@@ -937,7 +937,7 @@ Three changes:
 
 - [ ] **Step 2: Rewrite `.input-status` CSS**
 
-Edit `cmd/serf-hub/assets/style.css`. Replace the rules at lines 422–430:
+Edit `cmd/evener-hub/assets/style.css`. Replace the rules at lines 422–430:
 
 Old:
 ```css
@@ -1007,13 +1007,13 @@ Notes:
 - [ ] **Step 3: Confirm no other partial expects the old running-indicator in input_status**
 
 ```bash
-grep -rn "input-status\|status-spacer\|class=\"running-indicator\"" cmd/serf-hub
+grep -rn "input-status\|status-spacer\|class=\"running-indicator\"" cmd/evener-hub
 ```
 
 Expected hits:
-- `cmd/serf-hub/templates/partials/workspace.html` — running indicator in `.controls-center` (Task 5).
-- `cmd/serf-hub/templates/partials/workspace.html` — `id="input-status"` hx-get hook (unchanged).
-- `cmd/serf-hub/assets/style.css` — the new `.input-status` rule.
+- `cmd/evener-hub/templates/partials/workspace.html` — running indicator in `.controls-center` (Task 5).
+- `cmd/evener-hub/templates/partials/workspace.html` — `id="input-status"` hx-get hook (unchanged).
+- `cmd/evener-hub/assets/style.css` — the new `.input-status` rule.
 - No hit on `status-spacer` (now gone).
 
 If `.running-indicator` shows up in `input_strip.html`, the template edit in Step 1 missed it — revisit.
@@ -1021,7 +1021,7 @@ If `.running-indicator` shows up in `input_strip.html`, the template edit in Ste
 - [ ] **Step 4: Build + load a session and watch the status row**
 
 ```bash
-go build ./cmd/serf-hub
+go build ./cmd/evener-hub
 ```
 
 Open a workspace. The status row should read `cwd <path>   branch <name>   ctx [bar] <numbers>   cost <amount>`, all in mono, with dim keys and full-strength values. No `·` separators. When a turn is active, the running indicator appears in the controls row above, NOT in the status row.
@@ -1035,7 +1035,7 @@ The status row is updated via `hx-get="/_partials/s/{{.ID}}/state"` every 2s. Wa
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/serf-hub/templates/partials/input_strip.html cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/templates/partials/input_strip.html cmd/evener-hub/assets/style.css
 git commit -m "ui: mono single-line composer status row with key/value spans (pass 6)"
 ```
 
@@ -1056,7 +1056,7 @@ Expected: clean build. No new lints or vet warnings.
 - [ ] **Step 2: Run all jstest suites**
 
 ```bash
-cd cmd/serf-hub/jstest && npm test
+cd cmd/evener-hub/jstest && npm test
 ```
 
 Expected: all suites pass. If anything in test-input-area or test-queue-and-drain fails, recheck the JSDOM shell adjustments from Tasks 4 and 5.
@@ -1064,7 +1064,7 @@ Expected: all suites pass. If anything in test-input-area or test-queue-and-drai
 - [ ] **Step 3: Go tests for any web/template tests that touch the composer**
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf && go test ./cmd/serf-hub/... -run "Workspace|Composer|Input|Status|Attachment"
+cd /home/jesse/git/prime-radiant/serf && go test ./cmd/evener-hub/... -run "Workspace|Composer|Input|Status|Attachment"
 ```
 
 Expected: pass. If a Go-side template smoke test fails because it greps for `.input-attachments` or `.controls-spacer` in the rendered HTML, update the assertion to match the new markup (the class is now `.composer-attachments` / `.controls-left/center/right`).

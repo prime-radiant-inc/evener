@@ -127,7 +127,7 @@ agent/session_tools.go              EDIT — retarget root-only tool gating
                                      / agentUsesRootOnlyManagementTools) to the job tools
 agent/session_init.go               EDIT — restore path reconstructs the job store and runs
                                      reconciliation
-cmd/serf/serve.go                   EDIT — the existing SubmitNotification wiring carries
+cmd/evener/serve.go                   EDIT — the existing SubmitNotification wiring carries
                                      job-notifications (mechanism unchanged)
 agent/execenv/execenv.go            EDIT — add a NEW optional StreamingExecutor interface (a type-assertion
                                      target), NOT a method on ExecutionEnvironment — so the 5 existing
@@ -1047,12 +1047,12 @@ functions; the inventory below was built by grepping the tree, not from memory.
   (`case "spawn_agent"` output-truncation limit → add `delegate`/job-tool cases); and
   `agent/internal/contextmgr/context_manager.go:583` (`case "spawn_agent"` compaction render that
   extracts `agent_id` → repoint to `delegate`/`job_id`).
-- **serf-tui renderers** keyed on the old tool names: `cmd/serf-tui/internal/msgrender/tool_renderers.go`,
-  `cmd/serf-tui/internal/msgrender/tool_bodies.go`, `cmd/serf-tui/internal/toolsummary/tool_summary.go`
+- **serf-tui renderers** keyed on the old tool names: `cmd/evener-tui/internal/msgrender/tool_renderers.go`,
+  `cmd/evener-tui/internal/msgrender/tool_bodies.go`, `cmd/evener-tui/internal/toolsummary/tool_summary.go`
   → repoint to the job tools.
 - **serf-hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
-  otherwise leave red): `cmd/serf-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
-  `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/serf-hub/assets/appwire.js`
+  otherwise leave red): `cmd/evener-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
+  `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/evener-hub/assets/appwire.js`
   (the `serf/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +
   job-tool names. (Earlier the inventory grepped only the Go tree — this is the JS consumer of the
   same wire notifications.)
@@ -1070,7 +1070,7 @@ they need explicit handling):**
   hub/web/tui clients. **Full repoint (decided): emit new job-lifecycle events + wire notifications
   and repoint `appprojector` + `appwire/types.go` + `server` + every UI renderer** — do NOT keep the
   subagent names as an alias. (Those events are not
-  switched on in `cmd/serf-hub/internal/hubcore/*` or `cmd/serf-tui/*` directly — but
+  switched on in `cmd/evener-hub/internal/hubcore/*` or `cmd/evener-tui/*` directly — but
   `server/appwire_runtime.go:500` **does** populate `appwire.SerfSubagentInfo` from the snapshot, so it
   is a gate-token consumer that must be repointed alongside `server/server.go`'s `SubagentStatusInfo`.)
 - `SubagentInfo` / `SubagentStatus` and the snapshot/status/render chain (`agent/status.go`,

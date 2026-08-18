@@ -16,7 +16,7 @@ import (
 //
 // It binds "127.0.0.1:0" and reads the real port back from ln.Addr(); it
 // never dials a fixed port (kata 68fm is the same lesson for serf-hub — see
-// cmd/serf-hub/main_ephemeral_port_test.go and docs/agentic-testing.md).
+// cmd/evener-hub/main_ephemeral_port_test.go and docs/agentic-testing.md).
 func TestFake429Smoke(t *testing.T) {
 	const retryAfter = "3" // deliberately not defaultRetryAfterSeconds ("8"),
 	// so a handler that ignores the configured value and always answers "8"
@@ -41,7 +41,7 @@ func TestFake429Smoke(t *testing.T) {
 	// already put the socket in the kernel's backlog before this goroutine
 	// was even started, so the first attempt should succeed, but retry on a
 	// short bounded interval rather than assume — the same idiom
-	// cmd/serf-hub/main_ephemeral_port_test.go uses for the same reason.
+	// cmd/evener-hub/main_ephemeral_port_test.go uses for the same reason.
 	var modelsResp *http.Response
 	var dialErr error
 	for range 50 {

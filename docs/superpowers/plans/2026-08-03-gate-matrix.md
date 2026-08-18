@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - Consumes: the existing `web-preflight` target and the three committed npm scripts `layoutguard`, `overflowguard`, and `spawnguard`.
-- Produces: `make test-web-browser`, which runs all three guards from `cmd/serf-hub/frontend`, reports each guard's exit status, runs every guard even if an earlier guard fails, and returns the first nonzero guard status.
+- Produces: `make test-web-browser`, which runs all three guards from `cmd/evener-hub/frontend`, reports each guard's exit status, runs every guard even if an earlier guard fails, and returns the first nonzero guard status.
 
 - [x] **Step 1: Establish the RED wiring case.**
 
@@ -51,7 +51,7 @@ Add this target after `test-web` and before the binary build targets:
 # Run every guard so one missing browser or failing case does not hide the
 # remaining guard's verdict; return the first nonzero status.
 test-web-browser: web-preflight
-	@set -u; cd cmd/serf-hub/frontend && \
+	@set -u; cd cmd/evener-hub/frontend && \
 	status=0; \
 	for guard in layoutguard overflowguard spawnguard; do \
 		if npm run $$guard; then \

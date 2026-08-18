@@ -6,7 +6,7 @@
 
 **Architecture:** Correlate `EventSkillActivated` in the appwire projector with the nearest same-turn `use_skill` call for the same skill. Store the grouped activation in `ThreadItem.Raw` under `skill_activation`; web and TUI clients consume the grouped command-execution item and continue rendering unmatched activations as system messages.
 
-**Tech Stack:** Go appwire projector and TUI reducer/renderers; browser JavaScript renderer tests under `cmd/serf-hub/jstest`; deterministic Go/JS tests only, no provider/network tests.
+**Tech Stack:** Go appwire projector and TUI reducer/renderers; browser JavaScript renderer tests under `cmd/evener-hub/jstest`; deterministic Go/JS tests only, no provider/network tests.
 
 ## Global Constraints
 
@@ -23,13 +23,13 @@
 
 - Modify `internal/appprojector/appwire_projection.go`: track recent `use_skill` candidate data and project correlated `EventSkillActivated` as an update to the existing command-execution item with `Raw.skill_activation`.
 - Modify `internal/appprojector/appwire_projection_test.go`: add projector tests for grouped, fallback, legacy-key, and ambiguity cases.
-- Modify `cmd/serf-hub/assets/renderer-tools.js`: teach the `use_skill` renderer to display grouped activation detail from `tool_state`.
-- Modify `cmd/serf-hub/jstest/test-tool-renderers.js`: add grouped and standalone web renderer regression tests.
-- Modify `cmd/serf-tui/internal/transcript/types.go`: add a raw metadata field to `ToolCallInfo` so TUI tests can assert grouped activation metadata is carried without creating a system-message duplicate.
-- Modify `cmd/serf-tui/internal/transcript/item.go`: carry `ThreadItem.Raw` into `ToolCallInfo` so grouped metadata is available to the renderer.
-- Modify `cmd/serf-tui/internal/transcript/reducer_test.go`: verify grouped `use_skill` command-execution item creates one tool message and no system-message duplicate.
-- Modify `cmd/serf-tui/internal/msgrender/message.go` or `tool_renderers.go` only if the TUI should display expanded activation text; otherwise keep the concise `✓ skill <name>` row.
-- Modify `cmd/serf-tui/internal/msgrender/tool_renderers_test.go` only if renderer output changes.
+- Modify `cmd/evener-hub/assets/renderer-tools.js`: teach the `use_skill` renderer to display grouped activation detail from `tool_state`.
+- Modify `cmd/evener-hub/jstest/test-tool-renderers.js`: add grouped and standalone web renderer regression tests.
+- Modify `cmd/evener-tui/internal/transcript/types.go`: add a raw metadata field to `ToolCallInfo` so TUI tests can assert grouped activation metadata is carried without creating a system-message duplicate.
+- Modify `cmd/evener-tui/internal/transcript/item.go`: carry `ThreadItem.Raw` into `ToolCallInfo` so grouped metadata is available to the renderer.
+- Modify `cmd/evener-tui/internal/transcript/reducer_test.go`: verify grouped `use_skill` command-execution item creates one tool message and no system-message duplicate.
+- Modify `cmd/evener-tui/internal/msgrender/message.go` or `tool_renderers.go` only if the TUI should display expanded activation text; otherwise keep the concise `✓ skill <name>` row.
+- Modify `cmd/evener-tui/internal/msgrender/tool_renderers_test.go` only if renderer output changes.
 
 ---
 
@@ -310,8 +310,8 @@ git commit -m "fix(appwire): group use_skill activation events"
 ### Task 3: Web Renderer Grouped Detail
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/renderer-tools.js`
-- Modify: `cmd/serf-hub/jstest/test-tool-renderers.js`
+- Modify: `cmd/evener-hub/assets/renderer-tools.js`
+- Modify: `cmd/evener-hub/jstest/test-tool-renderers.js`
 
 **Interfaces:**
 - Consumes: `TOOL_CALL_END.tool_state` JSON with `skill_activation.name` and `skill_activation.text`.
@@ -358,7 +358,7 @@ await scenario("standalone skill activation system message still renders", [
 Run the hub tool-renderer JS test directly:
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected before implementation: grouped test fails because `use_skill` has no body for `skill_activation`.
@@ -396,7 +396,7 @@ const useSkillRenderer = Object.assign({}, defaultRenderer, {
 - [ ] **Step 5: Run JS renderer tests**
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: PASS.
@@ -404,7 +404,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit web renderer change**
 
 ```bash
-git add cmd/serf-hub/assets/renderer-tools.js cmd/serf-hub/jstest/test-tool-renderers.js
+git add cmd/evener-hub/assets/renderer-tools.js cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "fix(web): show skill activation inside use_skill"
 ```
 
@@ -413,10 +413,10 @@ git commit -m "fix(web): show skill activation inside use_skill"
 ### Task 4: TUI Duplicate Check and Raw Carrying
 
 **Files:**
-- Modify: `cmd/serf-tui/internal/transcript/types.go`
-- Modify: `cmd/serf-tui/internal/transcript/item.go`
-- Modify: `cmd/serf-tui/internal/transcript/reducer_test.go`
-- Modify: `cmd/serf-tui/internal/msgrender/message.go`
+- Modify: `cmd/evener-tui/internal/transcript/types.go`
+- Modify: `cmd/evener-tui/internal/transcript/item.go`
+- Modify: `cmd/evener-tui/internal/transcript/reducer_test.go`
+- Modify: `cmd/evener-tui/internal/msgrender/message.go`
 
 **Interfaces:**
 - Consumes: grouped `commandExecution` item with `Raw.skill_activation`.
@@ -424,7 +424,7 @@ git commit -m "fix(web): show skill activation inside use_skill"
 
 - [ ] **Step 1: Add failing TUI reducer test**
 
-In `cmd/serf-tui/internal/transcript/reducer_test.go`, add:
+In `cmd/evener-tui/internal/transcript/reducer_test.go`, add:
 
 ```go
 func TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate(t *testing.T) {
@@ -508,7 +508,7 @@ If adding this, add `encoding/json` to `message.go` imports.
 - [ ] **Step 5: Run TUI transcript tests**
 
 ```bash
-go test ./cmd/serf-tui/internal/transcript -run 'TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate|Test.*SystemMessage|Test.*Tool' -count=1
+go test ./cmd/evener-tui/internal/transcript -run 'TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate|Test.*SystemMessage|Test.*Tool' -count=1
 ```
 
 Expected: PASS.
@@ -516,7 +516,7 @@ Expected: PASS.
 - [ ] **Step 6: Run TUI renderer tests**
 
 ```bash
-go test ./cmd/serf-tui/internal/msgrender -run 'TestUseSkillRenderer|TestRenderToolCall' -count=1
+go test ./cmd/evener-tui/internal/msgrender -run 'TestUseSkillRenderer|TestRenderToolCall' -count=1
 ```
 
 Expected: PASS. If Task 4 Step 4 added renderer behavior, add or update a renderer test to assert the activation text appears once when expanded.
@@ -524,7 +524,7 @@ Expected: PASS. If Task 4 Step 4 added renderer behavior, add or update a render
 - [ ] **Step 7: Commit TUI verification/carrying change**
 
 ```bash
-git add cmd/serf-tui/internal/transcript/types.go cmd/serf-tui/internal/transcript/item.go cmd/serf-tui/internal/transcript/reducer_test.go cmd/serf-tui/internal/msgrender/message.go cmd/serf-tui/internal/msgrender/message_test.go
+git add cmd/evener-tui/internal/transcript/types.go cmd/evener-tui/internal/transcript/item.go cmd/evener-tui/internal/transcript/reducer_test.go cmd/evener-tui/internal/msgrender/message.go cmd/evener-tui/internal/msgrender/message_test.go
 git commit -m "test(tui): cover grouped use_skill activation"
 ```
 
@@ -535,7 +535,7 @@ Only include `message.go` / `message_test.go` if changed.
 ### Task 5: AppWire Replay/Conversion Regression
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/appwire.js` if replay drops `item.raw`.
+- Modify: `cmd/evener-hub/assets/appwire.js` if replay drops `item.raw`.
 - Test: existing hub JS and TUI reducer tests.
 
 **Interfaces:**
@@ -544,7 +544,7 @@ Only include `message.go` / `message_test.go` if changed.
 
 - [ ] **Step 1: Verify appwire conversion already forwards raw**
 
-Confirm `cmd/serf-hub/assets/appwire.js` maps command-execution `item.raw` into `TOOL_CALL_END.tool_state` in all thread replay and item-completed paths. The expected code shape is:
+Confirm `cmd/evener-hub/assets/appwire.js` maps command-execution `item.raw` into `TOOL_CALL_END.tool_state` in all thread replay and item-completed paths. The expected code shape is:
 
 ```js
 tool_state: item.raw || ""
@@ -557,7 +557,7 @@ If any path drops `item.raw`, add a JS test fixture that feeds a thread/turn/ite
 - [ ] **Step 3: Run hub JS tests**
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: PASS.
@@ -565,7 +565,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit only if code/test changed**
 
 ```bash
-git add cmd/serf-hub/assets/appwire.js cmd/serf-hub/jstest/test-tool-renderers.js
+git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "test(appwire): preserve grouped tool raw metadata"
 ```
 
@@ -585,7 +585,7 @@ Skip this commit if Step 1 confirms no changes are needed.
 - [ ] **Step 1: Run focused Go tests**
 
 ```bash
-go test ./internal/appprojector ./cmd/serf-tui/internal/transcript ./cmd/serf-tui/internal/msgrender -count=1
+go test ./internal/appprojector ./cmd/evener-tui/internal/transcript ./cmd/evener-tui/internal/msgrender -count=1
 ```
 
 Expected: PASS.
@@ -593,7 +593,7 @@ Expected: PASS.
 - [ ] **Step 2: Run focused web renderer tests**
 
 ```bash
-node cmd/serf-hub/jstest/test-tool-renderers.js
+node cmd/evener-hub/jstest/test-tool-renderers.js
 ```
 
 Expected: PASS.
@@ -601,7 +601,7 @@ Expected: PASS.
 - [ ] **Step 3: Run broader deterministic package tests**
 
 ```bash
-go test ./cmd/serf-tui/... ./internal/appprojector -count=1
+go test ./cmd/evener-tui/... ./internal/appprojector -count=1
 ```
 
 Expected: PASS.

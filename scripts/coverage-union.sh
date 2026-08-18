@@ -9,7 +9,7 @@
 # replays. The gap between them is not small and it is not noise: this repo keeps
 # whole families of behavioural checks in `check*` functions that only a
 # serffuzz-tagged "program" fuzz target calls, so the packages using that pattern
-# read far lower on the test track than they really are (cmd/serf-hub/internal/
+# read far lower on the test track than they really are (cmd/evener-hub/internal/
 # appsource: 66.4% on the test track, 83.1% under its program target).
 #
 # Reading one track alone therefore either credits work that is not there or

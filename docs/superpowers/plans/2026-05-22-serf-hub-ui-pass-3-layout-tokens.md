@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace every padding/margin/gap/border-radius/transition/animation/z-index literal in `cmd/serf-hub/assets/style.css` with the design-language tokens (`--space-*`, `--radius-*`, `--motion-*`, `--z-*`) added in Pass 1, and add a `prefers-reduced-motion` override — without shifting a pixel.
+**Goal:** Replace every padding/margin/gap/border-radius/transition/animation/z-index literal in `cmd/evener-hub/assets/style.css` with the design-language tokens (`--space-*`, `--radius-*`, `--motion-*`, `--z-*`) added in Pass 1, and add a `prefers-reduced-motion` override — without shifting a pixel.
 
 **Architecture:** Pass 1 already introduced the layout/motion/z tokens on `:root`; Pass 2 migrated typography. This pass is a mechanical-but-careful find-and-replace at the value layer. Group rules by surface so each commit produces a coherent, reviewable diff and any visual regression points at a small blast radius. The `var(--pad)` alias is collapsed in a single dedicated task so cross-rule spacing stays consistent. After all literals are migrated and the `prefers-reduced-motion` rule is added, a final verification pass diff-checks the rendered app against the pre-merge snapshot in both themes and exercises the reduced-motion override.
 
-**Tech Stack:** CSS custom properties (already declared in `:root`), Go web server (`cmd/serf-hub`), htmx-served partials. No JS changes. No template changes.
+**Tech Stack:** CSS custom properties (already declared in `:root`), Go web server (`cmd/evener-hub`), htmx-served partials. No JS changes. No template changes.
 
 ---
 
@@ -98,7 +98,7 @@ When the original transition was just a duration (no easing keyword) and the tok
 
 Single file modified end-to-end:
 
-- **Modify:** `cmd/serf-hub/assets/style.css` (~1037 lines as of pre-Pass-3). Pass 1 added tokens on `:root`; Pass 2 migrated typography. No new files.
+- **Modify:** `cmd/evener-hub/assets/style.css` (~1037 lines as of pre-Pass-3). Pass 1 added tokens on `:root`; Pass 2 migrated typography. No new files.
 
 All edits are pure value substitutions. No selector additions, no rule reordering, no JS changes, no template changes.
 
@@ -111,7 +111,7 @@ Every spacing/radius/motion task uses the same verification loop. Repeating the 
 1. Build and run the app:
    ```bash
    cd /home/jesse/git/prime-radiant/serf
-   go build -o /tmp/serf-hub ./cmd/serf-hub
+   go build -o /tmp/serf-hub ./cmd/evener-hub
    /tmp/serf-hub --addr 127.0.0.1:9180 &
    ```
 2. Open `http://127.0.0.1:9180` in a browser with DevTools open. Confirm:
@@ -130,10 +130,10 @@ The **first** task already establishes a baseline screenshot set. Subsequent tas
 
 - [ ] **Step 1: Read context**
 
-Confirm pre-Pass-3 state of `cmd/serf-hub/assets/style.css` — Pass 1 tokens present on `:root`, Pass 2 typography migrated, layout literals NOT yet migrated. Run:
+Confirm pre-Pass-3 state of `cmd/evener-hub/assets/style.css` — Pass 1 tokens present on `:root`, Pass 2 typography migrated, layout literals NOT yet migrated. Run:
 
 ```bash
-grep -cE "var\(--space-" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -cE "var\(--space-" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: low single digits (only places where Pass 1 token definitions exist in tooltips/comments). If 50+, Pass 3 is already in progress — STOP and reconcile.
@@ -175,12 +175,12 @@ No code changes in this task. Skip the commit — the next task starts the actua
 This is the task the spec calls out: replace every `var(--pad)` with `var(--space-4)` in a single commit. Both resolve to 12px, so visuals don't move; subsequent tasks no longer have to think about two parallel "12px" tokens.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` (every line containing `var(--pad)` — at least: `120-124`, `134-135`, `139`, `144`, `152`, `202-211`, `218-222`, `229-236`)
+- Modify: `cmd/evener-hub/assets/style.css` (every line containing `var(--pad)` — at least: `120-124`, `134-135`, `139`, `144`, `152`, `202-211`, `218-222`, `229-236`)
 
 - [ ] **Step 1: Read context**
 
 ```bash
-grep -n "var(--pad)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -n "var(--pad)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Confirm every match is a layout value (padding, margin, gap). Expect ~20-25 matches in the legacy landing-page and `#status-bar`/`#transcript`/`#input-area` blocks.
@@ -203,7 +203,7 @@ After Replacement 1, the file now contains `calc(var(--space-4) * 2)` and `calc(
 - [ ] **Step 3: Verify**
 
 ```bash
-grep -n "var(--pad)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -n "var(--pad)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero matches. Note: the **definition** of `--pad: 12px;` on `:root` (line 33) stays — it remains a legacy alias until the post-migration cleanup. Only **usages** are migrated.
@@ -214,7 +214,7 @@ Run "How to Verify" against all 10 baseline screenshots. Confirm no pixel diff i
 
 ```bash
 cd /home/jesse/git/prime-radiant/serf
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: collapse var(--pad) usages to var(--space-4)
 
@@ -236,7 +236,7 @@ EOF
 Covers the legacy landing-page rules and the generic surfaces that aren't part of the app shell.
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:120-247` (page-header, body:not(.app) main, .cols, section.panel, .row, top-level button/input rules, #status-bar, #transcript, .msg, #input-area, #input-buttons, .hint, .empty, html/body.app shell rules, .sidebar-loading, .workspace-empty)
+- Modify: `cmd/evener-hub/assets/style.css:120-247` (page-header, body:not(.app) main, .cols, section.panel, .row, top-level button/input rules, #status-bar, #transcript, .msg, #input-area, #input-buttons, .hint, .empty, html/body.app shell rules, .sidebar-loading, .workspace-empty)
 
 - [ ] **Step 1: Read context**
 
@@ -466,7 +466,7 @@ Run "How to Verify" against screenshots 00-landing, 02-workspace-empty, 03-works
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate top-level layout spacing to --space-* tokens
 
@@ -486,7 +486,7 @@ EOF
 ## Task 4: Migrate Sidebar Spacing
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:254-330` (`.sidebar`, `.sidebar-header`, `.sidebar-action`, `.sidebar-section`, `.sidebar-section-header`, `.project-header`, row variants, status dots, project glyphs, fork banner)
+- Modify: `cmd/evener-hub/assets/style.css:254-330` (`.sidebar`, `.sidebar-header`, `.sidebar-action`, `.sidebar-section`, `.sidebar-section-header`, `.project-header`, row variants, status dots, project glyphs, fork banner)
 
 - [ ] **Step 1: Read context**
 
@@ -603,7 +603,7 @@ Run "How to Verify." Compare with screenshots 03 and 08 (mobile-sidebar). Sideba
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate sidebar spacing to --space-* tokens
 
@@ -623,7 +623,7 @@ EOF
 ## Task 5: Migrate Workspace-Header Spacing
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:332-356` (`.workspace-header`, `.workspace-title-row`, `.workspace-title`, `.workspace-meta`, `.workspace-actions`, `.panel-toggle`, `.panel-toggle-icon`, `.panel-toggle-label`, `.header-action`, `.header-action-danger`, `.rule-dot`, `.status-pill`)
+- Modify: `cmd/evener-hub/assets/style.css:332-356` (`.workspace-header`, `.workspace-title-row`, `.workspace-title`, `.workspace-meta`, `.workspace-actions`, `.panel-toggle`, `.panel-toggle-icon`, `.panel-toggle-label`, `.header-action`, `.header-action-danger`, `.rule-dot`, `.status-pill`)
 
 - [ ] **Step 1: Read context**
 
@@ -681,7 +681,7 @@ Run "How to Verify" against 02, 03, 04. Title row, meta line, action chrome all 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate workspace-header spacing to --space-* tokens
 
@@ -700,7 +700,7 @@ EOF
 ## Task 6: Migrate Conversation, Tool-Call, and Diff Spacing
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:357-573` (`.conversation`, `.user-message`, `.user-message .pill`, `.user-message-actions`, `.user-message-images`, `.user-image-card`, `.user-image-name`, `.image-lightbox`, `.assistant-message`, `.tool-call`, `.tool-call-cluster`, `.tool-status` family, `.diff-body`, `.tool-body`, `.shell-output`, `.cheap-tool-args/output`, task/fetch/search bodies, `.subagent-reference`, `.diagnostic`, `.diagnostic-header`, `.diagnostic-badge`, `.diagnostic-hint`, `.banner`, `.system-line`, `.task-system-*`, `.steering`)
+- Modify: `cmd/evener-hub/assets/style.css:357-573` (`.conversation`, `.user-message`, `.user-message .pill`, `.user-message-actions`, `.user-message-images`, `.user-image-card`, `.user-image-name`, `.image-lightbox`, `.assistant-message`, `.tool-call`, `.tool-call-cluster`, `.tool-status` family, `.diff-body`, `.tool-body`, `.shell-output`, `.cheap-tool-args/output`, task/fetch/search bodies, `.subagent-reference`, `.diagnostic`, `.diagnostic-header`, `.diagnostic-badge`, `.diagnostic-hint`, `.banner`, `.system-line`, `.task-system-*`, `.steering`)
 
 This is the largest task by line count. The conversation is the most-seen surface; verify carefully.
 
@@ -938,7 +938,7 @@ Run "How to Verify" against screenshot 03-workspace-conversation. Diff body line
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate conversation + tool-call spacing to --space-* tokens
 
@@ -960,7 +960,7 @@ EOF
 ## Task 7: Migrate Composer Spacing
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:359-437` (`.workspace-input`, `.input-attachments`, `.queue-preview*`, `.attachment-chip*`, `.composer-attachments*`, `.composer-attachment*`, `.input-card`, `.message-input`, `.input-controls`, `.controls-spacer`, `.running-indicator`, `.running-dot`, `.input-btn*`, `.input-chip`, `.chip-caret`, `.input-status*`, `.context*`, `.cost`, `.fork-dialog*`)
+- Modify: `cmd/evener-hub/assets/style.css:359-437` (`.workspace-input`, `.input-attachments`, `.queue-preview*`, `.attachment-chip*`, `.composer-attachments*`, `.composer-attachment*`, `.input-card`, `.message-input`, `.input-controls`, `.controls-spacer`, `.running-indicator`, `.running-dot`, `.input-btn*`, `.input-chip`, `.chip-caret`, `.input-status*`, `.context*`, `.cost`, `.fork-dialog*`)
 
 The composer is the second-most-touched surface. Migrate the entire input strip together so the bottom-of-page feel stays coherent.
 
@@ -1131,7 +1131,7 @@ Run "How to Verify" against screenshot 03 (composer at the bottom). Verify: comp
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate composer spacing to --space-* tokens
 
@@ -1152,7 +1152,7 @@ EOF
 The remaining surfaces, batched. Each is small individually; together they cover the rest of the file (~lines 598-1036).
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css:598-1036`. Specifically:
+- Modify: `cmd/evener-hub/assets/style.css:598-1036`. Specifically:
   - Spawn surface (598-663): `.spawn-pane`, `.spawn-form`, `.spawn-prompt`, `.spawn-subtitle`, `.spawn-chips`, `.chip`, `.chip-label/value/caret/mode`, `.chip-picker*`, `.spawn-input*`, `.spawn-attach-row/btn`, `.spawn-advanced*`, `.spawn-actions`, `.spawn-btn`, `.spawn-recent*`
   - Pickers (666-686): `.chip-picker-wide`, `.chip-picker-search`, `.chip-picker-body`, providers/models, `.chip-picker-dir*`, `.chip-picker-empty`
   - Search palette (688-727): `.search-dialog*`, `.search-row*`, `.search-section-header`, `.search-empty`, `.search-cmd*`, `.search-help*`, `.search-hit`, palette-error
@@ -1214,7 +1214,7 @@ Use Edit per rule. The mappings (literals → tokens):
 
 Then commit:
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate spawn surface spacing to --space-* tokens
 
@@ -1260,7 +1260,7 @@ EOF
 
 Commit:
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate picker + search palette spacing to --space-* tokens
 
@@ -1367,7 +1367,7 @@ Mobile media block (lines 875-986):
 
 Commit:
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate settings/credentials/tasks/mobile spacing to --space-* tokens
 
@@ -1396,12 +1396,12 @@ Run "How to Verify" against ALL 10 baseline screenshots. Settings-general, setti
 ## Task 9: Migrate Border-Radius Literals to `--radius-*`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` — every line containing a `border-radius:` literal.
+- Modify: `cmd/evener-hub/assets/style.css` — every line containing a `border-radius:` literal.
 
 - [ ] **Step 1: Read context**
 
 ```bash
-grep -nE "border-radius:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "border-radius:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expect ~50 matches.
@@ -1435,13 +1435,13 @@ Mapping (apply all):
 - [ ] **Step 3: Verify**
 
 ```bash
-grep -nE "border-radius:\s+\d" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "border-radius:\s+\d" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero matches. Only `border-radius: var(...)` or `border-radius: 0` or `border-radius: 50%` (if any were missed by the `replace_all`) remain.
 
 ```bash
-grep -nE "border-radius:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | grep -v "var(--radius-"
+grep -nE "border-radius:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | grep -v "var(--radius-"
 ```
 
 Expected: at most lines containing `border-radius: 0` (mobile search-dialog full-screen override).
@@ -1451,7 +1451,7 @@ Run "How to Verify" against all 10 baseline screenshots. Radii are 1px-2px shift
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate border-radius literals to --radius-* tokens
 
@@ -1471,12 +1471,12 @@ EOF
 ## Task 10: Migrate Transition + Animation Durations to `--motion-*`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` — every line containing `transition:`, `animation:`, or `@keyframes`-adjacent timing.
+- Modify: `cmd/evener-hub/assets/style.css` — every line containing `transition:`, `animation:`, or `@keyframes`-adjacent timing.
 
 - [ ] **Step 1: Read context**
 
 ```bash
-grep -nE "(transition:|animation:|\b\d+\.?\d*m?s\b)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "(transition:|animation:|\b\d+\.?\d*m?s\b)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expect: `transition: color 0.1s, background 0.1s` (project-new-btn, project-gear-btn); `transition: border-color 0.15s` (input-card); `transition: background 0.1s, color 0.1s, border-color 0.1s` (panel-toggle); `transition: background 0.1s, color 0.1s` (header-action); `transition: transform 0.2s ease` (mobile sidebar); `transition: transform 0.15s` (task-row-chevron); `transition: outline-color 0.4s ease-out` (search-hit); `animation: search-hit-flash 2s ease-out` (search-hit); `animation: optimistic-pulse 1.4s ease-in-out infinite` (optimistic-pending).
@@ -1501,7 +1501,7 @@ Expect: `transition: color 0.1s, background 0.1s` (project-new-btn, project-gear
 - [ ] **Step 3: Verify**
 
 ```bash
-grep -nE "(transition:|animation:)" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | grep -v "var(--motion-\|var(--pulse-cycle\|var(--flash-cycle"
+grep -nE "(transition:|animation:)" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | grep -v "var(--motion-\|var(--pulse-cycle\|var(--flash-cycle"
 ```
 
 Expected: zero matches. Only token-using transitions/animations remain.
@@ -1511,7 +1511,7 @@ Run "How to Verify" against all 10 screenshots. Static screenshots will be ident
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate transitions and animations to --motion-* tokens
 
@@ -1532,12 +1532,12 @@ EOF
 ## Task 11: Migrate Z-Index Literals to `--z-*`
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` — every line containing `z-index:`.
+- Modify: `cmd/evener-hub/assets/style.css` — every line containing `z-index:`.
 
 - [ ] **Step 1: Read context**
 
 ```bash
-grep -nE "z-index:" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "z-index:" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expect: `.image-lightbox z-index: 200`; `.chip-picker z-index: 50`; `.details-panel z-index: 100`; `#sidebar z-index: 200` (mobile); `body[data-sidebar-open]::before z-index: 199` (mobile scrim); `#mobile-hamburger z-index: 150`; `.search-dialog-header z-index: 1` (mobile sticky).
@@ -1574,7 +1574,7 @@ The new order **changes one relationship**: the `.chip-picker` was at 50, below 
 - [ ] **Step 3: Verify**
 
 ```bash
-grep -nE "z-index:\s+\d" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "z-index:\s+\d" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero matches with raw digits. Only `z-index: var(--z-*)` remains.
@@ -1584,7 +1584,7 @@ Run "How to Verify" against screenshots 03 (with a chip-picker open if possible)
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: migrate z-index literals to --z-* tokens
 
@@ -1604,14 +1604,14 @@ EOF
 ## Task 12: Add `prefers-reduced-motion` Override
 
 **Files:**
-- Modify: `cmd/serf-hub/assets/style.css` — append at end of file (after the `@keyframes optimistic-pulse` block, line ~1036).
+- Modify: `cmd/evener-hub/assets/style.css` — append at end of file (after the `@keyframes optimistic-pulse` block, line ~1036).
 
 - [ ] **Step 1: Read context**
 
 Read the last 30 lines of `style.css`:
 
 ```bash
-tail -30 /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+tail -30 /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Confirm the file ends with the optimistic-pulse keyframes block.
@@ -1648,12 +1648,12 @@ Build + run the app (see "How to Verify"). With DevTools open:
 4. The running-dot pulse should be visually static (no breathing).
 5. The mobile sidebar slide-in should be instant.
 
-Also confirm: `grep -c "!important" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css` returns exactly **3** (the three `!important` declarations inside the new rule). No other `!important` exists in the file (verify with `grep -nv "1ms !important\|count: 1 !important" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | grep "!important"` — expected: zero matches).
+Also confirm: `grep -c "!important" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css` returns exactly **3** (the three `!important` declarations inside the new rule). No other `!important` exists in the file (verify with `grep -nv "1ms !important\|count: 1 !important" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | grep "!important"` — expected: zero matches).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: add prefers-reduced-motion override
 
@@ -1714,7 +1714,7 @@ In Chrome DevTools rendering tab, toggle "Emulate CSS media feature prefers-redu
 Confirm via `grep` that exactly three `!important` declarations live in the file (all inside the reduced-motion block):
 
 ```bash
-grep -n "!important" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -n "!important" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: 3 lines, all inside `@media (prefers-reduced-motion: reduce)`.
@@ -1722,10 +1722,10 @@ Expected: 3 lines, all inside `@media (prefers-reduced-motion: reduce)`.
 - [ ] **Step 5: Confirm token coverage**
 
 ```bash
-grep -cE "var\(--space-" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
-grep -cE "var\(--radius-" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
-grep -cE "var\(--motion-" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
-grep -cE "var\(--z-" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -cE "var\(--space-" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
+grep -cE "var\(--radius-" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
+grep -cE "var\(--motion-" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
+grep -cE "var\(--z-" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: hundreds of `--space-*`, ~50 `--radius-*`, ~10 `--motion-*` + a few `--pulse-cycle`/`--flash-cycle`, ~7 `--z-*`.
@@ -1734,25 +1734,25 @@ Conversely, residual literals:
 
 ```bash
 # Spacing literals in padding/margin/gap shorthand — exclude 0, 1px (hairline), and known geometry literals
-grep -nE "(padding|margin|gap|top|left|right|bottom):\s*-?\d+px" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css | grep -vE ":\s*(0|1px|220px|260px|260px|320px|360px|480px|520px|560px|640px|680px|720px|760px|80px|36px|48px|44px|32px|18px|14px|12px|7px|6px|18px|22px)\b"
+grep -nE "(padding|margin|gap|top|left|right|bottom):\s*-?\d+px" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css | grep -vE ":\s*(0|1px|220px|260px|260px|320px|360px|480px|520px|560px|640px|680px|720px|760px|80px|36px|48px|44px|32px|18px|14px|12px|7px|6px|18px|22px)\b"
 ```
 
 Expected: zero or near-zero matches. Any remaining literal MUST be documented in this plan (textarea min-height, sidebar width, settings nav width, etc. — content sizing, not layout rhythm) or be a missed substitution.
 
 ```bash
-grep -nE "border-radius:\s*\d" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "border-radius:\s*\d" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero, OR `border-radius: 0` (mobile search-dialog full-screen).
 
 ```bash
-grep -nE "z-index:\s*\d" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "z-index:\s*\d" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero.
 
 ```bash
-grep -nE "(transition|animation):[^;]*\b\d+\.?\d*m?s\b" /home/jesse/git/prime-radiant/serf/cmd/serf-hub/assets/style.css
+grep -nE "(transition|animation):[^;]*\b\d+\.?\d*m?s\b" /home/jesse/git/prime-radiant/serf/cmd/evener-hub/assets/style.css
 ```
 
 Expected: zero (every duration is now a token).
@@ -1762,7 +1762,7 @@ Expected: zero (every duration is now a token).
 If verification passed clean, no commit needed — the prior 11 commits stand. If a missed literal turned up, fix it inline:
 
 ```bash
-git add cmd/serf-hub/assets/style.css
+git add cmd/evener-hub/assets/style.css
 git commit -m "$(cat <<'EOF'
 ui: clean up residual layout literals found in Pass 3 verification
 

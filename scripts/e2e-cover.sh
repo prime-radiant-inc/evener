@@ -48,8 +48,8 @@ echo "==> building web UI (frontend/dist with Vite hashed assets)"
 make build-web >/dev/null 2>&1 || { echo "build-web failed" >&2; exit 1; }
 
 echo "==> building instrumented binaries (go build -cover)"
-go build -cover -o "$serf" ./cmd/serf || { echo "build serf failed" >&2; exit 1; }
-go build -cover -o "$tui" ./cmd/serf-tui || { echo "build serf-tui failed" >&2; exit 1; }
+go build -cover -o "$serf" ./cmd/evener || { echo "build serf failed" >&2; exit 1; }
+go build -cover -o "$tui" ./cmd/evener-tui || { echo "build serf-tui failed" >&2; exit 1; }
 
 # run CMD under GOCOVERDIR, ignoring its exit code (error paths are on purpose).
 run() { GOCOVERDIR="$covdir" "$@" >/dev/null 2>&1 || true; }
@@ -84,7 +84,7 @@ run "$tui" --bogus
 if command -v curl >/dev/null 2>&1; then
 	echo "==> driving the web-hub HTTP battery"
 	hub="$workdir/serf-hub"
-	if go build -cover -o "$hub" ./cmd/serf-hub 2>/dev/null; then
+	if go build -cover -o "$hub" ./cmd/evener-hub 2>/dev/null; then
 		hub_run="$workdir/hubrun"; mkdir -p "$hub_run"
 		port=$(( (RANDOM % 2000) + 9300 ))
 		GOCOVERDIR="$covdir" HOME="$workdir" "$hub" --addr "127.0.0.1:$port" >"$workdir/hub.log" 2>&1 &
@@ -95,9 +95,9 @@ if command -v curl >/dev/null 2>&1; then
 
 		# Extract real asset paths from the built index.html to verify /webassets/ routes work.
 		# Vite outputs hashed filenames like /webassets/index-<hash>.js; grep index.html to find them.
-		if [ -f "cmd/serf-hub/frontend/dist/index.html" ]; then
+		if [ -f "cmd/evener-hub/frontend/dist/index.html" ]; then
 			# Extract all /webassets/* paths from index.html (e.g., src="/webassets/index-CmdW429A.js")
-			webasset_routes=$(grep -oE '"/webassets/[^"]+' "cmd/serf-hub/frontend/dist/index.html" | tr -d '"' | sort -u)
+			webasset_routes=$(grep -oE '"/webassets/[^"]+' "cmd/evener-hub/frontend/dist/index.html" | tr -d '"' | sort -u)
 		else
 			webasset_routes=""
 		fi
@@ -146,7 +146,7 @@ fi
 if $run_tui; then
 	if command -v tmux >/dev/null 2>&1; then
 		echo "==> driving the TUI tmux battery under coverage (slow)"
-		SERF_E2E_COVER="$covdir" go test -run 'TmuxE2E' -count=1 -timeout 20m ./cmd/serf-tui/ >"$workdir/tui.log" 2>&1 \
+		SERF_E2E_COVER="$covdir" go test -run 'TmuxE2E' -count=1 -timeout 20m ./cmd/evener-tui/ >"$workdir/tui.log" 2>&1 \
 			|| echo "    (some tmux tests failed; coverage still collected — see $workdir/tui.log)"
 	else
 		echo "==> --tui requested but tmux not installed; skipping"
@@ -157,7 +157,7 @@ e2e_prof="$workdir/e2e.prof"
 go tool covdata textfmt -i="$covdir" -o="$e2e_prof" || { echo "covdata textfmt failed" >&2; exit 1; }
 echo
 echo "==> e2e binary coverage by cmd/* package:"
-go tool covdata percent -i="$covdir" 2>/dev/null | grep -E 'cmd/serf|cmdutil|hubapi|rendezvous' | sort
+go tool covdata percent -i="$covdir" 2>/dev/null | grep -E 'cmd/evener|cmdutil|hubapi|rendezvous' | sort
 
 if $merge_unit; then
 	echo

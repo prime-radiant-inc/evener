@@ -17,7 +17,7 @@
 - Every production package needs a local registered fuzz surface before the final gate. Do not omit packages or fabricate zero profiles.
 - Global profiles are package-local self-coverage profiles. Never use a cross-package -coverpkg=./... merge.
 - Exclusions are whole-file only and limited to generated or unavailable-platform source. No business, orchestration, package, directory, or function exclusions.
-- The controller serializes edits to scripts/run-fuzz.sh, scripts/fuzz-coverage-global.sh, scripts/fuzzcov-global-floors.txt, Makefile, and cmd/serf-fuzzcov.
+- The controller serializes edits to scripts/run-fuzz.sh, scripts/fuzz-coverage-global.sh, scripts/fuzzcov-global-floors.txt, Makefile, and cmd/evener-fuzzcov.
 - Do not bless floors until raw coverage already exceeds 95.0%. Floors never decrease.
 - Read docs/testing.md before changing tests. Use TDD: focused red, smallest green change, scoped verification, then the package gate.
 
@@ -30,10 +30,10 @@
 | agent/fork.go | Public ForkSession and its internal Afero-backed persistence seam |
 | agent/schema/snapshot.go | Session-meta persistence over the provided filesystem |
 | agent/transcript/transcript.go | Transcript-writer construction over the provided filesystem |
-| cmd/serf-fuzzregistry/main.go | Parse target manifest, discover local fuzz declarations, validate identity |
-| cmd/serf-fuzzregistry/main_test.go | Synthetic workspace and registry validation tests |
-| cmd/serf-fuzzcov/global.go | Package-profile union, file exclusions, raw threshold accounting |
-| cmd/serf-fuzzcov/global_test.go | Global accounting and exclusion validation tests |
+| cmd/evener-fuzzregistry/main.go | Parse target manifest, discover local fuzz declarations, validate identity |
+| cmd/evener-fuzzregistry/main_test.go | Synthetic workspace and registry validation tests |
+| cmd/evener-fuzzcov/global.go | Package-profile union, file exclusions, raw threshold accounting |
+| cmd/evener-fuzzcov/global_test.go | Global accounting and exclusion validation tests |
 | scripts/run-fuzz.sh | Authoritative native and rapid target manifest |
 | scripts/fuzz-registry-check.sh | Thin wrapper around serf-fuzzregistry |
 | scripts/fuzz-coverage-global.sh | Replay validated local targets and emit package profiles |
@@ -106,7 +106,7 @@ git commit -m "fix(agent): make fork persistence failures deterministic"
 ### Task 2: Make the Fuzz Target Registry Machine-Checked
 
 **Files:**
-- Create: cmd/serf-fuzzregistry/main.go, cmd/serf-fuzzregistry/main_test.go
+- Create: cmd/evener-fuzzregistry/main.go, cmd/evener-fuzzregistry/main_test.go
 - Create: scripts/fuzz-registry-check.sh
 - Modify: go.mod, scripts/run-fuzz.sh, Makefile
 - Modify: agent/registry_schemafuzz_test.go, agent/lifecycle_seqfuzz_test.go,
@@ -140,7 +140,7 @@ if err := CheckTargets(want, want); err != nil { t.Fatal(err) }
 
 Run:
 ~~~sh
-go test ./cmd/serf-fuzzregistry -run Test -count=1
+go test ./cmd/evener-fuzzregistry -run Test -count=1
 ~~~
 
 Expected before implementation: the package does not build.
@@ -159,7 +159,7 @@ rows remain support checks and do not count toward global coverage.
 The wrapper writes the run-fuzz manifest to a temporary file and executes:
 
 ~~~sh
-go run ./cmd/serf-fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
+go run ./cmd/evener-fuzzregistry --repo-root "$repo_root" --registry "$registry" --check --emit-plan
 ~~~
 
 Add make fuzz-registry-check. It may not run search, ordinary tests, or network traffic.
@@ -179,7 +179,7 @@ metadata; Task 4 consumes this exact four-column schema.
 Run:
 ~~~sh
 make fuzz-registry-check
-git add go.mod go.sum cmd/serf-fuzzregistry scripts/fuzz-registry-check.sh scripts/run-fuzz.sh Makefile agent internal/appserver
+git add go.mod go.sum cmd/evener-fuzzregistry scripts/fuzz-registry-check.sh scripts/run-fuzz.sh Makefile agent internal/appserver
 git commit -m "test(fuzz): audit registered fuzz targets"
 ~~~
 
@@ -188,8 +188,8 @@ Expected: it names the fourteen missing agent entries until Task 5 adds them, th
 ### Task 3: Build Strict Global Profile Accounting And Exclusion Validation
 
 **Files:**
-- Create: cmd/serf-fuzzcov/global.go, cmd/serf-fuzzcov/global_test.go
-- Modify: cmd/serf-fuzzcov/main.go, cmd/serf-fuzzcov/main_test.go
+- Create: cmd/evener-fuzzcov/global.go, cmd/evener-fuzzcov/global_test.go
+- Modify: cmd/evener-fuzzcov/main.go, cmd/evener-fuzzcov/main_test.go
 - Create: scripts/fuzzcov-global-exclusions.txt
 - Modify: scripts/fuzzcov-global-floors.txt
 
@@ -232,8 +232,8 @@ Resolve each entry to one compiled production file. Reject duplicate, missing, z
 
 Run:
 ~~~sh
-go test ./cmd/serf-fuzzcov -run 'Test.*Global|Test.*Exclusion' -count=1
-git add cmd/serf-fuzzcov scripts/fuzzcov-global-exclusions.txt scripts/fuzzcov-global-floors.txt
+go test ./cmd/evener-fuzzcov -run 'Test.*Global|Test.*Exclusion' -count=1
+git add cmd/evener-fuzzcov scripts/fuzzcov-global-exclusions.txt scripts/fuzzcov-global-floors.txt
 git commit -m "test(fuzz): enforce strict global coverage accounting"
 ~~~
 

@@ -129,7 +129,7 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
     (`load_client.go:77`) always uses `ResolveProfileFromConfig`.
 - **Hub materialization** — `cmdutil.MaterializeProvidersConfig`
   (`cmdutil/materialize.go:54`) seeds and **atomically writes** `providers.toml`
-  (temp-file + rename, mode `0644`). The hub (`cmd/serf-hub/main.go:120–131`)
+  (temp-file + rename, mode `0644`). The hub (`cmd/evener-hub/main.go:120–131`)
   calls this once on startup when the file is absent, then passes the path to
   spawned children via `SERF_PROVIDERS_CONFIG` so they load the same file instead
   of re-seeding. A failed write is a hard error.
@@ -574,11 +574,11 @@ name.
 
 Pre-1a, `WithModel` rebuilt a fresh profile via a hardcoded vendor switch. Now
 the **session** owns cross-provider/instance switching, via a resolver injected
-at construction (cycle-free: `cmd/serf` builds the closure; `agent` just holds
+at construction (cycle-free: `cmd/evener` builds the closure; `agent` just holds
 the field):
 
 - `SessionConfig.ResolveProfile func(ref) (ProviderProfile, error)`
-  (`session.go:201`), wired in `cmd/serf/serve.go` + `run.go` to
+  (`session.go:201`), wired in `cmd/evener/serve.go` + `run.go` to
   `cmdutil.SelectProfile`.
 - `Session.resolveProfileForRef(ref)` (`session.go:1283`): if `decidePrefixAction`
   classifies the ref as a cross-provider switch **and** a resolver is set → call
@@ -767,7 +767,7 @@ provider/model>`, surviving reload and daemon restart.
   in a subprocess (companion doc).
 - `resp.Provider` + error labels — stamped centrally to the instance name.
 - Resume: session meta persists `ProfileID`; the hub now **passes it through**
-  (`resumeRequestForConfig`, `cmd/serf-hub/app_rpc.go`) and errors on empty —
+  (`resumeRequestForConfig`, `cmd/evener-hub/app_rpc.go`) and errors on empty —
   the old hardcoded allowlist was removed (downstream `SelectProfile` validates).
 
 **Behavior (the TAG — `profile.BehaviorTag()`):**
@@ -784,7 +784,7 @@ provider/model>`, surviving reload and daemon restart.
   error's `BehaviorTag()` (falls back to `Provider()` when the tag is empty).
 - Provider-failure diagnostics classify on the structured `llm.Error` (provider +
   tag), not a hardcoded name list (`agent/diagnostic`,
-  `cmd/serf-hub/frontend/src/panes/session/transcript/turnFailure.ts`).
+  `cmd/evener-hub/frontend/src/panes/session/transcript/turnFailure.ts`).
 
 ## Phase 1a, 1b & 1c done / Phase 2 next
 
@@ -799,7 +799,7 @@ full-tree sweep.
 `SetNameToTag` wired from the config, per-instance OAuth (companion doc), the
 `openai` `apiStyle` recipe + custom base-URL instances + the `openai-compatible`
 fold-in, config-aware launch-check/serve, and the picker/launch **behavior**
-filters re-keyed off the tag (`launch_check.go:146`, `cmd/serf-hub/web.go:2035`,
+filters re-keyed off the tag (`launch_check.go:146`, `cmd/evener-hub/web.go:2035`,
 `app_rpc.go launchProviderAllowsUnreportedModels:1543`). The design lives in
 [`docs/superpowers/specs/2026-05-29-provider-type-instance-model-design.md`](superpowers/specs/2026-05-29-provider-type-instance-model-design.md).
 

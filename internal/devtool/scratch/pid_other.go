@@ -7,6 +7,6 @@ package scratch
 // as alive and nothing is ever reclaimed here: the mistake this package must
 // never make is deleting a live run's scratch. The dev tooling runs on
 // linux/darwin; this keeps the ports that import this library building
-// everywhere, the way cmd/serf-test-dev-tooling's wave_other.go does.
+// everywhere, the way cmd/evener-test-dev-tooling's wave_other.go does.
 
 func pidAlive(int) bool { return true }

@@ -72,8 +72,8 @@ implement `ModelLister`; it is not reported as a generic network failure.
 ### Task 1: Add the shared contract and backend probe
 
 **Files:** `appwire/types.go`, `appwire/protocol.go`, `cmdutil/load_client.go`,
-`cmd/serf-hub/app_auth.go` or a focused credential-probe file,
-`cmd/serf-hub/app_rpc.go`, and their focused tests.
+`cmd/evener-hub/app_auth.go` or a focused credential-probe file,
+`cmd/evener-hub/app_rpc.go`, and their focused tests.
 
 **Tests first:** Add RED coverage for explicit config-path loading, stored
 instance credentials, supported type-environment fallback, OAuth/header/base-URL
@@ -98,16 +98,16 @@ result or captured log contains them.
    safe error properties, close the client, and share one in-flight result per
    normalized instance name. Treat unsupported `ModelLister` explicitly.
 4. Regenerate `docs/appwire-protocol.md` and
-   `cmd/serf-hub/frontend/src/protocol/types.gen.ts`.
+   `cmd/evener-hub/frontend/src/protocol/types.gen.ts`.
 
 **Commit:** `feat(credentials): add shared credential verification RPC`
 
 ### Task 2: Add the web Credentials action
 
 **Files:**
-`cmd/serf-hub/frontend/src/stores/credentials.ts`,
-`cmd/serf-hub/frontend/src/panes/settings/credentials/CredentialsSection.tsx`,
-`cmd/serf-hub/frontend/src/panes/settings/credentials/InstanceRow.tsx`, and
+`cmd/evener-hub/frontend/src/stores/credentials.ts`,
+`cmd/evener-hub/frontend/src/panes/settings/credentials/CredentialsSection.tsx`,
+`cmd/evener-hub/frontend/src/panes/settings/credentials/InstanceRow.tsx`, and
 their tests.
 
 **Tests first:** Add RED tests against the real settings components and
@@ -126,9 +126,9 @@ instance’s controls. Display only the response status/message.
 ### Task 3: Add the TUI Credentials action
 
 **Files:**
-`cmd/serf-tui/internal/launchconfig/credentials_panel.go`,
-`cmd/serf-tui/internal/launchconfig/launchconfig_client.go`,
-`cmd/serf-tui/hub_update_config.go`, `cmd/serf-tui/hub_update.go`, and focused
+`cmd/evener-tui/internal/launchconfig/credentials_panel.go`,
+`cmd/evener-tui/internal/launchconfig/launchconfig_client.go`,
+`cmd/evener-tui/hub_update_config.go`, `cmd/evener-tui/hub_update.go`, and focused
 TUI tests.
 
 **Tests first:** Add RED tests for the credentials panel action key and exact
@@ -151,7 +151,7 @@ raw provider error.
 small fixes required by evidence. Add no new feature surface.
 
 **Verification:** Run focused Go, appwire, web, and TUI tests; frontend lint and
-typecheck from `cmd/serf-hub/frontend`; `go test ./...`; `make build-runtime`
+typecheck from `cmd/evener-hub/frontend`; `go test ./...`; `make build-runtime`
 when the repository environment permits it; `go generate ./appwire/...` and
 generated-file checks; `git diff --check`; and a secret-redaction scan over
 the implementation and tests. Run the final independent whole-branch review

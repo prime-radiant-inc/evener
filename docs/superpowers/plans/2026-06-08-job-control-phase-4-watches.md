@@ -1014,7 +1014,7 @@ Expected: all modules PASS; lint clean (golangci ×4 + `serf-namingcheck`/`serf-
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf
-go build -o /tmp/serf ./cmd/serf
+go build -o /tmp/serf ./cmd/evener
 . "$PWD/.env"
 # In a scratch dir, with --model oai-work/<model>:
 #  1. Start a background shell job that will print a "ready" line.
