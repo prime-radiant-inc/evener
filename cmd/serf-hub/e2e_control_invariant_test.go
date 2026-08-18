@@ -667,47 +667,30 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	t.Logf("a Stop pressed %s after the window opened, while the wire showed status=%s activeTurnId=%s, was applied",
 		time.Since(windowSeenAt), inWindow.Status.Type, inWindow.Serf.ActiveTurnID)
 
-	// MEASURED, and it is the state of play rather than the ruling (kata wms7).
+	// MEASURED, CLOSED, and now the ruling (kata wms7). Both restart rails end
+	// at popQueueHead, and it refuses while a Stop holds the queue:
 	//
-	// The Stop was ACCEPTED and cancelled its turn -- that half works, and the
-	// assertions above are what prove it. The queued message the Stop cancelled
-	// is then DELIVERED: it starts a turn and reaches the model. Asserted in both
-	// directions here so it cannot change silently in either.
+	//   1. The DRAIN LOOP: a turn ended by a Stop leaves the queue head alone --
+	//      91810a3be for a turn already producing, the claimed-and-unrun
+	//      completion's fence report for one still in pre-turn work.
+	//   2. The WAKE: ProcessPendingUserInput claims through popQueueHead, which
+	//      refuses while QueueHeld is set.
 	//
-	// wms7's ruling is that nothing should auto-start. Getting there means
-	// closing TWO rails, and only one is closed:
+	// So nothing reaches the model, the message stays on the queue -- visible in
+	// the queue strip, waiting for the user -- and the session settles idle.
 	//
-	//   1. The DRAIN LOOP, closed. A turn ended by a Stop leaves the queue head
-	//      alone -- 91810a3be for a turn already producing, and
-	//      TestCompletingAClaimedTurnReportsTheStopThatEndedIt for one claimed at
-	//      this boundary and still in pre-turn work, whose completion takes the
-	//      claimed-and-unrun path and so never reached the branch that reports
-	//      the Stop. Instrumented on the live stack: the drain decision now reads
-	//      stopSettled=true and declines.
-	//   2. The WAKE, open. Returning the entry to the queue fires
-	//      wakeForPendingQueuedInput, the serve loop hands it to
-	//      ProcessPendingUserInput, and that re-claims the SAME mutation the
-	//      drain loop just declined and runs it. Instrumented on the same run:
-	//      "ProcessPendingUserInput: claimed=<the id the drain loop skipped>".
-	//
-	// So the drain-rail fixes are necessary and not sufficient, and this test is
-	// how you find that out. Note what closing rail 2 costs, because it is the
-	// same question that has stalled the steering rail: the wake exists so a Stop
-	// with queued work does not strand the queue, and suppressing it leaves the
-	// user's message parked with nothing scheduled to deliver it. Park it and you
-	// owe the user a way to see and send it.
-	probe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
+	// Probed over the whole remaining park plus margin, because the delivery
+	// this replaces re-ran the parked command in full -- a shorter probe would
+	// pass while it was still in flight.
+	probe, cancelProbe := context.WithTimeout(ctx, time.Duration(preTurnParkSeconds+2)*time.Second)
 	defer cancelProbe()
-	round2, err := provider.Next(probe.Done())
-	if err != nil {
-		t.Fatal("no model round followed the Stop. If the wake rail has been closed deliberately, this test and kata wms7 need updating together -- and check that the parked message is reachable by the user, which is the open question in wms7. If it has not, this is a delivery regression: the message reached neither the model nor the queue")
+	if call, err := provider.Next(probe.Done()); err == nil {
+		carries := call.Contains(queuedText)
+		call.RespondText("this turn should never have run")
+		t.Fatalf("a model round followed the Stop (carries the queued text: %v): a restart rail is still open", carries)
 	}
-	if !round2.Contains(queuedText) {
-		t.Fatalf("the turn after the Stop does not carry the queued message; something else was delivered. messages:\n%s", strings.Join(round2.Texts(), "\n"))
-	}
-	t.Logf("the Stop cancelled its turn; the queued message was then delivered via the wake rail (wms7 rail 2, still open)")
-	round2.RespondToolCall("communicate", communicateArgs("post-stop turn done"))
-	awaitThread(ctx, t, client, ref, "the session to settle", func(thread appwire.Thread) bool {
-		return thread.Status.Type != string(appwire.ThreadStatusActive)
+	awaitThread(ctx, t, client, ref, "the stopped session to settle with its message parked", func(thread appwire.Thread) bool {
+		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Serf.Queue.Depth == 1
 	})
+	t.Logf("the Stop cancelled its turn and parked the queued message (wms7)")
 }
