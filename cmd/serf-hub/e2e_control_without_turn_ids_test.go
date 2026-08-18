@@ -543,8 +543,9 @@ type = %q
 	if landedIn == running {
 		t.Fatalf("the steer was folded into the stopped turn %q instead of a later one", running)
 	}
-	// The steering item is written when the daemon ACCEPTS the steer, so it is
-	// present whether or not the model ever saw it. The model repeating the
+	// The steering item is written when a turn INCORPORATES the steer, not when
+	// the daemon accepts it, so its presence proves the running loop drained the
+	// message - and still not that the model read it. The model repeating the
 	// marker back is what proves delivery.
 	awaitModelEcho(ctx, t, client, ref, steerText)
 	t.Logf("live steer landed in turn %s and came back from the model", landedIn)
@@ -660,8 +661,9 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 }
 
 // awaitModelEcho waits for text to come back as model output. Unlike a
-// steering item -- written when the daemon accepts the steer -- this can only
-// appear if the steer reached the model and the model answered it.
+// steering item -- written when a turn incorporates the steer, via
+// consumeSteeringMessage on the drain path -- this can only appear if the
+// steer reached the model and the model answered it.
 func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
