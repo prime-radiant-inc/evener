@@ -52,11 +52,13 @@ func (a *sharedWorkspaceBarrierAdapter) releaseRuns() { a.once.Do(func() { close
 
 func (a *sharedWorkspaceBarrierAdapter) awaitRun(t *testing.T) {
 	t.Helper()
-	select {
-	case <-a.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("delegate never reached its first model request")
-	}
+	// TRIPWIRE: this is a scripted in-process adapter with no real I/O; the
+	// delegate normally reaches its first model request in well under a
+	// second. 30s only fires on a genuine hang, not scheduler contention
+	// under a loaded suite.
+	awaitWithin(t, 30*time.Second, "delegate's first model request", func() {
+		<-a.entered
+	})
 }
 
 // TestSharedWorkspaceDelegateWarning covers the advisory's trigger table: it
