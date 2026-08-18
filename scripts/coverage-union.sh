@@ -81,13 +81,13 @@ tmpbase=${TMPDIR:-/tmp}
 # Reclaim what earlier runs of THIS script abandoned here, before taking a name
 # of our own: a SIGKILLed run never reached its trap, and a failed run kept its
 # scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
-reclaim_own_scratch "$tmpbase" serf-covunion
+reclaim_own_scratch "$tmpbase" evener-covunion
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed before
 # exiting rather than deleting it.
-work_dir="${tmpbase%/}/serf-covunion.$$"
+work_dir="${tmpbase%/}/evener-covunion.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and logs,
 # because the failure line printed their path.
@@ -169,7 +169,7 @@ for m in $modules; do
 done
 
 if $bless; then
-	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
 	{
 		if grep -q '^#' "$floors_file" 2>/dev/null; then
 			awk '/^#/{print; next} {exit}' "$floors_file"

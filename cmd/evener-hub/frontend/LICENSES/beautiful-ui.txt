@@ -1,4 +1,4 @@
-The serf web UI's visual design language (palette, elevation system, type
+The evener web UI's visual design language (palette, elevation system, type
 choices, and the chrome patterns applied across widgets) is adapted from
 Beautiful UI (https://www.beautifului.dev), and some widget structures are
 ported from its components. Beautiful UI is distributed under the MIT

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-repo="https://github.com/prime-radiant-inc/serf"
-bins="serf serf-hub serf-tui serf-doctor"
+repo="https://github.com/prime-radiant-inc/evener"
+bins="evener evener-hub evener-tui evener-doctor"
 
 if [ -n "${PREFIX:-}" ]; then
 	prefix=$PREFIX
@@ -15,7 +15,7 @@ else
 fi
 
 bindir=${BINDIR:-$prefix/bin}
-share_bindir=${SERF_SHARE_BINDIR:-$prefix/share/serf/bin}
+share_bindir=${SERF_SHARE_BINDIR:-$prefix/share/evener/bin}
 version=${SERF_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in
@@ -39,7 +39,7 @@ esac
 case "$os-$arch" in
 	linux-amd64 | darwin-arm64) ;;
 	*)
-		echo "No Serf binary release is available for $os-$arch." >&2
+		echo "No Evener binary release is available for $os-$arch." >&2
 		exit 1
 		;;
 esac
@@ -88,5 +88,5 @@ for bin in $bins; do
 	ln -sfn "$share_bindir/$bin" "$bindir/$bin"
 done
 
-echo "Installed Serf binaries to $share_bindir"
+echo "Installed Evener binaries to $share_bindir"
 echo "Symlinked commands into $bindir"

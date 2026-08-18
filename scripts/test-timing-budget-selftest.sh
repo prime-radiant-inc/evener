@@ -12,7 +12,7 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/test-timing-budget.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-testbudget-selftest
+scratch_dir work evener-testbudget-selftest
 trap 'scratch_rm' EXIT
 
 budget="$work/budget.json"

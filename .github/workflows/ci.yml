@@ -65,7 +65,7 @@ jobs:
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
 
-      # test-dev-tooling pins serf's own scripts/*-selftest.sh suites. It tests
+      # test-dev-tooling pins evener's own scripts/*-selftest.sh suites. It tests
       # tooling, not the product, so it is not part of make test above — it
       # needs only Go, bash, and git; suites stub everything else themselves.
       - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)

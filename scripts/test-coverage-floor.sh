@@ -98,7 +98,7 @@ tmpbase=${TMPDIR:-/tmp}
 # below). Nothing else sweeps either — this project cleans up at the source —
 # and the moment a failed run's diagnostics stop being the current answer is the
 # moment the next run starts. See covscratch-lib.sh for the pid rules.
-reclaim_own_scratch "$tmpbase" serf-testcov
+reclaim_own_scratch "$tmpbase" evener-testcov
 # The name is chosen and the trap armed BEFORE the directory exists. With
 # `mktemp -d` first and the trap a few lines later, a signal could land after
 # the directory was created but before any cleanup knew about it — mid-mktemp
@@ -107,7 +107,7 @@ reclaim_own_scratch "$tmpbase" serf-testcov
 # exactly that window. $$ is unique among live processes, so concurrent runs
 # cannot collide; a stale same-pid leftover makes the mkdir fail loudly. That
 # leftover is not this run's to delete, so the trap is disarmed before exiting.
-profiles_dir="${tmpbase%/}/serf-testcov.$$"
+profiles_dir="${tmpbase%/}/evener-testcov.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and the
 # per-module go test logs, because the failure line just printed their path and
@@ -167,7 +167,7 @@ for m in $modules; do
 done
 
 if $bless; then
-	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
 	{
 		# Carry the file's existing comment header through instead of restating a
 		# fixed one. A downward reset is a hand edit whose comment records WHY the

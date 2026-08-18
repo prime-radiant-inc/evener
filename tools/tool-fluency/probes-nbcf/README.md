@@ -56,32 +56,32 @@ This eval compares CURRENT prompting (this repo before kata nbcf's commit)
 against CANDIDATE prompting (this repo including it) on the same seeded
 bug, across three models. Two binaries, not `--system-prompt-append`: the
 new rules are baked into the shipped sections, not appended text, so a fair
-A/B needs two `serf` builds.
+A/B needs two `evener` builds.
 
 ```sh
 # 1. Build the baseline (no phase-transition prompting) in a disposable
 #    worktree at this kata's base commit. Do not touch other worktrees;
 #    this creates a new one.
 git worktree add /tmp/nbcf-baseline-wt ea6cc396d
-(cd /tmp/nbcf-baseline-wt && go build -o /tmp/nbcf-baseline-serf ./cmd/evener)
+(cd /tmp/nbcf-baseline-wt && go build -o /tmp/nbcf-baseline-evener ./cmd/evener)
 
 # 2. Build the candidate from this branch (kata/uq-nbcf, or wherever this
 #    landed on main).
-go build -o /tmp/nbcf-candidate-serf ./cmd/evener
+go build -o /tmp/nbcf-candidate-evener ./cmd/evener
 
 # 3. Run the probe against both binaries, for each model below. Repeat
 #    --repetitions 3+ per arm; single-shot runs are not comparable.
 for arm in baseline candidate; do
-  bin=/tmp/nbcf-$arm-serf
+  bin=/tmp/nbcf-$arm-evener
   go run ./tools/tool-fluency/cmd/evener-fluency run \
-    --serf-bin "$bin" \
+    --evener-bin "$bin" \
     --model <provider/model> \
     --probes-dir tools/tool-fluency/probes-nbcf \
     --probe diagnostic_fix.seeded_config_path \
     --reasoning-effort low \
     --repetitions 3 \
     --max-rounds 40 \
-    --out "/tmp/serf-nbcf-eval-$arm-<model-slug>"
+    --out "/tmp/evener-nbcf-eval-$arm-<model-slug>"
 done
 
 # 4. Clean up the disposable worktree when done.
@@ -93,7 +93,7 @@ git worktree remove /tmp/nbcf-baseline-wt
 | Kata's name | Model ref to actually use | Note |
 | --- | --- | --- |
 | GPT-5.6 Luna low | `openai/gpt-5.6-luna` | Real model (`llm/providers/openai/responses.go`'s `codexModelVariants`). |
-| the smallest supported GPT mini low | `openai/gpt-5.4-mini` | **Premise correction**: `gpt-5.6-mini` is not a real model — confirmed absent from `llm/data/litellm_model_catalog.json` and explicitly called out as such in `docs/superpowers/plans/2026-08-06-ws7-launch-validation.md`. `gpt-5.4-mini` is the smallest GPT mini this codebase actually supports (it's already `serf-fluency`'s own default model). |
+| the smallest supported GPT mini low | `openai/gpt-5.4-mini` | **Premise correction**: `gpt-5.6-mini` is not a real model — confirmed absent from `llm/data/litellm_model_catalog.json` and explicitly called out as such in `docs/superpowers/plans/2026-08-06-ws7-launch-validation.md`. `gpt-5.4-mini` is the smallest GPT mini this codebase actually supports (it's already `evener-fluency`'s own default model). |
 | Kimi K2.6 low | `kimi/kimi-k2.6` | Real model (`llm/providers/kimi/adapter_test.go`). |
 
 `low` is a valid reasoning-effort string for all three providers'

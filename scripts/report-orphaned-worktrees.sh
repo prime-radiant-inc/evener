@@ -2,8 +2,8 @@
 # report-orphaned-worktrees.sh — find directories under .claude/worktrees whose
 # .git file points at a path that no longer exists (kata smw0).
 #
-# Why this exists: this repo was moved from /Users/jesse/prime-radiant/serf to
-# /Users/jesse/prime-radiant/toil-suite/serf. Every worktree checkout made
+# Why this exists: this repo was moved from /Users/jesse/prime-radiant/evener to
+# /Users/jesse/prime-radiant/toil-suite/evener. Every worktree checkout made
 # BEFORE that move has a `.git` file (worktrees use a file, not a directory)
 # containing `gitdir: <old-repo-path>/.git/worktrees/<name>`. That path is
 # gone, so:

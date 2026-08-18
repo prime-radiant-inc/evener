@@ -105,7 +105,7 @@ fi
 run_failed=0
 cleanup() { [ "$run_failed" -eq 0 ] && scratch_rm; }
 trap cleanup EXIT
-scratch_dir work serf-testbudget
+scratch_dir work evener-testbudget
 
 measured="$work/measured.tsv"
 : >"$measured"

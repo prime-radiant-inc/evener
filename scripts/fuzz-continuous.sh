@@ -44,7 +44,7 @@
 # corpus), and the loop prints a session summary before exiting.
 #
 # Real-traffic corpus refresh (Plan 12 Phase E): with --drive-every N, every N
-# turns the loop runs scripts/fuzz-drive.sh to drive the real serf CLI against a
+# turns the loop runs scripts/fuzz-drive.sh to drive the real evener CLI against a
 # provider, harvest the recorded traffic into seeds, and (unless --no-pr) open a
 # corpus PR — so the seed corpus keeps deepening from real provider shapes, not
 # just coverage-guided mutation. Default off (driving makes live, paid calls).

@@ -1,5 +1,5 @@
 # Fixture for scripts/e2e-ratelimited-provider.sh (kata 3mn9), passed to
-# serf-hub via --config. `addr` here is illustrative only: the script always
+# evener-hub via --config. `addr` here is illustrative only: the script always
 # also passes "-addr 127.0.0.1:0" (kernel-assigned, never a fixed port —
 # kata 68fm), and an explicit -addr flag wins over this file
 # (cmd/evener-hub/main.go: "if opts.addr != "" { cfg.Addr = opts.addr }"), so

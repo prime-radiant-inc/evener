@@ -4,7 +4,7 @@
 #
 # Why this exists: when the repo volume hits its disk floor, the biggest single
 # pocket of reclaimable space has not been anything git can see. Measured
-# 2026-07-30, with 3G free against a 5G floor: 8.4G across 120 `/tmp/serf*`
+# 2026-07-30, with 3G free against a 5G floor: 8.4G across 120 `/tmp/evener*`
 # entries — per-session scratch CHECKOUTS (~270M each), stray per-session Go
 # build caches, chrome profiles, screenshots, DOM dumps, logs — against ~264M
 # of removable worktrees, which was the only lever the floor message named.
@@ -68,7 +68,7 @@ human_kb() {
 # that is the difference between one walk and 120 process spawns, and blocks
 # shared between entries are then counted once, the way the volume counts them.
 entries=()
-for entry in "$root"/serf*; do
+for entry in "$root"/evener*; do
 	[ -e "$entry" ] || continue # unmatched glob stays literal
 	entries+=("$entry")
 done
@@ -98,7 +98,7 @@ done
 total_h=$(human_kb "$total_kb")
 
 plural() { [ "$1" = 1 ] && echo "y" || echo "ies"; }
-echo "report-tmp-debris: ${#sized[@]} entr$(plural "${#sized[@]}") under $root match serf* (${total_h}):"
+echo "report-tmp-debris: ${#sized[@]} entr$(plural "${#sized[@]}") under $root match evener* (${total_h}):"
 echo
 
 listed=0

@@ -13,7 +13,7 @@
 #     --probes-dir tools/tool-fluency/probes-nbcf \
 #     --probe diagnostic_fix.seeded_config_path \
 #     --max-rounds 40 \
-#     --out /tmp/serf-nbcf-eval-<model-slug>
+#     --out /tmp/evener-nbcf-eval-<model-slug>
 #
 # See tools/tool-fluency/probes-nbcf/README.md for the full comparison
 # recipe (baseline vs. candidate prompting, the three required models, and
@@ -29,7 +29,7 @@ tool: shell
 prompt: |
   The configpath package resolves the on-disk path to a provider config
   file, following the same explicit-override / state-dir / home-dir
-  precedence Serf itself uses elsewhere. A caller reports a bug:
+  precedence Evener itself uses elsewhere. A caller reports a bug:
 
     Calling ResolveProvidersConfig("", "", homeA) and then
     ResolveProvidersConfig("", "", homeB) in the same process, with homeA
@@ -56,7 +56,7 @@ fixture:
 
       go 1.21
     configpath/resolve.go: |
-      // Package configpath resolves the on-disk path to Serf's provider
+      // Package configpath resolves the on-disk path to Evener's provider
       // configuration file, mirroring the explicit-override / state-dir /
       // home-dir precedence used elsewhere in the codebase.
       package configpath
@@ -70,7 +70,7 @@ fixture:
       // an explicit override, a configured state directory, and the caller's
       // home directory. explicit wins outright; otherwise
       // stateDir/providers.toml is used when stateDir is set; otherwise
-      // homeDir/.serf/providers.toml.
+      // homeDir/.evener/providers.toml.
       func ResolveProvidersConfig(explicit, stateDir, homeDir string) string {
       	if explicit != "" {
       		return explicit
@@ -78,7 +78,7 @@ fixture:
       	if stateDir != "" {
       		return filepath.Join(stateDir, "providers.toml")
       	}
-      	return filepath.Join(os.Getenv("HOME"), ".serf", "providers.toml")
+      	return filepath.Join(os.Getenv("HOME"), ".evener", "providers.toml")
       }
 expect:
   calls:

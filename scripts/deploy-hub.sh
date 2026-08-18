@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-hub.sh — build and restart THIS worktree's launchd-managed serf-hub,
+# deploy-hub.sh — build and restart THIS worktree's launchd-managed evener-hub,
 # without ever taking the old hub down before the new one is confirmed built
 # and healthy (kata mssy).
 #
@@ -9,20 +9,20 @@
 # by eye, probing /api/health, and inspecting built CSS — each step a place
 # to get it wrong, and an interrupted `kickstart` can return an ambiguous
 # exit status even when the restart itself succeeded (see
-# docs/serf-hub-remote-operations.md, "Restarting an ad hoc Hub"). This
+# docs/evener-hub-remote-operations.md, "Restarting an ad hoc Hub"). This
 # script automates the whole sequence and treats /api/health, not
 # `kickstart`'s exit code, as the source of truth for whether the restart
 # worked.
 #
 # What it does, in order:
-#   1. Preflight   — find the launchd label for serf-hub (auto-detected via
+#   1. Preflight   — find the launchd label for evener-hub (auto-detected via
 #                     `launchctl list`, or pass --label), confirm the job's
-#                     `program` path is THIS worktree's serf-hub binary (a
+#                     `program` path is THIS worktree's evener-hub binary (a
 #                     mismatch means the label belongs to a different
 #                     checkout — refuse rather than restart someone else's
 #                     hub), and record the old PID.
 #   2. Build       — `make build-hub`, which builds the frontend then the
-#                     serf/serf-hub pair into a temp dir and `mv`s them into
+#                     evener/evener-hub pair into a temp dir and `mv`s them into
 #                     place only on success (scripts/build-runtime-pair.sh).
 #                     A failed build never touches the binary that's
 #                     currently running — launchd/macOS keeps executing the
@@ -50,8 +50,8 @@
 #
 #   --label LABEL     Skip launchd auto-discovery and use this label
 #                      directly (gui/$(id -u)/LABEL). Required if more than
-#                      one serf-hub-like job is registered, or if the job's
-#                      label doesn't contain "serf-hub".
+#                      one evener-hub-like job is registered, or if the job's
+#                      label doesn't contain "evener-hub".
 #   --addr HOST:PORT  Health-check address. Default: parsed from the
 #                      launchd job's recorded launch arguments (-addr), or
 #                      127.0.0.1:9180 if that flag wasn't set (matches the
@@ -60,7 +60,7 @@
 #                      Default: 30.
 #
 # This only manages a job already registered with launchd (see
-# docs/serf-hub-remote-operations.md, "Ad hoc macOS background launch"). It
+# docs/evener-hub-remote-operations.md, "Ad hoc macOS background launch"). It
 # does not create one — a hub with no launchd job at all has no label to
 # `kickstart`, and starting one from scratch is a one-time setup decision
 # outside the scope of a routine rebuild-and-restart.
@@ -102,18 +102,18 @@ die() {
 
 repo_root=$(git rev-parse --show-toplevel) || die "not inside a git repository"
 cd "$repo_root" || die "could not cd to $repo_root"
-binary_path="$repo_root/serf-hub"
+binary_path="$repo_root/evener-hub"
 uid=$(id -u)
 
 echo "== preflight =="
 
 if [ -z "$label" ]; then
-	matches=$(launchctl list 2>/dev/null | awk '$3 ~ /serf-hub/ {print $3}')
+	matches=$(launchctl list 2>/dev/null | awk '$3 ~ /evener-hub/ {print $3}')
 	count=$(printf '%s\n' "$matches" | grep -c . || true)
 	if [ "$count" -eq 0 ]; then
-		die "no launchd job matching *serf-hub* found in \`launchctl list\`. If one is registered under a different name, pass --label; if none is registered at all, see docs/serf-hub-remote-operations.md's \"Ad hoc macOS background launch\" to set one up first."
+		die "no launchd job matching *evener-hub* found in \`launchctl list\`. If one is registered under a different name, pass --label; if none is registered at all, see docs/evener-hub-remote-operations.md's \"Ad hoc macOS background launch\" to set one up first."
 	elif [ "$count" -gt 1 ]; then
-		echo "deploy-hub: multiple serf-hub-like launchd jobs found; pass --label to pick one:" >&2
+		echo "deploy-hub: multiple evener-hub-like launchd jobs found; pass --label to pick one:" >&2
 		printf '%s\n' "$matches" >&2
 		exit 2
 	fi

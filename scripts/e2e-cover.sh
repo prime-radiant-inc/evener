@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-cover.sh — measure END-TO-END coverage of the real serf/serf-tui binaries.
+# e2e-cover.sh — measure END-TO-END coverage of the real evener/evener-tui binaries.
 #
 # WHY: unit tests can't reach main(), the CLI dispatchers, flag parsing, help/
 # error exits, or the full run/serve wiring — that code only executes in the
@@ -8,7 +8,7 @@
 # coverage the binary emits via GOCOVERDIR. It is the measured complement to the
 # `go test` unit coverage: together they show what ALL tests + real e2e reach.
 #
-# WHAT IT RUNS: a no-network, no-credential battery covering every serf/serf-tui
+# WHAT IT RUNS: a no-network, no-credential battery covering every evener/evener-tui
 # subcommand's help/dispatch/error path (the bulk of the cmd/* surface). With
 # SERF_E2E_LIVE=1 it also runs the live scenario scripts in test/ (which need
 # real provider credentials) under the same GOCOVERDIR.
@@ -40,38 +40,38 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-workdir="$(mktemp -d -t serf-e2e-cover.XXXXXX)"
+workdir="$(mktemp -d -t evener-e2e-cover.XXXXXX)"
 covdir="$workdir/gocov"; mkdir -p "$covdir"
-serf="$workdir/serf"; tui="$workdir/serf-tui"
+evener="$workdir/evener"; tui="$workdir/evener-tui"
 
 echo "==> building web UI (frontend/dist with Vite hashed assets)"
 make build-web >/dev/null 2>&1 || { echo "build-web failed" >&2; exit 1; }
 
 echo "==> building instrumented binaries (go build -cover)"
-go build -cover -o "$serf" ./cmd/evener || { echo "build serf failed" >&2; exit 1; }
-go build -cover -o "$tui" ./cmd/evener-tui || { echo "build serf-tui failed" >&2; exit 1; }
+go build -cover -o "$evener" ./cmd/evener || { echo "build evener failed" >&2; exit 1; }
+go build -cover -o "$tui" ./cmd/evener-tui || { echo "build evener-tui failed" >&2; exit 1; }
 
 # run CMD under GOCOVERDIR, ignoring its exit code (error paths are on purpose).
 run() { GOCOVERDIR="$covdir" "$@" >/dev/null 2>&1 || true; }
 
 echo "==> driving the no-credential CLI battery"
-# serf: version, help, every dispatcher arm's --help, and error paths.
-run "$serf" --version
-run "$serf" --help
-run "$serf" -h
-run "$serf" serve --help
-run "$serf" launch-check --help
-run "$serf" launch-check
-run "$serf" upgrade --help
-run "$serf" openai --help
-run "$serf" openai login --help
-run "$serf" openai logout --help
-run "$serf" openai status --help
-run "$serf" openai status
-run "$serf" openai bogus-subcommand
-run "$serf" --bogus-flag
-run "$serf" totally-unknown-command
-# serf-tui: help + error path.
+# evener: version, help, every dispatcher arm's --help, and error paths.
+run "$evener" --version
+run "$evener" --help
+run "$evener" -h
+run "$evener" serve --help
+run "$evener" launch-check --help
+run "$evener" launch-check
+run "$evener" upgrade --help
+run "$evener" openai --help
+run "$evener" openai login --help
+run "$evener" openai logout --help
+run "$evener" openai status --help
+run "$evener" openai status
+run "$evener" openai bogus-subcommand
+run "$evener" --bogus-flag
+run "$evener" totally-unknown-command
+# evener-tui: help + error path.
 run "$tui" --help
 run "$tui" -h
 run "$tui" --bogus
@@ -83,7 +83,7 @@ run "$tui" --bogus
 # ensure asset coverage exercises actual Vite hashed paths, not stale routes.
 if command -v curl >/dev/null 2>&1; then
 	echo "==> driving the web-hub HTTP battery"
-	hub="$workdir/serf-hub"
+	hub="$workdir/evener-hub"
 	if go build -cover -o "$hub" ./cmd/evener-hub 2>/dev/null; then
 		hub_run="$workdir/hubrun"; mkdir -p "$hub_run"
 		port=$(( (RANDOM % 2000) + 9300 ))
@@ -126,13 +126,13 @@ if command -v curl >/dev/null 2>&1; then
 		kill -TERM "$hub_pid" 2>/dev/null || true
 		wait "$hub_pid" 2>/dev/null || true
 	else
-		echo "    (serf-hub build failed; skipping hub battery)"
+		echo "    (evener-hub build failed; skipping hub battery)"
 	fi
 fi
 
 if [ "${SERF_E2E_LIVE:-0}" = "1" ]; then
 	echo "==> SERF_E2E_LIVE=1: running live provider scripts under GOCOVERDIR"
-	export GOCOVERDIR="$covdir" SERF_BIN="$serf"
+	export GOCOVERDIR="$covdir" SERF_BIN="$evener"
 	for s in test/*.sh; do
 		[ -f "$s" ] || continue
 		echo "    $s"; bash "$s" >/dev/null 2>&1 || true
@@ -140,7 +140,7 @@ if [ "${SERF_E2E_LIVE:-0}" = "1" ]; then
 fi
 
 # TUI battery: drive the real terminal UI in tmux (slow; needs tmux). The
-# tmux e2e tests build serf-tui with -cover and launch it with GOCOVERDIR set to
+# tmux e2e tests build evener-tui with -cover and launch it with GOCOVERDIR set to
 # our covdir when SERF_E2E_COVER is exported, so the TUI subprocess's paint /
 # interaction coverage — which units give 0% for — merges into this run.
 if $run_tui; then

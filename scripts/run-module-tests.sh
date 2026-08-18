@@ -242,7 +242,7 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-scratch_dir logdir serf-module-tests
+scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
 
@@ -319,7 +319,7 @@ run_module() {
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
-		# opposite -parallel settings. serf-dev agent-shards runs those halves as
+		# opposite -parallel settings. evener-dev agent-shards runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then

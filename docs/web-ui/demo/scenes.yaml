@@ -3,7 +3,7 @@ scenes:
     kind: image
     src: shots/card-title.png
     narration: >-
-      This is serf's web U I, before and after the redesign. Every frame here
+      This is evener's web U I, before and after the redesign. Every frame here
       is a real screenshot of the running product.
 
   - id: s01-old-welcome

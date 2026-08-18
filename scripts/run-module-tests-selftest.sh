@@ -22,7 +22,7 @@ if [ -n "${SERF_RUN_MODULE_TESTS_SHELL:-}" ]; then
 fi
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-module-tests-selftest
+scratch_dir work evener-module-tests-selftest
 trap 'scratch_rm' EXIT
 
 assert_has_word() {
@@ -311,7 +311,7 @@ recorded_tmpdirs() {
 }
 
 runner_logdirs() {
-	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
+	find "$case_dir" -maxdepth 1 -type d -name 'evener-module-tests.*' -print
 }
 
 # Both ceilings below bound a fixture process reaching a state (a marker file
