@@ -10,7 +10,7 @@ package contextmgr
 // is exactly where an agent-authored note (containing all the facts verbatim) earns
 // its keep.
 //
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
 //
 // Arms, scored by COUNT-based retention (facts present / total facts):
 //   A baseline:       summarizeWithLLMSteered(hist, 2, "")         -> summary only

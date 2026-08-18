@@ -337,7 +337,7 @@ build-all: build-runtime build-tui build-doctor
 ```
 
 Leave cross-compilation, distribution, and installation targets otherwise
-unchanged; the one-off migrator must not enter `SERF_INSTALL_BINS`.
+unchanged; the one-off migrator must not enter `EVENER_INSTALL_BINS`.
 
 - [ ] **Step 5: Run focused tests and a real pair build**
 

@@ -204,15 +204,15 @@ func TestRunServe_BareModelRejected(t *testing.T) {
 }
 
 // TestRunServe_MissingModel verifies runServe returns an error when no
-// --model flag is set and SERF_MODEL is unset.
+// --model flag is set and EVENER_MODEL is unset.
 func TestRunServe_MissingModel(t *testing.T) {
-	old := os.Getenv("SERF_MODEL")
-	if err := os.Unsetenv("SERF_MODEL"); err != nil {
+	old := os.Getenv("EVENER_MODEL")
+	if err := os.Unsetenv("EVENER_MODEL"); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		if old != "" {
-			os.Setenv("SERF_MODEL", old)
+			os.Setenv("EVENER_MODEL", old)
 		}
 	}()
 
@@ -220,7 +220,7 @@ func TestRunServe_MissingModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing model")
 	}
-	if got := err.Error(); got != "no model: use --model provider/model or set SERF_MODEL=provider/model" {
+	if got := err.Error(); got != "no model: use --model provider/model or set EVENER_MODEL=provider/model" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -228,8 +228,8 @@ func TestRunServe_MissingModel(t *testing.T) {
 func TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation(t *testing.T) {
 	var b strings.Builder
 	printServeEnvVars(&b)
-	if !strings.Contains(b.String(), envvars.SERFOpenAIResponsesContinuation.Name) {
-		t.Fatalf("serve env help missing %s: %s", envvars.SERFOpenAIResponsesContinuation.Name, b.String())
+	if !strings.Contains(b.String(), envvars.EVENEROpenAIResponsesContinuation.Name) {
+		t.Fatalf("serve env help missing %s: %s", envvars.EVENEROpenAIResponsesContinuation.Name, b.String())
 	}
 }
 
@@ -237,8 +237,8 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live serve integration test")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live serve integration test")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" && os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("requires an LLM API key for serve startup")
@@ -248,12 +248,12 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	args := []string{
-		"--model", os.Getenv("SERF_TEST_PROVIDER") + "/" + os.Getenv("SERF_TEST_MODEL"),
+		"--model", os.Getenv("EVENER_TEST_PROVIDER") + "/" + os.Getenv("EVENER_TEST_MODEL"),
 		"--addr", "127.0.0.1:0",
 		"--dir", t.TempDir(),
 	}
-	if os.Getenv("SERF_TEST_PROVIDER") == "" || os.Getenv("SERF_TEST_MODEL") == "" {
-		t.Skip("set SERF_TEST_PROVIDER and SERF_TEST_MODEL to run this test")
+	if os.Getenv("EVENER_TEST_PROVIDER") == "" || os.Getenv("EVENER_TEST_MODEL") == "" {
+		t.Skip("set EVENER_TEST_PROVIDER and EVENER_TEST_MODEL to run this test")
 	}
 
 	done := make(chan error, 1)

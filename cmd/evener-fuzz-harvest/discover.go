@@ -62,10 +62,10 @@ func discoverSources(stateDir string) (recordedSources, error) {
 }
 
 // isPersonalStateDir reports whether dir is the developer's own default state
-// root (~/.evener with no SERF_STATE_DIR override). Such a source must always be
+// root (~/.evener with no EVENER_STATE_DIR override). Such a source must always be
 // shape-scrubbed — --keep-values is ignored for it (decision 6).
 func isPersonalStateDir(dir string) bool {
-	if envvars.SERFStateDir.Getenv() != "" {
+	if envvars.EVENERStateDir.Getenv() != "" {
 		return false
 	}
 	abs, err := harvestAbs(dir)

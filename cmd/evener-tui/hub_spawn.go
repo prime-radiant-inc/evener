@@ -343,7 +343,7 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnRecentIdx = -1
 	m.spawnDirInput.Blur()
 	m.session.resetInput()
-	if envModel := envvars.SERFModel.Trimmed(); strings.Contains(envModel, "/") {
+	if envModel := envvars.EVENERModel.Trimmed(); strings.Contains(envModel, "/") {
 		m.spawnModel = envModel
 	}
 }

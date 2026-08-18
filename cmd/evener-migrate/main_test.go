@@ -19,7 +19,7 @@ func baseOpts(home, cwd string) options {
 
 func TestExecuteMovesLegacyStateRoot(t *testing.T) {
 	home := t.TempDir()
-	src := filepath.Join(home, ".serf")
+	src := filepath.Join(home, ".evener")
 	dst := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(filepath.Join(src, "run"), 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
@@ -53,7 +53,7 @@ func TestExecuteMovesLegacyStateRoot(t *testing.T) {
 
 func TestExecuteIdempotent(t *testing.T) {
 	home := t.TempDir()
-	src := filepath.Join(home, ".serf")
+	src := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestExecuteIdempotent(t *testing.T) {
 
 func TestExecuteRefusesOverwriteDestExists(t *testing.T) {
 	home := t.TempDir()
-	src := filepath.Join(home, ".serf")
+	src := filepath.Join(home, ".evener")
 	dst := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
@@ -130,7 +130,7 @@ func TestExecuteSkipsMissingSource(t *testing.T) {
 
 func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 	home := t.TempDir()
-	src := filepath.Join(home, ".serf")
+	src := filepath.Join(home, ".evener")
 	dst := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
@@ -167,14 +167,14 @@ func TestExecuteMigratesXDGConfigAndState(t *testing.T) {
 	configBase := filepath.Join(home, ".config")
 	stateBase := filepath.Join(home, ".local", "state")
 
-	configSrc := filepath.Join(configBase, "serf")
+	configSrc := filepath.Join(configBase, "evener")
 	if err := os.MkdirAll(filepath.Join(configSrc, "skills"), 0o755); err != nil {
 		t.Fatalf("mkdir config source: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configSrc, "mcp.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write mcp.json: %v", err)
 	}
-	stateSrc := filepath.Join(stateBase, "serf")
+	stateSrc := filepath.Join(stateBase, "evener")
 	if err := os.MkdirAll(filepath.Join(stateSrc, "projects"), 0o755); err != nil {
 		t.Fatalf("mkdir state source: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestExecuteMigratesXDGConfigAndState(t *testing.T) {
 func TestExecuteMigratesProjectSerfDirectory(t *testing.T) {
 	home := t.TempDir()
 	projectDir := t.TempDir()
-	src := filepath.Join(projectDir, ".serf")
+	src := filepath.Join(projectDir, ".evener")
 	dst := filepath.Join(projectDir, ".evener")
 	if err := os.MkdirAll(filepath.Join(src, "prompts"), 0o755); err != nil {
 		t.Fatalf("mkdir project source: %v", err)
@@ -242,7 +242,7 @@ func TestExecuteHandlesPartialMigration(t *testing.T) {
 
 	// Config root still needs migration.
 	configBase := filepath.Join(home, ".config")
-	configSrc := filepath.Join(configBase, "serf")
+	configSrc := filepath.Join(configBase, "evener")
 	if err := os.MkdirAll(configSrc, 0o755); err != nil {
 		t.Fatalf("mkdir config source: %v", err)
 	}
@@ -290,11 +290,11 @@ func TestRunRespectsXDGEnvVars(t *testing.T) {
 	configHome := filepath.Join(home, "custom-config")
 	stateHome := filepath.Join(home, "custom-state")
 
-	configSrc := filepath.Join(configHome, "serf")
+	configSrc := filepath.Join(configHome, "evener")
 	if err := os.MkdirAll(filepath.Join(configSrc, "skills"), 0o755); err != nil {
 		t.Fatalf("mkdir config source: %v", err)
 	}
-	stateSrc := filepath.Join(stateHome, "serf")
+	stateSrc := filepath.Join(stateHome, "evener")
 	if err := os.MkdirAll(filepath.Join(stateSrc, "projects"), 0o755); err != nil {
 		t.Fatalf("mkdir state source: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRunRespectsXDGEnvVars(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
 	// Isolate cwd to a temp dir to prevent the project scan from finding
-	// unrelated .serf directories in ancestor git roots.
+	// unrelated .evener directories in ancestor git roots.
 	cwd := t.TempDir()
 	oldwd, err := os.Getwd()
 	if err != nil {

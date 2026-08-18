@@ -42,7 +42,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   `fuzz-triage.sh` (both kinds, via the runner — its hardcoded rapid list is gone),
   and the static gap gate (`evener-fuzzcov -gap-only`). The three rapid promoter
   surfaces are registered with the `rapid` tag.
-- **`SERF_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
+- **`EVENER_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
   boundary (the `fuzz` module imports no evener package) means `promoter.PersistPaths`
   reads the raw env string, and the `envvars_audit_test.go` "use a registry row"
   check would actively reject registering it (the literal would then be flagged in
@@ -60,7 +60,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   committed set instead of dumping a raw diversity cap: content-dedup (skip bytes
   that already match a committed seed under any name), size-prefer (smallest-first
   so the cap keeps the most-reduced inputs), and a per-seed size cap
-  (`SERF_FUZZ_MAX_SEED_BYTES`, default 32 KiB). Exercised by self-test scenario 8
+  (`EVENER_FUZZ_MAX_SEED_BYTES`, default 32 KiB). Exercised by self-test scenario 8
   (stub gocache, asserts dedup + both caps).
 
 ## Pre-existing flake (surfaced during Phase 7 Wave 1, NOT caused by it)

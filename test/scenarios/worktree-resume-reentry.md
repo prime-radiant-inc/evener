@@ -11,7 +11,7 @@ Live end-to-end, real provider (billed).
 
 ## Pre-state
 
-Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked).
+Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked).
 
 ## Steps
 
@@ -45,7 +45,7 @@ Remove the scratch state + demo repo (unique temp paths).
 - Run 1 must END while still inside the lane (don't exit the worktree) so meta
   records it as active. A clean end unlocks the lane on close; resume re-locks
   it — that's the tested path.
-- The resume must use the SAME `SERF_STATE_DIR` and `--dir` so the session and
+- The resume must use the SAME `EVENER_STATE_DIR` and `--dir` so the session and
   its worktree resolve. `--resume <id>` needs the id from Run 1's output
   (`--list-sessions` also shows it).
 - If Run 1's model exits the worktree before ending, meta records no active

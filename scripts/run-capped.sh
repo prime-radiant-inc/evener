@@ -24,20 +24,20 @@
 #     single fat process, so the per-run cap alone would not have prevented it.)
 #
 # Tuning (env):
-#   SERF_MEM_MAX     per-run ceiling (any systemd size, e.g. 16G, 8G). Default
+#   EVENER_MEM_MAX     per-run ceiling (any systemd size, e.g. 16G, 8G). Default
 #                    16G — several times a healthy run, well under the danger
-#                    zone. SERF_MEM_MAX=0 disables capping entirely (run direct).
-#   SERF_MEM_TOTAL   shared ceiling for ALL concurrent evener capped runs. Default
+#                    zone. EVENER_MEM_MAX=0 disables capping entirely (run direct).
+#   EVENER_MEM_TOTAL   shared ceiling for ALL concurrent evener capped runs. Default
 #                    32G — leaves the host ~28G + headroom for network/SSH.
-#                    SERF_MEM_TOTAL=0 skips the slice (per-run cap only).
+#                    EVENER_MEM_TOTAL=0 skips the slice (per-run cap only).
 #
 # Degrades gracefully: if systemd-run is missing or the user manager has no
 # delegated memory cgroup (some CI containers), it prints a warning and runs the
 # command UNCAPPED rather than failing — CI runners impose their own cgroup limit.
 set -uo pipefail
 
-cap="${SERF_MEM_MAX:-16G}"
-total="${SERF_MEM_TOTAL:-32G}"
+cap="${EVENER_MEM_MAX:-16G}"
+total="${EVENER_MEM_TOTAL:-32G}"
 slice="evener-capped.slice"
 
 if [ "$#" -eq 0 ]; then
@@ -50,7 +50,7 @@ fi
 # create a second scope. A nested `systemd-run --user --scope` moves the process
 # into a fresh SIBLING scope, which would silently ESCAPE the outer ceiling. The
 # outermost cap already bounds this whole process tree, so just run.
-if [ "${SERF_CAPPED:-}" = "1" ]; then
+if [ "${EVENER_CAPPED:-}" = "1" ]; then
 	exec "$@"
 fi
 
@@ -87,7 +87,7 @@ if [ -n "$slice_arg" ]; then
 else
 	echo "run-capped: MemoryMax=$cap (swap off) — a runaway run OOMs this scope, not the host" >&2
 fi
-# SERF_CAPPED=1 marks the subtree as already bounded so nested run-capped calls
+# EVENER_CAPPED=1 marks the subtree as already bounded so nested run-capped calls
 # (run-fuzz.sh self-caps each target) skip re-wrapping instead of escaping.
 exec systemd-run --user --scope -q $slice_arg -p MemoryMax="$cap" -p MemorySwapMax=0 \
-	--setenv=SERF_CAPPED=1 -- "$@"
+	--setenv=EVENER_CAPPED=1 -- "$@"

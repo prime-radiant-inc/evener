@@ -25,7 +25,7 @@ type bucket struct {
 // there is no second selector dialect.
 //
 // stateBase is the already-resolved state root (the cmd layer applies the
-// --state-dir / SERF_STATE_DIR / XDG precedence). Locate auto-detects whether
+// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects whether
 // stateBase is an XDG state home (it contains evener/projects/<project-id> buckets) or
 // is itself a single bucket (an override / E2E scratch root with sessions/
 // directly under it). It resolves by globbing the on-disk layout — it never

@@ -5,7 +5,7 @@
 # llm/data/litellm_model_catalog.json is a verbatim snapshot of LiteLLM's
 # published model_prices_and_context_window.json. It must NEVER be hand-edited:
 # evener-specific metadata (effort levels, context windows for models upstream
-# lacks, capability flags) lives in llm/data/serf_model_catalog_overrides.json,
+# lacks, capability flags) lives in llm/data/evener_model_catalog_overrides.json,
 # which is overlaid at load time and always wins. This script is the only
 # sanctioned way to change the vendored file.
 #
@@ -48,7 +48,7 @@ if ! curl -fsSL --max-time 120 "${UPSTREAM_URL}" -o "${tmp}"; then
   exit 1
 fi
 
-OVERRIDES="${ROOT}/llm/data/serf_model_catalog_overrides.json"
+OVERRIDES="${ROOT}/llm/data/evener_model_catalog_overrides.json"
 
 python3 - "${TARGET}" "${tmp}" "${MIN_KEEP_RATIO}" "${OVERRIDES}" <<'PYEOF'
 import json, sys

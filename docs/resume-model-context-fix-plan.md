@@ -5,7 +5,7 @@
 Session `01KTHGQ3P1HZNX5B6919W8Z0HE` showed symptoms after resume where the agent appeared to use or reason about the wrong model/context state. The investigation found two likely causes:
 
 1. Restored sessions lose runtime-only profile resolution plumbing (`SessionConfig.ResolveProfile` / `Session.resolveProfile`).
-2. Resume model selection currently allows `SERF_MODEL` to override the persisted session model, which can surprise hub/browser resumes because spawned daemons inherit environment variables.
+2. Resume model selection currently allows `EVENER_MODEL` to override the persisted session model, which can surprise hub/browser resumes because spawned daemons inherit environment variables.
 
 The fix should make resume faithfully restore the session's persisted provider/model/profile-derived context, while still allowing explicit user-requested overrides in a controlled way.
 
@@ -66,8 +66,8 @@ Consequence: post-resume `Session.SetModel(...)` cannot use the configured resol
    - If the restored/current profile is wrong or shallowly mutated, context metrics/compaction thresholds can be wrong even if the UI displays a model label that looks correct.
 
 3. **Initial resume can be unintentionally overridden by environment.**
-   - `cmdutil.ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel)` currently prefers CLI, then `SERF_MODEL`, then resume metadata.
-   - Hub resume does not pass `--model`, but the daemon inherits env, so `SERF_MODEL` can silently override persisted resume metadata.
+   - `cmdutil.ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel)` currently prefers CLI, then `EVENER_MODEL`, then resume metadata.
+   - Hub resume does not pass `--model`, but the daemon inherits env, so `EVENER_MODEL` can silently override persisted resume metadata.
 
 ## Desired behavior
 
@@ -196,14 +196,14 @@ Relevant existing tests to mirror:
 Current `cmdutil.ResolveModelRef(...)` is used for both fresh and resumed sessions and has precedence:
 
 1. CLI `--model`
-2. `SERF_MODEL`
+2. `EVENER_MODEL`
 3. resume metadata
 
 For faithful resume, change behavior so resumed sessions use:
 
 1. explicit CLI `--model` if provided
 2. resume metadata
-3. `SERF_MODEL` only if no resume metadata exists
+3. `EVENER_MODEL` only if no resume metadata exists
 
 Options:
 
@@ -229,7 +229,7 @@ Recommended: **Option A** for clarity.
 
 Add tests in `cmdutil/cmdutil_test.go`:
 
-- `ResolveResumeModelRef` uses persisted metadata when `SERF_MODEL` is set.
+- `ResolveResumeModelRef` uses persisted metadata when `EVENER_MODEL` is set.
 - explicit CLI model still overrides persisted metadata.
 - env model works when no persisted metadata is available.
 
@@ -241,7 +241,7 @@ If resume is started with an explicit model override, log it clearly:
 [serve] resumed session <id> with model override <provider/model> (was <provider/model>)
 ```
 
-Do not log this for inherited `SERF_MODEL` if the new precedence ignores it.
+Do not log this for inherited `EVENER_MODEL` if the new precedence ignores it.
 
 Optional but useful:
 
@@ -254,7 +254,7 @@ Hub resume code:
 - `cmd/evener-hub/spawn.go`
   - `ResumeDaemon(...)` runs `evener serve --resume <sessionID>` and does not pass `--model`.
 
-With the changed precedence, hub resume should continue the persisted model regardless of `SERF_MODEL` in env.
+With the changed precedence, hub resume should continue the persisted model regardless of `EVENER_MODEL` in env.
 
 Add/adjust tests around hub resume if practical:
 
@@ -292,7 +292,7 @@ If full `cmd/evener-hub` has known local-environment failures, document exact fa
 - A restored session has a non-nil profile resolver when the caller has configured provider resolution.
 - Post-resume `SetModel("provider/model")` uses the same resolution path as fresh sessions.
 - `ContextMetrics().Window` after restore and after post-restore model switch matches the resolved profile's context window.
-- Hub/browser resume without explicit model override uses persisted `meta.ProfileID/meta.Model`, not inherited `SERF_MODEL`.
+- Hub/browser resume without explicit model override uses persisted `meta.ProfileID/meta.Model`, not inherited `EVENER_MODEL`.
 - Explicit `--model provider/model` on resume still works and is visible in logs.
 - Existing fresh-session model switching tests continue to pass.
 

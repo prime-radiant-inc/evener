@@ -28,7 +28,7 @@ func scenarioHarvestRunFailuresAndMain(t *testing.T) {
 	if run([]string{"--bad"}, &out, &errOut) != 2 || run([]string{"--surface", "bad"}, &out, &errOut) != 2 {
 		t.Fatal("parse failures")
 	}
-	t.Setenv(envvars.SERFFuzzCaptureEnv.Name, "")
+	t.Setenv(envvars.EVENERFuzzCaptureEnv.Name, "")
 	if run([]string{"--keep-values", "--surface", "sse"}, &out, &errOut) != 2 {
 		t.Fatal("keep gate")
 	}
@@ -145,12 +145,12 @@ func scenarioGitleaksScanOutcomes(t *testing.T) {
 
 func gitleaksTestCommandContext(ctx context.Context, exitCode int) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGitleaksCommandHelper$")
-	cmd.Env = append(os.Environ(), "SERF_GITLEAKS_TEST_EXIT_CODE="+strconv.Itoa(exitCode))
+	cmd.Env = append(os.Environ(), "EVENER_GITLEAKS_TEST_EXIT_CODE="+strconv.Itoa(exitCode))
 	return cmd
 }
 
 func TestGitleaksCommandHelper(t *testing.T) {
-	exitCode, err := strconv.Atoi(os.Getenv("SERF_GITLEAKS_TEST_EXIT_CODE"))
+	exitCode, err := strconv.Atoi(os.Getenv("EVENER_GITLEAKS_TEST_EXIT_CODE"))
 	if err != nil {
 		return
 	}
@@ -164,7 +164,7 @@ func scenarioHarvestLeakExitAndSmallHelpers(t *testing.T) {
 	api := filepath.Join(d, "api.jsonl")
 	mustHarvestWrite(t, api, canonicalAPIAttemptLine(t, "unknown", []byte("data: {\"x\":\"Zk9q3SxV1pLmTtRwYbNcHgJdFeUoIa72Qw0PzXyB\"}\n\n"))+"\n")
 	harvestDiscoverSources = func(string) (recordedSources, error) { return recordedSources{apiLogs: []string{api}}, nil }
-	t.Setenv(envvars.SERFFuzzCaptureEnv.Name, "yes")
+	t.Setenv(envvars.EVENERFuzzCaptureEnv.Name, "yes")
 	var out, errOut bytes.Buffer
 	if got := run([]string{"--keep-values", "--surface", "sse", "--state-dir", d, "--dry-run"}, &out, &errOut); got != 1 {
 		t.Fatalf("leak exit=%d %q", got, errOut.String())
@@ -307,8 +307,8 @@ func scenarioRunLogAndPersonalKeepNote(t *testing.T) {
 	t.Cleanup(func() { harvestDiscoverSources, harvestAbs = oldDiscover, oldAbs })
 	harvestDiscoverSources = func(string) (recordedSources, error) { return recordedSources{}, nil }
 	harvestAbs = func(string) (string, error) { return "/same", nil }
-	t.Setenv(envvars.SERFStateDir.Name, "")
-	t.Setenv(envvars.SERFFuzzCaptureEnv.Name, "yes")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
+	t.Setenv(envvars.EVENERFuzzCaptureEnv.Name, "yes")
 	var out, errOut bytes.Buffer
 	log := filepath.Join(t.TempDir(), "log")
 	if got := run([]string{"--keep-values", "--surface", "sse", "--state-dir", "personal", "--dry-run", "--log", log}, &out, &errOut); got != 0 || !strings.Contains(errOut.String(), "ignored for personal") {

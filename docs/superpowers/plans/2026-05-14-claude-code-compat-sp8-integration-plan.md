@@ -31,7 +31,7 @@
 | `cmd/evener/serve.go` | modify | Same for daemon-mode `SessionConfig` |
 | `cmd/evener-tui/embedded.go` | modify | Same for the three `SessionConfig` sites in TUI |
 | `cmd/evener-hub/web.go` | modify | Add `ConfigPaths` to `WebConfig`; thread merged config into the Spawner request |
-| `cmd/evenereval/main.go` | modify | Same wiring for serfeval |
+| `cmd/evenereval/main.go` | modify | Same wiring for evenereval |
 | `agent/integration_sp8_test.go` | create | End-to-end suite covering the 19 cases in spec §12.1 |
 | `agent/testdata/plugins/sp8-hookparity/` | create | Fixture plugin with one hook per new SP5 event |
 | `agent/testdata/marketplaces/sp8-basic/` | create | Smallest directory-source marketplace exercising the install → run → uninstall loop |

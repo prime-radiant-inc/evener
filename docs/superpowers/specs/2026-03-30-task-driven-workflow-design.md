@@ -168,7 +168,7 @@ Before each LLM call in the session loop:
 2. If it has `ReasoningEffort` set: `s.SetReasoningEffort(task.ReasoningEffort)`
 3. If no in_progress task or no effort specified: use session default
 
-The session default (`serf_agent.py`) reverts to `"low"`. The coordinator's
+The session default (`evener_agent.py`) reverts to `"low"`. The coordinator's
 Plan and Verify tasks declare `xhigh` where needed.
 
 ### Prompt slimming
@@ -275,7 +275,7 @@ tasks:
 | `agent/agents/explorer.md` | YAML tasks |
 | `agent/agents/worker.md` | YAML tasks |
 | `agent/task_reminders.go` | Show reasoning_effort in task displays |
-| `tools/serf_agent.py` | Revert reasoning_effort default to "low" |
+| `tools/evener_agent.py` | Revert reasoning_effort default to "low" |
 
 ## Migration path
 
@@ -291,7 +291,7 @@ Each step independently deployable:
 8. Coordinator prompt: add YAML tasks, slim body
 9. Implementer prompt: add YAML tasks, slim body
 10. Other agents: add YAML tasks
-11. Revert serf_agent.py to reasoning_effort="low"
+11. Revert evener_agent.py to reasoning_effort="low"
 
 ## Verification
 

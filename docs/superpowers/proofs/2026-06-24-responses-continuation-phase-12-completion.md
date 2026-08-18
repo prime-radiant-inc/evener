@@ -26,7 +26,7 @@ Phase 12 endpoint-family outcomes:
 Public OpenAI Phase 12 live proof:
 
 ```sh
-set -a; . ../../.env; set +a; SERF_LOG_RAW_HTTP=1 SERF_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
+set -a; . ../../.env; set +a; EVENER_LOG_RAW_HTTP=1 EVENER_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
 ```
 
 Result:
@@ -42,7 +42,7 @@ ok  	primeradiant.com/evener/agent	24.332s
 Codex Phase 12 live gate:
 
 ```sh
-SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
+EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 EVENER_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
 ```
 
 Result:

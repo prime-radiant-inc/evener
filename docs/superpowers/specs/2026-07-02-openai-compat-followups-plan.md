@@ -89,7 +89,7 @@ commits. Rules learned the hard way this session:
   + quirks/compat overlay + request.go emission + docs.
 - **F. catalog-shipped thinking maps**: extend `llm.ModelInfo` with
   `ThinkingLevels map[string]string` (+ maybe `ThinkingFormat`), populate
-  `llm/data/serf_model_catalog_overrides.json` for known z.ai GLM + DeepSeek
+  `llm/data/evener_model_catalog_overrides.json` for known z.ai GLM + DeepSeek
   models (mirror Pi's zai.models.ts / deepseek catalogs), teach
   `newOpenAICompatProfile` (levels precedence: instance > catalog > default)
   and the openaicompat adapter (`compatFor` fallback to catalog map when no

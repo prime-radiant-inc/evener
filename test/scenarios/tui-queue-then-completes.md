@@ -22,7 +22,7 @@ the same queue state.
 - `tmux`, `curl`, and `jq` installed (`tmux` 3.4 is known to work).
 - Anthropic OAuth or an API key configured so
   `anthropic/claude-haiku-4-5-20251001` can be invoked by the isolated hub.
-- `SERF_LIVE_TESTS=1` exported explicitly for this provider-backed scenario;
+- `EVENER_LIVE_TESTS=1` exported explicitly for this provider-backed scenario;
   the card refuses to start without that opt-in.
 - Run every code block below in the same Bash shell. The setup creates one
   workdir and derives a tmux name from the driving shell's PID; all request
@@ -40,8 +40,8 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    set -euo pipefail
 
-   if [ "${SERF_LIVE_TESTS:-}" != "1" ]; then
-     printf 'set SERF_LIVE_TESTS=1 to opt into the live provider scenario\n' >&2
+   if [ "${EVENER_LIVE_TESTS:-}" != "1" ]; then
+     printf 'set EVENER_LIVE_TESTS=1 to opt into the live provider scenario\n' >&2
      exit 1
    fi
 

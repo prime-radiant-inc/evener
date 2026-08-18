@@ -42,7 +42,7 @@ Compaction fires when context usage crosses configurable thresholds (defaults: 6
 
 ### 2.3 Evaluation Harness
 
-`serfeval` runs the agent on a task, then asks retention probe questions scored by a judge model on a 0-5 scale. Retention score = mean(probe_scores) / 5.
+`evenereval` runs the agent on a task, then asks retention probe questions scored by a judge model on a 0-5 scale. Retention score = mean(probe_scores) / 5.
 
 ### 2.4 Threshold Scaling
 

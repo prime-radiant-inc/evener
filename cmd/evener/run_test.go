@@ -189,9 +189,9 @@ func TestRunFastCheapModelValidation(t *testing.T) {
 }
 
 // TestRunMissingModel verifies that run returns an error when no --model is
-// provided and SERF_MODEL is unset.
+// provided and EVENER_MODEL is unset.
 func TestRunMissingModel(t *testing.T) {
-	t.Setenv("SERF_MODEL", "")
+	t.Setenv("EVENER_MODEL", "")
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{

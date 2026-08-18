@@ -16,7 +16,7 @@
 - Any test touching user-global discovery MUST isolate XDG: `t.Setenv("XDG_CONFIG_HOME", t.TempDir())` so the real `~/.config/evener/commands` is never read.
 - Frontend: run `npx biome check --write` on touched files before gates; `make test-web` is the canonical gate; avoid `noNonNullAssertion` and array-index-key violations.
 - `make generate` after changing `appwire/types.go`; `make lint-generated` must pass.
-- Local `make` invocations may need `SERF_DISK_MIN_FREE_GB=4` while the disk is at ~98% (the go build cache lives on another volume).
+- Local `make` invocations may need `EVENER_DISK_MIN_FREE_GB=4` while the disk is at ~98% (the go build cache lives on another volume).
 - Plugin command behavior is unchanged: `command.Expand` semantics, `plugin:name` namespacing, fail-hard plugin file reads.
 
 ---
@@ -72,7 +72,7 @@ In `agent/plugin/commands.go`, update the doc comment (currently "defined by a p
 ```go
 // Command represents a slash command. Plugin commands come from a plugin's
 // commands/ directory; evener-wide commands come from .evener/commands/ project
-// directories or the user-global config dir (see serfwide.go). Invoking a
+// directories or the user-global config dir (see evenerwide.go). Invoking a
 // plugin command expands Body with command.Expand (shell execution);
 // evener-wide commands expand inert with command.ExpandArgs.
 type Command struct {
@@ -188,8 +188,8 @@ git commit -m "agent/command: add inert ExpandArgs for evener-wide commands"
 ### Task 3: Evener-wide discovery core
 
 **Files:**
-- Create: `agent/plugin/serfwide.go`
-- Test: `agent/plugin/serfwide_test.go`
+- Create: `agent/plugin/evenerwide.go`
+- Test: `agent/plugin/evenerwide_test.go`
 
 **Interfaces:**
 - Consumes: `execenv.ExecutionEnvironment` (`WorkingDirectory()`), `execenv.GitRootOrEmpty`, `execenv.DirsFromRootToCwd`, `ParseCommand`, `envvars.XDGConfigHome`, `events.WarningData`.
@@ -197,7 +197,7 @@ git commit -m "agent/command: add inert ExpandArgs for evener-wide commands"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `agent/plugin/serfwide_test.go`:
+Create `agent/plugin/evenerwide_test.go`:
 
 ```go
 package plugin
@@ -279,7 +279,7 @@ Expected: FAIL — `DiscoverSerfWideCommands` undefined.
 
 - [ ] **Step 3: Implement the core**
 
-Create `agent/plugin/serfwide.go`:
+Create `agent/plugin/evenerwide.go`:
 
 ```go
 package plugin
@@ -296,7 +296,7 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-var serfwideUserHomeDir = os.UserHomeDir
+var evenerwideUserHomeDir = os.UserHomeDir
 
 // globalCommandsDir resolves the user-global commands directory:
 // $XDG_CONFIG_HOME/evener/commands, or ~/.config/evener/commands. Mirrors
@@ -304,7 +304,7 @@ var serfwideUserHomeDir = os.UserHomeDir
 func globalCommandsDir() string {
 	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
-		home, err := serfwideUserHomeDir()
+		home, err := evenerwideUserHomeDir()
 		if err != nil {
 			return ""
 		}
@@ -357,7 +357,7 @@ func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]eve
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			*warnings = append(*warnings, serfwideWarning("unreadable commands directory",
+			*warnings = append(*warnings, evenerwideWarning("unreadable commands directory",
 				fmt.Sprintf("skipping commands directory %s: %v", dir, err)))
 		}
 		return
@@ -369,14 +369,14 @@ func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]eve
 		file := filepath.Join(dir, entry.Name())
 		data, err := os.ReadFile(file)
 		if err != nil {
-			*warnings = append(*warnings, serfwideWarning("unreadable command file",
+			*warnings = append(*warnings, evenerwideWarning("unreadable command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".md")
 		command, err := ParseCommand(data, name, "")
 		if err != nil {
-			*warnings = append(*warnings, serfwideWarning("malformed command file",
+			*warnings = append(*warnings, evenerwideWarning("malformed command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))
 			continue
 		}
@@ -386,7 +386,7 @@ func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]eve
 	}
 }
 
-func serfwideWarning(title, message string) events.WarningData {
+func evenerwideWarning(title, message string) events.WarningData {
 	return events.WarningData{Source: "commands", Title: title, Message: message}
 }
 ```
@@ -401,7 +401,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/plugin/serfwide.go agent/plugin/serfwide_test.go
+git add agent/plugin/evenerwide.go agent/plugin/evenerwide_test.go
 git commit -m "agent/plugin: evener-wide command discovery core"
 ```
 
@@ -410,8 +410,8 @@ git commit -m "agent/plugin: evener-wide command discovery core"
 ### Task 4: Discovery guards and advisory warnings
 
 **Files:**
-- Modify: `agent/plugin/serfwide.go`
-- Test: `agent/plugin/serfwide_test.go`
+- Modify: `agent/plugin/evenerwide.go`
+- Test: `agent/plugin/evenerwide_test.go`
 
 **Interfaces:**
 - Consumes: `scanSerfwideDir` from Task 3.
@@ -419,7 +419,7 @@ git commit -m "agent/plugin: evener-wide command discovery core"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `agent/plugin/serfwide_test.go`:
+Add to `agent/plugin/evenerwide_test.go`:
 
 ```go
 func TestDiscoverSerfWideCommands_RejectsBadNames(t *testing.T) {
@@ -476,45 +476,45 @@ Expected: FAIL — bad names load (3 keys), no advisory warnings.
 
 - [ ] **Step 3: Implement the guards**
 
-In `agent/plugin/serfwide.go`, replace the per-file loop body in `scanSerfwideDir` (between the `.md` filter and the parse) and add advisories after a successful parse:
+In `agent/plugin/evenerwide.go`, replace the per-file loop body in `scanSerfwideDir` (between the `.md` filter and the parse) and add advisories after a successful parse:
 
 ```go
 		name := strings.TrimSuffix(entry.Name(), ".md")
 		if name == "" {
-			*warnings = append(*warnings, serfwideWarning("empty command name",
+			*warnings = append(*warnings, evenerwideWarning("empty command name",
 				fmt.Sprintf("skipping command file %s: a file named exactly .md has no command name", file)))
 			continue
 		}
 		if strings.Contains(name, ":") {
-			*warnings = append(*warnings, serfwideWarning("colon in command name",
+			*warnings = append(*warnings, evenerwideWarning("colon in command name",
 				fmt.Sprintf("skipping command file %s: ':' is the plugin namespace separator", file)))
 			continue
 		}
 		if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
-			*warnings = append(*warnings, serfwideWarning("whitespace in command name",
+			*warnings = append(*warnings, evenerwideWarning("whitespace in command name",
 				fmt.Sprintf("skipping command file %s: names with whitespace can never be invoked", file)))
 			continue
 		}
 		data, err := os.ReadFile(file)
 		if err != nil {
-			*warnings = append(*warnings, serfwideWarning("unreadable command file",
+			*warnings = append(*warnings, evenerwideWarning("unreadable command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))
 			continue
 		}
 		command, err := ParseCommand(data, name, "")
 		if err != nil {
-			*warnings = append(*warnings, serfwideWarning("malformed command file",
+			*warnings = append(*warnings, evenerwideWarning("malformed command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))
 			continue
 		}
 		command.Source = source
 		command.File = file
 		if execSpanPattern.MatchString(command.Body) {
-			*warnings = append(*warnings, serfwideWarning("inert execution directive",
+			*warnings = append(*warnings, evenerwideWarning("inert execution directive",
 				fmt.Sprintf("command file %s contains !` spans: execution directives are inert in evener-wide commands; use a plugin command for executable templates", file)))
 		}
 		if command.Model != "" || len(command.AllowedTools) > 0 {
-			*warnings = append(*warnings, serfwideWarning("unenforced command frontmatter",
+			*warnings = append(*warnings, evenerwideWarning("unenforced command frontmatter",
 				fmt.Sprintf("command file %s declares model/allowed-tools, which evener does not enforce yet", file)))
 		}
 		out[name] = command
@@ -538,7 +538,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/plugin/serfwide.go agent/plugin/serfwide_test.go
+git add agent/plugin/evenerwide.go agent/plugin/evenerwide_test.go
 git commit -m "agent/plugin: evener-wide discovery guards and advisory warnings"
 ```
 
@@ -552,7 +552,7 @@ git commit -m "agent/plugin: evener-wide discovery guards and advisory warnings"
 
 **Interfaces:**
 - Consumes: `Instance.Commands` (map keyed `plugin:name`).
-- Produces: `func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command` — plugin commands first (namespaced keys), evener-wide overlaid (bare keys). Tasks 6 and 9 consume this.
+- Produces: `func MergeCommands(instances []Instance, evenerwide map[string]Command) map[string]Command` — plugin commands first (namespaced keys), evener-wide overlaid (bare keys). Tasks 6 and 9 consume this.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -566,10 +566,10 @@ func TestMergeCommands(t *testing.T) {
 			"p:review": {Name: "review", PluginName: "p", Source: "plugin"},
 		}},
 	}
-	serfwide := map[string]Command{
+	evenerwide := map[string]Command{
 		"review": {Name: "review", Source: "user"},
 	}
-	got := MergeCommands(instances, serfwide)
+	got := MergeCommands(instances, evenerwide)
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2: %v", len(got), maps.Keys(got))
 	}
@@ -600,12 +600,12 @@ Add to `agent/plugin/plugin.go`:
 // the overlay cannot shadow a plugin's qualified key; precedence between a
 // bare evener-wide command and a plugin's bare-name fallback is decided by
 // ResolveCommand's exact-match-first rule.
-func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command {
-	out := make(map[string]Command, len(serfwide))
+func MergeCommands(instances []Instance, evenerwide map[string]Command) map[string]Command {
+	out := make(map[string]Command, len(evenerwide))
 	for _, inst := range instances {
 		maps.Copy(out, inst.Commands)
 	}
-	maps.Copy(out, serfwide)
+	maps.Copy(out, evenerwide)
 	return out
 }
 ```
@@ -744,8 +744,8 @@ and add discovery+assembly immediately after the `initPlugins` call site (~line 
 	// (which early-returns on empty PluginDirs). Discovery is fail-soft;
 	// warnings join the same session-start queue as command frontmatter
 	// warnings.
-	serfwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
-	s.pluginCommands = plugin.MergeCommands(s.plugins, serfwide)
+	evenerwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+	s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
 ```
 
@@ -906,7 +906,7 @@ In `docs/appwire-protocol.md`, update the `evener/command/list` row to mention t
 - [ ] **Step 2: Regenerate**
 
 Run: `make generate && make lint-generated`
-Expected: `types.gen.ts` gains `source?: string` on `CommandDescriptor`; lint passes. (Prefix `SERF_DISK_MIN_FREE_GB=4` if the preflight trips.)
+Expected: `types.gen.ts` gains `source?: string` on `CommandDescriptor`; lint passes. (Prefix `EVENER_DISK_MIN_FREE_GB=4` if the preflight trips.)
 
 - [ ] **Step 3: Run AppWire tests**
 
@@ -1011,8 +1011,8 @@ func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) 
 	loaded, _ := plugin.LoadAllFailSoft(dirs)
 	// Nil env: the hub is multi-project, so discovery scans the user-global
 	// dir only — project commands are per-session and never appear here.
-	serfwide, _ := plugin.DiscoverSerfWideCommands(nil)
-	merged := plugin.MergeCommands(loaded, serfwide)
+	evenerwide, _ := plugin.DiscoverSerfWideCommands(nil)
+	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor
 	for _, cmd := range merged {
 		commands = append(commands, appwire.CommandDescriptor{
@@ -1273,7 +1273,7 @@ git commit -m "web: forward unmatched slash commands from the palette to the ses
 ### Task 12: Discovery fuzz target
 
 **Files:**
-- Create: `agent/plugin/serfwide_fuzz_test.go`
+- Create: `agent/plugin/evenerwide_fuzz_test.go`
 - Pattern: `agent/plugin/loader_program_fuzz_test.go` (repo fuzz conventions; register per `make fuzz-registry-check`)
 
 **Interfaces:**
@@ -1324,7 +1324,7 @@ Expected: no failures. Register the target in the fuzz registry (`make fuzz-regi
 - [ ] **Step 3: Commit**
 
 ```bash
-git add agent/plugin/serfwide_fuzz_test.go
+git add agent/plugin/evenerwide_fuzz_test.go
 git commit -m "agent/plugin: fuzz evener-wide command discovery"
 ```
 

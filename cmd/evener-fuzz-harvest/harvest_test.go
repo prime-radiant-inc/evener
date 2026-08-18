@@ -134,8 +134,8 @@ func scenarioHarvestEndToEnd(t *testing.T) {
 // strip the planted secret (decision 6).
 func scenarioHarvestPersonalSourceForcesScrub(t *testing.T) {
 	state := writeFixtureState(t)
-	t.Setenv("SERF_STATE_DIR", state) // makes this an explicit (non-personal) source override
-	t.Setenv("SERF_FUZZ_CAPTURE_ENV", "1")
+	t.Setenv("EVENER_STATE_DIR", state) // makes this an explicit (non-personal) source override
+	t.Setenv("EVENER_FUZZ_CAPTURE_ENV", "1")
 	out := t.TempDir()
 
 	// Even with capture-env + keep-values, an explicit override is allowed to keep

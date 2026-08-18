@@ -109,7 +109,7 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 > [Jesse, priority comment:] Priority 3: latent capability-detection bug - a renamed or aliased Claude 5 model silently gets the wrong request shape (sampling params, thinking config). Nothing misfires today and the fix is small, so it is below the live defects.
 
 **Files:**
-- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Evener-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/serf_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
+- Modify: `llm/model_catalog.go` (ModelInfo struct, lines 17-48; overlay parse if the flag is Evener-authored), `llm/model_catalog_embedded.go` (`applyOverlayFields`, lines ~146-154), `llm/data/evener_model_catalog_overrides.json` (Claude 5 entries, lines ~91-205), `llm/providers/anthropic/request.go` (isClaude5OrNewer at 246-265 and the `claude5 :=` computation at line 35)
 - Test: `llm/providers/anthropic/claude5_test.go`, `llm/model_catalog_test.go`
 
 **Investigation facts (verified against this tree):**
@@ -170,13 +170,13 @@ Adjust constructor/argument details to match what the neighboring tests in this 
 
 **Kata body (verbatim):**
 
-> Surfaced by the independent review of the estate-gutting commit: Makefile lines 77, 121, 163 feed variables ($$dir, $(SERF_DIST_BIN_DIR)) to rm -rf. TestNoScriptFeedsVariableToRecursiveDelete and the docs/testing.md rule are scoped to scripts/*.sh, so these are the nearest unswept weapons if the rule is to hold repo-wide. Work: either convert the recipes to safe shapes (mkdir-owned paths, guard through a script that uses scratch-lib) or extend the audit to Makefile recipe lines with the same count-pinned list. Related katas: jvpe (the audit), yns5 (the estate).
+> Surfaced by the independent review of the estate-gutting commit: Makefile lines 77, 121, 163 feed variables ($$dir, $(EVENER_DIST_BIN_DIR)) to rm -rf. TestNoScriptFeedsVariableToRecursiveDelete and the docs/testing.md rule are scoped to scripts/*.sh, so these are the nearest unswept weapons if the rule is to hold repo-wide. Work: either convert the recipes to safe shapes (mkdir-owned paths, guard through a script that uses scratch-lib) or extend the audit to Makefile recipe lines with the same count-pinned list. Related katas: jvpe (the audit), yns5 (the estate).
 
 **Files:**
 - Read first: the `TestNoScriptFeedsVariableToRecursiveDelete` audit test (locate it by grep; it is the mechanism this kata extends or satisfies), the docs/testing.md rule it enforces, and Makefile lines 60-180 for the three recipes' context.
 - Modify: `Makefile` and/or the audit test file, per the option you choose with evidence.
 
-**Verified premise:** the three sites exist exactly as described at Makefile:77 (`rm -rf "$$dir" || finish_status=1`), :121 (`rm -rf "$$dir" || { finish_status=1; ... }`), :163 (`rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"`).
+**Verified premise:** the three sites exist exactly as described at Makefile:77 (`rm -rf "$$dir" || finish_status=1`), :121 (`rm -rf "$$dir" || { finish_status=1; ... }`), :163 (`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`).
 
 **Choosing between the kata's two options:** read the audit test and docs/testing.md rule first, then pick the option that holds the rule repo-wide with the smallest honest change. Two katas' worth of history says a named mechanism can be wrong — if the audit's shape does not extend cleanly to Makefile recipe text, converting the recipes to safe shapes is equally acceptable. Whichever you choose, the stop condition is: **a variable-fed recursive delete added to the Makefile after your change is either impossible (the recipe shape doesn't take variables) or caught by a test.** A conversion that leaves the next contributor free to add a fourth unswept `rm -rf "$$var"` does not meet it.
 

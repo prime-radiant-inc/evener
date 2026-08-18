@@ -15,7 +15,7 @@ Two Go modules are touched (`go.work` maps `.` and `./agent`; `envvars` is its o
 
 - **Root module `primeradiant.com/evener`** (`.`): `cmd/evener-hub`, `hubapi`, `appwire`, `cmd/evener`, `server`, `rendezvous`.
 - **Agent module `primeradiant.com/evener/agent`** (`./agent`): `agent`, `agent/schema`.
-- **Envvars module** (`./envvars`): the `SERF_SESSION_ORIGIN` declaration only.
+- **Envvars module** (`./envvars`): the `EVENER_SESSION_ORIGIN` declaration only.
 
 Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/evener`):
 
@@ -2182,9 +2182,9 @@ git commit -m "feat(hub): project delete endpoint (path-validated, live-refusing
 
 ---
 
-## Task 15: `Origin` on `SessionMeta` + `SERF_SESSION_ORIGIN` plumb + TestRuns classification
+## Task 15: `Origin` on `SessionMeta` + `EVENER_SESSION_ORIGIN` plumb + TestRuns classification
 
-Add `Origin string` to `schema.SessionMeta`, fed from `SERF_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `evener serve` and one-shot `evener run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
+Add `Origin string` to `schema.SessionMeta`, fed from `EVENER_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `evener serve` and one-shot `evener run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
 
 **Files:**
 - Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`SERFSessionOrigin`), `docs/environment.md`
@@ -2210,7 +2210,7 @@ func TestSessionOriginFromEnv(t *testing.T) {
 	sess := newTestSession(t) // existing agent_test helper that calls agent.NewSession
 	defer sess.Close()
 	if got := sess.Meta().Origin; got != "test" {
-		t.Fatalf("Origin should come from SERF_SESSION_ORIGIN, got %q", got)
+		t.Fatalf("Origin should come from EVENER_SESSION_ORIGIN, got %q", got)
 	}
 }
 ```
@@ -2256,7 +2256,7 @@ In `agent/schema/snapshot.go`, add after the `IsSubagent` field:
 
 ```go
 	// Origin marks how the session was launched: "test" for agentic-testing
-	// runs (set via SERF_SESSION_ORIGIN), empty for normal sessions. The hub
+	// runs (set via EVENER_SESSION_ORIGIN), empty for normal sessions. The hub
 	// classifies an all-"test" project into the "Test runs" group.
 	Origin string `json:"origin,omitempty"`
 ```
@@ -2288,13 +2288,13 @@ In `agent/session_state.go`, in the `Meta()` return literal, add:
 In `envvars/envvars.go`, add to the `var (...)` block (near `SERFStateDir`):
 
 ```go
-	SERFSessionOrigin = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
+	SERFSessionOrigin = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
 ```
 
 and add `SERFSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Evener Commands`:
 
 ```
-| `SERF_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
+| `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
 ```
 
 - [ ] **Step 5: Regenerate the golden**
@@ -2353,7 +2353,7 @@ Expected: PASS.
 
 ```bash
 git add agent/schema/snapshot.go agent/session.go agent/session_init.go agent/session_state.go agent/session_origin_test.go agent/snapshot_golden_test.go envvars/envvars.go docs/environment.md cmd/evener-hub/internal/hubcore/tree.go cmd/evener-hub/internal/hubcore/tree_test.go cmd/evener-hub/web_api_tree.go
-git commit -m "feat: SessionMeta.Origin via SERF_SESSION_ORIGIN + TestRuns classification"
+git commit -m "feat: SessionMeta.Origin via EVENER_SESSION_ORIGIN + TestRuns classification"
 ```
 
 ---
@@ -3888,7 +3888,7 @@ Prove the rebuilt surface end-to-end against a freshly built hub, per the `e2e-s
 
 - [ ] **Step 1: Invoke the skill and author the cards**
 
-Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/evener-hub ./cmd/evener-hub && go build -o /tmp/evener ./cmd/evener`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `SERF_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
+Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/evener-hub ./cmd/evener-hub && go build -o /tmp/evener ./cmd/evener`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `EVENER_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
 
 - [ ] **Step 2: Card — expand-non-live survives a working session**
 
@@ -3964,7 +3964,7 @@ Every Review-log fold and mechanism maps to a task that implements **and** tests
 - **`UpdateMeta` (A5/B1, H3):** sorted re-insert + FTS re-rank → Task 12.
 - **Remote async cache:** → Task 13.
 - **Delete:** resolution from `All()` w/ StateDir (A1), key↔workingDir validation (A11), per-session `Roster.Find` re-check (A9), `.log.jsonl` + `<id>/` removal (B2), store scrubs incl. legacy row (B7/G3), live-refusal 409, deleted/skipped → Task 14.
-- **Origin (Decision 4):** SessionMeta.Origin + `SERF_SESSION_ORIGIN` (coordinates w/ WS2 goldens), **TestRuns-over-Archived** (B6) → Task 15.
+- **Origin (Decision 4):** SessionMeta.Origin + `EVENER_SESSION_ORIGIN` (coordinates w/ WS2 goldens), **TestRuns-over-Archived** (B6) → Task 15.
 - **Rename (Decision 2):** `evener/thread/name/set` + catalog + `ThreadCapabilities.Rename` + docs regen (B5) → Task 17; agent in-memory naming update (A8) + namer suppression → Task 16; live path UpdateMeta+bump + ended pre-write re-check (A2) + UpdateMeta+bump (G1) + legacy-daemon 404 toast, no live file-edit fallback (G2) + `TreeNode.Rename` resolution (G2) → Task 18.
 - **Renderer/overlay:** RowID keying incl. cross-tier duplicates (B3) → Task 19; sequence guard, instant attention path, ≥2s + 60s resync, per-op predicates, **post-POST resync** (H1), 30s eviction → Task 20; menu incl. anchor-removal close → Task 21; **migration post-first-render + copy-to-all** (G4) + survivors (H5: resizer app-shell + rail + open-beside) → Task 22; delete old only after new suite covers surviving contract → Task 23.
 - **Typography/density:** → Task 24. **e2e cards** (all four spec scenarios) → Task 25. **Final gates + doc regen** → Task 26.

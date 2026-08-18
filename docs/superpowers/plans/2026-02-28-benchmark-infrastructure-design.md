@@ -119,7 +119,7 @@ easy to distinguish incomplete from complete runs.
     "git_branch": "main",
     "git_dirty": false,
     "build_time": "2026-02-28T23:40:00Z",
-    "adapter": "serf_agent:SerfAgent",
+    "adapter": "evener_agent:SerfAgent",
     "kwargs": {
       "enable_reviewer_gate": true,
       "max_rounds": 100
@@ -340,7 +340,7 @@ status helps distinguish "intentionally filtered" from "crashed before finishing
 Harbor has no post-verification hook. The `TrialEvent.END` fires after the container
 is already destroyed. The adapter's `run()` override is the only extraction point.
 
-### Changes to serf_agent.py
+### Changes to evener_agent.py
 
 1. **Move state dir to bind mount**: Change `--state-dir` from `/tmp/evener-state` to
    `/logs/agent/evener-state`. Harbor bind-mounts `/logs/agent/` to the host, so
@@ -550,7 +550,7 @@ For comparisons:
 
 ~/eval/                              # Working directory for harbor
 ├── evener-linux-amd64                 # Current binary (updated per run)
-├── serf_agent.py                    # Current adapter (updated per run)
+├── evener_agent.py                    # Current adapter (updated per run)
 ├── install-evener.sh.j2               # Container setup template
 ├── .env                             # API keys (chmod 600)
 └── jobs/                            # Harbor's working output (temporary)
@@ -563,7 +563,7 @@ For comparisons:
 3. `uv tool install harbor==0.1.44` (pin version)
 4. Create directory structure
 5. Copy `.env` with API keys, `chmod 600 .env`
-6. Copy `install-evener.sh.j2` and `serf_agent.py`
+6. Copy `install-evener.sh.j2` and `evener_agent.py`
 7. Test with a single task: `./tools/run-eval.sh --job smoke-test --task build-cython-ext --reps 1`
 8. Verify archive structure is correct
 
@@ -613,7 +613,7 @@ but keep summary.json, manifest.json, and reward.txt (a few KB per run).
 
 - **Harbor** remains the eval orchestrator. We wrap it, not replace it.
 - **terminal-bench@2.0** dataset stays the same
-- **serf_agent.py** adapter pattern stays the same (enhanced with artifact extraction)
+- **evener_agent.py** adapter pattern stays the same (enhanced with artifact extraction)
 - **Transcript format** (JSONL) stays the same
 - **api.jsonl format** stays the same
 - **Docker containers** per task stays the same

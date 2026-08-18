@@ -519,7 +519,7 @@ Replace the `change` handler body so each successful save fires a toast:
 
     if (target.matches('input[name="theme"]')) {
       const v = target.value;
-      window.serfHub.setTheme(v === "system" ? null : v);
+      window.evenerHub.setTheme(v === "system" ? null : v);
       if (window.SerfToast) window.SerfToast.show("Theme: " + v, "success");
       return;
     }

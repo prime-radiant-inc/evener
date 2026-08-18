@@ -18,7 +18,7 @@ available to turn it off).
   `evener` binary the one-shot half needs is under it too, and that half never touches
   the hub:
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
@@ -101,7 +101,7 @@ rm -rf "$tmpdir1" "$tmpdir2"
 
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
-`SERF_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
+`EVENER_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
 `pkill -f evener-hub`, which takes out every other concurrent agent's hub too
 (`docs/agentic-testing.md`, "Cleanup recipe").
 

@@ -57,9 +57,9 @@ func (r *erroringReader) Read(p []byte) (int, error) {
 }
 
 func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
-	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
+	binary := os.Getenv("EVENER_CODEX_APP_SERVER_BINARY")
 	if binary == "" {
-		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
+		t.Skip("set EVENER_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
 	}
 	codexHome := t.TempDir()
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{
@@ -95,9 +95,9 @@ func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 }
 
 func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
-	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
+	binary := os.Getenv("EVENER_CODEX_APP_SERVER_BINARY")
 	if binary == "" {
-		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
+		t.Skip("set EVENER_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
 	}
 	endpoint, shutdown := startRealCodexAppServer(t, binary)
 	defer shutdown()
@@ -129,9 +129,9 @@ func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
 }
 
 func TestHubRPCRealCodexSourceModelList(t *testing.T) {
-	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
+	binary := os.Getenv("EVENER_CODEX_APP_SERVER_BINARY")
 	if binary == "" {
-		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
+		t.Skip("set EVENER_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
 	}
 	endpoint, shutdown := startRealCodexAppServer(t, binary)
 	defer shutdown()

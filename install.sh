@@ -15,8 +15,8 @@ else
 fi
 
 bindir=${BINDIR:-$prefix/bin}
-share_bindir=${SERF_SHARE_BINDIR:-$prefix/share/evener/bin}
-version=${SERF_INSTALL_VERSION:-latest}
+share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/evener/bin}
+version=${EVENER_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in
 	Linux) os=linux ;;
@@ -44,8 +44,8 @@ case "$os-$arch" in
 		;;
 esac
 
-archive_name="serf_${os}_${arch}.tar.gz"
-archive_root="serf_${os}_${arch}"
+archive_name="evener_${os}_${arch}.tar.gz"
+archive_root="evener_${os}_${arch}"
 if [ "$version" = "latest" ]; then
 	url="$repo/releases/latest/download/$archive_name"
 else

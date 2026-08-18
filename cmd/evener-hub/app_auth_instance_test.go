@@ -2,7 +2,7 @@ package main
 
 // Tests for Phase 2: re-keying credential RPCs by instance name.
 //
-// Each test uses a temp dir, a temp providers.toml, and SERF_STATE_DIR /
+// Each test uses a temp dir, a temp providers.toml, and EVENER_STATE_DIR /
 // XDG_STATE_HOME so that auth files and credentials land in isolated dirs.
 
 import (

@@ -331,7 +331,7 @@ Triage each hit: a routing/registration literal is fine; a *behavior* comparison
 
 - **Spec coverage:** every §4.2 row maps to Task 4/5/6/7/9; switching (§4.5-4.6) → Task 8; identity (§4.3) → Task 6; the leaf package (§4.1) → Task 1; the backstop (§7) → Tasks 2+10.
 - **Behavior-preserving:** Phase 1a introduces no `providers.toml` and no custom instances at runtime — the single env-derived instance is named after its type, so `name==type==tag` and all behavior is unchanged; the renamed-instance assertions are *test-only* construction.
-- **Deferred to 1b (not in this plan):** `providers.toml` + loader, `NewFromProviders`, per-instance OAuth + `AuthRecord.Validate` + `openai_login`, the `apiStyle` recipe + anthropic base-URL instances + the `openai-compatible` fold-in, spawn `SERF_PROVIDERS_CONFIG`, the relocated `DefaultStateRoot` *wiring* (the function exists in Task 1; its consumers are 1b).
+- **Deferred to 1b (not in this plan):** `providers.toml` + loader, `NewFromProviders`, per-instance OAuth + `AuthRecord.Validate` + `openai_login`, the `apiStyle` recipe + anthropic base-URL instances + the `openai-compatible` fold-in, spawn `EVENER_PROVIDERS_CONFIG`, the relocated `DefaultStateRoot` *wiring* (the function exists in Task 1; its consumers are 1b).
 - **Type consistency:** `BehaviorTag()` (method), `behaviorTag` (field), `providerconfig.BehaviorTag` (func), `NameToTag` used consistently.
 
 ## Execution Handoff

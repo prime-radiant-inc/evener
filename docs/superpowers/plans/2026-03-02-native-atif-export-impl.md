@@ -299,7 +299,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   e.Turn.Message.Text(),
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "checkpoint"},
+				Extra:     map[string]any{"evener_kind": "checkpoint"},
 			}
 			traj.Steps = append(traj.Steps, step)
 			stepID++
@@ -310,7 +310,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   e.Turn.Message.Text(),
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "summary"},
+				Extra:     map[string]any{"evener_kind": "summary"},
 			}
 			traj.Steps = append(traj.Steps, step)
 			stepID++
@@ -322,7 +322,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 				Source:    "system",
 				Message:   "(orphaned tool results)",
 				Timestamp: e.Turn.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				Extra:     map[string]any{"serf_kind": "orphaned_tool_results"},
+				Extra:     map[string]any{"evener_kind": "orphaned_tool_results"},
 			}
 			step.Observation = convertToolResults(e.Turn)
 			traj.Steps = append(traj.Steps, step)
@@ -677,14 +677,14 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(steps) = %d, want 2", len(traj.Steps))
 	}
-	if traj.Steps[0].Extra["serf_kind"] != "checkpoint" {
-		t.Errorf("step[0].extra.serf_kind = %v", traj.Steps[0].Extra["serf_kind"])
+	if traj.Steps[0].Extra["evener_kind"] != "checkpoint" {
+		t.Errorf("step[0].extra.evener_kind = %v", traj.Steps[0].Extra["evener_kind"])
 	}
 	if traj.Steps[0].Source != "system" {
 		t.Errorf("step[0].source = %q, want system", traj.Steps[0].Source)
 	}
-	if traj.Steps[1].Extra["serf_kind"] != "summary" {
-		t.Errorf("step[1].extra.serf_kind = %v", traj.Steps[1].Extra["serf_kind"])
+	if traj.Steps[1].Extra["evener_kind"] != "summary" {
+		t.Errorf("step[1].extra.evener_kind = %v", traj.Steps[1].Extra["evener_kind"])
 	}
 }
 
@@ -898,12 +898,12 @@ git commit -m "feat: --export-atif flag writes ATIF v1.6 trajectory at session c
 ### Task 5: Wire adapter and validate end-to-end
 
 **Files:**
-- Modify: `tools/serf_agent.py:109-124` (add --export-atif to command)
-- Modify: `tools/serf_agent.py:126-158` (copy trajectory from evener-state)
+- Modify: `tools/evener_agent.py:109-124` (add --export-atif to command)
+- Modify: `tools/evener_agent.py:126-158` (copy trajectory from evener-state)
 
 **Step 1: Add `--export-atif` flag to the adapter command**
 
-In `tools/serf_agent.py`, in `create_run_agent_commands()`, add the export flag.
+In `tools/evener_agent.py`, in `create_run_agent_commands()`, add the export flag.
 Insert before the command string construction (around line 109):
 
 ```python
@@ -934,7 +934,7 @@ return [
 
 **Step 2: Copy trajectory to logs_dir in `run()`**
 
-In `tools/serf_agent.py`, in the `run()` method's `finally` block, after downloading
+In `tools/evener_agent.py`, in the `run()` method's `finally` block, after downloading
 evener-state and artifacts, add:
 
 ```python
@@ -948,7 +948,7 @@ if traj_src.exists():
 **Step 3: Commit**
 
 ```bash
-git add tools/serf_agent.py
+git add tools/evener_agent.py
 git commit -m "feat: adapter passes --export-atif flag and copies trajectory for harbor viewer"
 ```
 

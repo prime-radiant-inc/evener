@@ -48,7 +48,7 @@ This makes "what goes where" **compiler-enforced**: the app module physically ca
 | `cmd/evener-hub` | **Supervisor** — **spawns `evener` subprocesses**, persists metadata, serves clients | evener (spawn), agent (schema only) | **AppWire protocol** + agent schema |
 | `cmd/evener-tui` | **Client** — terminal UI | evener-hub | **hubapi** (HTTP) + agent schema |
 
-Verified: evener-hub does `exec.Command(serfBinary, …, "--protocol", appwire.ProtocolVersion)`
+Verified: evener-hub does `exec.Command(evenerBinary, …, "--protocol", appwire.ProtocolVersion)`
 (spawn.go) — it does **not** embed the engine; its `agent` usage is schema types only
 (`SessionMeta` ×89, `TranscriptHeader`, `Turn`, …), never `NewSession`/`ProcessInput`.
 evener-tui uses `hubapi.NewClient(baseURL, httpClient)` and only `agent` schema types for

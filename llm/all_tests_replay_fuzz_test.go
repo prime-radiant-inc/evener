@@ -155,7 +155,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestLoadOrCreateContinuationSecretMissingStateDir(t)
 		TestStreamResultNilReceivers(t)
 		TestNewFromEnv_PassesStateDirOptionToFactories(t)
-		TestNewFromEnv_UsesSERFStateDirEnvByDefault(t)
+		TestNewFromEnv_UsesEVENERStateDirEnvByDefault(t)
 		TestNewFromEnv_PassesXDGStateHomeToFactories(t)
 		TestNewFromEnv_UsesRegisteredFactories(t)
 		TestDefaultClient_LazyInitializationFromEnv(t)

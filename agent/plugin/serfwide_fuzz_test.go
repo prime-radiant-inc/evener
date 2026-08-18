@@ -24,7 +24,7 @@ func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
 		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0644); err != nil {
 			t.Skip() // filename not representable on disk
 		}
-		got, warnings := DiscoverSerfWideCommands(nil)
+		got, warnings := DiscoverEvenerWideCommands(nil)
 		for key := range got {
 			if strings.ContainsAny(key, ": \t\n") || key == "" {
 				t.Fatalf("bad key %q escaped the guards", key)

@@ -239,7 +239,7 @@ Prompter selection: `NonInteractivePrompter`.
 
 `PermissionAskFallback`: `AskFallbackDeny`.
 
-`IsRemote`: false. Plugin install is out of band; serfeval just consumes the resolved set.
+`IsRemote`: false. Plugin install is out of band; evenereval just consumes the resolved set.
 
 ### 5.5 Shared helper
 

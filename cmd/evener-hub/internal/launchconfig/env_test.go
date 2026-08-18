@@ -32,10 +32,10 @@ func checkToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	want := map[string]string{
 		"PATH":              "/usr/bin",
 		"FOO":               "bar",
-		"SERF_HUB_SPAWNED":  "1",
-		"SERF_RUN_DIR":      "/run",
-		"SERF_STATE_DIR":    "/state",
-		"SERF_HUB_TOKEN":    "tok",
+		"EVENER_HUB_SPAWNED":  "1",
+		"EVENER_RUN_DIR":      "/run",
+		"EVENER_STATE_DIR":    "/state",
+		"EVENER_HUB_TOKEN":    "tok",
 		"ANTHROPIC_API_KEY": "sk-ant-FROM-FILE",
 	}
 	gotMap := envSliceToMap(got)
@@ -100,8 +100,8 @@ func checkToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
 		ProvidersConfigPath: "/hub/.evener/providers.toml",
 		ParentEnv:           []string{"PATH=/usr/bin"},
 	}))
-	if got["SERF_PROVIDERS_CONFIG"] != "/hub/.evener/providers.toml" {
-		t.Errorf("SERF_PROVIDERS_CONFIG = %q, want /hub/.evener/providers.toml", got["SERF_PROVIDERS_CONFIG"])
+	if got["EVENER_PROVIDERS_CONFIG"] != "/hub/.evener/providers.toml" {
+		t.Errorf("EVENER_PROVIDERS_CONFIG = %q, want /hub/.evener/providers.toml", got["EVENER_PROVIDERS_CONFIG"])
 	}
 }
 
@@ -109,8 +109,8 @@ func checkToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		ParentEnv: []string{"PATH=/usr/bin"},
 	}))
-	if _, ok := got["SERF_PROVIDERS_CONFIG"]; ok {
-		t.Errorf("SERF_PROVIDERS_CONFIG should not be set when ProvidersConfigPath is empty, got %q", got["SERF_PROVIDERS_CONFIG"])
+	if _, ok := got["EVENER_PROVIDERS_CONFIG"]; ok {
+		t.Errorf("EVENER_PROVIDERS_CONFIG should not be set when ProvidersConfigPath is empty, got %q", got["EVENER_PROVIDERS_CONFIG"])
 	}
 }
 
@@ -118,7 +118,7 @@ func checkToEnv_DoesNotIntroduceObsoleteRawHTTPLogging(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
 		ParentEnv: []string{"PATH=/usr/bin"},
 	}))
-	if _, ok := got["SERF_LOG_RAW_HTTP"]; ok {
+	if _, ok := got["EVENER_LOG_RAW_HTTP"]; ok {
 		t.Fatal("child environment unexpectedly introduced the obsolete raw HTTP logging control")
 	}
 }

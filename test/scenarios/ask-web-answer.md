@@ -50,7 +50,7 @@ gesture.
   unset XDG_STATE_HOME
   ```
 - Start the hub on a kernel-assigned port and read the port back from its own log line.
-  **Never pass `--state-dir`/`SERF_STATE_DIR`** to the hub or any daemon in this scenario —
+  **Never pass `--state-dir`/`EVENER_STATE_DIR`** to the hub or any daemon in this scenario —
   both the hub and each spawned daemon must use the default state layout so the hub's
   roster and each daemon's `/status` agree (the isolated `$HOME` above still gives each its
   own default):
@@ -67,9 +67,9 @@ gesture.
   HUB=http://127.0.0.1:$PORT
   TOKEN=$(cat "$HOME/.evener/auth-token")
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
-  export SERF_E2E_RUN="$run"   # how the sibling ask cards find this hub
+  export EVENER_E2E_RUN="$run"   # how the sibling ask cards find this hub
   ```
-- This card owns the hub the rest of the ask set reuses. `$SERF_E2E_RUN` is the
+- This card owns the hub the rest of the ask set reuses. `$EVENER_E2E_RUN` is the
   whole handoff — `$HOME`, the port, the token and the pid all re-derive from files
   under it, so no sibling has to know a port number and two agents running the set
   concurrently never meet. See "Handing this hub to a sibling card" in

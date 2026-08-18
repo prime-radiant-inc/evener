@@ -54,8 +54,8 @@ to where harbor viewer expects the file.
 | ASSISTANT      | "agent"     | text→message, tool_call→tool_calls, thinking→reasoning_content |
 | TOOL_RESULTS   | (merged)    | Merged into preceding agent step as observation.results |
 | STEERING       | "system"    | Concatenate text content parts |
-| CHECKPOINT     | "system"    | Preserved with extra.serf_kind="checkpoint" |
-| SUMMARY        | "system"    | Preserved with extra.serf_kind="summary" |
+| CHECKPOINT     | "system"    | Preserved with extra.evener_kind="checkpoint" |
+| SUMMARY        | "system"    | Preserved with extra.evener_kind="summary" |
 
 ### Content Part Mapping (ASSISTANT turns)
 
@@ -104,8 +104,8 @@ preserve all internal data:
 | Thinking signatures | step extra: {thinking_signature} |
 | Redacted thinking | step extra: {has_redacted_thinking: true} |
 | Web searches | step extra: {web_searches: [{query, raw}]} |
-| Checkpoint data | step extra: {serf_kind: "checkpoint", ...data} |
-| Summary content | step extra: {serf_kind: "summary"} |
+| Checkpoint data | step extra: {evener_kind: "checkpoint", ...data} |
+| Summary content | step extra: {evener_kind: "summary"} |
 | Reasoning tokens | metrics extra: {reasoning_tokens} |
 | Cache write tokens | metrics extra: {cache_write_tokens} |
 
@@ -176,7 +176,7 @@ type ATIFFinalMetrics struct {
 
 ## Adapter Change
 
-In `serf_agent.py`, add `--export-atif` flag to the command in `create_run_agent_commands()`:
+In `evener_agent.py`, add `--export-atif` flag to the command in `create_run_agent_commands()`:
 
 ```python
 export_atif_path = f"{_CONTAINER_STATE_DIR}/trajectory.json"

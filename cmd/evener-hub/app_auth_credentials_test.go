@@ -203,12 +203,12 @@ func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(
 
 func TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing(t *testing.T) {
 	clearProviderKeysFromEnvironment(t)
-	t.Setenv("SERF_ZR5R_MISSING_API_KEY", "")
+	t.Setenv("EVENER_ZR5R_MISSING_API_KEY", "")
 	client := &credentialProbeFakeClient{}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
 		Name:   "anthropic-work",
 		Type:   "anthropic",
-		APIKey: "$SERF_ZR5R_MISSING_API_KEY",
+		APIKey: "$EVENER_ZR5R_MISSING_API_KEY",
 	}}}
 	c := newCredentialProbeController(t, client, cfg)
 

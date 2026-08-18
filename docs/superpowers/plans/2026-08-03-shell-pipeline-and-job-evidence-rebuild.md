@@ -36,7 +36,7 @@
 - Remove the default `EXIT=` plus `job_watch(output_match=...)` recipe from the workflow prompt.
 - Explain that background shell jobs are automatically logged, completion notifications carry status/exit code, and retained output can be read with `read_transcript(transcript_ref="job:<job_id>")`.
 - Explain that `job_watch` is for genuine intermediate readiness conditions, not ordinary completion.
-- Keep an optional absolute-path `tee` example only for preserving an external full artifact beyond retained output; qualify `SERF_SCRATCH_DIR` because it is not present in every execution environment, recommend the delegate's scratch directory when available, and require reporting the artifact path to the parent.
+- Keep an optional absolute-path `tee` example only for preserving an external full artifact beyond retained output; qualify `EVENER_SCRATCH_DIR` because it is not present in every execution environment, recommend the delegate's scratch directory when available, and require reporting the artifact path to the parent.
 - Update the shell tool definition consistently without adding prompt-string tests.
 
 ## Task 4: Sol review gate

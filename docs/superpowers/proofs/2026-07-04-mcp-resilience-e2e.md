@@ -99,7 +99,7 @@ HOME="$SCRATCH/hubhome" /tmp/evener-hub --addr 127.0.0.1:29180 --evener /tmp/eve
 
 `--state-dir` was deliberately **not** passed to `serve` — see "Sharp edges"
 for why an explicit `--state-dir` silently breaks hub/session association,
-and why `XDG_STATE_HOME` (not `SERF_STATE_DIR`) is the credential-scoped knob.
+and why `XDG_STATE_HOME` (not `EVENER_STATE_DIR`) is the credential-scoped knob.
 
 ## Assertions, evidence, and verdicts
 
@@ -352,11 +352,11 @@ state). `git status` on the worktree is clean before and after.
 
 ## Sharp edges
 
-- **`--state-dir` vs `XDG_STATE_HOME` vs `SERF_STATE_DIR` are three different
+- **`--state-dir` vs `XDG_STATE_HOME` vs `EVENER_STATE_DIR` are three different
   knobs.** `evener serve --state-dir X` only sets the *session's own*
   persistence path (meta/transcript) and the API-log path; it does **not**
   affect where `providers.toml`/`credentials.toml` are read from
-  (`cmdutil.DefaultStateRoot()` reads the `SERF_STATE_DIR` **env var**
+  (`cmdutil.DefaultStateRoot()` reads the `EVENER_STATE_DIR` **env var**
   directly, independent of the `--state-dir` flag), nor where the OpenAI OAuth
   token is read from (`auth/openai.DefaultStateDirWithStateHome` reads the
   `XDG_STATE_HOME` **env var**, and only when no `EnvOption` overrides it —

@@ -12,13 +12,13 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 
 - Repo built: `go build -o evener-tui ./cmd/evener-tui && go build -o evener-hub ./cmd/evener-hub`.
 - A fresh `mktemp -d` directory the test will copy binaries into.
-- `SERF_HUB_BIN` unset in the environment.
+- `EVENER_HUB_BIN` unset in the environment.
 - `python3` on PATH (step 4 uses it to take a port from the kernel).
 
 ## Steps
 
 1. `tmpdir=$(mktemp -d); cp evener-tui evener-hub "$tmpdir/"`.
-2. `cd "$tmpdir" && unset SERF_HUB_BIN`.
+2. `cd "$tmpdir" && unset EVENER_HUB_BIN`.
 3. Confirm `$PATH` does NOT include the tmpdir (it shouldn't — fresh
    shell). `which evener-hub` should fail.
 4. Take an address nothing answers on, without choosing a number: bind
@@ -128,6 +128,6 @@ prevent, and the next card to start a hub is the one that pays for it.
   in the unit test `TestResolveFollowsSymlinkedExecutable`
   (`internal/binresolve/sibling_test.go#TestResolveFollowsSymlinkedExecutable`) but not exercised
   end-to-end here.
-- `unset SERF_HUB_BIN` matters; if a developer has it set (e.g. to
+- `unset EVENER_HUB_BIN` matters; if a developer has it set (e.g. to
   point at a wip build), the explicit override pre-empts sibling
   resolution and the test would pass trivially.

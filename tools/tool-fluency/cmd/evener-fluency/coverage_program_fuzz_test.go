@@ -96,10 +96,10 @@ func FuzzFluencyCoverage(f *testing.F) {
 			_ = run(args)
 		}
 
-		t.Setenv(envvars.SERFFluencyModel.Name, "x/y")
+		t.Setenv(envvars.EVENERFluencyModel.Name, "x/y")
 		_ = defaultModel()
-		t.Setenv(envvars.SERFFluencyModel.Name, "")
-		t.Setenv(envvars.SERFModel.Name, "a/b")
+		t.Setenv(envvars.EVENERFluencyModel.Name, "")
+		t.Setenv(envvars.EVENERModel.Name, "a/b")
 		_ = defaultModel()
 
 		_ = run([]string{"catalog", "--bad-flag"})
@@ -379,8 +379,8 @@ func FuzzFluencyCoverage(f *testing.F) {
 		}
 		liveProbeCfg := runConfig{model: "openai/m", harness: "live", outDir: filepath.Join(t.TempDir(), "live-out"), timeout: time.Second, reasoningEffort: "low"}
 		_ = runProbe(liveProbeCfg, probeFile{ID: "live", Prompt: "hello"}, 1, nil)
-		t.Setenv(envvars.SERFFluencyModel.Name, "")
-		t.Setenv(envvars.SERFModel.Name, "")
+		t.Setenv(envvars.EVENERFluencyModel.Name, "")
+		t.Setenv(envvars.EVENERModel.Name, "")
 		_ = defaultModel()
 		t.Setenv(envvars.XDGConfigHome.Name, tmpFile)
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{}, &probeResult{}, &bytes.Buffer{}, &bytes.Buffer{})

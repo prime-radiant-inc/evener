@@ -21,7 +21,7 @@
 
 ## Non-Goals
 
-- Do not add env var support; Phase 2B-docs-help owns `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- Do not add env var support; Phase 2B-docs-help owns `EVENER_OPENAI_RESPONSES_CONTINUATION`.
 - Do not enable `responses_delta`.
 - Do not send `previous_response_id`.
 - Do not change OpenAI `store:false`.

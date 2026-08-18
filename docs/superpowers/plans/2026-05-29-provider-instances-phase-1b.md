@@ -4,7 +4,7 @@
 
 **Goal:** Make provider *instances* real and config-driven: a machine-global `~/.evener/providers.toml` defines named instances (custom base URLs, multiple instances of one type, `openai` `apiStyle`, per-instance OAuth), loaded by `llm.NewFromProviders` and an instance-aware resolver, reaching the daemon + the hub + the `launch-check` subprocess. When the file is absent, the existing `NewFromEnv` path is unchanged (zero-config dev still works).
 
-**Architecture:** Builds on Phase 1a (instance NAME vs behavior TAG; session-injected `ResolveProfile`; central identity stamping; `internal/providerconfig` leaf). 1b adds: a `providers.toml` loader; per-instance adapter constructors (the env factories are opaque, so each adapter gains an instance constructor); `llm.NewFromProviders(cfg)`; a config-aware resolver; the `openai` apiStyle recipe + custom `anthropic` base-URL instances; per-instance OAuth (`auth/<instance>.json`); spawn `SERF_PROVIDERS_CONFIG`; and re-keying the deferred picker/launch behavior filters via `NameToTag` (now testable with custom instances).
+**Architecture:** Builds on Phase 1a (instance NAME vs behavior TAG; session-injected `ResolveProfile`; central identity stamping; `internal/providerconfig` leaf). 1b adds: a `providers.toml` loader; per-instance adapter constructors (the env factories are opaque, so each adapter gains an instance constructor); `llm.NewFromProviders(cfg)`; a config-aware resolver; the `openai` apiStyle recipe + custom `anthropic` base-URL instances; per-instance OAuth (`auth/<instance>.json`); spawn `EVENER_PROVIDERS_CONFIG`; and re-keying the deferred picker/launch behavior filters via `NameToTag` (now testable with custom instances).
 
 **Tech Stack:** Go. Design record: `docs/superpowers/specs/2026-05-29-provider-type-instance-model-design.md` (v7, §4.7–4.13). As-built 1a architecture: `docs/llm-providers.md`.
 
@@ -16,7 +16,7 @@
 
 ## Sub-phase boundaries (natural checkpoints)
 - **1b-core (Tasks 1–6):** loader + per-instance adapters + `NewFromProviders` + config-aware resolver + the load-or-env helper + apiStyle/anthropic recipes. **Landing:** a hand-written `providers.toml` with multiple/custom instances routes end-to-end through `evener run`/`serve`.
-- **1b-auth+spawn (Tasks 7–8):** per-instance OAuth + `SERF_PROVIDERS_CONFIG` spawn plumbing (hub-spawned daemons + launch-check use the file).
+- **1b-auth+spawn (Tasks 7–8):** per-instance OAuth + `EVENER_PROVIDERS_CONFIG` spawn plumbing (hub-spawned daemons + launch-check use the file).
 - **1b-rekey+verify (Tasks 9–12):** re-key the deferred behavior filters; integration backstop; sweep + full suite + smoke.
 
 ---
@@ -83,7 +83,7 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 
 **Files:** a shared helper (e.g. `cmdutil` or a small `internal/providerload`); `cmd/evener/serve.go`, `run.go`, `cmd/evener-hub/web.go`, `cmd/evener/launch_check.go`, `llm/generate.go` `DefaultClient` (+ tests).
 
-- [ ] **Step 1: failing test** — the helper returns `(*llm.Client, providerconfig.Config, hasConfig bool)`: when `$hubStateRoot/providers.toml` exists → `NewFromProviders` + the config + true; else → `NewFromEnv` + identity `NameToTag` + false. The path comes from `providerconfig.DefaultStateRoot()`/`SERF_PROVIDERS_CONFIG`.
+- [ ] **Step 1: failing test** — the helper returns `(*llm.Client, providerconfig.Config, hasConfig bool)`: when `$hubStateRoot/providers.toml` exists → `NewFromProviders` + the config + true; else → `NewFromEnv` + identity `NameToTag` + false. The path comes from `providerconfig.DefaultStateRoot()`/`EVENER_PROVIDERS_CONFIG`.
 - [ ] **Step 2:** run → fail.
 - [ ] **Step 3:** implement the helper; convert `serve.go:39`, `run.go:127`, `web.go:2024`, `launch_check.go:94` **and** `:159`, `DefaultClient` to use it; pass the `Config` into `SessionConfig`/`WebConfig` so the resolver (Task 5) and filters (Task 9) see it. **Landing: a hand-written `~/.evener/providers.toml` with 2 instances routes end-to-end via `evener run`.**
 - [ ] **Step 4:** run → pass; `go build ./... && go test ./...`.
@@ -99,13 +99,13 @@ The 1a resolver closure calls `cmdutil.SelectProfile` (env path). Make it config
 - [ ] **Step 4:** run → pass.
 - [ ] **Step 5:** commit.
 
-## Task 8: spawn `SERF_PROVIDERS_CONFIG`
+## Task 8: spawn `EVENER_PROVIDERS_CONFIG`
 
 **Files:** `internal/launchconfig/env.go`, `cmd/evener-hub/spawn.go`, the daemon load helper (Task 6) (+ tests).
 
-- [ ] **Step 1: failing tests** — `launchconfig.ToEnv` sets `SERF_PROVIDERS_CONFIG=<path>` when the hub has a config; a spawned `evener serve` and the `evener launch-check` subprocess both load it (the load helper consults `SERF_PROVIDERS_CONFIG` first, Task 6); `validateProviderCredentials` resolves the instance set (not the fixed maps) when a config exists.
+- [ ] **Step 1: failing tests** — `launchconfig.ToEnv` sets `EVENER_PROVIDERS_CONFIG=<path>` when the hub has a config; a spawned `evener serve` and the `evener launch-check` subprocess both load it (the load helper consults `EVENER_PROVIDERS_CONFIG` first, Task 6); `validateProviderCredentials` resolves the instance set (not the fixed maps) when a config exists.
 - [ ] **Step 2:** run → fail.
-- [ ] **Step 3:** implement: thread `SERF_PROVIDERS_CONFIG` into `req.Env` via `ToEnv`; both spawn paths get it; the load helper already consults it. Remove the single-provider env injection when a config is present (keep env fallback when absent).
+- [ ] **Step 3:** implement: thread `EVENER_PROVIDERS_CONFIG` into `req.Env` via `ToEnv`; both spawn paths get it; the load helper already consults it. Remove the single-provider env injection when a config is present (keep env fallback when absent).
 - [ ] **Step 4:** run → pass.
 - [ ] **Step 5:** commit.
 

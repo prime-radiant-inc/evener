@@ -23,7 +23,7 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
-const verboseE2EChildEnv = "SERF_TEST_VERBOSE_E2E_CHILD"
+const verboseE2EChildEnv = "EVENER_TEST_VERBOSE_E2E_CHILD"
 
 // TestServeVerboseSurvivesAnUnreadStderr drives the REAL serve path -- real
 // deps.bridge, real projection, real --verbose wiring -- against the stderr a

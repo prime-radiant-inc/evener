@@ -36,13 +36,13 @@ type recordedHTTPRequest struct {
 
 // newHTTPRequestRecorder returns middleware that appends every inbound request
 // to <stateRoot>/hub-http.jsonl for fuzz-corpus harvesting. It is opt-in via
-// SERF_RECORD_HTTP and default-off: when unset (or the file cannot be opened) it
+// EVENER_RECORD_HTTP and default-off: when unset (or the file cannot be opened) it
 // returns the identity middleware, so the handler stack is byte-identical to the
 // unrecorded one. Recording is side-effect-only — a failed write is swallowed
 // and never changes the response.
 func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 	identity := func(next http.Handler) http.Handler { return next }
-	if !envvars.RecorderEnabled(envvars.SERFRecordHTTP) {
+	if !envvars.RecorderEnabled(envvars.EVENERRecordHTTP) {
 		return identity
 	}
 	f, err := httpRecorderOpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)

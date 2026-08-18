@@ -9,7 +9,7 @@
 #
 # This script's own stdout is not meant to be read directly - it is shell
 # code for the caller to eval. That code:
-#   - exports SERF_GATE_CAPABILITY_SKIP, a `go test -skip` regex covering
+#   - exports EVENER_GATE_CAPABILITY_SKIP, a `go test -skip` regex covering
 #     every known test-name pattern that needs a capability this preflight
 #     found blocked (empty when nothing is blocked, so run-module-tests.sh
 #     never sees an unset variable under `set -u`);
@@ -102,7 +102,7 @@ for id in $capability_ids; do
 	esac
 done
 
-printf 'export SERF_GATE_CAPABILITY_SKIP=%s\n' "$(printf '%q' "$skip_regex")"
+printf 'export EVENER_GATE_CAPABILITY_SKIP=%s\n' "$(printf '%q' "$skip_regex")"
 for line in "${summary_lines[@]}"; do
 	printf 'echo %s >&2\n' "$(printf '%q' "$line")"
 done

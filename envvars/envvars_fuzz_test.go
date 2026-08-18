@@ -8,7 +8,7 @@ import (
 
 func FuzzEnvvarsSurface(f *testing.F) {
 	f.Add("  value  ", uint8(0))
-	f.Add("SERF_MODEL", uint8(1))
+	f.Add("EVENER_MODEL", uint8(1))
 	f.Add("OPENAI", uint8(2))
 	f.Add("on", uint8(3))
 	f.Add("\x00", uint8(4))
@@ -24,7 +24,7 @@ func FuzzEnvvarsSurface(f *testing.F) {
 func fuzzVarHelpers(t *testing.T, raw string) {
 	t.Helper()
 
-	v := Var{Name: "SERF_ENVVARS_FUZZ_VALUE"}
+	v := Var{Name: "EVENER_ENVVARS_FUZZ_VALUE"}
 	envValue := strings.ReplaceAll(raw, "\x00", "")
 	t.Setenv(v.Name, envValue)
 
@@ -104,10 +104,10 @@ func fuzzRegistry(t *testing.T, raw string) {
 	if got, ok := Find(raw); ok != wantOK || got != want {
 		t.Fatalf("Find(%q) = %#v, %v; want %#v, %v", raw, got, ok, want, wantOK)
 	}
-	if got, ok := Find(SERFModel.Name); !ok || got != SERFModel {
-		t.Fatalf("Find(%q) = %#v, %v", SERFModel.Name, got, ok)
+	if got, ok := Find(EVENERModel.Name); !ok || got != EVENERModel {
+		t.Fatalf("Find(%q) = %#v, %v", EVENERModel.Name, got, ok)
 	}
-	if got, ok := Find("SERF_ENVVARS_FUZZ_MISSING"); ok || got != (Var{}) {
+	if got, ok := Find("EVENER_ENVVARS_FUZZ_MISSING"); ok || got != (Var{}) {
 		t.Fatalf("Find(missing) = %#v, %v", got, ok)
 	}
 }
@@ -207,14 +207,14 @@ func fuzzRecorderConfig(t *testing.T, raw string) {
 		t.Fatal("recordTruthy rejected a true spelling or accepted a false spelling")
 	}
 
-	specific := Var{Name: "SERF_ENVVARS_FUZZ_RECORDER"}
-	t.Setenv(SERFFuzzRecord.Name, "off")
+	specific := Var{Name: "EVENER_ENVVARS_FUZZ_RECORDER"}
+	t.Setenv(EVENERFuzzRecord.Name, "off")
 	t.Setenv(specific.Name, envValue)
 	if got := RecorderEnabled(specific); got != wantTruthy {
 		t.Fatalf("RecorderEnabled(explicit %q) = %v, want %v", envValue, got, wantTruthy)
 	}
 
-	t.Setenv(SERFFuzzRecord.Name, envValue)
+	t.Setenv(EVENERFuzzRecord.Name, envValue)
 	if err := specific.Unsetenv(); err != nil {
 		t.Fatalf("unset specific recorder: %v", err)
 	}

@@ -48,7 +48,7 @@ Two behaviors (kata 31gh plus the scratch contract):
 - [ ] **Step 1 (failing test):** construct the exec env from a parent
   process whose PATH lacks `/opt/homebrew/bin` while the login shell
   provides it; assert the spawned command env's PATH contains the
-  login-shell entries. Second test: `SERF_SCRATCH_DIR` and `TMPDIR` are
+  login-shell entries. Second test: `EVENER_SCRATCH_DIR` and `TMPDIR` are
   present in the command env for an UNSANDBOXED session.
 - [ ] **Step 2 (implement PATH):** resolve the user's login-shell PATH once
   per daemon/session launch — `exec.Command(os.Getenv("SHELL"), "-lc",
@@ -58,7 +58,7 @@ Two behaviors (kata 31gh plus the scratch contract):
   existing filter untouched.
 - [ ] **Step 3 (implement scratch):** provision a per-session scratch dir
   unconditionally (reuse the sandbox scratch location convention) and
-  export `SERF_SCRATCH_DIR`/`TMPDIR` in `commandEnvironment` for
+  export `EVENER_SCRATCH_DIR`/`TMPDIR` in `commandEnvironment` for
   unsandboxed sessions too, matching `docs/environment.md`'s contract
   ("Evener-provided private scratch directory for one live session" — no
   sandbox-only caveat). Sandboxed behavior unchanged.
@@ -217,7 +217,7 @@ restricted mode's read roots.
   commit, pristine stderr), run `go test` on a trivial module, execute its
   SessionStart hook, and read its own capability preamble stating all of
   that — with zero trial-and-error discovery.
-- `SERF_SCRATCH_DIR`/`TMPDIR` present in every session's exec env.
+- `EVENER_SCRATCH_DIR`/`TMPDIR` present in every session's exec env.
 - Config/hooks write-protection provably unchanged.
 
 ### Amendment 2026-08-07 — global git config is readable in restricted mode

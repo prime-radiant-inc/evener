@@ -16,7 +16,7 @@ func replayClientConfigEdges(t *testing.T) {
 		fn   func(*testing.T)
 	}{
 		{"env-state-option", TestNewFromEnv_PassesStateDirOptionToFactories},
-		{"env-state-default", TestNewFromEnv_UsesSERFStateDirEnvByDefault},
+		{"env-state-default", TestNewFromEnv_UsesEVENERStateDirEnvByDefault},
 		{"env-state-home", TestNewFromEnv_PassesXDGStateHomeToFactories},
 		{"env-factories", TestNewFromEnv_UsesRegisteredFactories},
 		{"default-lazy", TestDefaultClient_LazyInitializationFromEnv},

@@ -7,7 +7,7 @@
 
 ## Goal
 
-Replace the brittle env-var + key-name heuristic path (`SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` + `defCommunicateWithRequiredDataKeys`) with a new CLI flag `--output-schema <string>` that accepts a full JSON schema verbatim. The schema becomes the `communicate` tool's `output` field schema, exactly as supplied, with no inference. Ends the silent data-loss bug tracked in evener issue #2.
+Replace the brittle env-var + key-name heuristic path (`EVENER_SUBMIT_RESULT_REQUIRED_DATA_KEYS` + `defCommunicateWithRequiredDataKeys`) with a new CLI flag `--output-schema <string>` that accepts a full JSON schema verbatim. The schema becomes the `communicate` tool's `output` field schema, exactly as supplied, with no inference. Ends the silent data-loss bug tracked in evener issue #2.
 
 ## 1. CLI flag specification
 
@@ -49,7 +49,7 @@ Implementation:
 - Parse `outputSchemaJSON` (if non-empty after `strings.TrimSpace`) into `map[string]any`. On parse error, return `fmt.Errorf("invalid --json-schema: %w", err)`.
 - Build the raw provider profile via the existing `NewOpenAIProfile` / `NewAnthropicProfile` / `NewGeminiProfile` / etc. dispatch.
 - If `outputSchemaJSON` was non-empty: wrap via the new `agent.WithCommunicateOutputSchema(p, parsedMap)`.
-- `WithAllowedDecisions` still applies afterward — `SERF_ALLOWED_DECISIONS` is untouched by this change.
+- `WithAllowedDecisions` still applies afterward — `EVENER_ALLOWED_DECISIONS` is untouched by this change.
 
 Delete the env-var fallback block and the helper `parseCommunicateRequiredDataKeys` — nothing else should call it. Delete `WithCommunicateRequiredDataKeys` wrapping from every provider branch.
 
@@ -118,7 +118,7 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 ## 6. What gets deleted
 
 **`cmdutil/cmdutil.go`:**
-- Env-var read of `SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` / `SERF_COMMUNICATE_REQUIRED_DATA_KEYS`.
+- Env-var read of `EVENER_SUBMIT_RESULT_REQUIRED_DATA_KEYS` / `EVENER_COMMUNICATE_REQUIRED_DATA_KEYS`.
 - `parseCommunicateRequiredDataKeys` function.
 - All `agent.WithCommunicateRequiredDataKeys(...)` calls in every provider branch.
 
@@ -135,7 +135,7 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 - `TestWithAllowedDecisions_WithRequiredDataKeys_BothApplied` — replace with `TestWithAllowedDecisions_WithOutputSchema_BothApplied`.
 - `TestAnthropicProfile_WithCommunicateRequiredDataKeys`.
 
-**Env vars:** `SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` and `SERF_COMMUNICATE_REQUIRED_DATA_KEYS` — no longer read anywhere. No deprecation shim. No warning on set. Clean removal.
+**Env vars:** `EVENER_SUBMIT_RESULT_REQUIRED_DATA_KEYS` and `EVENER_COMMUNICATE_REQUIRED_DATA_KEYS` — no longer read anywhere. No deprecation shim. No warning on set. Clean removal.
 
 ## 7. User-facing doc updates
 
@@ -144,7 +144,7 @@ The `communicate` tool ships with `Strict: &strictFalse` today. **Do not change 
 **`README.md`:**
 - Add `--json-schema <json>` to the flags table.
 - Add a short paragraph under a new "Structured output" subsection with one working example that matches the Claude-CLI style.
-- Remove any `SERF_SUBMIT_RESULT_REQUIRED_DATA_KEYS` references.
+- Remove any `EVENER_SUBMIT_RESULT_REQUIRED_DATA_KEYS` references.
 
 ## 8. Risks and edge cases
 

@@ -41,7 +41,7 @@ git rebase main
 Known conflict files and resolution strategy:
 - `agent/session.go` — accept BOTH: main's `modelResponses` turn_count fix AND worktree's task-driven workflow changes (task population in NewSession, dynamic reasoning effort). The two changes touch different parts of the file.
 - `agent/subagents.go` — accept worktree's version (has task_list parameter + AgentName fix + working_dir removal). Main's prompt dedup fix should already be in worktree (was cherry-picked as commit bbd3f96).
-- `tools/serf_agent.py` — accept worktree's version (reasoning_effort="low"). Main has "xhigh" from v55 which the worktree intentionally reverted.
+- `tools/evener_agent.py` — accept worktree's version (reasoning_effort="low"). Main has "xhigh" from v55 which the worktree intentionally reverted.
 - `agent/agents/coordinator.md` — accept worktree's version (YAML tasks with h/m/m effort levels). Main has v55 prose-based planning which the worktree replaced.
 - `docs/experiments/*` — accept worktree's versions (more recent experiment data).
 

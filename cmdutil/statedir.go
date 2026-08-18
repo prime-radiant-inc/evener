@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-// DefaultStateRoot returns the evener state root: $SERF_STATE_DIR when set,
+// DefaultStateRoot returns the evener state root: $EVENER_STATE_DIR when set,
 // otherwise ~/.evener (or ./.evener if the home directory can't be resolved).
 //
 // It is the single knob that redirects all home-based evener state — the provider
@@ -17,7 +17,7 @@ import (
 // sandboxed runs, and multi-instance setups all honor it, so cmd/evener and
 // cmd/evener-hub resolve the identical path.
 func DefaultStateRoot() string {
-	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
+	if dir := envvars.EVENERStateDir.Getenv(); dir != "" {
 		return dir
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -39,7 +39,7 @@ func ResolveStateKeyDir(workDir string) string {
 
 // DefaultProjectStateDir computes the default per-project runtime state
 // directory for workDir, for use when no explicit --state-dir flag or
-// SERF_STATE_DIR override is set: $XDG_STATE_HOME/evener/projects/<Project.ID>/.
+// EVENER_STATE_DIR override is set: $XDG_STATE_HOME/evener/projects/<Project.ID>/.
 func DefaultProjectStateDir(workDir string) (identifier.Project, string, error) {
 	return agent.RuntimeDir(workDir, "")
 }

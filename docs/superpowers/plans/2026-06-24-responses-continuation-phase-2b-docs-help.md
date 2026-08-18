@@ -4,7 +4,7 @@
 
 **Goal:** Wire the OpenAI Responses continuation launch setting through the envvars registry, deterministic env launch input, CLI/serve help, hub launch-setting metadata, and user-facing environment docs.
 
-**Architecture:** Keep the runtime setting as the same `openai_responses_continuation` session/launch field from Phase 2A. Add `SERF_OPENAI_RESPONSES_CONTINUATION` as a launch-time fallback when no CLI flag or hub launch arg supplies a value. Do not enable continuation, planner/storage eligibility, or provider-side storage.
+**Architecture:** Keep the runtime setting as the same `openai_responses_continuation` session/launch field from Phase 2A. Add `EVENER_OPENAI_RESPONSES_CONTINUATION` as a launch-time fallback when no CLI flag or hub launch arg supplies a value. Do not enable continuation, planner/storage eligibility, or provider-side storage.
 
 **Tech Stack:** Go, `envvars`, `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `docs/environment.md`.
 
@@ -13,8 +13,8 @@
 ## File Structure
 
 - `envvars/envvars.go`: add `SERFOpenAIResponsesContinuation` and include it in `allVars`.
-- `cmd/evener/run.go`: resolve `--openai-responses-continuation` over `SERF_OPENAI_RESPONSES_CONTINUATION`.
-- `cmd/evener/serve.go`: resolve the serve flag over `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- `cmd/evener/run.go`: resolve `--openai-responses-continuation` over `EVENER_OPENAI_RESPONSES_CONTINUATION`.
+- `cmd/evener/serve.go`: resolve the serve flag over `EVENER_OPENAI_RESPONSES_CONTINUATION`.
 - `cmd/evener/openai_responses_continuation_config.go` (or nearby existing file): add a tiny resolver helper if needed to avoid duplicating precedence logic.
 - `cmd/evener/main.go`: list the env var in direct CLI help.
 - `cmd/evener/serve.go`: list the env var in serve help.
@@ -47,11 +47,11 @@
 
 Add deterministic tests that prove:
 
-- CLI flag value wins over `SERF_OPENAI_RESPONSES_CONTINUATION`;
+- CLI flag value wins over `EVENER_OPENAI_RESPONSES_CONTINUATION`;
 - env var value is used when the CLI/serve flag is empty;
 - values are trimmed;
-- direct CLI help env list includes `SERF_OPENAI_RESPONSES_CONTINUATION`;
-- `evener serve` help env list includes `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- direct CLI help env list includes `EVENER_OPENAI_RESPONSES_CONTINUATION`;
+- `evener serve` help env list includes `EVENER_OPENAI_RESPONSES_CONTINUATION`.
 
 Keep assertions narrow: call the resolver and `printRunEnvVars` / `printServeEnvVars`; do not snapshot the full help output.
 
@@ -69,13 +69,13 @@ Add:
 
 ```go
 SERFOpenAIResponsesContinuation = Var{
-	Name: "SERF_OPENAI_RESPONSES_CONTINUATION",
+	Name: "EVENER_OPENAI_RESPONSES_CONTINUATION",
 	Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.",
 	Visibility: Public,
 }
 ```
 
-Include it in `allVars` near the other public `SERF_*` launch/runtime settings.
+Include it in `allVars` near the other public `EVENER_*` launch/runtime settings.
 
 - [ ] **Step 3: Add shared resolver**
 
@@ -128,13 +128,13 @@ Add the `EnvFallback` and update the description to mention:
 
 - values are `off` and `auto`;
 - default is `off`;
-- CLI/launch setting overrides `SERF_OPENAI_RESPONSES_CONTINUATION`;
+- CLI/launch setting overrides `EVENER_OPENAI_RESPONSES_CONTINUATION`;
 - resume restore layers explicit launch values over persisted snapshots;
 - `auto` may allow provider-side storage/retention and can affect provider-token/cost behavior once a future phase enables continuation.
 
 - [ ] **Step 3: Update environment docs**
 
-Add `SERF_OPENAI_RESPONSES_CONTINUATION` to `docs/environment.md` with the same values, default, precedence, restore behavior, and retention/cost caveat.
+Add `EVENER_OPENAI_RESPONSES_CONTINUATION` to `docs/environment.md` with the same values, default, precedence, restore behavior, and retention/cost caveat.
 
 - [ ] **Step 4: Add proof artifact**
 

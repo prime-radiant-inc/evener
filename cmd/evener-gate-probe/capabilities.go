@@ -61,14 +61,14 @@ var chromeCandidates = []string{
 	"/usr/bin/chromium-browser",
 }
 
-// gitCacheDir is the path probeGitCache checks. SERF_GATE_GIT_CACHE_DIR
+// gitCacheDir is the path probeGitCache checks. EVENER_GATE_GIT_CACHE_DIR
 // overrides the kata's literal /tmp/git-cache default for a host or fixture
 // that uses a different location; it is gate-tooling-only, not a supported
 // runtime variable for the evener/evener-hub product (docs/testing.md's env-var
 // rule governs product-facing vars, not this gate's own internal plumbing -
 // ROOT_FULL and WEB are the same kind of tooling-only variable already).
 func gitCacheDir() string {
-	if v := os.Getenv("SERF_GATE_GIT_CACHE_DIR"); v != "" {
+	if v := os.Getenv("EVENER_GATE_GIT_CACHE_DIR"); v != "" {
 		return v
 	}
 	return "/tmp/git-cache"

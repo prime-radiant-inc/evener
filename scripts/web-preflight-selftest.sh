@@ -4,7 +4,7 @@
 #
 # The real cmd/evener-hub/frontend/node_modules is the fleet's ONE shared
 # install, which this test must never read as fixture state and must never
-# write to; SERF_WEB_FRONTEND_DIR exists so every scenario below runs against
+# write to; EVENER_WEB_FRONTEND_DIR exists so every scenario below runs against
 # a throwaway tree under $work instead.
 #
 # `npm ci` is the command the script's whole refusal exists to fence, so a
@@ -59,7 +59,7 @@ install_at() {
 run_preflight() {
 	: >"$work/npm-calls.txt"
 	out="$(PATH="$stub_bin:$PATH" NPM_CALLS="$work/npm-calls.txt" \
-		SERF_WEB_FRONTEND_DIR="$1" "$script" 2>&1)"
+		EVENER_WEB_FRONTEND_DIR="$1" "$script" 2>&1)"
 	status=$?
 }
 

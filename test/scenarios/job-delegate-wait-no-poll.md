@@ -12,7 +12,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 
 ## Pre-state
 
-- Fresh scenario state dir (own `$SERF_STATE_DIR` / `$HOME`), so the poll-loop
+- Fresh scenario state dir (own `$EVENER_STATE_DIR` / `$HOME`), so the poll-loop
   detector and any nudge counters start clean and nothing pollutes a real
   instance.
 - A `evener serve` instance and a hub (or TUI) client built from the code under

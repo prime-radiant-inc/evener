@@ -6,7 +6,7 @@
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
 Archived (`navigationProjectBuckets`, `cmd/evener-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
-the `SERF_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
+the `EVENER_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
 read once at fresh-session create in `agent/session_init.go:209`), and whole-
 project delete through to on-disk removal.
 
@@ -52,7 +52,7 @@ a browser, and only assert what the rail renders.
    let it finish, then `POST /api/sessions/local:$SID_A/shutdown`.
    `GET /api/tree`: `$A`'s project key is in `projects[]`.
 2. Spawn a session in `$B` with
-   `launch_overrides:{env:{SERF_SESSION_ORIGIN:"test"}}`, let it finish, then
+   `launch_overrides:{env:{EVENER_SESSION_ORIGIN:"test"}}`, let it finish, then
    `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/tree`: `$B`'s key is
    in `test_runs[]` and in neither `projects[]` nor `archived_projects[]`.
 3. **Archive `$A`.** `POST /api/archive` with
@@ -171,7 +171,7 @@ a browser, and only assert what the rail renders.
   Until that resolves the row has a single placeholder child
   (`railNodes.ts:365-367`) rendering `Loading…` with `role="status"`
   (`RailRow.tsx:663-672`), so "expanded but empty" for a beat is normal.
-- **`SERF_SESSION_ORIGIN` must travel through `launch_overrides.env`, not the
+- **`EVENER_SESSION_ORIGIN` must travel through `launch_overrides.env`, not the
   hub's own environment.** `agent/session_init.go:209` reads it from the
   *daemon's* process env at fresh-create time, which the hub controls
   per-spawn: `launchconfig.ToEnv` applies per-launch env last so it wins over

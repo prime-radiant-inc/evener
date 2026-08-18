@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Serf mockups · #15 Connection &amp; main-agent errors</title>
+<title>Evener mockups · #15 Connection &amp; main-agent errors</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -18,10 +18,10 @@
    error treatments.
 
    Three failures the shipped UI conflates into one red row:
-     1. TRANSPORT — the daemon/appwire connection dropped. Serf
+     1. TRANSPORT — the daemon/appwire connection dropped. Evener
         lost the agent. (Today: "[error] stream failed: appwire
         unavailable" — a red row INSIDE the transcript, identical
-        to a failed tool. The user can't tell "Serf lost the
+        to a failed tool. The user can't tell "Evener lost the
         agent" from "the agent's tool failed".)
      2. TURN — the provider/model errored mid-turn. The turn ITSELF
         failed. (Today: no chrome-level promotion; it reads like
@@ -33,7 +33,7 @@
    Design grammar in play (design-system §2, §4, §7):
      · red = BROKE, full stop. A retry that's recovering is NOT red.
      · transport errors belong in the CHROME (top bar / liveness
-       bar), not the scroll flow — Serf, not the agent, is what
+       bar), not the scroll flow — Evener, not the agent, is what
        failed.
      · the human-readable summary is the PRIMARY line; the raw
        "[error] …" / stack / request-id is mono detail on expand.
@@ -150,7 +150,7 @@ body{overflow:auto}
    ALT B — liveness-bar takeover
    The pinned liveness strip (already always-reachable, never scrolls off)
    is the home for connection state. It is the most honest place: liveness
-   is exactly the question "is Serf still attached to the agent?". On a
+   is exactly the question "is Evener still attached to the agent?". On a
    drop it goes amber "Reconnecting…"; on give-up red "Connection lost".
    Transient provider retries also surface here, neutral.
    ===================================================================== */
@@ -190,7 +190,7 @@ body{overflow:auto}
 
 /* =====================================================================
    ALT D — error taxonomy card + collapsed retry counter
-   ONE card classifies WHAT broke: transport (Serf↔daemon), provider
+   ONE card classifies WHAT broke: transport (Evener↔daemon), provider
    (model/API), harness (tool runner), or cancelled (you interrupted).
    The taxonomy makes the transport-vs-turn distinction the headline, not
    a guess. A run of transient retries collapses to ONE counter line that
@@ -230,11 +230,11 @@ body{overflow:auto}
     <h1>Mockup #15 — Connection &amp; main-agent errors</h1>
     <p>Three things break in different ways, and the shipped UI shows them <b>identically</b>:
       a red row in the transcript. This page separates them so a glance answers the only question
-      that matters — <b>did Serf lose the agent, did the turn fail, or is the system just
+      that matters — <b>did Evener lose the agent, did the turn fail, or is the system just
       recovering?</b></p>
     <p class="probs"><b>What's wrong today</b> (see <code>crop-liveness.png</code>): a transport
       drop renders as <code>[error] stream failed: appwire unavailable</code> — a <b>red row inside
-      the transcript</b>, byte-identical to a failed tool, so you can't tell "Serf lost the agent"
+      the transcript</b>, byte-identical to a failed tool, so you can't tell "Evener lost the agent"
       from "the agent's tool failed". A <b>turn failure</b> (provider/model error) gets no
       chrome-level promotion and no obvious Retry. And a <b>transient retry / rate-limit</b> renders
       red — or as a silent gap — a <b>false stall or false failure</b>.
@@ -256,7 +256,7 @@ body{overflow:auto}
     <div class="you"><span class="tag">You</span><span class="q">Run the migration across all 240 shards.</span></div>
     <div class="agent lead">Starting the migration — applying the schema change shard by shard.</div>
     <div class="legacy-err">[error] stream failed: appwire unavailable</div>
-    <div class="before-note"><b>Why it's wrong:</b> this is a <b>transport</b> failure — Serf's
+    <div class="before-note"><b>Why it's wrong:</b> this is a <b>transport</b> failure — Evener's
       connection to the daemon dropped — but it's drawn exactly like a failed tool: a red mono row in
       the flow. There is <b>no Retry</b>, <b>no reconnect state</b>, and nothing tells you the agent
       may still be running on the daemon. A transient retry that's about to recover would render the
@@ -332,7 +332,7 @@ request-id: req_8fa1c…  ·  after 4 retries  ·  model gpt-5.5</pre></div>
   <section class="alt aB">
     <div class="alt-h"><span class="badge">B</span><span class="ttl">Liveness-bar takeover</span></div>
     <p class="cap">The pinned liveness strip is <b>already</b> the always-reachable home for "is the
-      agent alive?" — and connection state is exactly that question for Serf↔daemon. So put all
+      agent alive?" — and connection state is exactly that question for Evener↔daemon. So put all
       connection state there: amber <b>"Reconnecting…"</b> on a drop, red <b>"Connection lost"</b> with
       a Retry if it gives up, and a neutral <b>"retrying"</b> for transient provider backoff. Nothing
       touches the transcript; the scroll stays pure conversation. Turn failures still get the inline
@@ -441,7 +441,7 @@ request-id: req_2c90b…  ·  model gpt-5.5  ·  239 of 240 shards completed bef
        ===================================================================== -->
   <section class="alt aD">
     <div class="alt-h"><span class="badge">D</span><span class="ttl">Error taxonomy card + collapsed retry counter</span></div>
-    <p class="cap">One card whose <b>headline is the classification</b>: TRANSPORT (Serf↔daemon),
+    <p class="cap">One card whose <b>headline is the classification</b>: TRANSPORT (Evener↔daemon),
       PROVIDER (model/API), HARNESS (tool runner), or CANCELLED (you interrupted — neutral, not an
       error). Naming the kind makes the transport-vs-turn distinction explicit instead of leaving the
       user to infer it from a red row. Each kind carries the right action (Reconnect vs Retry turn) and
@@ -457,9 +457,9 @@ request-id: req_2c90b…  ·  model gpt-5.5  ·  239 of 240 shards completed bef
       <div class="f-body">
         <div class="agent">Starting the migration — applying the schema change shard by shard.</div>
         <div class="taxcard broke">
-          <div class="tc-head"><span class="tc-kind transport"><span class="g">⊘</span>Transport</span><span class="tc-scope">Serf ↔ daemon</span></div>
+          <div class="tc-head"><span class="tc-kind transport"><span class="g">⊘</span>Transport</span><span class="tc-scope">Evener ↔ daemon</span></div>
           <div class="tc-body">
-            <div class="tc-summary">Serf lost its connection to the daemon.</div>
+            <div class="tc-summary">Evener lost its connection to the daemon.</div>
             <div class="tc-hint">The agent may still be running there — reconnecting won't restart it.</div>
             <div class="tc-actions"><button class="tc-retry">Reconnect</button><button class="tc-more" onclick="this.closest('.taxcard').classList.toggle('open')">Show raw error</button></div>
           </div>

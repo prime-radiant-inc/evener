@@ -129,9 +129,9 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		_, _ = pastWeb.localSessionCWD("01PAST")
 		_, _ = pastWeb.localSessionCWD("01EMPTY")
 
-		t.Setenv(envvars.SERFRecordHTTP.Name, "")
+		t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 		_ = newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		t.Setenv(envvars.SERFRecordHTTP.Name, "1")
+		t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
 		httpRecorderOpenFile = func(string, int, os.FileMode) (*os.File, error) { return nil, errors.New("open") }
 		_ = newHTTPRequestRecorder(root)
 		httpRecorderOpenFile = oldRecOpen

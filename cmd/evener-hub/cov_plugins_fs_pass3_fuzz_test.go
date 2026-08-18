@@ -145,11 +145,11 @@ func fuzzExerciseModels(data []byte) {
 	sp := &fakeRPCSpawner{launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) { return models, nil }}
 	cfg := hubcore.WebConfig{Spawner: sp}
 	_, _ = hubModelList(ctx, cfg, registry, appwire.ModelListParams{})
-	_ = validateSerfLaunchModel(ctx, cfg, mustModelRef("p/"+name), "")
-	_ = validateSerfLaunchModel(ctx, cfg, mustModelRef("p/missing"), "")
-	_ = validateSerfLaunchModel(ctx, cfg, mustModelRef("missing/model"), "")
+	_ = validateEvenerLaunchModel(ctx, cfg, mustModelRef("p/"+name), "")
+	_ = validateEvenerLaunchModel(ctx, cfg, mustModelRef("p/missing"), "")
+	_ = validateEvenerLaunchModel(ctx, cfg, mustModelRef("missing/model"), "")
 	sp.launchModels = func(context.Context) ([]appwire.ModelDescriptor, error) { return nil, errors.New("models") }
-	_ = validateSerfLaunchModel(ctx, cfg, mustModelRef("p/anything"), "")
+	_ = validateEvenerLaunchModel(ctx, cfg, mustModelRef("p/anything"), "")
 
 	contract := &fakeRPCModelContractSpawner{contract: appwire.ModelListResponse{Data: models, Diagnostics: diags}}
 	ccfg := hubcore.WebConfig{Spawner: contract}

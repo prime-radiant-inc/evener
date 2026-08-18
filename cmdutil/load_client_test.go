@@ -45,7 +45,7 @@ func TestLoadClient_WithValidConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(validProvidersToml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	client, cfg, hasConfig, err := LoadClient()
 	if err != nil {
@@ -80,7 +80,7 @@ func TestLoadProviderConfigAtUsesExplicitPath(t *testing.T) {
 	if err := os.WriteFile(otherPath, []byte(corruptToml), 0o600); err != nil {
 		t.Fatalf("WriteFile other config: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", otherPath)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", otherPath)
 
 	cfg, hasConfig, err := LoadProviderConfigAt(wantedPath)
 	if err != nil {
@@ -108,7 +108,7 @@ api_key = "sk-openai-test"
 `), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	client, cfg, hasConfig, err := LoadClient()
@@ -134,7 +134,7 @@ func TestLoadClient_NoFile_SeedsInMemory(t *testing.T) {
 	// writing a file.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	client, cfg, hasConfig, err := LoadClient()
@@ -173,7 +173,7 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 	if err := os.WriteFile(path, []byte(corruptToml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	_, _, _, err := LoadClient()
 	if err == nil {
@@ -182,12 +182,12 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 }
 
 func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
-	// Clear SERF_PROVIDERS_CONFIG so LoadClient uses the default path.
-	// Clear SERF_STATE_DIR so DefaultStateRoot() falls back to the HOME path.
+	// Clear EVENER_PROVIDERS_CONFIG so LoadClient uses the default path.
+	// Clear EVENER_STATE_DIR so DefaultStateRoot() falls back to the HOME path.
 	// Override HOME so the default state root lands in a clean temp dir.
 	// The config is seeded in memory; hasConfig is true and no file is written.
-	t.Setenv("SERF_PROVIDERS_CONFIG", "")
-	t.Setenv("SERF_STATE_DIR", "")
+	t.Setenv("EVENER_PROVIDERS_CONFIG", "")
+	t.Setenv("EVENER_STATE_DIR", "")
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	dir := t.TempDir()
@@ -211,7 +211,7 @@ func TestLoadClient_ResolverPicksConfig_WhenHasConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(validProvidersToml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	_, cfg, hasConfig, err := LoadClient()
 	if err != nil || !hasConfig {
@@ -235,7 +235,7 @@ func TestLoadClient_ResolverPicksConfig_WhenSeeded(t *testing.T) {
 	// When providers.toml is absent it is seeded in memory; the resolver always
 	// goes through ResolveProfileFromConfig (always-config contract).
 	dir := t.TempDir()
-	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
+	t.Setenv("EVENER_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	_, cfg, hasConfig, err := LoadClient()
@@ -269,7 +269,7 @@ func TestBuildResolveProfile_AlwaysUsesConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(validProvidersToml), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	_, cfg, _, err := LoadClient()
 	if err != nil {
@@ -290,8 +290,8 @@ func TestBuildResolveProfile_AlwaysUsesConfig(t *testing.T) {
 func TestLoadClientSeedsInMemoryAndInjects(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
-	t.Setenv("SERF_STATE_DIR", dir)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_STATE_DIR", dir)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 
 	client, cfg, hasConfig, err := LoadClient(llm.WithStateDir(dir))
@@ -361,7 +361,7 @@ api_key = "sk-hdr-store-must-not-inject"
 	if err := os.WriteFile(credPath, []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	cfg, hasConfig, err := LoadProviderConfig()
 	if err != nil || !hasConfig {
@@ -415,7 +415,7 @@ api_key = "sk-hdr-store-must-not-inject"
 	if err := os.WriteFile(filepath.Join(dir, "credentials.toml"), []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	cfg, _, err := LoadProviderConfig()
 	if err != nil {
@@ -469,7 +469,7 @@ api_key = "sk-ant-store"
 	if err := os.WriteFile(filepath.Join(dir, "credentials.toml"), []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	cfg, _, err := LoadProviderConfig()
 	if err != nil {
@@ -504,7 +504,7 @@ api_style = "chat-completions"
 	if err := os.WriteFile(path, []byte(providers), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
 
 	cfg, _, err := LoadProviderConfig()
 	if err != nil {

@@ -889,13 +889,13 @@ git commit -m "style(evener-hub): replace hardcoded colors with CSS custom prope
 
 A real Settings page comes in Phase G. For now, expose a programmatic theme toggle for development.
 
-- [ ] **Step 1: Add window.serfHub.setTheme() helper to a new asset**
+- [ ] **Step 1: Add window.evenerHub.setTheme() helper to a new asset**
 
 ```js
 // cmd/evener-hub/assets/theme.js
 (function () {
-  window.serfHub = window.serfHub || {};
-  window.serfHub.setTheme = function (theme) {
+  window.evenerHub = window.evenerHub || {};
+  window.evenerHub.setTheme = function (theme) {
     if (theme === "light" || theme === "dark") {
       document.documentElement.setAttribute("data-theme", theme);
       localStorage.setItem("evener-hub.theme", theme);
@@ -914,7 +914,7 @@ A real Settings page comes in Phase G. For now, expose a programmatic theme togg
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "feat(evener-hub): add window.serfHub.setTheme(theme) helper for dev/settings use"
+git commit -m "feat(evener-hub): add window.evenerHub.setTheme(theme) helper for dev/settings use"
 ```
 
 ---

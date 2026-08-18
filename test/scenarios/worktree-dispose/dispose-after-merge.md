@@ -19,7 +19,7 @@ the op and must NOT be scored here).
 
 ## Pre-state
 
-- Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked),
+- Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked),
   as in the other worktree cards.
 - The launch session owns `manage_worktree` with the dispose operation.
 

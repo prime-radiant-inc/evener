@@ -4,7 +4,7 @@
 
 **Goal:** Build the hub-side layered launch-config resolver, credentials store, RPC surface, and spawn integration so that hub-launched `evener serve` daemons pick up the merged config from disk and per-launch overrides. UI work is in separate plans.
 
-**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.evener/credentials.toml`. The hub wires `evener/launch/*` and extends `evener/auth/*` to surface both via JSON-RPC. `cmd/evener-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[serf_launch]` shape.
+**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.evener/credentials.toml`. The hub wires `evener/launch/*` and extends `evener/auth/*` to surface both via JSON-RPC. `cmd/evener-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[evener_launch]` shape.
 
 **Tech Stack:** Go 1.21+, `github.com/BurntSushi/toml`, existing `internal/appwire` JSON-RPC framework, existing `cmd/evener-hub/appserver.HandleTyped` registration pattern.
 
@@ -1945,10 +1945,10 @@ func TestToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	want := map[string]string{
 		"PATH":              "/usr/bin",
 		"FOO":               "bar",
-		"SERF_HUB_SPAWNED":  "1",
-		"SERF_RUN_DIR":      "/run",
-		"SERF_STATE_DIR":    "/state",
-		"SERF_HUB_TOKEN":    "tok",
+		"EVENER_HUB_SPAWNED":  "1",
+		"EVENER_RUN_DIR":      "/run",
+		"EVENER_STATE_DIR":    "/state",
+		"EVENER_HUB_TOKEN":    "tok",
 		"ANTHROPIC_API_KEY": "sk-ant-FROM-FILE",
 	}
 	gotMap := envSliceToMap(got)
@@ -2060,15 +2060,15 @@ var providerEnvVar = map[string]string{
 // overwrite earlier writes.
 func ToEnv(in EnvInputs) []string {
 	out := append([]string{}, in.ParentEnv...)
-	out = setEnv(out, "SERF_HUB_SPAWNED", "1")
+	out = setEnv(out, "EVENER_HUB_SPAWNED", "1")
 	if in.RunDir != "" {
-		out = setEnv(out, "SERF_RUN_DIR", in.RunDir)
+		out = setEnv(out, "EVENER_RUN_DIR", in.RunDir)
 	}
 	if in.StateDir != "" {
-		out = setEnv(out, "SERF_STATE_DIR", in.StateDir)
+		out = setEnv(out, "EVENER_STATE_DIR", in.StateDir)
 	}
 	if in.HubToken != "" {
-		out = setEnv(out, "SERF_HUB_TOKEN", in.HubToken)
+		out = setEnv(out, "EVENER_HUB_TOKEN", in.HubToken)
 	}
 
 	// 2. Credentials store value.
@@ -3480,7 +3480,7 @@ git commit -m "evener-hub: ThreadStart honors launchOverrides via Resolve"
 
 ---
 
-## Task 17 — Drop the old `[serf_launch]` schema and clean up config
+## Task 17 — Drop the old `[evener_launch]` schema and clean up config
 
 **Files:**
 - Modify: `cmd/evener-hub/config.go`
@@ -3533,7 +3533,7 @@ Run:
 go test ./cmd/evener-hub/ -run TestLoadConfig -v
 ```
 
-Update any test that referenced `[serf_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.evener/launch.toml` and assert via the resolver.
+Update any test that referenced `[evener_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.evener/launch.toml` and assert via the resolver.
 
 - [ ] **Step 4: Update main.go to use HubStateRoot for everything**
 
@@ -3556,7 +3556,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/config.go cmd/evener-hub/config_test.go cmd/evener-hub/main.go
-git commit -m "evener-hub: drop legacy [serf_launch] config, add hub_state_root"
+git commit -m "evener-hub: drop legacy [evener_launch] config, add hub_state_root"
 ```
 
 ---
@@ -3675,7 +3675,7 @@ git commit -m "evener-hub: e2e test for layered launch config"
 
 - [ ] **Step 1: Update the README**
 
-In `cmd/evener-hub/README.md`, remove the section describing `[serf_launch]` and `[serf_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.evener/launch.toml`, `<project>/.evener/launch.toml`, `~/.evener/projects/<id>/launch.toml`, and `~/.evener/credentials.toml`. Reference the spec for details.
+In `cmd/evener-hub/README.md`, remove the section describing `[evener_launch]` and `[evener_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.evener/launch.toml`, `<project>/.evener/launch.toml`, `~/.evener/projects/<id>/launch.toml`, and `~/.evener/credentials.toml`. Reference the spec for details.
 
 Replace the existing example `hub.toml`:
 
@@ -3688,7 +3688,7 @@ past_index_db = "$HOME/.evener/index.db"
 spawn_timeout = "30s"
 ```
 
-Note: `[serf_launch]` is gone. Launch configuration goes in `~/.evener/launch.toml` (form-editable from the Hub UI).
+Note: `[evener_launch]` is gone. Launch configuration goes in `~/.evener/launch.toml` (form-editable from the Hub UI).
 
 - [ ] **Step 2: Run full test suite**
 
@@ -3723,6 +3723,6 @@ git commit -m "evener-hub: README points at new launch-config layout"
 - [ ] Task 14 — Register handlers + notifications
 - [ ] Task 15 — `spawn.go` rewrite
 - [ ] Task 16 — ThreadStart applies overrides
-- [ ] Task 17 — Drop legacy `[serf_launch]`
+- [ ] Task 17 — Drop legacy `[evener_launch]`
 - [ ] Task 18 — End-to-end test
 - [ ] Task 19 — README + final cleanup

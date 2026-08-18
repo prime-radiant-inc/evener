@@ -35,7 +35,7 @@ longer on it".
    "totallyfakeprovider/nonexistent-model-xyz"`:
    ```
    HTTP 503
-   {"error":"model provider is not reported by the Evener launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"model provider is not reported by the Evener launch harness: totallyfakeprovider","code":-32014,"evener_error_info":"hubLaunch"}
    ```
    Rejected in `validateSerfLaunchModel` (`cmd/evener-hub/app_models.go#validateSerfLaunchModel`,
    message at `:122`) before any subprocess is spawned. Legible, named,
@@ -46,7 +46,7 @@ longer on it".
    harness, this specific model is not):
    ```
    HTTP 503
-   {"error":"model is not configured for Evener launch: ollama/does-not-exist-blah-9999","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"model is not configured for Evener launch: ollama/does-not-exist-blah-9999","code":-32014,"evener_error_info":"hubLaunch"}
    ```
    Same gate, message at `cmd/evener-hub/app_models.go:124`. Legible.
 
@@ -54,7 +54,7 @@ longer on it".
    "/does/not/exist/proj-nonexistent-xyz"`:
    ```
    HTTP 400
-   {"error":"cwd: resolve: lstat /does: no such file or directory","code":-32602,"serf_error_info":"invalidParams"}
+   {"error":"cwd: resolve: lstat /does: no such file or directory","code":-32602,"evener_error_info":"invalidParams"}
    ```
    Caught in `hubThreadStart`'s `hubCanonicalizeDir` call — the
    `fspaths.CanonicalizeDir` seam at
@@ -68,7 +68,7 @@ longer on it".
    attempted against it:
    ```
    HTTP 503
-   {"error":"evener launch-check failed: fork/exec /nonexistent/path/to/evener-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
+   {"error":"evener launch-check failed: fork/exec /nonexistent/path/to/evener-binary-xyz: no such file or directory","code":-32014,"evener_error_info":"hubLaunch"}
    ```
    Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
    (`cmd/evener-hub/spawn.go:741-774`, message at `:762`), which execs
@@ -83,15 +83,15 @@ longer on it".
 silent hang.** Every failure is caught pre-spawn (model validation, cwd
 canonicalization, or the `launch-check` subprocess probe) and returned
 as a structured JSON body (`hubapi.ErrorResponse`, `hubapi/types.go#ErrorResponse`:
-`{"error": ..., "code": ..., "serf_error_info": ...}`) with an HTTP
+`{"error": ..., "code": ..., "evener_error_info": ...}`) with an HTTP
 status appropriate to the failure kind — 400 for caller input errors via
 `appwire.CodeInvalidParams` (`-32602`), 503 for launch/environment-side
 failures via `appwire.CodeUnavailable` (`-32014`), both in
 `appwire/errors.go:7,10`. The mapping is `writeSpawnError`
 (`cmd/evener-hub/web_spawn.go#writeSpawnError`) → `writeAPIWireError`
-(`cmd/evener-hub/web_api.go#writeAPIWireError`), with the `serf_error_info` string
-lifted off the wire error's data by `serfErrorInfoFromData`
-(`web_api.go#serfErrorInfoFromData`; the values are `appwire.ErrorInvalidParams` /
+(`cmd/evener-hub/web_api.go#writeAPIWireError`), with the `evener_error_info` string
+lifted off the wire error's data by `evenerErrorInfoFromData`
+(`web_api.go#evenerErrorInfoFromData`; the values are `appwire.ErrorInvalidParams` /
 `ErrorHubLaunch`, `appwire/errors.go:16,22`). WS5's fix holds: no
 regression to buried-stderr raw 500s was found for any of the three
 named classes. **No code change made — this card is the

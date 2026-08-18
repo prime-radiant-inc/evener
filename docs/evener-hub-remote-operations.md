@@ -67,7 +67,7 @@ Authorize each browser once with the startup log's `/auth?token=...` URL. For a
 remote TUI, pass the same capability out of band:
 
 ```bash
-SERF_HUB_AUTH_TOKEN='<token>' \
+EVENER_HUB_AUTH_TOKEN='<token>' \
   evener-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
 ```
 
@@ -109,7 +109,7 @@ Current flags verified from source:
 - `evener launch-check --protocol evener-appwire-v1 --model <provider/model> --json`
   validates the binary/protocol/model contract before spawn.
 - `evener-tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
-- `evener-tui --auth-token <token>` overrides `SERF_HUB_AUTH_TOKEN` and the local
+- `evener-tui --auth-token <token>` overrides `EVENER_HUB_AUTH_TOKEN` and the local
   token file.
 - `evener-tui --no-auto-start-hub` prevents local auto-start, which is usually
   what you want when targeting a remote Hub.
@@ -127,10 +127,10 @@ spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
 
-[serf_launch]
+[evener_launch]
 sse_ring_size = 4096
 
-[serf_launch.env]
+[evener_launch.env]
 XDG_STATE_HOME = "/var/lib/evener/state"
 ```
 
@@ -159,16 +159,16 @@ is a clean break: Hub leaves inert old state untouched for manual removal.
 SQLite index cannot be opened or rebuilt, Hub falls back to substring search
 over the loaded metadata.
 
-`serf_launch.env` overrides the environment inherited by spawned `evener serve`
-children. Hub also sets `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`,
-`SERF_STATE_DIR`, and a generated `SERF_HUB_TOKEN` for each child. Do not set
-`SERF_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
+`evener_launch.env` overrides the environment inherited by spawned `evener serve`
+children. Hub also sets `EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`,
+`EVENER_STATE_DIR`, and a generated `EVENER_HUB_TOKEN` for each child. Do not set
+`EVENER_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
 per-Hub token.
 Launch model choices come from that same Evener launch harness contract
 (`evener launch-check --models`) rather than a static model roster in
 `hub.toml`.
 
-`serf_launch.sse_ring_size` passes `--sse-ring-size` to Hub-owned Evener daemons.
+`evener_launch.sse_ring_size` passes `--sse-ring-size` to Hub-owned Evener daemons.
 Increase it when long sessions produce enough token delta events that late SSE
 or AppWire clients need a deeper replay window than the daemon default of 1000
 events.
@@ -179,11 +179,11 @@ per-project state layout:
 ```toml
 state_glob = "/var/lib/evener/state/evener/projects/*"
 
-[serf_launch.env]
+[evener_launch.env]
 XDG_STATE_HOME = "/var/lib/evener/state"
 ```
 
-Only set `SERF_STATE_DIR` when you deliberately want every spawned daemon to use
+Only set `EVENER_STATE_DIR` when you deliberately want every spawned daemon to use
 one exact state directory. If you do that, `state_glob` must match that exact
 directory, otherwise Hub can spawn sessions that it cannot later find in the
 past-session index.
@@ -192,7 +192,7 @@ past-session index.
 
 Hub validates configured provider/model choices before spawning Evener. Credential
 lookup uses the spawned child environment: the Hub process environment first,
-then `serf_launch.env` overrides.
+then `evener_launch.env` overrides.
 
 Supported current credential checks:
 
@@ -375,11 +375,11 @@ parses (see [Required Binaries](#required-binaries)) — exactly as they were
 passed.
 
 It does **not** recover environment variables the process was started with (a
-`SERF_PROVIDERS_CONFIG` or `XDG_STATE_HOME` override, say). Don't reach for a
+`EVENER_PROVIDERS_CONFIG` or `XDG_STATE_HOME` override, say). Don't reach for a
 Linux-style `ps eww`/`ps -E` to fill that gap: verified on macOS 26.5.1
 (Darwin 25.5.0) that neither flag surfaces another process's environment on
 this platform, even a same-user one. Check the recovered `hub.toml`'s
-`[serf_launch.env]` table instead (see [Hub Config](#hub-config)); an
+`[evener_launch.env]` table instead (see [Hub Config](#hub-config)); an
 override that is in neither place is not recoverable by inspection.
 
 **3. Find where its log is going.**

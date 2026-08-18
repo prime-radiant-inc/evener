@@ -309,15 +309,15 @@ if [ -z "$out" ]; then
   echo "missing -o" >&2
   exit 2
 fi
-printf '%s\n' "$url" > "$SERF_FAKE_CURL_URL_FILE"
-cp "$SERF_FAKE_CURL_ARCHIVE" "$out"
+printf '%s\n' "$url" > "$EVENER_FAKE_CURL_URL_FILE"
+cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 `)
 
 			env := installTestEnv(t, home, map[string]string{
 				"PATH":                    fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-				"SERF_INSTALL_VERSION":    "v1.2.3",
-				"SERF_FAKE_CURL_ARCHIVE":  archive,
-				"SERF_FAKE_CURL_URL_FILE": urlFile,
+				"EVENER_INSTALL_VERSION":    "v1.2.3",
+				"EVENER_FAKE_CURL_ARCHIVE":  archive,
+				"EVENER_FAKE_CURL_URL_FILE": urlFile,
 			})
 			runCommand(t, repoRoot, env, "sh", script)
 
@@ -375,8 +375,8 @@ api_key = "sk-install-test"
 	}
 
 	env := overlayEnv(baseEnv, map[string]string{
-		"SERF_PROVIDERS_CONFIG": providersPath,
-		"SERF_HUB_TOKEN":        "",
+		"EVENER_PROVIDERS_CONFIG": providersPath,
+		"EVENER_HUB_TOKEN":        "",
 	})
 
 	var stdout, stderr bytes.Buffer

@@ -14,7 +14,7 @@ Tech Stack: GNU/BSD make, Bash selftests, Go 1.25 workspace/module tooling, Go Y
 - Preserve published gate coverage and ROOT_FULL=1 semantics.
 - merge-approval-gate runs lint, build, and ROOT_FULL=1 test serially and never runs fuzzing.
 - lint-generated validates both docs/appwire-protocol.md and cmd/evener-hub/frontend/src/protocol/types.gen.ts.
-- Missing gitleaks remains warning-plus-zero unless SERF_GITLEAKS_REQUIRED=1; only CI scan steps set that variable.
+- Missing gitleaks remains warning-plus-zero unless EVENER_GITLEAKS_REQUIRED=1; only CI scan steps set that variable.
 - fdhx changes only the root primeradiant.com/evener/identifier v0.0.0 requirement; do not align x/sys or x/text.
 - Tests exercise real target behavior at external boundaries, not rendered recipe text or mock existence.
 - Every behavior change follows RED, verify failure, minimal GREEN, verify pass, then commit.
@@ -190,18 +190,18 @@ Files:
 
 Interfaces:
 
-- SERF_GITLEAKS_REQUIRED=1 is the only strict-mode opt-in.
+- EVENER_GITLEAKS_REQUIRED=1 is the only strict-mode opt-in.
 - The aggregate repository scan and corpus scan CI steps each set that variable through step-level env.
 
 - [ ] Step 1: Add direct optional/required gitleaks tests before changing the script.
 
-Use a fake git at the external dependency boundary so the real scan script resolves a known repository root while PATH contains no gitleaks. Assert that the unset case returns zero with the existing warning. Assert that SERF_GITLEAKS_REQUIRED=1 returns nonzero and contains this future diagnostic:
+Use a fake git at the external dependency boundary so the real scan script resolves a known repository root while PATH contains no gitleaks. Assert that the unset case returns zero with the existing warning. Assert that EVENER_GITLEAKS_REQUIRED=1 returns nonzero and contains this future diagnostic:
 
     error: gitleaks is required but not installed; cannot run repo secret scan
 
 - [ ] Step 2: Add the structured CI test before changing the workflow.
 
-Add TestCISetsStrictGitleaksModeOnScanSteps to lintfamily_audit_test.go. Parse the existing workflow type and inspect step.Run only. For every step whose run block contains make lint or make fuzz-corpus-scan, require step.Env["SERF_GITLEAKS_REQUIRED"] == "1"; require exactly two scan-bearing steps. The current workflow must fail this test with a named missing environment setting.
+Add TestCISetsStrictGitleaksModeOnScanSteps to lintfamily_audit_test.go. Parse the existing workflow type and inspect step.Run only. For every step whose run block contains make lint or make fuzz-corpus-scan, require step.Env["EVENER_GITLEAKS_REQUIRED"] == "1"; require exactly two scan-bearing steps. The current workflow must fail this test with a named missing environment setting.
 
 - [ ] Step 3: Run the RED tests.
 
@@ -216,7 +216,7 @@ Expected: the shell test reports required mode incorrectly exits zero, and the G
 
 In scripts/gitleaks-scan.sh, inside the missing-command branch, check only the literal value 1:
 
-    if [ "${SERF_GITLEAKS_REQUIRED:-}" = 1 ]; then
+    if [ "${EVENER_GITLEAKS_REQUIRED:-}" = 1 ]; then
             echo "error: gitleaks is required but not installed; cannot run $mode secret scan (install: https://github.com/gitleaks/gitleaks)" >&2
             exit 1
     fi
@@ -230,7 +230,7 @@ Use the default-empty expansion safely when the variable is unset. Do not change
 Add this exact env block under both the aggregate lint step and the corpus secret-scan step:
 
     env:
-      SERF_GITLEAKS_REQUIRED: "1"
+      EVENER_GITLEAKS_REQUIRED: "1"
 
 Run:
 

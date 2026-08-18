@@ -89,7 +89,7 @@ type Session struct {
 	stateDir   string
 	installID  string
 	// origin marks how the session was launched: "test" for agentic-testing
-	// runs (set from SERF_SESSION_ORIGIN on fresh create), empty for normal
+	// runs (set from EVENER_SESSION_ORIGIN on fresh create), empty for normal
 	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
 	// Surfaced back out via Meta().Origin so the hub can classify an
 	// all-"test" project into the "Test runs" group.

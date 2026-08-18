@@ -18,7 +18,7 @@ import (
 // registeringFakeSerf is a stub daemon that says one thing on each stream,
 // registers a rendezvous entry under sessionID, and lingers just long enough
 // to look alive. runDir is baked in rather than read from the environment so
-// the stub cannot pick up an ambient SERF_RUN_DIR from the machine running
+// the stub cannot pick up an ambient EVENER_RUN_DIR from the machine running
 // the test.
 func registeringFakeSerf(runDir, sessionID, onStdout, onStderr string) string {
 	return fmt.Sprintf(`#!/bin/sh

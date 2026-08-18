@@ -157,8 +157,8 @@ if [ "$1" = "launch-check" ]; then
   exit 0
 fi
 if [ "$1" = "serve" ]; then
-  mkdir -p "$SERF_RUN_DIR"
-  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
 {"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
 EOF
   sleep 1
@@ -613,17 +613,17 @@ func TestToEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 	})
 	got := envMap(env)
 
-	if got["SERF_HUB_SPAWNED"] != "1" {
-		t.Fatalf("SERF_HUB_SPAWNED=%q, want 1", got["SERF_HUB_SPAWNED"])
+	if got["EVENER_HUB_SPAWNED"] != "1" {
+		t.Fatalf("EVENER_HUB_SPAWNED=%q, want 1", got["EVENER_HUB_SPAWNED"])
 	}
-	if got["SERF_RUN_DIR"] != "/tmp/run" {
-		t.Fatalf("SERF_RUN_DIR=%q, want /tmp/run", got["SERF_RUN_DIR"])
+	if got["EVENER_RUN_DIR"] != "/tmp/run" {
+		t.Fatalf("EVENER_RUN_DIR=%q, want /tmp/run", got["EVENER_RUN_DIR"])
 	}
-	if got["SERF_STATE_DIR"] != "/tmp/state" {
-		t.Fatalf("SERF_STATE_DIR=%q, want /tmp/state", got["SERF_STATE_DIR"])
+	if got["EVENER_STATE_DIR"] != "/tmp/state" {
+		t.Fatalf("EVENER_STATE_DIR=%q, want /tmp/state", got["EVENER_STATE_DIR"])
 	}
-	if got["SERF_HUB_TOKEN"] != "generated-token" {
-		t.Fatalf("SERF_HUB_TOKEN=%q, want generated-token", got["SERF_HUB_TOKEN"])
+	if got["EVENER_HUB_TOKEN"] != "generated-token" {
+		t.Fatalf("EVENER_HUB_TOKEN=%q, want generated-token", got["EVENER_HUB_TOKEN"])
 	}
 	if got["OPENROUTER_API_KEY"] != "configured-secret" {
 		t.Fatalf("OPENROUTER_API_KEY=%q, want configured-secret", got["OPENROUTER_API_KEY"])
@@ -635,11 +635,11 @@ func TestToEnvUsesExplicitConfigBeforeInheritedEnv(t *testing.T) {
 
 func TestToEnvPerLaunchEnvWinsOverHubToken(t *testing.T) {
 	// Per-launch Env (Effective.Env) is applied last in ToEnv, so it wins
-	// over the HubToken. In practice, Spawn never puts SERF_HUB_TOKEN in
+	// over the HubToken. In practice, Spawn never puts EVENER_HUB_TOKEN in
 	// Effective.Env, so the generated token always reaches the child.
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
-			Env: map[string]string{"SERF_HUB_TOKEN": "per-launch-override"},
+			Env: map[string]string{"EVENER_HUB_TOKEN": "per-launch-override"},
 		}},
 		RunDir:    "/tmp/run",
 		StateDir:  "/tmp/state",
@@ -648,8 +648,8 @@ func TestToEnvPerLaunchEnvWinsOverHubToken(t *testing.T) {
 	})
 	got := envMap(env)
 
-	if got["SERF_HUB_TOKEN"] != "per-launch-override" {
-		t.Fatalf("SERF_HUB_TOKEN=%q, want per-launch-override (per-launch env wins)", got["SERF_HUB_TOKEN"])
+	if got["EVENER_HUB_TOKEN"] != "per-launch-override" {
+		t.Fatalf("EVENER_HUB_TOKEN=%q, want per-launch-override (per-launch env wins)", got["EVENER_HUB_TOKEN"])
 	}
 }
 
@@ -665,10 +665,10 @@ if [ "$1" = "launch-check" ]; then
   exit 0
 fi
 if [ "$1" = "serve" ]; then
-  printf '%s' "$SERF_HUB_TOKEN" > "$TOKEN_OUT"
-  mkdir -p "$SERF_RUN_DIR"
-  cat > "$SERF_RUN_DIR/$$.json" <<EOF
-{"pid":$$,"address":"127.0.0.1:1","hub_token":"$SERF_HUB_TOKEN","started_at":"2999-01-01T00:00:00Z"}
+  printf '%s' "$EVENER_HUB_TOKEN" > "$TOKEN_OUT"
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","hub_token":"$EVENER_HUB_TOKEN","started_at":"2999-01-01T00:00:00Z"}
 EOF
   sleep 1
   exit 0
@@ -697,7 +697,7 @@ exit 2
 		t.Fatalf("read token output: %v", err)
 	}
 	if string(data) != "generated-token" {
-		t.Fatalf("child SERF_HUB_TOKEN=%q, want generated-token", data)
+		t.Fatalf("child EVENER_HUB_TOKEN=%q, want generated-token", data)
 	}
 }
 
@@ -722,8 +722,8 @@ fi
 if [ "$1" = "serve" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
   env > "$ENV_OUT"
-  mkdir -p "$SERF_RUN_DIR"
-  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
 {"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
 EOF
   sleep 1
@@ -765,8 +765,8 @@ exit 2
 	if env["XDG_STATE_HOME"] != stateHome {
 		t.Fatalf("child XDG_STATE_HOME=%q, want %q", env["XDG_STATE_HOME"], stateHome)
 	}
-	if env["SERF_STATE_DIR"] != stateDir {
-		t.Fatalf("child SERF_STATE_DIR=%q, want %q", env["SERF_STATE_DIR"], stateDir)
+	if env["EVENER_STATE_DIR"] != stateDir {
+		t.Fatalf("child EVENER_STATE_DIR=%q, want %q", env["EVENER_STATE_DIR"], stateDir)
 	}
 }
 
@@ -1110,7 +1110,7 @@ func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
 
 func TestRedactEnvSecretsKeepsShortSensitiveValues(t *testing.T) {
 	got := redactEnvSecrets("evener launch-check exited with code 1", envFromMap(map[string]string{
-		"SERF_HUB_TOKEN": "1",
+		"EVENER_HUB_TOKEN": "1",
 	}))
 	if got != "evener launch-check exited with code 1" {
 		t.Fatalf("diagnostic=%q", got)
@@ -1600,8 +1600,8 @@ if [ "$1" = "launch-check" ]; then
   exit 0
 fi
 if [ "$1" = "serve" ]; then
-  mkdir -p "$SERF_RUN_DIR"
-  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
 {"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
 EOF
   sleep 1

@@ -13,7 +13,7 @@ Proposed `MaxAnchorAgeSeconds`: `3600`
 ## Evidence
 
 ```sh
-set -a; . ../../.env; set +a; SERF_LOG_RAW_HTTP=1 SERF_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
+set -a; . ../../.env; set +a; EVENER_LOG_RAW_HTTP=1 EVENER_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
 ```
 
 Observed result:

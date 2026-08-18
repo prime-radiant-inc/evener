@@ -748,7 +748,7 @@ Wire `terminateGoalOnError` on `ProcessInput`'s `err != nil` return path, and in
 
 - [ ] **Step 1: Race test** — mirror `session_sync_race_test.go`: spawn goroutines hammering `SetGoal`/`ClearGoal` while a goroutine drives `armGoalContinuation`; assert no panic and (via the in-turn flag invariant) no `active`-but-unkicked stall. Run `cd agent && go test -race ./... -run TestGoal` → PASS.
 
-- [ ] **Step 2: E2E (the proof)** — gated behind the live-model build tag/env used by evener's existing live tests (see `reference_serf_live_run`: build, source `.env`, `--model oai-work/<model>`). Scenario A: `SetGoal("create a file /tmp/serf_goal_proof.txt containing exactly OK")`, drive `ProcessInput` continuations until idle; assert the file exists with contents `OK`, the goal reached `complete`, and an `EventGoalEnded{status:complete}` was emitted. Scenario B: impossible objective → assert it auto-blocks within `NoProgressLimit+1` turns with `EventGoalEnded{status:blocked}`.
+- [ ] **Step 2: E2E (the proof)** — gated behind the live-model build tag/env used by evener's existing live tests (see `reference_serf_live_run`: build, source `.env`, `--model oai-work/<model>`). Scenario A: `SetGoal("create a file /tmp/evener_goal_proof.txt containing exactly OK")`, drive `ProcessInput` continuations until idle; assert the file exists with contents `OK`, the goal reached `complete`, and an `EventGoalEnded{status:complete}` was emitted. Scenario B: impossible objective → assert it auto-blocks within `NoProgressLimit+1` turns with `EventGoalEnded{status:blocked}`.
 
 ```go
 //go:build live

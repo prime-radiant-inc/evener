@@ -371,7 +371,7 @@ All from `search.js:326-517` unless noted:
 
 ### 4.1 Theme — core primitive (`theme.js`)
 
-- [ ] `window.serfHub.setTheme(theme)`: for `"light"`/`"dark"`, sets `<html data-theme="…">` AND `localStorage["evener-hub.theme"]`; for anything else (including `null`/`"system"`), REMOVES both the attribute and the storage key, letting `prefers-color-scheme` take over (`theme.js:3-11`)
+- [ ] `window.evenerHub.setTheme(theme)`: for `"light"`/`"dark"`, sets `<html data-theme="…">` AND `localStorage["evener-hub.theme"]`; for anything else (including `null`/`"system"`), REMOVES both the attribute and the storage key, letting `prefers-color-scheme` take over (`theme.js:3-11`)
 
 ### 4.2 Theme — FOUC avoidance (NOT in theme.js — inline per-document)
 

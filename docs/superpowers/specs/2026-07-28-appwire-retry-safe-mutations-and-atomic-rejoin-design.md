@@ -241,7 +241,7 @@ Every error response to an in-scope mutation carries:
 
 ```json
 {
-  "serfErrorInfo": "conflict",
+  "evenerErrorInfo": "conflict",
   "clientMutationId": "9e03…",
   "mutationOutcome": "notAccepted",
   "retryDisposition": "none"
@@ -256,7 +256,7 @@ Every error response to an in-scope mutation carries:
 - `targetDeleted` when authoritative deletion irrevocably fenced the target,
   so replay must stop without claiming the mutation never applied.
 
-`unknown` uses `serfErrorInfo: "mutationOutcomeUnknown"` and is never rendered
+`unknown` uses `evenerErrorInfo: "mutationOutcomeUnknown"` and is never rendered
 as a mutation failure. The outbox retains the original record and retries it
 with the same ID. Terminal rejection replay returns the original error with
 `mutationOutcome: "notAccepted"`.
@@ -270,7 +270,7 @@ incorporated it.
 
 `retryDisposition` is `automatic`, `blocked`, or `none`. Transport loss uses
 `automatic`. A daemon journal write failure uses `blocked` with
-`serfErrorInfo: "mutationOutcomeUnknown"` and
+`evenerErrorInfo: "mutationOutcomeUnknown"` and
 `cause: "persistenceUnavailable"`; elapsed time never changes one disposition
 into another. Terminal rejection and target deletion use `none`.
 

@@ -568,7 +568,7 @@ func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 }
 
 func TestEnvVarPolicy_InheritNone(t *testing.T) {
-	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_not_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	env.EnvPolicy = EnvPolicyNone
@@ -578,7 +578,7 @@ func TestEnvVarPolicy_InheritNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
-	if strings.Contains(res.Stdout, "SERF_TEST_MARKER=") {
+	if strings.Contains(res.Stdout, "EVENER_TEST_MARKER=") {
 		t.Fatal("inherit-none should not pass through parent env vars")
 	}
 	// PATH won't be inherited either (bash may set its own default)
@@ -603,7 +603,7 @@ func TestEnvVarPolicy_InheritNone_AllowsExtraVars(t *testing.T) {
 }
 
 func TestEnvVarPolicy_CoreOnly(t *testing.T) {
-	t.Setenv("SERF_TEST_MARKER", "should_not_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_not_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	env.EnvPolicy = EnvPolicyCoreOnly
@@ -620,7 +620,7 @@ func TestEnvVarPolicy_CoreOnly(t *testing.T) {
 	if !strings.Contains(out, "HOME=") {
 		t.Fatal("core-only should include HOME")
 	}
-	if strings.Contains(out, "SERF_TEST_MARKER=") {
+	if strings.Contains(out, "EVENER_TEST_MARKER=") {
 		t.Fatal("core-only should not include arbitrary parent vars")
 	}
 }
@@ -659,7 +659,7 @@ func TestEnvVarPolicy_All(t *testing.T) {
 
 func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	t.Setenv("MY_API_KEY", "secret123")
-	t.Setenv("SERF_TEST_MARKER", "should_appear")
+	t.Setenv("EVENER_TEST_MARKER", "should_appear")
 
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	// EnvPolicy zero value is EnvPolicyDefault
@@ -672,7 +672,7 @@ func TestEnvVarPolicy_Default_FiltersSensitive(t *testing.T) {
 	if strings.Contains(res.Stdout, "MY_API_KEY=") {
 		t.Fatal("default policy should filter sensitive vars")
 	}
-	if !strings.Contains(res.Stdout, "SERF_TEST_MARKER=should_appear") {
+	if !strings.Contains(res.Stdout, "EVENER_TEST_MARKER=should_appear") {
 		t.Fatal("default policy should pass through non-sensitive vars")
 	}
 }

@@ -808,7 +808,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
 	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
 	loaded, _ := plugin.LoadAllFailSoft(dirs)
-	evenerwide, _ := plugin.DiscoverSerfWideCommands(nil)
+	evenerwide, _ := plugin.DiscoverEvenerWideCommands(nil)
 	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor
 	for _, cmd := range merged {

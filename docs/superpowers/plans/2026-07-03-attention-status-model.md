@@ -1349,7 +1349,7 @@ Add (structure — write it in the file's existing style):
   }
 ```
 
-IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation — if handlers receive only `method`, extend the dispatcher to pass `(method, params)` (sidebar.js's handler ignores extra args, safe); (b) keep `window.serfHubNotifications` test surface exporting `{init, _readPrefs: readPrefs}` plus `_onAttentionChanged: onAttentionChanged` for tests; (c) rewrite `applyTitle(prefs, summary)` to render `(N)` from `summary.needsYou + summary.error`, keeping the section-title logic; (d) `onPrefsChanged` keeps its permission-revert logic but ends with `applyCounts()` instead of `poll()`.
+IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation — if handlers receive only `method`, extend the dispatcher to pass `(method, params)` (sidebar.js's handler ignores extra args, safe); (b) keep `window.evenerHubNotifications` test surface exporting `{init, _readPrefs: readPrefs}` plus `_onAttentionChanged: onAttentionChanged` for tests; (c) rewrite `applyTitle(prefs, summary)` to render `(N)` from `summary.needsYou + summary.error`, keeping the section-title logic; (d) `onPrefsChanged` keeps its permission-revert logic but ends with `applyCounts()` instead of `poll()`.
 
 In `cmd/evener-hub/assets/renderer.js`, find the thread-status handler (search `showConnectionBanner` neighborhood / where `THREAD_STATUS_CHANGED` events update the status pill — the handler that processes decoded `["THREAD_STATUS_CHANGED", ...]` events) and add one line after it applies the status:
 

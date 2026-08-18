@@ -7,7 +7,7 @@
 **Architecture:** Shell wrapper (`run-eval.sh`) orchestrates: build, snapshot, deploy,
 launch harbor in tmux, poll progress, collect/normalize to structured archive, generate
 summary and HTML report. Python tools handle statistics and reporting. The adapter
-(`serf_agent.py`) extracts filtered artifacts from containers.
+(`evener_agent.py`) extracts filtered artifacts from containers.
 
 **Tech Stack:** Bash (orchestration), Python 3.11+ (stats/reports), Go (evener build),
 harbor (eval framework), tmux (process management), SSH/rsync (remote ops).
@@ -594,17 +594,17 @@ git commit -m "feat: summary.json generation with all three pass rate metrics"
 
 ---
 
-### Task 4: Update evener adapter (`serf_agent.py`)
+### Task 4: Update evener adapter (`evener_agent.py`)
 
 Add artifact filtering and bind-mount state dir. This file lives on the eval server,
 not in the evener repo, but we keep a copy in `tools/` for version control.
 
 **Files:**
-- Create: `tools/serf_agent.py` (canonical copy, deployed to eval servers)
+- Create: `tools/evener_agent.py` (canonical copy, deployed to eval servers)
 
 **Step 1: Write the updated adapter**
 
-Key changes from existing `serf_agent.py`:
+Key changes from existing `evener_agent.py`:
 - Change `_CONTAINER_STATE_DIR` from `/tmp/evener-state` to `/logs/agent/evener-state`
 - Add artifact extraction with exclusion filter in `run()` `finally` block
 - Keep the existing `download_dir` for evener-state as fallback
@@ -675,7 +675,7 @@ for pattern in _ARTIFACT_EXCLUDES:
 **Step 3: Deploy and smoke-test**
 
 ```bash
-scp tools/serf_agent.py jesse@192.168.118.101:~/git/terminal-bench/serf_agent.py
+scp tools/evener_agent.py jesse@192.168.118.101:~/git/terminal-bench/evener_agent.py
 # Run single task to verify artifacts are captured
 NO_BUILD=1 MODEL="openai/gpt-5.3-codex" ./tools/eval-task.sh adapter-test build-cython-ext 1 enable_reviewer_gate=true
 ```
@@ -683,7 +683,7 @@ NO_BUILD=1 MODEL="openai/gpt-5.3-codex" ./tools/eval-task.sh adapter-test build-
 **Step 4: Commit**
 
 ```bash
-git add tools/serf_agent.py
+git add tools/evener_agent.py
 git commit -m "feat: evener adapter with artifact extraction and bind-mount state dir"
 ```
 
@@ -709,7 +709,7 @@ This is a ~200-line bash script. Key sections:
 --reps N            Repetitions (default: 3)
 --concurrency N     Parallel tasks (default: 4)
 --ak KEY=VALUE      Agent kwarg (repeatable)
---adapter PATH      Agent import path (default: serf_agent:SerfAgent)
+--adapter PATH      Agent import path (default: evener_agent:SerfAgent)
 --no-build          Skip cross-compile
 --allow-dirty       Run from dirty git tree (stores diff)
 --collect-only      Just collect/report an already-finished job
@@ -739,7 +739,7 @@ cp /tmp/evener-linux-amd64 "$SNAPSHOT_DIR/"
 cp -r agent/prompts/ "$SNAPSHOT_DIR/prompts/"
 cp -r agent/agents/ "$SNAPSHOT_DIR/agents/"
 cp -r agent/skills/ "$SNAPSHOT_DIR/skills/"
-cp tools/serf_agent.py "$SNAPSHOT_DIR/adapter.py"
+cp tools/evener_agent.py "$SNAPSHOT_DIR/adapter.py"
 cp tools/install-evener.sh.j2 "$SNAPSHOT_DIR/" 2>/dev/null || true
 if [ "$ALLOW_DIRTY" = "1" ]; then
     git diff HEAD > "$SNAPSHOT_DIR/git-diff.patch"
@@ -920,7 +920,7 @@ ssh jesse@magic-kingdom 'pip install uv && uv tool install harbor==0.1.44'
 
 ```bash
 scp .env jesse@magic-kingdom:~/eval/.env
-scp tools/serf_agent.py jesse@magic-kingdom:~/eval/serf_agent.py
+scp tools/evener_agent.py jesse@magic-kingdom:~/eval/evener_agent.py
 scp tools/install-evener.sh.j2 jesse@magic-kingdom:~/eval/install-evener.sh.j2
 ssh jesse@magic-kingdom 'chmod 600 ~/eval/.env'
 ```

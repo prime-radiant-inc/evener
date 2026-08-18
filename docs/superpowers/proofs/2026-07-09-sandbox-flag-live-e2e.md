@@ -14,7 +14,7 @@ line, or denial legibility regresses, this card catches it.
 - Hermetic dirs: `WORK=$(mktemp -d)` (run `git init` + one commit — a real repo),
   `OUT=$(mktemp -d)` (an out-of-worktree target the sandbox must protect).
 - Host: Linux w/ bwrap (kernel 6.8, bubblewrap 0.9.0). macOS Seatbelt is validated
-  separately by `SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive`
+  separately by `EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive`
   + `scripts/seatbelt-smoke.sh` on paradise-park.
 
 ## Steps & Expected

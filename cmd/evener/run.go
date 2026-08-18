@@ -46,7 +46,7 @@ type runConfig struct {
 	maxRetainedTerminal       int      // --max-retained-terminal (-1=default)
 	shareTaskStore            bool     // --share-task-store
 	resultToolName            string   // --result-tool-name override
-	reasoningEffort           string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
+	reasoningEffort           string   // --reasoning-effort override (or EVENER_REASONING_EFFORT)
 	contextStrategy           string   // --context-strategy
 	exportATIF                string   // --export-atif path
 	exportATIFProviderHandles string   // --export-atif-provider-handles
@@ -126,11 +126,11 @@ func run(ctx context.Context, cfg runConfig) error {
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
-	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
+	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
 	var project identifier.Project
 	stateDir := cfg.stateDir
 	if stateDir == "" {
-		stateDir = envvars.SERFStateDir.Getenv()
+		stateDir = envvars.EVENERStateDir.Getenv()
 	}
 	if stateDir == "" {
 		var err error
@@ -165,7 +165,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return errors.New("no prompt provided")
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.SERFReasoningEffort.Getenv())
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -178,9 +178,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	var modelRef cmdutil.ModelRef
 	if meta != nil {
-		modelRef, err = cmdutil.ResolveResumeModelRef(cfg.model, envvars.SERFModel.Getenv(), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(cfg.model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(cfg.model, envvars.SERFModel.Getenv(), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(cfg.model, envvars.EVENERModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err

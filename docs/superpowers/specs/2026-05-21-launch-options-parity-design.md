@@ -160,7 +160,7 @@ List fields should render as vertical lists, not chips. Existing values appear f
 
 Path fields use the existing path picker/autocomplete. Model fields use the existing model picker. Values are validated at add time where validation is available.
 
-Per-launch Advanced may show non-secret environment fallback values, such as `SERF_MODEL` and `SERF_REASONING_EFFORT`, because those values affect the immediate launch. Settings screens must not show environment fallback choices. API tokens and credential env values are never displayed here.
+Per-launch Advanced may show non-secret environment fallback values, such as `EVENER_MODEL` and `EVENER_REASONING_EFFORT`, because those values affect the immediate launch. Settings screens must not show environment fallback choices. API tokens and credential env values are never displayed here.
 
 ## Web Settings UI
 

@@ -27,7 +27,7 @@
 
 **Files:**
 - Modify: `tests/test_serf_agent.py`
-- Modify: `src/harbor_runner/serf_agent.py`
+- Modify: `src/harbor_runner/evener_agent.py`
 - Modify: `src/harbor_runner/cli.py`
 
 1. Update the adapter test to construct the default adapter and assert parsed argv contains `--max-rounds 0`.

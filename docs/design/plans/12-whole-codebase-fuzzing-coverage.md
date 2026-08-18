@@ -28,10 +28,10 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
 ## What already exists (verified, do not rebuild)
 
 - **Three recorders, all default-off, all reading `os.Getenv` directly** (no central
-  default): `SERF_RECORD_APPWIRE` → `<state>/appwire-frames.jsonl`
+  default): `EVENER_RECORD_APPWIRE` → `<state>/appwire-frames.jsonl`
   (`appwire/frame_recorder.go:newEnvFrameRecorder`, attached in `appwire/ws_transport.go`);
-  `SERF_RECORD_HTTP` → `<state>/hub-http.jsonl` (`cmd/evener-hub/http_recorder.go`, middleware
-  in `cmd/evener-hub/web.go`); **`SERF_LOG_RAW_HTTP` → `<state>/api-raw.jsonl`** capturing
+  `EVENER_RECORD_HTTP` → `<state>/hub-http.jsonl` (`cmd/evener-hub/http_recorder.go`, middleware
+  in `cmd/evener-hub/web.go`); **`EVENER_LOG_RAW_HTTP` → `<state>/api-raw.jsonl`** capturing
   per-call provider `request_body` + streaming `response_body`
   (`llm/apilog.go:EnableRawLogging`, attached via `cmdutil.AttachAPILogger`). All registered
   in `envvars/envvars.go` with `Visibility: Tooling`.
@@ -43,7 +43,7 @@ real corpus), then **B/C/D in parallel** via fanned-out subagents.
 - **A robust sanitization chokepoint** (`cmd/evener-fuzz-harvest/sanitize.go`): shape-scrub by
   default (structure/enums kept, free-text length-bucketed, numbers zeroed, timestamps
   fixed), nine high-confidence secret regexes + entropy gate, `--keep-values` gated behind
-  `SERF_FUZZ_CAPTURE_ENV`, personal `~/.evener` forced to shape-scrub, plus a write-time
+  `EVENER_FUZZ_CAPTURE_ENV`, personal `~/.evener` forced to shape-scrub, plus a write-time
   `gitleaks` gate. Corpora are **not** path-allowlisted in `.gitleaks.toml` — they must be
   genuinely scrubbed to commit.
 - **The headless driving surface:** `evener --model <provider/model> [--verbose]
@@ -64,8 +64,8 @@ build the driver + run it.
 **D1 — RESOLVED: master env var.** Recording captures real prompts, code, and provider
 responses to disk, so it must be **off by default in the shipped binary, in CI, and in any
 non-dev environment**, and **on by default for local dev**. Mechanism: a single master env
-var **`SERF_FUZZ_RECORD`** that flips all three recorders on unless a per-recorder var
-(`SERF_RECORD_APPWIRE`, `SERF_RECORD_HTTP`, `SERF_LOG_RAW_HTTP`) explicitly disables it; set
+var **`EVENER_FUZZ_RECORD`** that flips all three recorders on unless a per-recorder var
+(`EVENER_RECORD_APPWIRE`, `EVENER_RECORD_HTTP`, `EVENER_LOG_RAW_HTTP`) explicitly disables it; set
 it once in the dev shell profile / dev bootstrap. Absent → all off (safe everywhere it isn't
 set). Ensure `./.evener/` is gitignored (the repo-local state fallback) so raw recordings never
 land in a commit; raw `*.jsonl` stays on the dev box, only *scrubbed seeds* are committed.
@@ -89,7 +89,7 @@ safety boundary before any PR; a leak aborts with non-zero exit and no PR.
 ## Phase A — Real-traffic corpus bootstrap (FIRST) — A1/A2/A3 DONE 2026-06-30
 
 **Status: A1, A2, and a first A3 validation run landed on `wip/fuzzing-toolkit`.**
-A1 = `SERF_FUZZ_RECORD` master switch (`envvars.RecorderEnabled`, `e1c43b9b`).
+A1 = `EVENER_FUZZ_RECORD` master switch (`envvars.RecorderEnabled`, `e1c43b9b`).
 A2 = `scripts/fuzz-drive.sh` + 24-task corpus + offline self-test (`8c2e008b`).
 A3 = drove 6 tasks live through **gpt-5.4-mini** (6/6 ok) → 45 scrubbed seeds
 (`871c52e8` windowing fix, `0bebd959` seeds); `decodeResponsesStream` replay

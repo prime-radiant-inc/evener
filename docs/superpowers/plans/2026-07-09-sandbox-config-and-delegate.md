@@ -82,7 +82,7 @@ Files (all under `cmd/evener-hub/internal/launchconfig/` unless noted):
 6. **`schema.go`**: add `LaunchGroupSandbox LaunchGroup = "Sandbox"` and two
    `LaunchOption`s in `LaunchOptionSchema()`:
    - `sandbox` → `LaunchControlSelect`, `Group: LaunchGroupSandbox`,
-     `DefaultableLayers: defaultLayers`, `PerLaunch: true`, `DriverSupport: serfOnly`,
+     `DefaultableLayers: defaultLayers`, `PerLaunch: true`, `DriverSupport: evenerOnly`,
      `Choices: sandboxChoices()` = `{"", "(default: off)"}, {"off","off"},
      {"read-only","read-only"}, {"workspace-write","workspace-write"},
      {"restricted","restricted"}`. Description: what each mode confines + "reads

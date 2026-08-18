@@ -136,14 +136,14 @@ func TestEnvFloorReturnsFreshSlice(t *testing.T) {
 func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
 	in := []string{
 		"TMPDIR=/ambient/tmp",
-		"SERF_SCRATCH_DIR=/ambient/evener",
+		"EVENER_SCRATCH_DIR=/ambient/evener",
 		"HOME=/home/jesse",
 		"GOCACHE=/cache/go",
 		"npm_config_cache=/cache/npm",
 		"CARGO_HOME=/cache/cargo",
 	}
 	out := ApplySessionScratchEnv(in, "/tmp/evener-sandbox-owned")
-	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+	for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
 		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
 			t.Fatalf("%s = %q, want session scratch", name, got)
 		}
@@ -167,7 +167,7 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 		"VAULT_TOKEN=secret",
 		"KUBECONFIG=/outside/kubeconfig",
 		"TMPDIR=/ambient/tmp",
-		"SERF_SCRATCH_DIR=/ambient/evener",
+		"EVENER_SCRATCH_DIR=/ambient/evener",
 		"HOME=/home/jesse",
 		"GOCACHE=/cache/go",
 		"npm_config_cache=/cache/npm",
@@ -186,7 +186,7 @@ func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
 			t.Errorf("security filter retained %s: %v", name, out)
 		}
 	}
-	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+	for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
 		if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
 			t.Errorf("%s = %q, want session scratch", name, got)
 		}

@@ -22,9 +22,9 @@
 #   scripts/fuzz-coverage-global.sh --format json
 #
 # Test seams:
-#   SERF_FUZZ_GO              go executable (default: go)
-#   SERF_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
-#   SERF_FUZZ_REGISTRY_CHECK  executable registry checker (default:
+#   EVENER_FUZZ_GO              go executable (default: go)
+#   EVENER_FUZZ_CAPPED          command wrapper (default: scripts/run-capped.sh)
+#   EVENER_FUZZ_REGISTRY_CHECK  executable registry checker (default:
 #                             scripts/fuzz-registry-check.sh)
 set -euo pipefail
 
@@ -32,16 +32,16 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 # How this run reclaims the leftovers of its own earlier runs; no janitor does.
 . "$(dirname "$0")/covscratch-lib.sh"
 go_work="$repo_root/go.work"
-go_bin="${SERF_FUZZ_GO:-go}"
-capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
-registry_check="${SERF_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
+go_bin="${EVENER_FUZZ_GO:-go}"
+capped="${EVENER_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
+registry_check="${EVENER_FUZZ_REGISTRY_CHECK:-$repo_root/scripts/fuzz-registry-check.sh}"
 exclusions_file="$repo_root/scripts/fuzzcov-global-exclusions.txt"
 floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 # The gap map's reasoned ignore-list, shared rather than duplicated: a package
 # declared out of fuzz scope for scripts/fuzz-gap-check.sh must not be mandatory
 # here. Entries are "<import-path>  # <reason>"; the reason is required there and
 # reviewed like code, so this consumer needs only the path.
-ignore_file="${SERF_FUZZCOV_IGNORE:-$repo_root/scripts/fuzzcov-ignore.txt}"
+ignore_file="${EVENER_FUZZCOV_IGNORE:-$repo_root/scripts/fuzzcov-ignore.txt}"
 
 in_ignore_list() {
 	[ -n "${1:-}" ] || return 1
@@ -557,12 +557,12 @@ replay_target() {
 	[ -n "$logical_module_dir" ] || die "missing module directory mapping: $module"
 	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
-		# SERF_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
+		# EVENER_FUZZ_TESTS=1: the seqfuzz/schemafuzz rapid family t.Skip()s under a
 		# plain `go test` (moved out of `make test` per the fuzz-family ruling);
 		# this coverage replay must still drive them, not accept a skip's
 		# zero-count profile as coverage.
 		if ! (cd "$logical_module_dir" && \
-			env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
+			env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$seed" RAPID_CHECKS="$rapid_checks" RAPID_STEPS="$rapid_steps" RAPID_NOFAILFILE="$rapid_nofailfile" RAPID_LOG="$rapid_log" RAPID_V="$rapid_verbose" RAPID_DEBUG="$rapid_debug" RAPID_DEBUGVIS="$rapid_debugvis" RAPID_SHRINKTIME="$rapid_shrinktime" \
 			"$capped" "$go_bin" test -tags serffuzz -run "^$name\$" -count=1 -coverprofile="$profile" "$pkg") >&2; then
 			die "replay failed: $label"
 		fi

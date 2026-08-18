@@ -16,7 +16,7 @@ import (
 )
 
 func TestRunPassesCanonicalProjectAndActiveWorkingDirToSession(t *testing.T) {
-	t.Setenv("SERF_STATE_DIR", "")
+	t.Setenv("EVENER_STATE_DIR", "")
 	target := t.TempDir()
 	alias := filepath.Join(t.TempDir(), "linked-worktree")
 	if err := os.Symlink(target, alias); err != nil {

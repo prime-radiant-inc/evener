@@ -133,7 +133,7 @@ documented for users in `docs/skills.md`.
 
 ### Discovery
 
-New file `agent/plugin/serfwide.go`:
+New file `agent/plugin/evenerwide.go`:
 
 ```go
 // DiscoverSerfWideCommands scans the user-global commands dir, then walks
@@ -219,8 +219,8 @@ on empty `PluginDirs`). Session init discovers immediately after the
 empty set included), then assembles the whole command map in one place:
 
 ```go
-serfwide, warnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
-s.pluginCommands = plugin.MergeCommands(s.plugins, serfwide)
+evenerwide, warnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 // warnings join the session-start warning queue
 ```
 
@@ -247,7 +247,7 @@ dirs would double-load. Share the flatten-and-merge, not the load:
 ```go
 // MergeCommands flattens plugin instances' commands (namespaced keys) and
 // overlays evener-wide commands (bare keys), returning the unified map.
-func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command
+func MergeCommands(instances []Instance, evenerwide map[string]Command) map[string]Command
 ```
 
 Session init calls it with its already-loaded instances; `hubCommandList`
@@ -433,11 +433,11 @@ no live requests.
 |---|---|
 | `agent/plugin/commands.go` | Add `Source` and `File` to `Command`; set both in `discoverPluginCommands`; update the `Command` doc comment (currently says "defined by a plugin") |
 | `agent/session.go` | Update the `pluginCommands` field comment (currently says "the union of every loaded plugin's slash commands") |
-| `agent/plugin/serfwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
+| `agent/plugin/evenerwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
 | `agent/plugin/plugin.go` | New: `MergeCommands` shared flatten-and-overlay |
 | `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
 | `agent/session_slash_command.go` | Branch expansion on `Command.Source` |
-| `agent/session_init.go` | `initPlugins` stops merging `p.Commands`; after it returns, discover evener-wide commands and set `s.pluginCommands = MergeCommands(s.plugins, serfwide)`; queue discovery warnings |
+| `agent/session_init.go` | `initPlugins` stops merging `p.Commands`; after it returns, discover evener-wide commands and set `s.pluginCommands = MergeCommands(s.plugins, evenerwide)`; queue discovery warnings |
 | `appwire/types.go` | `CommandDescriptor.Source`; update the type's doc comment (currently says "plugin-provided") |
 | generated AppWire outputs | Run `make generate` (`types.gen.ts`, protocol doc); `make lint-generated` must pass |
 | `appwire/protocol.go` | `evener/command/list` description mentions source |

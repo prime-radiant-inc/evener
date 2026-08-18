@@ -112,7 +112,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 // TestPrepareSubagentRun_TerminalFinishCapturesScratchPath proves kata tpb0's
 // scratch-path wiring against a real sandboxed env: stableDelegateFinish reads
 // the delegate's own SessionScratchDir into the terminal packet metadata, the
-// same absolute path the sandboxed child actually has as $SERF_SCRATCH_DIR.
+// same absolute path the sandboxed child actually has as $EVENER_SCRATCH_DIR.
 func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
@@ -347,7 +347,7 @@ func TestSandboxPromptLine(t *testing.T) {
 // provisioned a real kernel wrapper (Wrapper != nil), the environment section
 // must also tell the model where its scratch directory is. The model's file
 // tools have no other way to discover it: a spawned shell command learns it
-// through $TMPDIR/$SERF_SCRATCH_DIR (agent/sandbox/env_floor.go), but the model's
+// through $TMPDIR/$EVENER_SCRATCH_DIR (agent/sandbox/env_floor.go), but the model's
 // own write_file/read_file calls never see process environment variables.
 // sbxSetParentMode (used by TestSandboxPromptLine above) deliberately builds an
 // env with no Wrapper "so a createDelegate floor test can run under a concrete
@@ -414,7 +414,7 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 
 func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	const (
-		scratchMarker = "Scratch directory (read-write even in this sandbox; also $TMPDIR / $SERF_SCRATCH_DIR for shell commands): "
+		scratchMarker = "Scratch directory (read-write even in this sandbox; also $TMPDIR / $EVENER_SCRATCH_DIR for shell commands): "
 		guidance      = "Read-only delegates may write only inside this scratch directory; all other writes are denied."
 	)
 

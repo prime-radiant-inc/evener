@@ -108,8 +108,8 @@ Verified Codex:
 Current Evener:
 
 - Evener AppWire also omits `"jsonrpc"`, and `internal/appwire/jsonrpc.go` rejects any incoming message containing a `jsonrpc` field.
-- Evener AppWire has Evener-specific structured error data: `data.serfErrorInfo`.
-- Evener currently uses code `-32014` plus `serfErrorInfo: "actionUnavailable"` for unsupported actions.
+- Evener AppWire has Evener-specific structured error data: `data.evenerErrorInfo`.
+- Evener currently uses code `-32014` plus `evenerErrorInfo: "actionUnavailable"` for unsupported actions.
 
 Open questions:
 
@@ -261,7 +261,7 @@ Current Evener:
 Evener extension:
 
 - `Thread.Evener.Capabilities` is the client-visible action gate for Web and TUI.
-- `serfErrorInfo: "actionUnavailable"` is the structured diagnostic clients should understand for disabled source actions.
+- `evenerErrorInfo: "actionUnavailable"` is the structured diagnostic clients should understand for disabled source actions.
 
 Open questions:
 
@@ -309,7 +309,7 @@ Verified Codex:
 
 Current Evener:
 
-- Evener AppWire defines structured `serfErrorInfo` values: invalid params, method not found, provider unavailable, session unavailable, conflict, action unavailable, and internal.
+- Evener AppWire defines structured `evenerErrorInfo` values: invalid params, method not found, provider unavailable, session unavailable, conflict, action unavailable, and internal.
 - Hub Web maps AppWire unavailable errors to HTTP `503` in spawn paths.
 
 Evener extension:
@@ -353,7 +353,7 @@ Current explicit Evener extensions:
 - Evener lifecycle actions: `thread/clear`, `thread/shutdown`, `thread/model/set`.
 - Evener support APIs: `evener/tasks/list`, `evener/dirs/complete`, and Hub-owned `evener/auth/*` methods.
 - Evener notifications: `item/toolOutput/delta`, `evener/thread/contextPressure/updated`, `evener/task/updated`, `evener/steering/injected`, `evener/subagent/started`, and `evener/subagent/completed`.
-- Evener diagnostics: `data.serfErrorInfo`, including `actionUnavailable`.
+- Evener diagnostics: `data.evenerErrorInfo`, including `actionUnavailable`.
 - Evener fork/edit metadata: `sourceTurnId`, `editedInput`, and `label`.
 - Evener provider/model refs: separate `modelProvider` and `model` fields, plus model descriptors with provider/model.
 
@@ -387,7 +387,7 @@ Rules for adoption:
 | Assistant deltas | `item/agentMessage/delta` | same method | Web/TUI consume it | #65 live and replay proof |
 | Command output deltas | `item/commandExecution/outputDelta` | `item/toolOutput/delta` | Adapter currently checks wrong Codex method name | #65 red test and fix |
 | Tool transcript grouping | item lifecycle by `itemId` | normalized `tool_call` items | Web/TUI partially reduce starts/deltas/completions | #66 fixture coverage |
-| Diagnostics | JSON-RPC errors and turn errors | `serfErrorInfo` | Mixed current mapping | #53/#68/#58 structured diagnostics |
+| Diagnostics | JSON-RPC errors and turn errors | `evenerErrorInfo` | Mixed current mapping | #53/#68/#58 structured diagnostics |
 | Process launch | CLI/runtime concern | Hub supervision concern | Not implemented for Codex | #58 owns lifecycle and registration |
 
 ## Follow-Up Katas

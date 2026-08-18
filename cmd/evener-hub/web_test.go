@@ -166,7 +166,7 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	}
 }
 
-func TestWriteSessionActionErrorSetsEvenerErrorInfoHeader(t *testing.T) {
+func TestWriteSessionActionErrorSetsSerfErrorInfoHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/s/01TEST/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
 	writeSessionActionError(rec, req, appwire.QueuedDrainPartial("queued but drain failed"))
@@ -2598,8 +2598,8 @@ func TestWeb_ApiSearch_PastResultRefMatchesTreeAPI(t *testing.T) {
 // run against a live provider API. Skips unless live tests are explicitly
 // enabled and a real API key is set.
 func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live provider model-list test")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live provider model-list test")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set; live list models requires a real API key")
@@ -2639,8 +2639,8 @@ func disableLiveOllamaForModelTest(t *testing.T) {
 
 func isolateProviderConfigForModelTest(t *testing.T) {
 	t.Helper()
-	t.Setenv(envvars.SERFProvidersConfig.Name, filepath.Join(t.TempDir(), "providers.toml"))
-	t.Setenv(envvars.SERFStateDir.Name, t.TempDir())
+	t.Setenv(envvars.EVENERProvidersConfig.Name, filepath.Join(t.TempDir(), "providers.toml"))
+	t.Setenv(envvars.EVENERStateDir.Name, t.TempDir())
 }
 
 func disableStoredOpenAIAuthForModelTest(t *testing.T) {

@@ -64,7 +64,7 @@ func FuzzExactTails(f *testing.F) {
 		lister := &exactContractLister{resp: appwire.ModelListResponse{Diagnostics: []appwire.ModelListDiagnostic{{Provider: "p", Message: "unavailable"}}}}
 		cfg := hubcore.WebConfig{Spawner: lister}
 		_ = hasSerfLaunchModelLister(cfg)
-		_ = validateSerfLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
+		_ = validateEvenerLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
 		_, _ = ResumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond)
 
 		oldContract := listSerfLaunchModelContractFn

@@ -100,7 +100,7 @@ in the same container after the agent, `curl astral.sh/uv/... | sh` is a no-op.
 
 ### Evener agent files
 - `evener-linux-amd64` binary
-- `serf_agent.py` (harbor adapter)
+- `evener_agent.py` (harbor adapter)
 - `install-evener.sh.j2` (install template)
 - `.env` — NOT baked in. API keys come from Secrets Manager at boot.
 
@@ -167,7 +167,7 @@ throwaway instance and then `aws ec2 create-image`.
 #   eval-aws.sh terminate --run-id <id>
 
 # launch:
-#   1. Generate run-id: serf_{model}_{effort}_{sha}_{date}
+#   1. Generate run-id: evener_{model}_{effort}_{sha}_{date}
 #   2. For each rep (1..N):
 #      - Launch spot instance from launch template
 #      - Userdata script:
@@ -175,7 +175,7 @@ throwaway instance and then `aws ec2 create-image`.
 #        b. Start apt-cacher-ng
 #        c. Run harbor:
 #           harbor run -d terminal-bench@2.0 \
-#             --agent-import-path serf_agent:SerfAgent \
+#             --agent-import-path evener_agent:SerfAgent \
 #             -m $MODEL --ak max_rounds=100 \
 #             -k 1 -n 89 \
 #             --job-name ${RUN_ID}_rep${REP} \

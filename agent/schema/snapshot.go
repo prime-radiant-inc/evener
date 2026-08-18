@@ -179,7 +179,7 @@ type SessionMeta struct {
 	// has a parent spawn). Written by the spawn path at session initialisation.
 	IsSubagent bool `json:"is_subagent,omitempty"`
 	// Origin marks how the session was launched: "test" for agentic-testing
-	// runs (set via SERF_SESSION_ORIGIN), empty for normal sessions. The hub
+	// runs (set via EVENER_SESSION_ORIGIN), empty for normal sessions. The hub
 	// classifies an all-"test" project into the "Test runs" group.
 	Origin string `json:"origin,omitempty"`
 	// Goal holds the persisted goal state so the objective survives daemon

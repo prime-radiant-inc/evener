@@ -129,10 +129,10 @@ re-derives the rest:
 
 ```bash
 # Owning card, once the checklist above has run:
-export SERF_E2E_RUN="$run"
+export EVENER_E2E_RUN="$run"
 
 # Sibling card — works in the owning shell or a fresh one:
-run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
 export HOME="$run/home"
 unset XDG_STATE_HOME
 PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
@@ -154,7 +154,7 @@ is the live one.
 
 Whoever started the hub owns tearing it down. A sibling card that reused a
 running hub leaves it up; a sibling card that had to start its own (because
-`SERF_E2E_RUN` was unset) kills it in its own Cleanup, by that pid.
+`EVENER_E2E_RUN` was unset) kills it in its own Cleanup, by that pid.
 
 The alternative — make every card self-sufficient and delete the reuse
 language — was considered and rejected. The reuse costs nothing in test
@@ -258,7 +258,7 @@ contained:
 tmpdir=$(mktemp -d -t evener-e2e-XXXXX)
 ```
 
-For transcript isolation, pass a per-scenario `SERF_STATE_DIR` in
+For transcript isolation, pass a per-scenario `EVENER_STATE_DIR` in
 `launch_overrides.env`. This keeps the spawned daemon's sessions and
 logs under one directory while still using the hub REST shim:
 
@@ -277,7 +277,7 @@ body=$(jq -n \
     branch:"",
     access_mode:"full",
     agent:"default",
-    launch_overrides:{env:{SERF_STATE_DIR:$state}}
+    launch_overrides:{env:{EVENER_STATE_DIR:$state}}
   }')
 ```
 

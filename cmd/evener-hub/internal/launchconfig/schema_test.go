@@ -71,8 +71,8 @@ func checkLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
 			t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
 		}
 	}
-	if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFOpenAIResponsesContinuation.Name || opt.EnvFallback.Secret {
-		t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.SERFOpenAIResponsesContinuation.Name)
+	if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.EVENEROpenAIResponsesContinuation.Name || opt.EnvFallback.Secret {
+		t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.EVENEROpenAIResponsesContinuation.Name)
 	}
 }
 

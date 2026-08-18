@@ -277,10 +277,10 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	}
 	trace.Paths = append(trace.Paths, direct)
 
-	t.Setenv("SERF_STATE_DIR", fixture.base)
+	t.Setenv("EVENER_STATE_DIR", fixture.base)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(fixture.base, "xdg"))
 	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase("flag-state"), ResolveStateBase(""))
-	t.Setenv("SERF_STATE_DIR", "")
+	t.Setenv("EVENER_STATE_DIR", "")
 	trace.ResolvedStateBases = append(trace.ResolvedStateBases, ResolveStateBase(""))
 	if trace.ResolvedStateBases[0] != "flag-state" || trace.ResolvedStateBases[1] != fixture.base || trace.ResolvedStateBases[2] != filepath.Join(fixture.base, "xdg") {
 		t.Fatalf("ResolveStateBase precedence = %#v", trace.ResolvedStateBases)

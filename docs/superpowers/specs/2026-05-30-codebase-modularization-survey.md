@@ -34,8 +34,8 @@ splits, dedup, and a few clean leaf extractions.
 
 ### cmd/evener (CLI, ~1.85k) + cmdutil (558)
 - No god-files. ~65–70% of the CLI is logic that should leave `main`.
-- **Moves:** `buildInitialProfile`/`applyFastCheapModel`/`agentToServerDetailedStatus`/`drainEvents*` → `cmdutil`; launch-check model logic → `internal/launchcheck` (150 testable lines stuck in `main`); a shared `cmdutil.BuildSession(...)` to kill the ~40-line session-construction pattern duplicated across run.go/serve.go/serfeval.
-- **cmdutil is a moderate grab-bag:** `SelectProfile` + `queryModelContextWindow` are pre-`providerconfig` tech debt (migrate `serfeval` off them, then delete); `ResolveSnapshot` is dead code (delete); the hub-only `MaterializeProvidersConfig`/`seedConfigFromEnv` don't belong with CLI-flag helpers.
+- **Moves:** `buildInitialProfile`/`applyFastCheapModel`/`agentToServerDetailedStatus`/`drainEvents*` → `cmdutil`; launch-check model logic → `internal/launchcheck` (150 testable lines stuck in `main`); a shared `cmdutil.BuildSession(...)` to kill the ~40-line session-construction pattern duplicated across run.go/serve.go/evenereval.
+- **cmdutil is a moderate grab-bag:** `SelectProfile` + `queryModelContextWindow` are pre-`providerconfig` tech debt (migrate `evenereval` off them, then delete); `ResolveSnapshot` is dead code (delete); the hub-only `MaterializeProvidersConfig`/`seedConfigFromEnv` don't belong with CLI-flag helpers.
 
 ### llm/ (~11.3k, already structured) — mostly healthy
 - **God-files (largely intrinsic):** provider adapters — `openai/adapter.go` (2,357, carries TWO protocol paths: Responses + Chat-Completions), `openaicompat` (1,365), `anthropic` (1,354), `google` (1,043). Internal file-splits (responses.go / chat_completions.go / models.go etc.) improve navigation with zero API change.

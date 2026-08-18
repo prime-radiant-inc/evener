@@ -42,11 +42,11 @@ Payload-size result:
 Checkable line: live discovery is explicit opt-in and blocks treating Phases 1A-11 as committed implementation work for a target endpoint family until the target endpoint family has accepted valid anchors, rejected invalid anchors clearly, resolved co-present `previous_response_id` plus `conversation`, and shown net request-payload reduction on the scripted probe.
 
 Commands:
-- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
-- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Public OpenAI: `EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
+- Codex backend: `EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
-- Public OpenAI: run with an SSM-loaded API key and `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1`.
+- Public OpenAI: run with an SSM-loaded API key and `EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1`.
 - Public OpenAI: valid `previous_response_id` was accepted, a second branch from the same anchor was accepted, and an invalid anchor returned an explicit `previous_response_not_found` error.
 - Public OpenAI: co-present `previous_response_id` plus `conversation` was rejected with `mutually_exclusive_parameters`; the selected V1 runtime resolution is to use `full_history` whenever an explicit `ConversationID` is present.
 - Codex backend: run with stored OAuth. `gpt-5.2` failed before anchor creation with `The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.`

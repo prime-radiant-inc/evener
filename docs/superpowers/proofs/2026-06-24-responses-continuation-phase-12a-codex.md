@@ -13,7 +13,7 @@ Result: no-go for runtime continuation. The backend still rejects valid `previou
 ## Evidence
 
 ```sh
-SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
+EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 EVENER_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuationDiscovery' -count=1 -v
 ```
 
 Observed result:

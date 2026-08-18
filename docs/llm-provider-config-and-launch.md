@@ -40,8 +40,8 @@ The **hub process never runs a model**. To validate or list models it spawns
 `evener serve` daemon. API keys reach those subprocesses **through the environment**
 (one key per launch). The one config file that *does* cross the boundary is
 `providers.toml`: when the hub has loaded one it passes the path as
-`SERF_PROVIDERS_CONFIG` (`launchconfig.ToEnv:65`) and the child re-reads it; OAuth
-records are likewise re-read from disk by the child (via `SERF_STATE_DIR`).
+`EVENER_PROVIDERS_CONFIG` (`launchconfig.ToEnv:65`) and the child re-reads it; OAuth
+records are likewise re-read from disk by the child (via `EVENER_STATE_DIR`).
 
 ### Provider header classes
 
@@ -262,10 +262,10 @@ to query a provider's `/models` endpoint for context-window sizing
 ### Process-coordination vars (set by the hub, read by the subprocess)
 
 These are injected by the spawner (see below) — not provider credentials:
-`SERF_HUB_SPAWNED`, `SERF_RUN_DIR`, `SERF_STATE_DIR`, `SERF_HUB_TOKEN`
-(`launchconfig/env.go:54-63`). `evener serve` reads `SERF_HUB_SPAWNED` /
-`SERF_RUN_DIR` to label its rendezvous entry (`cmd/evener/serve.go:376-385`), and
-`llm.NewFromEnv` reads `SERF_STATE_DIR` / `XDG_STATE_HOME` to locate the OpenAI
+`EVENER_HUB_SPAWNED`, `EVENER_RUN_DIR`, `EVENER_STATE_DIR`, `EVENER_HUB_TOKEN`
+(`launchconfig/env.go:54-63`). `evener serve` reads `EVENER_HUB_SPAWNED` /
+`EVENER_RUN_DIR` to label its rendezvous entry (`cmd/evener/serve.go:376-385`), and
+`llm.NewFromEnv` reads `EVENER_STATE_DIR` / `XDG_STATE_HOME` to locate the OpenAI
 OAuth record (`llm/env_registry.go:51-52`).
 
 ---
@@ -344,7 +344,7 @@ The web Credentials screen drives this (see Web/TUI surfaces below):
 The CLI equivalent is `evener openai login` (`cmd/evener/openai_login.go:51`),
 which auto-selects browser vs. device flow based on whether a graphical session
 is detected (`SSH_CONNECTION`/`SSH_TTY`/`DISPLAY`/`WAYLAND_DISPLAY`, overridable
-with `SERF_LOGIN_HEADLESS`); subcommands `login` / `logout` / `status`. The CLI
+with `EVENER_LOGIN_HEADLESS`); subcommands `login` / `logout` / `status`. The CLI
 device flow also watches for a *concurrent* `evener openai login` writing fresh
 state and exits gracefully if it sees one (`service.go:308-348`).
 
@@ -371,7 +371,7 @@ This is the part most worth internalizing: **the hub orchestrates, separate
                         │  HubSpawner (spawn.go)                       │
                         └───────────────┬──────────────┬──────────────┘
                                         │              │
-                  SERF_PROVIDERS_CONFIG │              │  SERF_PROVIDERS_CONFIG
+                  EVENER_PROVIDERS_CONFIG │              │  EVENER_PROVIDERS_CONFIG
                   + one API key         │              │  + one API key
                                         ▼              ▼
               ┌─────────────────────────────┐   ┌─────────────────────────────┐
@@ -397,9 +397,9 @@ This is the part most worth internalizing: **the hub orchestrates, separate
 `ToEnv` (`env.go:53`) produces the env slice for a spawned subprocess. Starting
 from the parent env (`os.Environ()`), it sets, in increasing priority:
 
-1. Process-coordination vars: `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`,
-   `SERF_STATE_DIR`, `SERF_HUB_TOKEN` (`env.go:55-63`).
-2. `SERF_PROVIDERS_CONFIG`, when the hub loaded a `providers.toml`
+1. Process-coordination vars: `EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`,
+   `EVENER_STATE_DIR`, `EVENER_HUB_TOKEN` (`env.go:55-63`).
+2. `EVENER_PROVIDERS_CONFIG`, when the hub loaded a `providers.toml`
    (`env.go:65-66`) — the only config file that crosses the boundary; the child
    re-reads it.
 3. **Exactly one** provider API key — the registry's
@@ -413,7 +413,7 @@ from the parent env (`os.Environ()`), it sets, in increasing priority:
 OpenAI OAuth tokens are **not** in this list — the comment at `env.go:44-49`
 notes the on-disk OAuth state is "handled by evener itself": the subprocess re-reads
 the per-instance `auth/<instance>.json` via its client builder using the injected
-`SERF_STATE_DIR`.
+`EVENER_STATE_DIR`.
 
 ### Spawning `evener launch-check` (model discovery / validation)
 
@@ -424,7 +424,7 @@ the per-instance `auth/<instance>.json` via its client builder using the injecte
   (`spawn.go:607-608`) and decodes the JSON contract.
 - `validateSerfLaunchContract` (`spawn.go:558`) runs the same binary with
   `--model <provider/model>` to validate a specific model (`spawn.go:562-570`).
-- Both have a timeout (`serfLaunchCheckTimeout`) and redact secrets out of error
+- Both have a timeout (`evenerLaunchCheckTimeout`) and redact secrets out of error
   output via `redactEnvSecrets` (`spawn.go:655`).
 
 Inside the checker, `evener launch-check` (`cmd/evener/launch_check.go`) is
@@ -432,7 +432,7 @@ config-aware:
 
 - **Profile validation is credential-free.** `validateLaunchCheckProfile`
   (`launch_check.go:119`) loads just the config (`launchCheckLoadConfig:35`, same
-  `SERF_PROVIDERS_CONFIG`-else-default path resolution as `LoadClient`): it always
+  `EVENER_PROVIDERS_CONFIG`-else-default path resolution as `LoadClient`): it always
   resolves via `agent.ResolveProfileFromConfig` (`:125`) so **custom instance names
   are valid**. It needs no API keys, so the launch contract resolves even with no
   credentials present.
@@ -480,7 +480,7 @@ absent, then injects credentials via `credentials.Store.ResolveKey(name, typ)`
 `providers.toml` is the hub's responsibility. The hub (`cmd/evener-hub/main.go:120–131`)
 materializes the file on startup when absent via
 `cmdutil.MaterializeProvidersConfig` (`cmdutil/materialize.go:54`) and passes the
-path to spawned children via `SERF_PROVIDERS_CONFIG`. `llm.NewFromEnv` is retained
+path to spawned children via `EVENER_PROVIDERS_CONFIG`. `llm.NewFromEnv` is retained
 as the seed's detection input and for `launch_check.go`'s read-only validator, but
 is no longer a runtime default. `ProviderNames()` (`llm/client.go:63`) returns
 only the registered instances.

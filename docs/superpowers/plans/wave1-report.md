@@ -8,7 +8,7 @@ full gate green. Integration branch: `worktree-webui-workspace-shell`.
 - **Toolchain** (T1): `cmd/evener-hub/frontend/` — Vite 8 + React 19 + TS strict + vitest; npm with
   `ignore-scripts` enforced; `make build-web`/`test-web`; CI Node job; web tests gate CI for the
   first time.
-- **Flag-gated serving** (T2): `SERF_HUB_WEB=new` serves the SPA shell for page GETs only;
+- **Flag-gated serving** (T2): `EVENER_HUB_WEB=new` serves the SPA shell for page GETs only;
   `/webassets/*` immutable hashed assets; legacy UI byte-identical when the flag is off;
   unmatched-path SPA fallback pinned as intended.
 - **Generated types** (T3): `internal/appwirets` emits `types.gen.ts` (159 interfaces + method/

@@ -128,7 +128,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 - `internal/appprojector/appwire_projection_test.go` — projector usage-accumulation tests.
 - `internal/apptranscript/apptranscript.go` — per-round `Usage` stamp in `TurnsFromFile`.
 - `internal/apptranscript/apptranscript_test.go` — usage-stamp test.
-- `cmd/evener/serve.go` — dedup `serfUsageFromLLM` onto `appwire.SerfUsageFromLLM`.
+- `cmd/evener/serve.go` — dedup `evenerUsageFromLLM` onto `appwire.SerfUsageFromLLM`.
 - `cmd/evener-hub/app_threadread.go` — `pastEntryThread` gains Usage/WorkMillis/ActiveTurnStartedAt;
   `pastEntryTurns` gains a per-turn Cost post-pass.
 - `cmd/evener-hub/app_threadread_test.go` — new tests for both.
@@ -355,8 +355,8 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
   // returning nil when every total (including CacheReadTokens) is zero so
   // callers hide the usage cluster rather than render ↑0 ↓0 — the established
-  // WS2 convention (mirrors cmd/evener/serve.go's serfUsageFromLLM and
-  // cmd/evener-hub's serfUsageFromCumulative; this is the appwire-level home the
+  // WS2 convention (mirrors cmd/evener/serve.go's evenerUsageFromLLM and
+  // cmd/evener-hub's evenerUsageFromCumulative; this is the appwire-level home the
   // other two should eventually delegate to).
   func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
   	cacheRead := int64(0)
@@ -397,21 +397,21 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 - [ ] **Commit** — `git add appwire/cost.go appwire/cost_test.go` →
   `feat(appwire): SerfUsageFromLLM + EstimateCost — one cost path for session- and turn-level usage`.
 
-### Task Q2 — Dedup `cmd/evener/serve.go`'s `serfUsageFromLLM` onto the shared helper
+### Task Q2 — Dedup `cmd/evener/serve.go`'s `evenerUsageFromLLM` onto the shared helper
 
 **Files:** Modify `cmd/evener/serve.go`.
 
 - [ ] **Failing test** — none needed (pure refactor of a private function to delegate; existing
-  callers/tests of `serfUsageFromLLM` in `cmd/evener` already cover its behavior). Run the existing
+  callers/tests of `evenerUsageFromLLM` in `cmd/evener` already cover its behavior). Run the existing
   suite first to confirm current green baseline: `go test ./cmd/evener/... -run 'ServeStatus|Usage' -count=1`.
 - [ ] **Implement** — in `cmd/evener/serve.go:604`, replace the body of
-  `func serfUsageFromLLM(u llm.Usage) *appwire.SerfUsage { ... }` with
+  `func evenerUsageFromLLM(u llm.Usage) *appwire.SerfUsage { ... }` with
   `return appwire.SerfUsageFromLLM(u)` (keep the function — its call sites stay unchanged — just
   delegate the body).
 - [ ] **Run** `go test ./cmd/evener/... -count=1` → green (byte-identical behavior, same nil-when-
   all-zero rule). `golangci-lint run ./...` → green.
 - [ ] **Commit** — `git add cmd/evener/serve.go` →
-  `refactor(serve): serfUsageFromLLM delegates to appwire.SerfUsageFromLLM (dedup)`.
+  `refactor(serve): evenerUsageFromLLM delegates to appwire.SerfUsageFromLLM (dedup)`.
 
 ### Task Q3 — Pricing parity: cost path (GetPrice→LookupModelInfo) equals the picker's direct ModelInfo field reads
 
@@ -520,7 +520,7 @@ value; **no template change is needed**, only the four Go call sites that build 
     add `data.Cost = appwire.EstimateCost(data.Model, data.Usage)`. Place it AFTER `data.Model` is
     finalized (the block already updates `data.Model` from `status.Model` a few lines above) and
     after `data.Usage` is set, so both inputs are final.
-  - Past-meta branch (~line 347, in the `WorkspaceData{...}` literal alongside `Usage: serfUsageFromCumulative(pe.Meta.CumulativeUsage)`):
+  - Past-meta branch (~line 347, in the `WorkspaceData{...}` literal alongside `Usage: evenerUsageFromCumulative(pe.Meta.CumulativeUsage)`):
     add a line right after the literal: `data.Cost = appwire.EstimateCost(data.Model, data.Usage)`
     (the literal already sets `Model: pe.Meta.Model`).
 - [ ] **Run** `go test ./cmd/evener-hub/... -run 'TestWorkspaceData_.*Cost' -count=1` → pass.
@@ -884,10 +884,10 @@ parent.
   `Evener: appwire.SerfThread{...}` literal (~line 152-163), add after `Capabilities: ...`:
   ```go
   			WorkMillis: entry.Meta.WorkMillis,
-  			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
+  			Usage:      evenerUsageFromCumulative(entry.Meta.CumulativeUsage),
   			// ActiveTurnStartedAt stays 0 — an ended session has no turn in flight.
   ```
-  (`serfUsageFromCumulative` already exists in `cmd/evener-hub/web_workspace.go:364`, same package —
+  (`evenerUsageFromCumulative` already exists in `cmd/evener-hub/web_workspace.go:364`, same package —
   no new helper needed, reuse it verbatim.)
 - [ ] **Run** `go test ./cmd/evener-hub/... -run 'PastEntryThread' -count=1` → pass. `golangci-lint run ./...` → green.
 - [ ] **Commit** — `git add cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go` →
@@ -1026,7 +1026,7 @@ parent.
   		if m.WorkMillis > 0 {
   			rows = append(rows, detailsRow{"work time", formatWorkMillis(m.WorkMillis)})
   		}
-  		if usage := serfUsageFromCumulative(m.CumulativeUsage); usage != nil {
+  		if usage := evenerUsageFromCumulative(m.CumulativeUsage); usage != nil {
   			rows = append(rows, detailsRow{"tokens", fmt.Sprintf("↑%s ↓%s · cache-read %s · total %s",
   				formatTokenCount(int(usage.InputTokens)), formatTokenCount(int(usage.OutputTokens)),
   				formatTokenCount(int(usage.CacheReadTokens)), formatTokenCount(int(usage.TotalTokens)))})
@@ -1571,7 +1571,7 @@ stored model ids was found and fixed rather than assumed away.
 shape); `appwire.EstimateCost`/`llm.EstimateCost` (two layers: wire-level convenience wrapping the
 pure arithmetic) both named `EstimateCost` deliberately (same concept, different layer, mirrors the
 `Price`/`GetPrice` naming already established); `formatWorkMillis`/`formatTokens` reused verbatim
-in the TUI drawer (Task U2) rather than reinvented; `serfUsageFromCumulative` (existing) reused
+in the TUI drawer (Task U2) rather than reinvented; `evenerUsageFromCumulative` (existing) reused
 verbatim in `pastEntryThread` (U1) and the details panel (V3) rather than duplicated.
 
 **Estimate check:** the design spec estimated Track C at ~600-850 loc. This plan's per-turn wire

@@ -49,7 +49,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 		program := decodePIFProgram(data)
 		root := t.TempDir()
 		t.Setenv(envvars.XDGConfigHome.Name, filepath.Join(root, "xdg"))
-		t.Setenv(envvars.SERFSessionOrigin.Name, "test")
+		t.Setenv(envvars.EVENERSessionOrigin.Name, "test")
 
 		stateDir, workspace, pluginDir, promptFile, appendFile := pifMaterializeFixture(t, root)
 		newClock := agenttest.NewFakeClock()

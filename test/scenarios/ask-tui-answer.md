@@ -11,9 +11,9 @@ submitting through the overlay does.
 - Credentials + hub, same as `ask-web-answer.md` — reuse that card's hub if it is still
   running, otherwise re-run its Pre-state first. The handoff is its run directory, not a
   port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"), and
-  **never pass `--state-dir`/`SERF_STATE_DIR`** to anything here:
+  **never pass `--state-dir`/`EVENER_STATE_DIR`** to anything here:
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
@@ -159,7 +159,7 @@ rm -rf "$tmpdir"
 
 Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
 kills `$HUBPID` and removes `$run` (including this card's `evener-tui` and stderr log).
-If you had to start the hub yourself because `SERF_E2E_RUN` was unset, you own it:
+If you had to start the hub yourself because `EVENER_E2E_RUN` was unset, you own it:
 `kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f evener-hub`, which takes out every
 other concurrent agent's hub too (`docs/agentic-testing.md`, "Cleanup recipe").
 

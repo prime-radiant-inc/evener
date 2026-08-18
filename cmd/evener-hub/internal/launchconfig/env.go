@@ -25,7 +25,7 @@ type EnvInputs struct {
 	RunDir              string
 	StateDir            string
 	HubToken            string
-	ProvidersConfigPath string // if set, passed as SERF_PROVIDERS_CONFIG to spawned children
+	ProvidersConfigPath string // if set, passed as EVENER_PROVIDERS_CONFIG to spawned children
 }
 
 // ToEnv produces the env slice for the spawned `evener serve`. Order of
@@ -39,18 +39,18 @@ type EnvInputs struct {
 // overwrite earlier writes.
 func ToEnv(in EnvInputs) []string {
 	out := append([]string{}, in.ParentEnv...)
-	out = setEnv(out, envvars.SERFHubSpawned.Name, "1")
+	out = setEnv(out, envvars.EVENERHubSpawned.Name, "1")
 	if in.RunDir != "" {
-		out = setEnv(out, envvars.SERFRunDir.Name, in.RunDir)
+		out = setEnv(out, envvars.EVENERRunDir.Name, in.RunDir)
 	}
 	if in.StateDir != "" {
-		out = setEnv(out, envvars.SERFStateDir.Name, in.StateDir)
+		out = setEnv(out, envvars.EVENERStateDir.Name, in.StateDir)
 	}
 	if in.HubToken != "" {
-		out = setEnv(out, envvars.SERFHubToken.Name, in.HubToken)
+		out = setEnv(out, envvars.EVENERHubToken.Name, in.HubToken)
 	}
 	if in.ProvidersConfigPath != "" {
-		out = setEnv(out, envvars.SERFProvidersConfig.Name, in.ProvidersConfigPath)
+		out = setEnv(out, envvars.EVENERProvidersConfig.Name, in.ProvidersConfigPath)
 	}
 	// 2. Credentials store value.
 	if envKey, ok := envvars.InjectAPIKeyVar(strings.ToLower(in.Provider)); ok && in.Creds != nil {

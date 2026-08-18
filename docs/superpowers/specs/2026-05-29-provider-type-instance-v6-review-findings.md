@@ -42,7 +42,7 @@ asymptotic-but-never-zero completeness problem.
    across a switch; the comment (`:555-559`) explicitly warns that without it
    "`SetModel` and subagent model overrides would silently revert the communicate
    schema." v6's session-level resolver builds a fresh profile and never
-   re-applies these. A daemon with `--output-schema`/`SERF_ALLOWED_DECISIONS` that
+   re-applies these. A daemon with `--output-schema`/`EVENER_ALLOWED_DECISIONS` that
    does a cross-instance `/model` (or subagent/fallback) silently loses the
    override. **Fix:** the session re-applies its output-schema/allowed-decisions
    after `ResolveProfileFromConfig`. *(B1 — the standout.)*
@@ -65,7 +65,7 @@ asymptotic-but-never-zero completeness problem.
 4. **[SERIOUS] Stamp error identity at the `llm` stream layer, not just
    `session.go:3493`.** `llm.StreamGenerate` (`stream_generate.go:208`) drains the
    stream and captures `ev.Err` itself, outside the session (used by
-   `llmcall`/`serfeval`/`StreamGenerateObject`). §4.3's session-only stamp misses
+   `llmcall`/`evenereval`/`StreamGenerateObject`). §4.3's session-only stamp misses
    it. **Fix:** stamp in the `llm.Client` stream wrapper (wrap `Events()`), which
    covers the session **and** `StreamGenerate` in one place. *(B3.)*
 
@@ -98,10 +98,10 @@ asymptotic-but-never-zero completeness problem.
    unreachable from standalone `evener`; a custom hub root diverges.** §4.10 says
    both read `$hubStateRoot/providers.toml`, but `DefaultHubStateRoot`
    (`config.go:51`) can't be imported by `cmd/evener`, and a `hub.toml`-customized
-   root means a directly-invoked `evener run` (no `SERF_PROVIDERS_CONFIG`) reads
+   root means a directly-invoked `evener run` (no `EVENER_PROVIDERS_CONFIG`) reads
    `~/.evener` while the hub reads the custom root. **Fix:** move the path resolver
    to `internal/providerconfig`; document that hub-spawned daemons get
-   `SERF_PROVIDERS_CONFIG` (so they match) and a custom-root hub requires the env
+   `EVENER_PROVIDERS_CONFIG` (so they match) and a custom-root hub requires the env
    for direct `evener run`. *(A9, B7 — both.)*
 
 9. **[MINOR] `WithModel` same-instance rebuild needs the tag threaded.** The

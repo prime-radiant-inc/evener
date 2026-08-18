@@ -43,10 +43,10 @@ func readHTTPRecordings(t *testing.T, path string) []recordedHTTPRequest {
 	return out
 }
 
-// With SERF_RECORD_HTTP unset the middleware is identity: no file is written and
+// With EVENER_RECORD_HTTP unset the middleware is identity: no file is written and
 // the wrapped handler's behavior is byte-identical.
 func TestHTTPRecorderDisabledIsNoOp(t *testing.T) {
-	t.Setenv(envvars.SERFRecordHTTP.Name, "")
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 	root := t.TempDir()
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,10 +69,10 @@ func TestHTTPRecorderDisabledIsNoOp(t *testing.T) {
 	}
 }
 
-// With SERF_RECORD_HTTP set the middleware records each request and still passes
+// With EVENER_RECORD_HTTP set the middleware records each request and still passes
 // the request through unchanged (the body remains readable downstream).
 func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
-	t.Setenv(envvars.SERFRecordHTTP.Name, "1")
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
 	root := t.TempDir()
 
 	var seenBody string
@@ -108,7 +108,7 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 // Oversized bodies are capped, not buffered without bound, and the downstream
 // handler still sees the full body.
 func TestHTTPRecorderCapsBody(t *testing.T) {
-	t.Setenv(envvars.SERFRecordHTTP.Name, "on")
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "on")
 	root := t.TempDir()
 
 	big := strings.Repeat("A", httpRecorderMaxBodyBytes+5000)
@@ -140,7 +140,7 @@ func TestHTTPRecorderCapsBody(t *testing.T) {
 // always marks its parent as failed too, so the only way to observe "did it
 // fail correctly" without permanently red-ing this test binary is to run
 // the failing case in a subprocess and check its exit status.
-const scanErrorSubprocEnv = "SERF_TEST_SCANERROR_SUBPROC"
+const scanErrorSubprocEnv = "EVENER_TEST_SCANERROR_SUBPROC"
 
 func TestReadHTTPRecordings_ScanErrorFailsTest(t *testing.T) {
 	// In the subprocess, use the fixture path the parent already wrote -

@@ -217,7 +217,7 @@ func (s *Session) canPromptDelegation() bool {
 // env ("<mode> (network on|off) — fixed for this session"), so the model knows the
 // immutable box it runs under. When a kernel wrapper has provisioned a real
 // scratch directory, its path is appended (kata g8q6): a spawned shell command
-// learns the scratch dir through $TMPDIR/$SERF_SCRATCH_DIR, but the model's own
+// learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but the model's own
 // file tools (write_file, read_file, …) never see process environment
 // variables, so without this line a model has no way to discover the one
 // directory its file tools can actually write to outside the worktree — it was
@@ -238,7 +238,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	if le.Wrapper != nil {
 		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
 			line += ". Scratch directory (read-write even in this sandbox; also $" +
-				envvars.TmpDir.Name + " / $" + envvars.SERFScratchDir.Name + " for shell commands): " + scratch
+				envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
 			if le.Sandbox.Mode == sandbox.ModeReadOnly {
 				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
 			}

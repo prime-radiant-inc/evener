@@ -174,7 +174,7 @@ type TreeProject struct {
 	// group: manually archived, or no non-archived (Current/Recent) sessions.
 	IsArchived bool
 	// IsTestRun is true when the project has at least one session and every
-	// session in it carries Origin=="test" (SERF_SESSION_ORIGIN=test): the
+	// session in it carries Origin=="test" (EVENER_SESSION_ORIGIN=test): the
 	// whole project is agentic-testing output rather than real work. The hub
 	// routes such projects into a dedicated "Test runs" group, taking
 	// precedence over IsArchived.

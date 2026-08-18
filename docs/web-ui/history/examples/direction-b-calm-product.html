@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Serf — Refactor auth token cache</title>
+<title>Evener — Refactor auth token cache</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -633,7 +633,7 @@
           <path d="M3 3.2c0-.5.5-.9 1-.7l5.6 2.6c.6.3.6 1.1 0 1.4L3.9 9.1c-.5.2-1-.2-1-.7V3.2Z" fill="#1a140a"/>
         </svg>
       </span>
-      <span class="brand-name">serf<span class="dot">.</span></span>
+      <span class="brand-name">evener<span class="dot">.</span></span>
     </div>
 
     <div class="actions">
@@ -651,7 +651,7 @@
         <span class="glyph working" aria-label="working"></span>
         <span class="lc-body">
           <div class="lc-title">Refactor auth token cache</div>
-          <div class="lc-meta"><span class="model">serf</span> · <span class="st-working">working 1:12</span></div>
+          <div class="lc-meta"><span class="model">evener</span> · <span class="st-working">working 1:12</span></div>
         </span>
       </div>
 
@@ -666,14 +666,14 @@
       <!-- RECENT -->
       <div class="group-label">Recent</div>
 
-      <div class="tree-row" data-toggle="serf-grp">
+      <div class="tree-row" data-toggle="evener-grp">
         <span class="caret" style="transform:rotate(90deg)">▸</span>
-        <span class="tree-name">serf</span>
+        <span class="tree-name">evener</span>
         <span class="rollup-dot" title="live child"></span>
         <span class="tree-time">5m</span>
       </div>
 
-      <div data-grp="serf-grp">
+      <div data-grp="evener-grp">
         <div class="child selected">
           <span class="glyph working" aria-label="working"></span>
           <span class="child-title">Refactor auth token cache</span>
@@ -707,7 +707,7 @@
       <div class="group-label">Older</div>
       <div class="tree-row">
         <span class="caret">▸</span>
-        <span class="tree-name">serf-docs</span>
+        <span class="tree-name">evener-docs</span>
         <span class="tree-time">9d</span>
       </div>
 
@@ -773,7 +773,7 @@
           <div class="turn">
             <div class="role">
               <span class="avatar agent" aria-hidden="true">◆</span>
-              <span class="role-tag">Serf</span>
+              <span class="role-tag">Evener</span>
             </div>
             <div class="assistant-msg">
               I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.
@@ -837,7 +837,7 @@
           <div class="turn">
             <div class="role">
               <span class="avatar agent" aria-hidden="true">◆</span>
-              <span class="role-tag">Serf</span>
+              <span class="role-tag">Evener</span>
             </div>
             <div class="assistant-msg">
               Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="caret"></span>

@@ -17,9 +17,9 @@ import (
 )
 
 // pluginCacheDir returns the directory where the official Anthropic plugins are cached.
-// Set SERF_PLUGIN_CACHE_DIR to override the default macOS path, e.g. in CI or on Linux.
+// Set EVENER_PLUGIN_CACHE_DIR to override the default macOS path, e.g. in CI or on Linux.
 func pluginCacheDir() string {
-	if dir := os.Getenv("SERF_PLUGIN_CACHE_DIR"); dir != "" {
+	if dir := os.Getenv("EVENER_PLUGIN_CACHE_DIR"); dir != "" {
 		return dir
 	}
 	return "/Users/jesse/.claude/plugins/cache/claude-plugins-official"

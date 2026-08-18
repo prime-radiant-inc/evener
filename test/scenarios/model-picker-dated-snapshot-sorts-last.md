@@ -191,7 +191,7 @@ remove your `$run` dir. Nothing is spawned by this card.
   by mapping over the scoped list, so the scoped order wins
   (`widgets/modelCatalog/scopedCatalog.ts:17-29`,
   `panes/spawn/ModelField.tsx:33-46`). `model/list` returns
-  `serfLaunchModelList`'s data untouched (`cmd/evener-hub/app_models.go:76-81`);
+  `evenerLaunchModelList`'s data untouched (`cmd/evener-hub/app_models.go:76-81`);
   the launch check sorts models by raw id within a provider
   (`launchcheck.go:175`). For a bare/dated *pair* that by-id sort gives
   the same answer (the bare id is a prefix, so it sorts first), which is

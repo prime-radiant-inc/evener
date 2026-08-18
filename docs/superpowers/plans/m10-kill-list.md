@@ -190,11 +190,11 @@ endpoint deleted.
 
 ### 1.7 Go — embed / asset plumbing (`embed.go`) surgical
 
-Spec §10 deletes `SERF_HUB_ASSETS_DIR`; §7.2 replaces `?v=mtime` cache-busting with Vite hashing.
+Spec §10 deletes `EVENER_HUB_ASSETS_DIR`; §7.2 replaces `?v=mtime` cache-busting with Vite hashing.
 | Delete | Keep |
 |---|---|
 | `//go:embed templates/…` + `templatesFS` + `templatesRoot()` | `//go:embed assets/*` + `assetsFS` (now embeds only the 5 icon/manifest survivors) |
-| `devAssetsDir()` (reads `SERF_HUB_ASSETS_DIR`) | `assetsRoot()` — but delete its `devAssetsDir()` branch |
+| `devAssetsDir()` (reads `EVENER_HUB_ASSETS_DIR`) | `assetsRoot()` — but delete its `devAssetsDir()` branch |
 | `assetVersionQuery()` + `assetVersionOnce`/`assetVersionVal` (only `app.html`'s `{{assetv}}` used it) | — |
 | `noStore()` (only wrapped on-disk dev assets) | — |
 
@@ -278,7 +278,7 @@ assertions). Consumers: **S** = new SPA, **T** = TUI/`hubapi.Client`.
 `cmd/evener-hub/webnext.go:16`:
 
 ```go
-func newWebEnabled() bool { return os.Getenv("SERF_HUB_WEB") == "new" }
+func newWebEnabled() bool { return os.Getenv("EVENER_HUB_WEB") == "new" }
 ```
 
 Default (unset, or any value ≠ `"new"`) = **legacy**. It is checked at exactly **5 page-route
@@ -349,7 +349,7 @@ Spec §6.7 preserves the doc-route contract as the future doc-pane data layer, a
 `/doc` in dev — **but the SPA does not call these yet** (the `doc` pane type exists in the pane
 registry with "No deep link yet" and makes no network request; verified zero `/doc/` references in
 `frontend/src`). They are **not** in the §10 glob, so they are not auto-deleted. Two hazards: (a)
-`handleDocFile`/`handleDocImage` are the **only** page routes never gated by `SERF_HUB_WEB` (they
+`handleDocFile`/`handleDocImage` are the **only** page routes never gated by `EVENER_HUB_WEB` (they
 always serve legacy HTML today); (b) that HTML references `/assets/style.css` and
 `/assets/marked.min.js`, **both deleted in §1.1** — so a doc pane, once wired, would serve HTML
 with dead asset links. **Recommendation:** do **not** delete the `/doc/*` routes or their

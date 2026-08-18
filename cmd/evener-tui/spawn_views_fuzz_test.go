@@ -179,7 +179,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 			_ = m.spawnFieldHint()
 		}
 		m.closeSpawnForm()
-		t.Setenv(envvars.SERFModel.Name, "provider/model")
+		t.Setenv(envvars.EVENERModel.Name, "provider/model")
 		m.resetSpawnForm()
 		m.spawnFocus = hubSpawnFieldDir
 		m.spawnDirInput.SetValue(".")

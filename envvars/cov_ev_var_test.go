@@ -5,7 +5,7 @@ import "testing"
 // TestVarEnvAccessors exercises the os-backed accessors on a Var: reading a set
 // value (raw and trimmed), the LookupEnv presence flag, and Setenv/Unsetenv.
 func TestVarEnvAccessors(t *testing.T) {
-	v := Var{Name: "SERF_TEST_ACCESSOR"}
+	v := Var{Name: "EVENER_TEST_ACCESSOR"}
 
 	if err := v.Setenv("  spaced  "); err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestVarEnvAccessors(t *testing.T) {
 // TestVarFrom covers From/FromTrimmed with an injected getenv and with a nil
 // getenv (which falls back to os.Getenv).
 func TestVarFrom(t *testing.T) {
-	v := Var{Name: "SERF_TEST_FROM"}
+	v := Var{Name: "EVENER_TEST_FROM"}
 
 	getenv := func(name string) string {
 		if name == v.Name {
@@ -59,11 +59,11 @@ func TestVarFrom(t *testing.T) {
 }
 
 func TestVarAssignment(t *testing.T) {
-	v := Var{Name: "SERF_TEST_ASSIGN"}
-	if got := v.Assignment("val=with=equals"); got != "SERF_TEST_ASSIGN=val=with=equals" {
+	v := Var{Name: "EVENER_TEST_ASSIGN"}
+	if got := v.Assignment("val=with=equals"); got != "EVENER_TEST_ASSIGN=val=with=equals" {
 		t.Errorf("Assignment() = %q", got)
 	}
-	if got := v.Assignment(""); got != "SERF_TEST_ASSIGN=" {
+	if got := v.Assignment(""); got != "EVENER_TEST_ASSIGN=" {
 		t.Errorf("Assignment(\"\") = %q", got)
 	}
 }

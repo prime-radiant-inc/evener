@@ -270,7 +270,7 @@ moved these):
 ## Task 6 — paradise-park: live enforcement smoke + the three parity suites
 
 **Files:** a darwin-tagged `agent/sandbox/seatbelt_live_test.go` (guarded by an
-opt-in env, e.g. `SERF_SEATBELT_LIVE=1`, so it never runs in a non-macOS/CI unit
+opt-in env, e.g. `EVENER_SEATBELT_LIVE=1`, so it never runs in a non-macOS/CI unit
 pass); a small smoke script under `scripts/`.
 
 Run on the Mac:
@@ -279,7 +279,7 @@ Run on the Mac:
 ssh paradise-park
 git -C ~/evener fetch && git -C ~/evener worktree add ~/evener-m6 wip/sandbox-m6   # or clone
 cd ~/evener-m6 && make test && make test-race
-SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/... -run Seatbelt
+EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/... -run Seatbelt
 scripts/seatbelt-smoke.sh    # live /usr/bin/sandbox-exec allow/deny assertions
 ```
 
@@ -315,7 +315,7 @@ scripts/seatbelt-smoke.sh    # live /usr/bin/sandbox-exec allow/deny assertions
   snapshots + the escaper fuzz seed; `make vet && make lint` clean;
   `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...` passes.
 - **paradise-park gate:** `make test && make test-race` clean;
-  `SERF_SEATBELT_LIVE=1` suite + `scripts/seatbelt-smoke.sh` green; the three
+  `EVENER_SEATBELT_LIVE=1` suite + `scripts/seatbelt-smoke.sh` green; the three
   parity suites (network, pseudo-fs/process, path-race) pass; M1's `AssertResolve`
   passes against real macOS host facts.
 - The exported contract table carries the darwin/seatbelt-capable row; **no Linux

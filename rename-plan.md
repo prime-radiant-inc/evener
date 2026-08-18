@@ -4,21 +4,21 @@
 - Module: `primeradiant.com/evener` → `primeradiant.com/evener` (7 sub-modules: agent, auth, envvars, fuzz, identifier, invariant, llm)
 - Binaries: all 14 mirrored to `evener-*`
 - User data: all paths → evener (`~/.evener`, `~/.config/evener`, `~/.local/state/evener`, `<gitroot>/.evener`, `<prefix>/share/evener/bin`, `$XDG_CACHE_HOME/evener`)
-- Env vars: all `SERF_*` → `EVENER_*`
+- Env vars: all `EVENER_*` → `EVENER_*`
 - AppWire protocol: version bump + wire JSON keys renamed (hard flag day, no wire compat)
 - Generated files: regenerated via `make generate`
 - Prose: all docs, comments, strings rewritten
 - Migration tool: `cmd/evener-migrate`
 - Commits: ~20-30 small thematic commits
-- DO NOT rename: `ProtocolVersion`, continuation secret domain strings, `serffuzz` tag, `evener-apptranscript-prefix`, `SERF_STATE_HOME` (doesn't exist)
+- DO NOT rename: `ProtocolVersion`, continuation secret domain strings, `serffuzz` tag, `serf-apptranscript-prefix`, `SERF_STATE_HOME` (doesn't exist)
 
 ## Catalog Summary
 | Domain | Files | Occurrences |
 |---|---|---|
 | Go module path | 1653 go files | 4793 |
 | Go symbols (Evener/evener) | ~785 files | 219 cap + 2492 lower |
-| SERF_ env vars (Go) | ~100 files | 551 |
-| SERF_ env vars (non-Go) | ~60 files | 684 |
+| EVENER_ env vars (Go) | ~100 files | 551 |
+| EVENER_ env vars (non-Go) | ~60 files | 684 |
 | User data paths (Go) | ~20 key files | ~50 |
 | Markdown | 800 files | 17,422 |
 | Frontend (ts/tsx/html/css) | 277 files | 2,160 |
@@ -41,7 +41,7 @@
 - Verify: `go build ./...`
 
 **Commit 3: Binary names in Makefile**
-- SERF_INSTALL_BINS, build targets, dist targets, install targets, clean, temp dir names
+- EVENER_INSTALL_BINS, build targets, dist targets, install targets, clean, temp dir names
 - Verify: `make build`
 
 **Commit 4: Self-update & install paths**
@@ -51,15 +51,15 @@
 ### Phase 2: Go Code (sequential, depends on Phase 1)
 
 **Commit 5: Env var registry definitions**
-- envvars.go: rename 23 registered SERF_* Var identifiers + Name strings → EVENER_*
+- envvars.go: rename 23 registered EVENER_* Var identifiers + Name strings → EVENER_*
 - Verify: `go build ./...`
 
 **Commit 6: Env var usage in Go**
-- All SERF_ references in Go → EVENER_ (2 non-registry consts: SERF_LIVE_TESTS, SERF_FUZZ_PERSIST + test/build vars)
+- All EVENER_ references in Go → EVENER_ (2 non-registry consts: EVENER_LIVE_TESTS, EVENER_FUZZ_PERSIST + test/build vars)
 - Verify: `go test ./...`
 
 **Commit 7: Go package clause**
-- `serf_test` → `evener_test` (root external test package)
+- `evener_test` → `evener_test` (root external test package)
 - Verify: `go build ./...`
 
 **Commit 8: Go type/func/var/const identifiers**
@@ -77,7 +77,7 @@
 
 **Commit 11: AppWire protocol version bump + wire JSON keys**
 - Bump protocol version
-- Rename wire-stable JSON tags: `evener` → `evener`, `serfErrorInfo` → `evenerErrorInfo`
+- Rename wire-stable JSON tags: `evener` → `evener`, `evenerErrorInfo` → `evenerErrorInfo`
 - Rename wire method strings: `evener/jobs/list` → `evener/jobs/list`, etc.
 - Verify: `go test ./...`
 
@@ -88,7 +88,7 @@
 ### Phase 3: Scripts & Config (can parallelize after Phase 1)
 
 **Commit 13: Shell scripts**
-- 55 .sh files: SERF_* → EVENER_*, evener → evener
+- 55 .sh files: EVENER_* → EVENER_*, evener → evener
 - Verify: `make test-short`
 
 **Commit 14: Config files (yaml/toml/json/sbpl/tmpl)**
@@ -141,7 +141,7 @@
 ### Phase 7: Final Verification
 
 **Commit 25: Final cleanup & verification**
-- Full grep for remaining `evener`/`Evener`/`SERF_` references
+- Full grep for remaining `evener`/`Evener`/`EVENER_` references
 - Run: `make test`, `make lint`, `make fuzz-seeds`
 - Any stragglers fixed
 - Verify: all gates green

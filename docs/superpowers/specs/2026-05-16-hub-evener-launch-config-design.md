@@ -22,7 +22,7 @@ This design adds:
 3. A hub-managed credentials file editable from the UI.
 4. A trust-on-first-use mechanism for in-repo `.evener/launch.toml` files.
 
-No back-compat for the existing `[serf_launch]` shape in `hub.toml` — the
+No back-compat for the existing `[evener_launch]` shape in `hub.toml` — the
 schema is rewritten cleanly.
 
 ## 2. Non-Goals

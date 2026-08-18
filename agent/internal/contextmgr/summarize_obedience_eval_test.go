@@ -2,7 +2,7 @@
 
 package contextmgr
 
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
 //
 // Gates the compact tool's instruction path: requires >=90% of cases honored and
 // ZERO must-keep drops. If it fails, ship note-pin-only.

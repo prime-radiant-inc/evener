@@ -74,8 +74,8 @@ if `git apply` no longer lands (the SUT was refactored), the audit errors with
 we want. Re-deriving is cheap: it is the inverse of a known fix.
 
 > Alternative considered: build-tag fault injection via a `mutate` package
-> mirroring `invariant/` (a `mutate.Active(id)` no-op under `!serfmutate`,
-> env-selected under `-tags serfmutate`). Cleaner against refactors, but it
+> mirroring `invariant/` (a `mutate.Active(id)` no-op under `!evenermutate`,
+> env-selected under `-tags evenermutate`). Cleaner against refactors, but it
 > scatters `if mutate.Active(...) { buggy } else { correct }` scaffolding through
 > production SUT files. Prefer patches; fall back to this only for a fault that
 > cannot be expressed as a stable patch.
@@ -85,7 +85,7 @@ we want. Re-deriving is cheap: it is the inverse of a known fix.
   `id <TAB> target(module:FuzzName) <TAB> patchfile <TAB> description`.
 - `fuzz/mutations/<id>.patch` — the fault.
 - `scripts/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
-  `fuzz-bisect.sh` conventions: env seams `SERF_FUZZ_RUNNER`, throwaway worktree,
+  `fuzz-bisect.sh` conventions: env seams `EVENER_FUZZ_RUNNER`, throwaway worktree,
   honest reporting). For each mutation: worktree-at-HEAD → `git apply` (loud on
   failure) → `go test -tags serffuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
   → clean up. Then a **gap report**: every native target in `run-fuzz.sh --list`

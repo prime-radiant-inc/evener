@@ -32,7 +32,7 @@ cat >"$work/summary.json" <<JSON
 JSON
 cp "$work/summary.json" "$frontend/coverage/coverage-summary.json"
 
-run() { SERF_WEB_FRONTEND_DIR="$frontend" SERF_WEBCOV_FLOORS="$floors" bash "$script" --reuse "$@"; }
+run() { EVENER_WEB_FRONTEND_DIR="$frontend" EVENER_WEBCOV_FLOORS="$floors" bash "$script" --reuse "$@"; }
 
 : >"$floors"
 out="$work/out.txt"
@@ -113,7 +113,7 @@ fi
 exit "${FAKE_NPM_EXIT:-0}"
 FAKENPM
 chmod +x "$fake_bin/npm"
-measure() { PATH="$fake_bin:$PATH" SERF_WEB_FRONTEND_DIR="$frontend" SERF_WEBCOV_FLOORS="$floors" bash "$script" "$@"; }
+measure() { PATH="$fake_bin:$PATH" EVENER_WEB_FRONTEND_DIR="$frontend" EVENER_WEBCOV_FLOORS="$floors" bash "$script" "$@"; }
 
 # A green suite that writes a fresh report clears its floors.
 printf 'panes 25.0\n' >"$floors"

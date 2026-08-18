@@ -15,7 +15,7 @@ worktree (kata rule: no live LLM API calls from an implementer).
   (see `tools/tool-fluency/README.md` for the schema). It ships a tiny,
   self-contained `configpath` Go package with a deliberately seeded
   environment/configuration-path bug (modeled on the real HOME/XDG/
-  SERF_PROVIDERS_CONFIG precedence bug that kata nbcf's incident report
+  EVENER_PROVIDERS_CONFIG precedence bug that kata nbcf's incident report
   describes — see "Premise check" below) and a prompt describing the
   *symptom* only. The model must diagnose the root cause, write one
   regression test, apply the smallest fix, and verify, then report a
@@ -40,7 +40,7 @@ phase-transition or analysis-budget language and found none — the premise
 that no such prompting exists on `origin/main` (`ea6cc396d`) holds.
 
 I also found that the *specific* incident kata nbcf describes (an agent
-stalling on HOME/XDG/`SERF_PROVIDERS_CONFIG` propagation during a
+stalling on HOME/XDG/`EVENER_PROVIDERS_CONFIG` propagation during a
 tool-fluency run) already has its underlying bug fixed on main:
 `agent/internal/liveeval/paths.go` (commit `403e580c3`, "test(eval): gate
 live suites and resolve local paths") is that forced bounded fix, with

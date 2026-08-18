@@ -1594,7 +1594,7 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
 				{ID: "evener", Label: "evener", Kind: "evener"},
 				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
@@ -1654,7 +1654,7 @@ func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 			return appwire.ModelListResponse{}, appwire.Unavailable("models unavailable")
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
 				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 			}}, nil
@@ -1749,7 +1749,7 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 func TestHubModelSpawnRejectsHubUnsupportedEmptyTaskBeforeStart(t *testing.T) {
 	var startCalled bool
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		app.Router().Handle(appwire.MethodEvenerHarnessesList, func(context.Context, json.RawMessage) (any, error) {
+		app.Router().Handle(appwire.MethodSerfHarnessesList, func(context.Context, json.RawMessage) (any, error) {
 			return map[string]any{"data": []map[string]any{{
 				"id":                             "evener",
 				"label":                          "evener",
@@ -2086,7 +2086,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}}}, nil
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -2493,8 +2493,8 @@ func TestHubModelBusySendPreservesInput(t *testing.T) {
 func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	var methods []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-			methods = append(methods, appwire.MethodEvenerTasksList)
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			methods = append(methods, appwire.MethodSerfTasksList)
 			return appwire.TaskListResponse{Data: []task.Task{{ID: 1, Type: task.TaskTypeImplement, Description: "wire actions", Status: task.TaskDone}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -2525,7 +2525,7 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	if !strings.Contains(got.View(), "/tmp/details") {
 		t.Fatalf("details view missing:\n%s", got.View())
 	}
-	if strings.Join(methods, ",") != appwire.MethodEvenerTasksList+","+appwire.MethodThreadRead {
+	if strings.Join(methods, ",") != appwire.MethodSerfTasksList+","+appwire.MethodThreadRead {
 		t.Fatalf("methods=%v", methods)
 	}
 }
@@ -2644,15 +2644,15 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 			}
 			return appwire.ThreadReadResponse{Thread: thread}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-			methods = append(methods, appwire.MethodEvenerTasksList)
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			methods = append(methods, appwire.MethodSerfTasksList)
 			return appwire.TaskListResponse{Data: []task.Task{
 				{ID: 1, Type: task.TaskTypeImplement, Description: "wire status", Status: task.TaskDone},
 				{ID: 2, Type: task.TaskTypeVerify, Description: "verify status", Status: task.TaskInProgress},
 			}}, nil
 		})
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
-			methods = append(methods, appwire.MethodEvenerAuthStatus)
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			methods = append(methods, appwire.MethodSerfAuthStatus)
 			return appwire.AuthStatusResponse{Provider: "openai", Supported: true, SignedIn: true, ActiveSource: "oauth", Email: "jesse@example.test"}, nil
 		})
 	})
@@ -2688,7 +2688,7 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 			t.Fatalf("status output missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Join(methods, ",") != appwire.MethodThreadRead+","+appwire.MethodEvenerTasksList+","+appwire.MethodEvenerAuthStatus {
+	if strings.Join(methods, ",") != appwire.MethodThreadRead+","+appwire.MethodSerfTasksList+","+appwire.MethodSerfAuthStatus {
 		t.Fatalf("methods=%v", methods)
 	}
 }
@@ -3573,7 +3573,7 @@ func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
 func TestHubModelUpgradeSlashCommandCallsHub(t *testing.T) {
 	var got appwire.UpgradeParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerUpgrade, func(_ context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfUpgrade, func(_ context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
 			got = params
 			return appwire.UpgradeResponse{
 				Channel:        "snapshot",
@@ -4162,7 +4162,7 @@ func newTestHubClientWithFeed(t *testing.T, register func(*appserver.Server)) (*
 		SourceID:   "local",
 		Features:   appwire.FeatureSet{},
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}}}, nil
 	})
 	if register != nil {

@@ -9,7 +9,7 @@
 ## Infrastructure
 - **flower-garden**: Linux server at 192.168.118.101 (jesse@), 8 cores, 30GB RAM, Ubuntu + Docker
 - **Benchmark repo**: `~/git/terminal-bench/` on flower-garden
-- **Evener adapter**: `~/git/terminal-bench/serf_agent.py` — Python adapter that bridges harbor to evener binary
+- **Evener adapter**: `~/git/terminal-bench/evener_agent.py` — Python adapter that bridges harbor to evener binary
 - **Install template**: `~/git/terminal-bench/install-evener.sh.j2` — Jinja2 template for apt packages, python symlink, evener binary copy into container
 - **Evener binary**: `~/git/terminal-bench/evener-linux-amd64` — uploaded via scp from local build
 - **Task cache**: `~/.cache/harbor/tasks/<hash>/<task-name>/` — task definitions, environments, verifiers
@@ -24,7 +24,7 @@ On flower-garden it's at `~/.local/bin/harbor` (installed via `uv tool install`)
 ```bash
 cd ~/git/terminal-bench
 harbor run \
-  --agent-import-path 'serf_agent:SerfAgent' \
+  --agent-import-path 'evener_agent:SerfAgent' \
   -m openai/gpt-5.2-codex \
   --ak max_rounds=100 \
   -d 'terminal-bench@2.0' \
@@ -36,7 +36,7 @@ harbor run \
 ```
 
 ### Key flags
-- `--agent-import-path 'serf_agent:SerfAgent'` — Python module:class for the agent adapter
+- `--agent-import-path 'evener_agent:SerfAgent'` — Python module:class for the agent adapter
 - `-m openai/gpt-5.2-codex` — model name (passed through to evener)
 - `--ak max_rounds=100` — agent kwargs (passed to SerfAgent constructor)
 - `-d 'terminal-bench@2.0'` — dataset name and version

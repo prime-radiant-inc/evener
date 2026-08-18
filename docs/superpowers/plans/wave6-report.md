@@ -171,7 +171,7 @@ code-level verification, not covered by any prior ruling.
 
 ## Live proof
 
-Real hub (built `evener-hub`, `SERF_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
+Real hub (built `evener-hub`, `EVENER_HUB_WEB=new`) under an **isolated fake `$HOME`** (its own
 `$HOME/.evener/hub.lock`, run dir, state root — the real host hub was never touched) on
 `127.0.0.1:19286`, spawning real `evener serve` daemons via the built `evener` binary, driving the
 cheapest real model **`openai/gpt-5-nano`** (materialized from the repo `.env`), through Chrome. No
@@ -195,11 +195,11 @@ re-baseline). `/project` reveal was not driven live (verified in code: `railCont
 `RailHost`).
 
 **Critical operational finding (for the merge / M9 cutover).** The rewritten SPA serves the page
-routes **only when `SERF_HUB_WEB=new`** — `webnext.go:16` (`newWebEnabled`), and its comment states
+routes **only when `EVENER_HUB_WEB=new`** — `webnext.go:16` (`newWebEnabled`), and its comment states
 "Default is the legacy UI until the M9 cutover flips it." A hub started without that env var serves
 the **legacy htmx UI**, whose `spawn.js`/`dir-picker.js` chip-pickers render a superficially similar
 (but rich, non-interim) model catalog. Any future live-proof or demo of the new UI must export
-`SERF_HUB_WEB=new`; the M9 cutover work is what flips the default.
+`EVENER_HUB_WEB=new`; the M9 cutover work is what flips the default.
 
 **Out-of-scope observations (not W6 surfaces).** (a) The session-chrome work-time clock rendered an
 absurd value ("495269h" — a likely zero-start-time bug in the frozen Wave-5 `StatusRow`); worth a

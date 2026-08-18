@@ -1824,14 +1824,14 @@ import (
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
 // Caller does NOT manage the subprocess lifecycle — the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, t SpawnTemplate, workingDir string, timeout time.Duration) (rendezvous.Entry, error) {
-	if serfBinary == "" {
-		serfBinary = "evener"
+func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, t SpawnTemplate, workingDir string, timeout time.Duration) (rendezvous.Entry, error) {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
 	args := append([]string{"serve"}, buildSpawnArgs(t, workingDir)...)
 
-	cmd := exec.Command(serfBinary, args...)
-	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
+	cmd := exec.Command(evenerBinary, args...)
+	cmd.Env = append(os.Environ(), "EVENER_HUB_SPAWNED=1")
 	cmd.Stdout = os.Stderr // forward to hub stderr for now
 	cmd.Stderr = os.Stderr
 
@@ -3953,13 +3953,13 @@ In `cmd/evener-hub/spawn.go`, add:
 //
 // Note: resume always creates a NEW session_id (the daemon mints a fresh
 // one). Caller resolves it via roster lookup after rendezvous appears.
-func ResumeDaemon(ctx context.Context, serfBinary, runDir, sessionID string, timeout time.Duration) (rendezvous.Entry, error) {
-	if serfBinary == "" {
-		serfBinary = "evener"
+func ResumeDaemon(ctx context.Context, evenerBinary, runDir, sessionID string, timeout time.Duration) (rendezvous.Entry, error) {
+	if evenerBinary == "" {
+		evenerBinary = "evener"
 	}
 	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", sessionID}
-	cmd := exec.Command(serfBinary, args...)
-	cmd.Env = append(os.Environ(), "SERF_HUB_SPAWNED=1")
+	cmd := exec.Command(evenerBinary, args...)
+	cmd.Env = append(os.Environ(), "EVENER_HUB_SPAWNED=1")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -4108,7 +4108,7 @@ const Version = "0.1.0"
 func main() {
 	configPath := flag.String("config", DefaultConfigPath(), "path to hub.toml")
 	addr := flag.String("addr", "", "override hub listen address")
-	serfBinary := flag.String("evener", "", "path to evener binary (default: 'evener' on PATH)")
+	evenerBinary := flag.String("evener", "", "path to evener binary (default: 'evener' on PATH)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		flag.PrintDefaults()
@@ -4156,7 +4156,7 @@ func main() {
 	// Spawner
 	spawner := &HubSpawner{
 		Cfg:        cfg,
-		SerfBinary: *serfBinary,
+		SerfBinary: *evenerBinary,
 		RunDir:     runDir,
 	}
 
@@ -4279,15 +4279,15 @@ import (
 
 // TestE2E_HubAndDaemon brings up a real evener daemon plus the hub and
 // verifies the landing page lists the daemon. Skip-by-default; runs only
-// when SERF_TEST_PROVIDER, SERF_TEST_MODEL, and an API key are set.
+// when EVENER_TEST_PROVIDER, EVENER_TEST_MODEL, and an API key are set.
 func TestE2E_HubAndDaemon(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	provider := os.Getenv("SERF_TEST_PROVIDER")
-	model := os.Getenv("SERF_TEST_MODEL")
+	provider := os.Getenv("EVENER_TEST_PROVIDER")
+	model := os.Getenv("EVENER_TEST_MODEL")
 	if provider == "" || model == "" {
-		t.Skip("SERF_TEST_PROVIDER and SERF_TEST_MODEL required")
+		t.Skip("EVENER_TEST_PROVIDER and EVENER_TEST_MODEL required")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" && os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("no LLM API key in env")
@@ -4310,11 +4310,11 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 			t.Fatalf("build %s: %v\n%s", target, err, out)
 		}
 	}
-	serfBin := filepath.Join(tmpHome, "evener")
+	evenerBin := filepath.Join(tmpHome, "evener")
 	hubBin := filepath.Join(tmpHome, "evener-hub")
 
 	// Launch a evener serve daemon.
-	dCmd := exec.Command(serfBin, "serve",
+	dCmd := exec.Command(evenerBin, "serve",
 		"--provider", provider, "--model", model,
 		"--addr", "127.0.0.1:0",
 		"--dir", t.TempDir(),
@@ -4330,7 +4330,7 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 
 	// Launch the hub on a fixed port.
 	hubAddr := "127.0.0.1:9181"
-	hCmd := exec.Command(hubBin, "--addr", hubAddr, "--evener", serfBin)
+	hCmd := exec.Command(hubBin, "--addr", hubAddr, "--evener", evenerBin)
 	hCmd.Env = append(os.Environ(), "HOME="+tmpHome)
 	hCmd.Stderr = os.Stderr
 	if err := hCmd.Start(); err != nil {
@@ -4384,7 +4384,7 @@ Expected: PASS (this test SKIPs in `-short` mode).
 If you want to run the full e2e test:
 
 ```
-SERF_TEST_PROVIDER=openai SERF_TEST_MODEL=gpt-5-mini-2025-08-07 \
+EVENER_TEST_PROVIDER=openai EVENER_TEST_MODEL=gpt-5-mini-2025-08-07 \
 OPENAI_API_KEY=$OPENAI_API_KEY \
 go test ./cmd/evener-hub/ -run TestE2E -v -timeout 120s
 ```

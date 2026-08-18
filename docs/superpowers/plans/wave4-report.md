@@ -228,7 +228,7 @@ scoped follow-up.
 
 ## Live proof
 
-Real hub (`make build-hub`, `SERF_HUB_WEB=new`, dedicated port 19280) + a freshly-built `evener` CLI
+Real hub (`make build-hub`, `EVENER_HUB_WEB=new`, dedicated port 19280) + a freshly-built `evener` CLI
 (`--model openai/gpt-5.5`, no `.env` needed) + Chrome, driven end to end. Evidence:
 `.superpowers/sdd/t5b-evidence/`.
 
@@ -371,7 +371,7 @@ go build ./...                  → EXIT=0  (repo root)
 go test ./cmd/evener-hub/...      → EXIT=0  (11 packages, all ok)
 ```
 
-Live proof: real hub (`SERF_HUB_WEB=new`, `evener-hub -addr 127.0.0.1:19280 -evener <fresh evener
+Live proof: real hub (`EVENER_HUB_WEB=new`, `evener-hub -addr 127.0.0.1:19280 -evener <fresh evener
 binary>`) + a real `openai/gpt-5.5` session, driven via the Chrome skill. Evidence:
 `.superpowers/sdd/t5b-evidence/` (13 files). All spawned sessions shut down, hub process killed,
 scratch state directories and built binaries removed, browser tabs closed — confirmed via `pgrep`
@@ -393,7 +393,7 @@ this). Non-dynamic rows are byte-identical to before — jsdom can't lay out rea
 widget test pins the structural precondition (no inline height on the measured element in dynamic
 mode) rather than a height number; all existing `VirtualList` tests pass unmodified.
 
-Live re-verified (fresh `make build-hub`, `SERF_HUB_WEB=new`, a real `openai/gpt-5.5` session):
+Live re-verified (fresh `make build-hub`, `EVENER_HUB_WEB=new`, a real `openai/gpt-5.5` session):
 every rendered row now measures `inlineHeight: "(none)"`, `height` exactly equal to its own
 content's `scrollHeight`, and consecutive rows sit at *exactly* adjacent `top` offsets (zero gap,
 zero overlap) — checked across rows from 63px to 2798px tall, including a 1041px real streamed

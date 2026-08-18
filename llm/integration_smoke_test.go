@@ -61,8 +61,8 @@ func (p providerConfig) available() bool {
 
 func skipIfNoProviders(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live LLM integration tests")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live LLM integration tests")
 	}
 	for _, p := range providers {
 		if p.available() {
@@ -74,8 +74,8 @@ func skipIfNoProviders(t *testing.T) {
 
 func skipIfNoImageProviders(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live LLM integration tests")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run live LLM integration tests")
 	}
 	for _, p := range imageProviders {
 		if p.available() {

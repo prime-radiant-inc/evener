@@ -106,8 +106,8 @@ cat >"$fixtures/report-env" <<'REPORT_ENV'
 #!/usr/bin/env bash
 # report-env OUTFILE — one "NAME=value" line per variable evener reads to find
 # its configuration, with "<unset>" where the script cleared one.
-for name in SERF_PROVIDERS_CONFIG SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN \
-	SERF_HUB_ADDR SERF_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME \
+for name in EVENER_PROVIDERS_CONFIG EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN \
+	EVENER_HUB_ADDR EVENER_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME \
 	XDG_CACHE_HOME HOME; do
 	if [ -n "${!name+set}" ]; then
 		printf '%s=%s\n' "$name" "${!name}"
@@ -166,12 +166,12 @@ printf 'schema = 1\ndefault = "expensive-real-provider"\n' >"$leaked_providers"
 run_script() {
 	env PATH="$fakebin:$PATH" \
 		FAKE_STATE="$state" FAKE_FIXTURES="${FAKE_FIXTURES:-$fixtures}" \
-		SERF_PROVIDERS_CONFIG="$leaked_providers" \
-		SERF_STATE_DIR="$work/real-state" \
-		SERF_RUN_DIR="$work/real-run" \
-		SERF_HUB_TOKEN="not-the-fixture-token" \
-		SERF_HUB_ADDR="http://127.0.0.1:1" \
-		SERF_HUB_SPAWNED=1 \
+		EVENER_PROVIDERS_CONFIG="$leaked_providers" \
+		EVENER_STATE_DIR="$work/real-state" \
+		EVENER_RUN_DIR="$work/real-run" \
+		EVENER_HUB_TOKEN="not-the-fixture-token" \
+		EVENER_HUB_ADDR="http://127.0.0.1:1" \
+		EVENER_HUB_SPAWNED=1 \
 		XDG_STATE_HOME="$work/real-xdg-state" \
 		XDG_CONFIG_HOME="$work/real-xdg-config" \
 		XDG_CACHE_HOME="$work/real-xdg-cache" \
@@ -236,9 +236,9 @@ if [ -n "$run" ] && [ -d "$run" ]; then
 else
 	bad "the start did not print a usable run directory"
 fi
-assert_has "$state/hub.env" "SERF_PROVIDERS_CONFIG=<unset>" "the hub does not inherit SERF_PROVIDERS_CONFIG"
-assert_has "$state/fakellm.env" "SERF_PROVIDERS_CONFIG=<unset>" "fakellm does not inherit SERF_PROVIDERS_CONFIG"
-for isolated in SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME; do
+assert_has "$state/hub.env" "EVENER_PROVIDERS_CONFIG=<unset>" "the hub does not inherit EVENER_PROVIDERS_CONFIG"
+assert_has "$state/fakellm.env" "EVENER_PROVIDERS_CONFIG=<unset>" "fakellm does not inherit EVENER_PROVIDERS_CONFIG"
+for isolated in EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME; do
 	assert_has "$state/hub.env" "$isolated=<unset>" "the hub does not inherit $isolated"
 done
 assert_has "$state/hub.env" "HOME=$run/home" "the hub runs under the throwaway HOME"

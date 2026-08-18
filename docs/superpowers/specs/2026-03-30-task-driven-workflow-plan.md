@@ -1008,10 +1008,10 @@ git commit -m "task_list: update tool description and reminders for reasoning_ef
 
 ---
 
-### Task 12: Revert serf_agent.py to reasoning_effort="low"
+### Task 12: Revert evener_agent.py to reasoning_effort="low"
 
 **Files:**
-- Modify: `tools/serf_agent.py:36`
+- Modify: `tools/evener_agent.py:36`
 
 - [ ] **Step 1: Change default back to "low"**
 
@@ -1024,8 +1024,8 @@ The coordinator's Plan and Verify tasks now declare `xhigh` in their task defini
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tools/serf_agent.py
-git commit -m "serf_agent: revert to reasoning_effort=low (tasks control effort)"
+git add tools/evener_agent.py
+git commit -m "evener_agent: revert to reasoning_effort=low (tasks control effort)"
 ```
 
 ---

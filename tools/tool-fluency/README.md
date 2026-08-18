@@ -323,7 +323,7 @@ fluency is a workflow suite, not just a `job_watch` unit.
 
 1. Build a fresh `evener` binary when requested.
 2. For OpenAI OAuth runs, clear inherited `OPENAI_API_KEY` when requested.
-3. For each probe repetition, create a hermetic workdir and `SERF_STATE_DIR`.
+3. For each probe repetition, create a hermetic workdir and `EVENER_STATE_DIR`.
 4. Materialize fixtures.
 5. Run noninteractive `evener --verbose` with the selected model/context.
 6. Collect structured events and transcript data from the session state dir.

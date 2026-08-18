@@ -101,7 +101,7 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 }
 
 func TestAttachAPILoggerEnablesRawWhenEnvSet(t *testing.T) {
-	t.Setenv("SERF_LOG_RAW_HTTP", "1")
+	t.Setenv("EVENER_LOG_RAW_HTTP", "1")
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(loggingTestAdapter{})
@@ -208,8 +208,8 @@ Add to `cmd/evener/serve_test.go` or the closest existing serve test file:
 func TestRunServeInstallsAPILogger(t *testing.T) {
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
-	t.Setenv("SERF_STATE_DIR", stateDir)
-	t.Setenv("SERF_MODEL", "openai/gpt-4o-mini")
+	t.Setenv("EVENER_STATE_DIR", stateDir)
+	t.Setenv("EVENER_MODEL", "openai/gpt-4o-mini")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 
 	// Use the existing test provider transport/fake OpenAI server helpers from serve tests.

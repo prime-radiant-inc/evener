@@ -83,7 +83,7 @@ The full 18-entry ledger is in `.superpowers/sdd/` sweep output; the load-bearin
 
 ## Live proof (real hub, real browser, no mocks)
 
-Built the real thing (`npm run build` → `git restore dist/PLACEHOLDER`; `go build -o evener-hub ./cmd/evener-hub` embedding the fresh dist), ran an **isolated** hub — `hub_state_root`/`run_dir`/`past_index_db` under a scratch dir, `addr 127.0.0.1:19280`, `SERF_HUB_WEB=new`, real provider keys sourced from the repo `.env` — and drove the UI with Chrome. Every navigate used an explicit `127.0.0.1:19280` URL; all credential/launch mutations landed in the isolated state root (verified: isolated `launch.toml` holds the edits, Jesse's `~/.evener/launch.toml` untouched). Screenshots in `.superpowers/sdd/w7-live-evidence/` (copied from the scratch run).
+Built the real thing (`npm run build` → `git restore dist/PLACEHOLDER`; `go build -o evener-hub ./cmd/evener-hub` embedding the fresh dist), ran an **isolated** hub — `hub_state_root`/`run_dir`/`past_index_db` under a scratch dir, `addr 127.0.0.1:19280`, `EVENER_HUB_WEB=new`, real provider keys sourced from the repo `.env` — and drove the UI with Chrome. Every navigate used an explicit `127.0.0.1:19280` URL; all credential/launch mutations landed in the isolated state root (verified: isolated `launch.toml` holds the edits, Jesse's `~/.evener/launch.toml` untouched). Screenshots in `.superpowers/sdd/w7-live-evidence/` (copied from the scratch run).
 
 | # | Journey | Verdict | Evidence |
 |---|---|---|---|

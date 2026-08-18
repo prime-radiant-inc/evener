@@ -171,7 +171,7 @@ There is a real registered `openai-compatible` adapter (`openaicompat:122`, env
 factory `:90-110`) but `SelectProfile` has **no** case for it (already
 unselectable, `cmdutil.go:72`). `NewFromEnv` consumers: `serve.go:39`,
 `run.go:127`, `web.go:2024`, `launch_check.go:94,159`, `llmcall:220`,
-`serfeval:196`, `generate.go:158 DefaultClient()`.
+`evenereval:196`, `generate.go:158 DefaultClient()`.
 
 ## 4. Design
 
@@ -249,7 +249,7 @@ keys (recipe↔adapter contract — for kimi/glm/openrouter the key stays
   so every `StreamEventError` is stamped before it leaves the client. (b) covers
   both the session's `consumeModelStream` (`session.go:3493`) **and**
   `llm.StreamGenerate`'s own drain (`stream_generate.go:208`, used by
-  `llmcall`/`serfeval`) — a single chokepoint, not a per-consumer fix. Use
+  `llmcall`/`evenereval`) — a single chokepoint, not a per-consumer fix. Use
   `RewriteErrorProvider(err, req.Provider)` but **keep its empty-Provider no-op**
   (so cancellations / no-object errors stay unlabeled). Stamp the **behavior tag**
   on the error here too (from the client's `NameToTag`) so `classify.go` and
@@ -300,7 +300,7 @@ implicitly:
   (`profile.go:540`, comment `:555-559`) to carry `WithCommunicateOutputSchema` /
   `WithAllowedDecisions` across a switch. The session re-applies these after
   `ResolveProfileFromConfig` (the session knows its own `--output-schema` /
-  `SERF_ALLOWED_DECISIONS`), so a cross-instance switch doesn't silently revert
+  `EVENER_ALLOWED_DECISIONS`), so a cross-instance switch doesn't silently revert
   the communicate schema.
 - **Provider-conditional tools.** Native tools registered per behavior tag (the
   gemini `web_search` at `session.go:4785`, only set in `registerCoreTools`) must
@@ -403,7 +403,7 @@ One load helper, two branches: **if `providers.toml` exists** →
 `cfg` (when present) is passed into `SessionConfig`/`WebConfig` so the session can
 re-resolve (§4.5), and `NameToTag` reaches the client-only picker/launch sites
 (§4.2). Converted consumers: `serve.go:39`, `run.go:127`, `web.go:2024`,
-`launch_check.go:94` **and** `:159`, `DefaultClient()`; `llmcall`/`serfeval` adopt
+`launch_check.go:94` **and** `:159`, `DefaultClient()`; `llmcall`/`evenereval` adopt
 the helper. Launch gating/credential validation read the **instance set** when a
 config exists (else the existing env-keyed maps); `validateProviderCredentials`
 resolves the instance named by `req.Provider` and checks its credential (inline
@@ -411,14 +411,14 @@ key, or OAuth by instance name §4.9).
 
 ### 4.12 Spawn plumbing
 
-The hub threads `SERF_PROVIDERS_CONFIG=<path>` into `req.Env` via
+The hub threads `EVENER_PROVIDERS_CONFIG=<path>` into `req.Env` via
 `launchconfig.ToEnv`, reaching **both** spawned `evener serve` and the `evener
 launch-check` subprocess (validate + `--models` paths). The load helper (§4.11)
-consults `SERF_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
+consults `EVENER_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
 then the env fallback — so the spawned daemon uses exactly the hub's config. The
 single-provider env injection is removed. (A `hub.toml`-customized `hubStateRoot`
-reaches spawned daemons via `SERF_PROVIDERS_CONFIG`; a *directly* invoked
-`evener run` against a custom-root hub must set `SERF_PROVIDERS_CONFIG` itself —
+reaches spawned daemons via `EVENER_PROVIDERS_CONFIG`; a *directly* invoked
+`evener run` against a custom-root hub must set `EVENER_PROVIDERS_CONFIG` itself —
 documented, §9.)
 
 ### 4.13 Unified UI (Phase 2)
@@ -511,7 +511,7 @@ not just display, so it lands with the picker work.
   instance; `openai_login`/`validateProviderCredentials` resolve it.
 - **Consumers/spawn:** standalone `run`/`serve`, both launch-check paths, web
   picker build via the helper and see custom instances; `ToEnv` sets
-  `SERF_PROVIDERS_CONFIG`; the daemon uses it.
+  `EVENER_PROVIDERS_CONFIG`; the daemon uses it.
 - **Phase 2:** RPC round-trip + JSDOM for the screen + pickers.
 
 ## 8. v6-review findings → v7 resolutions
@@ -555,8 +555,8 @@ profile-swap-safe; finish-norm needs no change; catalog-by-tag works
 - **Same-tag cross-instance fallback (§4.2):** the guard now allows it (safe —
   identical surface). Confirm no caller depended on the stricter same-id rule.
 - **Custom `hubStateRoot` + direct `evener run`:** hub-spawned daemons get the right
-  config via `SERF_PROVIDERS_CONFIG`; a *directly* invoked `evener run` against a
-  hub configured with a non-default root must set `SERF_PROVIDERS_CONFIG` itself
+  config via `EVENER_PROVIDERS_CONFIG`; a *directly* invoked `evener run` against a
+  hub configured with a non-default root must set `EVENER_PROVIDERS_CONFIG` itself
   (it can't read `hub.toml`). Default-root setups need nothing. Documented
   limitation, not a blocker.
 - **`chat-completions` feature gap (§4.7)** and **Anthropic-compatible variance

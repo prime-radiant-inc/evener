@@ -6,9 +6,9 @@ package contextmgr
 // real OAuth OpenAI endpoint (NOT mocked).
 //
 // Smoke first:
-//   SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestEvalSmoke -v -timeout 5m
+//   EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestEvalSmoke -v -timeout 5m
 // Full eval:
-//   SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionComparison -v -timeout 20m
+//   EVENER_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionComparison -v -timeout 20m
 //
 // OAuth wiring: the creds are stored at <XDG_STATE_HOME>/evener/auth/openai.json,
 // not env vars. The live setup resolves XDG_STATE_HOME from the environment or

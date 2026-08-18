@@ -406,7 +406,7 @@ const (
 )
 
 type ErrorData struct {
-	SerfErrorInfo ErrorInfo `json:"serfErrorInfo"`
+	SerfErrorInfo ErrorInfo `json:"evenerErrorInfo"`
 	SourceID      string    `json:"sourceId,omitempty"`
 	ThreadID      string    `json:"threadId,omitempty"`
 	Retryable     bool      `json:"retryable"`
@@ -1517,7 +1517,7 @@ func (p *Projector) Project(event agent.SessionEvent) []ServerNotification {
 	case agent.EventToolCallStart:
 		base.Method = NotifyItemStarted
 	case agent.EventToolCallOutputDelta:
-		base.Method = "item/serfToolCall/outputDelta"
+		base.Method = "item/evenerToolCall/outputDelta"
 	case agent.EventToolCallEnd:
 		base.Method = NotifyItemCompleted
 	case agent.EventContextCompaction:

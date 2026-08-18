@@ -186,19 +186,19 @@ func coverFailureBranches(t *testing.T) {
 	marshalRecordedFrame = func(any) ([]byte, error) { return nil, errors.New("marshal") }
 	(&FrameRecorder{f: os.Stdout}).RecordSend(nil)
 
-	t.Setenv(envvars.SERFRecordAppwire.Name, "1")
+	t.Setenv(envvars.EVENERRecordAppwire.Name, "1")
 	root := t.TempDir()
-	t.Setenv(envvars.SERFStateDir.Name, root)
+	t.Setenv(envvars.EVENERStateDir.Name, root)
 	rec := newEnvFrameRecorder()
 	if rec != nil {
 		_ = rec.Close()
 	}
 	badRoot := filepath.Join(t.TempDir(), "file")
 	_ = os.WriteFile(badRoot, []byte("x"), 0o600)
-	t.Setenv(envvars.SERFStateDir.Name, badRoot)
+	t.Setenv(envvars.EVENERStateDir.Name, badRoot)
 	_ = newEnvFrameRecorder()
 	oldHome := frameRecorderHomeDir
-	t.Setenv(envvars.SERFStateDir.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	frameRecorderHomeDir = func() (string, error) { return "", errors.New("home") }
 	_ = recorderStateRoot()
 	frameRecorderHomeDir = oldHome

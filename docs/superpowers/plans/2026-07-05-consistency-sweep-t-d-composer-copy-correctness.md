@@ -164,7 +164,7 @@ Append to `cmd/evener-hub/jstest/test-actions.js` (before the final pass/exit bl
 // ── Composer-at-rest: a rested "awaiting" session shows plain Send ──────────
 // updateThreadState("awaiting") must NOT flip the send button into queue mode
 // nor enable the Stop/steer controls — awaiting is a rest, not a running turn.
-const R = window.SerfRenderer || window.serfRenderer;
+const R = window.SerfRenderer || window.evenerRenderer;
 if (R && typeof R.updateThreadState === "function") {
   R.sessionId = "01ACT001";
   R.conversation = window.document.getElementById("conversation");

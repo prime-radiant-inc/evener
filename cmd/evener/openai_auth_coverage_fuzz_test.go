@@ -214,7 +214,7 @@ func fuzzOpenAILoginMode(t *testing.T) {
 		goos   string
 		values map[string]string
 	}{
-		{"linux", map[string]string{"SERF_LOGIN_HEADLESS": "yes"}}, {"linux", map[string]string{"SERF_LOGIN_HEADLESS": "off", "SSH_TTY": "x"}},
+		{"linux", map[string]string{"EVENER_LOGIN_HEADLESS": "yes"}}, {"linux", map[string]string{"EVENER_LOGIN_HEADLESS": "off", "SSH_TTY": "x"}},
 		{"linux", map[string]string{"SSH_CONNECTION": "x"}}, {"darwin", nil}, {"windows", nil}, {"linux", nil},
 		{"linux", map[string]string{"DISPLAY": ":0"}}, {"linux", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}},
 	} {

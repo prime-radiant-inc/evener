@@ -134,11 +134,11 @@ func TestResolveSessionMeta(t *testing.T) {
 }
 
 func TestDefaultStateRoot(t *testing.T) {
-	t.Setenv(envvars.SERFStateDir.Name, "/explicit/state")
+	t.Setenv(envvars.EVENERStateDir.Name, "/explicit/state")
 	if got := DefaultStateRoot(); got != "/explicit/state" {
 		t.Fatalf("DefaultStateRoot with env=%q", got)
 	}
-	t.Setenv(envvars.SERFStateDir.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
 	if got := DefaultStateRoot(); got != "/home/tester/.evener" {
 		t.Fatalf("DefaultStateRoot home fallback=%q", got)

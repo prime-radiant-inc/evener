@@ -328,11 +328,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Resolve state directory.
-	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
+	// Priority: --state-dir flag > EVENER_STATE_DIR env > XDG-computed default.
 	var project identifier.Project
 	sd := *stateDir
 	if sd == "" {
-		sd = envvars.SERFStateDir.Getenv()
+		sd = envvars.EVENERStateDir.Getenv()
 	}
 	if sd == "" {
 		var err error
@@ -360,15 +360,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var modelRef cmdutil.ModelRef
 	var err error
 	if resuming {
-		modelRef, err = cmdutil.ResolveResumeModelRef(*model, envvars.SERFModel.Getenv(), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(*model, envvars.EVENERModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(*model, envvars.SERFModel.Getenv(), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(*model, envvars.EVENERModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, envvars.SERFReasoningEffort.Getenv())
+	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -493,7 +493,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return fmt.Errorf("listen %s: %w", *addr, err)
 	}
 
-	hubToken := envvars.SERFHubToken.Getenv()
+	hubToken := envvars.EVENERHubToken.Getenv()
 	srv := deps.newServer(server.ServerConfig{
 		AppReplaySize: *appReplaySize,
 		HubToken:      hubToken,
@@ -1069,12 +1069,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	serveLogf(os.Stderr, getSession().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
-	if envvars.SERFHubSpawned.Getenv() == "1" {
+	if envvars.EVENERHubSpawned.Getenv() == "1" {
 		spawnedBy = "hub"
 	}
 	runDir := *runDirFlag
 	if runDir == "" {
-		runDir = envvars.SERFRunDir.Getenv()
+		runDir = envvars.EVENERRunDir.Getenv()
 	}
 	if runDir == "" {
 		runDir = rendezvous.DefaultDir()
@@ -1192,15 +1192,15 @@ func holdServeStateForAwaitingWake(kind agent.EntryKind, hasPendingAsk bool) boo
 func printServeEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, v := range []envvars.Var{
-		envvars.SERFModel,
-		envvars.SERFOpenAIResponsesContinuation,
-		envvars.SERFReasoningEffort,
-		envvars.SERFStateDir,
-		envvars.SERFRunDir,
-		envvars.SERFHubToken,
-		envvars.SERFHubSpawned,
-		envvars.SERFAllowedDecisions,
-		envvars.SERFProvidersConfig,
+		envvars.EVENERModel,
+		envvars.EVENEROpenAIResponsesContinuation,
+		envvars.EVENERReasoningEffort,
+		envvars.EVENERStateDir,
+		envvars.EVENERRunDir,
+		envvars.EVENERHubToken,
+		envvars.EVENERHubSpawned,
+		envvars.EVENERAllowedDecisions,
+		envvars.EVENERProvidersConfig,
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
@@ -1212,7 +1212,7 @@ func printServeEnvVars(w io.Writer) {
 // are resolved via cmdutil.ResolveProfileWithLiveWindow, which sources the
 // context window from the provider's live /models endpoint for openai-compat
 // providers (falling back to the embedded catalog when unavailable).
-// outputSchemaJSON and SERF_ALLOWED_DECISIONS are applied in this app layer so
+// outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in this app layer so
 // callers see the same communicate-tool schema regardless of model.
 func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
 	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
@@ -1226,7 +1226,7 @@ func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outp
 		}
 	}
 	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
-	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.SERFAllowedDecisions.Getenv())
+	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 

@@ -352,7 +352,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
 
       if (target.matches('input[name="theme"]')) {
         const v = target.value;
-        window.serfHub.setTheme(v === "system" ? null : v);
+        window.evenerHub.setTheme(v === "system" ? null : v);
         if (window.SerfToast) window.SerfToast.show("Theme: " + v, "success");
         return;
       }

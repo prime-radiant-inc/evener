@@ -502,7 +502,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 		t.Fatalf("confined command = %#v", confined)
 	}
 	joinedEnv := strings.Join(confinedCommand.Command.Env, "\n")
-	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "MCP_PROGRAM_BASE=fixed") || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "SERF_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
+	if confinedCommand.Command.Path != mcpProgramBwrapPath || !strings.Contains(joinedEnv, "MCP_PROGRAM_BASE=fixed") || !strings.Contains(joinedEnv, "PROGRAM_VALUE=kept") || !strings.Contains(joinedEnv, "MCP_SERVER_TOKEN=configured") || strings.Contains(joinedEnv, "EVENER_AMBIENT_API_KEY=") || strings.Contains(joinedEnv, "SSH_AUTH_SOCK=") || confinedCommand.Command.ExtraFiles != nil {
 		t.Fatalf("confined command = %#v", confined)
 	}
 
@@ -734,7 +734,7 @@ func mcpProgramFixedEnvironment() []string {
 	return []string{
 		"PATH=/synthetic/bin",
 		"MCP_PROGRAM_BASE=fixed",
-		"SERF_AMBIENT_API_KEY=must-not-leak",
+		"EVENER_AMBIENT_API_KEY=must-not-leak",
 		"SSH_AUTH_SOCK=/synthetic/agent.sock",
 		"TMPDIR=/synthetic/ambient-tmp",
 		"GOCACHE=/synthetic/ambient-cache",

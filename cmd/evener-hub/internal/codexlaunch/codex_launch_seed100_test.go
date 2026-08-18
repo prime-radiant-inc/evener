@@ -160,7 +160,7 @@ func checkSeed100LaunchArgumentsEnvironmentAndScanning(t *testing.T) {
 	t.Setenv("SEED100_BASE", "base")
 	env := codexLaunchEnv(map[string]string{"SEED100_OVERRIDE": "value"})
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"SEED100_BASE=base", "SEED100_OVERRIDE=value", "SERF_HUB_SPAWNED_CODEX=1"} {
+	for _, want := range []string{"SEED100_BASE=base", "SEED100_OVERRIDE=value", "EVENER_HUB_SPAWNED_CODEX=1"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("environment missing %q", want)
 		}

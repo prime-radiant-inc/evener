@@ -22,7 +22,7 @@
 #   scripts/report-tmp-debris.sh --paths-only # one path per line, biggest first
 #   scripts/report-tmp-debris.sh --help
 #
-# SERF_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
+# EVENER_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
 # caller can point this at a throwaway tree instead of the real /tmp.
 # /tmp is scanned rather than $TMPDIR because that is where the
 # debris is: on macOS $TMPDIR is a per-user /var/folders path, and the entries
@@ -52,7 +52,7 @@ for arg in "$@"; do
 	esac
 done
 
-root=${SERF_TMP_DEBRIS_ROOT:-/tmp}
+root=${EVENER_TMP_DEBRIS_ROOT:-/tmp}
 [ -d "$root" ] || {
 	echo "report-tmp-debris: no such directory: $root" >&2
 	exit 1

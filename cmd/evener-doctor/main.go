@@ -19,7 +19,7 @@
 //	evener-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
-// --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
+// --state-dir <path> (overrides EVENER_STATE_DIR / XDG default) and --json.
 package main
 
 import (
@@ -116,7 +116,7 @@ COMMON FLAGS:
   --json               emit JSON instead of the human summary
 
 Run "evener-doctor <subcommand> -h" for subcommand flags.
-`, envvars.SERFStateDir.Name, envvars.XDGStateHome.Name)
+`, envvars.EVENERStateDir.Name, envvars.XDGStateHome.Name)
 }
 
 func writef(w io.Writer, format string, args ...any) int {
@@ -144,7 +144,7 @@ func writeText(w io.Writer, text string) int {
 func stateFlags(name string, stderr io.Writer) (*flag.FlagSet, *string, *bool) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	stateDir := fs.String("state-dir", "", fmt.Sprintf("state root (default: %s / %s / ~/.local/state)", envvars.SERFStateDir.Name, envvars.XDGStateHome.Name))
+	stateDir := fs.String("state-dir", "", fmt.Sprintf("state root (default: %s / %s / ~/.local/state)", envvars.EVENERStateDir.Name, envvars.XDGStateHome.Name))
 	asJSON := fs.Bool("json", false, "emit JSON instead of the human summary")
 	return fs, stateDir, asJSON
 }

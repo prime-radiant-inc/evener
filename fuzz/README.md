@@ -44,10 +44,10 @@ Two cross-cutting facts about every run above:
 - **Runs are memory-capped.** A coverage-guided search can balloon into tens of GB
   and fire the kernel's global OOM killer (it has taken the host's network down).
   `scripts/run-capped.sh` bounds every run via a cgroup-v2 systemd user scope —
-  per-run `SERF_MEM_MAX` (default 16G) plus a shared-slice `SERF_MEM_TOTAL`
+  per-run `EVENER_MEM_MAX` (default 16G) plus a shared-slice `EVENER_MEM_TOTAL`
   (default 32G) so concurrent runs can't sum past the host. Default-on across the
   Makefile and inside `run-fuzz.sh`; degrades to a warning + uncapped where user
-  scopes aren't available (CI imposes its own cgroup limit). `SERF_MEM_MAX=0`
+  scopes aren't available (CI imposes its own cgroup limit). `EVENER_MEM_MAX=0`
   disables. See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Memory safety*.
 
 ## Coverage measurement (`make fuzz-coverage`)
@@ -127,7 +127,7 @@ What a run does, in order:
 
 1. **Reconcile the ledger** — replay every `found` entry on the current tree; any
    that now passes flips to `fixed` (the cheap, scheduler-free fixed-count).
-2. **Search** under `SERF_FUZZ_PERSIST=1` (see below) for `--time` per target.
+2. **Search** under `EVENER_FUZZ_PERSIST=1` (see below) for `--time` per target.
 3. **Discover** new crashers as files that appeared since a pre-run `git status`
    snapshot: Go-native `…/testdata/fuzz/<FuzzName>/<hash>` files, and promoter
    `testregression_*_test.go` files.
@@ -143,11 +143,11 @@ What a run does, in order:
    developer's **local `gh`** auth — no `GH_TOKEN`, no CI permissions. If `gh` is
    missing/unauthenticated the tool stops before any push and leaves the artifacts
    on a local branch (same as `--no-pr`).
-7. **Promote the coverage-expanding corpus** — copy up to `SERF_FUZZ_MAX_SEEDS`
+7. **Promote the coverage-expanding corpus** — copy up to `EVENER_FUZZ_MAX_SEEDS`
    (default 8 per target per run) new inputs from Go's fuzz cache into the
    committed `testdata/fuzz/<FuzzName>/` seeds.
 
-### `SERF_FUZZ_PERSIST` (default off)
+### `EVENER_FUZZ_PERSIST` (default off)
 
 The two rapid-runner surfaces emit their regression test + bucket record through
 `promoter.Promote`. In the gate they construct it against throwaway temp dirs so
@@ -155,7 +155,7 @@ a fuzz run never dirties the tree. `promoter.PersistPaths` (in `promoter/`,
 stdlib-only — it reads the env directly rather than via evener's `envvars` registry
 to keep the no-evener-deps boundary) switches the emit dir to the surface's package
 and the bucket store to the committed **`fuzz/state/buckets.json`** only when
-`SERF_FUZZ_PERSIST` is truthy — which `fuzz-triage.sh` sets for the search. Unset
+`EVENER_FUZZ_PERSIST` is truthy — which `fuzz-triage.sh` sets for the search. Unset
 (every `make fuzz` / `make test` / gate run), behavior is byte-identical to
 before: the promoter still runs and is still tested, but writes nothing.
 
@@ -202,7 +202,7 @@ make fuzz-continuous FUZZ_ARGS="--sweep agent:FuzzPluginManifestParse"  # one-pa
 Round-robin (default, one target per turn) or `--sweep` (all selected targets per
 round). Rapid targets are excluded — they are bounded property checks, not
 coverage-guided searches that deepen across turns via `$GOCACHE/fuzz`. Seams
-`SERF_FUZZ_RUNNER` (registry) and `SERF_FUZZ_TRIAGE` (per-turn engine) exist
+`EVENER_FUZZ_RUNNER` (registry) and `EVENER_FUZZ_TRIAGE` (per-turn engine) exist
 for advanced use; the stub-driven selftest that used them is gone
 (fake-toolchain selftests are banned, docs/testing.md).
 
@@ -214,8 +214,8 @@ known-good ref (`--good`; `--bad` defaults to `HEAD`), it confirms the crash
 reproduces at `--bad` and not at `--good`, then drives `git bisect run`, replaying
 that one corpus entry at each step under `-tags serffuzz`. A commit where the
 target does not build or does not yet exist is **skipped** (exit 125), not
-misjudged; the working tree is restored on exit. Seams `SERF_FUZZ_GO` and
-`SERF_FUZZ_TAGS` (plus `SERF_FUZZ_RUNNER`) back the self-test
+misjudged; the working tree is restored on exit. Seams `EVENER_FUZZ_GO` and
+`EVENER_FUZZ_TAGS` (plus `EVENER_FUZZ_RUNNER`) back the self-test
 (`make fuzz-bisect-selftest`), which bisects a throwaway repo whose target crashes
 only after a known commit — real `git bisect`, no stubbed search.
 
@@ -261,8 +261,8 @@ traffic** into each target's `testdata/fuzz/<FuzzName>/` (Go auto-loads it under
 |---|---|---|
 | `sse` | canonical `sessions/*.api.jsonl` `api_attempt` response bodies | `FuzzParseSSE` + the matching provider metamorphic decoder |
 | `toolargs` | transcript tool-call args (always recorded) | `FuzzToolArgsValidate` |
-| `appwire` | `appwire-frames.jsonl` (needs `SERF_RECORD_APPWIRE=1`) | `FuzzMessageDecode`, `FuzzMethodParams` |
-| `http` | `hub-http.jsonl` (needs `SERF_RECORD_HTTP=1`) | `FuzzWebHandler` (GET routes reverse-mapped) |
+| `appwire` | `appwire-frames.jsonl` (needs `EVENER_RECORD_APPWIRE=1`) | `FuzzMessageDecode`, `FuzzMethodParams` |
+| `http` | `hub-http.jsonl` (needs `EVENER_RECORD_HTTP=1`) | `FuzzWebHandler` (GET routes reverse-mapped) |
 | `jobs` | `sessions/<SID>/jobs.jsonl` (always recorded) | staged for 8.1's jobstore-Event targets |
 
 ```sh
@@ -281,7 +281,7 @@ idempotent. An always-on abort gate (high-confidence secret regexes; an entropy
 quarantine under `--keep-values`) drops any leaking seed and fails the run.
 
 `--keep-values` (real values, never committed) is refused unless
-`SERF_FUZZ_CAPTURE_ENV=1` marks a dedicated capture box, and is forced off for a
+`EVENER_FUZZ_CAPTURE_ENV=1` marks a dedicated capture box, and is forced off for a
 personal `~/.evener` source.
 
 ### The opt-in recorders
@@ -290,9 +290,9 @@ AppWire frames and inbound hub HTTP requests are not written to disk in normal
 operation. Two default-off recorders capture them for harvesting, with **no
 behavior change** when their env var is unset:
 
-- `SERF_RECORD_APPWIRE=1` → `<stateRoot>/appwire-frames.jsonl` (WS frame recorder
+- `EVENER_RECORD_APPWIRE=1` → `<stateRoot>/appwire-frames.jsonl` (WS frame recorder
   in `appwire.WSTransport`).
-- `SERF_RECORD_HTTP=1` → `<HubStateRoot>/hub-http.jsonl` (hub HTTP middleware).
+- `EVENER_RECORD_HTTP=1` → `<HubStateRoot>/hub-http.jsonl` (hub HTTP middleware).
 
 These recorder logs hold raw, unscrubbed bytes and are **never committed**;
 scrubbing happens only in the harvester. Canonical per-session API logs also

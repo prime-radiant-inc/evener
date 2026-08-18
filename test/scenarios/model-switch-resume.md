@@ -3,7 +3,7 @@
 **What this covers**: spec Acceptance criterion 3 ("switch → crash → resume
 runs on the switched model") and N3 ("Persistence and resume": synchronous
 meta flush on switch, `ResolveResumeModelRef` honoring persisted
-`ProfileID`/`Model` over `SERF_MODEL`). This card kills the daemon **between**
+`ProfileID`/`Model` over `EVENER_MODEL`). This card kills the daemon **between**
 the switch and the resume, per the brief — it is the only card in this set
 that proves the switch is durable across a real process death, not just a
 live-notification convergence.
@@ -17,7 +17,7 @@ live-notification convergence.
   this card kills a daemon it finds by globbing the run directory, and that
   glob has to be able to name only its own daemons.
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Confirm no
-  `SERF_MODEL` env override is set for the daemon (would otherwise mask a
+  `EVENER_MODEL` env override is set for the daemon (would otherwise mask a
   regression per N3's "must not override" contract).
 
 ## Steps

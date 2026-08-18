@@ -118,7 +118,7 @@ Files: `templates/partials/settings/theme.html`, `assets/settings-appearance.js`
 `assets/theme.js`. Appwire: **none** — every control here is localStorage-only, explicitly "Saved
 per-browser" per the page copy.
 
-- [ ] "Color theme" radio (system/dark/light) calls `window.serfHub.setTheme(v === "system" ? null : v)`
+- [ ] "Color theme" radio (system/dark/light) calls `window.evenerHub.setTheme(v === "system" ? null : v)`
       — `assets/settings-appearance.js:12-17`, `templates/partials/settings/theme.html:8-13`
 - [ ] `setTheme`: for `"light"`/`"dark"` sets `<html data-theme>` and localStorage key
       `evener-hub.theme`; for anything else (i.e. `null`/system) **removes** the attribute and the

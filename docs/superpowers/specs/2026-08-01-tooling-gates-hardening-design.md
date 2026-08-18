@@ -29,7 +29,7 @@ Four small tooling contracts are currently incomplete:
 The published three-command baseline is green at the base commit: all seven
 non-fuzz Go modules, the full root wave, script selftests, the frontend gate,
 and the production build passed. Live probes also confirmed that
-`merge-approval-gate` has no rule, `SERF_GITLEAKS_REQUIRED=1` is currently
+`merge-approval-gate` has no rule, `EVENER_GITLEAKS_REQUIRED=1` is currently
 ignored with exit zero, and an offline external root consumer fails because
 identifier is replaced but not required.
 
@@ -109,7 +109,7 @@ the rendered recipe.
 Add one exact opt-in to `scripts/gitleaks-scan.sh`:
 
 ```text
-SERF_GITLEAKS_REQUIRED=1
+EVENER_GITLEAKS_REQUIRED=1
 ```
 
 When gitleaks is absent and the variable is unset or is not exactly `1`, retain

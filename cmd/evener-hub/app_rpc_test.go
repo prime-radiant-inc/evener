@@ -759,7 +759,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 	}
 	raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
 		ID:     appwire.NewIntID(1),
-		Method: appwire.MethodEvenerUpgrade,
+		Method: appwire.MethodSerfUpgrade,
 		Params: params,
 	})
 	if err != nil {
@@ -7461,7 +7461,7 @@ func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
 			Kind  string `json:"kind"`
 		} `json:"data"`
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHarnessesList, map[string]any{}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfHarnessesList, map[string]any{}, &resp); err != nil {
 		t.Fatalf("evener/harnesses/list: %v", err)
 	}
 	got := map[string]string{}
@@ -8887,7 +8887,7 @@ func TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray(t *testing.T) {
 			server := newHubAppServer(cfg, appsource.NewRegistry())
 			raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
 				ID:     appwire.NewIntID(1),
-				Method: appwire.MethodEvenerProjectsRecent,
+				Method: appwire.MethodSerfProjectsRecent,
 				Params: json.RawMessage(`{}`),
 			})
 			if err != nil {
@@ -9380,7 +9380,7 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceList, appwire.EmptyParams{}, &resp); err != nil {
 		t.Fatalf("evener/instance/list: %v", err)
 	}
 	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
@@ -9427,7 +9427,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
@@ -9463,7 +9463,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
 		t.Fatalf("evener/instance/edit: %v", err)
 	}
 
@@ -9499,7 +9499,7 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
 		t.Fatalf("evener/instance/remove: %v", err)
 	}
 
@@ -9536,7 +9536,7 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
 		t.Fatalf("evener/instance/setDefault: %v", err)
 	}
 
@@ -9623,14 +9623,14 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
 		appwire.MethodThreadTurnsList,
-		appwire.MethodEvenerSubagentPreview,
+		appwire.MethodSerfSubagentPreview,
 		appwire.MethodThreadStart,
 		appwire.MethodThreadResume,
 		appwire.MethodThreadFork,
 		appwire.MethodTurnStart,
 		appwire.MethodTurnSteer,
 		appwire.MethodTurnInterrupt,
-		appwire.MethodEvenerSandboxEscalationResolve,
+		appwire.MethodSerfSandboxEscalationResolve,
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,
@@ -9639,53 +9639,53 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
-		appwire.MethodEvenerThreadNameSet,
+		appwire.MethodSerfThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
-		appwire.MethodEvenerAuthStatus,
-		appwire.MethodEvenerAuthTest,
-		appwire.MethodEvenerAuthLoginStart,
-		appwire.MethodEvenerAuthLoginComplete,
-		appwire.MethodEvenerAuthLogout,
-		appwire.MethodEvenerAuthList,
-		appwire.MethodEvenerAuthApiKeySet,
-		appwire.MethodEvenerAuthDeviceStart,
-		appwire.MethodEvenerAuthDevicePoll,
-		appwire.MethodEvenerInstanceList,
-		appwire.MethodEvenerInstanceCreate,
-		appwire.MethodEvenerInstanceEdit,
-		appwire.MethodEvenerInstanceRemove,
-		appwire.MethodEvenerInstanceSetDefault,
-		appwire.MethodEvenerLaunchResolve,
-		appwire.MethodEvenerLaunchSchema,
-		appwire.MethodEvenerLaunchGetLayer,
-		appwire.MethodEvenerLaunchSetLayer,
-		appwire.MethodEvenerLaunchTrustRepo,
-		appwire.MethodEvenerUpgrade,
+		appwire.MethodSerfAuthStatus,
+		appwire.MethodSerfAuthTest,
+		appwire.MethodSerfAuthLoginStart,
+		appwire.MethodSerfAuthLoginComplete,
+		appwire.MethodSerfAuthLogout,
+		appwire.MethodSerfAuthList,
+		appwire.MethodSerfAuthApiKeySet,
+		appwire.MethodSerfAuthDeviceStart,
+		appwire.MethodSerfAuthDevicePoll,
+		appwire.MethodSerfInstanceList,
+		appwire.MethodSerfInstanceCreate,
+		appwire.MethodSerfInstanceEdit,
+		appwire.MethodSerfInstanceRemove,
+		appwire.MethodSerfInstanceSetDefault,
+		appwire.MethodSerfLaunchResolve,
+		appwire.MethodSerfLaunchSchema,
+		appwire.MethodSerfLaunchGetLayer,
+		appwire.MethodSerfLaunchSetLayer,
+		appwire.MethodSerfLaunchTrustRepo,
+		appwire.MethodSerfUpgrade,
 		appwire.MethodModelList,
-		appwire.MethodEvenerTasksList,
-		appwire.MethodEvenerJobsList,
-		appwire.MethodEvenerJobsOutput,
-		appwire.MethodEvenerThreadTranscriptsList,
-		appwire.MethodEvenerPathsComplete,
-		appwire.MethodEvenerProjectsRecent,
-		appwire.MethodEvenerPathValidate,
-		appwire.MethodEvenerHarnessesList,
-		appwire.MethodEvenerCommandList,
-		appwire.MethodEvenerSettingsOverview,
-		appwire.MethodEvenerMarketplaceList,
-		appwire.MethodEvenerMarketplaceAdd,
-		appwire.MethodEvenerMarketplaceRemove,
-		appwire.MethodEvenerMarketplaceRefresh,
-		appwire.MethodEvenerMarketplaceBrowse,
-		appwire.MethodEvenerPluginList,
-		appwire.MethodEvenerPluginInstall,
-		appwire.MethodEvenerPluginUpgrade,
-		appwire.MethodEvenerPluginRemove,
-		appwire.MethodEvenerPluginEnable,
-		appwire.MethodEvenerPluginDisable,
-		appwire.MethodEvenerPluginSetAutoUpgrade,
-		appwire.MethodEvenerPluginCheckNow,
+		appwire.MethodSerfTasksList,
+		appwire.MethodSerfJobsList,
+		appwire.MethodSerfJobsOutput,
+		appwire.MethodSerfThreadTranscriptsList,
+		appwire.MethodSerfPathsComplete,
+		appwire.MethodSerfProjectsRecent,
+		appwire.MethodSerfPathValidate,
+		appwire.MethodSerfHarnessesList,
+		appwire.MethodSerfCommandList,
+		appwire.MethodSerfSettingsOverview,
+		appwire.MethodSerfMarketplaceList,
+		appwire.MethodSerfMarketplaceAdd,
+		appwire.MethodSerfMarketplaceRemove,
+		appwire.MethodSerfMarketplaceRefresh,
+		appwire.MethodSerfMarketplaceBrowse,
+		appwire.MethodSerfPluginList,
+		appwire.MethodSerfPluginInstall,
+		appwire.MethodSerfPluginUpgrade,
+		appwire.MethodSerfPluginRemove,
+		appwire.MethodSerfPluginEnable,
+		appwire.MethodSerfPluginDisable,
+		appwire.MethodSerfPluginSetAutoUpgrade,
+		appwire.MethodSerfPluginCheckNow,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does
@@ -9703,20 +9703,20 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	// fetch its remote sources. app_plugins_test.go and
 	// app_plugin_autoupgrade_test.go drive those against fixture roots.
 	notDispatched := map[string]bool{
-		appwire.MethodEvenerUpgrade:              true,
-		appwire.MethodEvenerMarketplaceList:      true,
-		appwire.MethodEvenerMarketplaceAdd:       true,
-		appwire.MethodEvenerMarketplaceRemove:    true,
-		appwire.MethodEvenerMarketplaceRefresh:   true,
-		appwire.MethodEvenerMarketplaceBrowse:    true,
-		appwire.MethodEvenerPluginList:           true,
-		appwire.MethodEvenerPluginInstall:        true,
-		appwire.MethodEvenerPluginUpgrade:        true,
-		appwire.MethodEvenerPluginRemove:         true,
-		appwire.MethodEvenerPluginEnable:         true,
-		appwire.MethodEvenerPluginDisable:        true,
-		appwire.MethodEvenerPluginSetAutoUpgrade: true,
-		appwire.MethodEvenerPluginCheckNow:       true,
+		appwire.MethodSerfUpgrade:              true,
+		appwire.MethodSerfMarketplaceList:      true,
+		appwire.MethodSerfMarketplaceAdd:       true,
+		appwire.MethodSerfMarketplaceRemove:    true,
+		appwire.MethodSerfMarketplaceRefresh:   true,
+		appwire.MethodSerfMarketplaceBrowse:    true,
+		appwire.MethodSerfPluginList:           true,
+		appwire.MethodSerfPluginInstall:        true,
+		appwire.MethodSerfPluginUpgrade:        true,
+		appwire.MethodSerfPluginRemove:         true,
+		appwire.MethodSerfPluginEnable:         true,
+		appwire.MethodSerfPluginDisable:        true,
+		appwire.MethodSerfPluginSetAutoUpgrade: true,
+		appwire.MethodSerfPluginCheckNow:       true,
 	}
 
 	for _, method := range expected {

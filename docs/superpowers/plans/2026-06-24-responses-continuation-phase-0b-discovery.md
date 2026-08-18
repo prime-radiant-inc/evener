@@ -6,7 +6,7 @@
 
 **Architecture:** Keep Phase 0B adapter-level and evidence-producing. Deterministic tests record the current wire shape and payload-size math without enabling runtime continuation; opt-in live tests probe provider acceptance and log findings only when the matching discovery env var is set. The proof artifact records deterministic facts immediately and treats missing or failed live discovery as a blocker before Phases 1A-11 become committed implementation work.
 
-**Tech Stack:** Go tests in `llm/providers/openai`, local JSON body inspection through the existing OpenAI adapter, explicit `SERF_*_DISCOVERY_E2E=1` live gates, markdown proof artifact.
+**Tech Stack:** Go tests in `llm/providers/openai`, local JSON body inspection through the existing OpenAI adapter, explicit `EVENER_*_DISCOVERY_E2E=1` live gates, markdown proof artifact.
 
 ---
 
@@ -429,14 +429,14 @@ import (
 )
 
 func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
 	}
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY is required for public OpenAI discovery")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -445,8 +445,8 @@ func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {
 }
 
 func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Codex discovery in short mode")
@@ -458,7 +458,7 @@ func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
 	if !a.usesCodexBackend() {
 		t.Skip("OpenAI env did not resolve to stored OAuth/Codex backend credentials")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.4"
 	}
@@ -477,7 +477,7 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		Messages: []llm.Message{llm.User("Reply exactly: evener continuation discovery anchor")},
 		Store:    &store,
 		Metadata: map[string]string{
-			"serf_discovery_id": id,
+			"evener_discovery_id": id,
 		},
 	}
 	anchor, err := a.Complete(ctx, anchorReq)
@@ -568,7 +568,7 @@ Run:
 ```sh
 git status --short
 git add llm/providers/openai/responses_continuation_discovery_e2e_test.go
-git commit -m "test(openai): add opt-in responses continuation discovery e2e" -m "Add explicit opt-in Phase 0B live discovery probes for public OpenAI and Codex Responses continuation. Provider credentials alone do not run the tests; each endpoint family requires its own SERF_OPENAI_*_DISCOVERY_E2E gate."
+git commit -m "test(openai): add opt-in responses continuation discovery e2e" -m "Add explicit opt-in Phase 0B live discovery probes for public OpenAI and Codex Responses continuation. Provider credentials alone do not run the tests; each endpoint family requires its own EVENER_OPENAI_*_DISCOVERY_E2E gate."
 ```
 
 ## Task 4: Phase 0B Proof Artifact
@@ -631,9 +631,9 @@ Payload-size result:
 Checkable line: live discovery is explicit opt-in and blocks treating Phases 1A-11 as committed implementation work for a target endpoint family until the target endpoint family has accepted valid anchors, rejected invalid anchors clearly, resolved co-present `previous_response_id` plus `conversation`, and shown net request-payload reduction on the scripted probe.
 
 Commands:
-- Public OpenAI: `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
-- Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
-- Codex backend model override example: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Public OpenAI: `EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_PublicResponsesContinuationDiscovery -count=1 -v`
+- Codex backend: `EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
+- Codex backend model override example: `EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 EVENER_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
 - Public OpenAI: run with an explicit key; valid `previous_response_id` and branch reuse passed, invalid anchor rejected explicitly, and co-present `previous_response_id` plus `conversation` was rejected as mutually exclusive.

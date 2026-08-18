@@ -562,7 +562,7 @@ func TestHandleAppJobsList(t *testing.T) {
 
 func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	// no SetJobOutputFunc call
-	// want: error response, serfErrorInfo actionUnavailable
+	// want: error response, evenerErrorInfo actionUnavailable
 }
 
 func TestHandleAppJobsOutputNotFound(t *testing.T) {

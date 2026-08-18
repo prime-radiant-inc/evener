@@ -18,8 +18,8 @@ func TestPrintHubEnvVars(t *testing.T) {
 	// non-empty Summary; otherwise dropping the description from the
 	// format string would silently pass.
 	wantSummary := map[string]string{
-		"SERF_PROVIDERS_CONFIG": "Path to providers.toml.",
-		"SERF_STATE_DIR":        "Overrides the Evener state root.",
+		"EVENER_PROVIDERS_CONFIG": "Path to providers.toml.",
+		"EVENER_STATE_DIR":        "Overrides the Evener state root.",
 		"OPENAI_API_KEY":        "OpenAI API key.",
 		"ANTHROPIC_API_KEY":     "Anthropic API key.",
 		"GEMINI_API_KEY":        "Google Gemini API key; checked before GOOGLE_API_KEY.",

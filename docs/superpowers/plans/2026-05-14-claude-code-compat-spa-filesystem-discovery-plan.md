@@ -1607,7 +1607,7 @@ Open question #3 (mid-session rescan) is **not** in scope — discovery runs onc
 
 ## Out of Scope (handled by SP8)
 
-- Wiring `DiscoverPluginDirs` into `SessionConfig` and the four `cmd/` binaries (`evener`, `evener-tui`, `evener-hub`, `serfeval`).
+- Wiring `DiscoverPluginDirs` into `SessionConfig` and the four `cmd/` binaries (`evener`, `evener-tui`, `evener-hub`, `evenereval`).
 - Printing `[]error` and `[]DiscoveryShadowedEntry` to stderr at startup.
 - Calling `LoadPlugins(dirs)` on the result.
 - Lifecycle event firing.

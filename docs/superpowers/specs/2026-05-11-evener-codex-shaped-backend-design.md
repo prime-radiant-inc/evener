@@ -158,7 +158,7 @@ Notification:
 Error:
 
 ```json
-{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"threadId is required","data":{"serfErrorInfo":"invalidParams"}}}
+{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"threadId is required","data":{"evenerErrorInfo":"invalidParams"}}}
 ```
 
 ### Transport
@@ -347,15 +347,15 @@ Evener reuses Codex item kinds where they match:
 
 Evener adds these item kinds:
 
-- `serfToolCall` for Evener-native tool calls that are not command, file change, MCP, or web search.
-- `serfSubagent` for subagent lifecycle and status.
-- `serfTaskList` for task snapshots.
-- `serfHook` for plugin hook execution.
-- `serfContextCompaction` for context compaction events.
-- `serfPlugin` for plugin load status.
-- `serfPrompt` for prompt load status.
+- `evenerToolCall` for Evener-native tool calls that are not command, file change, MCP, or web search.
+- `evenerSubagent` for subagent lifecycle and status.
+- `evenerTaskList` for task snapshots.
+- `evenerHook` for plugin hook execution.
+- `evenerContextCompaction` for context compaction events.
+- `evenerPlugin` for plugin load status.
+- `evenerPrompt` for prompt load status.
 
-Evener item kinds are serialized with `type` values prefixed by `evener`, for example `{"type":"serfTaskList", ...}`.
+Evener item kinds are serialized with `type` values prefixed by `evener`, for example `{"type":"evenerTaskList", ...}`.
 
 ## Request Methods
 
@@ -659,12 +659,12 @@ Evener agent events map into app notifications:
 | `ASSISTANT_TEXT_START` | `item/started` with `agentMessage` |
 | `ASSISTANT_TEXT_DELTA` | `item/agentMessage/delta` |
 | `ASSISTANT_TEXT_END` | `item/completed` with final `agentMessage` |
-| `TOOL_CALL_START` | `item/started` with `serfToolCall` or a more specific item kind |
-| `TOOL_CALL_OUTPUT_DELTA` | `item/serfToolCall/outputDelta` |
+| `TOOL_CALL_START` | `item/started` with `evenerToolCall` or a more specific item kind |
+| `TOOL_CALL_OUTPUT_DELTA` | `item/evenerToolCall/outputDelta` |
 | `TOOL_CALL_END` | `item/completed` |
 | `STEERING_INJECTED` | `item/started` + `item/completed` with `userMessage`, flagged as steering |
-| `CONTEXT_COMPACTION` | `item/completed` with `serfContextCompaction` and `evener/thread/contextPressure/updated` |
-| `SUBAGENT_START` | `evener/subagent/started` and `item/started` with `serfSubagent` |
+| `CONTEXT_COMPACTION` | `item/completed` with `evenerContextCompaction` and `evener/thread/contextPressure/updated` |
+| `SUBAGENT_START` | `evener/subagent/started` and `item/started` with `evenerSubagent` |
 | `SUBAGENT_END` | `evener/subagent/completed` and `item/completed` |
 | `PLUGIN_LOADED` | `evener/plugin/loaded` |
 | `HOOK_START` | `evener/hook/started` |
@@ -795,7 +795,7 @@ Error data includes:
 
 ```json
 {
-  "serfErrorInfo": "activeTurnMismatch",
+  "evenerErrorInfo": "activeTurnMismatch",
   "sourceId": "local",
   "threadId": "th_01HX",
   "retryable": false

@@ -65,7 +65,7 @@ no hub, no browser — so the switch path under test is exactly
   chmod 600 "$run/cfg/credentials.toml"
   ```
 
-- `export SERF_PROVIDERS_CONFIG="$run/cfg/providers.toml"`. The session's
+- `export EVENER_PROVIDERS_CONFIG="$run/cfg/providers.toml"`. The session's
   canonical private API log captures exact attempts whenever API logging is
   attached; there is no separate raw-body toggle or sidecar.
 

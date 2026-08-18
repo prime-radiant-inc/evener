@@ -24,7 +24,7 @@ If you need a complete external artifact beyond the retained job output, keep a 
 ( <command> ) 2>&1 | tee "/absolute/path/inside/your/scratch/artifact.log"
 ```
 
-Replace the placeholder with an actual absolute path. Prefer the session's allocated scratch directory, especially for read-only delegates; when `SERF_SCRATCH_DIR` is provided, `"$SERF_SCRATCH_DIR/artifact.log"` is a suitable path. Report the artifact path to your parent. `pipefail` preserves the command's failure while `tee` preserves the stream, and `tee` overwrites the artifact file by default.
+Replace the placeholder with an actual absolute path. Prefer the session's allocated scratch directory, especially for read-only delegates; when `EVENER_SCRATCH_DIR` is provided, `"$EVENER_SCRATCH_DIR/artifact.log"` is a suitable path. Report the artifact path to your parent. `pipefail` preserves the command's failure while `tee` preserves the stream, and `tee` overwrites the artifact file by default.
 
 If the task depends on tools or capabilities explicitly listed as unavailable in
 this session, report that mismatch promptly through your result tool instead of

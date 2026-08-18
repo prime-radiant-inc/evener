@@ -87,7 +87,7 @@ gate is the API vocabulary, per the max_wait spec's sweep list.
    `docs/agentic-testing.md`, plus hard-won rules in
    `docs/superpowers/research/2026-06-12-e2e-rerun-addendum.md` and the memory
    file: spawn model `openai/gpt-5.5` (OAuth `openai`, never `oai-work`); NEVER
-   `--state-dir`/`SERF_STATE_DIR`; card command text VERBATIM in spawn prompts
+   `--state-dir`/`EVENER_STATE_DIR`; card command text VERBATIM in spawn prompts
    (quote repositioning caused a false FAIL); NEVER `pgrep -f`/`pkill -f`
    (self-match killed a shell and forged a phantom orphan); sonnet runner,
    sequential, ledger after every card; runner never kills the hub.

@@ -34,7 +34,7 @@ func globalCommandsDir() string {
 	return filepath.Join(dir, "evener", "commands")
 }
 
-// DiscoverSerfWideCommands scans the user-global commands dir, then walks
+// DiscoverEvenerWideCommands scans the user-global commands dir, then walks
 // git-root→cwd scanning <dir>/.evener/commands, returning commands keyed by
 // bare name. Later scans shadow earlier ones, so the deepest project dir wins
 // and every project command shadows the user-global one. A nil env or empty
@@ -43,7 +43,7 @@ func globalCommandsDir() string {
 // Discovery is fail-soft: a missing dir is silent, and per-file problems
 // (unreadable dir/file, bad name, malformed frontmatter) skip the file with a
 // warning rather than failing the scan.
-func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData) {
+func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData) {
 	out := map[string]Command{}
 	var warnings []events.WarningData
 

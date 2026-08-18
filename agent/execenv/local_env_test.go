@@ -211,8 +211,8 @@ func TestLoginPATH_SurvivesSandboxInvocationGrant(t *testing.T) {
 // --- always-on session scratch vars ---------------------------------------
 
 // TestCommandEnvironment_UnsandboxedSessionExportsScratchVars: docs/environment.md
-// documents SERF_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
-// session's spawned commands must see SERF_SCRATCH_DIR and TMPDIR too, not
+// documents EVENER_SCRATCH_DIR with no sandbox-only caveat, so an unsandboxed
+// session's spawned commands must see EVENER_SCRATCH_DIR and TMPDIR too, not
 // only a sandboxed one.
 func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	home := t.TempDir()
@@ -222,22 +222,22 @@ func TestCommandEnvironment_UnsandboxedSessionExportsScratchVars(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(worktree)
 	got := envToMap(env.commandEnvironment(nil))
-	scratch, ok := got["SERF_SCRATCH_DIR"]
+	scratch, ok := got["EVENER_SCRATCH_DIR"]
 	if !ok || strings.TrimSpace(scratch) == "" {
-		t.Fatalf("SERF_SCRATCH_DIR missing from an unsandboxed command env: %v", got)
+		t.Fatalf("EVENER_SCRATCH_DIR missing from an unsandboxed command env: %v", got)
 	}
 	if got["TMPDIR"] != scratch {
-		t.Fatalf("TMPDIR = %q, want it to match SERF_SCRATCH_DIR %q", got["TMPDIR"], scratch)
+		t.Fatalf("TMPDIR = %q, want it to match EVENER_SCRATCH_DIR %q", got["TMPDIR"], scratch)
 	}
 	info, err := os.Stat(scratch)
 	if err != nil || !info.IsDir() {
-		t.Fatalf("SERF_SCRATCH_DIR %q must exist and be a directory: %v", scratch, err)
+		t.Fatalf("EVENER_SCRATCH_DIR %q must exist and be a directory: %v", scratch, err)
 	}
 	// Provisioned once per env: a second spawn reuses the same directory rather
 	// than allocating a fresh one per command.
 	got2 := envToMap(env.commandEnvironment(nil))
-	if got2["SERF_SCRATCH_DIR"] != scratch {
-		t.Fatalf("second commandEnvironment call allocated a different scratch dir: %q vs %q", got2["SERF_SCRATCH_DIR"], scratch)
+	if got2["EVENER_SCRATCH_DIR"] != scratch {
+		t.Fatalf("second commandEnvironment call allocated a different scratch dir: %q vs %q", got2["EVENER_SCRATCH_DIR"], scratch)
 	}
 }
 
@@ -260,8 +260,8 @@ func TestCommandEnvironment_SandboxedSessionScratchUnchanged(t *testing.T) {
 	env.Wrapper = w
 
 	got := envToMap(env.commandEnvironment(nil))
-	if _, ok := got["SERF_SCRATCH_DIR"]; ok {
-		t.Fatalf("commandEnvironment must not itself inject SERF_SCRATCH_DIR for a sandboxed env; ApplyEnvFloor owns that: %v", got)
+	if _, ok := got["EVENER_SCRATCH_DIR"]; ok {
+		t.Fatalf("commandEnvironment must not itself inject EVENER_SCRATCH_DIR for a sandboxed env; ApplyEnvFloor owns that: %v", got)
 	}
 }
 

@@ -374,7 +374,7 @@ Stat the parent before creation. If this logger creates the directory, create it
 
 Append/sync errors return from the low-level sink to the coordinator, which immediately invokes `APILogFailure`'s observer. Middleware must then return the provider response/error unchanged. `cmdutil.AttachAPILogger` wires the existing `warnings io.Writer` to a structured one-line forensic warning containing operation/session/group/attempt identifiers and the sanitized storage error; it never disables the client or turns the warning into an LLM error. `Close` may return its own shutdown error to the process shutdown path, but it must not retroactively alter a completed provider call.
 
-`cmdutil.AttachAPILogger` must always attach this logger and must not inspect `SERF_LOG_RAW_HTTP`.
+`cmdutil.AttachAPILogger` must always attach this logger and must not inspect `EVENER_LOG_RAW_HTTP`.
 
 - [ ] **Step 4: Remove summary/raw fixtures and update deterministic fuzz programs.**
 
@@ -701,7 +701,7 @@ Provider wrappers (`glm`, `kimi`, `kimi_anthropic`, `minimax`, `ollama`, `openro
 
 - [ ] **Step 4: Replace environment-gated raw tests with always-on canonical tests.**
 
-Delete subprocess setup for `SERF_LOG_RAW_HTTP`. Preserve provider error wrapping tests that are part of the public SDK contract, but remove raw-body carrier APIs that exist only for the obsolete split logger.
+Delete subprocess setup for `EVENER_LOG_RAW_HTTP`. Preserve provider error wrapping tests that are part of the public SDK contract, but remove raw-body carrier APIs that exist only for the obsolete split logger.
 
 - [ ] **Step 5: Run adapter tests and confirm GREEN.**
 
@@ -992,13 +992,13 @@ Move evener-doctor API analysis off transcript records and expose attempt identi
 - `<sid>.api.jsonl` is the canonical private exact-attempt log, always written when API logging is attached.
 - Each completed attempt is appended immediately as `api_attempt`; outer-call finality/count follows as `attempt_group_settlement`, so a crash may leave a readable explicitly unsettled group.
 - Exact bodies require explicit attempt/body expansion and credentials are excluded.
-- `SERF_LOG_RAW_HTTP`, `raw_http_logging`, and `api-raw.jsonl` no longer exist.
+- `EVENER_LOG_RAW_HTTP`, `raw_http_logging`, and `api-raw.jsonl` no longer exist.
 - Doctor and transcript-tool examples use their new canonical sources.
 - Historical proof/research/spec/plan documents remain historical artifacts; do not rewrite them to make old observations appear current.
 
 - [ ] **Step 1: Add failing config-surface tests.**
 
-Update launch schema tests to assert `raw_http_logging` is absent from controls, wire types, and provenance. Update the envvar catalog test to assert `SERF_LOG_RAW_HTTP` is absent. This is deliberate deletion under the hard break, not deprecation.
+Update launch schema tests to assert `raw_http_logging` is absent from controls, wire types, and provenance. Update the envvar catalog test to assert `EVENER_LOG_RAW_HTTP` is absent. This is deliberate deletion under the hard break, not deprecation.
 
 - [ ] **Step 2: Run focused tests and confirm RED.**
 
@@ -1017,7 +1017,7 @@ Remove the environment variable from `SERFFuzzRecord`'s override prose as well a
 Run:
 
 ```bash
-rg -n 'SERF_LOG_RAW_HTTP|raw_http_logging|api-raw\.jsonl|transcript.*api_call|api_call.*transcript' \
+rg -n 'EVENER_LOG_RAW_HTTP|raw_http_logging|api-raw\.jsonl|transcript.*api_call|api_call.*transcript' \
   --glob '!docs/superpowers/proofs/**' \
   --glob '!docs/superpowers/research/**' \
   --glob '!docs/superpowers/specs/**' \

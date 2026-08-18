@@ -42,7 +42,7 @@ and assert what each tab converges to.
   Pre-state first. The handoff is its run directory, not a port
   (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
@@ -147,10 +147,10 @@ and assert what each tab converges to.
 ## Expected
 
 - **Step 2 (exact, the whole point)**: one request returns **202**; the other returns
-  **409** with body `{"error":"turn is already active","code":-32013,"serf_error_info":"conflict"}`
+  **409** with body `{"error":"turn is already active","code":-32013,"evener_error_info":"conflict"}`
   (`statusForWireError`, `cmd/evener-hub/web_api.go#statusForWireError`; `hubapi.ErrorResponse` tags at
   `hubapi/types.go#ErrorResponse`), **or** — if the capability gate saw the flip first — **503**
-  with `serf_error_info: "actionUnavailable"` (`ensureThreadActionAvailable(…, "send")`
+  with `evener_error_info: "actionUnavailable"` (`ensureThreadActionAvailable(…, "send")`
   ahead of `StartTurn`, `cmd/evener-hub/web_session.go:137-139`). Either loser shape is
   correct; two 202s is not. Falsify: both requests return 202, or the loser returns 502
   ("daemon unreachable") — a conflict must not be mistaken for an unavailable session and

@@ -107,6 +107,6 @@ entry + regenerate (docs + TS types) + Go tests (broadcast asserted via appserve
 Scope: ScopeHub notification, no params. TDD.
 
 ### Task 7 (sequential, after merges): wave gate
-Full suite + typecheck + lint + build; SERF_HUB_WEB=new manual smoke: hub serves the shell,
+Full suite + typecheck + lint + build; EVENER_HUB_WEB=new manual smoke: hub serves the shell,
 deep links open panes, layout survives reload, mobile viewport check via chrome skill
 (390px), screenshots archived to the wave worktree sdd dir; wave report; merge to integration.

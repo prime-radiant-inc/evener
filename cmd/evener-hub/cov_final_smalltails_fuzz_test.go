@@ -97,7 +97,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 			cfg := hubcore.WebConfig{Spawner: &finalSmalltailLister{mode: mode}}
 			_, _ = evenerLaunchModelList(context.Background(), cfg, "")
 			_ = hasSerfLaunchModelLister(cfg)
-			_ = validateSerfLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "missing", Model: "m"}, "")
+			_ = validateEvenerLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "missing", Model: "m"}, "")
 		}
 
 		thread := appwire.Thread{ID: "child", Source: "remote", Evener: appwire.EvenerThread{Kind: "subagent", ParentRef: "remote:root"}, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "agentMessage", Text: "x"}}}}}

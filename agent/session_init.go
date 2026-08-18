@@ -317,9 +317,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// (which sets s.origin from the persisted meta first), so the read must
 	// happen here — a fresh-only site — rather than inside the shared
 	// function, or a resume would have its persisted origin clobbered by
-	// whatever SERF_SESSION_ORIGIN happens to be set in the ambient
+	// whatever EVENER_SESSION_ORIGIN happens to be set in the ambient
 	// environment at restore time.
-	s.origin = envvars.SERFSessionOrigin.Getenv()
+	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
 	if err != nil {
@@ -804,7 +804,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.pinnedNote = meta.PinnedNote
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
-	// re-reading SERF_SESSION_ORIGIN — the fresh-create path's env read
+	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
 	// happens once, at creation time, not on every resume.
 	s.origin = meta.Origin
 
@@ -1116,7 +1116,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// (which early-returns on empty PluginDirs). Discovery is fail-soft;
 	// warnings join the same session-start queue as command frontmatter
 	// warnings.
-	evenerwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+	evenerwide, cmdWarnings := plugin.DiscoverEvenerWideCommands(s.currentEnv())
 	s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
 	s.applyAgentRolePromptOverride()

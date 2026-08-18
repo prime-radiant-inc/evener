@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=1440, initial-scale=1" />
-<title>Serf — Live Session</title>
+<title>Evener — Live Session</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Familjen+Grotesk:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -316,7 +316,7 @@
     padding:2px 7px;border-radius:5px;
   }
   .badge.you{color:var(--signal);background:rgba(195,232,141,.10);border:1px solid rgba(195,232,141,.28);}
-  .badge.serf{color:var(--work);background:rgba(95,208,197,.10);border:1px solid rgba(95,208,197,.28);}
+  .badge.evener{color:var(--work);background:rgba(95,208,197,.10);border:1px solid rgba(95,208,197,.28);}
 
   /* USER message — loud, human */
   .userbox{
@@ -561,7 +561,7 @@
         <span class="dot working"></span>
         <span class="body">
           <span class="ttl">Refactor auth token cache</span>
-          <span class="meta"><span class="mdl">serf</span> · working 1:12</span>
+          <span class="meta"><span class="mdl">evener</span> · working 1:12</span>
         </span>
       </div>
       <div class="row">
@@ -616,7 +616,7 @@
       <!-- OLDER -->
       <div class="grouphdr"><span>Older</span><span class="ln"></span></div>
       <div class="disc" onclick="toggleGroup(this)">
-        <span class="car">▸</span><span class="nm" style="text-transform:none;letter-spacing:0;font-family:var(--mono);font-weight:400;font-size:12px">serf-docs</span><span class="when">9d</span>
+        <span class="car">▸</span><span class="nm" style="text-transform:none;letter-spacing:0;font-family:var(--mono);font-weight:400;font-size:12px">evener-docs</span><span class="when">9d</span>
       </div>
       <div class="indent groupbody" style="display:none"></div>
 
@@ -671,7 +671,7 @@
           <!-- 3. ASSISTANT -->
           <div class="entry reveal">
             <div class="node asst"><span class="knob"></span><span class="arm"></span></div>
-            <div class="who"><span class="badge serf">SERF</span> assistant</div>
+            <div class="who"><span class="badge evener">SERF</span> assistant</div>
             <div class="prose">
               I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.
             </div>
@@ -726,7 +726,7 @@
           <!-- 6. ASSISTANT (streaming) -->
           <div class="entry reveal">
             <div class="node asst active"><span class="knob"></span><span class="arm"></span></div>
-            <div class="who"><span class="badge serf">SERF</span> assistant · streaming</div>
+            <div class="who"><span class="badge evener">SERF</span> assistant · streaming</div>
             <div class="prose">
               Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="caret"></span>
             </div>

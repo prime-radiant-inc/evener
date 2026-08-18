@@ -211,33 +211,33 @@ type LaunchOption struct {
 func LaunchOptionSchema() []LaunchOption {
 	defaultLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject}
 	allLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject, LaunchLayerLaunch}
-	serfOnly := map[string]bool{"evener": true}
+	evenerOnly := map[string]bool{"evener": true}
 	return []LaunchOption{
-		{Field: "agent", WireField: "agent", Label: "Agent", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "model", WireField: "model", Label: "Model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_MODEL"}, DriverSupport: serfOnly},
-		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_REASONING_EFFORT"}, Choices: reasoningChoices(), DriverSupport: serfOnly},
-		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: serfOnly},
-		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Label: "Max subagent depth", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "no_project_prompts", WireField: "noProjectPrompts", Label: "Suppress .evener/prompts loading", Group: LaunchGroupLimits, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "app_replay_size", WireField: "appReplaySize", Label: "App replay size", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: false, DriverSupport: serfOnly},
-		{Field: "system_prompt_mode", WireField: "systemPromptMode", Label: "System prompt", Group: LaunchGroupSystemPrompt, Kind: LaunchControlRadio, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: systemPromptModeChoices(), DriverSupport: serfOnly},
-		{Field: "system_prompt_file", WireField: "systemPromptFile", Label: "System prompt file", Group: LaunchGroupSystemPrompt, Kind: LaunchControlPath, PathKind: LaunchPathFile, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "system_prompt_text", WireField: "systemPromptText", Label: "System prompt text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "system_prompt_append_mode", WireField: "systemPromptAppendMode", Label: "Append to system prompt", Group: LaunchGroupSystemPrompt, Kind: LaunchControlRadio, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: appendModeChoices(), DriverSupport: serfOnly},
-		{Field: "system_prompt_append_file", WireField: "systemPromptAppendFile", Label: "Append file", Group: LaunchGroupSystemPrompt, Kind: LaunchControlPath, PathKind: LaunchPathFile, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "system_prompt_append_text", WireField: "systemPromptAppendText", Label: "Append text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "skills_dirs", WireField: "skillsDirs", Label: "Skill directories", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "plugin_dirs", WireField: "pluginDirs", Label: "Plugin directories", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "mcp_configs", WireField: "mcpConfigs", Label: "MCP config files", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "env", WireField: "env", Label: "Environment variables", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
-		{Field: "trace_file", WireField: "traceFile", Label: "Trace file", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
-		{Field: "cpu_profile", WireField: "cpuProfile", Label: "CPU profile", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
-		{Field: "export_atif_path", WireField: "exportATIFPath", Label: "Export ATIF path", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
+		{Field: "agent", WireField: "agent", Label: "Agent", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "model", WireField: "model", Label: "Model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "EVENER_MODEL"}, DriverSupport: evenerOnly},
+		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "EVENER_REASONING_EFFORT"}, Choices: reasoningChoices(), DriverSupport: evenerOnly},
+		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: evenerOnly},
+		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Label: "Max subagent depth", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "no_project_prompts", WireField: "noProjectPrompts", Label: "Suppress .evener/prompts loading", Group: LaunchGroupLimits, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "app_replay_size", WireField: "appReplaySize", Label: "App replay size", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: []LaunchLayerSupport{LaunchLayerGlobal}, PerLaunch: false, DriverSupport: evenerOnly},
+		{Field: "system_prompt_mode", WireField: "systemPromptMode", Label: "System prompt", Group: LaunchGroupSystemPrompt, Kind: LaunchControlRadio, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: systemPromptModeChoices(), DriverSupport: evenerOnly},
+		{Field: "system_prompt_file", WireField: "systemPromptFile", Label: "System prompt file", Group: LaunchGroupSystemPrompt, Kind: LaunchControlPath, PathKind: LaunchPathFile, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "system_prompt_text", WireField: "systemPromptText", Label: "System prompt text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "system_prompt_append_mode", WireField: "systemPromptAppendMode", Label: "Append to system prompt", Group: LaunchGroupSystemPrompt, Kind: LaunchControlRadio, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: appendModeChoices(), DriverSupport: evenerOnly},
+		{Field: "system_prompt_append_file", WireField: "systemPromptAppendFile", Label: "Append file", Group: LaunchGroupSystemPrompt, Kind: LaunchControlPath, PathKind: LaunchPathFile, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "system_prompt_append_text", WireField: "systemPromptAppendText", Label: "Append text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "skills_dirs", WireField: "skillsDirs", Label: "Skill directories", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "plugin_dirs", WireField: "pluginDirs", Label: "Plugin directories", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "mcp_configs", WireField: "mcpConfigs", Label: "MCP config files", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "env", WireField: "env", Label: "Environment variables", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
+		{Field: "trace_file", WireField: "traceFile", Label: "Trace file", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
+		{Field: "cpu_profile", WireField: "cpuProfile", Label: "CPU profile", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
+		{Field: "export_atif_path", WireField: "exportATIFPath", Label: "Export ATIF path", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly},
 	}
 }
 ```
@@ -1140,8 +1140,8 @@ function renderEnvFallbacks(form, schema) {
   const box = document.createElement("div");
   box.className = "spawn-env-fallbacks";
   fallbacks.forEach(opt => {
-    const value = window.SERF_ENV && Object.prototype.hasOwnProperty.call(window.SERF_ENV, opt.envFallback.name)
-      ? window.SERF_ENV[opt.envFallback.name]
+    const value = window.EVENER_ENV && Object.prototype.hasOwnProperty.call(window.EVENER_ENV, opt.envFallback.name)
+      ? window.EVENER_ENV[opt.envFallback.name]
       : "";
     const row = document.createElement("div");
     row.className = "settings-help";
@@ -1152,13 +1152,13 @@ function renderEnvFallbacks(form, schema) {
 }
 ```
 
-Add a safe non-secret environment map to spawn page data before this renderer is enabled. The map must include only the environment variables named by non-secret schema fallbacks, currently `SERF_MODEL` and `SERF_REASONING_EFFORT`. Render it before `spawn.js` runs:
+Add a safe non-secret environment map to spawn page data before this renderer is enabled. The map must include only the environment variables named by non-secret schema fallbacks, currently `EVENER_MODEL` and `EVENER_REASONING_EFFORT`. Render it before `spawn.js` runs:
 
 ```html
 <script>
-  window.SERF_ENV = {
-    SERF_MODEL: {{printf "%q" (index .SafeEnv "SERF_MODEL")}},
-    SERF_REASONING_EFFORT: {{printf "%q" (index .SafeEnv "SERF_REASONING_EFFORT")}}
+  window.EVENER_ENV = {
+    EVENER_MODEL: {{printf "%q" (index .SafeEnv "EVENER_MODEL")}},
+    EVENER_REASONING_EFFORT: {{printf "%q" (index .SafeEnv "EVENER_REASONING_EFFORT")}}
   };
 </script>
 ```
@@ -1168,7 +1168,7 @@ Add `SafeEnv map[string]string` to the spawn template data and populate it from 
 ```go
 func safeLaunchEnvForTemplate() map[string]string {
 	out := map[string]string{}
-	for _, key := range []string{"SERF_MODEL", "SERF_REASONING_EFFORT"} {
+	for _, key := range []string{"EVENER_MODEL", "EVENER_REASONING_EFFORT"} {
 		if value, ok := os.LookupEnv(key); ok {
 			out[key] = value
 		}

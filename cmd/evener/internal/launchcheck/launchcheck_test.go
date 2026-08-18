@@ -148,7 +148,7 @@ api_key = "test-key"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
@@ -386,7 +386,7 @@ func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 }
 
 // TestLaunchCheckAcceptsConfigInstanceModel verifies that when
-// SERF_PROVIDERS_CONFIG points to a valid config file, launch-check resolves
+// EVENER_PROVIDERS_CONFIG points to a valid config file, launch-check resolves
 // a custom instance name (e.g. "work2") without requiring credentials.
 func TestLaunchCheckAcceptsConfigInstanceModel(t *testing.T) {
 	dir := t.TempDir()
@@ -400,7 +400,7 @@ type = "openai"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer
@@ -440,7 +440,7 @@ base_url = "https://example.test/v1"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer
@@ -476,7 +476,7 @@ type = "openai"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	t.Setenv("EVENER_PROVIDERS_CONFIG", cfgPath)
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer

@@ -107,7 +107,7 @@ const (
 )
 
 // AskFallback dictates what Evaluate returns when a rule yields "ask" on a
-// surface that has no human (evener -p, serfeval, hub batch).
+// surface that has no human (evener -p, evenereval, hub batch).
 type AskFallback int
 
 const (
@@ -2662,7 +2662,7 @@ In `agent/session.go`, add fields to `SessionConfig` (right after `DeniedToolNam
 	Permissions PermissionsConfig `json:"-"`
 
 	// PermissionAskFallback is the policy each entry-point selects for
-	// surfaces that have no human (evener -p, serfeval). Defaults to
+	// surfaces that have no human (evener -p, evenereval). Defaults to
 	// AskFallbackInteractive on TTY surfaces. SP8 owns the surface defaults.
 	PermissionAskFallback AskFallback `json:"-"`
 ```

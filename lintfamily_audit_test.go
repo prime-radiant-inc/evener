@@ -65,8 +65,8 @@ func TestCISetsStrictGitleaksModeOnScanSteps(t *testing.T) {
 				continue
 			}
 			scanSteps++
-			if step.Env["SERF_GITLEAKS_REQUIRED"] != "1" {
-				t.Fatalf("job %s step %q runs a CI secret scan without SERF_GITLEAKS_REQUIRED=1", jobName, step.Name)
+			if step.Env["EVENER_GITLEAKS_REQUIRED"] != "1" {
+				t.Fatalf("job %s step %q runs a CI secret scan without EVENER_GITLEAKS_REQUIRED=1", jobName, step.Name)
 			}
 		}
 	}

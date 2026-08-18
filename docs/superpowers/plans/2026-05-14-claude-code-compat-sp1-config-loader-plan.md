@@ -12,7 +12,7 @@
 **Sub-spec (source of truth):** `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-loader-design.md`
 
 **File map:**
-- Create `agent/config.go` — types, `LoadSerfConfigFile`, `MergeSerfConfigs`, `DiscoverSerfConfig`, `globalSerfConfigPath`, `serfConfigWarnWriter`.
+- Create `agent/config.go` — types, `LoadSerfConfigFile`, `MergeSerfConfigs`, `DiscoverSerfConfig`, `globalSerfConfigPath`, `evenerConfigWarnWriter`.
 - Create `agent/config_test.go` — table-driven unit tests for parse, merge, discovery.
 - Create `agent/testdata/config/full.json`, `agent/testdata/config/hooks_only.json`, `agent/testdata/config/permissions_only.json`, `agent/testdata/config/malformed.json`.
 
@@ -140,9 +140,9 @@ type SerfConfig struct {
 	Sources        []ConfigSource
 }
 
-// serfConfigWarnWriter is where non-fatal config warnings go. Tests swap it
+// evenerConfigWarnWriter is where non-fatal config warnings go. Tests swap it
 // to capture output without touching os.Stderr.
-var serfConfigWarnWriter io.Writer = os.Stderr
+var evenerConfigWarnWriter io.Writer = os.Stderr
 
 // LoadSerfConfigFile parses one config.json. Missing file is not an error
 // (returns zero SerfConfig and nil). Malformed JSON or a structurally
@@ -819,7 +819,7 @@ Add this block in `LoadSerfConfigFile` after the Hooks block (before `return cfg
 				}
 				cfg.Permissions.DefaultMode = mode
 			default:
-				fmt.Fprintf(serfConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, "permissions."+k)
+				fmt.Fprintf(evenerConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, "permissions."+k)
 			}
 		}
 	}
@@ -924,9 +924,9 @@ func TestLoadSerfConfigFile_UnknownTopLevelFieldWarns(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	prev := serfConfigWarnWriter
-	serfConfigWarnWriter = &buf
-	t.Cleanup(func() { serfConfigWarnWriter = prev })
+	prev := evenerConfigWarnWriter
+	evenerConfigWarnWriter = &buf
+	t.Cleanup(func() { evenerConfigWarnWriter = prev })
 
 	cfg, err := LoadSerfConfigFile(path)
 	if err != nil {
@@ -955,9 +955,9 @@ func TestLoadSerfConfigFile_UnknownPermissionsSubfieldWarns(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	prev := serfConfigWarnWriter
-	serfConfigWarnWriter = &buf
-	t.Cleanup(func() { serfConfigWarnWriter = prev })
+	prev := evenerConfigWarnWriter
+	evenerConfigWarnWriter = &buf
+	t.Cleanup(func() { evenerConfigWarnWriter = prev })
 
 	cfg, err := LoadSerfConfigFile(path)
 	if err != nil {
@@ -992,7 +992,7 @@ Modify `LoadSerfConfigFile` to scan unknown top-level keys after the `raw` unmar
 	}
 	for k := range raw {
 		if _, ok := known[k]; !ok {
-			fmt.Fprintf(serfConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, k)
+			fmt.Fprintf(evenerConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, k)
 		}
 	}
 ```
@@ -1505,7 +1505,7 @@ git commit -m "feat(config): globalSerfConfigPath honors XDG_CONFIG_HOME"
 
 ---
 
-## Task 18: Test fixture helpers — `serfConfigTestRepo` (git repo + tier paths)
+## Task 18: Test fixture helpers — `evenerConfigTestRepo` (git repo + tier paths)
 
 **Files:**
 - Modify: `agent/config_test.go`
@@ -1521,7 +1521,7 @@ import (
 	"time"
 )
 
-// serfConfigTestRepo builds a temporary directory layout suitable for
+// evenerConfigTestRepo builds a temporary directory layout suitable for
 // DiscoverSerfConfig tests:
 //
 //   <tmp>/xdg/evener/config.json        (global, when global!="")
@@ -1536,7 +1536,7 @@ import (
 // Empty string for global or project means "do not create that file".
 // cliFiles maps relative name -> file body; the returned cliPaths slice
 // preserves cliFiles iteration order via the caller-supplied cliOrder.
-func serfConfigTestRepo(t *testing.T, global, project string, cliOrder []string, cliFiles map[string]string) (env ExecutionEnvironment, repo string, cliPaths []string) {
+func evenerConfigTestRepo(t *testing.T, global, project string, cliOrder []string, cliFiles map[string]string) (env ExecutionEnvironment, repo string, cliPaths []string) {
 	t.Helper()
 
 	if _, err := exec.LookPath("git"); err != nil {
@@ -1604,7 +1604,7 @@ Expected: PASS — this exercises compilation. The helper has no test of its own
 
 ```bash
 git add agent/config_test.go
-git commit -m "test(config): add serfConfigTestRepo helper for discovery tests"
+git commit -m "test(config): add evenerConfigTestRepo helper for discovery tests"
 ```
 
 ---
@@ -1621,7 +1621,7 @@ Append to `agent/config_test.go`:
 
 ```go
 func TestDiscoverSerfConfig_AllAbsent(t *testing.T) {
-	env, _, cliPaths := serfConfigTestRepo(t, "", "", nil, nil)
+	env, _, cliPaths := evenerConfigTestRepo(t, "", "", nil, nil)
 	cfg, err := DiscoverSerfConfig(env, cliPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1729,7 +1729,7 @@ Append to `agent/config_test.go`:
 ```go
 func TestDiscoverSerfConfig_OnlyGlobal(t *testing.T) {
 	body := `{"permissions":{"defaultMode":"default","allow":["G"]}}`
-	env, _, cliPaths := serfConfigTestRepo(t, body, "", nil, nil)
+	env, _, cliPaths := evenerConfigTestRepo(t, body, "", nil, nil)
 	cfg, err := DiscoverSerfConfig(env, cliPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1744,7 +1744,7 @@ func TestDiscoverSerfConfig_OnlyGlobal(t *testing.T) {
 
 func TestDiscoverSerfConfig_OnlyProject(t *testing.T) {
 	body := `{"permissions":{"allow":["P"]}}`
-	env, _, cliPaths := serfConfigTestRepo(t, "", body, nil, nil)
+	env, _, cliPaths := evenerConfigTestRepo(t, "", body, nil, nil)
 	cfg, err := DiscoverSerfConfig(env, cliPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1759,7 +1759,7 @@ func TestDiscoverSerfConfig_OnlyProject(t *testing.T) {
 
 func TestDiscoverSerfConfig_OnlyCLI(t *testing.T) {
 	body := `{"permissions":{"allow":["C"]}}`
-	env, _, cliPaths := serfConfigTestRepo(t, "", "", []string{"one.json"}, map[string]string{"one.json": body})
+	env, _, cliPaths := evenerConfigTestRepo(t, "", "", []string{"one.json"}, map[string]string{"one.json": body})
 	cfg, err := DiscoverSerfConfig(env, cliPaths)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1803,7 +1803,7 @@ func TestDiscoverSerfConfig_AllTiersConcat(t *testing.T) {
 	cli0 := `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"c0.sh"}]}]}}`
 	cli1 := `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"c1.sh"}]}]}}`
 
-	env, _, cliPaths := serfConfigTestRepo(
+	env, _, cliPaths := evenerConfigTestRepo(
 		t, global, project,
 		[]string{"a.json", "b.json"},
 		map[string]string{"a.json": cli0, "b.json": cli1},
@@ -1921,7 +1921,7 @@ Append to `agent/config_test.go`:
 
 ```go
 func TestDiscoverSerfConfig_MalformedGlobalAborts(t *testing.T) {
-	env, _, cliPaths := serfConfigTestRepo(t, `{`, "", nil, nil)
+	env, _, cliPaths := evenerConfigTestRepo(t, `{`, "", nil, nil)
 	_, err := DiscoverSerfConfig(env, cliPaths)
 	if err == nil {
 		t.Fatal("expected error for malformed global config")
@@ -1932,7 +1932,7 @@ func TestDiscoverSerfConfig_MalformedGlobalAborts(t *testing.T) {
 }
 
 func TestDiscoverSerfConfig_MalformedProjectAborts(t *testing.T) {
-	env, repo, cliPaths := serfConfigTestRepo(t, "", `{`, nil, nil)
+	env, repo, cliPaths := evenerConfigTestRepo(t, "", `{`, nil, nil)
 	_, err := DiscoverSerfConfig(env, cliPaths)
 	if err == nil {
 		t.Fatal("expected error for malformed project config")
@@ -1944,7 +1944,7 @@ func TestDiscoverSerfConfig_MalformedProjectAborts(t *testing.T) {
 }
 
 func TestDiscoverSerfConfig_MalformedCLIAbortsWithTierPrefix(t *testing.T) {
-	env, _, cliPaths := serfConfigTestRepo(t, "", "",
+	env, _, cliPaths := evenerConfigTestRepo(t, "", "",
 		[]string{"bad.json"}, map[string]string{"bad.json": `{`},
 	)
 	_, err := DiscoverSerfConfig(env, cliPaths)
@@ -1985,7 +1985,7 @@ Append to `agent/config_test.go`:
 
 ```go
 func TestDiscoverSerfConfig_MissingCLIIsError(t *testing.T) {
-	env, _, _ := serfConfigTestRepo(t, "", "", nil, nil)
+	env, _, _ := evenerConfigTestRepo(t, "", "", nil, nil)
 	missing := filepath.Join(t.TempDir(), "absent-config.json")
 	_, err := DiscoverSerfConfig(env, []string{missing})
 	if err == nil {
@@ -2023,7 +2023,7 @@ Append to `agent/config_test.go`:
 ```go
 func TestDiscoverSerfConfig_ProjectViaGitRootFromSubdir(t *testing.T) {
 	body := `{"permissions":{"allow":["P"]}}`
-	env, repo, _ := serfConfigTestRepo(t, "", body, nil, nil)
+	env, repo, _ := evenerConfigTestRepo(t, "", body, nil, nil)
 
 	// Reroot the env at <repo>/sub/dir, two levels below the repo root.
 	subdir := filepath.Join(repo, "sub", "dir")

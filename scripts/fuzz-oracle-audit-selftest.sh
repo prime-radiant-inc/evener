@@ -112,7 +112,7 @@ STUB
 chmod +x "$runner"
 
 run_audit() {
-	SERF_FUZZ_REPO_ROOT="$repo" SERF_FUZZ_RUNNER="$runner" SERF_FUZZ_TAGS="" \
+	EVENER_FUZZ_REPO_ROOT="$repo" EVENER_FUZZ_RUNNER="$runner" EVENER_FUZZ_TAGS="" \
 		bash "$audit" "$@" 2>&1
 }
 

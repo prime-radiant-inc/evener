@@ -209,7 +209,7 @@ build-go:
 # MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
 # so a leaky test or fuzz run is OOM-killed individually instead of firing the
 # kernel's global OOM killer and taking the whole host — and its network — down.
-# Tune or disable via SERF_MEM_MAX (default 16G; SERF_MEM_MAX=0 turns it off).
+# Tune or disable via EVENER_MEM_MAX (default 16G; EVENER_MEM_MAX=0 turns it off).
 # Systemd user scopes are unavailable on Darwin, where the wrapper can only warn
 # before execing the same command, so recipes run directly there. Other hosts
 # retain the wrapper and its uncapped-warning fallback when scopes are unavailable.
@@ -263,7 +263,7 @@ test-short:
 # test-fuzz runs the seqfuzz/schemafuzz stateful rapid.Check family (delegate,
 # watch, lifecycle, jobs descendant-merge, tool-args schema, jobstore, context
 # compaction x2, appserver router, appserver multi-session) at FULL depth:
-# SERF_FUZZ_TESTS=1 opts each t.Skip()-gated test back in, and the absence of
+# EVENER_FUZZ_TESTS=1 opts each t.Skip()-gated test back in, and the absence of
 # -short lets rapid.Check run its full default check count instead of the
 # reduced one it uses under -short. These tests never run inside `make test`
 # (Jesse ruling: no fuzz-family test, including smoke iterations, belongs in
@@ -271,15 +271,15 @@ test-short:
 # FuzzXxx corpora and this SAME rapid family against a fixed coverage seed
 # bank (scripts/run-fuzz.sh) for deterministic CI coverage, not a search.
 test-fuzz:
-	@cd agent && SERF_FUZZ_TESTS=1 go test . ./internal/contextmgr ./internal/jobstore -run 'SeqFuzz|ToolArgsSchemaFuzz' -count=1 -v
-	@SERF_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
+	@cd agent && EVENER_FUZZ_TESTS=1 go test . ./internal/contextmgr ./internal/jobstore -run 'SeqFuzz|ToolArgsSchemaFuzz' -count=1 -v
+	@EVENER_FUZZ_TESTS=1 go test ./internal/appserver -run 'SeqFuzz' -count=1 -v
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/testing.md for diagnosis and evidence.
 #
 # The capability preflight (scripts/gate-capability-preflight.sh) classifies
 # sandbox-sensitive host capabilities ONCE, before any phase runs, and
-# exports SERF_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
+# exports EVENER_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
 # the known-infeasible live/e2e tests instead of repeatedly failing into
 # them, and reports what it found blocked with exact rerun commands. All four
 # steps now run in ONE shell (chained with && instead of four separate
@@ -303,7 +303,7 @@ test-race:
 # e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
 # structurally can't reach. --merge-unit unions it with the unit profile for a
-# combined whole-repo number; SERF_E2E_LIVE=1 additionally runs the live provider
+# combined whole-repo number; EVENER_E2E_LIVE=1 additionally runs the live provider
 # scripts (needs real credentials). Local/on-demand, not a gate.
 e2e-cover:
 	@scripts/e2e-cover.sh --merge-unit
@@ -342,7 +342,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE EVENER_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential

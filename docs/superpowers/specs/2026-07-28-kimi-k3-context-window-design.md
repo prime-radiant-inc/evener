@@ -15,7 +15,7 @@ metadata.
 ## Design
 
 Materialize Kimi Code's model-specific context metadata in
-`serf_model_catalog_overrides.json`, the existing authority for models absent
+`evener_model_catalog_overrides.json`, the existing authority for models absent
 from LiteLLM:
 
 - `k3`: 1,048,576

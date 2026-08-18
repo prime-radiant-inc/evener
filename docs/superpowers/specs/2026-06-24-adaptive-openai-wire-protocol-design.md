@@ -132,7 +132,7 @@ Default tests:
 
 Live tests:
 
-- Keep first-party OpenAI and compatible-provider live probes opt-in with explicit `SERF_*_E2E=1` variables.
+- Keep first-party OpenAI and compatible-provider live probes opt-in with explicit `EVENER_*_E2E=1` variables.
 - Provider credentials alone must never trigger live detection tests.
 - Live artifacts should record model, base URL family, selected transport, feature results, and downgrade reasons.
 

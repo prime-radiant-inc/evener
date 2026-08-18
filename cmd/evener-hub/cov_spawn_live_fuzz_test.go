@@ -84,7 +84,7 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 			_ = providerCredentialInEnv(provider, []string{"OPENAI_API_KEY=abcdefgh"})
 		}
 		_ = openAICompatibleBaseURLInEnv([]string{"OPENAI_COMPATIBLE_BASE_URL=http://x"})
-		_ = openAIStoredOAuthUsable([]string{"SERF_STATE_DIR=" + dir})
+		_ = openAIStoredOAuthUsable([]string{"EVENER_STATE_DIR=" + dir})
 		_ = openAIStateDirFromLaunchEnv(nil)
 		_ = openAIInstanceOAuthUsable(dir, "missing")
 

@@ -8,7 +8,7 @@
 # What it does:
 #   1. Sanity-checks that /usr/bin/sandbox-exec exists and enforces a trivial
 #      deny-default policy (a raw allow/deny pair, independent of evener's Go code).
-#   2. Runs evener's gated Go parity suite (SERF_SEATBELT_LIVE=1), which generates
+#   2. Runs evener's gated Go parity suite (EVENER_SEATBELT_LIVE=1), which generates
 #      real policies from ResolvedPolicy and asserts the kernel's verdict for
 #      network denial, worktree/secret confinement, and git-config protection.
 #
@@ -54,7 +54,7 @@ fi
 echo "PASS: raw deny-default + writable-param enforcement"
 
 echo "== stage 2: evener generated-policy parity suite =="
-if ! SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v; then
+if ! EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v; then
 	fail "evener live parity suite (TestSeatbeltLive) failed"
 fi
 echo "PASS: evener generated-policy parity suite"

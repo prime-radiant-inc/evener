@@ -22,11 +22,11 @@ jobs:
           - name: linux-amd64
             goos: linux
             goarch: amd64
-            asset: serf_linux_amd64.tar.gz
+            asset: evener_linux_amd64.tar.gz
           - name: darwin-arm64
             goos: darwin
             goarch: arm64
-            asset: serf_darwin_arm64.tar.gz
+            asset: evener_darwin_arm64.tar.gz
 
     steps:
       - uses: actions/checkout@v6

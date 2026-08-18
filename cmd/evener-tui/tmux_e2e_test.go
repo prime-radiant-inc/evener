@@ -1093,10 +1093,10 @@ func buildTUIBinary(t *testing.T) string {
 		}
 		bin := filepath.Join(dir, "evener-tui")
 		buildArgs := []string{"build", "-o", bin}
-		// SERF_E2E_COVER=<dir>: build an instrumented binary so the tmux'd TUI
+		// EVENER_E2E_COVER=<dir>: build an instrumented binary so the tmux'd TUI
 		// subprocess emits coverage into that GOCOVERDIR (see tuiCoverEnvPrefix).
 		// Unset (the default) leaves the build and the launch command unchanged.
-		if os.Getenv("SERF_E2E_COVER") != "" {
+		if os.Getenv("EVENER_E2E_COVER") != "" {
 			buildArgs = append(buildArgs, "-cover")
 		}
 		buildArgs = append(buildArgs, "./cmd/evener-tui")
@@ -1144,11 +1144,11 @@ func startTUITmux(t *testing.T, bin string, hub *tuiE2EHub) *tmuxTUI {
 }
 
 // tuiCoverEnvPrefix returns a "GOCOVERDIR=<dir> " shell prefix when
-// SERF_E2E_COVER is set, so the tmux-launched TUI (built with -cover, see
+// EVENER_E2E_COVER is set, so the tmux-launched TUI (built with -cover, see
 // buildTUIBinary) writes its coverage counters there; empty otherwise, leaving
 // the launch command byte-identical on the default path.
 func tuiCoverEnvPrefix() string {
-	if dir := os.Getenv("SERF_E2E_COVER"); dir != "" {
+	if dir := os.Getenv("EVENER_E2E_COVER"); dir != "" {
 		return "GOCOVERDIR=" + shellQuote(dir) + " "
 	}
 	return ""
@@ -1802,24 +1802,24 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, h.handleHarnessList)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, h.handleTurnStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, h.handleTurnSteer)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, h.handleTurnQueue)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, h.handleTurnDrainAsSteer)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, h.handleTasksList)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, h.handleTasksList)
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, h.handleTurnInterrupt)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, h.handleThreadCompactStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, h.handleThreadModelSet)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, h.handleThreadClear)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, h.handleThreadFork)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, h.handleAuthStatus)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginStart, h.handleAuthLoginStart)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, h.handleAuthLoginComplete)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLogout, h.handleAuthLogout)
-	appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, h.handleThreadTranscriptList)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, h.handleAuthStatus)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginStart, h.handleAuthLoginStart)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLoginComplete, h.handleAuthLoginComplete)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthLogout, h.handleAuthLogout)
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, h.handleThreadTranscriptList)
 }
 
 func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {

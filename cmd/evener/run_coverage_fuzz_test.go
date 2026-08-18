@@ -25,7 +25,7 @@ import (
 func FuzzRunCoverage(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
-		t.Setenv("SERF_STATE_DIR", "")
+		t.Setenv("EVENER_STATE_DIR", "")
 		base := func(t *testing.T) runConfig {
 			t.Helper()
 			return runConfig{prompt: "ping", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(), noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}

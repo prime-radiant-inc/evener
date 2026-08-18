@@ -417,7 +417,7 @@ For plugin sources with `git-subdir`, the same routine applies, with the final p
 
 ### 4.5 Cross-cutting
 
-`git` operations all run with a 120-second timeout (configurable via the env var `SERF_PLUGIN_GIT_TIMEOUT_MS`, mirroring Claude Code's `CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS`). The fetcher captures stderr and surfaces it on failure.
+`git` operations all run with a 120-second timeout (configurable via the env var `EVENER_PLUGIN_GIT_TIMEOUT_MS`, mirroring Claude Code's `CLAUDE_CODE_PLUGIN_GIT_TIMEOUT_MS`). The fetcher captures stderr and surfaces it on failure.
 
 Network errors during `update` do not wipe the existing checkout. If `git fetch` fails, the prior install is left in place and the error is returned. This is the v1 equivalent of Claude Code's `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1` — SP3 makes that the only mode, since silent cache wipes are how users lose offline access.
 
@@ -651,14 +651,14 @@ This is the open question §11.1 resolves. Decision:
 - **`evener-tui` / `evener-hub` / `evener serve`:** non-interactive. Project marketplaces remain *listed but uncloned* until explicitly trusted. The session emits a single warning event (`marketplace_trust_required`) and proceeds without those marketplaces' plugins.
 - **Scripted CLI (no tty on stdin):** identical to the non-interactive surfaces. To trust from CI/scripts, use one of:
   - `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on `evener` (top-level), repeatable. Implies a "this session only" trust.
-  - `SERF_TRUST_MARKETPLACES=<name>,<name>` env var. Same semantics — session-scoped, not persisted.
+  - `EVENER_TRUST_MARKETPLACES=<name>,<name>` env var. Same semantics — session-scoped, not persisted.
   - `evener plugin marketplace trust <name>` (a fifth subcommand, SP3 ships it). Persists to `trusted_projects.json` from the command line; the inverse is `evener plugin marketplace untrust <name>`.
 
 Rationale: the `trust` subcommand makes scripting clean (one command, exit code) and the env var covers the "I am running this in a container and have no persistent home directory" case. The flag covers the "run-once with confirmation suppressed" case.
 
 ### 7.5 Bypassing the prompt with foreknowledge
 
-`SERF_TRUST_ALL_MARKETPLACES=1` exists but is **off** by default and logs a single startup warning when on. Documented as "for ephemeral sandboxed environments where you have already audited the project."
+`EVENER_TRUST_ALL_MARKETPLACES=1` exists but is **off** by default and logs a single startup warning when on. Documented as "for ephemeral sandboxed environments where you have already audited the project."
 
 ## 8. Error Contracts
 
@@ -750,7 +750,7 @@ internal/plugins/testdata/
 
 ## 10. Testing Strategy
 
-TDD: every test in this section is written before the corresponding production code. No mocked filesystem; every test uses `t.TempDir()`. Real `git` binary on PATH; tests are gated with `testing.Short()` skipping the slow ones and an env-var (`SERF_LIVE_NET_TESTS`) gating any test that touches a real remote.
+TDD: every test in this section is written before the corresponding production code. No mocked filesystem; every test uses `t.TempDir()`. Real `git` binary on PATH; tests are gated with `testing.Short()` skipping the slow ones and an env-var (`EVENER_LIVE_NET_TESTS`) gating any test that touches a real remote.
 
 ### 10.1 `ParseMarketplace` — table-driven (`marketplace_test.go`)
 
@@ -864,7 +864,7 @@ Each subcommand has at least one happy path and one error path. The CLI tests co
 
 ### 10.6 End-to-end (`marketplace_e2e_test.go`)
 
-Gated on `SERF_LIVE_NET_TESTS=1`. Adds the real `obra/superpowers-marketplace` (github source), lists, updates, removes. The test is `t.Skip`ed by default to keep `go test ./...` hermetic.
+Gated on `EVENER_LIVE_NET_TESTS=1`. Adds the real `obra/superpowers-marketplace` (github source), lists, updates, removes. The test is `t.Skip`ed by default to keep `go test ./...` hermetic.
 
 ### 10.7 Conventions
 
@@ -881,13 +881,13 @@ Every exported function in §2 has at least one direct test. Every error in §8 
 
 ### 11.1 Trust prompt UX in non-interactive surfaces
 
-**Decision.** CLI `evener plugin marketplace add` and foreground `evener` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `evener-tui`, `evener-hub`, `evener serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on the top-level `evener` command (session-scoped); the `SERF_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `evener plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
+**Decision.** CLI `evener plugin marketplace add` and foreground `evener` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `evener-tui`, `evener-hub`, `evener serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on the top-level `evener` command (session-scoped); the `EVENER_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `evener plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
 
-**Rationale.** A blocking prompt inside `evener serve` would deadlock an HTTP-driven session. Refusing-until-trusted is the safe default; the env var covers ephemeral CI; the explicit `trust` subcommand covers operators who want a one-time persistent decision without an interactive run. `SERF_TRUST_ALL_MARKETPLACES=1` exists as an emergency hatch for sandboxed environments and logs a startup warning.
+**Rationale.** A blocking prompt inside `evener serve` would deadlock an HTTP-driven session. Refusing-until-trusted is the safe default; the env var covers ephemeral CI; the explicit `trust` subcommand covers operators who want a one-time persistent decision without an interactive run. `EVENER_TRUST_ALL_MARKETPLACES=1` exists as an emergency hatch for sandboxed environments and logs a startup warning.
 
 ### 11.2 Network access during tests
 
-**Decision.** Unit tests for the git-based fetchers use `file://` URLs pointing at a `t.TempDir()`-built bare repo. `git init --bare` + `git push` from a working copy in the same temp dir gives every test a deterministic, hermetic remote with no network or daemon. The git binary already speaks `file://`; no fixture process is needed. End-to-end tests that hit real remotes (github.com, gitlab.com) are gated on `SERF_LIVE_NET_TESTS=1` and `t.Skip`ed by default. `testing.Short()` additionally skips the slowest fetch tests so `go test -short ./...` stays fast.
+**Decision.** Unit tests for the git-based fetchers use `file://` URLs pointing at a `t.TempDir()`-built bare repo. `git init --bare` + `git push` from a working copy in the same temp dir gives every test a deterministic, hermetic remote with no network or daemon. The git binary already speaks `file://`; no fixture process is needed. End-to-end tests that hit real remotes (github.com, gitlab.com) are gated on `EVENER_LIVE_NET_TESTS=1` and `t.Skip`ed by default. `testing.Short()` additionally skips the slowest fetch tests so `go test -short ./...` stays fast.
 
 **Rationale.** `file://` URLs are the simplest hermetic substrate that exercises the same `git clone`/`git fetch` code paths as a real remote, with zero infrastructure. A `git daemon` subprocess works but adds startup latency and port-bind flakiness on shared CI runners. An HTTP stub is the right shape for SP3's future "marketplace.json via plain URL" feature (deferred); reusing `file://` for git operations keeps the v1 test surface tight.
 

@@ -10,5 +10,5 @@ func resolveOpenAIResponsesContinuation(flagValue string, getenv func(string) st
 	if trimmed := strings.TrimSpace(flagValue); trimmed != "" {
 		return trimmed
 	}
-	return envvars.SERFOpenAIResponsesContinuation.FromTrimmed(getenv)
+	return envvars.EVENEROpenAIResponsesContinuation.FromTrimmed(getenv)
 }

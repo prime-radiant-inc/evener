@@ -579,7 +579,7 @@ A single advisory file lock at `<RegistryPath>.lock` serializes every mutating o
 
 Implementation: `golang.org/x/sys/unix` flock on POSIX, `LockFileEx` on Windows. We already have a precedent in the codebase if the existing `.evener/` session lock pattern is reused; otherwise add `github.com/gofrs/flock` as a dependency.
 
-Lock acquisition uses an exponential backoff up to `LockTimeout` (default 30s, configurable via `SERF_PLUGIN_LOCK_TIMEOUT_MS`). On timeout, the CLI exits 3 with `another evener plugin operation is in progress (locked: <lockpath>)`.
+Lock acquisition uses an exponential backoff up to `LockTimeout` (default 30s, configurable via `EVENER_PLUGIN_LOCK_TIMEOUT_MS`). On timeout, the CLI exits 3 with `another evener plugin operation is in progress (locked: <lockpath>)`.
 
 ### 10.2 What happens when two installs race
 

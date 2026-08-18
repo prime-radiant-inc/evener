@@ -592,7 +592,7 @@ func TestWriteConfinedToWritableRoots(t *testing.T) {
 
 // TestWriteFileReachesSessionScratch: the per-session scratch directory
 // (sandbox.SessionScratch, provisioned by EnableSandbox and exported to spawned
-// processes as $TMPDIR/$SERF_SCRATCH_DIR) must also be writable AND readable back
+// processes as $TMPDIR/$EVENER_SCRATCH_DIR) must also be writable AND readable back
 // through the file tools in every enforced mode — docs/sandboxing.md documents
 // "temp only" (read-only) and "worktree + temp" (workspace-write/restricted) as
 // part of the file-tool grant, not just the kernel-wrapped spawned-process layer.

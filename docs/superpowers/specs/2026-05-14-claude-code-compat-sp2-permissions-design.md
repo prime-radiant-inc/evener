@@ -90,7 +90,7 @@ The unexported `parsedRule` struct stores `(rule Rule, source string)` so decisi
 
 ```go
 // AskFallback dictates what Evaluate returns when a rule yields "ask" on a
-// surface that has no human (evener -p, serfeval, hub batch). Surfaces opt in
+// surface that has no human (evener -p, evenereval, hub batch). Surfaces opt in
 // to one of these at session construction.
 type AskFallback int
 
@@ -412,7 +412,7 @@ Default for `PermissionAskFallback` per surface:
 | `evener` non-interactive (`-p`, stdin) | `AskFallbackDeny`        |
 | `evener-tui`                           | `AskFallbackInteractive` |
 | `evener-hub` (web)                     | `AskFallbackInteractive` |
-| `serfeval`                           | `AskFallbackDeny`        |
+| `evenereval`                           | `AskFallbackDeny`        |
 | Subagents                            | inherit from parent      |
 
 Each entry-point chooses at session construction. SP2 ships the type and the default; SP8 wires the surface logic.
@@ -565,7 +565,7 @@ Cases:
 
 - **TTY-attached `evener` and `evener-tui`**: an interactive prompt. `evener` prompts on stdin/stderr; `evener-tui` opens a dialog overlay. The `PermissionRequest` hook fires *before* the prompt so a hook can short-circuit ("auto-approve all calls in this CI run").
 - **`evener-hub`**: enqueues a permission request in the session's event stream (`EventPermissionRequest`) and *blocks the tool call* on a `RespondToPermission(sessionID, callID, decision)` API call. Until the API returns, the call hangs. A timeout (default 60s, configurable per-session) collapses to the `AskFallback` value — `AskFallbackDeny` for hub.
-- **`evener -p`, `serfeval`**: no human. `AskFallbackDeny` is the default. Documented in `--help`.
+- **`evener -p`, `evenereval`**: no human. `AskFallbackDeny` is the default. Documented in `--help`.
 
 **Why this and not "always prompt on stdin"?** Hub is multi-user and async; blocking on stdin breaks it. Eval runs are batched; prompts deadlock them. Letting each surface declare its policy keeps the matcher pure.
 

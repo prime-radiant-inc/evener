@@ -31,7 +31,7 @@ OpenAI-compatible Chat Completions endpoint at `/v1/chat/completions`.
    Ollama is always registered as an addressable provider, but it never
    becomes Evener's silent default — you must address it explicitly with a
    provider-qualified model such as `--model ollama/llama3.1:8b` or
-   `SERF_MODEL=ollama/llama3.1:8b`.
+   `EVENER_MODEL=ollama/llama3.1:8b`.
 
 ## How it works
 

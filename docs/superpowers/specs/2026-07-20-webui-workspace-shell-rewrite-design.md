@@ -242,7 +242,7 @@ re-generated to the new brand tokens.
    immutable cache headers (hashing replaces the `?v=mtime` scheme). Dev mode: the Vite dev
    server proxies `/rpc` (ws), `/api`, `/auth`, `/doc`, and image routes to the hub — cookies are
    port-agnostic on localhost, so the capability-token flow works through the proxy. No Go-side
-   dev proxy; `SERF_HUB_ASSETS_DIR` dies with the old assets.
+   dev proxy; `EVENER_HUB_ASSETS_DIR` dies with the old assets.
 3. Tree-change push: broadcast an empty `evener/tree/changed` notification on roster refresh
    deltas, past-index changes, archive/favorite/rename/project-delete mutations. Client refetches
    `/api/tree` on it (debounced). This kills the sidebar poll without moving the tree off REST.
@@ -280,7 +280,7 @@ Delete: `cmd/evener-hub/templates/` (all), `cmd/evener-hub/assets/*.js` (all, in
 htmx/marked), `assets/style.css`, `cmd/evener-hub/jstest/`, the htmx fragment routes
 (`/_partials/*`), the `/s/{id}/send|steer|queue|drain-as-steer|promote-queued|cancel-queued`
 form-POST handlers (browser uses AppWire; `/api/sessions/{ref}/send` stays for the TUI), the
-inline-script CSP exemption, `SERF_HUB_ASSETS_DIR`, and every `web_*.go` block that existed only
+inline-script CSP exemption, `EVENER_HUB_ASSETS_DIR`, and every `web_*.go` block that existed only
 to render or serve the above. Update `docs/evener-hub-web-routing.md`, `cmd/evener-hub/README.md`,
 `docs/web-ui/*` to describe the new world. `git grep htmx` returns nothing when this lands.
 
@@ -305,7 +305,7 @@ Net: the web layer shrinks by roughly a third while gaining panes, types, and CI
 ## 13. Milestones (plan input)
 
 - **M0 foundation:** scaffold, codegen + drift test, make/CI wiring, embed + dev proxy, hello-app
-  served by hub behind `SERF_HUB_DEV_WEB`.
+  served by hub behind `EVENER_HUB_DEV_WEB`.
 - **M1 protocol core:** client.ts, reducer.ts, stores, golden fixtures, reconnect/self-heal.
 - **M2 style guide + widgets:** tokens, both themes, widget library, `/dev/widgets` gallery,
   design-system.md v2. (frontend-design skill pass.)

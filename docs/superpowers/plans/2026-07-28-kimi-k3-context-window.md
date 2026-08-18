@@ -24,7 +24,7 @@
 - Modify: `agent/provider/resolve_test.go`
 - Modify: `llm/model_catalog_test.go`
 - Modify: `cmd/evener-hub/app_models_test.go`
-- Modify: `llm/data/serf_model_catalog_overrides.json`
+- Modify: `llm/data/evener_model_catalog_overrides.json`
 - Modify: `agent/provider/profile.go`
 - Modify: `cmd/evener-hub/web_spawn.go`
 

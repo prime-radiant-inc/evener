@@ -99,7 +99,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Every project in `archived_projects[]` ships as a session-less stub on `/api/tree` (`sessions:null`, `session_count:N`) — the archive is unbounded, so its sessions never ride the main snapshot; the sidebar lazy-loads them on expand (§11) (`cmd/evener-hub/web_api_tree.go:97-104`)
 
 ### 2.5 Test Runs
-- [ ] A project is `IsTestRun` when it has ≥1 session and EVERY session in it has `Origin=="test"` (i.e. `SERF_SESSION_ORIGIN=test`) (`cmd/evener-hub/internal/hubcore/tree.go:711`, doc at `tree.go:55-59`)
+- [ ] A project is `IsTestRun` when it has ≥1 session and EVERY session in it has `Origin=="test"` (i.e. `EVENER_SESSION_ORIGIN=test`) (`cmd/evener-hub/internal/hubcore/tree.go:711`, doc at `tree.go:55-59`)
 - [ ] Bucket-routing precedence is decided in the HTTP HANDLER, not in `hubcore`: `IsTestRun` wins over `IsArchived` — a project that is both gets routed to `test_runs[]`, never to `archived_projects[]`. This precedence rule lives entirely in `web_api_tree.go`, not in `BuildTreeAtWithProjects` (`cmd/evener-hub/web_api_tree.go:78-113`, comment at `web_api_tree.go:78-84`)
 - [ ] Because of that precedence check, `test_runs[]`'s ordering is two CONCATENATED recency-sorted runs — every test-run project sourced from `tree.Projects` (active, recency-desc) followed by every test-run project sourced from `tree.ArchivedProjects` (recency-desc) — not one global recency sort across the bucket (`cmd/evener-hub/web_api_tree.go:85-92`)
 - [ ] A test-run project's own `is_archived` flag carries through unchanged regardless of which bucket it lands in, so its ⋯ menu still correctly offers "Unarchive" if it also happens to be archived (`cmd/evener-hub/assets/sidebar.js:282-289`)
