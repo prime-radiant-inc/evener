@@ -82,12 +82,12 @@ test("the local-path field browses real directories and sends the picked one", a
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  fake.on("serf/paths/complete", (params) => {
+  fake.on("evener/paths/complete", (params) => {
     // Directories only, and the prefix goes over the wire verbatim.
     expect(params).toEqual({ prefix: "", includeFiles: false });
     return { data: ["/opt/marketplaces"] };
   });
-  fake.on("serf/marketplace/add", (params) => {
+  fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "", source: { kind: "directory", path: "/opt/marketplaces" } });
     return { marketplaces: [] };
   });
@@ -112,7 +112,7 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  fake.on("serf/marketplace/add", (params) => {
+  fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "", source: { kind: "github", repo: "acme/plugins" } });
     return { marketplaces: [MARKETPLACE_A] };
   });
@@ -129,7 +129,7 @@ test("a non-empty name is appended to the success toast and sent in the payload"
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  fake.on("serf/marketplace/add", (params) => {
+  fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "my-name", source: { kind: "url", url: "https://example.com/x.git" } });
     return { marketplaces: [] };
   });
@@ -147,7 +147,7 @@ test("a failed add toasts failure and keeps the form open", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
-  fake.on("serf/marketplace/add", () => {
+  fake.on("evener/marketplace/add", () => {
     throw new Error("boom");
   });
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
@@ -165,7 +165,7 @@ test("Cancel closes the form without calling addMarketplace", async () => {
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [] });
   const addSpy = vi.fn();
-  fake.on("serf/marketplace/add", addSpy);
+  fake.on("evener/marketplace/add", addSpy);
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -177,7 +177,7 @@ test("Refresh calls refreshMarketplace and toasts success", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("serf/marketplace/refresh", (params) => {
+  fake.on("evener/marketplace/refresh", (params) => {
     expect(params).toEqual({ name: "acme-plugins" });
     return { marketplaces: [MARKETPLACE_A] };
   });
@@ -192,9 +192,9 @@ test("Refresh on an expanded marketplace also re-browses it (the cache the refre
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("serf/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
+  fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
   const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [] }));
-  fake.on("serf/marketplace/browse", browseSpy);
+  fake.on("evener/marketplace/browse", browseSpy);
   render(<MarketplacesSection expandedMarketplaces={new Set(["acme-plugins"])} />);
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(browseSpy).toHaveBeenCalledWith({ name: "acme-plugins" }));
@@ -206,7 +206,7 @@ test("Refresh disables its own button while the RPC is in flight, and re-enables
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   let resolveRefresh: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
   fake.on(
-    "serf/marketplace/refresh",
+    "evener/marketplace/refresh",
     () =>
       new Promise((resolve) => {
         resolveRefresh = resolve;
@@ -230,7 +230,7 @@ test("Refresh only disables the clicked row's own button, not other rows'", asyn
     lastUpdated: 1,
   };
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] });
-  fake.on("serf/marketplace/refresh", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  fake.on("evener/marketplace/refresh", () => new Promise(() => {})); // never resolves - observe mid-flight only
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
   const buttons = screen.getAllByRole("button", { name: "Refresh" });
   await user.click(buttons[0]!);
@@ -242,7 +242,7 @@ test("a failed refresh re-enables the button too", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("serf/marketplace/refresh", () => {
+  fake.on("evener/marketplace/refresh", () => {
     throw new Error("boom");
   });
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
@@ -255,7 +255,7 @@ test("Remove opens a confirm dialog; confirming removes and toasts success", asy
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
-  fake.on("serf/marketplace/remove", (params) => {
+  fake.on("evener/marketplace/remove", (params) => {
     expect(params).toEqual({ name: "acme-plugins" });
     return { marketplaces: [] };
   });
@@ -274,7 +274,7 @@ test("cancelling the remove confirm does not call removeMarketplace", async () =
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   const removeSpy = vi.fn();
-  fake.on("serf/marketplace/remove", removeSpy);
+  fake.on("evener/marketplace/remove", removeSpy);
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -287,7 +287,7 @@ test("the confirm dialog's buttons disable while removal is in flight, and it st
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
   let resolveRemove: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
   fake.on(
-    "serf/marketplace/remove",
+    "evener/marketplace/remove",
     () =>
       new Promise((resolve) => {
         resolveRemove = resolve;

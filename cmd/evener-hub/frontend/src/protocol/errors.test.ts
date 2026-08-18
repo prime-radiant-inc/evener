@@ -15,7 +15,7 @@ import {
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");
-  expect(errorText(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+  expect(errorText(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
     "turn t1 is active",
   );
   expect(errorText("plain string")).toBe("plain string");
@@ -23,13 +23,13 @@ test("errorText prefers an Error's message and stringifies anything else", () =>
 });
 
 test("isHubLaunchError matches only a WireError carrying the hubLaunch discriminator", () => {
-  expect(isHubLaunchError(new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+  expect(isHubLaunchError(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
     true,
   );
   // The code alone is never the discriminator - a sibling error can share it.
-  expect(isHubLaunchError(new WireError("turn t1 is active", -32014, { serfErrorInfo: "conflict" }))).toBe(false);
+  expect(isHubLaunchError(new WireError("turn t1 is active", -32014, { evenerErrorInfo: "conflict" }))).toBe(false);
   expect(isHubLaunchError(new WireError("no data at all", -32014))).toBe(false);
-  expect(isHubLaunchError(new Error("fork/exec serf: no such file"))).toBe(false);
+  expect(isHubLaunchError(new Error("fork/exec evener: no such file"))).toBe(false);
   expect(isHubLaunchError("hubLaunch")).toBe(false);
 });
 
@@ -40,9 +40,9 @@ test("sessionActionError names the resume, not the action, when the resume is wh
   expect(
     sessionActionError(
       "Couldn't change model",
-      new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" }),
+      new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }),
     ),
-  ).toBe("Couldn't start this session: serf launch-check timed out");
+  ).toBe("Couldn't start this session: evener launch-check timed out");
 });
 
 test("sessionActionError names the action for every other failure", () => {
@@ -50,13 +50,13 @@ test("sessionActionError names the action for every other failure", () => {
     "Couldn't change model: switch boom",
   );
   expect(
-    sessionActionError("Couldn't set goal", new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" })),
+    sessionActionError("Couldn't set goal", new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" })),
   ).toBe("Couldn't set goal: turn t1 is active");
 });
 
 test("sessionActionError drops the separator when the failure carries no detail", () => {
   expect(sessionActionError("Couldn't compact", new Error(""))).toBe("Couldn't compact");
-  expect(sessionActionError("Couldn't compact", new WireError("", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+  expect(sessionActionError("Couldn't compact", new WireError("", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
     "Couldn't start this session",
   );
 });
@@ -65,11 +65,11 @@ test("sessionActionError drops the separator when the failure carries no detail"
 // EmptyState's title/hint) needs the same substitution without the join, and
 // must not carry its own copy of the resume's wording.
 test("sessionActionHeadline picks the same headline sessionActionError would", () => {
-  const launch = new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  const launch = new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
   expect(sessionActionHeadline("Couldn't load tasks", launch)).toBe("Couldn't start this session");
   expect(sessionActionHeadline("Couldn't load tasks", new Error("tasks boom"))).toBe("Couldn't load tasks");
   expect(sessionActionError("Couldn't load tasks", launch)).toBe(
-    `${sessionActionHeadline("Couldn't load tasks", launch)}: serf launch-check timed out`,
+    `${sessionActionHeadline("Couldn't load tasks", launch)}: evener launch-check timed out`,
   );
 });
 
@@ -83,7 +83,7 @@ test("sessionActionHeadline picks the same headline sessionActionError would", (
 // state is ..." / "; not connected"), so the match is on that shape, not on
 // a specific class.
 test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
-  expect(friendlyErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+  expect(friendlyErrorMessage(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
     "turn t1 is active",
   );
 });
@@ -145,16 +145,16 @@ test("errorKind classifies a closed/not-yet-open socket as hub-unreachable", () 
 });
 
 test("errorKind classifies the hubLaunch WireError family as daemon-missing", () => {
-  expect(errorKind(new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+  expect(errorKind(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
     "daemon-missing",
   );
-  expect(errorKind(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
+  expect(errorKind(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
     "daemon-missing",
   );
 });
 
 test("errorKind classifies every other WireError as server", () => {
-  expect(errorKind(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe("server");
+  expect(errorKind(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe("server");
   expect(errorKind(new WireError("no data at all", -32014))).toBe("server");
 });
 
@@ -168,8 +168,8 @@ test("errorKind classifies anything else as unknown", () => {
 // the daemon-missing family - everything else passes through unchanged.
 test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy instead of the launch-check's raw text", () => {
   expect(
-    friendlyLaunchErrorMessage(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
-  ).toBe("No agent daemon responded for this project. Start one by running serf in the repo, then retry.");
+    friendlyLaunchErrorMessage(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" })),
+  ).toBe("No agent daemon responded for this project. Start one by running evener in the repo, then retry.");
 });
 
 test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message through untouched", () => {
@@ -179,34 +179,34 @@ test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message t
   expect(
     friendlyLaunchErrorMessage(
       new WireError(
-        "provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var",
+        "provider credentials missing for openai: set via evener/auth/apiKey/set or set the matching env var",
         -32014,
-        { serfErrorInfo: "hubLaunch" },
+        { evenerErrorInfo: "hubLaunch" },
       ),
     ),
-  ).toBe("provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var");
+  ).toBe("provider credentials missing for openai: set via evener/auth/apiKey/set or set the matching env var");
   expect(
     friendlyLaunchErrorMessage(
-      new WireError("model is not configured for Serf launch: openai/gpt-5.5", -32014, { serfErrorInfo: "hubLaunch" }),
+      new WireError("model is not configured for Evener launch: openai/gpt-5.5", -32014, { evenerErrorInfo: "hubLaunch" }),
     ),
-  ).toBe("model is not configured for Serf launch: openai/gpt-5.5");
+  ).toBe("model is not configured for Evener launch: openai/gpt-5.5");
   expect(
     friendlyLaunchErrorMessage(
-      new WireError("model provider is not reported by the Serf launch harness: openai", -32014, {
-        serfErrorInfo: "hubLaunch",
+      new WireError("model provider is not reported by the Evener launch harness: openai", -32014, {
+        evenerErrorInfo: "hubLaunch",
       }),
     ),
-  ).toBe("model provider is not reported by the Serf launch harness: openai");
+  ).toBe("model provider is not reported by the Evener launch harness: openai");
 });
 
 test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the guidance copy", () => {
   for (const raw of [
-    "serf launch-check timed out",
-    "serf launch-check canceled",
-    "fork/exec serf: no such file or directory",
+    "evener launch-check timed out",
+    "evener launch-check canceled",
+    "fork/exec evener: no such file or directory",
   ]) {
-    expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
-      "No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
+    expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
+      "No agent daemon responded for this project. Start one by running evener in the repo, then retry.",
     );
   }
 });
@@ -214,22 +214,22 @@ test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the gui
 test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub propagates it on purpose)", () => {
   // Mirrors cmd/evener-hub/app_rpc_test.go's stderr-propagation fixture: a
   // daemon that SPAWNED and crashed carries its diagnosis in the message,
-  // and 'run serf in the repo' would reproduce the same crash silently.
+  // and 'run evener in the repo' would reproduce the same crash silently.
   const stderr =
-    'daemon spawn failed: process exited before rendezvous: exit status 1: serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/x": lstat /Users: no such file or directory';
-  expect(friendlyLaunchErrorMessage(new WireError(stderr, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(stderr);
+    'daemon spawn failed: process exited before rendezvous: exit status 1: evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/x": lstat /Users: no such file or directory';
+  expect(friendlyLaunchErrorMessage(new WireError(stderr, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(stderr);
   expect(
-    friendlyLaunchErrorMessage(new WireError("serf launch-check failed: boom", -32014, { serfErrorInfo: "hubLaunch" })),
-  ).toBe("serf launch-check failed: boom");
+    friendlyLaunchErrorMessage(new WireError("evener launch-check failed: boom", -32014, { evenerErrorInfo: "hubLaunch" })),
+  ).toBe("evener launch-check failed: boom");
 });
 
 test("friendlyLaunchErrorMessage passes wrapped and resume-advice messages through", () => {
   const wrapped =
-    "session s1 is still held by live daemon pid 42. Stop it and resume again. Replacement spawn failed: provider credentials missing for openai: set via serf/auth/apiKey/set or set the matching env var";
-  expect(friendlyLaunchErrorMessage(new WireError(wrapped, -32014, { serfErrorInfo: "hubLaunch" }))).toBe(wrapped);
+    "session s1 is still held by live daemon pid 42. Stop it and resume again. Replacement spawn failed: provider credentials missing for openai: set via evener/auth/apiKey/set or set the matching env var";
+  expect(friendlyLaunchErrorMessage(new WireError(wrapped, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(wrapped);
   expect(
     friendlyLaunchErrorMessage(
-      new WireError("codex launch not configured: src1", -32014, { serfErrorInfo: "hubLaunch" }),
+      new WireError("codex launch not configured: src1", -32014, { evenerErrorInfo: "hubLaunch" }),
     ),
   ).toBe("codex launch not configured: src1");
 });
@@ -241,7 +241,7 @@ test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed 
 });
 
 test("friendlyLaunchErrorMessage keeps every other WireError's own message untouched", () => {
-  expect(friendlyLaunchErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+  expect(friendlyLaunchErrorMessage(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
     "turn t1 is active",
   );
 });

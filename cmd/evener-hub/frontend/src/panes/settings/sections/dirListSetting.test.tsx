@@ -48,7 +48,7 @@ describe("PathListEditor", () => {
       label: "Plugin directories",
       addLabel: "New directory",
       kind: "dir" as const,
-      items: ["/opt/plugins", "/home/user/.serf/plugins"],
+      items: ["/opt/plugins", "/home/user/.evener/plugins"],
       onAdd: vi.fn(async () => ({ ok: true }) as const),
       onRemove: vi.fn(),
       complete: vi.fn(async () => []),
@@ -63,7 +63,7 @@ describe("PathListEditor", () => {
     render(<PathListEditor {...baseProps()} />);
     expect(screen.getByRole("list", { name: "Plugin directories" })).toBeTruthy();
     expect(screen.getByText("/opt/plugins")).toBeTruthy();
-    expect(screen.getByText("/home/user/.serf/plugins")).toBeTruthy();
+    expect(screen.getByText("/home/user/.evener/plugins")).toBeTruthy();
   });
 
   test("renders the empty message and no rows when items is empty", () => {
@@ -146,11 +146,11 @@ describe("PathListEditor", () => {
   test("Enter on a directory row descends without submitting the add row", async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn(async () => ({ ok: true }) as const);
-    const complete = vi.fn(async () => ["/opt/plugins/serf-lint"]);
+    const complete = vi.fn(async () => ["/opt/plugins/evener-lint"]);
     render(<PathListEditor {...baseProps({ onAdd, complete })} />);
     await user.click(picker());
     await screen.findByRole("combobox", { name: "Path" });
-    await screen.findByRole("option", { name: /serf-lint/ });
+    await screen.findByRole("option", { name: /evener-lint/ });
 
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
@@ -183,10 +183,10 @@ describe("PathListEditor", () => {
 
   test("kind:dir browses directories only", async () => {
     const user = userEvent.setup();
-    const complete = vi.fn(async () => ["/opt/plugins/serf-lint"]);
+    const complete = vi.fn(async () => ["/opt/plugins/evener-lint"]);
     render(<PathListEditor {...baseProps({ kind: "dir", complete })} />);
     await user.click(picker());
-    expect(await screen.findByRole("option", { name: /serf-lint/ })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: /evener-lint/ })).toBeTruthy();
     expect(complete).toHaveBeenCalledWith("", false);
   });
 
@@ -206,28 +206,28 @@ describe("PathListEditor", () => {
 describe("DirListSetting", () => {
   test("shows a loading state before the launch layer resolves", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => new Promise(() => {}));
-    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories serf scans." />);
+    fake.on("evener/launch/getLayer", () => new Promise(() => {}));
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories evener scans." />);
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   });
 
   test("renders the label as a heading and the copy as help text", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     render(
       <DirListSetting
         wireField="pluginDirs"
         label="Plugin directories"
-        copy="Directories serf scans for plugins at launch."
+        copy="Directories evener scans for plugins at launch."
       />,
     );
     expect(await screen.findByText("Plugin directories")).toBeTruthy();
-    expect(screen.getByText("Directories serf scans for plugins at launch.")).toBeTruthy();
+    expect(screen.getByText("Directories evener scans for plugins at launch.")).toBeTruthy();
   });
 
   test("renders the wireField's entries from the fetched launch layer", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", (params) => {
+    fake.on("evener/launch/getLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global" });
       return { pluginDirs: ["/opt/plugins"], skillsDirs: ["/opt/skills"] };
     });
@@ -238,35 +238,35 @@ describe("DirListSetting", () => {
 
   test("shows a count header that pluralizes N entries", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/more"] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/more"] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     expect(await screen.findByText("2 entries")).toBeTruthy();
   });
 
   test("shows a singular count for exactly one entry", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     expect(await screen.findByText("1 entry")).toBeTruthy();
   });
 
   test("shows a 0 entries count when the list is empty", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     expect(await screen.findByText("0 entries")).toBeTruthy();
   });
 
   test("does not show a count while the launch layer is still loading", () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => new Promise(() => {}));
+    fake.on("evener/launch/getLayer", () => new Promise(() => {}));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
   });
 
   test("does not show a count when the launch layer fails to load", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => {
+    fake.on("evener/launch/getLayer", () => {
       throw new Error("boom");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
@@ -276,7 +276,7 @@ describe("DirListSetting", () => {
 
   test("shows a failed-to-load error when the launch layer fetch rejects", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => {
+    fake.on("evener/launch/getLayer", () => {
       throw new Error("network down");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
@@ -287,16 +287,16 @@ describe("DirListSetting", () => {
   test("adding a valid path validates then saves the layer with the new entry appended", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
-    fake.on("serf/path/validate", (params) => {
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+    fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt/new", kind: "dir" });
       return { path: "/opt/new", valid: true };
     });
-    fake.on("serf/launch/setLayer", (params) => {
+    fake.on("evener/launch/setLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: { pluginDirs: ["/opt/plugins", "/opt/new"] } });
       return { effective: {}, layers: {}, provenance: {} };
     });
-    fake.on("serf/paths/complete", () => ({ data: [] }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("/opt/plugins");
     await typePath(user, "/opt/new");
@@ -304,11 +304,11 @@ describe("DirListSetting", () => {
     expect(await screen.findByText("/opt/new")).toBeTruthy();
   });
 
-  test("the add row's picker browses via serf/paths/complete, directories only", async () => {
+  test("the add row's picker browses via evener/paths/complete, directories only", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
-    fake.on("serf/paths/complete", (params) => {
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "", includeFiles: false });
       return { data: ["/opt/plugins"] };
     });
@@ -321,11 +321,11 @@ describe("DirListSetting", () => {
   test("adding an invalid path shows the server's error inline and never calls setLayer", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
-    fake.on("serf/path/validate", () => ({ path: "/nope", valid: false, error: "path does not exist" }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("evener/path/validate", () => ({ path: "/nope", valid: false, error: "path does not exist" }));
     const setLayer = vi.fn();
-    fake.on("serf/launch/setLayer", setLayer);
-    fake.on("serf/paths/complete", () => ({ data: [] }));
+    fake.on("evener/launch/setLayer", setLayer);
+    fake.on("evener/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("No plugin directories. Add one below.");
     await typePath(user, "/nope");
@@ -337,8 +337,8 @@ describe("DirListSetting", () => {
   test("confirming a row removal saves the layer with that entry filtered out", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/keep"] }));
-    fake.on("serf/launch/setLayer", (params) => {
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/keep"] }));
+    fake.on("evener/launch/setLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: { pluginDirs: ["/opt/keep"] } });
       return { effective: {}, layers: {}, provenance: {} };
     });
@@ -353,8 +353,8 @@ describe("DirListSetting", () => {
   test("a failed removal shows an error toast and leaves the entry in place", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
-    fake.on("serf/launch/setLayer", () => {
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+    fake.on("evener/launch/setLayer", () => {
       throw new Error("disk full");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);

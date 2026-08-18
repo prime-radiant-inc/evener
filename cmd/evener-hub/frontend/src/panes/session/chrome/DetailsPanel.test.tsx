@@ -280,21 +280,21 @@ test("the status row names the session's current state", async () => {
 
 test("session id, cwd, and branch each render when the wire carried them", async () => {
   await openPanel(
-    testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/serf", gitBranch: "details-empty" }),
+    testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/evener", gitBranch: "details-empty" }),
   );
   expect(sessionRowValue("session id")).toContain("033uaztQj6XPP6eF7pS0OW");
-  expect(screen.getByTestId("session-details-cwd").textContent).toContain("/Users/jesse/serf");
+  expect(screen.getByTestId("session-details-cwd").textContent).toContain("/Users/jesse/evener");
   expect(screen.getByTestId("session-details-branch").textContent).toContain("details-empty");
 });
 
 test("a project path distinct from the cwd gets its own row (a linked worktree)", async () => {
-  await openPanel(testModel({ cwd: "/Users/jesse/serf/.claude/worktrees/x", projectPath: "/Users/jesse/serf" }));
-  expect(screen.getByTestId("session-details-project").textContent).toContain("/Users/jesse/serf");
+  await openPanel(testModel({ cwd: "/Users/jesse/evener/.claude/worktrees/x", projectPath: "/Users/jesse/evener" }));
+  expect(screen.getByTestId("session-details-project").textContent).toContain("/Users/jesse/evener");
 });
 
 // Repeating the cwd verbatim under a second label teaches a reader nothing.
 test("no project row when the project path is just the cwd again", async () => {
-  await openPanel(testModel({ cwd: "/Users/jesse/serf", projectPath: "/Users/jesse/serf" }));
+  await openPanel(testModel({ cwd: "/Users/jesse/evener", projectPath: "/Users/jesse/evener" }));
   expect(screen.queryByTestId("session-details-project")).toBeNull();
 });
 

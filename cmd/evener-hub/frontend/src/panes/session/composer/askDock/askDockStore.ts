@@ -168,7 +168,7 @@ export function nextUnansweredKey(
 // advancesOnAnswer is the one-click-resolution rule for auto-advance: a
 // single-select option pick, a skip, or a fallback is a COMPLETE answer the
 // moment it lands, so the dock moves on. Multi-select checkboxes, free
-// text, and a serf-decide leaning are all mid-edit states (more typing or
+// text, and a evener-decide leaning are all mid-edit states (more typing or
 // more boxes may follow), so they never move the reader mid-gesture.
 function advancesOnAnswer(questionMultiSelect: boolean, resolution: AskResolution): boolean {
   if (resolution.kind === "skip" || resolution.kind === "fallback") return true;

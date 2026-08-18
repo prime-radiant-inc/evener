@@ -15,7 +15,7 @@ afterEach(() => {
 
 test("refresh populates catalog entries and tolerates failure", async () => {
   const fake = new FakeClient();
-  fake.on("serf/command/list", () => ({
+  fake.on("evener/command/list", () => ({
     commands: [
       { name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" },
       { name: "standup", description: "user cmd", source: "user" },
@@ -27,7 +27,7 @@ test("refresh populates catalog entries and tolerates failure", async () => {
   expect(useCommandCatalog.getState().loaded).toBe(true);
 
   const failing = new FakeClient();
-  failing.on("serf/command/list", () => Promise.reject(new Error("down")));
+  failing.on("evener/command/list", () => Promise.reject(new Error("down")));
   connectionStore.setState({ client: failing as never });
   await useCommandCatalog.getState().refresh();
   expect(useCommandCatalog.getState().commands).toEqual([]);

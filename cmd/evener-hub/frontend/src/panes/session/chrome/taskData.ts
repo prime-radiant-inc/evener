@@ -6,7 +6,7 @@
 // agent/task/task_store.go's Task struct (json tags: id/type/description/
 // prompt/status/depends_on/notes/reasoning_effort/insert/created_at/
 // updated_at/completed_at), always non-nil-but-possibly-empty for any
-// source that wires SetTasksFunc (every real serf daemon session does,
+// source that wires SetTasksFunc (every real evener daemon session does,
 // cmd/evener/serve.go:596) and unreachable (a rejected request, not a null
 // response) for a source that never supports tasks at all (codex_source.go:
 // 405-407). `data` is `null`/`undefined` only when no tasksFn is registered

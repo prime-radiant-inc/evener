@@ -40,8 +40,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -259,7 +259,7 @@ test("a failed auto-resume names the resume, not the page fetch", async () => {
     await threadsStore.getState().ensureThread("ref_a");
   });
   fake.on("thread/turns/list", () =>
-    Promise.reject(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
+    Promise.reject(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" })),
   );
 
   const { result } = renderHook(() => useTranscript("ref_a"));
@@ -268,7 +268,7 @@ test("a failed auto-resume names the resume, not the page fetch", async () => {
     await flushUntil(() => result.current.olderError !== null);
   });
 
-  expect(result.current.olderError).toBe("Couldn't start this session: serf launch-check timed out");
+  expect(result.current.olderError).toBe("Couldn't start this session: evener launch-check timed out");
 });
 
 test("a successful fetch leaves olderError null", async () => {

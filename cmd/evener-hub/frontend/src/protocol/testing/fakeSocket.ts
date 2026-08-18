@@ -11,8 +11,8 @@ import type { InitializeResponse } from "../types.gen";
 // can assert AppwireClient.connect() resolves with exactly this value
 // without duplicating the literal.
 export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
-  serverInfo: { name: "fake-serf-hub", version: "0.0.0-test" },
-  protocolVersion: "serf-appwire-v3",
+  serverInfo: { name: "fake-evener-hub", version: "0.0.0-test" },
+  protocolVersion: "evener-appwire-v3",
   sourceId: "fake-source",
   features: {
     threadList: true,

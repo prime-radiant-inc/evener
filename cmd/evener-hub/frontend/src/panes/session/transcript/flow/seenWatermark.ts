@@ -1,13 +1,13 @@
 // Per-ref "seen" watermark (kata g2ez): the id of the last turn that
 // existed the last time this session's pane was actually open, so a
 // reopened session can mark where new content begins. Same per-ref
-// localStorage precedent as composer/draft.ts (serf.composer.draft.v1.<ref>)
+// localStorage precedent as composer/draft.ts (evener.composer.draft.v1.<ref>)
 // - per-session scope, device-local persistence. Device-local is a real,
 // accepted limitation (see useSeenDivider.ts's own doc comment): a laptop
 // watermark never clears on a phone or second machine. A cross-device read
 // cursor would need to live on the daemon - a materially bigger feature,
 // out of scope here.
-const STORAGE_PREFIX = "serf.transcript.seen.v1.";
+const STORAGE_PREFIX = "evener.transcript.seen.v1.";
 
 export function seenWatermarkKey(ref: string): string {
   return `${STORAGE_PREFIX}${ref}`;

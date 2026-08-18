@@ -125,8 +125,8 @@ function readResponse(ref: string): ThreadReadResponse {
       status: { type: "idle" },
       cwd: "/tmp/project",
       cliVersion: "1.0.0",
-      source: "serf",
-      serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      source: "evener",
+      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     },
   };
 }
@@ -320,7 +320,7 @@ test("keeps the scaffold heading consistent with the registered title after rena
 
 test("mounts Tasks body and fetches after the model is hydrated", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({
+  fake.on("evener/tasks/list", () => ({
     data: [{ id: 1, type: "verify", description: "Run checks", prompt: "", status: "open" }],
   }));
   const model = testModel({ tasks: { total: 1, done: 0 } });
@@ -329,12 +329,12 @@ test("mounts Tasks body and fetches after the model is hydrated", async () => {
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
 
   expect(await screen.findByText("Run checks")).toBeTruthy();
-  expect(fake.calls.filter((call) => call.method === "serf/tasks/list")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(1);
 });
 
 test("retains Tasks rows and disclosure state across a pane remount", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: RETAINED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: RETAINED_TASKS }));
   const model = testModel({ tasks: { total: 1, done: 0 } });
   seedModel(model);
 
@@ -398,8 +398,8 @@ test("renders retained Activity rows and expanded fold state after a pane remoun
 
 test("renders daemon-gone state from the retained Tasks store result", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
-    throw new WireError("thread not found: thread_a", -32014, { serfErrorInfo: "sessionUnavailable" });
+  fake.on("evener/tasks/list", () => {
+    throw new WireError("thread not found: thread_a", -32014, { evenerErrorInfo: "sessionUnavailable" });
   });
   const model = testModel({ tasks: { total: 1, done: 0 } });
   seedModel(model);
@@ -411,8 +411,8 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
 
 test.each(["tasks", "activity"] as const)("%s pane does not install the Details clock", async (kind) => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [] }));
-  fake.on("serf/jobs/list", () => ({ data: retainedActivity() }));
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  fake.on("evener/jobs/list", () => ({ data: retainedActivity() }));
   const model = testModel({ tasks: { total: 0, done: 0 }, jobsUpdatedAt: 1 });
   seedModel(model);
   const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
@@ -470,14 +470,14 @@ test("retains Details rendering and the current clock value across a pane remoun
 test("retains deferred Activity root completion after unmount and remount", async () => {
   const fake = connectFakeClient();
   const root = deferred<{ data: unknown }>();
-  fake.on("serf/jobs/list", () => root.promise);
+  fake.on("evener/jobs/list", () => root.promise);
   const model = testModel({ jobsUpdatedAt: 1 });
   seedModel(model);
 
   const first = render(
     <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
   );
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   first.unmount();
 
   await act(async () => {
@@ -504,7 +504,7 @@ test("retains Activity continuation failure, retry, and graft across remounts", 
   const failedContinuation = deferred<{ data: unknown }>();
   const retriedContinuation = deferred<{ data: unknown }>();
   let continuationCalls = 0;
-  fake.on("serf/jobs/list", ({ continuation }) => {
+  fake.on("evener/jobs/list", ({ continuation }) => {
     if (!continuation) return root.promise;
     continuationCalls += 1;
     return continuationCalls === 1 ? failedContinuation.promise : retriedContinuation.promise;
@@ -515,7 +515,7 @@ test("retains Activity continuation failure, retry, and graft across remounts", 
   const first = render(
     <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
   );
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   first.unmount();
   await act(async () => {
     root.resolve({ data: activityRootTree() });
@@ -528,7 +528,7 @@ test("retains Activity continuation failure, retry, and graft across remounts", 
   );
   expect(await screen.findByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
   second.unmount();
 
   await act(async () => {
@@ -541,7 +541,7 @@ test("retains Activity continuation failure, retry, and graft across remounts", 
   expect(screen.getByRole("treeitem", { name: "Continue retained branch" })).toBeTruthy();
 
   await userEvent.click(screen.getByRole("button", { name: "Load more" }));
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3));
   cleanup();
   await act(async () => {
     retriedContinuation.resolve({ data: continuedActivityTree() });

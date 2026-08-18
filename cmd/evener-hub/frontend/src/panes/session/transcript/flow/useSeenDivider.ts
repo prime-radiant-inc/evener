@@ -6,7 +6,7 @@
 // deliberately left unsettled - see the kata's own comments):
 //  1. SCOPE: per-session, keyed by sessionRef - matches the existing
 //     per-ref localStorage precedent (composer/draft.ts's
-//     serf.composer.draft.v1.<ref>), not per-pane or per-device.
+//     evener.composer.draft.v1.<ref>), not per-pane or per-device.
 //  2. PERSISTENCE: localStorage, so device-local. A laptop-only watermark
 //     never clears on a phone or second machine - a real limitation, but a
 //     cross-device read cursor would need to live on the daemon (wire

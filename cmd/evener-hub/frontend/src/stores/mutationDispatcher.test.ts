@@ -222,7 +222,7 @@ describe("MutationDispatcher", () => {
     await firstDispatch;
     lateUnknown.reject(
       new WireError("journal unavailable", -32014, {
-        serfErrorInfo: "mutationOutcomeUnknown",
+        evenerErrorInfo: "mutationOutcomeUnknown",
         clientMutationId: record.clientMutationId,
         mutationOutcome: "unknown",
         retryDisposition: "blocked",
@@ -243,7 +243,7 @@ describe("MutationDispatcher", () => {
     const client = new FakeClient();
     client.on("turn/queue", (params) => {
       throw new WireError("journal unavailable", -32014, {
-        serfErrorInfo: "mutationOutcomeUnknown",
+        evenerErrorInfo: "mutationOutcomeUnknown",
         clientMutationId: params.clientMutationId,
         mutationOutcome: "unknown",
         retryDisposition: "blocked",
@@ -277,7 +277,7 @@ describe("MutationDispatcher", () => {
     const client = new FakeClient();
     client.on("turn/queue", (params) => {
       if (params.clientMutationId === first.clientMutationId) {
-        throw new WireError("expectedTurnId is required", -32602, { serfErrorInfo: "invalidParams" });
+        throw new WireError("expectedTurnId is required", -32602, { evenerErrorInfo: "invalidParams" });
       }
       return { receipt: receipt(params.clientMutationId) };
     });
@@ -300,7 +300,7 @@ describe("MutationDispatcher", () => {
     const record = await outbox.enqueueIntent(queueIntent("ref-a", "ambiguous"));
     const client = new FakeClient();
     client.on("turn/queue", () => {
-      throw new WireError("relay hiccup", -32011, { serfErrorInfo: "unavailable" });
+      throw new WireError("relay hiccup", -32011, { evenerErrorInfo: "unavailable" });
     });
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
 
@@ -329,7 +329,7 @@ describe("MutationDispatcher", () => {
       if (failFirstAttempt) {
         failFirstAttempt = false;
         throw new WireError("journal unavailable", -32014, {
-          serfErrorInfo: "mutationOutcomeUnknown",
+          evenerErrorInfo: "mutationOutcomeUnknown",
           clientMutationId: params.clientMutationId,
           mutationOutcome: "unknown",
           retryDisposition: "blocked",
@@ -392,7 +392,7 @@ describe("MutationDispatcher", () => {
     client.on("turn/queue", (params) => {
       if (params.clientMutationId === first.clientMutationId) {
         throw new WireError("turn changed", -32013, {
-          serfErrorInfo: "conflict",
+          evenerErrorInfo: "conflict",
           clientMutationId: params.clientMutationId,
           mutationOutcome: "notAccepted",
           retryDisposition: "none",
@@ -408,7 +408,7 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
 
-  // Kata 2f41. The daemon sends BOTH a category (serfErrorInfo: "conflict") and
+  // Kata 2f41. The daemon sends BOTH a category (evenerErrorInfo: "conflict") and
   // its own sentence ("turn is not active"). Showing the category tells the
   // user the class of failure instead of the failure, so the message wins.
   test("a rejection records the daemon's message, not its error category", async () => {
@@ -418,7 +418,7 @@ describe("MutationDispatcher", () => {
     const client = new FakeClient();
     client.on("turn/queue", (params) => {
       throw new WireError("turn is not active", -32013, {
-        serfErrorInfo: "conflict",
+        evenerErrorInfo: "conflict",
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
       });
@@ -440,7 +440,7 @@ describe("MutationDispatcher", () => {
     const client = new FakeClient();
     client.on("turn/queue", () => {
       throw new WireError("turn changed", -32013, {
-        serfErrorInfo: "conflict",
+        evenerErrorInfo: "conflict",
         mutationOutcome: "notAccepted",
         retryDisposition: "none",
       });

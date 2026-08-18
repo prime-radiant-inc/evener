@@ -55,7 +55,7 @@ describe("OAuthRedirectDialog", () => {
   test("empty (trimmed) submit silently cancels with no RPC call", async () => {
     const fake = connectFakeClient();
     const complete = vi.fn();
-    fake.on("serf/auth/login/complete", complete);
+    fake.on("evener/auth/login/complete", complete);
     const onCancel = vi.fn();
     render(
       <OAuthRedirectDialog name="work" flowId="flow-1" authUrl="https://x" onCancel={onCancel} onSuccess={() => {}} />,
@@ -67,13 +67,13 @@ describe("OAuthRedirectDialog", () => {
 
   test("submitting a redirect URL calls authLoginComplete and, on success, fetches + calls onSuccess", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/auth/login/complete", (params) => {
+    fake.on("evener/auth/login/complete", (params) => {
       expect(params).toEqual({ provider: "work", flowId: "flow-1", redirectUrl: "https://redirect?code=1" });
       return {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
     });
-    fake.on("serf/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
     const onSuccess = vi.fn();
     render(
       <>
@@ -101,7 +101,7 @@ describe("OAuthRedirectDialog", () => {
 
   test("failure shows an inline error and a 'Sign-in failed' toast, without closing", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/auth/login/complete", () => {
+    fake.on("evener/auth/login/complete", () => {
       throw new Error("expired flow");
     });
     const onSuccess = vi.fn();
@@ -178,11 +178,11 @@ describe("DeviceCodeDialog", () => {
   test("polling: authorized stops polling, fetches, toasts, and calls onSuccess", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
-    fake.on("serf/auth/device/poll", (params) => {
+    fake.on("evener/auth/device/poll", (params) => {
       expect(params).toEqual({ provider: "work", flowId: "flow-2" });
       return { state: "authorized" };
     });
-    fake.on("serf/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
     const onSuccess = vi.fn();
     render(
       <>
@@ -209,7 +209,7 @@ describe("DeviceCodeDialog", () => {
   test("polling: expired stops polling and switches to a 'Start again' action", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
-    fake.on("serf/auth/device/poll", () => ({ state: "expired" }));
+    fake.on("evener/auth/device/poll", () => ({ state: "expired" }));
     render(
       <DeviceCodeDialog
         name="work"
@@ -232,7 +232,7 @@ describe("DeviceCodeDialog", () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/auth/device/poll", () => {
+    fake.on("evener/auth/device/poll", () => {
       calls += 1;
       return { state: "pending" };
     });
@@ -263,7 +263,7 @@ describe("DeviceCodeDialog", () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/auth/device/poll", () => {
+    fake.on("evener/auth/device/poll", () => {
       calls += 1;
       throw new Error("network error");
     });
@@ -290,7 +290,7 @@ describe("DeviceCodeDialog", () => {
   test("clicking 'Start again' after expiry calls onRestart", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
-    fake.on("serf/auth/device/poll", () => ({ state: "expired" }));
+    fake.on("evener/auth/device/poll", () => ({ state: "expired" }));
     const onRestart = vi.fn();
     render(
       <DeviceCodeDialog
@@ -313,7 +313,7 @@ describe("DeviceCodeDialog", () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/auth/device/poll", () => {
+    fake.on("evener/auth/device/poll", () => {
       calls += 1;
       return { state: "pending" };
     });

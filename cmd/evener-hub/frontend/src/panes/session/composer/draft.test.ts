@@ -98,6 +98,6 @@ test("clearDraft never throws when localStorage throws", () => {
   expect(() => clearDraft("local:01AAA")).not.toThrow();
 });
 
-test("draftStorageKey namespaces by ref under the app's serf.* convention", () => {
-  expect(draftStorageKey("local:01AAA")).toBe("serf.composer.draft.v1.local:01AAA");
+test("draftStorageKey namespaces by ref under the app's evener.* convention", () => {
+  expect(draftStorageKey("local:01AAA")).toBe("evener.composer.draft.v1.local:01AAA");
 });

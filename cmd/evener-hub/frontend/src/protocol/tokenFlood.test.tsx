@@ -143,7 +143,7 @@ function floodThread(ref: string): Thread {
     status: { type: "active" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
+    source: "evener",
     // One turn holding TWO items: a settled sibling (probe-instrumented, see
     // below) and the live agentMessage item this test floods with deltas -
     // both inside the SAME turn deliberately, since reducer.ts's
@@ -180,7 +180,7 @@ function floodThread(ref: string): Thread {
         ],
       },
     ],
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_flood_settled" },
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_flood_settled" },
   };
 }
 

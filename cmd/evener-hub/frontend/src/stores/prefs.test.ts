@@ -37,13 +37,13 @@ beforeAll(() => {
 });
 
 // Every key this store reads/writes lives under this prefix - the plan's own
-// "serf.prefs.<name>" contract (docs/superpowers/plans/
+// "evener.prefs.<name>" contract (docs/superpowers/plans/
 // 2026-07-21-webui-rewrite-wave7-settings.md). enterToSend/showCost are
 // PINNED exact names (the composer and transcript read them through this
 // store), so those two get their own named contract test below rather
 // than relying only on the generic round-trip coverage every other field
 // gets.
-const KEY = (name: string) => `serf.prefs.${name}`;
+const KEY = (name: string) => `evener.prefs.${name}`;
 
 beforeEach(() => {
   localStorage.clear();
@@ -233,7 +233,7 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
   });
 });
 
-describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", () => {
+describe("pinned key contract: evener.prefs.enterToSend / evener.prefs.showCost", () => {
   // This is a live contract reachable from Settings today, not a
   // hypothetical one - Settings -> Display's own setEnterToSend/setShowCost
   // write both keys, and Composer.tsx reads enterToSend from this same
@@ -245,18 +245,18 @@ describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", ()
   // encoding to '1'/'0' (cross-wave contract break)") fixed readBool/
   // writeBool back from a brief "true"/"false" regression. Never repeat it -
   // both the key NAME and the encoding must stay exactly as they are.
-  test("setEnterToSend writes the literal key serf.prefs.enterToSend with '1'/'0' encoding", () => {
+  test("setEnterToSend writes the literal key evener.prefs.enterToSend with '1'/'0' encoding", () => {
     prefsStore.getState().setEnterToSend(true);
-    expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("1");
+    expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("1");
     prefsStore.getState().setEnterToSend(false);
-    expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("0");
+    expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("0");
   });
 
-  test("setShowCost writes the literal key serf.prefs.showCost with '1'/'0' encoding", () => {
+  test("setShowCost writes the literal key evener.prefs.showCost with '1'/'0' encoding", () => {
     prefsStore.getState().setShowCost(false);
-    expect(localStorage.getItem("serf.prefs.showCost")).toBe("0");
+    expect(localStorage.getItem("evener.prefs.showCost")).toBe("0");
     prefsStore.getState().setShowCost(true);
-    expect(localStorage.getItem("serf.prefs.showCost")).toBe("1");
+    expect(localStorage.getItem("evener.prefs.showCost")).toBe("1");
   });
 
   // The pin covers the key NAME and the value ENCODING. A browser that has
@@ -264,10 +264,10 @@ describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", ()
   // for an UNSET key happens to be - so a default change can never silently
   // flip an existing user's preference.
   test("a stored value wins over the default in both directions", () => {
-    localStorage.setItem("serf.prefs.showCost", "1");
+    localStorage.setItem("evener.prefs.showCost", "1");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().showCost).toBe(true);
-    localStorage.setItem("serf.prefs.showCost", "0");
+    localStorage.setItem("evener.prefs.showCost", "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().showCost).toBe(false);
   });
@@ -391,7 +391,7 @@ describe("setPhoneDensity", () => {
   });
 });
 
-// A stale serf.prefs.sidebarMode key from before collapsed mode's removal
+// A stale evener.prefs.sidebarMode key from before collapsed mode's removal
 // (2026-07-24) must be inert: never read, never crashing the loader.
 describe("stale sidebarMode key", () => {
   test("is ignored by a fresh load", () => {
@@ -477,7 +477,7 @@ describe("setTranscriptStatus", () => {
     });
   });
 
-  test("tokenCounts persists under its own serf.prefs.transcriptTokenCounts key", () => {
+  test("tokenCounts persists under its own evener.prefs.transcriptTokenCounts key", () => {
     prefsStore.getState().setTranscriptStatus("tokenCounts", true);
     expect(localStorage.getItem(KEY("transcriptTokenCounts"))).toBe("1");
     expect(prefsStore.getState().transcript.tokenCounts).toBe(true);

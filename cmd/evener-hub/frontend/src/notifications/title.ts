@@ -2,10 +2,10 @@
 // the focused pane's title.
 //
 // The base title is the ONE honest divergence from the legacy's server-side
-// "<section> · serf hub" (floor §3.2): the SPA has panes, not server-rendered
+// "<section> · evener hub" (floor §3.2): the SPA has panes, not server-rendered
 // sections, so the base comes from the focused pane via workspaceStore +
 // paneRegistry.title() — the same threadName-backed ctx DockHost builds for a
-// pane's tab (DockHost.tsx:210). The "· serf hub" suffix is preserved, so the
+// pane's tab (DockHost.tsx:210). The "· evener hub" suffix is preserved, so the
 // shape stays exactly the legacy's, only the left-hand source differs.
 import { resolveThreadName } from "../panes/session/threadTitle";
 import { paneFor } from "../shell/paneRegistry";
@@ -13,14 +13,14 @@ import { workspaceStore } from "../shell/workspace";
 import { threadsStore } from "../stores/threads";
 import { type AttentionSummary, treeStore } from "../stores/tree";
 
-// Base title from the focused pane, or bare "serf hub" with none focused. A
+// Base title from the focused pane, or bare "evener hub" with none focused. A
 // pane whose title() throws (an unregistered type — never expected, since
 // only registered types are ever opened) degrades to the bare form rather
 // than throwing out of a store-subscription callback.
 export function baseTitle(): string {
   const { panes, focusedPaneId } = workspaceStore.getState();
   const pane = panes.find((p) => p.id === focusedPaneId);
-  if (!pane) return "serf hub";
+  if (!pane) return "evener hub";
   try {
     // The same fallback chain the dockview tab and in-pane header use
     // (threadTitle.ts): live thread name, else the rail's tree title —
@@ -29,9 +29,9 @@ export function baseTitle(): string {
       threadName: (ref: string) => resolveThreadName(threadsStore.getState().threads, treeStore.getState().tree, ref),
     };
     const paneTitle = paneFor(pane.type).title(pane.params, ctx);
-    return paneTitle ? `${paneTitle} · serf hub` : "serf hub";
+    return paneTitle ? `${paneTitle} · evener hub` : "evener hub";
   } catch {
-    return "serf hub";
+    return "evener hub";
   }
 }
 

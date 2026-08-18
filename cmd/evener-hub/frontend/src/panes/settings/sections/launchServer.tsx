@@ -1,4 +1,4 @@
-// Settings -> Serf launch (#9): the global launch-config layer, via the
+// Settings -> Evener launch (#9): the global launch-config layer, via the
 // schema-driven LaunchConfigForm (launchShared/). Sequential load (schema()
 // then getLayer("/","global")) into a 2-state contract - unlike project.tsx's
 // 3-state contract, a load failure has no distinct recoverable state, just a
@@ -48,7 +48,7 @@ export interface LaunchServerSectionProps {
 }
 
 /**
- * Serf launch defaults: applied to every serf spawn unless overridden by a
+ * Evener launch defaults: applied to every evener spawn unless overridden by a
  * project layer or per-launch. Loads schema()+getLayer("/","global")
  * sequentially, then best-effort resolve("/") to seed the diagnostics panel
  * (failure there is swallowed - "non-fatal", matching the legacy exactly).
@@ -60,7 +60,7 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
-  // /settings/launch-serf can mount this section before AppShell's own
+  // /settings/launch-evener can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
   // connected client (throw otherwise) - see that hook's own doc comment.
   // isCancelled guards the same "component unmounted mid-load" case the
@@ -84,9 +84,9 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
 
   return (
     <div className={CLASS.root}>
-      <h2>Serf launch defaults</h2>
+      <h2>Evener launch defaults</h2>
       <p className={CLASS.help}>
-        These values are applied to every serf spawn unless overridden by a project layer or per-launch.
+        These values are applied to every evener spawn unless overridden by a project layer or per-launch.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading launch settings…</p>}
       {load.phase === "error" && <p className={CLASS.error}>Failed to load launch settings. {load.message}</p>}

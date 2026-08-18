@@ -1,6 +1,6 @@
 // Settings -> In-repo config (#11): resolve() a working directory's
-// .serf/launch.toml and let the user trust it before the hub will apply it
-// (parity-m7-settings.md §11). Appwire: serf/launch/{resolve,trustRepo}.
+// .evener/launch.toml and let the user trust it before the hub will apply it
+// (parity-m7-settings.md §11). Appwire: evener/launch/{resolve,trustRepo}.
 //
 // The cwd field re-resolves on blur/Enter, not per keystroke - the Input
 // widget's typed props have no onBlur/onKeyDown (only onChange, matching
@@ -120,7 +120,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
 
   return (
     <div className={CLASS.root}>
-      <h2>In-repo config (.serf/launch.toml)</h2>
+      <h2>In-repo config (.evener/launch.toml)</h2>
       <p className={CLASS.help}>
         Per-project launch config shipped inside the working directory. Hub only applies it after you confirm trust.
       </p>
@@ -157,7 +157,7 @@ function ResolvedStatus({
   if (!repo || repo.trust === "absent") {
     return (
       <p className={CLASS.note}>
-        No <code>.serf/launch.toml</code> in <code>{cwd}</code>.
+        No <code>.evener/launch.toml</code> in <code>{cwd}</code>.
       </p>
     );
   }

@@ -28,7 +28,7 @@ function appendViteDockHostAssets(): void {
 
 function retryStylesheet(): HTMLLinkElement {
   const link = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')).find((candidate) =>
-    candidate.href.includes("serf-dock-retry=1"),
+    candidate.href.includes("evener-dock-retry=1"),
   );
   if (!link) throw new Error("retry DockHost stylesheet was not appended");
   return link;
@@ -65,18 +65,18 @@ test("retry waits for a cache-busted DockHost stylesheet before evaluating JS", 
   expect(evaluatedURLs).toEqual([]);
   const stylesheet = retryStylesheet();
   const retryPreload = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')).find(
-    (link) => link.href.includes("serf-dock-retry=1"),
+    (link) => link.href.includes("evener-dock-retry=1"),
   );
   expect(retryPreload).toBeTruthy();
-  expect(stylesheet.href).toContain("serf-dock-retry=1");
+  expect(stylesheet.href).toContain("evener-dock-retry=1");
   expect(stylesheet.getAttribute("crossorigin")).toBe("");
   expect(stylesheet.getAttribute("nonce")).toBe("dock-nonce");
 
   stylesheet.dispatchEvent(new Event("load"));
   await expect(retry).resolves.toBe(DOCK_HOST_MODULE);
-  expect(evaluatedURLs).toEqual([expect.stringContaining("serf-dock-retry=1")]);
-  expect(new URL(evaluatedURLs[0]!).searchParams.get("serf-dock-retry")).toBe(
-    new URL(stylesheet.href).searchParams.get("serf-dock-retry"),
+  expect(evaluatedURLs).toEqual([expect.stringContaining("evener-dock-retry=1")]);
+  expect(new URL(evaluatedURLs[0]!).searchParams.get("evener-dock-retry")).toBe(
+    new URL(stylesheet.href).searchParams.get("evener-dock-retry"),
   );
 });
 

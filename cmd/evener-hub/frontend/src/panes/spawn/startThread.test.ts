@@ -21,7 +21,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   rename: false,
 };
 
-// A wire-true minimal Thread: only the fields startThread reads (serf.ref)
+// A wire-true minimal Thread: only the fields startThread reads (evener.ref)
 // carry meaning; the rest are representative defaults, mirroring
 // stores/threads.test.ts's own testThread helper (this project has no shared
 // test-utils module - see that file's note).
@@ -38,7 +38,7 @@ function threadWithRef(ref: string): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "local",
-    serf: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
   };
 }
 
@@ -203,7 +203,7 @@ test("passes the direct optional fields (harness/model/provider/effort/overrides
   await startThread(fake, {
     cwd: "/tmp/p",
     prompt: "go",
-    harness: "serf",
+    harness: "evener",
     modelProvider: "openai",
     model: "gpt-5",
     reasoningEffort: "high",
@@ -213,7 +213,7 @@ test("passes the direct optional fields (harness/model/provider/effort/overrides
   expect(fake.calls[0]?.params).toEqual({
     cwd: "/tmp/p",
     input: [{ type: "text", text: "go" }],
-    harness: "serf",
+    harness: "evener",
     modelProvider: "openai",
     model: "gpt-5",
     reasoningEffort: "high",

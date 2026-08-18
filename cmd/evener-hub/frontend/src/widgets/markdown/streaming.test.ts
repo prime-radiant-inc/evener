@@ -32,7 +32,7 @@ test("closes an unterminated ~~ at the end of the stream", () => {
 });
 
 test("closes an unterminated inline code span at the end of the stream", () => {
-  expect(closeOpenMarkdown("run `serf bui")).toBe("run `serf bui`");
+  expect(closeOpenMarkdown("run `evener bui")).toBe("run `evener bui`");
 });
 
 test("a double-backtick code span closes with a matching double backtick", () => {

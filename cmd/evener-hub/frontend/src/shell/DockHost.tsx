@@ -33,7 +33,7 @@ import {
 // layout. Bumping the key means such a value is simply never read again -
 // cheaper and more honest than migration code for a shape it was never tested
 // against (Jesse: "do not care about current local storage").
-const LAYOUT_STORAGE_KEY = "serf.workspace.layout.v2";
+const LAYOUT_STORAGE_KEY = "evener.workspace.layout.v2";
 // Coalesces a whole user gesture (a drag-resize fires onDidLayoutChange
 // many times a second; dockview's own doc comment on that event says as
 // much: "may be worth debouncing outputs") into one localStorage write,
@@ -487,7 +487,7 @@ export function DockHost() {
         components={COMPONENTS}
         defaultTabComponent={PaneTab}
         onReady={handleReady}
-        className="dockview-theme-serf"
+        className="dockview-theme-evener"
         rightHeaderActionsComponent={PopoutHeaderAction}
       />
     </div>

@@ -56,16 +56,16 @@ afterEach(() => {
 });
 
 describe("fireOsNotification", () => {
-  test("granted + unfocused: constructs 'serf · <title>'", () => {
+  test("granted + unfocused: constructs 'evener · <title>'", () => {
     vi.stubGlobal("Notification", FakeNotification);
     fireOsNotification(entry({ title: "Fix the parser" }));
-    expect(FakeNotification.instances.map((n) => n.title)).toEqual(["serf · Fix the parser"]);
+    expect(FakeNotification.instances.map((n) => n.title)).toEqual(["evener · Fix the parser"]);
   });
 
   test("falls back to the ref when the title is empty", () => {
     vi.stubGlobal("Notification", FakeNotification);
     fireOsNotification(entry({ title: "" }));
-    expect(FakeNotification.instances[0]?.title).toBe("serf · local:r1");
+    expect(FakeNotification.instances[0]?.title).toBe("evener · local:r1");
   });
 
   test("permission not granted: no notification", () => {

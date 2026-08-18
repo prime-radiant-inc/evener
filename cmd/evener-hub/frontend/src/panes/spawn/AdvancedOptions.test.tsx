@@ -34,7 +34,7 @@ const RESOLVED: LaunchConfigResolved = {
 // Every path-valued field renders the shared PathField browse widget, so the
 // panel needs a completion loader; entries are keyed by the listing prefix the
 // widget sends, with directory entries carrying a trailing slash the way
-// serf/paths/complete's includeFiles mode does. An empty-valued field opens on
+// evener/paths/complete's includeFiles mode does. An empty-valued field opens on
 // the empty prefix, which the hub resolves to $HOME - here, /opt's contents.
 const HOME_ENTRIES = ["/opt/skills/", "/opt/prompt.md"];
 const TREE: Record<string, string[]> = {
@@ -152,7 +152,7 @@ test("a failing path validation flags the field invalid so it is dropped from th
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({}));
 });
 
-// serf/path/validate spells the output-file kind "output-file"; the schema
+// evener/path/validate spells the output-file kind "output-file"; the schema
 // spells it "outputFile". Sending the schema spelling falls through the RPC's
 // switch to a plain stat, which rejects the not-yet-existing file an
 // outputFile field exists to name (spec 3.4).
@@ -325,9 +325,9 @@ test("a command-kind path option stays a plain text input, since a command is no
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   expect(screen.getByLabelText("Agent").tagName).toBe("INPUT");
-  await user.type(screen.getByLabelText("Agent"), "serf");
+  await user.type(screen.getByLabelText("Agent"), "evener");
 
-  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ agent: "serf" }));
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ agent: "evener" }));
 });
 
 /** Browses to a directory row and submits it, which is the add path the picker
@@ -385,7 +385,7 @@ test("each pathList add picker is named by its own option", async () => {
 });
 
 // A pathList add reaches the daemon on the same wire field a Settings add does,
-// so it is gated the same way: serf/path/validate runs on the add itself. The
+// so it is gated the same way: evener/path/validate runs on the add itself. The
 // assertion is on the validate CALL, not on the add's side effect - an
 // unvalidated add produces the same override, so only the RPC distinguishes
 // them.

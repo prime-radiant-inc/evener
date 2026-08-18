@@ -10,7 +10,7 @@
 import { WireError } from "../../../protocol/errors";
 
 export function isActionUnavailable(err: unknown): boolean {
-  return err instanceof WireError && err.serfErrorInfo === "actionUnavailable";
+  return err instanceof WireError && err.evenerErrorInfo === "actionUnavailable";
 }
 
 // A local-source thread with no live daemon behind it (a one-shot CLI
@@ -23,7 +23,7 @@ export function isActionUnavailable(err: unknown): boolean {
 // sessionUnavailable, but as "local/codex daemon unavailable: ..."
 // (local_daemon.go:438-501, codex_source.go:522-591) - that must still
 // surface as a real error, so this checks the message prefix too, not just
-// the serfErrorInfo code.
+// the evenerErrorInfo code.
 //
 // This is also why the panels' daemonGone terminal state never offers Try
 // again: the hub's own list handlers (app_tasks.go's hubTasksList and the
@@ -37,7 +37,7 @@ export function isActionUnavailable(err: unknown): boolean {
 export function isThreadNotFound(err: unknown): boolean {
   return (
     err instanceof WireError &&
-    err.serfErrorInfo === "sessionUnavailable" &&
+    err.evenerErrorInfo === "sessionUnavailable" &&
     err.message.startsWith("thread not found: ")
   );
 }

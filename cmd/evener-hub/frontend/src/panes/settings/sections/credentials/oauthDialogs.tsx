@@ -1,6 +1,6 @@
 // oauthDialogs.tsx: the 2 OAuth continuation editors (parity-m7-settings.md
 // §7g/§7h), opened by CredentialsSection's shared "Sign in…"/"Refresh OAuth"
-// handler depending on whether serf/auth/device/start signals `fallback`.
+// handler depending on whether evener/auth/device/start signals `fallback`.
 //
 // DeviceCodeDialog owns its own poll loop entirely internally (a single
 // effect keyed by flowId, cleaned up on unmount) rather than a module-level

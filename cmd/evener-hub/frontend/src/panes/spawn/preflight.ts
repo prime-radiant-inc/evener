@@ -1,5 +1,5 @@
 // preflight is the working-directory preflight seam (floor §1.13): validate
-// the cwd via appwire "serf/path/validate" and create it via REST
+// the cwd via appwire "evener/path/validate" and create it via REST
 // "POST /api/dirs/create" (no appwire method exists for creation - verified).
 // T1 defines the signatures + a minimal working body; T2 wires them into the
 // real submission flow and adds the "doesn't exist yet -> offer to create"
@@ -22,7 +22,7 @@ const NON_FIXABLE_REASONS = new Set(["path is not a directory", "absolute path r
 
 export async function preflightDir(client: AppwireClientLike, path: string): Promise<PreflightOutcome> {
   try {
-    const result = await client.request("serf/path/validate", { path, kind: "dir" });
+    const result = await client.request("evener/path/validate", { path, kind: "dir" });
     if (result.valid) return { kind: "ok" };
     if (result.error && NON_FIXABLE_REASONS.has(result.error)) {
       return { kind: "abort", message: result.error };

@@ -37,8 +37,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -455,7 +455,7 @@ describe("active tab (kata 99yf)", () => {
     expect(activeFor(batchId)).toBe("call_1:0");
   });
 
-  test("multi-select, free-text, and let-serf-decide answers never auto-advance", async () => {
+  test("multi-select, free-text, and let-evener-decide answers never auto-advance", async () => {
     const fake = connectFakeClient();
     const batchId = await setupBatch(fake, MULTI_THEN_SINGLE);
 

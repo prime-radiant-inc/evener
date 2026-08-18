@@ -259,7 +259,7 @@ describe("clicking Retry", () => {
   test("populates serverInfo from the fresh client's connect() response, same as AppShell's own initial boot", async () => {
     const fresh = new FakeClient("ready");
     const scripted: InitializeResponse = {
-      serverInfo: { name: "serf-hub-retry-test", version: "9.9.9" },
+      serverInfo: { name: "evener-hub-retry-test", version: "9.9.9" },
       protocolVersion: "1",
       sourceId: "src_retry",
       features: ALL_FEATURES_OFF,
@@ -271,7 +271,7 @@ describe("clicking Retry", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => {
-      expect(connectionStore.getState().serverInfo).toEqual({ name: "serf-hub-retry-test", version: "9.9.9" });
+      expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-retry-test", version: "9.9.9" });
     });
   });
 

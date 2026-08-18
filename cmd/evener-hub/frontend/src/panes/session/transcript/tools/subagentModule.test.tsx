@@ -569,8 +569,8 @@ test("a running row with a transcriptRef watches the child and updates live stat
       status: { type: "systemError" },
       cwd: "/tmp",
       cliVersion: "1.0.0",
-      source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
+      source: "evener",
+      evener: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
     },
   }));
   connectionStore.getState().connect(fake);
@@ -828,8 +828,8 @@ function childThreadRead(params: unknown, childStatus: string) {
       status: { type: childStatus },
       cwd: "/tmp",
       cliVersion: "1.0.0",
-      source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
+      source: "evener",
+      evener: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
       turns: includeTurns
         ? [
             {
@@ -942,8 +942,8 @@ function manyStepsThreadRead(params: unknown, stepCount: number) {
       status: { type: "active" },
       cwd: "/tmp",
       cliVersion: "1.0.0",
-      source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
+      source: "evener",
+      evener: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
       turns: includeTurns ? [{ id: "turn_c1", status: "completed", itemsView: "full", items }] : [],
     },
   };
@@ -1158,7 +1158,7 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
   expect(within(row).queryByText("running")).toBeNull();
 });
 
-// --- dr7e: serf/job/finished's own reason/resumable/exhaustion detail -----
+// --- dr7e: evener/job/finished's own reason/resumable/exhaustion detail -----
 
 test("the collapsed preview prefers a live overlay reason over the frozen tool-output reason", () => {
   const d = toolRendererFor("delegate");

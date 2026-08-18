@@ -10,7 +10,7 @@ export function SkillsDirsSection() {
     <DirListSetting
       wireField="skillsDirs"
       label="Skill directories"
-      copy="Directories serf scans for skills at launch. Applied to every spawn."
+      copy="Directories evener scans for skills at launch. Applied to every spawn."
     />
   );
 }

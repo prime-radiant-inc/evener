@@ -46,8 +46,8 @@ const fixtureThread: Thread = {
   status: { type: "idle" },
   cwd: "/home/dev/project",
   cliVersion: "1.0.0",
-  source: "serf",
-  serf: {
+  source: "evener",
+  evener: {
     ref,
     capabilities: FULL_CAPABILITIES,
     queue: { revision: 0, depth: 2 },

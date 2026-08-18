@@ -98,7 +98,7 @@ test("toggling Token counts persists under its own key without disturbing Round 
   expect(prefsStore.getState().transcript.tokenCounts).toBe(true);
   // Untouched by this click, so it stays at its shipped default (on).
   expect(prefsStore.getState().transcript.roundTimings).toBe(true);
-  expect(localStorage.getItem("serf.prefs.transcriptTokenCounts")).toBe("1");
+  expect(localStorage.getItem("evener.prefs.transcriptTokenCounts")).toBe("1");
   expect(await screen.findByText("Settings saved")).toBeTruthy();
 });
 
@@ -130,12 +130,12 @@ test("toggling Prompt loaded off persists under its own key", async () => {
   await user.click(screen.getByRole("switch", { name: "Prompt loaded" }));
 
   expect(prefsStore.getState().transcript.promptLoaded).toBe(false);
-  expect(localStorage.getItem("serf.prefs.transcriptPromptLoaded")).toBe("0");
+  expect(localStorage.getItem("evener.prefs.transcriptPromptLoaded")).toBe("0");
 
   await user.click(screen.getByRole("switch", { name: "Prompt loaded" }));
 
   expect(prefsStore.getState().transcript.promptLoaded).toBe(true);
-  expect(localStorage.getItem("serf.prefs.transcriptPromptLoaded")).toBe("1");
+  expect(localStorage.getItem("evener.prefs.transcriptPromptLoaded")).toBe("1");
 });
 
 // The intro copy dates from when all four toggles gated one "system status"

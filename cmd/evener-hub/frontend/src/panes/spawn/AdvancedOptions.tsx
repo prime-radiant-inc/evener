@@ -39,10 +39,10 @@ const CLASS = {
 };
 
 export interface AdvancedOptionsProps {
-  /** Already filtered to perLaunch serf options (schema.perLaunchSerfOptions). */
+  /** Already filtered to perLaunch evener options (schema.perLaunchEvenerOptions). */
   options: LaunchOption[];
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
-  /** serf/path/validate. Both the scalar path fields' live validation and the
+  /** evener/path/validate. Both the scalar path fields' live validation and the
    * pathList add rows go through it; `path` (the server-canonicalized spelling)
    * is used by an add when the caller's closure forwards it. */
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
@@ -50,7 +50,7 @@ export interface AdvancedOptionsProps {
   /** Loads the model catalog for this panel's model-valued fields, scoped the
    * same way the top-level Model field is (harness + cwd). */
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
-  /** Path completions for this panel's browsable path fields (serf/paths/
+  /** Path completions for this panel's browsable path fields (evener/paths/
    * complete). Each field's PathField derives includeFiles from its own kind. */
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   /** Rendered first inside the expanded panel, ahead of the schema controls
@@ -250,7 +250,7 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
       // PathField's trigger is a <button>, which FormRow's own <label htmlFor>
       // labels natively - so unlike the ModelCatalog rows this keeps the FormRow
       // shell, and with it the error slot carrying the submit-time
-      // serf/path/validate failure.
+      // evener/path/validate failure.
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
           <PathField id={controlId} value={current} onChange={onScalar} kind={pathKind} complete={complete} />
@@ -334,7 +334,7 @@ function isMcpList(v: unknown): v is MCPServerSpec[] {
  * other path field uses rather than a hand-typed path. The picked path lands in
  * CollectionEditor's own draft, which the Add button submits - and the submit
  * goes through the SAME shared validatePathListAdd decision the settings-side
- * pathList field uses (dedupe, then serf/path/validate). These are the same
+ * pathList field uses (dedupe, then evener/path/validate). These are the same
  * wire fields reaching the same daemon from either surface, so a path added
  * here is gated exactly the way one added in Settings is.
  */

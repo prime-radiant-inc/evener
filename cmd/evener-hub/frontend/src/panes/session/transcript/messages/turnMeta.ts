@@ -4,7 +4,7 @@
 // passes the wire's Turn.usage/Turn.cost straight through without re-typing
 // them - see wireToTurnModel), so both are narrowed at the point of use. Their
 // REAL runtime shape, per protocol/types.gen.ts's own Turn interface, is
-// `usage?: SerfUsage` ({inputTokens?, outputTokens?, cacheReadTokens?,
+// `usage?: EvenerUsage` ({inputTokens?, outputTokens?, cacheReadTokens?,
 // totalTokens?}) and `cost?: string` (already formatted server-side, e.g.
 // "$0.0234"). turnUsageTokens (chrome/detailsAccounting.ts) owns the usage
 // narrowing, shared with the session-details panel's own token derivation so

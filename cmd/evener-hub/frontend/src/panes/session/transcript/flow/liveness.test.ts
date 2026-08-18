@@ -254,7 +254,7 @@ test("describeLiveness: a retry pre-empts the subagent wait — it is the more s
 //
 // Chosen trigger (recorded on the kata before implementing): retry.attempt
 // >= 2 bypasses the 20s gate; attempt 1 stays fully gated (test above).
-// attempt is already reported on every serf/thread/modelRetry notification
+// attempt is already reported on every evener/thread/modelRetry notification
 // (reducer.ts), so this needs no new wire field, no accumulator, and no
 // new clock - describeLiveness stays a pure function of its existing four
 // inputs. It also preserves the ORIGINAL reason the gate existed on this

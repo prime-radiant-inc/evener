@@ -78,7 +78,7 @@ test("expanding a node lazily fetches its catalog once; re-expanding does not re
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
   const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [{ name: "linter", description: "Lints code" }] }));
-  fake.on("serf/marketplace/browse", browseSpy);
+  fake.on("evener/marketplace/browse", browseSpy);
   render(<Harness />);
   const toggle = screen.getByRole("button", { name: /acme-plugins/ });
   await user.click(toggle);
@@ -99,7 +99,7 @@ test("shows a Loader while a marketplace's catalog is loading", async () => {
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  fake.on("serf/marketplace/browse", async () => {
+  fake.on("evener/marketplace/browse", async () => {
     await gate;
     return { name: "acme-plugins", plugins: [] };
   });
@@ -117,7 +117,7 @@ test("shows loading, then error, for a failed browse", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => {
+  fake.on("evener/marketplace/browse", () => {
     throw new Error("network down");
   });
   render(<Harness />);
@@ -129,7 +129,7 @@ test("an empty catalog shows its own empty message", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [] }));
   render(<Harness />);
   await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
   expect(await screen.findByText("This marketplace has no plugins.")).toBeTruthy();
@@ -139,7 +139,7 @@ test("an already-installed plugin shows an Installed badge instead of an Install
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [INSTALLED_LINTER] });
-  fake.on("serf/marketplace/browse", () => ({
+  fake.on("evener/marketplace/browse", () => ({
     name: "acme-plugins",
     plugins: [{ name: "linter" }, { name: "formatter" }],
   }));
@@ -157,8 +157,8 @@ test("Install opens a non-destructive confirm; confirming installs and toasts su
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
-  fake.on("serf/plugin/install", (params) => {
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
     return { plugins: [INSTALLED_LINTER] };
   });
@@ -177,7 +177,7 @@ test("the install confirm states the marketplace's actual source, not just its n
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
   render(<Harness />);
   await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
   await user.click(await screen.findByRole("button", { name: "Install" }));
@@ -189,9 +189,9 @@ test("cancelling the install confirm does not call installPlugin", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
   const installSpy = vi.fn();
-  fake.on("serf/plugin/install", installSpy);
+  fake.on("evener/plugin/install", installSpy);
   render(<Harness />);
   await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
   await user.click(await screen.findByRole("button", { name: "Install" }));
@@ -203,8 +203,8 @@ test("a failed install toasts failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
-  fake.on("serf/plugin/install", () => {
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", () => {
     throw new Error("boom");
   });
   render(<Harness />);
@@ -221,8 +221,8 @@ test("the install confirm's buttons disable while the install is in flight", asy
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
-  fake.on("serf/plugin/install", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/plugin/install", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
   render(<Harness />);
   await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
   await user.click(await screen.findByRole("button", { name: "Install" }));
@@ -237,7 +237,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
-  fake.on("serf/marketplace/browse", (params) =>
+  fake.on("evener/marketplace/browse", (params) =>
     params.name === "acme-plugins"
       ? { name: "acme-plugins", plugins: [{ name: "linter" }] }
       : { name: "other-plugins", plugins: [{ name: "formatter" }] },
@@ -260,7 +260,7 @@ test("clearing the filter immediately collapses every node with no debounce", as
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
   render(<Harness initialExpanded={new Set(["acme-plugins"])} />);
   const filter = screen.getByPlaceholderText("Filter plugins…");
   await user.type(filter, "x");
@@ -273,7 +273,7 @@ test("zero matches anywhere shows a not-found message quoting the query", async 
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
   const fake = connectFakeClient();
   extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
-  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "zzz");
   await vi.advanceTimersByTimeAsync(150);

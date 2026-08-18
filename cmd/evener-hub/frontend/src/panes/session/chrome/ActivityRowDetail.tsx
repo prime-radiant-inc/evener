@@ -115,7 +115,7 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
 // the job last said, small enough that expanding a row is never a log dump.
 const previewBytes = 256;
 
-// tailText validates the untyped serf/jobs/output data field down to the one
+// tailText validates the untyped evener/jobs/output data field down to the one
 // member the preview needs (same wire-shape caution as JobLog's own parser).
 function tailText(data: unknown): string | null {
   if (typeof data !== "object" || data === null) return null;

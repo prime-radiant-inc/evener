@@ -53,19 +53,19 @@ const MODELS: ModelDescriptor[] = [
 
 describe("defaultsKeyFor", () => {
   test("keys a per-project blob by its working dir (floor §1.9, spawn.js:51-53)", () => {
-    expect(defaultsKeyFor("/home/me/proj")).toBe("serf-hub.spawn-defaults./home/me/proj");
+    expect(defaultsKeyFor("/home/me/proj")).toBe("evener-hub.spawn-defaults./home/me/proj");
   });
 
   test("an empty working dir keys the shared 'global' blob", () => {
-    expect(defaultsKeyFor("")).toBe("serf-hub.spawn-defaults.global");
-    expect(defaultsKeyFor("   ")).toBe("serf-hub.spawn-defaults.global");
+    expect(defaultsKeyFor("")).toBe("evener-hub.spawn-defaults.global");
+    expect(defaultsKeyFor("   ")).toBe("evener-hub.spawn-defaults.global");
   });
 });
 
 describe("loadDefaultsBlob", () => {
   test("returns the parsed blob for a project", () => {
-    localStorage.setItem(defaultsKeyFor("/p"), JSON.stringify({ harness: "serf", branch: "main" }));
-    expect(loadDefaultsBlob("/p")).toEqual({ harness: "serf", branch: "main" });
+    localStorage.setItem(defaultsKeyFor("/p"), JSON.stringify({ harness: "evener", branch: "main" }));
+    expect(loadDefaultsBlob("/p")).toEqual({ harness: "evener", branch: "main" });
   });
 
   test("returns an empty object when absent or malformed", () => {
@@ -102,10 +102,10 @@ describe("resolveInitialDefaults", () => {
   test("surfaces harness/branch/access/reasoning from the resolved project blob", () => {
     localStorage.setItem(
       defaultsKeyFor("/p"),
-      JSON.stringify({ harness: "serf", branch: "dev", access_mode: "read-only", reasoning_effort: "high" }),
+      JSON.stringify({ harness: "evener", branch: "dev", access_mode: "read-only", reasoning_effort: "high" }),
     );
     expect(resolveInitialDefaults({ serverPrefillDir: "/p" })).toMatchObject({
-      harness: "serf",
+      harness: "evener",
       branch: "dev",
       accessMode: "read-only",
       reasoningEffort: "high",
@@ -116,25 +116,25 @@ describe("resolveInitialDefaults", () => {
 
 describe("saveDefaults", () => {
   test("writes a per-project blob plus the global working_dir on every submit (floor §1.9, spawn.js:100)", () => {
-    saveDefaults({ cwd: "/p", harness: "serf", branch: "main", harnessUsesSerfModels: true });
-    expect(loadDefaultsBlob("/p")).toMatchObject({ harness: "serf", branch: "main" });
+    saveDefaults({ cwd: "/p", harness: "evener", branch: "main", harnessUsesEvenerModels: true });
+    expect(loadDefaultsBlob("/p")).toMatchObject({ harness: "evener", branch: "main" });
     expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBe("/p");
   });
 
-  test("drops the model field for a non-serf-model harness (floor §1.9, spawn.js:92-96)", () => {
-    saveDefaults({ cwd: "/p", model: "openai/gpt-5", harnessUsesSerfModels: false });
+  test("drops the model field for a non-evener-model harness (floor §1.9, spawn.js:92-96)", () => {
+    saveDefaults({ cwd: "/p", model: "openai/gpt-5", harnessUsesEvenerModels: false });
     expect(loadDefaultsBlob("/p").model).toBeUndefined();
     expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBeNull();
   });
 
-  test("writes the model globally only when the harness uses serf models AND a model was chosen (floor §1.9, spawn.js:98)", () => {
-    saveDefaults({ cwd: "/p", model: "anthropic/claude-sonnet-4-5", harnessUsesSerfModels: true });
+  test("writes the model globally only when the harness uses evener models AND a model was chosen (floor §1.9, spawn.js:98)", () => {
+    saveDefaults({ cwd: "/p", model: "anthropic/claude-sonnet-4-5", harnessUsesEvenerModels: true });
     expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBe("anthropic/claude-sonnet-4-5");
     expect(loadDefaultsBlob("/p").model).toBe("anthropic/claude-sonnet-4-5");
   });
 
   test("does not write a global working_dir when the submit has no cwd", () => {
-    saveDefaults({ cwd: "", harness: "serf", harnessUsesSerfModels: true });
+    saveDefaults({ cwd: "", harness: "evener", harnessUsesEvenerModels: true });
     expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBeNull();
   });
 });

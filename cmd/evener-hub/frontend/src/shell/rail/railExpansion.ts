@@ -3,9 +3,9 @@
 // are all still where you left them after a reload. Rail.tsx owns the live
 // map; this module only turns it into localStorage and back.
 //
-// One JSON blob under one key, following DockHost's serf.workspace.layout.v2
+// One JSON blob under one key, following DockHost's evener.workspace.layout.v2
 // precedent rather than the htmx UI's key-per-row
-// (localStorage["serf-hub.sidebar.expanded.<key>"], parity-m3-sidebar-tree.md
+// (localStorage["evener-hub.sidebar.expanded.<key>"], parity-m3-sidebar-tree.md
 // §10.1): the behavior is identical row by row, but this reads in one call at
 // boot instead of scanning the namespace, and it cannot leave orphaned keys
 // behind when a row's id changes.
@@ -16,7 +16,7 @@
 
 /** The localStorage key. Exported for tests, which seed corrupt values
  * directly to prove the load path tolerates them. */
-export const EXPANSION_STORAGE_KEY = "serf.rail.expanded.v1";
+export const EXPANSION_STORAGE_KEY = "evener.rail.expanded.v1";
 
 /** Entries kept before the oldest are evicted. The map only ever holds ids
  * the user explicitly toggled, but rows outlive the sessions they name, so on

@@ -89,9 +89,9 @@ export function DevHarness() {
       {listError && <p>thread/list error: {listError}</p>}
       <ul>
         {threadList.map((t) => (
-          <li key={t.serf.ref}>
-            <button type="button" onClick={() => setSelectedRef(t.serf.ref)}>
-              {t.serf.ref} — {t.preview}
+          <li key={t.evener.ref}>
+            <button type="button" onClick={() => setSelectedRef(t.evener.ref)}>
+              {t.evener.ref} — {t.preview}
             </button>
           </li>
         ))}

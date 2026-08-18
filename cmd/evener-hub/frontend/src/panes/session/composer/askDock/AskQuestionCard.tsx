@@ -1,7 +1,7 @@
 // AskQuestionCard renders one ask_user question's full interactive control
 // set (parity-m5-composer.md §C / test-ask-card.js): recommended-first
 // option chips (checkboxes when multi_select, else radios so native
-// keyboard nav and AT semantics both work), a free-text row, a "let serf
+// keyboard nav and AT semantics both work), a free-text row, a "let evener
 // decide" row with an optional leaning, a fallback button when
 // if_unanswered is present, a skip button, a dim `why` line, and a
 // per-question note. Every control funnels through the two callback props
@@ -192,7 +192,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             value={resolution?.kind === "free" ? resolution.text : ""}
             onChange={(e) => onResolutionChange({ kind: "free", text: e.target.value })}
             // Marks this as THE question's own free-text answer input (not
-            // the "let serf decide" leaning input or the per-question note,
+            // the "let evener decide" leaning input or the per-question note,
             // both also plain single-line <input type="text"> elements
             // sitting in the same batch) - AskDock's own batch-level keydown
             // handler reads this to decide whether a bare Enter here should
@@ -208,7 +208,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
           <input
             type="radio"
             name={radioName}
-            aria-label="let serf decide"
+            aria-label="let evener decide"
             checked={decideActive}
             onClick={(e) => {
               if (decideActive) {
@@ -220,7 +220,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
               if (!decideActive) activateDecide();
             }}
           />
-          <span id={decideLabelId}>let serf decide</span>
+          <span id={decideLabelId}>let evener decide</span>
         </label>
         {decideActive && (
           <input

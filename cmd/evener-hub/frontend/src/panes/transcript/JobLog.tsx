@@ -1,7 +1,7 @@
 // JobLog renders a shell job's transcript - its output log - inside the
 // read-only transcript pane. A "job:<id>" ref is not a thread, so instead of
 // the thread engine (useTranscript/TurnBlock) it fetches the job's output
-// through serf/jobs/output against the OWNING session: the pane's parentRef,
+// through evener/jobs/output against the OWNING session: the pane's parentRef,
 // which every producer that opens a job transcript (the activity tree's rows
 // and detail strips) already supplies.
 //
@@ -35,7 +35,7 @@ interface JobLogTail {
   hasEarlier: boolean;
 }
 
-// serf/jobs/output's data field crosses the wire untyped (unknown on the
+// evener/jobs/output's data field crosses the wire untyped (unknown on the
 // generated JobsOutputResponse); validate the appwire.JobOutputTail shape
 // before trusting it rather than casting.
 function parseJobLogTail(data: unknown): JobLogTail | null {

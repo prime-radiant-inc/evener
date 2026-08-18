@@ -74,8 +74,8 @@ function ForkFromHereButton({ sessionRef, transcriptEntryIndex }: ForkFromHereBu
       const resp = await threadsStore
         .getState()
         .forkFromTurn(sessionRef, { sourceTurnId: String(transcriptEntryIndex), deferInput: true });
-      writeDraft(resp.thread.serf.ref, resp.originalInput ?? "");
-      workspaceStore.getState().openPane("session", { ref: resp.thread.serf.ref });
+      writeDraft(resp.thread.evener.ref, resp.originalInput ?? "");
+      workspaceStore.getState().openPane("session", { ref: resp.thread.evener.ref });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't fork from here", err));
     } finally {

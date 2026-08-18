@@ -37,14 +37,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Scripts serf/paths/complete off a prefix -> entries table, the way the
+/** Scripts evener/paths/complete off a prefix -> entries table, the way the
  * pathList add row's picker asks for it (the store passes the prefix through
  * verbatim, and directory entries carry a trailing slash once includeFiles is
  * on). Returns the recorded (prefix, includeFiles) pairs. */
 function connectPathLister(table: Record<string, string[]>): { calls: Array<[string, boolean]> } {
   const fake = new FakeClient("ready");
   const calls: Array<[string, boolean]> = [];
-  fake.on("serf/paths/complete", (params) => {
+  fake.on("evener/paths/complete", (params) => {
     calls.push([params.prefix, params.includeFiles === true]);
     return { data: table[params.prefix] ?? [] };
   });
@@ -76,7 +76,7 @@ function pathListOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
     field: "skills_dirs",
     wireField: "skillsDirs",
     label: "Skill directories",
-    description: "Extra directories serf scans for skills.",
+    description: "Extra directories evener scans for skills.",
     group: "Resources",
     kind: "pathList",
     pathKind: "dir",
@@ -96,7 +96,7 @@ describe("PathListField", () => {
       />,
     );
     expect(screen.getAllByText("Skill directories").length).toBeGreaterThan(0);
-    expect(screen.getByText("Extra directories serf scans for skills.")).toBeTruthy();
+    expect(screen.getByText("Extra directories evener scans for skills.")).toBeTruthy();
     expect(screen.getByText("/opt/skills")).toBeTruthy();
   });
 

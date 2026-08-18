@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { RECENT_COMMANDS_KEY, readRecentCommandIds, rememberCommand } from "./recentCommands";
 
-// Recent commands live at localStorage["serf.search.recentCommands"] as a
+// Recent commands live at localStorage["evener.search.recentCommands"] as a
 // JSON array of ids, most-recent-first, capped at 5 (search.js:16-17,
-// 619-633). This is a legacy key OUTSIDE the serf.prefs.* namespace - pin it.
+// 619-633). This is a legacy key OUTSIDE the evener.prefs.* namespace - pin it.
 
 // See stores/prefs.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global, so
@@ -37,8 +37,8 @@ afterEach(() => {
   localStorage.clear();
 });
 
-test("the storage key is the legacy serf.search.recentCommands", () => {
-  expect(RECENT_COMMANDS_KEY).toBe("serf.search.recentCommands");
+test("the storage key is the legacy evener.search.recentCommands", () => {
+  expect(RECENT_COMMANDS_KEY).toBe("evener.search.recentCommands");
 });
 
 test("readRecentCommandIds returns [] when nothing is stored", () => {

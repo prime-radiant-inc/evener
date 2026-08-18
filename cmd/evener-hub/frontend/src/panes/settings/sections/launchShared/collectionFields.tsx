@@ -140,7 +140,7 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
 
 /** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared
  * path picker (PathAddField below), and every add goes through the shared
- * validatePathListAdd decision - dedupe, then server-side serf/path/validate
+ * validatePathListAdd decision - dedupe, then server-side evener/path/validate
  * before being accepted, using the server-canonicalized path when one comes
  * back - matching the legacy's own "blocks the add on failure, shows a
  * field-level error" / "uses valid.path if present else the raw trimmed input"
@@ -175,14 +175,14 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
 
 /**
  * The pathList add row: the shared path picker plus CollectionEditor's own
- * submit button. `complete` is the extensions store's serf/paths/complete
+ * submit button. `complete` is the extensions store's evener/paths/complete
  * call, imported directly the way ModelAddField imports its own catalog
  * loader rather than threading a prop through StringListField - and no
  * `listRecents`, since a skills- or config-file list has no meaningful
  * "recent" of its own (that belongs to the spawn working directory alone).
  *
  * The browsed path lands in CollectionEditor's `draft`; the Add button submits
- * it, which is where serf/path/validate still gates it (the picker's own panel
+ * it, which is where evener/path/validate still gates it (the picker's own panel
  * is portaled outside this <form>, so Enter inside the picker picks a path
  * rather than submitting the row - asserted by collectionFields.test.tsx's
  * "Enter on a directory row descends without submitting the add row").
@@ -437,7 +437,7 @@ function renderSpec(spec: MCPServerSpec): string {
 }
 
 /** mcpServerList kind: `mcps`. Add syntax is "name command [args...]"
- * (whitespace-split); the command token is validated via serf/path/validate
+ * (whitespace-split); the command token is validated via evener/path/validate
  * kind="command" before the row is accepted, matching the legacy's own
  * validateMCPCommandInput. */
 export function McpServerListField({ option, items, onChange, validateCommand }: McpServerListFieldProps) {

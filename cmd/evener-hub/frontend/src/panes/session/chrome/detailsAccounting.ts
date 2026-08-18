@@ -18,9 +18,9 @@ export interface TokenPair {
 // wire's Turn.usage straight through without re-typing it), so the narrowing
 // lives here - shared with the transcript's own per-turn stamp (messages/
 // turnMeta.ts) so both surfaces read a turn's tokens by exactly one rule. The
-// real runtime shape is types.gen.ts's SerfUsage; anything else on the wire is
+// real runtime shape is types.gen.ts's EvenerUsage; anything else on the wire is
 // treated as no data, and so is a pair of zeroes (Go's unset zero value, not a
-// measurement of zero - the same rule SerfThread.Usage's own contract states).
+// measurement of zero - the same rule EvenerThread.Usage's own contract states).
 export function turnUsageTokens(turn: TurnModel): TokenPair | null {
   const usage = turn.usage;
   if (typeof usage !== "object" || usage === null) return null;
@@ -36,7 +36,7 @@ export function turnUsageTokens(turn: TurnModel): TokenPair | null {
 // session and conflating them would print a partial figure under a
 // full-session label:
 //
-//   "session" - the daemon's own cumulative total (SerfThread.Usage, from the
+//   "session" - the daemon's own cumulative total (EvenerThread.Usage, from the
 //     persisted SessionMeta.CumulativeUsage), or a sum over turns that are
 //     provably the WHOLE transcript. Either way it accounts for the entire
 //     session.
@@ -64,7 +64,7 @@ export interface SessionTokens {
 //
 // Returns null when there is no token data anywhere. A total of zero is
 // treated as no data rather than a real "0 tokens": the wire's zero here is
-// Go's unset zero value, and SerfThread.Usage's own contract is that absent
+// Go's unset zero value, and EvenerThread.Usage's own contract is that absent
 // token data must not render as "↑0 ↓0".
 export function sessionTokens(model: ThreadModel): SessionTokens | null {
   const cumulative = model.usage;

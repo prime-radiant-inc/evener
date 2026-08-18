@@ -142,14 +142,14 @@ function createRetryLink(template: LinkDescriptor | null, rel: string, href: str
 
 function retryAssetURL(href: string, retryToken: string): string {
   const url = new URL(href, window.location.href);
-  url.searchParams.set("serf-dock-retry", retryToken);
+  url.searchParams.set("evener-dock-retry", retryToken);
   return url.href;
 }
 
 function preloadRetryAssets(retryURL: string): Promise<void> {
   if (typeof document === "undefined") return Promise.resolve();
 
-  const retryToken = new URL(retryURL).searchParams.get("serf-dock-retry");
+  const retryToken = new URL(retryURL).searchParams.get("evener-dock-retry");
   if (retryToken === null) return Promise.resolve();
 
   const modulepreload = createRetryLink(dockHostPreloadLink, "modulepreload", retryURL);
@@ -200,7 +200,7 @@ export function loadDockHost(cacheBust = false): Promise<DockHostModule> {
     // evaluate the cache-busted module so a stylesheet failure cannot leave a
     // mounted host with an unstyled dock.
     const retryURL = new URL(dockHostChunkURL);
-    retryURL.searchParams.set("serf-dock-retry", String(++retrySequence));
+    retryURL.searchParams.set("evener-dock-retry", String(++retrySequence));
     return preloadRetryAssets(retryURL.href)
       .then(() =>
         dockHostImporterForTests === null

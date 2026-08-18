@@ -15,7 +15,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";
 
-// Ground truth: serf/sandbox/escalation/requested + SerfThread.
+// Ground truth: evener/sandbox/escalation/requested + EvenerThread.
 // pendingEscalations are thread-level, not item-level - so, unlike every
 // other T3 surface, there is no registerToolRenderer/registerItemRenderer
 // integration point for this at all (confirmed by reading ToolCallItem.tsx:
@@ -24,7 +24,7 @@ import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } f
 // level mount (outside transcript/tools/**'s ownership).
 //
 // R3 closed both gaps the original version of this file's hook could not:
-// protocol/reducer.ts now projects thread.serf.pendingEscalations into
+// protocol/reducer.ts now projects thread.evener.pendingEscalations into
 // ThreadModel at hydrate (hydrateThread) and live-updates it from the
 // notification (applyNotification's own case + upsertPendingEscalation).
 // This hook now reads that model directly (via the threads store) instead
@@ -72,8 +72,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -94,7 +94,7 @@ function connectFakeClient(): FakeClient {
 
 function readResponseWithEscalation(ref: string, escalation: SandboxEscalationRequested): ThreadReadResponse {
   return readResponse(ref, {
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 }
 
@@ -166,7 +166,7 @@ test("a cold-open snapshot's pendingEscalations render immediately - the exact c
   expect(result.current.pending[0]?.escalationId).toBe("esc_1");
 });
 
-test("a live serf/sandbox/escalation/requested notification, folded through the store, appears in `pending`", async () => {
+test("a live evener/sandbox/escalation/requested notification, folded through the store, appears in `pending`", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
@@ -175,7 +175,7 @@ test("a live serf/sandbox/escalation/requested notification, folded through the 
   expect(result.current.pending).toEqual([]);
 
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   expect(result.current.pending).toHaveLength(1);
@@ -190,7 +190,7 @@ test("a notification for a DIFFERENT ref is ignored", async () => {
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ ref: "ref_other" }),
     });
   });
@@ -201,7 +201,7 @@ test("a notification for a DIFFERENT ref is ignored", async () => {
 test("resolve(escalationId, true) delegates to the threads store, sending approve:true and removing it from `pending`", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
-  fake.on("serf/sandbox/escalation/resolve", () => ({}));
+  fake.on("evener/sandbox/escalation/resolve", () => ({}));
   await threadsStore.getState().ensureThread("ref_a");
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
@@ -211,7 +211,7 @@ test("resolve(escalationId, true) delegates to the threads store, sending approv
     await result.current.resolve("esc_1", true);
   });
 
-  const call = fake.calls.find((c) => c.method === "serf/sandbox/escalation/resolve");
+  const call = fake.calls.find((c) => c.method === "evener/sandbox/escalation/resolve");
   expect(call?.params).toEqual({ ref: "ref_a", escalationId: "esc_1", approve: true });
   expect(result.current.pending).toEqual([]);
 });
@@ -219,7 +219,7 @@ test("resolve(escalationId, true) delegates to the threads store, sending approv
 test("resolve(escalationId, false) sends approve:false", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
-  fake.on("serf/sandbox/escalation/resolve", () => ({}));
+  fake.on("evener/sandbox/escalation/resolve", () => ({}));
   await threadsStore.getState().ensureThread("ref_a");
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
@@ -227,14 +227,14 @@ test("resolve(escalationId, false) sends approve:false", async () => {
     await result.current.resolve("esc_1", false);
   });
 
-  const call = fake.calls.find((c) => c.method === "serf/sandbox/escalation/resolve");
+  const call = fake.calls.find((c) => c.method === "evener/sandbox/escalation/resolve");
   expect(call?.params).toEqual({ ref: "ref_a", escalationId: "esc_1", approve: false });
 });
 
 test("a rejected resolve() propagates to the caller and leaves `pending` untouched", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
-  fake.on("serf/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
+  fake.on("evener/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
   await threadsStore.getState().ensureThread("ref_a");
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
@@ -250,11 +250,11 @@ test("two distinct escalations both surface independently", async () => {
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_1" }),
     });
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }),
     });
   });
@@ -269,8 +269,8 @@ test("a duplicate notification for the same escalationId is de-duplicated, not a
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   expect(result.current.pending).toHaveLength(1);
@@ -286,13 +286,13 @@ test("clicking Allow immediately disables that card (before the resolve response
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   const box: { resolveCall: (() => void) | null } = { resolveCall: null };
-  fake.on("serf/sandbox/escalation/resolve", () => new Promise((res) => (box.resolveCall = () => res({}))));
+  fake.on("evener/sandbox/escalation/resolve", () => new Promise((res) => (box.resolveCall = () => res({}))));
   const user = userEvent.setup();
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -317,13 +317,13 @@ test("clicking Allow immediately disables that card (before the resolve response
 test("a rejected resolve surfaces an error on the card instead of an unhandled rejection, and re-enables the buttons", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
-  fake.on("serf/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
+  fake.on("evener/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
   const user = userEvent.setup();
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -340,13 +340,13 @@ test("a subsequent successful resolve clears a previously shown error", async ()
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   let shouldFail = true;
-  fake.on("serf/sandbox/escalation/resolve", () => (shouldFail ? Promise.reject(new Error("sandbox offline")) : {}));
+  fake.on("evener/sandbox/escalation/resolve", () => (shouldFail ? Promise.reject(new Error("sandbox offline")) : {}));
   const user = userEvent.setup();
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -376,11 +376,11 @@ test("SandboxEscalationRail renders one card per pending escalation, keyed by es
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_1" }),
     });
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_2" }),
     });
   });
@@ -424,7 +424,7 @@ test("an escalation arriving focuses the Allow button", async () => {
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -447,7 +447,7 @@ test("does not steal focus while a textarea is focused", async () => {
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
   });
 
   await screen.findByRole("button", { name: /allow/i });
@@ -468,7 +468,7 @@ test("a later escalation that only grows an already-open rail does not steal foc
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_1" }),
     });
   });
@@ -480,7 +480,7 @@ test("a later escalation that only grows an already-open rail does not steal foc
 
   act(() => {
     fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
+      method: "evener/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }),
     });
   });

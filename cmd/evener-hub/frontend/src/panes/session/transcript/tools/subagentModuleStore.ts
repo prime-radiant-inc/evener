@@ -20,7 +20,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { ItemModel } from "../../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../../protocol/stableDelegate";
-import type { SerfDelegateInfo } from "../../../../protocol/types.gen";
+import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { parseArgs, parseJSONObject, str } from "./helpers";
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
@@ -42,7 +42,7 @@ export interface SubagentRow {
   exhaustionLimit?: number;
   task: string;
   delegateId?: string;
-  stable?: SerfDelegateInfo;
+  stable?: EvenerDelegateInfo;
   transcriptRef?: string;
   startedAt?: string;
   completedAt?: string;
@@ -284,8 +284,8 @@ export function resolveRowKey(delegateId: string | undefined, jobId: string | un
   return `call:${fallback}`;
 }
 
-function cloneStableDelegate(delegate: SerfDelegateInfo): SerfDelegateInfo {
-  const { waitIgnoredReason: _callScoped, ...stable } = delegate as SerfDelegateInfo & {
+function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
+  const { waitIgnoredReason: _callScoped, ...stable } = delegate as EvenerDelegateInfo & {
     waitIgnoredReason?: unknown;
   };
   return {
@@ -306,7 +306,7 @@ function mergeLatestActivity(current: string | undefined, incoming: string | und
   return Number.isNaN(currentMillis) || incomingMillis > currentMillis ? incoming : current;
 }
 
-function mergeStableDelegate(current: SerfDelegateInfo, incoming: SerfDelegateInfo): SerfDelegateInfo {
+function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelegateInfo): EvenerDelegateInfo {
   const stable = incoming.projectionRevision > current.projectionRevision ? cloneStableDelegate(incoming) : current;
   const latestActivityAt = mergeLatestActivity(current.latestActivityAt, incoming.latestActivityAt);
   return latestActivityAt === stable.latestActivityAt ? stable : { ...stable, latestActivityAt };
@@ -316,7 +316,7 @@ function mergeStableDelegate(current: SerfDelegateInfo, incoming: SerfDelegateIn
 // module rows. A snapshot may create the row before the transcript item is
 // mounted; later item rendering enriches the same dlg_-keyed row without
 // replacing this revision-fenced state.
-export function applySerfDelegateUpdated(delegate: SerfDelegateInfo, sessionRef: string | undefined): void {
+export function applyEvenerDelegateUpdated(delegate: EvenerDelegateInfo, sessionRef: string | undefined): void {
   if (!delegate.originTurnId || !delegate.delegateId) return;
   const scopeKey = turnScopeKey(sessionRef, delegate.originTurnId);
   const rowKey = resolveRowKey(

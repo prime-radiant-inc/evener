@@ -49,7 +49,7 @@ function basenameOf(path: string): string {
 //
 // shell/dockview-theme.css is the one deliberate exception: it restyles a
 // third-party library (dockview) via a plain, UNSCOPED class selector
-// (.dockview-theme-serf, passed to DockviewReact's own className prop -
+// (.dockview-theme-evener, passed to DockviewReact's own className prop -
 // see DockHost.tsx), which a `.module.css` file cannot do (CSS Modules
 // hash every class name, and dockview needs to see the literal class it's
 // told to apply). The wave-3 plan's Global Constraints name this file
@@ -475,7 +475,7 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // lives under panes/session/transcript/tools/, not widgets/<name>/, so it
 // can never match WIDGET_STYLESHEET_RE either. A sandbox escalation card is
 // a BLOCKING approval (the tool-exec goroutine is parked waiting on
-// serf/sandbox/escalation/resolve) - the app's SECOND "a human is needed
+// evener/sandbox/escalation/resolve) - the app's SECOND "a human is needed
 // right now" moment after askDock's ask batch (kata crcf, above), same
 // structural reason, so it earns the same --attention-bg/--attention-edge
 // container tint askDock's .batch uses instead of a neutral Card.

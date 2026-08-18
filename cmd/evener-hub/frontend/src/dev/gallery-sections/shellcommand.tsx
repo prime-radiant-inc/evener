@@ -2,10 +2,10 @@ import { ShellCommandBlock } from "../../widgets/shellcommand";
 import { ThemeFlip } from "../ThemeFlip";
 
 const CHAINED_COMMAND =
-  "cd /srv/serf && npm test -- --run src/widgets/shellcommand/shellCommand.test.ts && git status --short";
+  "cd /srv/evener && npm test -- --run src/widgets/shellcommand/shellCommand.test.ts && git status --short";
 
 const AUTHORED_MULTILINE_COMMAND = `printf '%s\\n' "$HOME" \\
-  | tee /tmp/serf-paths # preserve the authored continuation`;
+  | tee /tmp/evener-paths # preserve the authored continuation`;
 
 export default function ShellCommandGallerySection() {
   return (

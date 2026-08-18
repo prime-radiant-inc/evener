@@ -18,8 +18,8 @@ import type { TurnError } from "../../../protocol/types.gen";
 // source:"hub" and the "Hub error" title/hint onto these same messages. The two
 // copies had drifted in both directions - this side was missing appwire,
 // websocket and "stream failed"; Go was missing "local daemon unavailable" and
-// "session unavailable", so the hub's own dial failures came back titled "Serf
-// error" and hinted at the Serf session log while this file, correctly, put a
+// "session unavailable", so the hub's own dial failures came back titled "Evener
+// error" and hinted at the Evener session log while this file, correctly, put a
 // "Reconnect & retry" button under them. They are held equal now by
 // TestHubFailureKeywordsMatchWebClient (cmd/evener-hub), which parses the array
 // below; keep it a plain list of lowercase literals so that test can read it.

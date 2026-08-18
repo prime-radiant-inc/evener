@@ -157,7 +157,7 @@ test("scopes the /api/models enrichment to the spawn harness and cwd", async () 
 
   // The enrichment must be scoped to the SAME harness+cwd as the authoritative
   // model/list SET, so a non-default harness enriches its own models rather than
-  // the default serf catalog.
+  // the default evener catalog.
   expect(fetchModelCatalog).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", cwd: "/tmp/project" }));
 });
 

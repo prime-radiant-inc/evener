@@ -352,7 +352,7 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
 });
 
-// serf's "none" clears the effort to the provider default (llm/types.go:670,
+// evener's "none" clears the effort to the provider default (llm/types.go:670,
 // providercfg/load.go:76) - the same meaning as unset. A ladder that lists
 // "none" collapses it into the single "(default)" entry (never a duplicate
 // option), and a current "none" effort selects that entry, not a literal
@@ -481,7 +481,7 @@ test("an unmeasured work time renders no clock, never a fabricated '1s'", () => 
 });
 
 // Wire-true reproduction of the W6-close punch item: a present-but-zero
-// SerfThread.ActiveTurnStartedAt (the daemon's zero value) runs through the
+// EvenerThread.ActiveTurnStartedAt (the daemon's zero value) runs through the
 // REAL reducer, whose epochMsToISO turns it into "1970-01-01T00:00:00.000Z"
 // (proven here first), and the status row must NOT render the resulting
 // now-minus-epoch span as an absurd "500000h" clock.
@@ -500,8 +500,8 @@ test("renders no now-minus-epoch clock for a zero-valued activeTurnStartedAt off
         status: { type: "active" },
         cwd: "/tmp/project",
         cliVersion: "1.0.0",
-        source: "serf",
-        serf: {
+        source: "evener",
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 0 },

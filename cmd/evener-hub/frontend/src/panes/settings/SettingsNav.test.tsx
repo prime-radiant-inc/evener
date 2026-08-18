@@ -53,7 +53,7 @@ test("renders all 16 section links with their visible labels", () => {
     "Notifications",
     "Providers & credentials",
     "Agents",
-    "Serf launch",
+    "Evener launch",
     "Codex launch",
     "In-repo config",
     "Marketplaces & Plugins",

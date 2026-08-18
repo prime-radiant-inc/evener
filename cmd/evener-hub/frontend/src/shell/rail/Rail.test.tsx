@@ -328,7 +328,7 @@ beforeEach(() => {
       return jsonResponse(treeResponseBody);
     }
     if (method === "GET" && url.startsWith("/api/tree/project?key=")) {
-      const parsed = new URL(url, "http://serf.test");
+      const parsed = new URL(url, "http://evener.test");
       const key = parsed.searchParams.get("key") ?? "";
       if (parsed.searchParams.has("tier")) {
         const pageKey = `${key}:${parsed.searchParams.get("tier")}:${parsed.searchParams.get("offset")}`;
@@ -456,7 +456,7 @@ describe("initial load", () => {
   });
 
   // kata p5w9. This effect's duty is "the rail has data", not "fetch again":
-  // the tree it renders is kept current by serf/tree/changed pushes, so a
+  // the tree it renders is kept current by evener/tree/changed pushes, so a
   // remount with one already loaded has nothing to go and get. Mobile makes
   // that routine - the rail lives inside TreeDrawer's sheet, which renders
   // null while closed, so every drawer OPEN is a fresh mount - and on desktop

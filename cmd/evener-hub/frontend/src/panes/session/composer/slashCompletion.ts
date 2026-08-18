@@ -1,7 +1,7 @@
 // Inline slash-command completion for the composer's own textarea, ported
 // from Beautiful UI's prompt-bar completion affordance (beautifului.dev,
 // MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt. Only the slash
-// half of their trailing-token parser is ported: serf has no @-source
+// half of their trailing-token parser is ported: evener has no @-source
 // catalog to complete against, so that branch is deliberately dropped
 // rather than carried over unused.
 //

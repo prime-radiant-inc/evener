@@ -1,12 +1,12 @@
 // Sandbox escalation cards (M7): "the tool-exec goroutine blocks until
-// answered via serf/sandbox/escalation/resolve" (docs/appwire-protocol.md).
+// answered via evener/sandbox/escalation/resolve" (docs/appwire-protocol.md).
 // Fully interactive - approve/deny actually call the wire method - and
 // mounted at the SESSION level (Session.tsx renders SandboxEscalationRail),
 // deliberately not inside the transcript tree. Ground truth for why a
 // transcript mount is structurally impossible (see the wave-4 task-3
 // report for the full trail, condensed here):
 //
-//   - serf/sandbox/escalation/requested and SerfThread.pendingEscalations
+//   - evener/sandbox/escalation/requested and EvenerThread.pendingEscalations
 //     are thread-level (a raw notification + a snapshot list on the
 //     hydrate response), never a ThreadItem. R3 projects both into
 //     ThreadModel.pendingEscalations (protocol/reducer.ts's hydrateThread
@@ -89,7 +89,7 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved,
     // keybinding, and there is no native element for it.
     // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate, see above
     <div className={CLASS.card} role="group" aria-label="Sandbox approval" onKeyDown={handleKeyDown}>
-      <div className={CLASS.label}>Sandbox approval — requested by serf, not the agent</div>
+      <div className={CLASS.label}>Sandbox approval — requested by evener, not the agent</div>
       <div className={CLASS.body}>
         The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
         Allow this one action?
@@ -133,7 +133,7 @@ function isEditableElement(element: Element | null): boolean {
 }
 
 // useSandboxEscalations reads `ref`'s tracked ThreadModel.pendingEscalations
-// (snapshot-seeded at hydrate, live-updated by serf/sandbox/escalation/
+// (snapshot-seeded at hydrate, live-updated by evener/sandbox/escalation/
 // requested - both protocol/reducer.ts's job) and delegates resolve() to
 // the threads store's own resolveEscalation action. `ref` must already be
 // ensureThread'd by something else (a real session pane) - this hook only

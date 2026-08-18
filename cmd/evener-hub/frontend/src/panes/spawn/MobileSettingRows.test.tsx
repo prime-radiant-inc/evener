@@ -24,9 +24,9 @@ const catalog: ModelCatalog = {
 
 function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRowsProps {
   return {
-    harness: "serf",
+    harness: "evener",
     harnessOptions: [
-      { value: "serf", label: "serf" },
+      { value: "evener", label: "evener" },
       { value: "codex-cli", label: "codex-cli" },
     ],
     onHarnessChange: vi.fn(),
@@ -84,7 +84,7 @@ test("option sheets commit a selection and return focus to the row", async () =>
   const onHarnessChange = vi.fn();
   renderRows({ onHarnessChange });
 
-  const rowButton = screen.getByRole("button", { name: "Harness: serf" });
+  const rowButton = screen.getByRole("button", { name: "Harness: evener" });
   const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose harness" });

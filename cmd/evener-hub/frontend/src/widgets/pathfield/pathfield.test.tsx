@@ -220,7 +220,7 @@ test("clicking a directory row writes it into the value AND lists its children, 
     value: "/home/jesse",
     complete: lister({
       "/home/jesse/": ["/home/jesse/src"],
-      "/home/jesse/src/": ["/home/jesse/src/serf"],
+      "/home/jesse/src/": ["/home/jesse/src/evener"],
     }),
   });
 
@@ -230,7 +230,7 @@ test("clicking a directory row writes it into the value AND lists its children, 
   expect(onChange).toHaveBeenCalledWith("/home/jesse/src");
   await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/jesse/src/", false));
   expect(panelInput()).not.toBeNull();
-  expect(await screen.findByRole("option", { name: /serf/ })).toBeTruthy();
+  expect(await screen.findByRole("option", { name: /evener/ })).toBeTruthy();
 });
 
 // 94yg: a directory click both picks the value and descends into it - by
@@ -303,13 +303,13 @@ test("the Recent group leads the list and disappears after the first keystroke",
   renderField({
     value: "/home/jesse",
     complete: lister({ "/home/jesse/": ["/home/jesse/src"] }),
-    listRecents: vi.fn().mockResolvedValue(["/home/jesse/serf"]),
+    listRecents: vi.fn().mockResolvedValue(["/home/jesse/evener"]),
   });
 
   await open(user);
   expect(await screen.findByText("Recent projects")).toBeTruthy();
   const options = screen.getAllByRole("option");
-  expect(options[0]?.textContent).toMatch(/serf/);
+  expect(options[0]?.textContent).toMatch(/evener/);
 
   await user.keyboard("x");
 
@@ -321,13 +321,13 @@ test("clicking a recent row commits it and closes, unlike a directory row", asyn
   const { onChange } = renderField({
     value: "/home/jesse",
     complete: lister({ "/home/jesse/": ["/home/jesse/src"] }),
-    listRecents: vi.fn().mockResolvedValue(["/home/jesse/serf"]),
+    listRecents: vi.fn().mockResolvedValue(["/home/jesse/evener"]),
   });
 
   await open(user);
-  await user.click(await screen.findByRole("option", { name: /serf/ }));
+  await user.click(await screen.findByRole("option", { name: /evener/ }));
 
-  expect(onChange).toHaveBeenLastCalledWith("/home/jesse/serf");
+  expect(onChange).toHaveBeenLastCalledWith("/home/jesse/evener");
   await waitFor(() => expect(panelInput()).toBeNull());
 });
 
@@ -533,7 +533,7 @@ test("a client-unreachable rejection renders the friendly hub-unreachable senten
   const user = userEvent.setup();
   renderField({
     value: "/home/jesse",
-    complete: vi.fn().mockRejectedValue(new Error('AppwireClient: cannot call "serf/paths/complete"; not connected')),
+    complete: vi.fn().mockRejectedValue(new Error('AppwireClient: cannot call "evener/paths/complete"; not connected')),
   });
 
   await open(user);
@@ -627,7 +627,7 @@ async function openWithLateRecents(user: ReturnType<typeof userEvent.setup>) {
   });
   const input = await open(user);
   await waitFor(() => expect(screen.getByRole("option", { name: /src/ })).toBeTruthy());
-  return { ...props, input, resolveRecents: () => act(async () => recents.resolve(["/home/jesse/serf"])) };
+  return { ...props, input, resolveRecents: () => act(async () => recents.resolve(["/home/jesse/evener"])) };
 }
 
 // A listing that resolves after the user has already moved the highlight must
@@ -801,14 +801,14 @@ test("committing a recent fires onPanelClose once with the committed path", asyn
   const { onPanelClose } = renderStatefulField({
     value: "/home/jesse",
     complete: lister({ "/home/jesse/": [] }),
-    listRecents: () => Promise.resolve(["/home/jesse/serf"]),
+    listRecents: () => Promise.resolve(["/home/jesse/evener"]),
   });
 
   await open(user);
-  await user.click(await screen.findByRole("option", { name: /serf/ }));
+  await user.click(await screen.findByRole("option", { name: /evener/ }));
 
   await waitFor(() => expect(panelInput()).toBeNull());
-  expect(onPanelClose.mock.calls).toEqual([["/home/jesse/serf"]]);
+  expect(onPanelClose.mock.calls).toEqual([["/home/jesse/evener"]]);
 });
 
 test("a trigger click that closes fires onPanelClose once", async () => {

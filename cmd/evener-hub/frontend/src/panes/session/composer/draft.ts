@@ -13,7 +13,7 @@
 // from React's own empty initial state - there is no "leftover text from a
 // different ref" for a fresh mount to ever see. Restoring this ref's draft
 // on mount (Composer.tsx) is therefore unconditional, not guarded.
-const STORAGE_PREFIX = "serf.composer.draft.v1.";
+const STORAGE_PREFIX = "evener.composer.draft.v1.";
 
 export function draftStorageKey(ref: string): string {
   return `${STORAGE_PREFIX}${ref}`;

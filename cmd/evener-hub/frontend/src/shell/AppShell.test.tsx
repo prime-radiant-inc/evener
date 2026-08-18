@@ -20,7 +20,7 @@ import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./w
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same
 // way DockHost.test.tsx's own LAYOUT_KEY is).
-const LAYOUT_KEY = "serf.workspace.layout.v2";
+const LAYOUT_KEY = "evener.workspace.layout.v2";
 
 const ALL_FEATURES_OFF = {
   threadList: false,
@@ -146,7 +146,7 @@ function threadStartResponse(ref: string): ThreadStartResponse {
       cwd: "/tmp/project",
       cliVersion: "1.0.0",
       source: "local",
-      serf: { ref, capabilities: THREAD_CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref, capabilities: THREAD_CAPABILITIES, queue: { revision: 0 } },
     },
     turn: { id: "turn_1", itemsView: "full", status: "idle" },
   };
@@ -235,7 +235,7 @@ async function warmRoute(
   // The /settings/general warm route mounts the real GeneralSection, whose
   // mount effect calls settingsOverviewStore.getState().fetch() for real
   // against this warm-up's own FakeClient (no handler scripted for
-  // "serf/settings/overview", so it settles into a scripted-looking
+  // "evener/settings/overview", so it settles into a scripted-looking
   // "no handler" error) - settingsOverviewStore is a module singleton, so
   // that leftover error/inflight bookkeeping must not survive into this
   // file's own tests or the next file in the worker.
@@ -606,7 +606,7 @@ test("clicking the rail's own Search button opens the command palette", async ()
 test("populates connectionStore.serverInfo from the injected client's scripted connect() response", async () => {
   const fake = new FakeClient("ready");
   const scripted: InitializeResponse = {
-    serverInfo: { name: "serf-hub-test", version: "9.9.9" },
+    serverInfo: { name: "evener-hub-test", version: "9.9.9" },
     protocolVersion: "1",
     sourceId: "src_test",
     features: ALL_FEATURES_OFF,
@@ -617,7 +617,7 @@ test("populates connectionStore.serverInfo from the injected client's scripted c
   await screen.findByText("No session open");
 
   await waitFor(() => {
-    expect(connectionStore.getState().serverInfo).toEqual({ name: "serf-hub-test", version: "9.9.9" });
+    expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-test", version: "9.9.9" });
   });
 });
 
@@ -1703,7 +1703,7 @@ function installSwitchableViewport(): (mobile: boolean) => void {
 // link parsed but unplaced. StackHost fills an empty stack with welcome and
 // publishes the focused pane's URL, which used to overwrite the address bar
 // with "/" during exactly that beat: the deep link was gone before the tree
-// it was waiting for ever landed, and no later serf/tree/changed push could
+// it was waiting for ever landed, and no later evener/tree/changed push could
 // name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
   let resolveTree!: (value: Response) => void;

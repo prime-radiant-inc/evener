@@ -44,7 +44,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // --- Agents & models -----------------------------------------------
   { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
   { id: "agents", label: "Agents", cluster: "agents-models" },
-  { id: "launch-serf", label: "Serf launch", cluster: "agents-models" },
+  { id: "launch-evener", label: "Evener launch", cluster: "agents-models" },
   { id: "launch-codex", label: "Codex launch", cluster: "agents-models" },
   { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------

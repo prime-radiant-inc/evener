@@ -118,8 +118,8 @@ function thread(status: string, capabilities: ThreadCapabilities): Thread {
     status: { type: status },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref: REF, capabilities, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref: REF, capabilities, queue: { revision: 0 } },
   };
 }
 

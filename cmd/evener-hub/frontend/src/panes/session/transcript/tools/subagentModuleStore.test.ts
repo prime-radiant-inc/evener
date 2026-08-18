@@ -1,9 +1,9 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel } from "../../../../protocol/model";
-import type { SerfDelegateInfo } from "../../../../protocol/types.gen";
+import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import {
-  applySerfDelegateUpdated,
+  applyEvenerDelegateUpdated,
   claimLeader,
   classifyJobStatus,
   itemScopeKey,
@@ -230,9 +230,9 @@ test("upsertSubagentRow preserves liveReason/resumable/exhaustion fields a deleg
   });
 });
 
-// --- applySerfDelegateUpdated ---------------------------------------------
+// --- applyEvenerDelegateUpdated ---------------------------------------------
 
-function stableDelegate(overrides: Partial<SerfDelegateInfo> = {}): SerfDelegateInfo {
+function stableDelegate(overrides: Partial<EvenerDelegateInfo> = {}): EvenerDelegateInfo {
   return {
     delegateId: "dlg_1",
     ownerSessionId: "sess_owner",
@@ -254,18 +254,18 @@ function stableDelegate(overrides: Partial<SerfDelegateInfo> = {}): SerfDelegate
 
 const SESS = "ref_root";
 
-test("applySerfDelegateUpdated requires durable turn identity before creating a row", () => {
-  applySerfDelegateUpdated(stableDelegate({ originTurnId: undefined }), SESS);
+test("applyEvenerDelegateUpdated requires durable turn identity before creating a row", () => {
+  applyEvenerDelegateUpdated(stableDelegate({ originTurnId: undefined }), SESS);
   const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_1")));
   expect(result.current).toEqual([]);
 });
 
-test("applySerfDelegateUpdated creates a stable dlg-keyed row without call-scoped wait evidence", () => {
-  applySerfDelegateUpdated(
+test("applyEvenerDelegateUpdated creates a stable dlg-keyed row without call-scoped wait evidence", () => {
+  applyEvenerDelegateUpdated(
     {
       ...stableDelegate({ exhaustionBudget: "30m", exhaustionLimit: 60, exhaustionResumable: true }),
       waitIgnoredReason: "call scoped only",
-    } as SerfDelegateInfo & { waitIgnoredReason: string },
+    } as EvenerDelegateInfo & { waitIgnoredReason: string },
     SESS,
   );
 
@@ -283,8 +283,8 @@ test("applySerfDelegateUpdated creates a stable dlg-keyed row without call-scope
   expect(result.current[0]?.stable).not.toHaveProperty("waitIgnoredReason");
 });
 
-test("applySerfDelegateUpdated fences state by revision and max-merges latest activity", () => {
-  applySerfDelegateUpdated(
+test("applyEvenerDelegateUpdated fences state by revision and max-merges latest activity", () => {
+  applyEvenerDelegateUpdated(
     stableDelegate({
       projectionRevision: 3,
       lifecycle: "idle",
@@ -295,7 +295,7 @@ test("applySerfDelegateUpdated fences state by revision and max-merges latest ac
     }),
     SESS,
   );
-  applySerfDelegateUpdated(
+  applyEvenerDelegateUpdated(
     stableDelegate({
       projectionRevision: 2,
       status: "running",
@@ -315,8 +315,8 @@ test("applySerfDelegateUpdated fences state by revision and max-merges latest ac
   expect(result.current[0]?.kind).toBe("done");
 });
 
-test("applySerfDelegateUpdated displays a terminal outcome but a resumed delegate's lifecycle", () => {
-  applySerfDelegateUpdated(
+test("applyEvenerDelegateUpdated displays a terminal outcome but a resumed delegate's lifecycle", () => {
+  applyEvenerDelegateUpdated(
     stableDelegate({
       lifecycle: "idle",
       phase: "idle",
@@ -331,7 +331,7 @@ test("applySerfDelegateUpdated displays a terminal outcome but a resumed delegat
   expect(result.current[0]?.kind).toBe("failed");
 
   act(() => {
-    applySerfDelegateUpdated(
+    applyEvenerDelegateUpdated(
       stableDelegate({
         lifecycle: "running",
         phase: "running",
@@ -353,13 +353,13 @@ test("turnScopeKey: two different sessionRefs with the SAME turnId never produce
   expect(turnScopeKey("session_a", "turn_1")).not.toBe(turnScopeKey("session_b", "turn_1"));
 });
 
-test("applySerfDelegateUpdated scopes the same turn id to the notification's session ref", () => {
+test("applyEvenerDelegateUpdated scopes the same turn id to the notification's session ref", () => {
   // Both sessions' first real turn lands on the identical "turn_1" string
   // (turn ids restart at 0 per session - internal/appprojector's own
   // nextTurn counter) - exactly the collision kata 8525 was reproduced with.
   const scopeA = turnScopeKey("session_a", "turn_1");
   upsertSubagentRow(scopeA, { rowKey: "dlg:dlg_a", kind: "running", task: "session A's own task", resultPreview: "" });
-  applySerfDelegateUpdated(
+  applyEvenerDelegateUpdated(
     stableDelegate({
       delegateId: "dlg_b",
       childSessionId: "sess_b",

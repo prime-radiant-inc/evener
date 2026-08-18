@@ -67,7 +67,7 @@ test("the embedded license const matches LICENSES/beautiful-ui.txt on disk, from
 test("shows the hub version (and commit) once connected and loaded", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = { hub: { version: "1.2.3", commit: "abc1234" } };
-  fake.on("serf/settings/overview", () => response);
+  fake.on("evener/settings/overview", () => response);
 
   render(<AboutSection />);
 
@@ -77,12 +77,12 @@ test("shows the hub version (and commit) once connected and loaded", async () =>
 
 test("omits version/commit gracefully, with no raw error text, when not connected", () => {
   render(<AboutSection />);
-  expect(screen.getByText("serf hub")).toBeTruthy();
+  expect(screen.getByText("evener hub")).toBeTruthy();
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => {
+  fake.on("evener/settings/overview", () => {
     throw new Error("hub unreachable");
   });
 

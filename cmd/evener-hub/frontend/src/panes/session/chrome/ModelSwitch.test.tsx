@@ -394,7 +394,7 @@ test("a daemon-missing catalog fetch shows actionable copy under the session-sta
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("model/list", () => {
-    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+    throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
   });
 
   render(
@@ -407,7 +407,7 @@ test("a daemon-missing catalog fetch shows actionable copy under the session-sta
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toBe(
-    "Couldn't start this session: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
+    "Couldn't start this session: No agent daemon responded for this project. Start one by running evener in the repo, then retry.",
   );
   expect(alert.textContent).not.toMatch(/launch-check timed out/i);
 });
@@ -516,7 +516,7 @@ test("a setModel that fails because the session would not start names the start,
   const fake = connectFakeClient();
   fake.on("model/list", () => modelListResponse());
   fake.on("thread/model/set", () => {
-    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+    throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
   });
 
   render(
@@ -533,6 +533,6 @@ test("a setModel that fails because the session would not start names the start,
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await screen.findByText("Couldn't start this session: serf launch-check timed out");
+  await screen.findByText("Couldn't start this session: evener launch-check timed out");
   expect(screen.queryByText(/couldn't change model/i)).toBeNull();
 });

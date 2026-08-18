@@ -8,9 +8,9 @@ import type {
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
-  SerfDelegateInfo,
-  SerfTurnSlots,
-  SerfUsage,
+  EvenerDelegateInfo,
+  EvenerTurnSlots,
+  EvenerUsage,
   ThreadCapabilities,
   ThreadStatus,
 } from "./types.gen";
@@ -204,7 +204,7 @@ export interface ThreadModel {
   reasoningEffort?: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
-  // (M7) — appwire/types.go's ThreadSerf.PendingEscalations doc comment: "a
+  // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a
   // HUMAN-CLIENT field only ... never part of the model's transcript or any
   // model-visible projection." THREAD-level, never a turn item; always an
   // array (hydrateThread defaults an absent wire value to []).
@@ -218,19 +218,19 @@ export interface ThreadModel {
   // Live updates are fenced by projectionRevision; latestActivityAt is
   // independently max-merged because transcript activity is durable outside
   // the lifecycle event sequence.
-  delegates?: SerfDelegateInfo[];
-  turnSlots?: SerfTurnSlots | null;
-  // Bumped (to the reducer's frame time) by every serf/job/started and
-  // serf/job/finished for this thread; the jobs panel re-fetches its list when
+  delegates?: EvenerDelegateInfo[];
+  turnSlots?: EvenerTurnSlots | null;
+  // Bumped (to the reducer's frame time) by every evener/job/started and
+  // evener/job/finished for this thread; the jobs panel re-fetches its list when
   // this changes. null until the first push arrives.
   jobsUpdatedAt: number | null;
   // The root activity tree's monotonic lifecycle revision. Null until a
-  // serf/jobs/treeUpdated notification names this thread as the root whose tree
+  // evener/jobs/treeUpdated notification names this thread as the root whose tree
   // changed.
   jobsTreeRevision: number | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input
-  // The in-flight model-call retry, when one is pending (serf/thread/modelRetry).
+  // The in-flight model-call retry, when one is pending (evener/thread/modelRetry).
   // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
   // produced nothing, so the quiet/stall clock must keep running. This only
   // explains the silence it is already measuring. Sticky and cumulative
@@ -241,8 +241,8 @@ export interface ThreadModel {
   // the completion of the model's own output item (assistant message,
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
-  // Wave 5 T1: the following are all sourced from thread.serf
-  // (appwire/types.go's SerfThread, lines 223-274) and are SNAPSHOT-ONLY -
+  // Wave 5 T1: the following are all sourced from thread.evener
+  // (appwire/types.go's EvenerThread, lines 223-274) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY
   // where a real notification actually carries the field (see each field's
   // own note below); everything else here is stale until the next
@@ -266,7 +266,7 @@ export interface ThreadModel {
   // to say) reads as "none" rather than forcing every builder to answer a
   // question about provenance it does not have.
   capabilitySource?: CapabilitySource;
-  // Goal is null when no /goal objective is set (wire: SerfThread.Goal
+  // Goal is null when no /goal objective is set (wire: EvenerThread.Goal
   // *GoalState, omitempty). No live push exists (goal/set's response
   // carries only {started}, and appwire/protocol.go's Notifications catalog
   // has no goal-changed entry) - a future wave's wire-candidate.
@@ -275,11 +275,11 @@ export interface ThreadModel {
   contextWindow: number;
   contextPressure: number;
   // Usage is null (not a zero-valued object) when the daemon has no token
-  // data at all (old daemon, or a Codex-bridged thread) - SerfThread.Usage's
+  // data at all (old daemon, or a Codex-bridged thread) - EvenerThread.Usage's
   // own doc comment: "nil is how a fresh/old-daemon/codex thread signals 'no
   // token data' rather than rendering ↑0 ↓0." No live push.
-  usage: SerfUsage | null;
-  // Cost is the session-level estimated dollar total (wire: SerfThread.Cost) -
+  usage: EvenerUsage | null;
+  // Cost is the session-level estimated dollar total (wire: EvenerThread.Cost) -
   // the "~$X.XX" string EstimateCost derives SERVER-SIDE from the cumulative
   // usage at the thread's model price (the pricing table never crosses the
   // wire), the session-scope sibling of TurnModel.cost. undefined/null (never
@@ -290,7 +290,7 @@ export interface ThreadModel {
   // it refreshes on the next thread/read (e.g. a reconnect re-hydrate).
   cost?: string | null;
   // failedToolCalls is how many of this session's tool calls failed, counted
-  // SERVER-SIDE over the whole transcript (wire: SerfThread.FailedToolCalls).
+  // SERVER-SIDE over the whole transcript (wire: EvenerThread.FailedToolCalls).
   // It is not derivable here: thread/read windows turns, so a count over
   // model.turns covers only the loaded suffix, and a "0 failed" from a partial
   // window is the very misreading the figure exists to prevent.
@@ -311,7 +311,7 @@ export interface ThreadModel {
   workMillis: number;
   // activeTurnStartedAt is undefined when no turn is active (an ISO string,
   // like every other timestamp on this model, converted from the wire's
-  // epoch-ms SerfThread.ActiveTurnStartedAt). No live push.
+  // epoch-ms EvenerThread.ActiveTurnStartedAt). No live push.
   activeTurnStartedAt?: string;
   // reasoningEffortLevels/supportsReasoning DO get a live update, but only
   // via thread/model/changed (a model switch describes the new model's full
@@ -328,7 +328,7 @@ export interface ThreadModel {
   // When the session began and when its state was last written, as ISO
   // strings (the model's timestamp convention) converted from the wire's
   // top-level Thread.createdAt/updatedAt, which are Unix SECONDS - a
-  // different unit from the millisecond stamps on serf.activeTurnStartedAt
+  // different unit from the millisecond stamps on evener.activeTurnStartedAt
   // and on turns (see detailsAccounting.ts's epochSecondsToISO). undefined
   // when the source did not know the instant (Go's zero value). Snapshot-only
   // like the fields above; the session-details panel reads them.

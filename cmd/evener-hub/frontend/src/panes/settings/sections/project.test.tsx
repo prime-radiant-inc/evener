@@ -36,7 +36,7 @@ const SCHEMA: LaunchOptionSchemaResponse = {
 };
 
 const PROJECT_LAYER: LaunchConfigLayer = {};
-const GLOBAL_LAYER: LaunchConfigLayer = { agent: "serf" };
+const GLOBAL_LAYER: LaunchConfigLayer = { agent: "evener" };
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -62,11 +62,11 @@ describe("3-state loaded contract", () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
     const calls: string[] = [];
-    fake.on("serf/launch/schema", () => {
+    fake.on("evener/launch/schema", () => {
       calls.push("schema");
       return SCHEMA;
     });
-    fake.on("serf/launch/getLayer", (params) => {
+    fake.on("evener/launch/getLayer", (params) => {
       calls.push(`getLayer:${params.layer}`);
       return params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER;
     });
@@ -75,13 +75,13 @@ describe("3-state loaded contract", () => {
     await screen.findByLabelText("Agent");
     expect(calls).toEqual(["schema", "getLayer:project", "getLayer:global"]);
     // The global layer is read-only context for the "default: X" hint, never itself editable here.
-    expect(screen.getByText("default: serf")).toBeTruthy();
+    expect(screen.getByText("default: evener")).toBeTruthy();
   });
 
   test("error is a distinct third state (not '2-state, stays loading forever')", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/schema", () => {
+    fake.on("evener/launch/schema", () => {
       throw new Error("boom");
     });
     render(<ProjectSection sectionId="project" />);
@@ -95,8 +95,8 @@ describe("3-state loaded contract", () => {
   test("no diagnostics panel anywhere on this page", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/schema", () => SCHEMA);
-    fake.on("serf/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
+    fake.on("evener/launch/schema", () => SCHEMA);
+    fake.on("evener/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
     render(<ProjectSection sectionId="project" />);
     await screen.findByLabelText("Agent");
     expect(screen.queryByText("Warnings")).toBeNull();
@@ -107,9 +107,9 @@ describe("save", () => {
   test("saves to the project layer (not global) and toasts the project-specific success message", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/schema", () => SCHEMA);
-    fake.on("serf/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
-    fake.on("serf/launch/setLayer", (params) => {
+    fake.on("evener/launch/schema", () => SCHEMA);
+    fake.on("evener/launch/getLayer", (params) => (params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER));
+    fake.on("evener/launch/setLayer", (params) => {
       expect(params.cwd).toBe("/repo");
       expect(params.layer).toBe("project");
       return { effective: {}, layers: {}, provenance: {} };

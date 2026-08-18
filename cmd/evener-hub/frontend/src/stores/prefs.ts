@@ -2,10 +2,10 @@
 // that has no server-side counterpart (Theme/Transcript/Display/
 // Notifications - see docs/web-ui/parity/parity-m7-settings.md §§3-6):
 // General/Hub/Storage read live daemon state through settingsOverview.ts
-// instead. Every key lives under the "serf.prefs.<name>" contract (wave-7
+// instead. Every key lives under the "evener.prefs.<name>" contract (wave-7
 // plan): a flat, one-value-per-key namespace, NOT the legacy's per-section
-// JSON blobs (serf-hub.composer, serf-hub.transcript.systemStatus, ...).
-// serf.prefs.enterToSend/serf.prefs.showCost are PINNED: this is a live
+// JSON blobs (evener-hub.composer, evener-hub.transcript.systemStatus, ...).
+// evener.prefs.enterToSend/evener.prefs.showCost are PINNED: this is a live
 // contract reachable from Settings today, not a hypothetical one - Settings
 // -> Display's own setEnterToSend/setShowCost (below) write both keys, and
 // Composer.tsx reads enterToSend from this same store on every render and
@@ -56,7 +56,7 @@
 // sidebarHidden is a plain persisted BOOLEAN (desktop only): true = the
 // docked rail is hidden behind the top-left ☰ chip. It replaced the former
 // tri-state sidebarMode (auto/pane/rail overlay-drawer system, removed
-// 2026-07-24) — a stale serf.prefs.sidebarMode key is simply never read.
+// 2026-07-24) — a stale evener.prefs.sidebarMode key is simply never read.
 // No document mirror: RailHost reads it directly.
 // sidebarWidth is the docked rail's dragged width in CSS pixels (desktop
 // only; the mobile drawer sizes itself). Always CLAMPED on read as well as
@@ -89,7 +89,7 @@ export interface PrefsStoreState {
   fontSize: FontSizePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
-  // match the PINNED serf.prefs.enterToSend / serf.prefs.showCost keys.
+  // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
   enterToSend: boolean;
   showCost: boolean;
   notifications: Record<NotificationKey, boolean>;
@@ -107,7 +107,7 @@ export interface PrefsStoreState {
   setNotificationsLoudScope(value: NotificationsLoudScopePref): void;
 }
 
-const KEY_PREFIX = "serf.prefs.";
+const KEY_PREFIX = "evener.prefs.";
 
 // --- localStorage access: every read/write is best-effort - a private
 // browsing mode that throws on storage access must never be fatal to the
@@ -141,7 +141,7 @@ function removeRaw(name: string): void {
 // "1"/"0", not JS's "true"/"false": every boolean this store persists
 // (enterToSend, showCost, every transcript.* and notifications.* member)
 // uses this one encoding, so readBool/writeBool only have to get it right
-// once. serf.prefs.enterToSend/serf.prefs.showCost in
+// once. evener.prefs.enterToSend/evener.prefs.showCost in
 // particular are a live contract reachable from Settings today (Display's
 // own setEnterToSend/setShowCost, Composer.tsx's own enterToSend read) -
 // this encoding already broke that contract once during development
@@ -211,7 +211,7 @@ const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"]
 // Per-field localStorage key names for the two grouped record fields -
 // transcript/notifications are exposed as small in-memory records for a
 // convenient single destructure at each section's call site, but each
-// member still round-trips through its OWN flat serf.prefs.<name> key
+// member still round-trips through its OWN flat evener.prefs.<name> key
 // (never one shared JSON blob), per this file's own top comment.
 const TRANSCRIPT_KEY_NAMES: Record<TranscriptStatusKey, string> = {
   roundTimings: "transcriptRoundTimings",

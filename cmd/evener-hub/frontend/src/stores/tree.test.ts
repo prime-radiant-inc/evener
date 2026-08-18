@@ -334,7 +334,7 @@ describe("ensureLoaded", () => {
     expect(treeStore.getState().tree).toEqual(NORMALIZED_EMPTY_TREE);
   });
 
-  // The guarantee the dedup must NOT eat: serf/tree/changed (and a reconnect)
+  // The guarantee the dedup must NOT eat: evener/tree/changed (and a reconnect)
   // call refresh() because something changed, and a request already in flight
   // may have been issued before that change. Joining it would silently drop
   // the update, so refresh() always issues its own.
@@ -861,8 +861,8 @@ describe("REFRESH_NOTIFICATIONS", () => {
     expect(REFRESH_NOTIFICATIONS).toEqual([
       "thread/started",
       "thread/closed",
-      "serf/attention/changed",
-      "serf/tree/changed",
+      "evener/attention/changed",
+      "evener/tree/changed",
     ]);
   });
 });
@@ -897,7 +897,7 @@ describe("notification-triggered refetch", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  test("serf/attention/changed schedules a debounced refetch", async () => {
+  test("evener/attention/changed schedules a debounced refetch", async () => {
     fetchMock.mockResolvedValue(jsonResponse(EMPTY_WIRE_TREE));
     const fake = connectFakeClient();
     await treeStore.getState().refresh();

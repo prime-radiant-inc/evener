@@ -14,7 +14,7 @@
 // three divergent wire implementations, and layoutguard's copy is where the
 // file:// font bug lived.
 //
-// Origin discipline (kata 8ecz): guards never touch the shared serf-hub dev
+// Origin discipline (kata 8ecz): guards never touch the shared evener-hub dev
 // server on 9180 or the shared MCP Chrome. Every page load is pinned to the
 // guard's OWN loopback Vite origin by assertGuardOrigin.
 
@@ -321,13 +321,13 @@ export async function forcePseudoStates(send, states) {
 /**
  * Belt-and-suspenders guard rail: refuse to proceed if a measurement ever
  * lands anywhere but the guard's own loopback Vite origin - above all the
- * shared serf-hub dev server on 9180 (kata 8ecz's shared-instance class of
+ * shared evener-hub dev server on 9180 (kata 8ecz's shared-instance class of
  * bug).
  */
 export async function assertGuardOrigin(send, expectedHost) {
   const origin = await evaluate(send, "location.protocol + '//' + location.host");
   if (origin.includes("9180")) {
-    throw new Error("refusing: this eval landed on port 9180 (the shared serf-hub dev server)");
+    throw new Error("refusing: this eval landed on port 9180 (the shared evener-hub dev server)");
   }
   if (origin !== `http://${expectedHost}`) {
     throw new Error(`refusing: expected origin http://${expectedHost}, got ${origin}`);

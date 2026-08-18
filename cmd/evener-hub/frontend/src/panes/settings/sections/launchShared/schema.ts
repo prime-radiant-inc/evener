@@ -12,7 +12,7 @@ export function optionSupportsLayer(opt: LaunchOption, layer: LaunchConfigLayerN
 }
 
 // schemaPathKind maps a LaunchOption.pathKind onto the `kind` string
-// serf/path/validate expects - the one case that differs is outputFile,
+// evener/path/validate expects - the one case that differs is outputFile,
 // whose wire/schema spelling ("outputFile") is not what the RPC accepts
 // ("output-file"). Mirrors assets/launchconfig.js's own function of the
 // same name exactly.
@@ -157,7 +157,7 @@ export function emptyChoiceLabel(layer: LaunchConfigLayerName): string {
 
 // resolvedEmptyChoice: every select/radio field in the real schema
 // (cmd/evener-hub/internal/launchconfig/schema.go) already supplies its own
-// custom-labeled value:"" choice (e.g. "(inherit)", "Serf default") - using
+// custom-labeled value:"" choice (e.g. "(inherit)", "Evener default") - using
 // that verbatim instead of ALSO synthesizing a second, generically-labeled
 // empty option avoids a real duplicate-"unset"-entry defect the legacy
 // engine has (it unconditionally prepends its own placeholder AND then

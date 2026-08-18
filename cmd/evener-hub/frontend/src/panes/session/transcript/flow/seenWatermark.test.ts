@@ -68,6 +68,6 @@ test("writeSeenWatermark never throws when localStorage throws (quota exceeded e
   expect(() => writeSeenWatermark("local:01AAA", "turn-1")).not.toThrow();
 });
 
-test("seenWatermarkKey namespaces by ref under the app's serf.* convention", () => {
-  expect(seenWatermarkKey("local:01AAA")).toBe("serf.transcript.seen.v1.local:01AAA");
+test("seenWatermarkKey namespaces by ref under the app's evener.* convention", () => {
+  expect(seenWatermarkKey("local:01AAA")).toBe("evener.transcript.seen.v1.local:01AAA");
 });

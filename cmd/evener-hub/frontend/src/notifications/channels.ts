@@ -8,7 +8,7 @@ import { navigate } from "../shell/routing";
 import type { AttentionEntry } from "./attention";
 
 // OS notification. Requires the API, permission "granted", and an unfocused
-// document (floor §3.4). Title "serf · <title||ref>"; construction failure
+// document (floor §3.4). Title "evener · <title||ref>"; construction failure
 // swallowed. Click focuses the window (best-effort) and navigates to the
 // session pane via SPA routing — no full reload, unlike the legacy's
 // location.href assignment.
@@ -19,7 +19,7 @@ export function fireOsNotification(entry: AttentionEntry): void {
   if (document.hasFocus?.()) return;
   let n: Notification;
   try {
-    n = new Ctor(`serf · ${entry.title || entry.ref}`);
+    n = new Ctor(`evener · ${entry.title || entry.ref}`);
   } catch {
     return; // construction refused (e.g. permission race): no alert, no throw
   }

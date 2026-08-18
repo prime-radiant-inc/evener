@@ -33,8 +33,8 @@ function thread(overrides: Partial<Thread> = {}): Thread {
     status: { type: "active" },
     cwd: "",
     cliVersion: "",
-    source: "serf",
-    serf: {
+    source: "evener",
+    evener: {
       ref: "ref_a",
       activeTurnId: "turn_1",
       capabilities: {
@@ -191,8 +191,8 @@ test("recovery action wrappers refresh the durable projection", async () => {
 
 test("authoritative pendingMutations reconstruct accepted steering without a browser registry", async () => {
   await connect({
-    serf: {
-      ...thread().serf,
+    evener: {
+      ...thread().evener,
       pendingMutations: [
         {
           clientMutationId: "mutation_1",
@@ -325,7 +325,7 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   });
   act(() => {
     fake.emitNotification({
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: {
         threadId: "thread_a",
         ref: "ref_a",

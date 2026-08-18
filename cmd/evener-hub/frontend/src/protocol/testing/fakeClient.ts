@@ -12,7 +12,7 @@ import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 // The hub's real method catalog, as data. MethodName alone is a compile-time
 // constraint, and a compile-time constraint is silent whenever it has been
 // bypassed — a cast, an `any`, a name assembled at runtime. That silence is
-// what let the serf/dirs/complete -> serf/paths/complete rename ship a broken
+// what let the evener/dirs/complete -> evener/paths/complete rename ship a broken
 // picker past a green suite: the test scripted the old name, the component
 // called the old name, and the two agreed with each other rather than with
 // the hub. Checking against this set makes a nonexistent method a loud
@@ -59,8 +59,8 @@ export type ConnectHandler = () => InitializeResponse | Promise<InitializeRespon
 // resolves connect() with something valid rather than forcing every caller
 // to script one just to get past the handshake.
 const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
-  serverInfo: { name: "fake-serf-hub", version: "0.0.0" },
-  protocolVersion: "serf-appwire-v3",
+  serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
+  protocolVersion: "evener-appwire-v3",
   sourceId: "fake",
   features: {
     threadList: false,

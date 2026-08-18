@@ -63,7 +63,7 @@ const CLASS = {
 const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
   credentials: CredentialsSection,
   agents: AgentsSection,
-  "launch-serf": LaunchServerSection,
+  "launch-evener": LaunchServerSection,
   "launch-codex": CodexLaunchSection,
   inrepo: InRepoSection,
   project: ProjectSection,

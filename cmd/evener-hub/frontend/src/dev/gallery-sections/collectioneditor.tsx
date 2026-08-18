@@ -7,7 +7,7 @@ interface DirItem {
 }
 
 function LiveCollectionEditor() {
-  const [items, setItems] = useState<DirItem[]>([{ path: "/opt/plugins" }, { path: "/home/user/.serf/plugins" }]);
+  const [items, setItems] = useState<DirItem[]>([{ path: "/opt/plugins" }, { path: "/home/user/.evener/plugins" }]);
 
   async function handleAdd(value: string): Promise<CollectionAddResult> {
     if (!value.startsWith("/")) return { ok: false, error: "Path must be absolute." };

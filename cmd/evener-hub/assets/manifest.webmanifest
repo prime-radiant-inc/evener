@@ -1,6 +1,6 @@
 {
-  "name": "serf hub",
-  "short_name": "serf",
+  "name": "evener hub",
+  "short_name": "evener",
   "description": "Watch your agents work.",
   "display": "standalone",
   "orientation": "portrait-primary",

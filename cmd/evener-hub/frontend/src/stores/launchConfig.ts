@@ -1,7 +1,7 @@
 // launchConfig.ts is the thin wire-truth gateway for every settings surface
 // built on the schema-driven launch-config engine (launchShared/) plus the
-// hand-rolled in-repo trust flow: serf/launch/{schema,getLayer,setLayer,
-// resolve,trustRepo} and serf/path/validate. Follows stores/threads.ts's own
+// hand-rolled in-repo trust flow: evener/launch/{schema,getLayer,setLayer,
+// resolve,trustRepo} and evener/path/validate. Follows stores/threads.ts's own
 // requireClient()-via-connectionStore pattern (no connect() of its own).
 //
 // schema() is the one cached read here: the option schema is server-global,
@@ -56,7 +56,7 @@ export const launchConfigStore = createStore<LaunchConfigStoreState>(() => ({
     if (!schemaInflight) {
       const client = requireClient();
       schemaInflight = client
-        .request("serf/launch/schema", {})
+        .request("evener/launch/schema", {})
         .then((resp) => {
           schemaCache = resp;
           return resp;
@@ -70,27 +70,27 @@ export const launchConfigStore = createStore<LaunchConfigStoreState>(() => ({
 
   async getLayer(cwd, layer) {
     const client = requireClient();
-    return client.request("serf/launch/getLayer", { cwd, layer });
+    return client.request("evener/launch/getLayer", { cwd, layer });
   },
 
   async setLayer(cwd, layer, config) {
     const client = requireClient();
-    return client.request("serf/launch/setLayer", { cwd, layer, config });
+    return client.request("evener/launch/setLayer", { cwd, layer, config });
   },
 
   async resolve(cwd, launchOverrides) {
     const client = requireClient();
-    return client.request("serf/launch/resolve", { cwd, launchOverrides });
+    return client.request("evener/launch/resolve", { cwd, launchOverrides });
   },
 
   async trustRepo(cwd, hash) {
     const client = requireClient();
-    return client.request("serf/launch/trustRepo", { cwd, hash });
+    return client.request("evener/launch/trustRepo", { cwd, hash });
   },
 
   async validatePath(path, kind) {
     const client = requireClient();
-    return client.request("serf/path/validate", { path, kind });
+    return client.request("evener/path/validate", { path, kind });
   },
 }));
 

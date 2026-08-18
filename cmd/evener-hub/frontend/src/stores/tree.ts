@@ -319,7 +319,7 @@ const projectDetailsInFlight = new Map<string, Promise<void>>();
 // The refresh() currently in flight, if any - what ensureLoaded() joins
 // instead of issuing a second identical GET. refresh() itself deliberately
 // never joins it: every refresh() caller is reacting to something that just
-// changed (a serf/tree/changed push, a reconnect), and a request already in
+// changed (a evener/tree/changed push, a reconnect), and a request already in
 // flight may have been issued BEFORE that change, so joining it would drop
 // the update with nothing left to re-fetch it. refreshGeneration decides
 // which response wins; this decides whether to ask at all.
@@ -535,18 +535,18 @@ export function useTreeStore<T>(selector?: (state: TreeStoreState) => T): T | Tr
 // --- notification-triggered refetch -------------------------------------
 //
 // Notification methods that invalidate the cached tree and should trigger a
-// debounced refresh(). `serf/tree/changed` (a sibling Go stream, landing
+// debounced refresh(). `evener/tree/changed` (a sibling Go stream, landing
 // after this task) is a one-line addition to this list once it exists in
 // NotificationName - everything else here (the debounce, the subscribe
 // wiring) already generalizes to N methods and needs no other change.
 export const REFRESH_NOTIFICATIONS: readonly AnyNotification["method"][] = [
   "thread/started",
   "thread/closed",
-  "serf/attention/changed",
+  "evener/attention/changed",
   // The hub's dedicated tree push (roster deltas, past-index changes, and
   // every successful mutation, exactly once each) — the reason the old
   // UI's 60s sidebar resync poll has no successor here.
-  "serf/tree/changed",
+  "evener/tree/changed",
 ];
 
 const REFETCH_DEBOUNCE_MS = 250;

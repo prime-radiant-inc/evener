@@ -184,7 +184,7 @@ export function QueueStrip({
     try {
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
       // Success is entirely rendered by the daemon's own thread/queueChanged
-      // (row removed) + serf/steering/injected (transcript shows it) - no
+      // (row removed) + evener/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
     } catch (err) {
       // Names the act the button names. The row's control reads "Steer now"

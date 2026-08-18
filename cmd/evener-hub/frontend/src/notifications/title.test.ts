@@ -49,31 +49,31 @@ describe("formatTitle", () => {
   // "(<needsYou + error>) " prefix, ONLY when that sum > 0 AND the title pref
   // is on (notifications.js:118-123).
   test("title on, count > 0: prepends the sum of needsYou + error", () => {
-    expect(formatTitle("serf hub", summary(2, 1), true)).toBe("(3) serf hub");
+    expect(formatTitle("evener hub", summary(2, 1), true)).toBe("(3) evener hub");
   });
   test("title on, count 0: no prefix", () => {
-    expect(formatTitle("serf hub", summary(0, 0), true)).toBe("serf hub");
+    expect(formatTitle("evener hub", summary(0, 0), true)).toBe("evener hub");
   });
   test("title on, null summary: no prefix", () => {
-    expect(formatTitle("Settings · serf hub", null, true)).toBe("Settings · serf hub");
+    expect(formatTitle("Settings · evener hub", null, true)).toBe("Settings · evener hub");
   });
 
   // THE all-OFF trap (schedule-W6 #4): title pref OFF must NEVER prefix a
   // count, no matter how high. A mutation resurrecting the legacy's
   // title-default-TRUE would prepend "(5)" here and fail.
   test("title OFF: no prefix even with a high count", () => {
-    expect(formatTitle("serf hub", summary(3, 2), false)).toBe("serf hub");
+    expect(formatTitle("evener hub", summary(3, 2), false)).toBe("evener hub");
   });
 });
 
 describe("baseTitle", () => {
-  test("no focused pane: bare 'serf hub'", () => {
-    expect(baseTitle()).toBe("serf hub");
+  test("no focused pane: bare 'evener hub'", () => {
+    expect(baseTitle()).toBe("evener hub");
   });
 
-  test("a focused pane: '<pane title> · serf hub' (the honest divergence)", () => {
+  test("a focused pane: '<pane title> · evener hub' (the honest divergence)", () => {
     workspaceStore.getState().openPane("doc", {});
-    expect(baseTitle()).toBe("New session · serf hub");
+    expect(baseTitle()).toBe("New session · evener hub");
   });
 
   test("with no hydrated thread, the tree store's title backs the tab title", () => {
@@ -104,7 +104,7 @@ describe("baseTitle", () => {
       },
     });
     workspaceStore.getState().openPane("doc", { ref: "local:r2" });
-    expect(baseTitle()).toBe("Fix Four Open Issues · serf hub");
+    expect(baseTitle()).toBe("Fix Four Open Issues · evener hub");
   });
 
   test("a session pane resolves its live name via the threadName ctx", () => {
@@ -112,7 +112,7 @@ describe("baseTitle", () => {
       threads: new Map([["local:r1", { name: "Fix the parser", turns: [] } as unknown as ThreadModel]]),
     });
     workspaceStore.getState().openPane("doc", { ref: "local:r1" });
-    expect(baseTitle()).toBe("Fix the parser · serf hub");
+    expect(baseTitle()).toBe("Fix the parser · evener hub");
   });
 });
 
@@ -120,12 +120,12 @@ describe("applyTitle", () => {
   test("writes the composed document.title", () => {
     workspaceStore.getState().openPane("doc", {});
     applyTitle(true, summary(2, 0));
-    expect(document.title).toBe("(2) New session · serf hub");
+    expect(document.title).toBe("(2) New session · evener hub");
   });
 
   test("title OFF writes only the base", () => {
     workspaceStore.getState().openPane("doc", {});
     applyTitle(false, summary(2, 0));
-    expect(document.title).toBe("New session · serf hub");
+    expect(document.title).toBe("New session · evener hub");
   });
 });

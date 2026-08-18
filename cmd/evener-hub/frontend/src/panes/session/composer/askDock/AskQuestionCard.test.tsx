@@ -189,14 +189,14 @@ test("clicking the already-active free alternative again toggles it off", async 
 test("activating decide shows an optional leaning input", async () => {
   const user = userEvent.setup();
   render(<Harness q={question()} />);
-  await user.click(screen.getByRole("radio", { name: /let serf decide/i }));
+  await user.click(screen.getByRole("radio", { name: /let evener decide/i }));
   expect(document.activeElement).toBe(screen.getByPlaceholderText(/leaning/i));
 });
 
 test("clicking the already-active decide alternative again toggles it off", async () => {
   const user = userEvent.setup();
   render(<Harness q={question()} initial={{ resolution: { kind: "decide", leaning: "" }, note: "" }} />);
-  await user.click(screen.getByRole("radio", { name: /let serf decide/i }));
+  await user.click(screen.getByRole("radio", { name: /let evener decide/i }));
   expect(screen.queryByPlaceholderText(/leaning/i)).toBeNull();
 });
 

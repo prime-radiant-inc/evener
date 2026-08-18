@@ -50,7 +50,7 @@ export function FieldDim({ children }: { children: ReactNode }) {
 }
 
 /** An inline monospace mention (a path, a filename, a hub.toml key) within
- * help text or a value - e.g. General's "Edit `~/.serf/hub.toml`..." copy. */
+ * help text or a value - e.g. General's "Edit `~/.evener/hub.toml`..." copy. */
 export function Code({ children }: { children: ReactNode }) {
   return <code className={CLASS.code}>{children}</code>;
 }

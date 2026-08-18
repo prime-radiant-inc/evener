@@ -222,7 +222,7 @@ export interface RailProps {
   // mobile drawer instance passes none — the drawer is its own show/hide.
   onHide?: () => void;
   // Renders the right-edge drag-to-resize handle at this width when provided
-  // (the desktop case; RailHost passes the persisted serf.prefs.sidebarWidth).
+  // (the desktop case; RailHost passes the persisted evener.prefs.sidebarWidth).
   // The mobile drawer instance passes none: the Rail fills the sheet there
   // (Rail.module.css's <=899px block) and has no resizable edge.
   width?: number;
@@ -242,7 +242,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const projectDetails = useTreeStore((s) => s.projectDetails);
   const projectDetailGenerations = useTreeStore((s) => s.projectDetailGenerations);
   // Footer identity: the connected daemon's own name (never a fabricated user
-  // handle). Falls back to the "serf" brand string before a handshake has
+  // handle). Falls back to the "evener" brand string before a handshake has
   // populated serverInfo.
   const serverInfo = useConnectionStore((s) => s.serverInfo);
   // UX fix: the docked rail carries the same needs-you count RailHost's own
@@ -300,7 +300,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         });
 
   // ensureLoaded, not refresh: the duty here is "the rail has data", and the
-  // tree it renders is kept current by serf/tree/changed pushes, so a mount
+  // tree it renders is kept current by evener/tree/changed pushes, so a mount
   // with one already loaded has nothing to go and get. Sharing the store's
   // in-flight request is what collapses a desktop boot's two identical GET
   // /api/tree - this and initNotifications()'s baseline, fired milliseconds
@@ -762,7 +762,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       )}
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandName}>serf</span>
+          <span className={CLASS.brandName}>evener</span>
           {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
           {/* Search is a palette opener, never a text input, so it rides in
               the brand row as an icon button instead of claiming a row of the
@@ -887,7 +887,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       </div>
 
       <div className={CLASS.footer}>
-        <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "serf"}</span>
+        <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "evener"}</span>
         <IconButton
           data-testid="rail-settings"
           label="Settings"

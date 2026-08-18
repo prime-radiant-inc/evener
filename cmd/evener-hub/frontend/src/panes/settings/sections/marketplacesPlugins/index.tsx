@@ -66,7 +66,7 @@ export function MarketplacesPluginsSection() {
       <h2 className={CLASS.pageTitle}>Marketplaces &amp; Plugins</h2>
       <p className={CLASS.pageHelp}>
         Marketplaces are catalogs of installable plugins. Register a marketplace, browse its catalog, and install what
-        you need — installed, enabled plugins load into every new serf session.
+        you need — installed, enabled plugins load into every new evener session.
       </p>
       {loadError !== null ? (
         <EmptyState title="Failed to load" hint={friendlyErrorMessage(loadError)} />

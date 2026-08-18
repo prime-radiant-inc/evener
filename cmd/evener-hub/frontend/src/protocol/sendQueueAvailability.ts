@@ -38,7 +38,7 @@
 // `this.liveQueueCap`; nowhere in that chain does it read activeTurnId. The
 // stronger `state === "active" && !!activeTurnId` formula lives in a
 // DIFFERENT, deliberately-shared predicate (thread-state.js:16-18,
-// `SerfThreadState.isBusy`) that gates interrupt/steer/model-switch, not
+// `EvenerThreadState.isBusy`) that gates interrupt/steer/model-switch, not
 // send/queue - that file's own header comment lists exactly those three
 // call sites and none of them is the composer's send/queue capability
 // chain. Folding isBusy's activeTurnId check into THIS gate would also add

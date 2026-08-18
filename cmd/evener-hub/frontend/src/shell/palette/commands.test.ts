@@ -159,8 +159,8 @@ function wireThread(ref: string): Thread {
     status: { type: "idle" },
     cwd: "/tmp/p",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPS, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPS, queue: { revision: 0 } },
   };
 }
 
@@ -658,9 +658,9 @@ test("/aside forks the session and opens the child as a new pane", async () => {
 
 // --- /upgrade ---
 
-test("/upgrade calls serf/upgrade and toasts success + restart message", async () => {
+test("/upgrade calls evener/upgrade and toasts success + restart message", async () => {
   const fake = connectFake();
-  fake.on("serf/upgrade", () => ({
+  fake.on("evener/upgrade", () => ({
     release: "1.2.3",
     channel: "stable",
     url: "",
@@ -672,8 +672,8 @@ test("/upgrade calls serf/upgrade and toasts success + restart message", async (
     restartMessage: "restart your shell",
   }));
   await cmd("upgrade").run?.(runContext());
-  expect(fake.calls.some((call) => call.method === "serf/upgrade")).toBe(true);
-  expect(pushes).toContainEqual({ kind: "success", text: "Serf upgraded to stable" });
+  expect(fake.calls.some((call) => call.method === "evener/upgrade")).toBe(true);
+  expect(pushes).toContainEqual({ kind: "success", text: "Evener upgraded to stable" });
   expect(pushes).toContainEqual({ kind: "info", text: "restart your shell" });
 });
 

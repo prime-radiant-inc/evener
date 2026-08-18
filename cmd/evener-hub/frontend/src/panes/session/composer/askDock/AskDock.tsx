@@ -17,7 +17,7 @@
 // single-question batch has nothing to switch to, so it gets no strip.
 //
 // The footer's primary button follows the same one-question-at-a-time
-// model (kata w2zy): a multi-select/free-text/"let serf decide" answer
+// model (kata w2zy): a multi-select/free-text/"let evener decide" answer
 // never auto-advances (askDockStore's advancesOnAnswer - more typing or
 // more boxes may follow), so without this the reader's only move was the
 // button that ALWAYS submitted the whole batch, silently skipping whatever

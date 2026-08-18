@@ -63,9 +63,9 @@ afterEach(() => {
 });
 
 describe("initial load", () => {
-  test("fetches serf/instance/list on mount and groups rows by type", async () => {
+  test("fetches evener/instance/list on mount and groups rows by type", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
+    fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
     expect(screen.getByText("anthropic")).toBeTruthy();
@@ -75,14 +75,14 @@ describe("initial load", () => {
 
   test("empty state", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("No provider instances configured.");
   });
 
   test("load failure shows an error message", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => {
+    fake.on("evener/instance/list", () => {
       throw new Error("network down");
     });
     render(<CredentialsSection sectionId="credentials" />);
@@ -101,7 +101,7 @@ describe("initial load", () => {
     const fake = new FakeClient("idle"); // NOT ready at mount
     connectionStore.getState().connect(fake);
     let calls = 0;
-    fake.on("serf/instance/list", () => {
+    fake.on("evener/instance/list", () => {
       calls += 1;
       return LIST;
     });
@@ -127,8 +127,8 @@ describe("credential verification", () => {
     const customName = "OpenAI / team-east:prod";
     const custom = instance({ name: customName, type: "openai", authModes: ["apiKey"] });
     const response = deferred<AuthTestResponse>();
-    fake.on("serf/instance/list", () => ({ instances: [custom], availableTypes: ["openai"] }));
-    fake.on("serf/auth/test", (params) => {
+    fake.on("evener/instance/list", () => ({ instances: [custom], availableTypes: ["openai"] }));
+    fake.on("evener/auth/test", (params) => {
       expect(params).toEqual({ provider: customName });
       return response.promise;
     });
@@ -144,7 +144,7 @@ describe("credential verification", () => {
       true,
     );
     expect((within(row!).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 
     response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
     expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
@@ -155,8 +155,8 @@ describe("credential verification", () => {
     const fake = connectFakeClient();
     const workResponse = deferred<AuthTestResponse>();
     const personalResponse = deferred<AuthTestResponse>();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/auth/test", (params) => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/test", (params) => {
       if (params.provider === WORK.name) return workResponse.promise;
       if (params.provider === PERSONAL.name) return personalResponse.promise;
       throw new Error(`unexpected provider ${params.provider}`);
@@ -172,7 +172,7 @@ describe("credential verification", () => {
     const workButton = within(workRow!).getByRole("button", { name: "Test credentials" });
     await user.click(workButton);
     await user.click(workButton);
-    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
     expect((within(workRow!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -181,7 +181,7 @@ describe("credential verification", () => {
     );
 
     await user.click(within(personalRow!).getByRole("button", { name: "Test credentials" }));
-    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(2);
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(2);
 
     workResponse.resolve({ provider: WORK.name, status: "success", message: "Credentials verified." });
     personalResponse.resolve({ provider: PERSONAL.name, status: "success", message: "Credentials verified." });
@@ -205,8 +205,8 @@ describe("credential verification", () => {
   ] as const)("renders the safe %s status and message", async (status, message) => {
     const fake = connectFakeClient();
     const response = deferred<AuthTestResponse>();
-    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
-    fake.on("serf/auth/test", () => response.promise);
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText(WORK.name);
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
@@ -219,8 +219,8 @@ describe("credential verification", () => {
   test("does not render a supplied secret from a response message", async () => {
     const fake = connectFakeClient();
     const secret = "sk-live-do-not-render";
-    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
-    fake.on("serf/auth/test", async () => ({ provider: WORK.name, status: "auth_rejected", message: secret }));
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/auth/test", async () => ({ provider: WORK.name, status: "auth_rejected", message: secret }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText(WORK.name);
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
@@ -233,8 +233,8 @@ describe("credential verification", () => {
   test("does not render a raw RPC error string", async () => {
     const fake = connectFakeClient();
     const secret = "raw provider response containing sk-live-do-not-render";
-    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
-    fake.on("serf/auth/test", async () => {
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/auth/test", async () => {
       throw new Error(secret);
     });
     render(<CredentialsSection sectionId="credentials" />);
@@ -254,13 +254,13 @@ describe("credential verification", () => {
     const refreshedInstance = instance({ name: "work", type: "anthropic", baseUrl: "https://new.example/v1" });
     const response = deferred<AuthTestResponse>();
     let listCalls = 0;
-    fake.on("serf/instance/list", () => {
+    fake.on("evener/instance/list", () => {
       listCalls += 1;
       return listCalls === 1
         ? { instances: [oldInstance], availableTypes: [oldInstance.type] }
         : { instances: [refreshedInstance], availableTypes: [refreshedInstance.type] };
     });
-    fake.on("serf/auth/test", () => response.promise);
+    fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("base https://old.example/v1");
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
@@ -283,7 +283,7 @@ describe("credential verification", () => {
 describe("single-open-editor invariant", () => {
   test("opening the Add form, then Edit on a row, replaces it (only one editor open at a time)", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
+    fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
     const user = userEvent.setup();
@@ -298,8 +298,8 @@ describe("single-open-editor invariant", () => {
 describe("OAuth start branches", () => {
   test("fallback:true opens the redirect (paste-back) editor using loginStart's own flowId/url", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/auth/device/start", () => ({
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/device/start", () => ({
       provider: "personal",
       flowId: "device-flow",
       userCode: "X",
@@ -307,7 +307,7 @@ describe("OAuth start branches", () => {
       intervalSeconds: 5,
       fallback: true,
     }));
-    fake.on("serf/auth/login/start", () => ({
+    fake.on("evener/auth/login/start", () => ({
       provider: "personal",
       flowId: "redirect-flow",
       url: "https://auth/start",
@@ -324,15 +324,15 @@ describe("OAuth start branches", () => {
 
   test("fallback:false/absent opens the device-code editor", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/auth/device/start", () => ({
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/device/start", () => ({
       provider: "personal",
       flowId: "device-flow",
       userCode: "ABCD-EFGH",
       verificationUrl: "https://verify",
       intervalSeconds: 5,
     }));
-    fake.on("serf/auth/device/poll", () => ({ state: "pending" }));
+    fake.on("evener/auth/device/poll", () => ({ state: "pending" }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
     const user = userEvent.setup();
@@ -342,8 +342,8 @@ describe("OAuth start branches", () => {
 
   test("a deviceStart failure toasts 'Sign-in failed' and opens no editor", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/auth/device/start", () => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/device/start", () => {
       throw new Error("provider unavailable");
     });
     render(
@@ -363,7 +363,7 @@ describe("OAuth start branches", () => {
   });
 
   // Proves the key={flowId} teardown DeviceCodeDialog's own doc comment
-  // claims: expiring flow A, then "Start again" (a fresh serf/auth/device/
+  // claims: expiring flow A, then "Start again" (a fresh evener/auth/device/
   // start -> a NEW flowId, same openEditor.kind==="device" throughout) must
   // both (a) reset DeviceCodeDialog's own local UI state (copied/expired/
   // error) rather than leaking flow A's "expired" straight into flow B's
@@ -376,9 +376,9 @@ describe("OAuth start branches", () => {
   // state, across the transition).
   test("abandoning an expired device flow and starting a new one resets to a fresh state, not flow A's leftover 'expired' UI - and flow A's timer stays dead", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
+    fake.on("evener/instance/list", () => LIST);
     let deviceStartCalls = 0;
-    fake.on("serf/auth/device/start", () => {
+    fake.on("evener/auth/device/start", () => {
       deviceStartCalls += 1;
       return deviceStartCalls === 1
         ? {
@@ -397,7 +397,7 @@ describe("OAuth start branches", () => {
           };
     });
     const pollCalls: string[] = [];
-    fake.on("serf/auth/device/poll", (params) => {
+    fake.on("evener/auth/device/poll", (params) => {
       pollCalls.push(params.flowId);
       return params.flowId === "flow-A" ? { state: "expired" } : { state: "pending" };
     });
@@ -430,8 +430,8 @@ describe("OAuth start branches", () => {
 describe("set default", () => {
   test("calls instanceSetDefault directly with no confirm dialog and no success toast", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/instance/setDefault", (params) => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setDefault", (params) => {
       expect(params).toEqual({ name: "personal" });
       return { instances: [WORK, { ...PERSONAL, isDefault: true }], availableTypes: ["anthropic", "openai"] };
     });
@@ -444,14 +444,14 @@ describe("set default", () => {
     await screen.findByText("personal");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /make default/i }));
-    await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/instance/setDefault")).toBe(true));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/setDefault")).toBe(true));
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   test("a setDefault failure toasts 'Set default failed'", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/instance/setDefault", () => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setDefault", () => {
       throw new Error("boom");
     });
     render(
@@ -473,8 +473,8 @@ describe("set default", () => {
 describe("Clear / Remove confirm dialogs", () => {
   test("Clear opens a ConfirmDialog naming the instance; confirming calls authLogout then refreshes", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/auth/logout", (params) => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/logout", (params) => {
       expect(params).toEqual({ provider: "work" });
       return {
         removed: true,
@@ -502,8 +502,8 @@ describe("Clear / Remove confirm dialogs", () => {
 
   test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
-    fake.on("serf/instance/remove", (params) => {
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal" });
       return { instances: [WORK], availableTypes: ["anthropic"] };
     });
@@ -527,9 +527,9 @@ describe("Clear / Remove confirm dialogs", () => {
 
   test("cancelling a confirm dialog makes no RPC call", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/list", () => LIST);
+    fake.on("evener/instance/list", () => LIST);
     const removeCalls: unknown[] = [];
-    fake.on("serf/instance/remove", (params) => {
+    fake.on("evener/instance/remove", (params) => {
       removeCalls.push(params);
       return { instances: [], availableTypes: [] };
     });

@@ -239,7 +239,7 @@ test("a '/set' filter narrows to matching commands and drops non-matches", () =>
 
 test("an async catalog refresh rerenders the open session palette - a newly-loaded plugin command now surfaces the handoff row", async () => {
   const fake = new FakeClient();
-  fake.on("serf/command/list", async () => {
+  fake.on("evener/command/list", async () => {
     await Promise.resolve();
     return { commands: [{ name: "review", pluginName: "p", source: "plugin" }] };
   });
@@ -345,14 +345,14 @@ test("the handoff row appears for /model even on an ended session with false cap
 });
 
 test("a failed auto-resume is attributed to the session, not blamed on the command", () => {
-  // The hub returns the spawner's own raw text under serfErrorInfo hubLaunch
+  // The hub returns the spawner's own raw text under evenerErrorInfo hubLaunch
   // when the resume behind a cold-session mutation fails; unprefixed it reads
   // as the command having failed.
   expect(
-    commandErrorMessage(new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" })),
-  ).toBe("couldn't start this session: fork/exec serf: no such file");
+    commandErrorMessage(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" })),
+  ).toBe("couldn't start this session: fork/exec evener: no such file");
   // Every other rejection is passed through untouched.
-  expect(commandErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+  expect(commandErrorMessage(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
     "turn t1 is active",
   );
 });

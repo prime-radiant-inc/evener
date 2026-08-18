@@ -82,7 +82,7 @@ test("a top-level probe failure replaces the discovered-servers list with one me
 
 test("renders the mcpConfigs entries from the launch layer", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   expect(await screen.findByText("/etc/mcp.json")).toBeTruthy();
 });
@@ -90,16 +90,16 @@ test("renders the mcpConfigs entries from the launch layer", async () => {
 test("adding a config file validates as kind:file and saves mcpConfigs", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("serf/path/validate", (params) => {
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", (params) => {
     expect(params).toEqual({ path: "/etc/mcp.json", kind: "file" });
     return { path: "/etc/mcp.json", valid: true };
   });
-  fake.on("serf/launch/setLayer", (params) => {
+  fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global", config: { mcpConfigs: ["/etc/mcp.json"], mcps: [] } });
     return { effective: {}, layers: {}, provenance: {} };
   });
-  fake.on("serf/paths/complete", () => ({ data: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
   await user.click(screen.getByRole("button", { name: "New config file" }));
@@ -116,8 +116,8 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
 test("the config-file add row browses files, and picking one fills the add field", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("serf/paths/complete", (params) => {
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/paths/complete", (params) => {
     expect(params).toEqual({ prefix: "", includeFiles: true });
     return { data: ["/etc/mcp/", "/etc/mcp.json"] };
   });
@@ -133,8 +133,8 @@ test("the config-file add row browses files, and picking one fills the add field
 test("removing a config file confirms first, then saves with it filtered out", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
-  fake.on("serf/launch/setLayer", (params) => {
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
+  fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global", config: { mcpConfigs: [], mcps: [] } });
     return { effective: {}, layers: {}, provenance: {} };
   });
@@ -148,7 +148,7 @@ test("removing a config file confirms first, then saves with it filtered out", a
 
 test("renders inline MCP servers as '{name} → {command} {args}'", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({
+  fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: ["--port", "9000"] }],
   }));
@@ -159,12 +159,12 @@ test("renders inline MCP servers as '{name} → {command} {args}'", async () => 
 test("adding an inline server validates the command as kind:command and saves mcps", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("serf/path/validate", (params) => {
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", (params) => {
     expect(params).toEqual({ path: "/usr/bin/search-mcp", kind: "command" });
     return { path: "/usr/bin/search-mcp", valid: true };
   });
-  fake.on("serf/launch/setLayer", (params) => {
+  fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({
       cwd: "/",
       layer: "global",
@@ -185,10 +185,10 @@ test("adding an inline server validates the command as kind:command and saves mc
 test("an invalid command shows the inline error and does not save", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
-  fake.on("serf/path/validate", () => ({ path: "nope", valid: false, error: "command not found" }));
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("evener/path/validate", () => ({ path: "nope", valid: false, error: "command not found" }));
   const setLayerSpy = vi.fn();
-  fake.on("serf/launch/setLayer", setLayerSpy);
+  fake.on("evener/launch/setLayer", setLayerSpy);
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No inline MCP servers. Add one below.");
   await user.type(screen.getByPlaceholderText("name"), "search");
@@ -202,11 +202,11 @@ test("an invalid command shows the inline error and does not save", async () => 
 test("removing an inline server confirms first, then saves with it filtered out", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({
+  fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
   }));
-  fake.on("serf/launch/setLayer", (params) => {
+  fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global", config: { mcpConfigs: [], mcps: [] } });
     return { effective: {}, layers: {}, provenance: {} };
   });
@@ -221,11 +221,11 @@ test("removing an inline server confirms first, then saves with it filtered out"
 test("the remove-server confirm's buttons disable while the save is in flight", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({
+  fake.on("evener/launch/getLayer", () => ({
     mcpConfigs: [],
     mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
   }));
-  fake.on("serf/launch/setLayer", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  fake.on("evener/launch/setLayer", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("search → /usr/bin/search-mcp");
   await user.click(screen.getByRole("button", { name: "Remove search" }));
@@ -238,8 +238,8 @@ test("the remove-server confirm's buttons disable while the save is in flight", 
 test("a failed save while removing a config file toasts failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
-  fake.on("serf/launch/setLayer", () => {
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: ["/etc/mcp.json"], mcps: [] }));
+  fake.on("evener/launch/setLayer", () => {
     throw new Error("disk full");
   });
   render(<McpSection useOverviewStore={overviewHook()} />);

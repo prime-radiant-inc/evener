@@ -19,7 +19,7 @@ test("durationMs of exactly 0 is still shown (a real, server-reported zero) - `?
   expect(turnMetaParts(turn({ durationMs: 0 }))).toEqual({ duration: "1ms" });
 });
 
-test("tokens render as up/down arrows using formatTokenCount, from a SerfUsage-shaped usage value", () => {
+test("tokens render as up/down arrows using formatTokenCount, from a EvenerUsage-shaped usage value", () => {
   const parts = turnMetaParts(turn({ usage: { inputTokens: 1200, outputTokens: 340 } }));
   expect(parts.tokens).toBe("↑1k ↓340");
 });

@@ -23,7 +23,7 @@
 // fetch, no wire call, nothing to load, so there is no loading or error state
 // to render (unlike TasksPanel, whose rows are fetched on open).
 //
-// Cost is SerfThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
+// Cost is EvenerThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
 // server-side from the thread's cumulative usage at the model's catalog price.
 // The pricing table never crosses the wire, so the string is shown verbatim -
 // never re-formatted, and never derived client-side even when the token total

@@ -7,7 +7,7 @@
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import { schemaPathKind } from "./schema";
 
-/** The subset of serf/path/validate's response this decision reads. `path` is
+/** The subset of evener/path/validate's response this decision reads. `path` is
  * the server-canonicalized path when the server rewrites one; a caller whose
  * closure doesn't forward it simply keeps the user's own input. */
 export interface PathValidation {

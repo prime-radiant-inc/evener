@@ -66,7 +66,7 @@ describe("AddInstanceDialog", () => {
 
   test("apiStyle is sent only for type openai, forced to '' otherwise even with a stale radio selection", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/create", (params) => {
+    fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "" });
       return { instances: [], availableTypes: ["anthropic"] };
     });
@@ -79,12 +79,12 @@ describe("AddInstanceDialog", () => {
     await user.selectOptions(screen.getByLabelText("Type"), "anthropic");
     await user.type(screen.getByLabelText("Name"), "work");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/instance/create")).toBe(true));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
 
   test("submit calls instanceCreate and, on success, toasts + calls onSuccess", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/create", (params) => {
+    fake.on("evener/instance/create", (params) => {
       expect(params).toEqual({ type: "anthropic", name: "work", apiStyle: "", baseUrl: "https://x" });
       return { instances: [], availableTypes: ["anthropic"] };
     });
@@ -106,7 +106,7 @@ describe("AddInstanceDialog", () => {
 
   test("a create failure shows an inline error and a 'Create failed' toast, without calling onSuccess", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/create", () => {
+    fake.on("evener/instance/create", () => {
       throw new Error("name already exists");
     });
     const onSuccess = vi.fn();
@@ -162,7 +162,7 @@ describe("EditInstanceDialog", () => {
 
   test("submit calls instanceEdit with apiStyle '' when the instance isn't openai", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/edit", (params) => {
+    fake.on("evener/instance/edit", (params) => {
       expect(params).toEqual({ name: "work", apiStyle: "", baseUrl: "https://x" });
       return { instances: [], availableTypes: [] };
     });
@@ -187,7 +187,7 @@ describe("EditInstanceDialog", () => {
 
   test("a failure shows an inline error and an 'Edit failed' toast", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/instance/edit", () => {
+    fake.on("evener/instance/edit", () => {
       throw new Error("boom");
     });
     const user = userEvent.setup();
@@ -211,7 +211,7 @@ describe("ApiKeyDialog", () => {
   test("submitting an empty (trimmed) value silently cancels - no RPC", async () => {
     const fake = connectFakeClient();
     const setKey = vi.fn();
-    fake.on("serf/auth/apiKey/set", setKey);
+    fake.on("evener/auth/apiKey/set", setKey);
     const onCancel = vi.fn();
     const user = userEvent.setup();
     render(
@@ -229,11 +229,11 @@ describe("ApiKeyDialog", () => {
 
   test("a non-empty key calls authApiKeySet, refreshes, toasts, and calls onSuccess", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/auth/apiKey/set", (params) => {
+    fake.on("evener/auth/apiKey/set", (params) => {
       expect(params).toEqual({ provider: "work", value: "sk-secret" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "file", hasStoredOAuth: false };
     });
-    fake.on("serf/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
     const onSuccess = vi.fn();
     const user = userEvent.setup();
     render(
@@ -254,7 +254,7 @@ describe("ApiKeyDialog", () => {
 
   test("a failure shows an inline error and a 'Save failed' toast", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/auth/apiKey/set", () => {
+    fake.on("evener/auth/apiKey/set", () => {
       throw new Error("rejected");
     });
     const user = userEvent.setup();

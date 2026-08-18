@@ -1,7 +1,7 @@
 // Advanced launch-config options: schema filtering, override collection, and
 // the model/reasoning precedence (floor §1.11). The schema comes from appwire
-// "serf/launch/schema" (LaunchOptionSchemaResponse); the collected overrides
-// go to thread/start as launchOverrides and to "serf/launch/resolve" for the
+// "evener/launch/schema" (LaunchOptionSchemaResponse); the collected overrides
+// go to thread/start as launchOverrides and to "evener/launch/resolve" for the
 // "show resolved config" preview.
 import type {
   LaunchConfigLayer,
@@ -22,9 +22,9 @@ export interface AdvancedFieldValue {
 export type AdvancedValues = Record<string, AdvancedFieldValue>;
 
 // Filters the schema to the options the spawn advanced panel offers (floor
-// §1.11): perLaunch options whose serf driver support is not explicitly false.
-export function perLaunchSerfOptions(schema: LaunchOptionSchemaResponse): LaunchOption[] {
-  return schema.options.filter((opt) => opt.perLaunch && opt.driverSupport?.serf !== false);
+// §1.11): perLaunch options whose evener driver support is not explicitly false.
+export function perLaunchEvenerOptions(schema: LaunchOptionSchemaResponse): LaunchOption[] {
+  return schema.options.filter((opt) => opt.perLaunch && opt.driverSupport?.evener !== false);
 }
 
 // Builds the launch overrides from the advanced form state (floor §1.11,
