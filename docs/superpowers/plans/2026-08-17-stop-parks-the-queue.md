@@ -120,17 +120,23 @@ and RENDER it in `RenderMutations`, beside the `input queue:` line — the previ
 
 ```go
 	if r.QueueHeld {
-		fmt.Fprintf(&b, "queue:          held (parked by a Stop; waiting on the user)\n")
+		fmt.Fprintf(&b, "queue: held (parked by a Stop; waiting on the user)\n")
 	}
+```
+
+Then prove the render, because declaring without printing is the rejected attempt's exact mistake and nothing else in the suite fails on it: in `agent/doctor/mutations_test.go`, add `"queue_held": true,` at the top level of the `storeWithBothOutcomes` fixture (after `"accepted_turns": 1,`) and add this line to the want list in `TestMutations_RenderCarriesTheDecisiveFields`:
+
+```go
+		"queue: held (parked by a Stop; waiting on the user)",
 ```
 
 - [ ] **Step 6: Run the doctor drift guard and commit**
 
-Run: `go test ./agent/ ./agent/doctor/ -run 'TestQueueHeld|Doctor|TestClientMutationSnapshot' -count=1`
+Run: `go test ./agent/ ./agent/doctor/ -run 'TestQueueHeld|Doctor|TestClientMutationSnapshot|TestMutations_Render' -count=1`
 Expected: PASS.
 
 ```bash
-git add agent/session_client_mutation.go agent/session_stop_and_queued_work_test.go agent/doctor/mutations.go
+git add agent/session_client_mutation.go agent/session_stop_and_queued_work_test.go agent/doctor/mutations.go agent/doctor/mutations_test.go
 git commit -m "feat(agent): a durable parked-queue flag, read without cloning"
 ```
 
@@ -168,8 +174,10 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 	if claimed := sess.popQueueHead(); claimed.ClientMutationID != "" {
 		t.Fatalf("the queue head was claimed after a Stop (%q): the message the user stopped will run", claimed.ClientMutationID)
 	}
-	if ran, _, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ran != "" {
-		t.Fatalf("ProcessPendingUserInput ran work after a Stop: ran=%q err=%v", ran, err)
+	// The SECOND return is "did a turn run"; the first is that turn's output
+	// text, which an adapter may legitimately leave empty.
+	if _, ranTurn, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ranTurn {
+		t.Fatalf("ProcessPendingUserInput ran work after a Stop: ranTurn=%v err=%v", ranTurn, err)
 	}
 	// And the message is still the user's.
 	if got := sess.QueueDepth(); got != 1 {
@@ -245,18 +253,53 @@ That wake IS the interim behaviour this plan reverses: it was added so a Stop de
 
 Delete `TestStopWakesTheSessionForWorkItLeftQueued` from `agent/session_stop_and_queued_work_test.go`, including its doc comment. It asserts a Stop over queued work fires the drain kick — the delivery contract this task abolishes — and it fails once Step 6 lands. Its concern (a Stop must not strand queued work invisibly) is carried forward by `TestStopParksTheQueueAgainstBothRestartRails` (nothing runs, the message survives) and Task 3's `TestAParkedQueueDoesNotMakeTheSessionLookBusy` (the session stops claiming to be busy over it). This is contract replacement, not coverage reduction; say so in the commit message.
 
-- [ ] **Step 8: Run the agent suite and commit**
+- [ ] **Step 8: Sweep the sibling comments that still document delivery as the ruling**
+
+Three surviving comments pin "a Stop delivers what it left queued" as current. Their tests and code pass every gate in this plan (they assert durability, not delivery), so nothing forces the update — do it here, where the contract actually changes.
+
+In `agent/session_stop_and_queued_work_test.go`, replace `TestStopCancelsTheTurnAndKeepsUserWorkDurable`'s doc comment (the block quoting the interim ruling, "…stays durable, is delivered, and starts the next turn… KNOWN and INTENDED…") with:
+
+```go
+// TestStopCancelsTheTurnAndKeepsUserWorkDurable pins the two halves of a Stop
+// that must not regress: it actually cancels the running turn, and work the
+// user already gave the session survives it durably.
+//
+// The steering case is the one no other test covers. A steer not yet injected
+// stays durable and is still DELIVERED -- a Stop with pending steering
+// restarts, and that stays true until kata 1k3m gives a parked steer somewhere
+// to surface. A restart the user can stop again beats text they cannot get
+// back: the rejected designs moved the user's words out of durable server
+// storage and then failed to keep them safe. Queued messages, the other
+// user-authored rail, park instead (kata wms7,
+// TestStopParksTheQueueAgainstBothRestartRails).
+```
+
+Replace `TestStopKeepsAQueuedMessageDurable`'s doc comment ("…the promise is identical: Stop cancels, the message stays, and the session delivers it rather than dropping it.") with:
+
+```go
+// TestStopKeepsAQueuedMessageDurable covers the queued-message rail of the
+// same promise: Stop cancels, and the message stays durably on the queue --
+// parked, visible in the queue strip, payload intact -- until the user asks
+// for it to run (kata wms7).
+```
+
+In `agent/session_lifecycle.go` (the drain-loop comment above `if !closed && !stopSettledThisTurn`), replace the sentence fragment "and the message waits for one of the ordinary wake paths." with "and the message waits, parked, until a user-initiated run releases the hold." — the wake paths now refuse a parked queue, so the old phrasing promises a delivery that will never come.
+
+- [ ] **Step 9: Run the agent suite and commit**
 
 Run: `go test ./agent/ -count=1`
 Expected: PASS, with `TestStopWakesTheSessionForWorkItLeftQueued` gone and nothing else newly failing.
 
+Known interim state, deliberate: from this commit until Task 5 flips it, the live boundary e2e (`TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary`) is RED at its delivery probe — it pins the contract this commit abolishes, and its own comment says the test and kata must update together when the wake rail closes. `make test` runs `-short` and skips it, so the default gate stays green. Do not "fix" it mid-plan; Task 5 is the fix.
+
 ```bash
-git add agent/session_client_mutation.go agent/session_queue.go agent/session_stop_and_queued_work_test.go
+git add agent/session_client_mutation.go agent/session_queue.go agent/session_stop_and_queued_work_test.go agent/session_lifecycle.go
 git commit -m "feat(agent): a Stop parks the queue against both restart rails
 
-Removes the interrupt-tail queued-input wake and its test: they pinned
-the interim contract (a Stop delivers what it left queued) that this
-change replaces with the parked contract (kata wms7)."
+Removes the interrupt-tail queued-input wake and its test, and rewrites
+the three sibling comments that documented delivery as the ruling: all
+of them pinned the interim contract (a Stop delivers what it left
+queued) that this change replaces with the parked contract (kata wms7)."
 ```
 
 ---
@@ -331,6 +374,15 @@ func (s *Session) pendingQueueDepth() int {
 
 In `sessionWorkPending`, replace `s.QueueDepth() > 0` with `s.pendingQueueDepth() > 0`.
 
+Also in `agent/session_state.go`, fix `WireState`'s doc comment, which this change makes false ("…an idle session with undelivered job notifications or queued input reads as 'active' because parent-owned work can resume it without user input."). Replace that sentence with:
+
+```go
+// except for one override: an idle session with undelivered job notifications
+// or claimable queued input reads as "active" because work the session owns
+// can resume it without user input. A queue parked by a Stop is not claimable
+// and reads idle -- nothing will move it until the user acts (kata wms7).
+```
+
 - [ ] **Step 4: Run it and watch it pass**
 
 Run: `go test ./agent/ -run TestAParkedQueueDoesNotMakeTheSessionLookBusy -count=1 -v`
@@ -376,6 +428,28 @@ func TestSendingAgainReleasesTheParkedQueue(t *testing.T) {
 		// parked forever, with the session reporting idle and nothing saying why.
 		{"turn/queue", func(t *testing.T, sess *Session) {
 			queueOneMutation(t, sess, "one-more", "and this too")
+		}},
+		// Draining and promoting are the queue-strip's own "run this now"
+		// gestures. Each gets its own table entry because each clear is an
+		// independent edit an implementer can forget: without these two cases,
+		// reverting either clear leaves the whole suite green while a promoted
+		// message strands its siblings parked forever.
+		{"turn/drainAsSteer", func(t *testing.T, sess *Session) {
+			revision := sess.clientMutations.snapshot().QueueRevision
+			if _, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+				ClientMutationID:      "drain-after-stop",
+				ExpectedQueueRevision: revision,
+			}); err != nil {
+				t.Fatalf("turn/drainAsSteer: %v", err)
+			}
+		}},
+		{"turn/promoteQueuedAsSteer", func(t *testing.T, sess *Session) {
+			if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
+				ClientMutationID: "promote-after-stop",
+				Index:            0,
+			}); err != nil {
+				t.Fatalf("turn/promoteQueuedAsSteer: %v", err)
+			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -430,10 +504,12 @@ func TestARejectedPromoteLeavesTheQueueParked(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [ ] **Step 2: Run them and watch the release table fail**
 
 Run: `go test ./agent/ -run 'TestSendingAgainReleasesTheParkedQueue|TestARejectedPromoteLeavesTheQueueParked' -count=1 -v`
-Expected: both FAIL — nothing clears the flag yet.
+Expected: all four `TestSendingAgainReleasesTheParkedQueue` subtests FAIL — nothing clears the flag yet.
+
+`TestARejectedPromoteLeavesTheQueueParked` PASSES here, and that is correct, not vacuous: with no clear implemented, a rejected promote trivially leaves the flag set. It is a PLACEMENT regression guard, not a TDD driver — the only production change that fails it is a clear written above its rejection checks, which is exactly the mistake it exists to catch. Task 5's mutation testing proves it can fail (move the promote clear above the rejections and run it).
 
 - [ ] **Step 3: Clear it on each user-initiated run, below the rejections**
 
@@ -453,17 +529,21 @@ Expected: both FAIL — nothing clears the flag yet.
 		snapshot.QueueHeld = false
 ```
 
-`clientMutationDrain`, AFTER the `queue is empty` check and every other rejection, immediately before the accepted path's first mutation of the snapshot:
+`clientMutationDrain` and `clientMutationPromote` each have a SECOND rejection in their second (effect) callback — "reserved queue entries are no longer available" / "reserved queue entry is no longer available" — and `executeAtomic` durably commits the prepare callback's writes before the effect runs. A prepare-phase clear would therefore be committed below the prepare rejections but ABOVE the effect ones. Those effect rejections look unreachable today (reserved entries are protected from removal at every remover), but the constraint is "below every rejection", not "below every rejection we can currently reach" — so both clears go in the effect callback.
+
+`clientMutationDrain`, in its SECOND callback, immediately after the `if !foundAll { ... }` rejection:
 
 ```go
-		// Draining IS the user asking for it to run.
+		// Draining IS the user asking for the queue to run. Below the effect
+		// rejection so a refused drain cannot unpark it.
 		snapshot.QueueHeld = false
 ```
 
-`clientMutationPromote`, AFTER the index-range, `ExpectedEntryID` and reserved-entry rejections:
+`clientMutationPromote`, in its SECOND callback, immediately after the `if index < 0 { ... }` rejection:
 
 ```go
-		// Promoting is the user picking one to run now.
+		// Promoting is the user picking one to run now. Below the effect
+		// rejection so a refused promote cannot unpark it.
 		snapshot.QueueHeld = false
 ```
 
@@ -488,17 +568,24 @@ git commit -m "feat(agent): a user-initiated run releases the parked queue"
 
 - [ ] **Step 1: Flip the boundary e2e to the parked contract**
 
-Replace the delivery tail with:
+The span to replace runs from the `// MEASURED, and it is the state of play rather than the ruling (kata wms7).` comment through the end of the test: the whole two-rails comment block (which documents the wake rail as OPEN — false once Task 2 landed), the 30-second delivery probe, the `round2` assertions and `RespondToolCall`, and the settle `awaitThread`. Replace all of it with:
 
 ```go
-	// Both restart rails are closed now: the drain loop (91810a3be plus the
-	// claimed-branch fence report) and the wake, via popQueueHead refusing while
-	// the queue is parked. So nothing reaches the model, the message is still on
-	// the queue for the user to send, and the session settles.
+	// MEASURED, CLOSED, and now the ruling (kata wms7). Both restart rails end
+	// at popQueueHead, and it refuses while a Stop holds the queue:
 	//
-	// Probed over the whole remaining park plus margin, because the restart this
-	// replaces re-ran the parked command in full -- a shorter probe would pass
-	// while it was still in flight.
+	//   1. The DRAIN LOOP: a turn ended by a Stop leaves the queue head alone --
+	//      91810a3be for a turn already producing, the claimed-and-unrun
+	//      completion's fence report for one still in pre-turn work.
+	//   2. The WAKE: ProcessPendingUserInput claims through popQueueHead, which
+	//      refuses while QueueHeld is set.
+	//
+	// So nothing reaches the model, the message stays on the queue -- visible in
+	// the queue strip, waiting for the user -- and the session settles idle.
+	//
+	// Probed over the whole remaining park plus margin, because the delivery
+	// this replaces re-ran the parked command in full -- a shorter probe would
+	// pass while it was still in flight.
 	probe, cancelProbe := context.WithTimeout(ctx, time.Duration(preTurnParkSeconds+2)*time.Second)
 	defer cancelProbe()
 	if call, err := provider.Next(probe.Done()); err == nil {
@@ -519,10 +606,10 @@ Expected: all four PASS. If the boundary one still sees a model round, a third r
 
 - [ ] **Step 3: Mutation-test every new assertion**
 
-For each of the four production edits (the `popQueueHead` guard, the `QueueHeld = true` set, the `pendingQueueDepth` swap in `sessionWorkPending`, and one of the clears), revert it, run the agent suite, and confirm a test fails. A test that stays green with its subject removed is guarding nothing — two tests in this exact area were found to be that way earlier in this kata.
+For each of the SEVEN production edits — the `QueueHeld = true` set, the `popQueueHead` guard, the `pendingQueueDepth` swap in `sessionWorkPending`, and EACH of the four clears (turn/start, turn/queue, drain, promote) — revert it, run the suite below, and confirm a test fails. The clears get individual reverts because each is an edit an implementer can forget independently, and the first draft of this plan could not catch a missing drain or promote clear at all. Then one placement mutation: move the promote clear ABOVE its rejection checks and confirm `TestARejectedPromoteLeavesTheQueueParked` fails — that is the only mutation that test exists to catch, and this is where it proves it can. A test that stays green with its subject removed is guarding nothing — two tests in this exact area were found to be that way earlier in this kata.
 
 Run per mutation: `go test ./agent/ -run 'TestStop|TestQueue|TestAParked|TestSendingAgain|TestARejected' -count=1`
-Expected: at least one FAIL per reverted edit. Record which test catches which edit in the commit message.
+Expected: at least one FAIL per mutation. Record which test catches which edit in the commit message.
 
 - [ ] **Step 4: Full gates**
 
@@ -536,7 +623,10 @@ git add cmd/serf-hub/e2e_control_invariant_test.go
 git commit -m "test(turn-control): the boundary Stop parks its message end to end"
 ```
 
-Then comment on `wms7` with: which rails are closed, the mutation-test results from Step 3, and that steering remains open as `1k3m`.
+Then comment on `wms7` with: which rails are closed, the mutation-test results from Step 3, that steering remains open as `1k3m`, and these two DELIBERATE deferrals so they are ruled on rather than forgotten:
+
+1. `armAwaitingAtSettle`/`settleTerminalState` (`agent/session_state.go` ~:298-344) still read raw `QueueDepth`, so a turn that settles cleanly over a parked queue rests **idle** rather than **awaiting**. Narrow trigger (only a steering-restarted or notification turn can settle over a parked queue), and idle is the state the ruling names — this may be intended, but it is Jesse's call, not the executor's.
+2. MaxTurns: parked entries keep their `BudgetReservations` slots, and at the cap both `turn/start` and `turn/queue` reject on budget ABOVE the clears (correctly, per the ordering rule). A user at the cap who Stops can still release via promote, drain, or cancelling entries — but cannot type a fresh message. Corner case with escape hatches; recorded, not solved.
 
 ---
 
@@ -547,6 +637,10 @@ Then comment on `wms7` with: which rails are closed, the mutation-test results f
 **The interim contract this replaces, retired explicitly (found on plan review):** `InterruptClientMutation`'s applied path carried `wakeForPendingQueuedInput()` under a comment promising "popQueueHead will claim again" — the deliberate interim behaviour (a Stop delivers what it left queued) that this plan reverses. Task 2 Steps 6–8 remove the wake, rewrite the comment, and delete `TestStopWakesTheSessionForWorkItLeftQueued`, the test that pinned it. Left alone, they would have been dead code under a false comment plus a failing test at Task 5's full gates.
 
 **Review findings from the rejected attempt, each mapped:** mirror drift → no mirror (Global Constraints, Task 1's accessor). Clear above rejections → Task 4 Step 3 ordering plus `TestARejectedPromoteLeavesTheQueueParked`. Sticky hold → `turn/queue` clear in Task 4. Doctor declared-but-unrendered → Task 1 Step 5 renders it. Vacuous tests → Task 5 Step 3 mutation-tests every edit.
+
+**Adversarial review round (two independent reviewers, 2026-08-17), each finding mapped:** false red-phase claim on the rejected-promote test → Task 4 Step 2 now labels it a placement regression guard, proven able to fail in Task 5 Step 3. Drain/promote clears unguarded by any test → two new cases in the release table plus per-clear mutation testing. Sibling comments pinning the dead delivery contract (two test doc comments, the drain-loop comment) → Task 2 Step 8 sweep. `WireState` doc comment made false by Task 3 → fixed in Task 3 Step 3. Drain/promote clears above their effect-phase rejections → moved into the effect callbacks. Doctor render unguarded → fixture + want-line in Task 1 Step 5. Live boundary e2e knowingly red between Task 2 and Task 5 → acknowledged in Task 2 Step 9 (Jesse waived commit-ordering concerns; end state is the bar). `ProcessPendingUserInput`'s first return is output text, not ran-a-turn → Task 2's test asserts the bool.
+
+**Deferred with reasons, recorded on the kata in Task 5 Step 5:** the `armAwaitingAtSettle`/`settleTerminalState` raw `QueueDepth` reads (idle-vs-awaiting tier over a parked queue; may be intended, Jesse rules), and the MaxTurns corner (budget rejections above the clears lock out `turn/start`/`turn/queue` at the cap; promote/drain/cancel remain open).
 
 **Not covered here, deliberately:** REST `/status` computes `Steer` differently from `appCapabilities` (found in the same review). Unrelated to parking; belongs in its own change.
 
