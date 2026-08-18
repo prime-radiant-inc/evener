@@ -11,13 +11,14 @@
 package scratch
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // Dir is one acquired scratch directory.
@@ -33,18 +34,18 @@ type Dir struct {
 func tmpBase() (string, error) {
 	base, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
-		return "", fmt.Errorf("scratch: TMPDIR is unusable: %w", err)
+		return "", fmt.Errorf("scratch: %s is unusable: %w", envvars.TmpDir.Name, err)
 	}
 	info, err := os.Stat(base)
 	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("scratch: TMPDIR %s is not a directory", base)
+		return "", fmt.Errorf("scratch: %s %s is not a directory", envvars.TmpDir.Name, base)
 	}
 	if base == "/" {
-		return "", errors.New("scratch: refusing TMPDIR resolving to /")
+		return "", fmt.Errorf("scratch: refusing %s resolving to /", envvars.TmpDir.Name)
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if resolvedHome, err := filepath.EvalSymlinks(home); err == nil && base == resolvedHome {
-			return "", errors.New("scratch: refusing TMPDIR resolving to the home directory")
+			return "", fmt.Errorf("scratch: refusing %s resolving to the home directory", envvars.TmpDir.Name)
 		}
 	}
 	return base, nil

@@ -149,6 +149,7 @@ func translateFlags(flags []string) []string {
 func testSetKey(listOutput string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
-	sum := sha256.Sum256([]byte(strings.Join(lines, "\n") + "\n"))
+	payload := strings.Join(lines, "\n") + "\n"
+	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
 }
