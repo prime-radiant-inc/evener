@@ -770,6 +770,42 @@ func TestWorkflowSection_GatesItsToolMentions(t *testing.T) {
 	}
 }
 
+// TestWorkflowSectionDefinesRootCauseToActionTransition pins kata nbcf's
+// positive phase-transition rule: root-cause investigation ends when the
+// evidence isolates a boundary and one falsifiable hypothesis is stateable,
+// at which point the smallest test runs instead of more surveying. It also
+// pins the stall checkpoint (no new evidence -> summarize and act or report
+// the gap) and that both land between the existing "let verification drive
+// further exploration" line and the pre-finish verification line, not before
+// or after the whole section.
+func TestWorkflowSectionDefinesRootCauseToActionTransition(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("coordinator").Section("workflow", promptData{Provider: "openai", Agent: "coordinator"})
+	for _, want := range []string{
+		"falsifiable hypothesis",
+		"stop surveying adjacent code",
+		"smallest test that could confirm or refute it",
+		"adds no new evidence",
+		"summarize the current hypothesis",
+		"report exactly what evidence is missing",
+		"does not cap a legitimate broad investigation",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("workflow section missing %q: %s", want, section)
+		}
+	}
+
+	exploration := strings.Index(section, "let verification drive further exploration")
+	transition := strings.Index(section, "falsifiable hypothesis")
+	preFinish := strings.Index(section, "Before finishing, verify the actual required artifact")
+	if exploration < 0 || transition < 0 || preFinish < 0 {
+		t.Fatalf("expected anchor lines not found: exploration=%d transition=%d preFinish=%d", exploration, transition, preFinish)
+	}
+	if exploration >= transition || transition >= preFinish {
+		t.Fatalf("transition rule out of place: want exploration(%d) < transition(%d) < preFinish(%d)", exploration, transition, preFinish)
+	}
+}
+
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
@@ -903,6 +939,25 @@ func TestVerificationSectionDefinesIncompleteGates(t *testing.T) {
 	}
 }
 
+// TestVerificationSectionRequiresSmokeCaseBeforeMatrix pins kata nbcf's
+// harness-vs-product rule: before a cross-model or cross-configuration
+// comparison is read as a product/model-behavior finding, one known-good
+// smoke case must be proven on each participant first.
+func TestVerificationSectionRequiresSmokeCaseBeforeMatrix(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("coordinator").Section("verification", promptData{Provider: "openai", Agent: "coordinator"})
+	for _, want := range []string{
+		"cross-model or cross-configuration comparison",
+		"known-good smoke case",
+		"an infrastructure or configuration failure is not",
+		"evidence about behavior under test",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("verification section missing %q: %s", want, section)
+		}
+	}
+}
+
 // TestContextManagementSectionIsAdvisoryAndBounded pins the context-management
 // posture: compaction is a suggestion at a task boundary, and a stalled
 // implement/review/fix loop stops after two cycles instead of repeating.
@@ -933,6 +988,37 @@ func TestContextManagementSection_SilentAboutAnUncallableCompactTool(t *testing.
 	}
 	if !strings.Contains(section, "two incomplete implement/review/fix cycles") {
 		t.Fatalf("tool-free context-management section lost its tool-independent guidance: %s", section)
+	}
+}
+
+// TestCommunicateSectionReportsPhaseChangeCheckpoint pins kata nbcf's
+// checkpoint-reporting rule: a long or delegated task that changes phase
+// (e.g. investigation to implementation) sends a non-terminal checkpoint
+// naming completed work, the current hypothesis/plan, the next concrete
+// action, and blockers, and it lands after the "Report real milestones"
+// paragraph rather than replacing it.
+func TestCommunicateSectionReportsPhaseChangeCheckpoint(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("coordinator").Section("communicate", promptData{
+		Provider: "openai", Agent: "coordinator", ResultToolName: "communicate",
+	})
+	for _, want := range []string{
+		"Report real milestones",
+		"changes phase",
+		"communicate with `end_turn=false`",
+		"current hypothesis or plan",
+		"next concrete action",
+		"any blockers",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("communicate section missing %q: %s", want, section)
+		}
+	}
+
+	milestones := strings.Index(section, "Report real milestones")
+	checkpoint := strings.Index(section, "changes phase")
+	if milestones < 0 || checkpoint < 0 || milestones >= checkpoint {
+		t.Fatalf("checkpoint guidance out of place: want milestones(%d) < checkpoint(%d)", milestones, checkpoint)
 	}
 }
 
