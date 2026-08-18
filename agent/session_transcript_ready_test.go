@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -40,7 +42,8 @@ func transcriptTurnKinds(t *testing.T, path string) []schema.TurnKind {
 func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
+	metaFS := afero.NewMemMapFs()
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1, testOnly: testConfig{metaFS: metaFS}}))
 	go func() {
 		for range sess.Events() {
 		}
@@ -79,7 +82,8 @@ func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 func TestDurableTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
+	metaFS := afero.NewMemMapFs()
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1, testOnly: testConfig{metaFS: metaFS}}))
 	go func() {
 		for range sess.Events() {
 		}

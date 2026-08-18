@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -537,6 +539,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	workDir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(workDir)
 	c := llm.NewClient()
@@ -545,6 +548,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession parent: %v", err)
@@ -554,6 +558,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession child: %v", err)
@@ -602,6 +607,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	workDir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(workDir)
 	modelEntered := make(chan struct{})
@@ -640,6 +646,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession parent: %v", err)
@@ -649,6 +656,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession child: %v", err)
@@ -1304,6 +1312,9 @@ func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	if cfg.StateDir != "" && cfg.testOnly.metaFS == nil {
+		cfg.testOnly.metaFS = afero.NewMemMapFs()
+	}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

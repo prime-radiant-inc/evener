@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
@@ -148,6 +150,7 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -155,7 +158,7 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 		StateDir:         stateDir,
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: metaFS},
 	}
 	cfg.spawn.parentSessionID = "parent-session-id"
 	cfg.spawn.depth = 1
@@ -170,7 +173,7 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 
 	restoreCfg := RestoreSessionConfig{
 		StateDir: stateDir,
-		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: metaFS},
 	}
 	restoreCfg.spawn.parentSessionID = "parent-session-id"
 	restoreCfg.spawn.depth = 1

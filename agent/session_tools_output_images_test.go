@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -37,12 +39,16 @@ func newImageToolSession(t *testing.T, toolName, stateDir string, exec func() (a
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(client, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	cfg := SessionConfig{
 		// explorer skips the vision side-channel; these tests are about the
 		// descriptor, not about describing the image.
 		AgentName: "explorer",
 		StateDir:  stateDir,
-	})
+	}
+	if stateDir != "" {
+		cfg.testOnly.metaFS = afero.NewMemMapFs()
+	}
+	sess, err := NewSession(client, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

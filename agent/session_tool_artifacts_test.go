@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
@@ -115,6 +117,7 @@ func artifactRestoreConfig(t *testing.T, stateDir string) RestoreSessionConfig {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			metaFS:              afero.NewMemMapFs(),
 		},
 		deferRestoreSideEffects: true,
 	}
