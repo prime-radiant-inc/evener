@@ -74,7 +74,13 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-if ! logdir="$(mktemp -d -t serf-module-lint.XXXXXX)"; then
+# Not scratch_dir: every failing exit here must route through fail_lint's
+# one-summary contract, and the guard reports its own failures by exiting.
+# The mint is checked and empty-guarded, never canonicalized, and the delete
+# below stays on TestNoScriptFeedsVariableToRecursiveDelete's pinned list.
+# An explicit template, never -t: macOS mktemp -t ignores TMPDIR.
+if ! logdir="$(mktemp -d "${TMPDIR:-/tmp}/serf-module-lint.XXXXXX")" ||
+	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
 	printf 'lint: unable to create temporary log directory\n' >&2
 	fail_lint 'setup: unable to create temporary log directory' 1
 fi

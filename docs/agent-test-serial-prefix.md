@@ -89,8 +89,9 @@ callees transitively.
 ## Verification lesson
 
 **One green run proves nothing here.** The 90-file sweep passed a per-file
-single-run gate and then failed 6 of 12 full runs. `scripts/parallelize-tests.sh`
-now takes `--runs N` and keeps a file only if every run passes.
+single-run gate and then failed 6 of 12 full runs. The migration tool that did
+the sweep (`parallelize-tests.sh`, since retired with the migration; see git
+history) learned to keep a file only if every one of N runs passed.
 
 ## What was landed instead: 25 tests, same win, no flakes
 

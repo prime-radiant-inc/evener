@@ -28,7 +28,8 @@ live_eval_begin() {
 		return 1
 	fi
 
-	LIVE_EVAL_ROOT=$(mktemp -d -t serf-live-eval.XXXXXX)
+	# An explicit template, never -t: macOS mktemp -t ignores TMPDIR.
+	LIVE_EVAL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/serf-live-eval.XXXXXX")
 }
 
 live_eval_prepare_trial() {

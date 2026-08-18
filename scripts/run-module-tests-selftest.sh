@@ -22,8 +22,8 @@ if [ -n "${SERF_RUN_MODULE_TESTS_SHELL:-}" ]; then
 fi
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work serf-module-tests-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work serf-module-tests-selftest
+trap 'scratch_rm' EXIT
 
 assert_has_word() {
 	case " $1 " in

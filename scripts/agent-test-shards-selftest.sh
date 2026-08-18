@@ -5,8 +5,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/agent-test-shards.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work agent-test-shards-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work agent-test-shards-selftest
+trap 'scratch_rm' EXIT
 
 assert_absent() {
 	if [ ! -e "$1" ]; then ok "$2"; else bad "$2 (still present: $1)"; fi

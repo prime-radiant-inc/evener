@@ -5,8 +5,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/reclaim-test-debris.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work reclaim-test-debris-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work reclaim-test-debris-selftest
+trap 'scratch_rm' EXIT
 
 tmpbase="$work/tmp"
 mkdir -p "$tmpbase"

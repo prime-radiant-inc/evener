@@ -6,9 +6,9 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 . "$repo/scripts/selftest-lib.sh"
 
-selftest_scratch fixture serf-live-isolation-selftest
+scratch_dir fixture serf-live-isolation-selftest
 cleanup() {
-	selftest_rm_scratch
+	scratch_rm
 }
 trap cleanup EXIT
 

@@ -53,6 +53,7 @@
 # fails or the partition check finds a discrepancy.
 set -uo pipefail
 
+. "$(dirname "$0")/scratch-lib.sh"
 cd "$(dirname "$0")/../agent" || { echo "agent-test-shards: no agent dir" >&2; exit 2; }
 
 flags="$*"
@@ -60,16 +61,10 @@ shards=${AGENT_SHARD_COUNT:-4}
 par=${AGENT_SHARD_PARALLEL:-3}
 skip=${AGENT_SHARD_SKIP:-}
 noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
-# This script has already cd'd into the agent module, and the cleanup below
-# does `rm -rf "$logdir"`. An unchecked mktemp would leave $logdir empty, and
-# `cd "" && pwd -P` resolves to the current directory, which would aim that
-# delete at the agent module itself. Refuse instead of running without scratch.
-if ! logdir="$(mktemp -d "${TMPDIR:-/tmp}/agent-test-shards.XXXXXX")" ||
-	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
-	echo "agent-test-shards: could not create a scratch directory under ${TMPDIR:-/tmp}" >&2
-	exit 2
-fi
-logdir="$(cd "$logdir" && pwd -P)"
+# This script has already cd'd into the agent module, and its cleanup deletes
+# scratch recursively. scratch_dir refuses to hand back anything it did not
+# mint and validate under TMPDIR, so the delete can never aim at the module.
+scratch_dir logdir agent-test-shards
 
 # The reclaimer cannot use the shard directory mtime as a liveness signal:
 # shard output is appended below it, and appending an existing log does not
@@ -141,7 +136,7 @@ cleanup_once() {
 	stop_heartbeat_process
 	rm -f "$heartbeat" 2>/dev/null || :
 	if [ "$normal_completion" -eq 1 ] && [ "$status" -eq 0 ]; then
-		rm -rf "$logdir"
+		scratch_rm
 	else
 		printf 'full logs: %s\n' "$logdir" >&2
 	fi
