@@ -37,14 +37,15 @@
 #                          push). The continuous loop passes --pr.
 #   -h, --help             this help
 #
-# Binary overrides (used by the self-test to inject stubs):
+# Binary overrides (advanced use):
 #   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/serf)
 #   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/serf-fuzz-harvest)
 #   SERF_FUZZ_GH           gh binary         (default: gh)
 #   SERF_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
-# Self-test (offline, deterministic, no real provider calls):
-#   scripts/fuzz-drive-selftest.sh
+# No selftest: the old one drove this script with a stubbed toolchain, and
+# fake-toolchain selftests are banned (docs/testing.md). This header is the
+# living contract until the tool's port-on-touch moment.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"

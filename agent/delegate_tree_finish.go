@@ -398,7 +398,17 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:
+		// An externally cancelled generation still reports whatever evidence its
+		// own run loop already gathered (task, worktree, scratch path — see
+		// delegateTerminalPacketMetadata) via finish.packet; only fall back to the
+		// bare synthetic packet when the run loop produced none at all (kata
+		// tpb0). The fold layer (applyRunFinished) still has final say: it
+		// replaces this with the bare packet when the owner is outside the
+		// stopped subtree or the packet isn't a terminal-error kind.
 		packet := delegateStoppedTerminalPacket()
+		if finish.packet != nil {
+			packet = cloneDelegateTerminalPacket(*finish.packet)
+		}
 		outcome = delegatestore.OutcomeStopped
 		disposition = delegatestore.DispositionTerminalError
 		reason = "stopped_by_parent"

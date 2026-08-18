@@ -170,10 +170,12 @@ who pull `main`.
 
 ### Testing the triage logic
 
-`scripts/fuzz-triage-selftest.sh` (`make fuzz-triage-selftest`) exercises the
-flake-guard, all three dedup layers, quarantine, reconcile, the commit path, and
-graceful `gh` degradation **deterministically** — synthetic failures and stubbed
-`go`/`gh` against a throwaway git repo, with no real search, crash, or PR.
+fuzz-triage has no selftest: its old suite drove it with a stubbed `go`/`gh`
+toolchain, and fake-toolchain selftests are banned (docs/testing.md). The
+header's contract and the ledger/bucket file formats are the living contract;
+honest tests arrive when the tool ports to Go
+(docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md,
+"port-on-touch").
 
 ### Secret handling
 
@@ -200,8 +202,9 @@ make fuzz-continuous FUZZ_ARGS="--sweep agent:FuzzPluginManifestParse"  # one-pa
 Round-robin (default, one target per turn) or `--sweep` (all selected targets per
 round). Rapid targets are excluded — they are bounded property checks, not
 coverage-guided searches that deepen across turns via `$GOCACHE/fuzz`. Seams
-`SERF_FUZZ_RUNNER` (registry) and `SERF_FUZZ_TRIAGE` (per-turn engine) let the
-self-test (`make fuzz-continuous-selftest`) drive it with stubs.
+`SERF_FUZZ_RUNNER` (registry) and `SERF_FUZZ_TRIAGE` (per-turn engine) exist
+for advanced use; the stub-driven selftest that used them is gone
+(fake-toolchain selftests are banned, docs/testing.md).
 
 ## Regression bisect (`make fuzz-bisect`)
 

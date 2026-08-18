@@ -91,6 +91,21 @@ type delegateActor struct {
 	lease         *delegateLease
 }
 
+// describe renders the actor as human-readable provenance for a cancellation
+// report (kata tpb0): the caller is always either the tree's root session or
+// the exact parent delegate (authorizeMutationLocked admits no other caller),
+// so this is a complete account of "who cancelled this" for job_stop's own
+// response. Empty for the zero value (no admitted actor).
+func (a delegateActor) describe() string {
+	if a.lease != nil {
+		return "delegate " + a.lease.delegateID
+	}
+	if a.rootSessionID != "" {
+		return "root session " + a.rootSessionID
+	}
+	return ""
+}
+
 type delegateLease struct {
 	delegateID string
 	generation uint64
