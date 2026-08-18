@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -231,7 +231,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union test-timing-budget scratch-lib merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
@@ -434,6 +434,31 @@ web-coverage-floor: web-preflight
 # throwaway frontend and a synthetic coverage summary — no vitest run.
 web-coverage-floor-selftest:
 	@scripts/web-coverage-floor-selftest.sh
+
+# test-timing-budget ratchets per-package test wall time against
+# testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, plus
+# a flat per-test ceiling, so an unexamined timing regression cannot silently
+# erode the wins docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md
+# recorded. CHECK=1 enforces (strict in CI, warn-only on a local run); bare
+# invocation only measures and prints. Companion to test-coverage-floor and
+# web-coverage-floor, same as those heavy + local.
+test-timing-budget:
+	@scripts/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
+
+# test-timing-budget-selftest exercises the comparison contract (ratio bands,
+# the per-test ceiling, a missing budget entry, an absent/empty budget file,
+# strict-vs-warn-only policy, and --bless) against fixture duration rows — no
+# go test or vitest run.
+test-timing-budget-selftest:
+	@scripts/test-timing-budget-selftest.sh
+
+# test-rebaseline resets testing-budget.json to what a clean-host run just
+# measured (kata b6rv). Run it deliberately, on an otherwise idle box, and
+# review the diff in the same commit as whatever change earned it — this is
+# NOT part of any gate, and nothing here should run it to invent a baseline;
+# see docs/testing.md.
+test-rebaseline:
+	@scripts/test-timing-budget.sh --bless $(TIMING_ARGS)
 
 # mutation-floor gates the gremlins kill score: MIN=95 fails any curated package
 # whose test efficacy drops below 95%. Slow (nightly). No MIN = report only.
