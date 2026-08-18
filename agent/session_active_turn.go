@@ -219,22 +219,137 @@ func (s *Session) runningTurnNameHasOwner() bool {
 	return false
 }
 
+// turnNameReleaseResult says what became of a release of the running turn's
+// name. A write the store refused has stranded a name that names a dead turn,
+// a slot this turn does not own has stranded nothing, and a released name is
+// the ordinary end of a turn -- three situations the caller cannot tell apart
+// from the durable slot alone once the write is over.
+type turnNameReleaseResult int
+
+const (
+	// turnNameReleased: the slot named this turn and no longer does.
+	turnNameReleased turnNameReleaseResult = iota
+	// turnNameReleaseNoop: this turn ran unnamed, or the slot already names
+	// another mutation's turn. Nothing of this turn's was in the slot, so a
+	// store that refused the write left nothing behind.
+	turnNameReleaseNoop
+	// turnNameReleaseStoreFailed: the slot still names this turn because the
+	// durable store would not take the write. Every later turn on the session
+	// is refused against that name until it is cleared.
+	turnNameReleaseStoreFailed
+)
+
 // releaseRunningTurnID clears an id minted by mintRunningTurnID. It is a
 // no-op for any other id, so a turn that ended after a client mutation took
 // the slot cannot clear that mutation's identity out from under its own
 // settle path.
-func (s *Session) releaseRunningTurnID(turnID string) {
+//
+// A store that refuses the write is the case that strands the session. The id
+// left in the slot names a turn that is already over, and both durable entry
+// points refuse against it -- mintRunningTurnID with turnNameHeld,
+// AcceptClientMutationStart with Conflict("turn is already active") -- while
+// the only thing that clears such a name, forgetRunningTurnNoOneOwns, runs at
+// load and nowhere else. So the write is re-attempted rather than dropped
+// (kata fbmy).
+func (s *Session) releaseRunningTurnID(turnID string) turnNameReleaseResult {
 	if turnID == "" || s.clientMutations == nil {
+		return turnNameReleaseNoop
+	}
+	clearing := false
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if snapshot.ActiveTurnID != turnID {
+			return nil
+		}
+		snapshot.ActiveTurnID = ""
+		clearing = true
+		return nil
+	})
+	if !clearing {
+		// The closure decides this before the write is attempted, so the answer
+		// holds either way: nothing of this turn's was in the slot, and a
+		// refused write therefore stranded nothing to retry.
+		//
+		// It also ends any strand that WAS outstanding. The slot holding some
+		// other id means the name this session was stuck on is gone -- an
+		// interrupt cleared it mid-unwind and a client mutation claimed it
+		// (session_client_mutation.go's compare-and-clear note) -- so the
+		// budget belongs to whatever fails next, not to that.
+		s.clearRunningTurnReleaseRetry()
+		return turnNameReleaseNoop
+	}
+	if err != nil {
+		s.warnStoreUnhealthyOnce(fmt.Sprintf("release running turn failed: %v", err))
+		s.scheduleRunningTurnReleaseRetry(turnID)
+		return turnNameReleaseStoreFailed
+	}
+	// The store took a write, so the next failure is news again.
+	s.clearStoreUnhealthyWarning()
+	s.clearRunningTurnReleaseRetry()
+	return turnNameReleased
+}
+
+// scheduleRunningTurnReleaseRetry arms ONE paced re-attempt of a release write
+// the store refused, or -- once the budget is spent -- says so and stops.
+//
+// It re-attempts the WRITE, which is what separates it from
+// scheduleRunningTurnNameRetry. Mint runs on every wake, so re-waking the serve
+// loop is enough to re-enter it; release runs once, in the unwind of the turn
+// that held the name, and nothing re-enters it. A wake would find the name
+// still held and stand down again.
+//
+// The delay doubles to the ceiling job notifications use, and the budget is
+// finite. Unlike the stand-down's re-wake, which can poll a broken mount
+// forever because each poll costs only a wake, this loop is holding a name no
+// later turn can take, so it has to end in an answer.
+func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
+	s.releaseRetryMu.Lock()
+	if s.runningTurnReleaseRetry.attempts >= runningTurnReleaseRetryLimit {
+		s.releaseRetryMu.Unlock()
+		// Loud, not diagnostic: the session will refuse every later turn until
+		// it is restarted, and nothing else is going to report that.
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf(
+				"running turn %s could not be released after %d attempts; this session refuses every later turn until it restarts",
+				turnID, runningTurnReleaseRetryLimit),
+		})
 		return
 	}
-	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.ActiveTurnID == turnID {
-			snapshot.ActiveTurnID = ""
-		}
-		return nil
-	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("release running turn failed: %v", err),
-		})
+	delay := s.runningTurnReleaseRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
 	}
+	s.runningTurnReleaseRetry.attempts++
+	s.runningTurnReleaseRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+	s.runningTurnReleaseRetry.generation++
+	generation := s.runningTurnReleaseRetry.generation
+	s.releaseRetryMu.Unlock()
+
+	s.sclock().AfterFunc(delay, func() {
+		s.releaseRetryMu.Lock()
+		superseded := s.runningTurnReleaseRetry.generation != generation
+		s.releaseRetryMu.Unlock()
+		if superseded {
+			return
+		}
+		if s.releaseRunningTurnID(turnID) != turnNameReleased {
+			return
+		}
+		// The name is free again, and nothing else will notice: whatever stood
+		// down for it is waiting out a backoff of its own -- as long as
+		// turnNameStoreRetryMaxDelay -- with no way to learn that the answer
+		// changed early.
+		s.notify()
+	})
+}
+
+// clearRunningTurnReleaseRetry drops the backoff and strands any armed
+// re-attempt once there is no longer a name of this turn's stuck in the slot.
+// Bumping the generation is what stops a timer already in flight writing again
+// behind it.
+func (s *Session) clearRunningTurnReleaseRetry() {
+	s.releaseRetryMu.Lock()
+	s.runningTurnReleaseRetry = runningTurnReleaseRetryState{
+		generation: s.runningTurnReleaseRetry.generation + 1,
+	}
+	s.releaseRetryMu.Unlock()
 }

@@ -29,6 +29,13 @@ type standDownHarness struct {
 	// warningsMatching.
 	drained chan struct{}
 
+	// warned carries every delivered warning message. warningsMatching's
+	// barrier only makes counts exact for warnings the TEST goroutine emitted
+	// before it; a warning emitted from a clock callback has no such ordering,
+	// so a test that waits for one waits here. Sends drop when full, which no
+	// test in this file comes close to.
+	warned chan string
+
 	mu       sync.Mutex
 	wakes    int
 	warnings []string
@@ -40,6 +47,7 @@ func newStandDownHarness(t *testing.T) *standDownHarness {
 		clock:   agenttest.NewFakeClock(),
 		woken:   make(chan struct{}, 64),
 		drained: make(chan struct{}, 1),
+		warned:  make(chan string, 64),
 	}
 	h.sess = newTestSessionForEnvctx(t)
 	h.sess.clock = h.clock
@@ -62,6 +70,12 @@ func newStandDownHarness(t *testing.T) *standDownHarness {
 		h.mu.Lock()
 		h.warnings = append(h.warnings, data.Message)
 		h.mu.Unlock()
+		// After the append, so a test that returns from awaitWarning can read
+		// an exact count immediately.
+		select {
+		case h.warned <- data.Message:
+		default:
+		}
 	}, func() {})
 	h.sess.SetNotifyFunc(func() {
 		h.mu.Lock()
@@ -105,6 +119,18 @@ func (h *standDownHarness) warningsMatching(substr string) int {
 		}
 	}
 	return n
+}
+
+// awaitWarning blocks until a delivered warning contains substr. A blocking
+// receive is the assertion: the package test timeout fails the run if the
+// warning never comes.
+func (h *standDownHarness) awaitWarning(t *testing.T, substr string) {
+	t.Helper()
+	for message := range h.warned {
+		if strings.Contains(message, substr) {
+			return
+		}
+	}
 }
 
 // seedOwnedRunningTurn puts the durable slot in the state a live turn/start
