@@ -75,20 +75,37 @@ function optionalNonNegativeInteger(attrs: Record<string, string>, key: string):
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+// A notification-text fragment in source order: either a raw
+// <job|delegate-notification> block (still unparsed - the caller classifies
+// it) or a trimmed span of text between/around blocks. Splitting into
+// ordered fragments - instead of collecting every block and handing back one
+// merged leftover string - is what lets a caller keep interstitial text
+// pinned to its original position between two notification cards (issue #48)
+// rather than collapsing it into a single trailing divider.
+interface NotificationBlockFragment {
+  kind: "block" | "text";
+  text: string;
+}
+
 // splitJobNotificationBlocks extracts each individual <job-notification …>…
 // </job-notification> block. The per-block match MUST be non-greedy: a single
 // steering turn can carry several blocks joined by newlines, and a greedy match
 // would span the first opening tag to the last closing tag and aggregate
 // distinct notifications into one (contracts §17).
-function splitNotificationBlocks(text: string): { blocks: string[]; leftover: string } {
-  const blocks: string[] = [];
-  const leftover = text
-    .replace(/<(job|delegate)-notification\s+[^>]*>[\s\S]*?<\/\1-notification>/g, (block) => {
-      blocks.push(block);
-      return "";
-    })
-    .trim();
-  return { blocks, leftover };
+function splitNotificationBlocks(text: string): NotificationBlockFragment[] {
+  const pattern = /<(job|delegate)-notification\s+[^>]*>[\s\S]*?<\/\1-notification>/g;
+  const fragments: NotificationBlockFragment[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const before = text.slice(cursor, index).trim();
+    if (before) fragments.push({ kind: "text", text: before });
+    fragments.push({ kind: "block", text: match[0] });
+    cursor = index + match[0].length;
+  }
+  const after = text.slice(cursor).trim();
+  if (after) fragments.push({ kind: "text", text: after });
+  return fragments;
 }
 
 function parseDelegateNotification(block: string): ParsedNotification | null {
@@ -303,24 +320,40 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   };
 }
 
+// An ordered fragment of a parsed steer: either a notification card or a span
+// of plain text between/around cards, in the position it appeared in the
+// original text. SteeringItem.tsx renders these in order so interstitial
+// text stays where it was written (issue #48) instead of collapsing into one
+// trailing divider after every card.
+export type SteeringFragment =
+  | { kind: "notification"; notification: ParsedNotification }
+  | { kind: "text"; text: string };
+
 // Notification blocks are STRUCTURED markup (<job-notification …>) and a fixed
 // "Observer callback:\n" header, so reading them is parsing, not guessing: they
 // cannot false-positive the way a prose pattern like /completed all tasks/ can.
 // This is why the card's trigger stayed content-driven while the kind moved to
 // the wire, and why a pre-Kind transcript still renders its cards.
-export function parseSteeringNotifications(text: string): {
-  notifications: ParsedNotification[];
-  leftover: string;
-} {
+export function parseSteeringNotifications(text: string): SteeringFragment[] {
   const stripped = stripSystemReminder(text);
-  const { blocks, leftover } = splitNotificationBlocks(stripped);
-  const notifications = blocks
-    .map((block) =>
-      block.startsWith("<delegate-notification") ? parseDelegateNotification(block) : parseJobNotification(block),
-    )
-    .filter((n): n is ParsedNotification => n !== null);
-  if (notifications.length > 0) return { notifications, leftover };
+  const blockFragments = splitNotificationBlocks(stripped);
+  const fragments: SteeringFragment[] = [];
+  let sawNotification = false;
+  for (const frag of blockFragments) {
+    if (frag.kind === "text") {
+      fragments.push({ kind: "text", text: frag.text });
+      continue;
+    }
+    const notification = frag.text.startsWith("<delegate-notification")
+      ? parseDelegateNotification(frag.text)
+      : parseJobNotification(frag.text);
+    if (notification) {
+      fragments.push({ kind: "notification", notification });
+      sawNotification = true;
+    }
+  }
+  if (sawNotification) return fragments;
   const observer = parseObserverCallback(stripped);
-  if (observer) return { notifications: [observer], leftover: "" };
-  return { notifications: [], leftover: stripped };
+  if (observer) return [{ kind: "notification", notification: observer }];
+  return stripped ? [{ kind: "text", text: stripped }] : [];
 }

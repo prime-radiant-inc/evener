@@ -233,12 +233,24 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			}
 			if text != "" {
 				m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgSteering, Text: text})
-				// Tie a job notification to its rail row: pull its result headline
-				// onto the matching run (keeps both — the notification stays in the
-				// flow, the rail shows the result).
-				if jobID, headline, isError, ok := transcript.ParseJobNotificationHeadline(text); ok && jobID != "" {
+				// Tie every job notification in this steering event to its rail
+				// row: pull each one's result headline onto the matching run
+				// (keeps both — the notification stays in the flow, the rail
+				// shows the result). One steering event can name several jobs —
+				// the daemon joins one poll tick's blocks with "\n" — so every
+				// tie must be applied, not just the first (issue #49).
+				if ties := transcript.ParseJobNotificationHeadlines(text); len(ties) > 0 {
 					reducer := m.sessionTranscriptReducer()
-					if reducer.ApplyTieHeadline(jobID, headline, isError) {
+					applied := false
+					for _, tie := range ties {
+						if tie.JobID == "" {
+							continue
+						}
+						if reducer.ApplyTieHeadline(tie.JobID, tie.Headline, tie.IsError) {
+							applied = true
+						}
+					}
+					if applied {
 						m.applySessionTranscriptReducer(reducer)
 					}
 				}

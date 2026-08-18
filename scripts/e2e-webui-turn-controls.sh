@@ -276,15 +276,14 @@ echo "$fakellm_pid" >"$run/fakellm.pid"
 # Read the real port back from fakellm's own startup log line — never a fixed
 # port (kata 68fm). Poll rather than sleep a guessed interval.
 #
-# The ceiling is a guess: 50 x 0.1s is about six seconds of wall clock, and a
-# process that binds slower than that is declared dead. That was merely noisy
-# when a timed-out start left everything running; now the reaper takes the
-# stack down with it, so a healthy-but-slow hub on a loaded machine loses its
-# fakellm too. Six seconds to bind a loopback port is a long time for these
-# three binaries, but if this ever fires on a machine that was simply busy,
-# raise the count — do not remove the reaper.
+# The ceiling only has to be impossible for a healthy run to exhaust: the
+# poll exits the moment the line appears, and the liveness arm below catches a
+# dead child immediately, so a long ceiling costs nothing when things work.
+# The old six-second guess fired twice in one day on gate runs where the
+# dev-tooling wave had the machine saturated, false-redding this suite's
+# selftest; 60s is past anything a busy-but-healthy machine has shown.
 fakellm_port=""
-for _ in $(seq 1 50); do
+for _ in $(seq 1 600); do
 	fakellm_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/fakellm.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
 	[ -n "$fakellm_port" ] && break
 	kill -0 "$fakellm_pid" 2>/dev/null || {
@@ -318,7 +317,8 @@ hub_pid=$!
 echo "$hub_pid" >"$run/hub.pid"
 
 hub_port=""
-for _ in $(seq 1 50); do
+# Same ceiling reasoning as the fakellm poll above: long is free when healthy.
+for _ in $(seq 1 600); do
 	hub_port="$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$')" || true
 	[ -n "$hub_port" ] && break
 	kill -0 "$hub_pid" 2>/dev/null || {

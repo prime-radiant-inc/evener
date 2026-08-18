@@ -466,6 +466,52 @@ func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
 	}
 }
 
+// sharedWorkspaceDelegateWarning returns a non-blocking advisory when a new
+// non-isolated delegate would join a running non-isolated sibling already
+// working in this session's directory. The caller's isolation choice stays
+// authoritative: this inspects no files, takes no locks beyond the
+// manager-then-leaf discipline liveDirectSubagents already follows, creates no
+// worktree, and never blocks the spawn.
+//
+// A delegate's working directory is not a caller-supplied parameter: a delegate
+// either shares its parent's current directory or gets its own worktree lane, so
+// the only comparison is the parent's live working directory against each live
+// child's — which is also what catches a child that re-rooted itself.
+func (s *Session) sharedWorkspaceDelegateWarning(requestedIsolation string) string {
+	if s == nil || s.subagents == nil || strings.TrimSpace(requestedIsolation) != "" {
+		return ""
+	}
+	parentEnv := s.currentEnv()
+	if parentEnv == nil {
+		return ""
+	}
+	parentDir := parentEnv.WorkingDirectory()
+	target := canonicalOrClean(parentDir)
+	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		active := sub.running || sub.driving
+		isolation := ""
+		if sub.stableDescriptor != nil {
+			isolation = sub.stableDescriptor.Isolation
+		}
+		sub.mu.Unlock()
+		if !active || strings.TrimSpace(isolation) != "" {
+			continue
+		}
+		env := sub.sess.currentEnv()
+		if env != nil && canonicalOrClean(env.WorkingDirectory()) == target {
+			// Name the directory the way the caller knows it, not its canonical
+			// form: the comparison resolves symlinks, the advisory does not.
+			return fmt.Sprintf(
+				"shared workspace %q already has a running delegate; this delegate will still launch, "+
+					"but consider isolation=\"worktree\" to avoid file, report, branch, and Git-state collisions",
+				parentDir,
+			)
+		}
+	}
+	return ""
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
 	selection, err := s.selectSubagentModel(ctx, model, agentType)
 	if err != nil {

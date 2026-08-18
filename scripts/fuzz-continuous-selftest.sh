@@ -13,8 +13,8 @@ set -uo pipefail
 loop="$(cd "$(dirname "$0")" && pwd)/fuzz-continuous.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work fuzz-continuous-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work fuzz-continuous-selftest
+trap 'scratch_rm' EXIT
 
 # assert_str_has STRING NEEDLE DESC — DESC passes if STRING contains NEEDLE.
 # Distinct from the lib's file-based assert_has: every call site here already

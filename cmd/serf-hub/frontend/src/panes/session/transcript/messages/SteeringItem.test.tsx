@@ -436,6 +436,28 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
 });
 
+// issue #48: text between two notification blocks used to be stripped out
+// and re-merged into a single divider rendered AFTER both cards, so
+// "middle steering text" (written between the two blocks) rendered below
+// both instead of between them. Fragments must render in source order.
+test("text between two notification blocks renders as its own divider, positioned between the two cards (issue #48)", () => {
+  const secondBlock = `<job-notification job_id="job_8" event="failed" job_type="shell" status="failed" reason="bad" output_bytes="1" exit_code="3">
+Job job_8 failed.
+</job-notification>`;
+  const text = `${JOB_NOTIFICATION_STEERING}\n\nmiddle steering text\n\n${secondBlock}`;
+  const { container } = render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+
+  const nodes = Array.from(
+    container.querySelectorAll('[data-testid="notification-card"], [data-testid="steering-item"]'),
+  );
+  expect(nodes.map((n) => n.getAttribute("data-testid"))).toEqual([
+    "notification-card",
+    "steering-item",
+    "notification-card",
+  ]);
+  expect(nodes[1]?.textContent).toContain("middle steering text");
+});
+
 // The card's trigger is <job-notification> markup, not the kind: structured
 // markup cannot false-positive the way a prose pattern can, so a pre-Kind
 // transcript still gets its card.

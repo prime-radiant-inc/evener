@@ -31,6 +31,7 @@ set -uo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/private-go-home.sh"
+. "$script_dir/scratch-lib.sh"
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
@@ -201,8 +202,8 @@ stop_children() {
 cleanup() {
 	stop_children
 	[ "$normal_completion" -eq 1 ] || keep_failed_logs=1
-	if [ -n "$logdir" ] && [ "$keep_failed_logs" -eq 0 ]; then
-		rm -rf "$logdir"
+	if [ "$keep_failed_logs" -eq 0 ]; then
+		scratch_rm
 	fi
 }
 
@@ -221,16 +222,7 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
-tmp_base="${TMPDIR:-/tmp}"
-tmp_base="${tmp_base%/}"
-# Checked: cleanup deletes $logdir recursively. It guards on non-empty, so an
-# unchecked mktemp would not delete the wrong thing — it would instead run the
-# whole wave writing logs to paths under an empty prefix, and report nothing.
-if ! logdir="$(mktemp -d "$tmp_base/serf-module-tests.XXXXXX")" ||
-	[ -z "$logdir" ] || [ ! -d "$logdir" ]; then
-	echo "run-module-tests: could not create a log directory under $tmp_base" >&2
-	exit 1
-fi
+scratch_dir logdir serf-module-tests
 fail=0
 failed_modules=()
 

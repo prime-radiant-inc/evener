@@ -23,6 +23,8 @@
 // a `switch` that turned out to be a no-op reads "Already in", not
 // "Switched to", and an `already_disposed` dispose never claims a
 // dirty-discard, because nothing was torn down to discard.
+import { MCPToolArguments } from "../MCPToolArguments";
+import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { clip, parseArgs, parseJSONObject, str } from "./helpers";
@@ -157,8 +159,21 @@ function findSessionsSummary(item: { argumentsJSON?: string; output?: string }):
   return count === undefined ? lead : `${lead} · ${count} ${noun}`;
 }
 
+// The row's body composes the request arguments above the head-clipped
+// output (matching defaultToolBody's own arrangement in toolRenderers.ts) so
+// "what was searched for" is answerable from the expanded card, not just the
+// summary line above it.
+function FindSessionTranscriptsBody(props: ToolRenderProps) {
+  return (
+    <>
+      <MCPToolArguments {...props} />
+      <HeadClippedOutputBody {...props} />
+    </>
+  );
+}
+
 registerToolRenderer({
   match: "find_session_transcripts",
   summary: findSessionsSummary,
-  body: HeadClippedOutputBody,
+  body: FindSessionTranscriptsBody,
 });
