@@ -134,3 +134,45 @@ func TestCumulativeUsageSnapshot_MatchesContextManagerTotal(t *testing.T) {
 		t.Fatalf("CumulativeUsageSnapshot() = %+v, want %+v", got, want)
 	}
 }
+
+// TestResumedSubagentMetaSurvivesAutosave pins that a bare `serve --resume
+// <delegate-id>` keeps its persisted is_subagent flag. That restore leaves the
+// spawn carrier empty (spawn is json:"-", never persisted), so a Meta() that
+// re-derived the flag from cfg.spawn alone would write is_subagent:false back
+// on the next autosave — a one-way erasure of durable delegate lineage.
+func TestResumedSubagentMetaSurvivesAutosave(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	meta := schema.SessionMeta{
+		ID:         "resumed-delegate",
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		IsSubagent: true,
+		Config:     (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+	}
+	// restoreCfg.spawn intentionally left zero: the bare-resume case.
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.cfg.spawn.parentSessionID != "" {
+		t.Fatalf("test setup: spawn carrier not empty (%q) — the case under test requires it empty", sess.cfg.spawn.parentSessionID)
+	}
+	if !sess.Meta().IsSubagent {
+		t.Error("Meta().IsSubagent = false right after resuming a delegate, want true")
+	}
+
+	sess.maybeAutoSave()
+	saved, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if !saved.IsSubagent {
+		t.Error("autosave rewrote is_subagent to false for a resumed delegate")
+	}
+}
