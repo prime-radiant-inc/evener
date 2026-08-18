@@ -40,6 +40,28 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.updateDashboardKey(msg)
 }
 
+// replayKeyBurst delivers a coalesced multi-rune KeyMsg as the individual
+// keystrokes the sender typed, threading the model through each one and
+// batching whatever commands they emit.
+func (m hubModel) replayKeyBurst(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	model := tea.Model(m)
+	for _, r := range msg.Runes {
+		next, ok := model.(hubModel)
+		if !ok {
+			// A handler handed back a foreign model; stop replaying rather
+			// than guess at its key semantics.
+			break
+		}
+		var cmd tea.Cmd
+		model, cmd = next.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt})
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return model, tea.Batch(cmds...)
+}
+
 func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.followupModal != nil {
 		updated, cmd := m.followupModal.Update(msg)
@@ -80,6 +102,23 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.dashboardFilterActive {
 		return m.updateHubFilterKey(msg)
+	}
+	// From here down, printable runes are commands, and a single pty read can
+	// carry several of them: tmux coalesces rapid writes when the pane's
+	// reader lags, and bubbletea reports every rune of one read as one
+	// KeyMsg. Replay such a batch one rune at a time or the switch below sees
+	// one unmatchable "/ops" instead of the keys the sender typed and drops
+	// it silently (kata fazd). Only here: where a text surface has focus —
+	// the composer, the palette and dashboard filters, the panels — a batch
+	// is the typed text and must stay whole (a split "/interrupt" in the
+	// composer would open the palette instead). Browse/transcript view is
+	// neither: a command mode whose coalesced runes still fall through to
+	// the composer as text, so the same word means different things at
+	// different delivery timings. That ambiguity is unresolved by design
+	// record (kata 7hh0); TestHubModelBrowseKeepsComposerVisibleAndTyping
+	// pins the coalesced behavior until it is decided.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
+		return m.replayKeyBurst(msg)
 	}
 	rows := m.dashboardRows()
 	switch msg.String() {

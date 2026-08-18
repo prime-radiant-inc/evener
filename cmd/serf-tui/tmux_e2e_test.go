@@ -154,6 +154,31 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitForExit()
 }
 
+// A pty delivers rapid keystrokes as one read burst under CPU contention:
+// tmux coalesces separate send-keys writes when the pane's reader lags, and
+// bubbletea reports every printable rune of one read as a single KeyMsg.
+// That is how a loaded CI runner turned SendKeys("/")+TypeText("ops") into
+// one batched message the dashboard dropped on the floor, and k/k/f into
+// "kk" typed at the composer (kata fazd). One literal send-keys call IS that
+// burst, deterministically — no load required — so this pins that a
+// coalesced "/ops" behaves exactly like "/", "o", "p", "s" typed one at a
+// time.
+func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
+	t.Parallel()
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub)
+	defer app.Close()
+
+	app.WaitForWithout([]string{"ended maintenance"}, "SERF LIVE", "live task", "ops task")
+	app.TypeText("/ops")
+	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
+	app.SendKeys("Escape")
+	app.WaitFor("SERF LIVE", "live task", "ops task")
+}
+
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -545,8 +570,16 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
+	// Await each selection render before the next press, the way
+	// TestTUITmuxE2E_BrowseAndFork does: consecutive printable command keys
+	// sent back-to-back can coalesce into one pty read on a loaded machine
+	// and arrive as a single batched KeyMsg, which browse mode reads as
+	// composer text rather than three commands (kata fazd — this test's CI
+	// failure pane had "kk" sitting in the composer).
 	app.SendKeys("k")
+	app.WaitFor("▶ ▍ ✓ exec")
 	app.SendKeys("k")
+	app.WaitFor("▶ ┃  > initial question")
 	app.SendKeys("f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 	app.TypeText(" with edit")
