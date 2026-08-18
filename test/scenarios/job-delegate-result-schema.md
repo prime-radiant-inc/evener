@@ -212,13 +212,12 @@ own `transcript_ref`, the `delegate_send` result, or `delegates.jsonl`.
   `transcript_ref`) but is NOT the way to learn a result — its own
   description says delegate status "never returns terminal packet
   contents" and "Completion is notification-driven; do not poll this
-  waiting for completed". Do **not** expect a
-  `delegate_session_busy` failure if you race it. `delegate_session_busy`
-  stays in the general canonical-code vocabulary
-  (`docs/job-control.md` "Status and reason model" "Canonical codes
-  include"), but it does not describe this case and nothing in the Go
-  source emits it here: a `delegate_send` aimed at a delegate that is
-  still running live-steers it instead.
+  waiting for completed". Do **not** expect a busy-refusal failure if
+  you race it: `docs/job-control.md`'s reason vocabulary has no code
+  for this case (kata xmag retired the busy-session code it used to
+  name here, once it was clear no Go source emitted it), and a
+  `delegate_send` aimed at a delegate that is still running
+  live-steers it instead.
   That result is addressed by `delegate_id`, not `job_id` — the wire
   result carries `delegate_id`, `type`, `status` and `action:"steered"`
   and exposes no job identity at all

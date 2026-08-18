@@ -106,15 +106,12 @@ Turn 2:
   finalizes as `cancelled/stopped_by_parent`") — still listed, still carrying
   `parent_job_id`. Falsification (recursion hole): the nested job
   still `running` after an `include_children=true` stop. Accept
-  `stopped`/`runtime_lost`-or-`supervision_lost` for the child ONLY if
-  the delegate cancellation tore down the owner runtime before the
-  child stop confirmed ("`job_stop`" "If no live handle remains and
-  cancellation cannot be confirmed, terminal status is `stopped` with
-  reason `stop_unconfirmed` or `runtime_lost`", and "Job status and
-  reason model" defines `supervision_lost` for an owner runtime that
-  ended mid-supervision); a child
-  left silently running is the failure, a child finalized by
-  supervision loss is a recorded variant.
+  `stopped`/`runtime_lost` for the child ONLY if the delegate
+  cancellation tore down the owner runtime before the child stop
+  confirmed ("`job_stop`" "If no live handle remains and cancellation
+  cannot be confirmed, terminal status is `stopped` with reason
+  `runtime_lost`"); a child left silently running is the failure, a
+  child finalized by lost supervision is a recorded variant.
 - The parent's `jobs.jsonl` contains `job_finished` events for both
   the delegate and the nested job (the nested one forwarded with
   `owner_session_id` = the child session).

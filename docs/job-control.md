@@ -194,34 +194,33 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 
 | Value | Surface | Meaning | Normative reasons | Owner attention |
 | --- | --- | --- | --- | --- |
-| `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `awaiting_permission`, `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
+| `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
 | `idle` | delegate status | No delegate generation is processing; resumability is separate metadata. | usually `null` | none by lifecycle alone |
 | `completed` | shell status or delegate `last_outcome` | Work ended normally. | `exit_zero` for shell; otherwise usually `null` | typed terminal attention |
-| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `permission_denied`, `startup_failed`, `runtime_lost` as applicable | typed terminal attention |
+| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Serf intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
-| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `stop_unconfirmed`, `supervision_lost`, `run_timeout` | typed terminal attention |
+| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
 
 Validation, lookup, and routing errors are synchronous tool errors and create
 neither a shell JobRecord nor a delegate generation. Canonical codes include
 `invalid_request`, `permission_required`, `target_not_found`,
 `target_not_messageable`, `target_terminal`, `target_not_resumable`,
-`target_not_watchable`, `delegate_session_busy`, and `not_controllable`.
+`target_not_watchable`, and `not_controllable`.
 
 `status` is the primary machine branch field. `reason` is optional diagnostic
 metadata. Branch first on shell status or delegate status/last outcome, then
 consult `reason` for documented operational cases such as `runtime_lost`,
-`run_timeout`, `awaiting_permission`, budget exhaustion, and `stop_pending`.
+`run_timeout`, and `stop_pending`.
 Keep this portable vocabulary small; other diagnostics belong in free-text
 `diagnostic` or `error` fields.
 
-`cancelled` is intentional, confirmed stop. `stopped` is supervision loss,
-runtime timeout, or unconfirmed stop. Restart reconciles a shell as
-`stopped/runtime_lost` and a lost stable delegate generation as
-`failed/runtime_lost`, after which the delegate is idle. `supervision_lost`
-means an owning runtime became unable to supervise nested shell work while Serf
-was otherwise live. `not_controllable` is a synchronous routing/control error,
-not a terminal status reason.
+`cancelled` is intentional, confirmed stop. `stopped` is work Serf cannot
+attribute to normal failure or confirmed cancellation: a runtime timeout, a
+lost runtime, or a cancellation it could not confirm. Restart reconciles a
+shell as `stopped/runtime_lost` and a lost stable delegate generation as
+`failed/runtime_lost`, after which the delegate is idle. `not_controllable` is
+a synchronous routing/control error, not a terminal status reason.
 
 The following diagram is the shell lifecycle; delegate lifecycle is the
 two-state `running`/`idle` model above.
@@ -232,7 +231,7 @@ stateDiagram-v2
     running --> completed: success / exit 0
     running --> failed: error / exit nonzero / denied
     running --> cancelled: job_stop confirmed
-    running --> stopped: runtime_lost / stop_unconfirmed / run_timeout
+    running --> stopped: runtime_lost / cancelled / run_timeout
     completed --> [*]
     failed --> [*]
     cancelled --> [*]
@@ -1008,7 +1007,7 @@ Semantics:
 - Stopping does not require or imply acknowledgement.
 - If a shell job already completed before stop lands, return its actual terminal status.
 - If shell stop is confirmed, terminal status is `cancelled` with reason `stopped_by_parent`.
-- If no live shell handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `stop_unconfirmed` or `runtime_lost`.
+- If no live shell handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `runtime_lost`.
 - If a shell is still running after timeout, status remains `running` with reason `stop_pending`, and a later terminal notification remains guaranteed.
 - A shell return classifies the result in `outcome`: `cancelled_by_request` (the stop cancelled a live job), `already_terminal` (the job had already finished before the stop), `completed_during_stop` (the job finished on its own as the stop landed), or `stop_requested` (still finalizing, e.g. reason `stop_pending`). `previous_status` reports the status the job held immediately before the stop signal, so a race between completion and cancellation is unambiguous.
 - A stable delegate stop records its admission-time lifecycle and preserves that classification across same-target retries and provider-free restart. Incomplete at `max_wait_ms` returns current `status="running"`, `reason="stop_pending"`, and `outcome="stop_requested"`. Completed stop returns current `status="idle"`; admission while active returns `previous_status="running"` and `outcome="cancelled_by_request"`, while admission when already idle/no-work returns `previous_status="idle"` and `outcome="already_idle"`.
