@@ -80,9 +80,9 @@ assert_killed_run_cleans_up() {
 }
 
 # assert_reclaims_abandoned_scratch — no janitor sweeps TMPDIR for these
-# runners; reclaim-test-debris.sh deliberately does not know their prefixes. A
-# scratch whose owner is gone — SIGKILLed, OOM-killed, or cut off with the
-# machine — is therefore the next run's problem, and the next run takes it.
+# runners; every scratch owner reclaims its own. A scratch whose owner is
+# gone — SIGKILLed, OOM-killed, or cut off with the machine — is therefore
+# the next run's problem, and the next run takes it.
 assert_reclaims_abandoned_scratch() {
 	local dead abandoned
 	# A pid that has already exited AND been reaped: the shell that printed its

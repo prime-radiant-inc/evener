@@ -308,9 +308,6 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// The one blessed delete: scratch_rm removing only what scratch_dir
 	// minted, validated, and registered. Everything else defers here.
 	"scratch-lib.sh": 1,
-	// Deletes for a living; its targets come from a fixed-basename scan plus
-	// a prefix allowlist, never from a caller's variable.
-	"reclaim-test-debris.sh": 2,
 	// --stop reaps a run directory only after finding the marker file the
 	// start wrote there; an emptied or clobbered argument fails the marker
 	// check and exits 2 without deleting.
