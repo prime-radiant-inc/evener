@@ -400,6 +400,16 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
+	// EntrySteeringCarrier is a turn whose only job is to carry already-accepted
+	// user steering that has no turn of its own to land in -- the wake
+	// ProcessPendingUserInput runs when nothing is queued but user steering is
+	// pending. It passes the pending-question gate the way EntryUserInput does
+	// (the user's steering supersedes an unanswered question just as a queued
+	// message would), but does not route through acceptUserInput: it carries no
+	// user text, so it skips MaxTurns, s.turns++, and the TurnUserInput
+	// transcript append, mirroring EntryNotification's accounting instead of
+	// EntryUserInput's.
+	EntrySteeringCarrier
 	// entryKindCount is the number of EntryKind values. Keep it last: the
 	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
 	// added above this line must declare how its turn acquires an identity
@@ -589,7 +599,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// wake source's own durable queue (jobstore notifications, the goal engine,
 	// the watch outbox) untouched, so it redelivers once the boundary drains
 	// after the user's reply. EntryUserInput is always accepted — it is how the
-	// reply resolves awaiting (spec §5.2).
+	// reply resolves awaiting (spec §5.2). EntrySteeringCarrier is accepted for
+	// the same reason a queued message is: the steering it carries is the user
+	// speaking, not an autonomous wake, so it must reach the model rather than
+	// wait behind a question the user has already moved past.
 	//
 	// Gated on the pending set, not raw state (attention-status-model v5
 	// reconciliation): SessionAwaiting used to imply "a question is pending" —
@@ -601,7 +614,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// pending question is a stronger stop than the wake (a delegate finishing
 	// while the user reads a QUESTION must not silently resolve it out from
 	// under them); a general re-arm has nothing pending to protect.
-	if len(s.askPending) > 0 && kind != EntryUserInput {
+	if len(s.askPending) > 0 && kind != EntryUserInput && kind != EntrySteeringCarrier {
 		s.mu.Unlock()
 		return "", nil
 	}
@@ -1152,6 +1165,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
+	} else if kind == EntrySteeringCarrier {
+		// Also arrives already named: claimSteeringCarrierTurn reserved the id
+		// (the steering mutation's own, reserved at its acceptance) and
+		// published it into ActiveTurnID before ProcessPendingUserInput ever
+		// called ProcessInputKind, so onRunnable already handed it to the
+		// daemon and cancellation is wired before this point runs.
+		runningTurnID = steeringCarrierTurnIDFromContext(ctx)
+		if !s.acceptSteeringCarrierInput(ctx, runningTurnID) {
+			return "", false, nil
+		}
 	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
 		return "", false, err
 	}
@@ -1708,6 +1731,41 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
+	s.injectDrainedSteering()
+	return true
+}
+
+// acceptSteeringCarrierInput opens a turn whose only job is to carry
+// already-accepted user steering that has no turn of its own to land in. It
+// is acceptUserInput's notification-style sibling for this one shape: no
+// MaxTurns check, no s.turns++, no TurnUserInput transcript append, because
+// nothing about this turn is user-typed text -- the input already ran through
+// turn/steer's (or drain's, or promote's) accept path, and only needs
+// somewhere to land.
+//
+// turnID is the id claimSteeringCarrierTurn reserved and published to
+// ActiveTurnID before this call, and handed to the daemon via onRunnable
+// before the model call starts. It is one of the pending steer mutations' own
+// reserved ids -- not a freshly minted one -- so the id the client was told in
+// its Applied receipt is the id that actually runs, which is what lets an
+// interrupt's fence match the turn it cancels.
+//
+// It returns false when nothing is left to deliver -- a race with a turn that
+// drained the steering first between the wake deciding to run and this call
+// -- so the caller can stand down without opening a turn that carries
+// nothing.
+func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) (proceed bool) {
+	if !s.hasPendingUserSteering() {
+		s.finishNotificationNoop()
+		return false
+	}
+	s.repairOrphanedToolResults("before accepting steering carrier")
+	// The announce precedes every content event of the turn, the same as
+	// acceptNotificationInput's boundary: content emitted before it would be
+	// attributed to the turn before this one.
+	if s.servedByDaemon() {
+		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+	}
 	s.injectDrainedSteering()
 	return true
 }
