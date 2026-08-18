@@ -310,6 +310,14 @@ func scenarioAnchorCovers(anchor string, line int) bool {
 	return false
 }
 
+// scenarioMinCheckedLineCitations is the floor on how many quoted-literal line
+// citations the audit below must actually check. A zero-floor only catches a
+// needle that died outright; this catches the corpus drifting out of the
+// audit's reach one reworded sentence at a time, which is gap 4 and leaves no
+// other trace. The corpus checked 28 when this landed, so the floor sits there:
+// raise it as the corpus grows, and lower it only with a reason.
+const scenarioMinCheckedLineCitations = 28
+
 // scenarioLineCitationExemption identifies one citation the two-witness rule
 // mis-reads.
 type scenarioLineCitationExemption struct {
@@ -374,6 +382,14 @@ var scenarioLineCitationExempt = map[scenarioLineCitationExemption]string{
 //
 //  3. Only the range is checked, never the claim. A card may quote a real string
 //     from the right line and still describe its behaviour wrongly.
+//
+//  4. The adjacency rule drops a pair SILENTLY. Put a word between the quote and
+//     its citation and the pair stops being extracted, with no signal — and this
+//     is not hypothetical: two edits made while repairing the corpus did exactly
+//     that, taking the checked count from 28 to 26 without a test noticing. That
+//     is why scenarioMinCheckedLineCitations exists below; it turns a mass drop
+//     into a failure, but it cannot see one or two. A card rewording a sentence
+//     around a citation can still quietly remove it from this audit's reach.
 func TestScenarioQuotedLiteralsSitInsideTheCitedLineRange(t *testing.T) {
 	byBase := scenarioSourceFilesByBase(t)
 	sources := map[string][]string{}
@@ -432,9 +448,13 @@ func TestScenarioQuotedLiteralsSitInsideTheCitedLineRange(t *testing.T) {
 	// needle stopped matching anything; only a floor on matches tells the two
 	// apart. Cards quote code they cite by the dozen, so zero checks means the
 	// pair extractor broke, not that the quotations left.
-	if checked == 0 {
-		t.Fatalf("the quoted-literal line-citation needle matched nothing across " +
-			"the corpus — the detector is dead and this audit is checking nothing")
+	if checked < scenarioMinCheckedLineCitations {
+		t.Fatalf("this audit checked %d quoted-literal line citations, below the "+
+			"floor of %d. Either the pair extractor broke, or cards were reworded "+
+			"so that prose now sits between a quote and its citation — gap 4 above, "+
+			"which is silent by construction and is the only reason this floor "+
+			"exists. Restore the adjacency, or lower the floor deliberately and say "+
+			"why here.", checked, scenarioMinCheckedLineCitations)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
