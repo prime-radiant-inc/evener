@@ -117,7 +117,14 @@ to re-run consumers under sabotage.
 **A selftest earns its gate slot by pinning outcomes of a tool the gate
 or CI depends on.** Outcomes are exit codes, summaries, refusals, and
 file effects; the argv a script hands a faked binary is an implementation
-restated, and asserting on it is testing the mock. Hand-run conveniences
+restated, and asserting on it is testing the mock. Fake-toolchain
+selftests are banned outright, not merely denied a gate slot: a tool that
+can only be tested by faking `go`, `gh`, or its sibling tools on PATH has
+outgrown shell, and the move is the port (the dev-tooling spec's
+port-on-touch trigger), never the suite. Feeding a data seam fixture
+input — the registry listing fuzz-bisect's and fuzz-oracle-audit's suites
+stub while the git history, replays, and verdicts stay real — is not a
+faked toolchain. Hand-run conveniences
 fail loudly in front of whoever ran them and get no suite. New tooling
 that accumulates real logic belongs in Go under `go test`, where the type
 system, `-race`, and ordinary unit tests replace an entire shell-fixture
@@ -329,11 +336,11 @@ them: `make fuzz`'s fixed-seed rapid replay loop (`scripts/run-fuzz.sh`'s
 `scripts/fuzz-oracle-audit.sh`'s `run_seeds`, which replays a mutation against
 `TestJobstoreSeqFuzz` and must never read that test's now-default skip as the
 oracle failing to catch the mutation, and `scripts/fuzz-coverage-global.sh`'s
-Rapid replay branch (`fuzz-coverage-global-selftest.sh` now asserts the
-opt-in actually propagates — not just that it's in the source — by proving a
-gated replay's coverage profile carries a nonzero execution count, and by
-mutation-testing that assertion itself: stripping the opt-in from a copy of
-the runner reproduces a zero-count profile and makes the assertion fail).
+Rapid replay branch. (The fake-toolchain selftest that once pinned that last
+opt-in's propagation was deleted under the ban above, so the threading is
+currently unpinned — a regression would surface as Rapid modules' coverage
+collapsing under `make fuzz-coverage-global CHECK=1`, not in any gate.
+Honest tests return at the tool's port-on-touch moment.)
 
 Fuzz-family coverage and the default gate's coverage number are tracked on
 two separate tracks, not one. `go test ./agent -short`'s `-cover` output (and
