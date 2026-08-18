@@ -322,7 +322,7 @@ Add `TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell`. Use five scri
 4. communicate `"waiting for B"`;
 5. after B's notification, communicate `"all shell work complete"`.
 
-Use `strings.Count(requestFullText(req), "<job-notification")` to distinguish the A-only and A-plus-B requests. Assert five requests, two distinct notification job IDs, and final stdout containing only the post-B completion result as the run's final answer.
+Use `strings.Count(requestDeliveredText(req), "<job-notification")` to distinguish the A-only and A-plus-B requests. Counting over `requestFullText` instead would include the system prompt, so a prompt section naming the frame would shift every count by one (kata zzpw). Assert five requests, two distinct notification job IDs, and final stdout containing only the post-B completion result as the run's final answer.
 
 - [ ] **Step 5: Add the foreground-promotion regression at the agent boundary**
 

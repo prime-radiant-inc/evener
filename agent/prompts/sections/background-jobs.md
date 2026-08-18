@@ -70,6 +70,7 @@ For watch-driven tasks, complete this sequence:
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
 details. It reaches you as that observer delegate's ordinary terminal
-delegate-notification frame carrying its result packet, and it wakes you on its
-own, so ending your turn is how you wait for it. Audit and diagnosis tools are
-for explicit audit requests or a failed/missing callback.
+`<delegate-notification delegate_id="dlg_...">` frame carrying its result
+packet, and it wakes you on its own, so ending your turn is how you wait for
+it. Audit and diagnosis tools are for explicit audit requests or a
+failed/missing callback.

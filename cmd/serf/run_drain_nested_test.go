@@ -38,11 +38,12 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 
 	step := func(req llm.Request) llm.Response {
 		text := requestFullText(req)
+		delivered := requestDeliveredText(req)
 		switch {
 		case strings.Contains(text, rootPrompt):
 			// Root coordinator.
 			switch {
-			case strings.Contains(text, "<delegate-notification"):
+			case strings.Contains(delivered, "<delegate-notification"):
 				return scriptedCommunicate(finalMsg)
 			case strings.Contains(text, "COORD-TASK"):
 				return scriptedCommunicate("root waiting on coordinator")
@@ -52,7 +53,7 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 		case strings.Contains(text, "COORD-TASK"):
 			// Mid-tree coordinator: delegate the worker, then wait for it.
 			switch {
-			case strings.Contains(text, "<delegate-notification"):
+			case strings.Contains(delivered, "<delegate-notification"):
 				return scriptedCommunicate("coordinator done")
 			case strings.Contains(text, "WORKER-TASK"):
 				return scriptedCommunicate("coordinator waiting on worker")
