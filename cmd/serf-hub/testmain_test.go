@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -28,6 +29,35 @@ var testEnvRoot string
 // what carries the duty to remove it: a child that inherits one uses it and
 // leaves it alone, and the parent's single RemoveAll collects everything.
 const testEnvRootVar = "SERF_HUB_TEST_ENV_ROOT"
+
+// retiredSerfEnvVars are names the product no longer declares but that a
+// developer machine may still export from when it did. envvars cannot list them
+// (nothing reads them any more), so they are carried here.
+var retiredSerfEnvVars = []string{"SERF_API_TOKEN"}
+
+// productSerfEnvVars is every SERF_* variable Serf itself reads. TestMain
+// clears the lot; TestHostSerfEnvNeverReachesTheTestEnvironment asserts it did.
+// Deriving the set from envvars rather than writing it out is the point: a
+// variable added to the product is isolated from these tests the day it exists,
+// which a hand-kept list does not manage (SERF_PROVIDERS_CONFIG was missing from
+// one for as long as it took a developer to export it).
+//
+// The harness's own SERF_-prefixed variables — testEnvRootVar,
+// serfEnvScrubHelperVar, SERF_FAKE_CODEX_APP_SERVER, SERF_LIVE_TESTS,
+// SERF_TEST_PROVIDER, SERF_TEST_MODEL, SERF_CODEX_APP_SERVER_BINARY — name the
+// test rig, not the product, so they are absent from envvars and survive.
+func productSerfEnvVars() []envvars.Var {
+	out := []envvars.Var{}
+	for _, v := range envvars.All() {
+		if strings.HasPrefix(v.Name, "SERF_") {
+			out = append(out, v)
+		}
+	}
+	for _, name := range retiredSerfEnvVars {
+		out = append(out, envvars.Var{Name: name})
+	}
+	return out
+}
 
 func TestMain(m *testing.M) {
 	root, inherited := os.LookupEnv(testEnvRootVar)
@@ -75,17 +105,17 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	_ = os.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
-	for _, key := range []string{
-		"SERF_MODEL",
-		"SERF_REASONING_EFFORT",
-		"SERF_API_TOKEN",
-		"SERF_RUN_DIR",
-		"SERF_STATE_DIR",
-		"SERF_HUB_TOKEN",
-		"SERF_HUB_SPAWNED",
-		"SERF_HUB_SPAWNED_CODEX",
-	} {
-		_ = os.Unsetenv(key)
+	// Clear Serf's own configuration environment. HOME and the XDG roots above
+	// redirect where these tests look; this decides what configures them, and
+	// the two have to agree or the fixtures written into the throwaway root are
+	// not what the code under test reads. SERF_PROVIDERS_CONFIG is the sharp
+	// edge — it names the providers.toml every serf process loads, so a value in
+	// the developer's shell reached the live-stack hub and its `serf
+	// launch-check` and enumerated that developer's real providers instead of
+	// the scripted "fake" instance the harness had just written.
+	// TestHostSerfEnvNeverReachesTheTestEnvironment is the guard.
+	for _, v := range productSerfEnvVars() {
+		_ = os.Unsetenv(v.Name)
 	}
 
 	code := m.Run()
@@ -218,5 +248,68 @@ func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(testEnvRoot); err != nil {
 		t.Fatalf("the helper removed the root it inherited: %v", err)
+	}
+}
+
+// serfEnvScrubHelperVar gates the helper below, which is only meaningful in a
+// re-executed copy of this binary whose parent seeded a developer-shaped
+// environment. Like testEnvRootVar it names the harness rather than the
+// product, so it is absent from envvars.All() and TestMain's scrub leaves it
+// alone -- the same property that keeps SERF_LIVE_TESTS and
+// SERF_FAKE_CODEX_APP_SERVER working.
+const serfEnvScrubHelperVar = "SERF_HUB_TEST_ENV_SCRUB_HELPER"
+
+// TestHostSerfEnvNeverReachesTheTestEnvironment pins the isolation rule that
+// makes this package's results a property of its fixtures rather than of the
+// machine it runs on.
+//
+// Every SERF_* variable in envvars is production configuration, and the hub,
+// the daemons it spawns and the `serf launch-check` it shells out to all read
+// the test process's environment. One of them, SERF_PROVIDERS_CONFIG, names the
+// providers.toml every serf process loads: exported in a developer's shell it
+// overrode the fake instance the live-stack harness writes into its throwaway
+// HOME, so the launch harness enumerated that developer's real providers and
+// rejected every spawn with "model provider is not reported by the Serf launch
+// harness: fake". Fifteen e2e cases failed on one machine and passed on
+// another with the same commit.
+//
+// The assertion is on the whole SERF_* set, not on the one variable that bit
+// us, because the failure mode is a scrub list that falls behind the product.
+func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	env := append([]string{}, os.Environ()...)
+	seeded := 0
+	for _, v := range productSerfEnvVars() {
+		env = append(env, v.Assignment("host-value-that-must-not-survive"))
+		seeded++
+	}
+	if seeded == 0 {
+		t.Fatal("envvars declares no SERF_* variables, so this test asserts nothing")
+	}
+	env = append(env, testEnvRootVar+"="+testEnvRoot, serfEnvScrubHelperVar+"=1")
+
+	cmd := exec.Command(exe, "-test.run=^TestSerfEnvScrubHelper$")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("a host SERF_* environment survived into the test process (%d variables seeded): %v\n%s", seeded, err, out)
+	}
+}
+
+// TestSerfEnvScrubHelper is the re-executed half of
+// TestHostSerfEnvNeverReachesTheTestEnvironment. It runs after this package's
+// TestMain, so what it sees is what every subprocess the tests start would see.
+func TestSerfEnvScrubHelper(t *testing.T) {
+	if os.Getenv(serfEnvScrubHelperVar) == "" {
+		t.Skip("re-executed helper for TestHostSerfEnvNeverReachesTheTestEnvironment")
+	}
+	for _, v := range productSerfEnvVars() {
+		if value, ok := os.LookupEnv(v.Name); ok {
+			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `serf launch-check` all inherit it", v.Name, value)
+		}
 	}
 }
