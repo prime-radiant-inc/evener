@@ -10,7 +10,7 @@ import (
 
 // OptInEnv is the environment variable that explicitly enables provider-backed
 // evals. Build tags select the eval sources; this variable permits live calls.
-const OptInEnv = "SERF_LIVE_TESTS"
+const OptInEnv = "EVENER_LIVE_TESTS"
 
 // Enabled reports whether a caller explicitly opted into live provider calls.
 func Enabled(value string) bool {
