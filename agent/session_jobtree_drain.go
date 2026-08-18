@@ -556,6 +556,20 @@ func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan tim
 // it quiesce for real. Calling it here, every pass, before the outstanding
 // check, closes that gap the same way rematerializeDurablePendings closes the
 // durable/in-memory job-notification gap just below.
+//
+// flushPendingDelegateDeliveries carries no s.state check of its own — its four
+// other call sites are all safe only because each runs ON the owning session's
+// own turn goroutine. This recursion instead calls it from the ANCESTOR's drain
+// goroutine, so a child that is actively running/driving/finalizing must be
+// skipped (see the busy check in the loop below), matching the gate
+// driveSubagentNotificationTurn already applies before touching a child's own
+// turn machinery: flushing into a busy child's history at a point its own round
+// loop did not choose can splice a delivery between an in-flight tool call and
+// its result. Only the flush is skipped, not the rest of the kick (watch-send
+// delivery and recursion into grandchildren still run) — the child's own
+// pending count still holds the ancestor's drain open via treeHasOutstandingWork
+// (which reads it recursively too), and the child's own turn flushes it at its
+// next natural boundary once it stops being busy.
 func (s *Session) kickDriveTree(ctx context.Context) error {
 	return s.kickDriveTreeWith(ctx, func(sess *Session, ctx context.Context) error {
 		return sess.drainPendingWatchSends(ctx)
@@ -563,9 +577,21 @@ func (s *Session) kickDriveTree(ctx context.Context) error {
 }
 
 func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, context.Context) error) error {
+	return s.kickDriveTreeWithFlush(ctx, drain, true)
+}
+
+// kickDriveTreeWithFlush is kickDriveTreeWith's recursive body. flushDeliveries
+// gates only this session's own flushPendingDelegateDeliveries call — see
+// kickDriveTree's doc for why a busy child must not have it called on its
+// behalf from the ancestor's goroutine. The root/direct caller always passes
+// true: DrainJobTree only ever starts once the caller's own turn has already
+// ended (PRI-2441's premise), so the top-level session is never mid-turn here.
+func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Session, context.Context) error, flushDeliveries bool) error {
 	s.drivePendingStableDelegateAttention()
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
-		return err
+	if flushDeliveries {
+		if err := s.flushPendingDelegateDeliveries(); err != nil {
+			return err
+		}
 	}
 	if err := s.rematerializeDurablePendings(); err != nil {
 		return err
@@ -574,11 +600,14 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 		return err
 	}
 	for _, sub := range s.liveDirectSubagents() {
+		sub.mu.Lock()
+		childBusy := sub.running || sub.driving || sub.finalizing
 		child := sub.sess
+		sub.mu.Unlock()
 		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
 			continue
 		}
-		if err := child.kickDriveTreeWith(ctx, drain); err != nil {
+		if err := child.kickDriveTreeWithFlush(ctx, drain, !childBusy); err != nil {
 			return err
 		}
 	}

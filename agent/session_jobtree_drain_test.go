@@ -290,6 +290,69 @@ func TestKickDriveTreeFlushesPendingDelegateDeliveries(t *testing.T) {
 	}
 }
 
+// TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries pins a
+// hazard in TestKickDriveTreeFlushesPendingDelegateDeliveries's own fix:
+// kickDriveTreeWith recurses into every live child (liveDirectSubagents
+// filters only on sub.closed) and, before this test, called
+// flushPendingDelegateDeliveries there unconditionally. flushPendingDelegateDeliveries
+// has no s.state check -- it was safe at its four pre-existing call sites only
+// because every one of them runs ON the owning session's own turn goroutine.
+// The drain's recursive call runs on the ANCESTOR's drain goroutine instead, so
+// flushing a child that is actively running/driving/finalizing can splice a
+// delivered notification into that child's history at a point its own round
+// loop did not choose -- e.g. between an in-flight assistant tool call and its
+// tool result, breaking message alternation. -race cannot catch this: every
+// lock is held correctly, the hazard is purely about WHEN the mutation lands,
+// not whether it races.
+//
+// driveSubagentNotificationTurn (subagents.go) already refuses to touch a
+// child where sub.running || sub.driving || sub.finalizing; this test holds
+// kickDriveTree to the same gate for the flush specifically. The child's own
+// delivery queue must still count as outstanding work (so the ancestor's drain
+// correctly keeps waiting on it) even though the ancestor must not be the one
+// to flush it — the child's own turn machinery flushes at its next natural
+// boundary instead.
+func TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	root := newSession(t)
+	child := newSession(t)
+	sub := &subagent{id: child.ID(), sess: child, running: true}
+	root.subagents.mu.Lock()
+	root.subagents.subs[child.ID()] = sub
+	root.subagents.mu.Unlock()
+
+	child.delegateDeliveryMu.Lock()
+	child.pendingDelegateDeliveries = append(child.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	child.delegateDeliveryMu.Unlock()
+
+	if err := root.kickDriveTree(context.Background()); err != nil {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if !child.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree flushed a running child's pending delegate delivery; a busy child's own turn owns that mutation, not the ancestor's drain")
+	}
+
+	outstanding, err := root.treeHasOutstandingWork()
+	if err != nil {
+		t.Fatalf("treeHasOutstandingWork: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("treeHasOutstandingWork = false with the running child's delegate delivery still pending; skipping the flush must not also drop it from the outstanding count")
+	}
+
+	// Once the child is no longer busy, its own turn boundary has passed and
+	// the ancestor's kick may flush it like any other idle child.
+	sub.mu.Lock()
+	sub.running = false
+	sub.mu.Unlock()
+	if err := root.kickDriveTree(context.Background()); err != nil && !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if child.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree did not flush the child's pending delegate delivery once it stopped running")
+	}
+}
+
 // TestOutstandingDrainJobCountIncludesRunningManagedJobs verifies every owned
 // managed job keeps the drain open while it remains in the running map. Shell
 // execution mode is not part of that durable drain contract.
