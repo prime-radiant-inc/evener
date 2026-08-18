@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"primeradiant.com/serf/envvars"
 )
@@ -114,12 +113,18 @@ func ReclaimOwn(prefix string, warn io.Writer) {
 	reclaimOwn(base, prefix, warn)
 }
 
-// reclaimOwn is scripts/covscratch-lib.sh's reclaim_own_scratch, rule for
-// rule: directories only, direct children only, exact prefix match, symlinks
-// never matched or followed, and the one thing that must never be touched is
-// a live run's scratch — a live pid (including our own) always keeps its
-// directory. Pid reuse only ever keeps a leftover one round longer, which is
-// the right direction for a recursive delete to fail.
+// reclaimOwn is scripts/covscratch-lib.sh's reclaim_own_scratch with two safe
+// tightenings. Rule for rule: directories only, direct children only, exact
+// prefix match, symlinks never matched or followed, and the one thing that
+// must never be touched is a live run's scratch — a live pid (including our
+// own) always keeps its directory. Pid reuse only ever keeps a leftover one
+// round longer, which is the right direction for a recursive delete to fail.
+//
+// The two tightenings both keep MORE than the shell did, which is the same
+// right direction: an EPERM from signal 0 counts as alive here where bash's
+// `kill -0` reports failure and the shell would reclaim (pidAlive), and a
+// pid suffix above 1<<30 is treated as "not a pid" and kept where the shell
+// asked the kernel and reclaimed on its refusal (ownerPid).
 func reclaimOwn(base, prefix string, warn io.Writer) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -170,12 +175,4 @@ func ownerPid(name string) int {
 		}
 	}
 	return pid
-}
-
-// pidAlive reports whether a pid answers signal 0. EPERM is an answer: the
-// process exists, it just isn't ours, and an existing process keeps its
-// directory.
-func pidAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
 }
