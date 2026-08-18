@@ -93,7 +93,7 @@ done
 # test-coverage-floor.sh so this ratchet cannot drift into measuring a surface
 # no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
-. "$(dirname "${BASH_SOURCE[0]}")/covscratch-lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/scratch-lib.sh"
 
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
@@ -101,13 +101,10 @@ else
 	strict=$([ -n "${CI:-}" ] && echo true || echo false)
 fi
 
-tmpbase=${TMPDIR:-/tmp}
-reclaim_own_scratch "$tmpbase" serf-testbudget
-work="${tmpbase%/}/serf-testbudget.$$"
 run_failed=0
-cleanup() { [ "$run_failed" -eq 0 ] && rm -rf "$work"; }
+cleanup() { [ "$run_failed" -eq 0 ] && scratch_rm; }
 trap cleanup EXIT
-mkdir "$work" || { trap - EXIT; echo "test-timing-budget: scratch $work already exists or cannot be created" >&2; exit 1; }
+scratch_dir work serf-testbudget
 
 measured="$work/measured.tsv"
 : >"$measured"

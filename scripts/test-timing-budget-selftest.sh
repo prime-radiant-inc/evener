@@ -12,8 +12,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/test-timing-budget.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work serf-testbudget-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work serf-testbudget-selftest
+trap 'scratch_rm' EXIT
 
 budget="$work/budget.json"
 measured="$work/measured.tsv"
@@ -126,10 +126,15 @@ assert_eq "$?" "1" "a missing --measured file is a hard failure"
 assert_has "$out" "--measured file not found" "the missing-file diagnostic names the flag and the path"
 
 # ---- a clean run leaves nothing behind under its private TMPDIR. ----
+# Failing runs above retain their scratch on purpose (scratch-lib registers it,
+# cleanup skips scratch_rm on failure so the operator keeps the logs), so give
+# the successful run a fresh private TMPDIR of its own: the hygiene claim is
+# about a SUCCESSFUL run only.
+mkdir -p "$work/tmp-clean"
 printf 'SUM\tpkgA\t1.0\n' >"$measured"
 printf '{"packages": {"pkgA": 10.0}}\n' >"$budget"
-run --check --strict >/dev/null 2>&1
-assert_eq "$(ls -A "$work/tmp")" "" "a clean run leaves no scratch directory behind"
+TMPDIR="$work/tmp-clean" bash "$script" --no-web --budget "$budget" --measured "$measured" --check --strict >/dev/null 2>&1
+assert_eq "$(ls -A "$work/tmp-clean")" "" "a clean run leaves no scratch directory behind"
 
 help_out="$(bash "$script" --help 2>&1)"
 if echo "$help_out" | grep -q "^Usage:" && ! echo "$help_out" | grep -q "^set -uo pipefail"; then
