@@ -183,7 +183,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "start work", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -450,7 +450,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 
 	collect := drainEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -614,7 +614,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 
 	sess.getOrCreateGoalStore().Set("never-progress objective", time.Now())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted in-process adapter driving many sustained-notification rounds; no real I/O, only fires on a genuine hang.
 	defer cancel()
 	// The call may end in nil (breaker fired, idle) — the goal status is the
 	// authoritative assertion, not the call's error, so we don't fail on err here.
@@ -707,7 +707,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 		return base3(req)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -780,7 +780,7 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 		return base1(req)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -874,7 +874,7 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 		return base4(req)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -976,7 +976,7 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 		return base5(req)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

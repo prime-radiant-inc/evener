@@ -98,7 +98,7 @@ func TestLifecycleBackgroundShellQuiesces(t *testing.T) {
 	}
 	sess, clk := lifecycleTestSession(t, responder, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run a background job", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

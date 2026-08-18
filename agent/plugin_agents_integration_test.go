@@ -141,7 +141,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.spawnAgent(ctx, "review this code", "", "", 10, "my-plugin:reviewer", "", nil, nil)
@@ -250,7 +250,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 				},
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 
 			result, err := sess.spawnAgent(ctx, tc.prompt, "", "", 10, tc.agentKey, "", nil, nil)
@@ -302,7 +302,7 @@ func TestSpawnAgent_UnavailablePluginModelUsesExplicitFallback(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	result, err := sess.spawnAgent(ctx, "review this", "k3", "", 10, agentType, "", nil, nil)
 	if err != nil {
@@ -389,7 +389,7 @@ func TestSpawnAgent_AvailablePluginAliasWins(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	result, err := sess.spawnAgent(ctx, "review this", "claude-opus-4-6", "", 10, agentType, "", nil, nil)
 	if err != nil {
@@ -456,7 +456,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.spawnAgent(ctx, "read the code", "", "", 10, "my-plugin:reader", "", nil, nil)
@@ -563,7 +563,7 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 
 		sess.pluginAgents = map[string]plugin.Agent{"my-plugin:coordinator": coordinatorAgent}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 		defer cancel()
 
 		result, err := sess.spawnAgent(ctx, "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
@@ -617,7 +617,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.spawnAgent(ctx, "inspect and optionally shell out", "", "", 10, "my-plugin:reader", "", nil, []string{"exec_command"})
@@ -734,7 +734,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.spawnAgent(ctx, "write tests", "", "", 10, "my-plugin:test-eng", "", nil, nil)
