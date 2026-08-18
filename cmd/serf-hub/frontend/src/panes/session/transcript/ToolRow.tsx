@@ -169,7 +169,21 @@ function middleSplit(text: string): [head: string, tail: string] {
  * <summary>'s disclosure: that element's onClick (below) unconditionally
  * preventDefaults every click that reaches it, which - since this is the
  * SAME bubbled event - would otherwise cancel the link's native navigation
- * too, not just skip the toggle. */
+ * too, not just skip the toggle.
+ *
+ * Located by search (indexOf), NOT by the positional-prefix rule
+ * `trailingAfter` uses, and deliberately so. That rule exists because a
+ * searched anchor could place the trailing CONTROL at a coincidental
+ * occurrence - a different spot in the line, carrying a different meaning
+ * (kata ledger #97). This anchor has no such wrong answer available: it is
+ * the complete href, so every occurrence of it is the same characters
+ * denoting the same target, and marking up the first is the same link as
+ * marking up any other. A prefix contract here would also be unbuildable
+ * without asking every descriptor for text it does not have - the URL sits
+ * mid-summary by construction ("Fetched <url> · N bytes"), never at the
+ * start. What the search does owe is that it marks up ONE occurrence and
+ * leaves the visible text byte-identical; toolRowGrammar.test.tsx pins
+ * both. */
 function linkifySummary(text: string, href: string | undefined): ReactNode {
   if (href === undefined) return text;
   const start = text.indexOf(href);
