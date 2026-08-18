@@ -227,7 +227,7 @@ head and runs it as a fresh user turn.
   The transcript records the partial tool output plus a system
   interrupt marker (a `STEERING` turn whose text contains
   `The user interrupted the previous turn`,
-  `agent/session_lifecycle.go:702`). The turn is reported
+  `agent/session_lifecycle.go:715`). The turn is reported
   `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
   `canceled` value at all (`appwire/types.go:166-171`), so a controller
   grepping for that literal will never find it. The session remains alive —
