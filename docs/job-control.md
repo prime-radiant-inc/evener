@@ -997,10 +997,13 @@ Return shape:
 (kata tpb0): who requested the stop, whether this exact delegate resource can
 still be resumed (the same classification `job_status` reports), and whatever
 partial scratch/worktree evidence its run loop had already gathered before
-being cancelled. All are omitted for a shell `job_stop` and for a delegate
-stop that has not completed yet (`status`/`outcome` still `running`/
-`stop_requested`). `job_stop` never infers or performs a retry/resume itself —
-the parent decides what to do with this evidence.
+being cancelled. All are omitted for a shell `job_stop`. `requested_by` is
+reported on every delegate stop, including one that has not completed yet;
+`resumable`, `not_resumable_reason`, `scratch_path`, and `worktree` are read
+from the settled delegate and are omitted until the stop completes
+(`status`/`outcome` still `running`/`stop_requested`). `job_stop` never infers
+or performs a retry/resume itself — the parent decides what to do with this
+evidence.
 
 ```mermaid
 stateDiagram-v2

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -101,37 +102,7 @@ func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testin
 func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-
-	metadata := delegateTerminalPacketMetadata{
-		Task:        "rebuild the search index",
-		ScratchPath: "/abs/scratch/dlg_target",
-		Worktree:    &delegateTerminalWorktreeReport{Path: "/abs/worktree/dlg_target", Branch: "work", HeadSHA: "deadbeef"},
-	}
-	rawMetadata, err := json.Marshal(metadata)
-	if err != nil {
-		t.Fatalf("marshal metadata: %v", err)
-	}
-	rawMessage, err := json.Marshal("partial output gathered before cancellation")
-	if err != nil {
-		t.Fatalf("marshal message: %v", err)
-	}
-	runEvidence := &delegatestore.TerminalPacket{
-		Kind:     delegatestore.PacketTerminalError,
-		Message:  rawMessage,
-		Metadata: rawMetadata,
-	}
-
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
-	if _, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{
-		outcome:     delegatestore.OutcomeCancelled,
-		disposition: delegatestore.DispositionTerminalError,
-		reason:      "cancelled",
-		packet:      runEvidence,
-	}); err != nil {
-		t.Fatalf("FinishGeneration for externally cancelled delegate: %v", err)
-	}
+	cancelDelegateWithRunEvidence(t, c, "dlg_target")
 
 	c.mu.Lock()
 	aggregate := c.durable["dlg_target"]
@@ -149,6 +120,165 @@ func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testin
 	worktree, _ := got["worktree"].(map[string]any)
 	if worktree == nil || worktree["path"] != "/abs/worktree/dlg_target" {
 		t.Fatalf("externally cancelled delegate lost its worktree evidence: %#v", got)
+	}
+}
+
+// cancelDelegateWithRunEvidence stops a running delegate and finishes its
+// generation the way an externally cancelled run loop does: with a terminal
+// packet that already carries the task, scratch path, and worktree it gathered
+// before the cancellation landed.
+func cancelDelegateWithRunEvidence(t *testing.T, c *delegateTreeController, delegateID string) {
+	t.Helper()
+	rawMetadata, err := json.Marshal(delegateTerminalPacketMetadata{
+		Task:        "rebuild the search index",
+		ScratchPath: "/abs/scratch/" + delegateID,
+		Worktree:    &delegateTerminalWorktreeReport{Path: "/abs/worktree/" + delegateID, Branch: "work", HeadSHA: "deadbeef"},
+	})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	rawMessage, err := json.Marshal("partial output gathered before cancellation")
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), delegateID); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(delegateLease{delegateID: delegateID, generation: 1}, delegateFinish{
+		outcome:     delegatestore.OutcomeCancelled,
+		disposition: delegatestore.DispositionTerminalError,
+		reason:      "cancelled",
+		packet: &delegatestore.TerminalPacket{
+			Kind:     delegatestore.PacketTerminalError,
+			Message:  rawMessage,
+			Metadata: rawMetadata,
+		},
+	}); err != nil {
+		t.Fatalf("FinishGeneration for externally cancelled delegate: %v", err)
+	}
+}
+
+// completedDelegateStopResult builds the jobStopResult stopStableDelegate
+// hands to the evidence projection once a delegate stop has completed.
+func completedDelegateStopResult(delegateID string, actor delegateActor) jobStopResult {
+	reason := "stopped_by_parent"
+	return jobStopResult{
+		ID:             delegateID,
+		JobID:          delegateID,
+		Type:           "delegate",
+		Status:         string(delegateLifecycleIdle),
+		Reason:         &reason,
+		PreviousStatus: string(delegateLifecycleRunning),
+		Outcome:        "cancelled_by_request",
+		RequestedBy:    actor.describe(),
+	}
+}
+
+// TestDelegateResourceStop_JobStopProjectsPreservedEvidence closes the second
+// half of kata tpb0: retaining the packet is worth nothing unless job_stop's own
+// result carries that evidence and its footer renders it, so this drives the
+// exact projection and renderer the tool uses over real controller state.
+func TestDelegateResourceStop_JobStopProjectsPreservedEvidence(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
+	c.rootRuntime = root
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	cancelDelegateWithRunEvidence(t, c, "dlg_target")
+
+	stop := completedDelegateStopResult("dlg_target", rootDelegateActor("root-session"))
+	populateDelegateStopEvidence(&stop, root, "dlg_target")
+	if stop.ScratchPath != "/abs/scratch/dlg_target" {
+		t.Fatalf("job_stop scratch_path = %q, want the cancelled run's scratch dir", stop.ScratchPath)
+	}
+	if stop.Worktree == nil || stop.Worktree.Path != "/abs/worktree/dlg_target" ||
+		stop.Worktree.Branch != "work" || stop.Worktree.HeadSHA != "deadbeef" {
+		t.Fatalf("job_stop worktree = %#v, want the cancelled run's worktree", stop.Worktree)
+	}
+	if stop.Resumable == nil || !*stop.Resumable {
+		t.Fatalf("job_stop resumable = %#v, want true for a still-resumable delegate", stop.Resumable)
+	}
+
+	output := formatJobStop(stop)
+	for _, want := range []string{
+		"was running",
+		"requested by: root session root-session",
+		"resumable: yes",
+		"scratch: /abs/scratch/dlg_target",
+		"worktree: path=/abs/worktree/dlg_target, branch=work, head=deadbeef, 0 commits ahead, dirty=false",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("job_stop footer %q omits %q", output, want)
+		}
+	}
+}
+
+// TestDelegateResourceStop_JobStopReportsClosedResumability covers the other
+// resumable classification kata tpb0 promises: a delegate whose resumability is
+// already closed must say so, with the recorded reason, rather than leaving the
+// parent to guess whether retrying is even possible.
+func TestDelegateResourceStop_JobStopReportsClosedResumability(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
+	c.rootRuntime = root
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	cancelDelegateWithRunEvidence(t, c, "dlg_target")
+	c.mu.Lock()
+	_, err := c.appendLocked(delegatestore.Event{
+		Kind:               delegatestore.EventDelegateResumabilityClosed,
+		DelegateID:         "dlg_target",
+		ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "turn_budget_exhausted"},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("close delegate resumability: %v", err)
+	}
+
+	stop := completedDelegateStopResult("dlg_target", rootDelegateActor("root-session"))
+	populateDelegateStopEvidence(&stop, root, "dlg_target")
+	if stop.Resumable == nil || *stop.Resumable {
+		t.Fatalf("job_stop resumable = %#v, want false for a closed delegate", stop.Resumable)
+	}
+	if stop.NotResumableReason != "turn_budget_exhausted" {
+		t.Fatalf("job_stop not_resumable_reason = %q, want the recorded close reason", stop.NotResumableReason)
+	}
+	if output := formatJobStop(stop); !strings.Contains(output, "resumable: no (turn_budget_exhausted)") {
+		t.Fatalf("job_stop footer %q omits the closed-resumability reason", output)
+	}
+}
+
+// TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance holds the
+// line the delegate footer must not cross: a shell job_stop renders exactly the
+// one-line job-family footer, with no cancellation provenance appended.
+func TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance(t *testing.T) {
+	reason := "stopped_by_parent"
+	shell := jobStopResult{
+		ID:             "job_1",
+		JobID:          "job_1",
+		Type:           string(jobstore.JobShell),
+		Status:         string(jobstore.StatusCancelled),
+		Reason:         &reason,
+		PreviousStatus: string(jobstore.StatusRunning),
+		Outcome:        "cancelled_by_request",
+	}
+	want := "[shell job_1 · cancelled · cancelled_by_request · stopped_by_parent]"
+	if got := formatJobStop(shell); got != want {
+		t.Fatalf("shell job_stop footer = %q, want %q", got, want)
+	}
+}
+
+// TestDelegateResourceStop_CancellingActorIsNamed pins the provenance string
+// job_stop reports for each actor authorizeMutationLocked admits: the tree's
+// root session, or the exact parent delegate.
+func TestDelegateResourceStop_CancellingActorIsNamed(t *testing.T) {
+	if got, want := rootDelegateActor("root-session").describe(), "root session root-session"; got != want {
+		t.Fatalf("root actor describe() = %q, want %q", got, want)
+	}
+	parent := delegateActor{lease: &delegateLease{delegateID: "dlg_parent", generation: 2}}
+	if got, want := parent.describe(), "delegate dlg_parent"; got != want {
+		t.Fatalf("parent delegate actor describe() = %q, want %q", got, want)
+	}
+	if got := (delegateActor{}).describe(); got != "" {
+		t.Fatalf("unadmitted actor describe() = %q, want an empty description", got)
 	}
 }
 

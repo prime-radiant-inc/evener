@@ -1179,9 +1179,11 @@ type jobStopResult struct {
 	// RequestedBy, Resumable, NotResumableReason, ScratchPath, and Worktree are
 	// delegate-only cancellation provenance (kata tpb0): who requested the
 	// stop, whether the same delegate resource can still be resumed, and
-	// whatever partial evidence its run loop had already gathered. Empty/nil
-	// for a shell job_stop and for a delegate stop that hasn't completed yet
-	// (status/outcome are still "running"/"stop_requested").
+	// whatever partial evidence its run loop had already gathered. All are
+	// empty/nil for a shell job_stop. RequestedBy is known at admission and so
+	// is reported on every delegate stop; the rest are read from the settled
+	// delegate row and stay empty/nil until the stop completes (status/outcome
+	// still "running"/"stop_requested").
 	RequestedBy        string                      `json:"requested_by,omitempty"`
 	Resumable          *bool                       `json:"resumable,omitempty"`
 	NotResumableReason string                      `json:"not_resumable_reason,omitempty"`
