@@ -7,10 +7,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/appwire"
 )
+
+// withMetaFS routes the session's session-meta JSON IO through fs instead of
+// the real filesystem (kata 49k3). It mutates the config an earlier withConfig
+// installed, so it must be passed after any withConfig option — which
+// newTestSessionForEnvctx's base-then-opts ordering guarantees.
+func withMetaFS(fs afero.Fs) sessionOpt {
+	return func(o *sessionOpts) { o.cfg.testOnly.metaFS = fs }
+}
 
 // boundaryRecorder collects the events a served session emits. Registering a
 // real drain through ConsumeEventsLossless is also what marks the session
@@ -75,7 +85,8 @@ func indexOf(kinds []events.EventKind, k events.EventKind) int {
 // turn opens under an id the daemon's mutation preconditions reject, and every
 // Steer, Send and Stop aimed at it fails silently (kata 7vmd).
 func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
@@ -104,7 +115,8 @@ func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
 // TestNotificationTurnAnnouncesOneNamedBoundary above, which drives the shape
 // that block skips entirely.
 func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
@@ -136,8 +148,9 @@ func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 // record) because acceptNotificationInput drops a hand-made in-memory
 // notification as undeliverable and refuses the wake.
 func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
+	metaFS := afero.NewMemMapFs()
 	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	s := newTestSessionForEnvctx(t, withDir(dir), withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 
 	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
@@ -171,7 +184,8 @@ func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
 // set, and mintRunningTurnID refuses to name the next agent turn, so an id
 // held past its turn wedges the session for the life of the process.
 func TestNotificationTurnReleasesItsTurnID(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
@@ -188,7 +202,8 @@ func TestNotificationTurnReleasesItsTurnID(t *testing.T) {
 // with nothing to deliver — the commonest outcome — neither announces a turn
 // nor reserves an id for one that never runs.
 func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 
 	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -214,8 +229,9 @@ func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
 // leaks, and the projection is left holding an open active turn whose close
 // finishNotificationNoop's sessionEndEmitted then suppresses.
 func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
+	metaFS := afero.NewMemMapFs()
 	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	s := newTestSessionForEnvctx(t, withDir(dir), withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 
 	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
@@ -258,8 +274,9 @@ func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 // inline once that turn ends, by which point nothing is claimed and the wake
 // names itself. Nothing is lost, and no turn ever runs unnameable.
 func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
+	metaFS := afero.NewMemMapFs()
 	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	s := newTestSessionForEnvctx(t, withDir(dir), withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 
 	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
@@ -313,7 +330,8 @@ func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
 // woken for, with nothing left to raise it again until some unrelated wake
 // happens by. The decision has to come first, while nothing has been consumed.
 func TestStandDownConsumesNoWakeState(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	serveSession(t, s)
 
 	s.attentionMu.Lock()
@@ -356,7 +374,8 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 // loop's SetState(sess.WireState()) then publishes that. Every other refusal
 // on this path settles through finishNotificationNoop; this one must too.
 func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	serveSession(t, s)
 
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -396,7 +415,8 @@ func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
 // for as long as the name stays held -- which a mutation store failing writes
 // makes forever. The guarantee is unchanged; only the timing is.
 func TestStandDownReArmsTheWake(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	clk := agenttest.NewFakeClock()
 	s.clock = clk
 	serveSession(t, s)
@@ -470,7 +490,8 @@ func TestStandDownReArmsTheWake(t *testing.T) {
 // forgetRunningTurnNoOneOwns applies at load; here it decides whether asking
 // again can ever help.
 func TestStandDownDoesNotSpinOnAStaleName(t *testing.T) {
-	s := newTestSessionForEnvctx(t)
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS))
 	serveSession(t, s)
 
 	var mu sync.Mutex
@@ -513,8 +534,9 @@ func TestStandDownDoesNotSpinOnAStaleName(t *testing.T) {
 // Once the user's turn ends and gives the name back, the same wake names itself
 // and runs -- which is what the serve loop's tail gate provokes for real.
 func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
+	metaFS := afero.NewMemMapFs()
 	dir := t.TempDir()
-	s := newTestSessionForEnvctx(t, withDir(dir))
+	s := newTestSessionForEnvctx(t, withDir(dir), withMetaFS(metaFS))
 	rec := serveAndRecord(t, s)
 
 	jm, err := newJobManager(dir, s.ID(), s.enqueueJobNotification)
@@ -574,7 +596,8 @@ func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
 // reversing this deliberately — delegates would take durable names so they can
 // be stopped. When that lands, this test inverts rather than being deleted.
 func TestUnservedSessionNamesNoTurn(t *testing.T) {
-	s := newTestSessionForEnvctx(t) // no drain registered
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS)) // no drain registered
 
 	if s.servedByDaemon() {
 		t.Fatal("a session with no authoritative consumer reports itself served")
@@ -597,7 +620,8 @@ func TestUnservedSessionNamesNoTurn(t *testing.T) {
 // in-process subagent's projection and close and reopen turns on a delegate
 // thread no client can address.
 func TestUnservedSessionAnnouncesNoBoundary(t *testing.T) {
-	s := newTestSessionForEnvctx(t) // no drain registered
+	metaFS := afero.NewMemMapFs()
+	s := newTestSessionForEnvctx(t, withMetaFS(metaFS)) // no drain registered
 
 	var mu sync.Mutex
 	var forwarded []events.EventKind

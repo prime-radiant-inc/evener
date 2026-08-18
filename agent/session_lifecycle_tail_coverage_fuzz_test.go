@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/hooks"
@@ -287,7 +289,7 @@ func sltcNewToolSession(t *testing.T) *Session {
 		},
 	})
 	cfg := SessionConfig{NoProjectPrompts: true, StateDir: root, MaxToolRoundsPerInput: 1, clock: agenttest.NewFakeClock()}
-	cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
+	cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: afero.NewMemMapFs()}
 	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: root, Seed: 101}, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -321,6 +323,7 @@ func sltcNewSession(t *testing.T, bare, maxTurns bool) *Session {
 		skipGitSnapshot:     true,
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
+		metaFS:              afero.NewMemMapFs(),
 	}
 	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: root, Seed: 100}, cfg)
 	if err != nil {

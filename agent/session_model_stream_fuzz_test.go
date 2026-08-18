@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -581,6 +583,7 @@ func msfzNewPlanningSession(t *testing.T, cfg msfzPlanConfig) *Session {
 	sc := SessionConfig{
 		StateDir:         dir,
 		MaxSubagentDepth: 1,
+		testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
 	}
 	if cfg.auto {
 		sc.OpenAIResponsesContinuation = "auto"

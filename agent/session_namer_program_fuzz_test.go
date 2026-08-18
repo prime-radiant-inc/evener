@@ -11,6 +11,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/schema"
@@ -183,6 +185,7 @@ func namerFuzzSchemaName(name string) string {
 func namerFuzzSessionLifecycle(t *testing.T, mode byte, text, name string) {
 	t.Helper()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	profile := WithCheapModel(NewOpenAIProfile("gpt-main"), "gpt-cheap")
 	body, err := json.Marshal(map[string]string{"name": name})
 	if err != nil {
@@ -193,7 +196,7 @@ func namerFuzzSessionLifecycle(t *testing.T, mode byte, text, name string) {
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, profile, &agenttest.DenyEnv{WorkDir: dir}, SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, &agenttest.DenyEnv{WorkDir: dir}, SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

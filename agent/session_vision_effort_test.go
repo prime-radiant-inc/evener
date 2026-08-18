@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
@@ -15,6 +17,7 @@ import (
 func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	var gotEffort string
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -35,6 +38,7 @@ func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		ReasoningEffort: "max",
+		testOnly:        testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
