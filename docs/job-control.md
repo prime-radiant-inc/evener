@@ -502,10 +502,15 @@ Return shape when messaging a running target:
   "reason": null,
   "running_in_background": true,
   "timed_out": false,
-  "action": "steered",
-  "transcript_ref": "local:01JCHILD..."
+  "action": "steered"
 }
 ```
+
+A live steer carries no `transcript_ref` — the steer branch never resolves
+one, and the field is omitted rather than sent empty
+(`agent/delegate_runtime.go#delegateRuntime.send`,
+`agent/session_tools_jobs.go#delegateSendResult`). `delegate_id` is the only
+identity a steered result carries.
 
 Return shape when starting an idle delegate's next run:
 
@@ -521,6 +526,68 @@ Return shape when starting an idle delegate's next run:
   "transcript_ref": "local:01JCHILD..."
 }
 ```
+
+Once a resumed generation is dispatched its `transcript_ref` is set and
+stable for that generation, so `delegate_id` + `transcript_ref` together are
+the result's identity whenever a `transcript_ref` is present at all.
+
+**`delegate_send` contract facts settled 2026-08-17.** These four facts
+were the ambiguity that blocked repairing
+`test/scenarios/job-send-message-surface.md` (kata `badq`/`fknv`); each is
+pinned here because callers of this tool read this document, not the
+implementation, and every claim below was re-traced to its emitting Go on
+the date given.
+
+- **A `job_id` (or any other unrecognized/unauthorized) target fails with
+  the bare tool error `not_controllable: delegate` — nothing else.** There
+  is no `job_`-prefix check anywhere on the send path; `to` is handed
+  straight to the delegate tree's id lookup
+  (`agent/delegate_tree_controller.go#delegateTreeController.authorizeMutationLocked`),
+  which returns `errDelegateNotControllable`
+  (`agent/delegate_tree_controller.go#errDelegateNotControllable`) for any id
+  it does not hold, including a syntactically valid `job_` handle. That error
+  carries an empty `DelegateID`
+  (`agent/job_delegate.go#sendMessageFailed`), so
+  `stableDelegateSendTool` (`agent/session_tools.go#stableDelegateSendTool`)
+  returns the raw `error.Error()` text with no result JSON and no id
+  interpolated into it — there is no structured `reason: "not_controllable"`
+  envelope on THIS path, unlike the `job_stop` non-direct-descendant case
+  above. The similar-looking string `job_id is a job/turn handle` is real but
+  belongs only to the internal watch-delivery validator
+  (`agent/job_watch.go#validateWatchSendDeliveryTarget`); `delegate_send`
+  never calls it and never produces it.
+- **A `delegate_send` result's identity is `delegate_id` plus (once set)
+  `transcript_ref` — never a job field.** `sendMessageResult`
+  (`agent/job_delegate.go#sendMessageResult`) and its wire form
+  `delegateSendResult` (`agent/session_tools_jobs.go#delegateSendResult`)
+  declare no `job_id`, `started_job_id`, `current_job_id`, or
+  `latest_job_id` field, and nothing in the tree emits any of those four
+  names on this path.
+- **`action: "started"` is the still-running/timed-out shape; a wait that
+  resolves in time reports `action: "completed"`.** Starting an idle
+  delegate's next generation always builds the result with `action:
+  "started"` first
+  (`agent/delegate_runtime.go#delegateRuntime.send`); if `max_wait_ms` was 0
+  the call returns that shape immediately. If a positive wait was given and
+  it resolves before the ceiling, `action` is overwritten to `"completed"`,
+  `running_in_background` becomes `false`, and the reply's `output` and
+  `structured_result` fields are populated. If the wait ceiling is hit
+  first, the result keeps `action: "started"` and gains `timed_out: true`
+  with no reply content — that generation is not finished, only the wait is.
+  A caller reading `action` alone cannot tell "just started, no wait
+  requested" from "still running, wait expired"; check `timed_out` to
+  distinguish them.
+- **`max_wait_ms` is silently clamped to 60000, on this tool as on every
+  other job-control wait.** `clampJobBlockTimeout`
+  (`agent/session_tools_jobs.go#clampJobBlockTimeout`) caps every inline
+  wait — including `delegate_send`'s — at `maxJobBlockTimeoutMS`
+  (`agent/session_tools_jobs.go#maxJobBlockTimeoutMS`), 60000 ms, before it
+  reaches the wait. A caller asking for more silently gets 60000; nothing
+  reports the request was reduced. `delegate` creation itself accepts no
+  `max_wait_ms` at all and rejects the argument outright with
+  `invalid_request: delegate creation does not accept max_wait_ms`
+  (`agent/session_tools.go#stableDelegateCreateTool`) — the wait only
+  applies to `delegate_send`, never to creation.
 
 ### `job_watch`
 
