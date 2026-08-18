@@ -224,6 +224,18 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// callers rely on.
 		return "", false, nil
 	}
+	// Hand the claim back on EVERY exit, not just the ones that reach
+	// processOneInput's own deferred release. That defer is registered several
+	// early returns into the call: the entry gate refuses a closed session
+	// before it, and so does the cancellation check processOneInput makes
+	// before taking any name. A claim stranded on either is not recoverable --
+	// the pending steer still owns the id, so forgetRunningTurnNoOneOwns leaves
+	// it alone at load -- and every later turn/start is then refused with "turn
+	// is already active" for the life of the session, across restarts.
+	// releaseRunningTurnID compare-and-clears, so on the ordinary path (where
+	// the turn's own release already ran, or a later mutation took the slot)
+	// this is a no-op.
+	defer s.releaseRunningTurnID(turnID)
 	if onRunnable != nil {
 		onRunnable(turnID)
 	}

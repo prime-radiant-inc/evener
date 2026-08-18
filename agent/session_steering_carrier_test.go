@@ -166,3 +166,95 @@ func TestSteeringOnlyCarrierInterruptCancelsTheModelRequestAndMatchesTurnAuthori
 		t.Fatalf("interrupt fence left set: %#v", got)
 	}
 }
+
+// TestSteeringOnlyCarrierHandsBackAClaimTheTurnNeverUsed is the obligation the
+// claim takes on by publishing ActiveTurnID from OUTSIDE processOneInput:
+// whatever happens next, the id comes back.
+//
+// processOneInput's own deferred releaseRunningTurnID covers the turn once it
+// starts, but it is registered several early returns into the call --
+// processInputKindWithProvenance refuses a closed session before it, and
+// processOneInput checks its context for cancellation before it. A claim
+// stranded on either of those is permanent rather than merely untidy: the
+// pending steer that reserved the id still owns it, so forgetRunningTurnNoOneOwns
+// (the load-time sweep for ids nobody will settle) deliberately leaves it
+// alone, and AcceptClientMutationStart's precondition then refuses every later
+// turn/start with "turn is already active" -- across restarts, for the life of
+// the session.
+func TestSteeringOnlyCarrierHandsBackAClaimTheTurnNeverUsed(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange makes the wake fail before processOneInput registers its
+		// release, and reports the context to wake with.
+		arrange func(sess *Session) context.Context
+	}{
+		{
+			name: "turn context already cancelled",
+			arrange: func(*Session) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
+		{
+			name: "session closed",
+			arrange: func(sess *Session) context.Context {
+				sess.Close()
+				return context.Background()
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t)
+			if err := sess.ensureClientMutationStore(); err != nil {
+				t.Fatalf("ensureClientMutationStore: %v", err)
+			}
+			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID: "cm-steer-unused-claim",
+				Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+			}); err != nil {
+				t.Fatalf("AcceptClientMutationSteer: %v", err)
+			}
+
+			ctx := tc.arrange(sess)
+			if _, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil {
+				t.Fatal("the wake reported success; this case is meant to fail before the turn runs")
+			}
+
+			if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
+				t.Fatalf("ActiveTurnID = %q after a wake whose turn never ran: the claim was never handed back, "+
+					"and a pending steer owns it so nothing at load will clear it -- every later turn/start is refused", got)
+			}
+		})
+	}
+}
+
+// TestSteeringOnlyCarrierStrandedClaimWouldRefuseTheNextTurnStart names the
+// consequence the test above exists to prevent, on the one case where the
+// session is still open enough to prove it: a stranded claim is not a bookkeeping
+// wart, it is a session that can never start another turn.
+func TestSteeringOnlyCarrierStrandedClaimWouldRefuseTheNextTurnStart(t *testing.T) {
+	sess := newSession(t)
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "cm-steer-then-start",
+		Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := sess.ProcessPendingUserInput(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessPendingUserInput on a cancelled context = %v, want context.Canceled", err)
+	}
+
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-start-after-the-wake",
+		Input:            []appwire.InputItem{{Type: "text", Text: "hello"}},
+	}); err != nil {
+		t.Fatalf("turn/start after a wake that never ran: %v -- the carrier's claim is still holding the session's turn identity", err)
+	}
+}
