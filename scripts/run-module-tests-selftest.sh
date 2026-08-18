@@ -465,6 +465,39 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
+# kata 5gvk: scripts/gate-capability-preflight.sh exports
+# SERF_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
+# blocked. The runner must union that pattern into root's -skip so the
+# known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of
+# failing into a denied bind/exec - but ONLY for root: agent has its own,
+# unrelated TestE2E_* tests (agent/session_escalation_e2e_test.go), and
+# unioning the pattern into every module would silently skip those too.
+new_case
+out="$case_dir/capability-skip.out"
+if run_tests ". agent" "$out" SERF_GATE_CAPABILITY_SKIP='^(TestE2E_|TestTUITmuxE2E_)'; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a capability-driven skip pattern alone does not fail the run"
+root_args="$(arguments_for .)"
+agent_args="$(arguments_for agent)"
+assert_has_word "$root_args" "-skip" "root's invocation still carries -skip"
+case "$root_args" in
+	*"-skip "*"TestE2E_"*"TestTUITmuxE2E_"*) ok "root's -skip pattern carries the capability skip pattern" ;;
+	*) bad "root's -skip pattern does not carry the capability skip pattern (got: $root_args)" ;;
+esac
+case "$agent_args" in
+	*"TestE2E_"*) bad "agent's -skip pattern was wrongly widened by the root-only capability skip (got: $agent_args)" ;;
+	*) ok "agent's -skip pattern is untouched by the root-only capability skip" ;;
+esac
+
+# The absence case: no SERF_GATE_CAPABILITY_SKIP set (the ordinary path, and
+# what an unrestricted host's preflight exports) leaves -skip exactly as
+# before - this is the "green path unchanged" half of kata 5gvk's contract.
+new_case
+out="$case_dir/no-capability-skip.out"
+if run_tests "." "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
+root_args="$(arguments_for .)"
+assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
+
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
 # lines, two writers on one log, and a failure dump with nothing in it.

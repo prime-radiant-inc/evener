@@ -154,7 +154,7 @@ capacity, browser availability, and CI tool setup are explicit prerequisites.
 | <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Serf fuzz/tooling; no new follow-up currently |
 | <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless SERF_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Serf security/tooling; no new follow-up currently |
 | <code>make test-dev-tooling</code> | The scripts/*-selftest.sh suites that pin serf's own dev tooling | Each suite is the only thing pinning its script's contract; a suite that leaves anything in its private TMPDIR after passing fails, which is what enforces suite cleanup | Final step of <code>make merge-approval-gate</code>, and on demand; not part of <code>make test</code> because these suites test tooling, not the product | Each suite is offline and deterministic; the wave runner (<code>cmd/serf-test-dev-tooling</code>) gives every suite its own process group and private TMPDIR, is quiet on success, and replays a failing suite's whole log | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero | Serf CI/tooling; no new follow-up currently |
-| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs | Serf CI/tooling; no new follow-up currently |
+| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, full deterministic test, and the dev-tooling self-test wave | The canonical local/post-merge contract: make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. A one-time capability preflight (<code>scripts/gate-capability-preflight.sh</code>) classifies loopback binds, Chrome/CDP, process inspection, and the external git cache directory before any phase runs; on an unrestricted host every capability is available and behavior is unchanged | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. A capability the preflight classifies as blocked skips exactly the known-infeasible tests that need it (reported, with an exact rerun command, on the preflight's own summary) instead of failing into them; a blocked capability alone never fails the gate, and a genuine test or build failure still does | Serf CI/tooling; no new follow-up currently |
 | <code>make dist DIST_GOOS=... DIST_GOARCH=...</code> | Release/distribution binaries | The archive contains serf, serf-hub, serf-tui, and serf-doctor built for the requested target with a fresh SPA | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Serf launcher work is implied |
 | <code>scripts/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Serf |
 | <code>make test-coverage-floor</code> (<code>CHECK=1</code> to gate, <code>BLESS=1</code> to raise) | Whole-module Go statement coverage for every module in <code>GO_MODULES</code> | Full-suite statement coverage has not regressed below <code>scripts/testcov-global-floors.txt</code>. Measures the surface <code>ROOT_FULL=1 make test</code> proves, reusing that gate's own <code>-run</code>/<code>-skip</code> selection from <code>scripts/gate-surface-lib.sh</code> — <code>-short</code> on every module except the root | Local/on-demand; not required CI (heavier than <code>make test</code>) | Deterministic; no provider calls. Requires <code>-count=1</code> because cached coverage profiles report stale numbers. Runs no fuzz-family work: without the gate's <code>-run</code> filter <code>go test</code> would also execute every native Fuzz seed corpus | A module below its floor beyond the tolerance band is nonzero; a failing module keeps its full <code>go test</code> output in a named log rather than discarding it | Serf CI/tooling; floors for <code>invariant</code> are undefined by design (zero statements in a production build) |
@@ -181,6 +181,32 @@ make build
 ROOT_FULL=1 make test
 make test-dev-tooling
 ~~~
+
+Before any phase runs, `merge-approval-gate` evaluates
+`scripts/gate-capability-preflight.sh` (`eval "$(scripts/gate-capability-preflight.sh)"`),
+which classifies four sandbox-sensitive host capabilities ONCE via
+`go run ./cmd/serf-gate-probe`: loopback binds, a Chrome/Chromium binary,
+process inspection via `ps`, and a writable external git cache directory
+(kata 5gvk). Each probe is bounded (it classifies blocked rather than hanging
+on a stalled resource) and honest (it never guesses available). The
+preflight echoes one AVAILABLE/BLOCKED line per capability to stderr, and for
+any it finds blocked, exports `SERF_GATE_CAPABILITY_SKIP` - a `go test -skip`
+regex covering the known root-module test-name pattern that needs it
+(currently `TestE2E_`/`TestTUITmuxE2E_`, the cmd/serf-hub and cmd/serf-tui
+live/e2e families that only run under `ROOT_FULL=1` and need a real
+loopback-bound hub/daemon or tmux pane). `scripts/run-module-tests.sh` unions
+that pattern into root's own `-skip` argument only - never into other
+modules', since `agent/session_escalation_e2e_test.go` has unrelated
+`TestE2E_`-named tests of its own. A blocked capability alone does not fail
+the gate; a genuine test or build failure still does, and still stops the
+gate at the first failing phase as below. Chrome/CDP and the git cache
+directory are classified and reported the same way, honestly, even though no
+gate component currently depends on either - see
+`scripts/gate-surface-lib.sh`'s `gate_capability_skip_pattern` for the full,
+evidenced mapping and how to extend it. On an unrestricted host every probe
+reports available, `SERF_GATE_CAPABILITY_SKIP` is empty, and the gate's
+coverage and exit code are exactly what they were before the preflight
+existed.
 
 ROOT_FULL=1 makes the protected first wave remove root's ordinary -short mode
 while retaining the non-fuzz Test/Example name filter.

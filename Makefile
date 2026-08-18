@@ -274,11 +274,21 @@ test-fuzz:
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/testing.md for diagnosis and evidence.
+#
+# The capability preflight (scripts/gate-capability-preflight.sh) classifies
+# sandbox-sensitive host capabilities ONCE, before any phase runs, and
+# exports SERF_GATE_CAPABILITY_SKIP so ROOT_FULL=1 make test skips exactly
+# the known-infeasible live/e2e tests instead of repeatedly failing into
+# them, and reports what it found blocked with exact rerun commands. All four
+# steps now run in ONE shell (chained with && instead of four separate
+# `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
+# at the first failing phase either way, same as before.
 merge-approval-gate:
-	@$(MAKE) lint
-	@$(MAKE) build
-	@ROOT_FULL=1 $(MAKE) test
-	@$(MAKE) test-dev-tooling
+	@eval "$$(scripts/gate-capability-preflight.sh)" && \
+		$(MAKE) lint && \
+		$(MAKE) build && \
+		ROOT_FULL=1 $(MAKE) test && \
+		$(MAKE) test-dev-tooling
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
 # leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra

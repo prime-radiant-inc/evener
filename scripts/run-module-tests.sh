@@ -116,6 +116,19 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
+# SERF_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
+# (merge-approval-gate's preflight) when it classified a sandbox capability as
+# blocked. Applied to the ROOT module ONLY: the known test-name patterns
+# (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/serf-hub and cmd/serf-tui,
+# both part of root, and agent/session_escalation_e2e_test.go has unrelated
+# TestE2E_*-named tests of its own - unioning the pattern into every module
+# would silently skip those too. See gate-surface-lib.sh's
+# gate_capability_skip_pattern for the evidenced mapping.
+root_skip="$fuzz_test_skip"
+if [ -n "${SERF_GATE_CAPABILITY_SKIP:-}" ]; then
+	root_skip="(${fuzz_test_skip}|${SERF_GATE_CAPABILITY_SKIP})"
+fi
+
 flags="$*"
 module_test_flags() {
 	local m="$1" flag selected=""
@@ -291,8 +304,9 @@ run_module() {
 		fi
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
-		# functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${packages[@]}"
+		# functions stay under the explicit make fuzz gate. root_skip additionally
+		# carries any capability-blocked skip pattern - see its definition above.
+		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
