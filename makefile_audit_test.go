@@ -36,28 +36,43 @@ func recipeCommands(line string) []string {
 	).Replace(line), sep)
 }
 
-// recursiveDeleteOperands returns the paths a recursive `rm` in this command
-// would delete, and reports whether the command is a recursive delete at all.
+// namesRM reports whether a command word invokes rm.
 //
 // A prefixed or quoted spelling still names the same weapon: make's `@rm` and
-// `-rm`, and the `'rm` that opens `trap 'rm -rf …'`. The trap spelling matters
-// most — an EXIT trap holding a recursive delete is what deleted a checkout in
-// kata 5hs2 — so it must not read as an ordinary word. Quotes are trimmed from
-// both ends, so a fully quoted `"rm"` is recognized too.
-func recursiveDeleteOperands(command string) (operands []string, isRecursiveDelete bool) {
+// `-rm`, the `'rm` that opens `trap 'rm -rf …'`, and a fully quoted `"rm"`. The
+// trap spelling matters most — an EXIT trap holding a recursive delete is what
+// deleted a checkout in kata 5hs2 — so it must not read as an ordinary word.
+//
+// Two indirect spellings reach rm without naming it directly. `$(RM)` is
+// defined by GNU make itself (as `rm -f`) and needs no declaration here to
+// work, and any absolute path ends in `/rm`. Both are ordinary things to write,
+// so both have to count.
+func namesRM(field string) bool {
+	word := strings.Trim(field, `@-+'"`)
+	return word == "rm" || word == "$(RM)" || word == "${RM}" || strings.HasSuffix(word, "/rm")
+}
+
+// rmArguments returns the words following an `rm` command word, and reports
+// whether the command invokes rm at all.
+//
+// Finding rm is deliberately separate from deciding the delete is recursive.
+// A recipe may put the command on one physical line and its flags on the next,
+// and a scan that only recognized an already-recursive delete would not see
+// `rm \` as anything at all — so the caller could not refuse it.
+func rmArguments(command string) ([]string, bool) {
 	fields := strings.Fields(command)
-	at := -1
 	for i, f := range fields {
-		if strings.Trim(f, `@-+'"`) == "rm" {
-			at = i
-			break
+		if namesRM(f) {
+			return fields[i+1:], true
 		}
 	}
-	if at < 0 {
-		return nil, false
-	}
-	recursive := false
-	for _, f := range fields[at+1:] {
+	return nil, false
+}
+
+// recursiveDelete classifies rm's arguments into the paths it would delete and
+// whether any flag among them makes the delete recursive.
+func recursiveDelete(args []string) (operands []string, recursive bool) {
+	for _, f := range args {
 		switch {
 		case f == "--recursive":
 			recursive = true
@@ -72,10 +87,7 @@ func recursiveDeleteOperands(command string) (operands []string, isRecursiveDele
 			operands = append(operands, strings.Trim(f, `'"`))
 		}
 	}
-	if !recursive {
-		return nil, false
-	}
-	return operands, true
+	return operands, recursive
 }
 
 // operandComesFromVariable reports whether a recursive delete's target is
@@ -124,10 +136,14 @@ var makefileVariableFedDeletes = map[string]string{
 // checkout.
 //
 // Two limits are worth stating, because a passing run does not cover them. The
-// scan is textual and per physical line, so `find … -exec rm -rf {} +` reads as
-// a delete of the literal `{}` and slips through. And the pin cannot see one
-// blessed delete swapped for a different one on a line whose text is unchanged.
-// Read the deletes in any diff that touches this file's Makefile lines.
+// scan is textual, so `find … -exec rm -rf {} +` reads as a delete of the
+// literal `{}` and slips through. And the pin cannot see one blessed delete
+// swapped for a different one on a line whose text is unchanged. Read the
+// deletes in any diff that touches this file's Makefile lines.
+//
+// The scan is also per physical line, but that is handled rather than merely
+// admitted: a delete running past the end of its line is refused outright, so a
+// continuation hides nothing.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
 	body, err := os.ReadFile("Makefile")
@@ -142,16 +158,36 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		// Whether make joins the NEXT physical line onto this one. It is read
+		// before recipeLine strips the marker, and it is what makes a delete at
+		// the end of this line unreviewable.
+		continues := strings.HasSuffix(strings.TrimSpace(line), `\`)
 		where := fmt.Sprintf("Makefile:%d: %s", i+1, trimmed)
-		for _, command := range recipeCommands(trimmed) {
-			operands, isDelete := recursiveDeleteOperands(command)
-			if !isDelete {
+		commands := recipeCommands(trimmed)
+		for c, command := range commands {
+			args, isRM := rmArguments(command)
+			if !isRM {
 				continue
 			}
-			// A recursive delete with no path on its own line takes its target
-			// from a continuation line or from a pipe, so this audit cannot see
-			// what it deletes. That shape is refused outright rather than
-			// allowlisted: an unreadable delete cannot be reviewed.
+			// An rm that is the LAST command on a continued line runs on into
+			// the next physical line, which may carry its recursion flag, its
+			// path, or both. Neither this line nor the next says what gets
+			// deleted, so the shape is refused outright rather than
+			// allowlisted: a delete that cannot be read cannot be reviewed.
+			//
+			// A delete followed by more commands on the same line is safe from
+			// this: `||` and `;` end the rm before the continuation does, which
+			// is why the blessed sites at Makefile:77 and :121 stay green.
+			if continues && c == len(commands)-1 {
+				unreadable = append(unreadable, where)
+				continue
+			}
+			operands, recursive := recursiveDelete(args)
+			if !recursive {
+				continue
+			}
+			// A recursive delete with no path at all takes its target from a
+			// pipe (`xargs rm -rf`), which is equally unreadable.
 			if len(operands) == 0 {
 				unreadable = append(unreadable, where)
 				continue
@@ -185,9 +221,10 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 
 	sort.Strings(unreadable)
 	for _, o := range unreadable {
-		t.Errorf("this recursive delete names no path on its own line, so it takes its "+
-			"target from a continuation line or from a pipe and nothing here can review "+
-			"what it deletes; put the path on the same line as the rm:\n  %s", o)
+		t.Errorf("this delete either runs on past the end of its line or names no path on "+
+			"it, so its flags or its target arrive somewhere nothing here can tie them back "+
+			"to the rm and no review can say what it deletes; keep the whole delete — rm, "+
+			"flags and path — on one line:\n  %s", o)
 	}
 
 	stale := make([]string, 0, len(makefileVariableFedDeletes))
