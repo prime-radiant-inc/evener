@@ -11,12 +11,12 @@
 ## Global Constraints
 
 - JSON/TOML keys stay snake_case (the sweep's guardrail); Go struct fields for the TUI's in-memory `ModelPickerItem` are not wire types and are exempt, but every new appwire/JSON field in this track (`recent`) must be snake_case.
-- `make lint` (namingcheck runs only here) must pass before merge; any deliberate camelCase wire field needs a `// serf:naming-ignore:` line (none is expected in this track — all new fields are snake_case or Go-internal).
+- `make lint` (namingcheck runs only here) must pass before merge; any deliberate camelCase wire field needs a `// evener:naming-ignore:` line (none is expected in this track — all new fields are snake_case or Go-internal).
 - New appwire **struct fields** (e.g. `ModelListResponse.Recent`) do not require the dual-router catalog change; only new **methods** do. This track adds no new appwire method.
 - Per-repo `GO_MODULES` (root, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`): this track touches only the **root** module (`appwire`, `cmd/evener-hub`, `cmd/evener-tui`) plus read-only imports of the already-built `llm` module; run tests with `go test ./<pkg>/... -run '<Name>' -count=1` from the repo root, and `golangci-lint run ./...` from the repo root.
 - **Out of scope (verbatim from spec):** "A hand-maintained curated model manifest (explicitly rejected in favor of Recent)." / "Model `pricing.go` becoming the picker's pricing path (§4 keeps the direct field read; only §5 cost adopts `pricing.go`)." This plan never imports `llm/pricing.go` and never introduces a manifest file; `Recent` is derived purely from `PastIndex`.
 - `llm/model_catalog.go` and `llm/model_catalog_embedded.go` are **not owned by this track** (no other track claims them either) — this plan deliberately does not modify them, even though a private `datedModelSuffix` regex already exists there. Each consumer (`cmd/evener-hub`, `cmd/evener-tui`) defines its own small, duplicated dated-snapshot regex and prettify helper rather than exporting from `llm`, to avoid an un-owned cross-track edit.
-- jstest is agent-run, not part of `make`/CI: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node <file>.js` (or `sh run-all.sh` for the full suite; one-time jsdom install per `jstest/README.md`).
+- jstest is agent-run, not part of `make`/CI: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node <file>.js` (or `sh run-all.sh` for the full suite; one-time jsdom install per `jstest/README.md`).
 - Never `git add -A`; stage only the exact paths listed in each task's commit step (after a `git status`).
 
 ---
@@ -28,7 +28,7 @@ New/changed responsibilities, in dependency order:
 - `appwire/types.go` — `ModelListResponse` gains `Recent []ModelDescriptor` (wire shape only; no behavior).
 - `cmd/evener-hub/internal/hubcore/past.go` — `PastIndex.RecentModels(limit int) []appwire.ModelDescriptor`: the global-recency, deduped query over the already-sorted `PastIndex.all`, keyed on `(Meta.ProfileID, Meta.Model)`.
 - `cmd/evener-hub/app_models.go` — `hubModelList` (the single appwire-dispatch entry point used by every `ModelList` RPC, including the TUI's) attaches `Recent` via a new `attachRecentModels` wrapper, regardless of the harness selected (Recent is harness-independent per the spec).
-- `cmd/evener-hub/web_spawn.go` — `modelDescriptorsToAPIModels` and `fetchLiveModels` (the two builders of the web's `/api/models` entries) gain: auto-prettified `display_name` (replacing the raw-id passthrough), three new badge fields (`supports_vision`, `supports_web_search`, `max_output_tokens`), and dated-snapshot-last ordering within each provider. `handleApiModels`/`writeModelsResponse` gain a `recent` field on the diagnostics-envelope JSON response, resolved from the Past index (default harness path) or from `hubModelList`'s `Recent` (non-serf harness path).
+- `cmd/evener-hub/web_spawn.go` — `modelDescriptorsToAPIModels` and `fetchLiveModels` (the two builders of the web's `/api/models` entries) gain: auto-prettified `display_name` (replacing the raw-id passthrough), three new badge fields (`supports_vision`, `supports_web_search`, `max_output_tokens`), and dated-snapshot-last ordering within each provider. `handleApiModels`/`writeModelsResponse` gain a `recent` field on the diagnostics-envelope JSON response, resolved from the Past index (default harness path) or from `hubModelList`'s `Recent` (non-evener harness path).
 - `cmd/evener-hub/assets/spawn.js` — `openModelPicker`'s `renderList` renders a `Recent` group above the provider groups; each row shows the prettified `display_name` primary with the raw id as a dim secondary line, plus a capability-badge row. A `buildModelRow`/`modelBadges` helper pair is factored out of the existing inline row-building code.
 - `cmd/evener-hub/assets/settings-pickers.js` — `buildModelPicker`'s two-column layout gains a pinned-first `Recent` pseudo-provider tab; `renderModels` gets the same display_name/badges treatment as spawn.js (small, deliberate duplication — the two files already duplicate `formatCtx`).
 - `cmd/evener-hub/assets/style.css` — a small, new, self-contained CSS block for `.chip-picker-model-id` (secondary raw-id line) and `.chip-picker-model-badges`/`.chip-picker-badge` (capability pills), appended next to the existing `.chip-picker-model-meta` rule; does not touch Track A's state/glyph regions.
@@ -223,7 +223,7 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 
 **Interfaces:**
 - Consumes: `hubcore.PastIndex.RecentModels` (Task 2), `hubcore.WebConfig.Past *PastIndex`.
-- Produces: `hubModelList(...)` now always returns `resp.Recent` populated (when `cfg.Past != nil` and it has matches), used by every `ModelList` RPC dispatch (`app_rpc.go:749-750`) — this is the path the TUI's `client.ModelList()` hits, and (for non-serf harnesses) the path `handleApiModels` hits too.
+- Produces: `hubModelList(...)` now always returns `resp.Recent` populated (when `cfg.Past != nil` and it has matches), used by every `ModelList` RPC dispatch (`app_rpc.go:749-750`) — this is the path the TUI's `client.ModelList()` hits, and (for non-evener harnesses) the path `handleApiModels` hits too.
 
 - [ ] **Failing test** — create `cmd/evener-hub/app_models_test.go`:
 ```go
@@ -241,7 +241,7 @@ import (
 )
 
 // TestHubModelList_AttachesRecentFromPastIndex verifies every ModelList
-// response (the path both the TUI's appwire RPC and the web's non-serf-harness
+// response (the path both the TUI's appwire RPC and the web's non-evener-harness
 // REST branch use) carries Recent, filtered to models actually present in
 // resp.Data — a recent ref no longer offered isn't rendered as unselectable.
 func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
@@ -252,7 +252,7 @@ func TestHubModelList_AttachesRecentFromPastIndex(t *testing.T) {
 	})
 	cfg := hubcore.WebConfig{Past: past}
 	sources := appsource.NewRegistry()
-	// No Spawner/live source configured: hubModelList's serf/local branch
+	// No Spawner/live source configured: hubModelList's evener/local branch
 	// returns an empty ModelListResponse (its early-return path), which is
 	// enough to exercise attachRecentModels' filtering against resp.Data.
 	resp, err := hubModelList(context.Background(), cfg, sources, appwire.ModelListParams{})
@@ -609,7 +609,7 @@ Run: `go test ./cmd/evener-hub/... -run 'TestModelDescriptorsToAPIModels_Include
 - Test: `cmd/evener-hub/web_test.go` (extend)
 
 **Interfaces:**
-- Consumes: `hubModelList`'s `resp.Recent` (Task 3, non-serf-harness branch), `hubcore.PastIndex.RecentModels` directly (Task 2, default serf/local branch).
+- Consumes: `hubModelList`'s `resp.Recent` (Task 3, non-evener-harness branch), `hubcore.PastIndex.RecentModels` directly (Task 2, default evener/local branch).
 - Produces: `recentModelEntriesFromDescriptors(models []map[string]any, refs []appwire.ModelDescriptor) []map[string]any`; the `/api/models?diagnostics=1` response gains a `"recent"` array (always present, never null, when the envelope form is requested) — the bare-array default response (used by `search.js`, unaffected) is untouched.
 
 - [ ] **Failing test** — add to `cmd/evener-hub/web_test.go`:
@@ -699,7 +699,7 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 	})
 }
 ```
-  - In `handleApiModels`, in the non-serf-harness branch, change:
+  - In `handleApiModels`, in the non-evener-harness branch, change:
 ```go
 		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig), resp.Diagnostics, includeDiagnostics)
 ```
@@ -708,7 +708,7 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 		models := modelDescriptorsToAPIModels(resp.Data, s.cfg.ProviderConfig)
 		writeModelsResponse(w, models, resp.Diagnostics, recentModelEntriesFromDescriptors(models, resp.Recent), includeDiagnostics)
 ```
-  - In `handleApiModels`'s default (serf/local) branch, immediately before the final `writeModelsResponse(...)` call, add:
+  - In `handleApiModels`'s default (evener/local) branch, immediately before the final `writeModelsResponse(...)` call, add:
 ```go
 	var recentRefs []appwire.ModelDescriptor
 	if s.cfg.Past != nil {
@@ -761,7 +761,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
         </button>
       </div>
       <textarea name="prompt"></textarea>
-      <input type="hidden" name="harness" value="serf">
+      <input type="hidden" name="harness" value="evener">
       <input type="hidden" name="model" value="">
       <input type="hidden" name="working_dir" value="">
       <input type="hidden" name="branch" value="">
@@ -939,7 +939,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
         </button>
       </div>
       <textarea name="prompt"></textarea>
-      <input type="hidden" name="harness" value="serf">
+      <input type="hidden" name="harness" value="evener">
       <input type="hidden" name="model" value="">
       <input type="hidden" name="working_dir" value="">
       <input type="hidden" name="branch" value="">
@@ -1640,9 +1640,9 @@ func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID boo
 
 ## Task 13 — End-to-end scenario cards + full-repo gates
 
-Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/serf-hub ./cmd/evener-hub`, `go build -o /tmp/serf-tui ./cmd/evener-tui`, `go build -o /tmp/serf ./cmd/evener`) and author falsifiable scenario cards against a hermetic `$HOME`/dedicated Chrome profile:
+Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/evener-hub ./cmd/evener-hub`, `go build -o /tmp/evener-tui ./cmd/evener-tui`, `go build -o /tmp/evener ./cmd/evener`) and author falsifiable scenario cards against a hermetic `$HOME`/dedicated Chrome profile:
 
-- [ ] **Card: fresh install shows no Recent group.** With an empty `~/.serf` (no session history), open the web spawn model picker and the settings model picker; assert neither shows a "Recent" group/tab — only the provider-grouped catalog. Open the TUI's `n` (new session) model picker; assert the same.
+- [ ] **Card: fresh install shows no Recent group.** With an empty `~/.evener` (no session history), open the web spawn model picker and the settings model picker; assert neither shows a "Recent" group/tab — only the provider-grouped catalog. Open the TUI's `n` (new session) model picker; assert the same.
 - [ ] **Card: Recent reflects the last 5 distinct models across sessions, globally.** Launch and complete (or just spawn+idle) 6 sessions across at least 3 different models/providers from different working directories; assert the web spawn picker's Recent group shows exactly the 5 most-recently-touched distinct models (not the 6th, oldest), in most-recent-first order, and that it's the SAME 5 regardless of which working directory the spawn form is currently scoped to. Repeat the read against the TUI's model picker and the settings picker — all three must agree.
 - [ ] **Card: uncatalogued live model still renders.** Configure a provider instance whose live-listed model id is absent from the embedded catalog (or stub one via `providers.toml` if the live provider can't be forced to report an unknown id); assert all three pickers still render a row for it (provider/model/name visible) with no badges/price/context shown, and that it's selectable and launches successfully.
 - [ ] **Card: dated snapshot sorts last within its provider.** Pick a provider with both a bare family id and a dated snapshot in the live/embedded catalog (e.g. an Anthropic model); assert all three pickers list the bare id before its dated snapshot within that provider's group.
@@ -1654,8 +1654,8 @@ Full-repo gates (root module only — this track touches no other `GO_MODULES` e
 - [ ] `go test ./appwire/... ./cmd/evener-hub/... ./cmd/evener-tui/... -count=1` → green.
 - [ ] `golangci-lint run ./...` from the repo root → green.
 - [ ] `make fuzz` — confirms no appwire decode golden references `ModelListResponse` in a way this field addition could break (Task 1's research found none, but this is the authoritative check); if `Test*Golden` drifts, `make fuzz-goldens` and re-verify.
-- [ ] jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` → all green, including the four new files from Tasks 7-9.
-- [ ] `make lint` (naming, internal, docs, golangci, generated, secret-scan) → green — confirms the new `recent` JSON field and all other new fields pass namingcheck without needing a `// serf:naming-ignore:` line.
+- [ ] jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → all green, including the four new files from Tasks 7-9.
+- [ ] `make lint` (naming, internal, docs, golangci, generated, secret-scan) → green — confirms the new `recent` JSON field and all other new fields pass namingcheck without needing a `// evener:naming-ignore:` line.
 - [ ] **Commit** any gate-driven fixups with a focused message; do not `git add -A`.
 
 ---

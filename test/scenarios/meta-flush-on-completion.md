@@ -14,7 +14,7 @@ error (`3tgv`), a deferred flush + panic recovery at the top of
 - Hub running on an isolated `$HOME` and a free port (never `9180`,
   Jesse's real one — see the Setup checklist in
   `docs/agentic-testing.md`).
-- Path to write a transcript: `$HOME/.local/state/serf/projects/`.
+- Path to write a transcript: `$HOME/.local/state/evener/projects/`.
 
 ## Steps
 
@@ -23,14 +23,14 @@ error (`3tgv`), a deferred flush + panic recovery at the top of
 1. Spawn a session with a single completable prompt. e.g.:
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
-        -d '{"prompt":"Reply with literal OK.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"serf","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
+        -H "Authorization: Bearer $(cat "$HOME/.evener/auth-token")" \
+        -d '{"prompt":"Reply with literal OK.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"evener","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
         $HUB/api/spawn
    ```
 2. Wait for idle (~10s).
 3. Read `meta.json`:
    ```bash
-   find "$HOME/.local/state/serf/projects" -name "<session_id>.meta.json" \
+   find "$HOME/.local/state/evener/projects" -name "<session_id>.meta.json" \
      -exec cat {} \; | python3 -c "import sys, json; \
      d=json.load(sys.stdin); print('turn_count:', d['turn_count'])"
    ```
@@ -45,7 +45,7 @@ unit tests in `agent/session_test.go::TestSession_*FlushesMeta`
 verify each exit individually with mocked LLMs. For a manual repro:
 
 1. Spawn a session as above. Wait for idle.
-2. `pkill -f 'serf serve.*<session_id>'` — kill mid-life.
+2. `pkill -f 'evener serve.*<session_id>'` — kill mid-life.
 3. Send another turn from the workspace UI.
 4. While the agent is processing (status=active), send a SECOND
    message immediately. The hub's send-while-processing returns a

@@ -24,7 +24,7 @@ translation step: see `Turn 58` in the outline → read `range:"55-60"` → `exp
 
 ## Why these tools exist
 
-A serf session produces an immutable `.transcript.jsonl`. After compaction, when
+A evener session produces an immutable `.transcript.jsonl`. After compaction, when
 auditing a subagent, or when resuming prior work, the agent needs to read that record
 back — selectively, because a transcript can dwarf the context window. `find` locates
 the session; `read` shows it, escalating from a one-line-per-turn **outline** to
@@ -221,7 +221,7 @@ Rendering rules:
 The bounded transcript-v2 JSONL for the range: one header followed only by semantic
 entries. It contains neither the system prompt nor provider request/response records.
 This is rarely what you want: reserve it for debugging transcript structure. For
-comprehension, use markdown; for provider forensics, use `serf-doctor apilog <selector>`.
+comprehension, use markdown; for provider forensics, use `evener-doctor apilog <selector>`.
 
 ```
 { "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
@@ -258,7 +258,7 @@ range, or turn expansion. It omits `job_status`; expired capabilities report
 ### Provider forensics
 
 The model-facing `read_transcript` tool does not expose API-log selectors or request/
-response bodies. Use `serf-doctor apilog <selector>` for private attempt metadata and
+response bodies. Use `evener-doctor apilog <selector>` for private attempt metadata and
 aggregates. Credential values remain excluded from that diagnostic surface.
 
 ## Truncation and size budgets (markdown)

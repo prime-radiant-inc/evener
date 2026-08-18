@@ -36,7 +36,7 @@ executed.
 ## Where the LIVE run fits
 
 **The live 3×3 run is a human-triggered step, NOT part of CI.** These cards are
-executed by an agent (Claude / Codex / etc.) against a freshly built `serf`
+executed by an agent (Claude / Codex / etc.) against a freshly built `evener`
 binary with real, billed provider calls — see `test/scenarios/README.md` and
 `docs/agentic-testing.md` for the harness conventions. CI covers the mechanics
 deterministically (the `TestE2E_*` session-level integration tests in

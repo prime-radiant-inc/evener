@@ -2,11 +2,11 @@
 
 **Date:** 2026-02-14
 **Author:** Bot (Claude Opus 4.6)
-**Project:** Recursive Language Model — Context Management Strategies for Serf
+**Project:** Recursive Language Model — Context Management Strategies for Evener
 
 ## 1. Executive Summary
 
-We evaluated four context management strategies for Serf, an autonomous coding agent operating under LLM context window constraints. The strategies manage information retention as the agent's conversation history grows beyond the context window and must be compressed.
+We evaluated four context management strategies for Evener, an autonomous coding agent operating under LLM context window constraints. The strategies manage information retention as the agent's conversation history grows beyond the context window and must be compressed.
 
 **Key findings (updated with rigorous N=5 evaluation):**
 

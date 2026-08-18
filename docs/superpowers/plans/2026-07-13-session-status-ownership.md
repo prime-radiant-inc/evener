@@ -6,7 +6,7 @@
 
 **Architecture:** Treat the parent daemon's `/status` payload as the authoritative observation point for in-process delegates. Extract running local delegate transcript IDs into the probe result and carry them as non-routable metadata on the parent's `LiveEntry`. Tree and saved-thread projections consume that metadata for child status, while `Session.WireState` reports only work owned by the parent itself.
 
-**Tech Stack:** Go, Serf daemon `/status`, hub roster/tree projection, appwire thread projection, deterministic `go test` fixtures.
+**Tech Stack:** Go, Evener daemon `/status`, hub roster/tree projection, appwire thread projection, deterministic `go test` fixtures.
 
 ---
 
@@ -50,7 +50,7 @@ func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestWireState_(LiveChildDoesNotMakeIdleParentActive|PendingParentWorkMakesIdleParentActive)$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestWireState_(LiveChildDoesNotMakeIdleParentActive|PendingParentWorkMakesIdleParentActive)$' -count=1
 ```
 
 Expected: the live-child test fails because `WireState` calls `autonomyInFlight`.
@@ -72,7 +72,7 @@ Use `sessionWorkPending` in `WireState`. Keep `autonomyInFlight` as `sessionWork
 Run the command from Step 2, then:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test(WireState|SettleTerminalState|Restore.*Awaiting)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test(WireState|SettleTerminalState|Restore.*Awaiting)' -count=1
 ```
 
 Expected: PASS.
@@ -112,7 +112,7 @@ Assert that the result contains only `child-running`.
 **Step 2: Run the test to verify it fails**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
 ```
 
 Expected: compile failure because the structured result and running-child field do not exist.
@@ -147,7 +147,7 @@ This method scans the nested ID metadata under the roster lock. It must not inse
 **Step 5: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
 ```
 
 Expected: PASS, including `IsSubagentActive(child)==true` and `Find(child)==false`.
@@ -191,8 +191,8 @@ Build a `PastIndex` containing the child plus a roster containing only the paren
 **Step 3: Run tests to verify they fail**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(PastThreadRead.*RunningSubagent|HubThreadList.*RunningSubagent)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub -run 'Test(PastThreadRead.*RunningSubagent|HubThreadList.*RunningSubagent)' -count=1
 ```
 
 Expected: the child is `ended` / `notLoaded` and the rollup is idle.
@@ -208,8 +208,8 @@ Pass `WebConfig` into `pastEntryThread` and set `ThreadStatusActive` only when `
 **Step 6: Run focused package tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(PastThread|HubThreadList|HubRPCThread)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/hubcore -run FuzzHubcoreScenarios -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub -run 'Test(PastThread|HubThreadList|HubRPCThread)' -count=1
 ```
 
 Expected: PASS.
@@ -237,7 +237,7 @@ git status --short
 **Step 2: Run affected packages**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -count=1
 ```
 
 Expected: PASS.
@@ -245,7 +245,7 @@ Expected: PASS.
 **Step 3: Run focused race tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test -race ./agent ./cmd/evener-hub/internal/hubcore -run 'Test(WireState|StatusProber|Roster|BuildTree)' -count=1
+GOCACHE=/tmp/evener-gocache go test -race ./agent ./cmd/evener-hub/internal/hubcore -run 'Test(WireState|StatusProber|Roster|BuildTree)' -count=1
 ```
 
 Expected: PASS.
@@ -253,7 +253,7 @@ Expected: PASS.
 **Step 4: Run the complete deterministic suite**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./... -count=1
+GOCACHE=/tmp/evener-gocache go test ./... -count=1
 ```
 
 Expected: no new failures. Compare any failures exactly with the recorded baseline fuzz failures in `cmd/evener-fuzz-harvest` and `cmd/evener-hub/internal/fspaths`.

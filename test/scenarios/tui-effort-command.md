@@ -1,4 +1,4 @@
-# tui-effort-command: serf-tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
+# tui-effort-command: evener-tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
 
 **What this covers**: spec Acceptance criterion 6 — TUI `/effort` and the
 web effort control both show only the current model's levels, and both
@@ -19,7 +19,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
 
 ## Pre-state
 
-- Hub + serf-tui + a web client, all able to attach to the same session
+- Hub + evener-tui + a web client, all able to attach to the same session
   (isolated `$HOME`, kernel-assigned port — see the Setup checklist in
   `docs/agentic-testing.md`).
 - A session on a reasoning-capable model with a known ladder (e.g.
@@ -92,7 +92,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   `thread/reasoning-effort/changed` (`protocol/reducer.ts:702-705`).
   `readout` shows the same word, and `options` is `[""]` followed by the
   model's own ladder minus `"none"` (`StatusRow.tsx:129`). An unset effort —
-  and serf's `"none"`, which clears to the provider default — both render as
+  and evener's `"none"`, which clears to the provider default — both render as
   the leading `(default)` option, value `""` (`:128,139,159`). The palette's
   own rows are `(default)` plus the same ladder
   (`shell/palette/commands.ts:410`). Falsification: `selectValue` is

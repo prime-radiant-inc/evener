@@ -7,7 +7,7 @@ Sibling spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-l
 
 ## 1. Goal
 
-SP5 brings serf's hook surface up to the Claude Code A-tier. It adds nine new events at their correct serf integration points, three new hook handler types (`http`, `mcp_tool`, `agent`), six new hook-config fields, five new output fields, five new input fields, and three new environment variables. It also replaces the current `regexp.Compile`-on-every-call matcher with the documented dual-mode algorithm (exact-or-pipe-list vs JavaScript regex) so plugin authors can write `"Bash"` or `"Edit|Write"` and get the literal match they expect, while regex patterns like `"mcp__.*"` continue to work.
+SP5 brings evener's hook surface up to the Claude Code A-tier. It adds nine new events at their correct evener integration points, three new hook handler types (`http`, `mcp_tool`, `agent`), six new hook-config fields, five new output fields, five new input fields, and three new environment variables. It also replaces the current `regexp.Compile`-on-every-call matcher with the documented dual-mode algorithm (exact-or-pipe-list vs JavaScript regex) so plugin authors can write `"Bash"` or `"Edit|Write"` and get the literal match they expect, while regex patterns like `"mcp__.*"` continue to work.
 
 SP5 owns hook *machinery* — event firing, type dispatch, field plumbing, output parsing. It does not own permission rule grammar (SP2) or config loading (SP1). The `if` field is a permission rule string that SP5 passes to SP2's matcher for evaluation; SP5's only responsibility is wiring the filter into hook dispatch.
 
@@ -254,7 +254,7 @@ Each event spec covers: integration point, input schema, output schema, decision
 
 Behavioral change: the current code fires `PostToolUse` for both success and failure. SP5 keeps `PostToolUse` firing on success and adds `PostToolUseFailure` for failure. Plugins relying on `PostToolUse` seeing failures continue to work because nothing is *removed* from `PostToolUse`'s contract; SP5 ships a one-line behavior note in the changelog and the hook docs (this is the only Claude-Code-compat semantic change for existing events — every other event keeps its current trigger).
 
-Wait — the safer behavior is to keep firing `PostToolUse` for both outcomes, and additionally fire `PostToolUseFailure` for failure. That preserves the existing serf contract verbatim and matches the Claude Code documented semantics (the docs do not say `PostToolUse` skips failures). SP5 ships with this dual-fire behavior; the `tool_response` field on `PostToolUse` carries the error text when applicable.
+Wait — the safer behavior is to keep firing `PostToolUse` for both outcomes, and additionally fire `PostToolUseFailure` for failure. That preserves the existing evener contract verbatim and matches the Claude Code documented semantics (the docs do not say `PostToolUse` skips failures). SP5 ships with this dual-fire behavior; the `tool_response` field on `PostToolUse` carries the error text when applicable.
 
 **Input fields (event-specific).**
 
@@ -324,7 +324,7 @@ Matcher is the `agent_type` string (`"general-purpose"`, plugin agent names, etc
 
 ### 3.5 `UserPromptExpansion`
 
-**Integration point.** Slash command expansion happens in two future SP slots (commands invocation is deferred per parent spec), but serf already expands `:skill:` skill invocations and built-in slash forms inline before `ProcessInput`. SP5 wires `UserPromptExpansion` at the existing skill-activation site in `agent/session.go` (search for `ActivatedSkillBodies` / skill-resolution in `processOneInput`). The hook fires after the input string has been classified as an expansion candidate and the expansion has produced the final prompt text, but before the expanded text is appended to history as `TurnUserInput`.
+**Integration point.** Slash command expansion happens in two future SP slots (commands invocation is deferred per parent spec), but evener already expands `:skill:` skill invocations and built-in slash forms inline before `ProcessInput`. SP5 wires `UserPromptExpansion` at the existing skill-activation site in `agent/session.go` (search for `ActivatedSkillBodies` / skill-resolution in `processOneInput`). The hook fires after the input string has been classified as an expansion candidate and the expansion has produced the final prompt text, but before the expanded text is appended to history as `TurnUserInput`.
 
 For MCP prompts, the integration site is wherever MCP prompts are expanded — today this is not implemented; SP5 fires the hook at the future expansion site as a no-op when MCP prompts are absent.
 
@@ -431,9 +431,9 @@ Matcher is `tool_name`.
 
 ### 3.9 `ConfigChange`
 
-**Integration point.** Mid-session config-file reloading is not yet a serf feature. SP1 lays down the loader; SP8 wires it. SP5 fires `ConfigChange` at the future reload site, which is a file-watcher loop SP5 itself adds in `agent/config_watcher.go` (a small fsnotify-backed goroutine started by `Session` when `cfg.WatchConfig` is true; default off). The watcher emits a `ConfigChangeSignal` to a channel; the main session loop reads it and calls `RunConfigChange`.
+**Integration point.** Mid-session config-file reloading is not yet a evener feature. SP1 lays down the loader; SP8 wires it. SP5 fires `ConfigChange` at the future reload site, which is a file-watcher loop SP5 itself adds in `agent/config_watcher.go` (a small fsnotify-backed goroutine started by `Session` when `cfg.WatchConfig` is true; default off). The watcher emits a `ConfigChangeSignal` to a channel; the main session loop reads it and calls `RunConfigChange`.
 
-Matcher is `config_source`, one of `"user_settings"`, `"project_settings"`, `"local_settings"`, `"policy_settings"`, `"skills"`. The first three are config-tier names mapped from SP1's `ConfigTier`. `"policy_settings"` is reserved (admin/MDM, not in scope for serf v1). `"skills"` covers skill-file changes when serf gains live-skill-reload.
+Matcher is `config_source`, one of `"user_settings"`, `"project_settings"`, `"local_settings"`, `"policy_settings"`, `"skills"`. The first three are config-tier names mapped from SP1's `ConfigTier`. `"policy_settings"` is reserved (admin/MDM, not in scope for evener v1). `"skills"` covers skill-file changes when evener gains live-skill-reload.
 
 **Input fields.**
 
@@ -623,7 +623,7 @@ On non-Windows when `shell: "powershell"` is requested, falls back to `bash` wit
 
 ### 5.6 `statusMessage`
 
-`string`. UI surface only. Plumbed through to `HookStartData.StatusMessage` so consumers (`serf-tui`, `serf-hub`) can render a spinner caption while the hook runs. Empty = default behavior ("Running hook…"). Not interpreted; not substituted.
+`string`. UI surface only. Plumbed through to `HookStartData.StatusMessage` so consumers (`evener-tui`, `evener-hub`) can render a spinner caption while the hook runs. Empty = default behavior ("Running hook…"). Not interpreted; not substituted.
 
 ## 6. New Output Fields
 
@@ -691,7 +691,7 @@ Set on `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `User
 
 Set on events that have a `permission_mode` field plus `PostCompact` and `SubagentStart`. Source: `cfg.ReasoningEffort` (when set on the session) or a CLI flag.
 
-Note: serf today stores reasoning effort as a plain string ("low", "medium", "high"). CC adds `"xhigh"` and `"max"`; SP5 passes the string through unchanged. Validation of allowed values belongs in the CLI parser.
+Note: evener today stores reasoning effort as a plain string ("low", "medium", "high"). CC adds `"xhigh"` and `"max"`; SP5 passes the string through unchanged. Validation of allowed values belongs in the CLI parser.
 
 Shape: `{ "level": "<string>" }` — wrapped so future fields (cost budget, token cap) can attach without a schema break.
 
@@ -711,9 +711,9 @@ Each is set in the spawned hook process environment (in addition to the existing
 
 ### 8.1 `CLAUDE_PLUGIN_DATA`
 
-Per-plugin persistent data directory. Source: `~/.config/serf/plugins/data/<marketplace>/<plugin>/` (created on first read, mode 0700). SP4 owns the directory creation; SP5 reads the path and exports it. For ad-hoc plugins loaded via `--plugin-dir` (no marketplace), value is `<plugin-dir>/.data/` (created lazily).
+Per-plugin persistent data directory. Source: `~/.config/evener/plugins/data/<marketplace>/<plugin>/` (created on first read, mode 0700). SP4 owns the directory creation; SP5 reads the path and exports it. For ad-hoc plugins loaded via `--plugin-dir` (no marketplace), value is `<plugin-dir>/.data/` (created lazily).
 
-Survives plugin updates: SP4 preserves this directory across `serf plugin update`.
+Survives plugin updates: SP4 preserves this directory across `evener plugin update`.
 
 ### 8.2 `CLAUDE_EFFORT`
 
@@ -721,7 +721,7 @@ The active reasoning effort level. Source: same as `effort.level` in §7.3. Empt
 
 ### 8.3 `CLAUDE_CODE_REMOTE`
 
-Set to `"true"` when the session runs in `serf-hub` or any future remote/web embedding. Source: a session flag `cfg.IsRemote` populated by the embedder. Unset (not present in environment, not empty string) for CLI / TUI / SDK sessions.
+Set to `"true"` when the session runs in `evener-hub` or any future remote/web embedding. Source: a session flag `cfg.IsRemote` populated by the embedder. Unset (not present in environment, not empty string) for CLI / TUI / SDK sessions.
 
 The flag has no effect on hook semantics; it's a signal for plugins that need to choose between interactive and non-interactive output formats.
 
@@ -795,7 +795,7 @@ The existing nine events keep their current input/output shape. SP5's HookInput 
 
 The existing two hook types (`command`, `prompt`) keep their current semantics. The new `args` field is optional on `command`; the new `shell` field defaults to `"bash"` which matches the current `bash -c` behavior.
 
-The matcher change (§9) alters behavior in one observable way: a matcher of `""` (empty string) now matches everything, where the previous code compiled it as a regex and matched everything (since empty regex matches every string). Net effect: no behavior change for `""`. The change for `"*"` is also a no-op (existing special case). The change for exact-name matchers like `"Bash"` is a *semantic* shift from "regex-matches-substring" to "exact-equal" — a matcher of `"Bash"` no longer matches tool names that contain `"Bash"` as a substring. In practice, all current serf-tested matchers either are `"*"`, are full regex (`.*`), or are exact names — none rely on substring matching. The test suite (§13) includes a row that codifies the new behavior to catch any regression.
+The matcher change (§9) alters behavior in one observable way: a matcher of `""` (empty string) now matches everything, where the previous code compiled it as a regex and matched everything (since empty regex matches every string). Net effect: no behavior change for `""`. The change for `"*"` is also a no-op (existing special case). The change for exact-name matchers like `"Bash"` is a *semantic* shift from "regex-matches-substring" to "exact-equal" — a matcher of `"Bash"` no longer matches tool names that contain `"Bash"` as a substring. In practice, all current evener-tested matchers either are `"*"`, are full regex (`.*`), or are exact names — none rely on substring matching. The test suite (§13) includes a row that codifies the new behavior to catch any regression.
 
 ## 12. Package and File Layout
 
@@ -911,7 +911,7 @@ No SP5-level re-decision. SP5 records the firing order in `EventHookStart` paylo
 
 Implemented. One-time warning per plugin per hook at config-parse time. No runtime gate; users opting into the experimental hook accept the risk.
 
-The warning is logged at `level: info` to stderr and emitted as a structured event (`EventPluginWarning` with payload identifying plugin + event + hook type) so `serf-hub` can surface it in the UI.
+The warning is logged at `level: info` to stderr and emitted as a structured event (`EventPluginWarning` with payload identifying plugin + event + hook type) so `evener-hub` can surface it in the UI.
 
 ### 14.3 `asyncRewake` main-loop integration — addressed in §3.10
 
@@ -919,7 +919,7 @@ Wake channel (capacity 16), non-blocking select arms at two safe points per roun
 
 ### 14.4 Genuinely open at SP5 close
 
-- **MCP-prompt expansion site.** Serf does not yet expand MCP prompts inline. The `UserPromptExpansion` integration point (§3.5) is wired in `processOneInput` for the skill-expansion case but the MCP-prompt branch is a stub that runs only when a future MCP-prompt feature lands. Decision: ship the hook and the stub; document the gap in the hooks reference doc. Resolution will land in a later SP when MCP prompt invocation arrives.
+- **MCP-prompt expansion site.** Evener does not yet expand MCP prompts inline. The `UserPromptExpansion` integration point (§3.5) is wired in `processOneInput` for the skill-expansion case but the MCP-prompt branch is a stub that runs only when a future MCP-prompt feature lands. Decision: ship the hook and the stub; document the gap in the hooks reference doc. Resolution will land in a later SP when MCP prompt invocation arrives.
 - **`config_source` for skills.** §3.9 declares a `"skills"` matcher value but live skill reload is not implemented today. SP5 includes the matcher value in the public surface so plugins can be authored against it; the actual firing happens once live skill reload lands (probably in SP7 or later).
-- **`policy_settings` precedence.** CC enforces `policy_settings` as MDM-style admin config that cannot be overridden by user hooks. Serf has no policy tier today. The reserved value lives in the matcher set so future MDM work has a slot; behavior is "treat as if not present" until the tier is added.
+- **`policy_settings` precedence.** CC enforces `policy_settings` as MDM-style admin config that cannot be overridden by user hooks. Evener has no policy tier today. The reserved value lives in the matcher set so future MDM work has a slot; behavior is "treat as if not present" until the tier is added.
 - **`addPermissionRule` persistence.** §3.7 says the in-session permission set extends but no on-disk write. Long-term, users may want a hook decision to persist ("always allow this"). Defer to a future SP after SP2 settles its session-permission-mutation API.

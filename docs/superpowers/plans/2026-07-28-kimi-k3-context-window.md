@@ -4,7 +4,7 @@
 
 **Goal:** Give Kimi K3 its documented 1,048,576-token context window without changing the 256K Kimi models.
 
-**Architecture:** The embedded Serf override catalog remains the single source of model-specific Kimi metadata. The `kimi-anthropic` profile constructor and Web UI live-model enrichment consume that metadata, falling back only when a model or field is absent.
+**Architecture:** The embedded Evener override catalog remains the single source of model-specific Kimi metadata. The `kimi-anthropic` profile constructor and Web UI live-model enrichment consume that metadata, falling back only when a model or field is absent.
 
 **Tech Stack:** Go, embedded JSON model catalog, deterministic Go tests.
 
@@ -60,7 +60,7 @@ Expected: behavioral assertion failures showing 262,144 or a missing
 
 - [ ] **Step 4: Materialize Kimi model metadata**
 
-Add complete Serf-only catalog entries for `k3`, `k3-256k`, and
+Add complete Evener-only catalog entries for `k3`, `k3-256k`, and
 `kimi-for-coding-highspeed`; keep the existing `kimi-for-coding` entry at
 262,144. Use Kimi's documented model IDs and context sizes.
 

@@ -39,7 +39,7 @@ When a user drills into a run that has harbor data available (local cache or S3)
 
 Two data sources for in-flight waves:
 
-**S3 polling:** Checks `s3://harbor-eval-results-526275945504/runs/{wave_id}/` every 30 seconds for new `result.json` files. Reuses the approach from `wave_scores.py` — list objects, parse reward values. Discovers active waves from `.serf-launches/*.json`.
+**S3 polling:** Checks `s3://harbor-eval-results-526275945504/runs/{wave_id}/` every 30 seconds for new `result.json` files. Reuses the approach from `wave_scores.py` — list objects, parse reward values. Discovers active waves from `.evener-launches/*.json`.
 
 **SSH proxy (optional):** Connects to running EC2 instances for real-time status — container health, task progress, system metrics. Uses `eval_lib.py`'s existing SSH helpers. Only activated when user clicks into a specific instance.
 
@@ -47,7 +47,7 @@ Emits updates via SSE (Server-Sent Events) to connected browsers.
 
 ### S3 client (new: `s3_client.py`)
 
-Thin wrapper around `aws s3 sync` CLI calls. Downloads transcripts/artifacts on-demand to local cache (`~/.serf-evals/`) when user drills into a run not yet cached locally. No boto3 dependency — shells out to AWS CLI which is already installed and configured.
+Thin wrapper around `aws s3 sync` CLI calls. Downloads transcripts/artifacts on-demand to local cache (`~/.evener-evals/`) when user drills into a run not yet cached locally. No boto3 dependency — shells out to AWS CLI which is already installed and configured.
 
 ## Pages
 
@@ -104,7 +104,7 @@ Data flow:
 - Browser updates grid cells and recalculates mean in real-time
 - Optional: click an instance ID to SSH-proxy into its eval_dashboard for deep container monitoring
 
-Auto-discovers active waves from `.serf-launches/` metadata files.
+Auto-discovers active waves from `.evener-launches/` metadata files.
 
 ### 4. Compare
 
@@ -232,9 +232,9 @@ No boto3. S3 access via `aws s3` CLI subprocess calls.
 Environment variables:
 - `DASHBOARD_DATA_DIR` — harbor job directory (existing, default `/data/agent-evals/runs`)
 - `DASHBOARD_EXPERIMENTS_DIR` — git-tracked JSON directory (new, default `docs/experiments`)
-- `DASHBOARD_CACHE_DIR` — local eval cache (new, default `~/.serf-evals`)
+- `DASHBOARD_CACHE_DIR` — local eval cache (new, default `~/.evener-evals`)
 - `DASHBOARD_S3_BUCKET` — S3 bucket for results (new, default `harbor-eval-results-526275945504`)
-- `DASHBOARD_LAUNCHES_DIR` — wave launch metadata (new, default `.serf-launches`)
+- `DASHBOARD_LAUNCHES_DIR` — wave launch metadata (new, default `.evener-launches`)
 
 CLI args mirror these for convenience.
 
@@ -254,7 +254,7 @@ All existing tests in `test_server.py`, `test_data.py`, `test_stats.py`, `test_t
 
 Extend `conftest.py` with:
 - `experiment_dir` — temporary directory with sample run JSONs, task JSONs, scoreboard.json
-- `launch_dir` — temporary `.serf-launches/` with wave metadata
+- `launch_dir` — temporary `.evener-launches/` with wave metadata
 
 ## What stays untouched
 

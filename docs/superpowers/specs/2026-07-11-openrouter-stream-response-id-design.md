@@ -37,7 +37,7 @@ network request beyond its local `httptest` server.
 
 ## Failure behavior
 
-- Streams with no ID continue to produce an empty response ID; Serf does not
+- Streams with no ID continue to produce an empty response ID; Evener does not
   invent one.
 - A malformed chunk remains subject to the existing skip behavior.
 - Provider-handle export stays redacted by default. This change only makes the
@@ -47,7 +47,7 @@ network request beyond its local `httptest` server.
 ## Security
 
 The identifier is operational metadata, not response content. It is retained
-in Serf's existing assistant-turn field and follows existing transcript and
+in Evener's existing assistant-turn field and follows existing transcript and
 ATIF redaction controls. No prompt, completion, tool argument, credential, or
 raw HTTP body is newly persisted.
 
@@ -59,12 +59,12 @@ raw HTTP body is newly persisted.
    tests.
 3. Run `go test ./...`, `go vet ./...`, and the repository's formatting/lint
    checks.
-4. Commit and push the exact Serf SHA.
-5. Update the eval appliance's immutable Serf pin, rebuild through managed
+4. Commit and push the exact Evener SHA.
+5. Update the eval appliance's immutable Evener pin, rebuild through managed
    preparation, and verify both source SHA and binary provenance before a paid
    smoke.
 
 ## Rollback
 
-Revert the Serf commit and rebuild the prior immutable pin. No stored artifact
+Revert the Evener commit and rebuild the prior immutable pin. No stored artifact
 or config migration is required.

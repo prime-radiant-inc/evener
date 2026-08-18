@@ -4,7 +4,7 @@
 **Worktree:** `subagent-limit-study`
 **Origin:** session `local:033rRr4hCSjZLuIs7XT5Nw` hit `tree_at_capacity` while
 every delegate job was terminal and every delegate idle; `job_list` was
-truncated at exactly 50 rows, producing the user-visible belief that "serf is
+truncated at exactly 50 rows, producing the user-visible belief that "evener is
 limited to 50 subagents per session no matter what."
 
 ## Problem statement
@@ -53,7 +53,7 @@ today).
   (`json:"max_concurrent_delegate_turns,omitempty"`); `applyDefaults` maps
   `<= 0` → 50. Snapshot round-trip via `schema.ConfigSnapshot` /
   `toSnapshot` / `fromSnapshot`, same as `MaxSubagentDepth`.
-- CLI: `--max-concurrent-delegates` on `serf run` and `serf serve`
+- CLI: `--max-concurrent-delegates` on `evener run` and `evener serve`
   (`-1` = default), wired exactly like `--max-subagent-depth`
   (`cmd/evener/main.go`, `run.go`, `serve.go`).
 - Launch surfaces: appwire `maxConcurrentDelegateTurns *int`

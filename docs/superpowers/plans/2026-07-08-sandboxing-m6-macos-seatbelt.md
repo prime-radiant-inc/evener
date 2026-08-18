@@ -1,4 +1,4 @@
-# Serf Sandboxing — M6: macOS Seatbelt Backend
+# Evener Sandboxing — M6: macOS Seatbelt Backend
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -6,7 +6,7 @@
 > `docs/superpowers/specs/2026-07-08-sandboxing-design.md` (v4), section
 > **"Backend (macOS)"** + the shared **Modes**/**Backends** policy model.
 
-**Goal:** Give serf a third enforcement backend — Apple's `sandbox-exec`
+**Goal:** Give evener a third enforcement backend — Apple's `sandbox-exec`
 (Seatbelt) — that turns M1's `ResolvedPolicy` into an SBPL policy and runs
 spawned commands under `/usr/bin/sandbox-exec -p <policy> -- <cmd>`. Seatbelt is
 **deny-capable** (`(deny default)`), so — unlike Landlock — **every mode is
@@ -98,7 +98,7 @@ moved these):
   contract tests + the cross-build gate. **paradise-park** runs `make test` and
   the live `sandbox-exec` smoke + parity suites.
 - **snake_case** for any JSON/config/flag key that hits the wire (`make lint` /
-  serf-namingcheck gate). Never `git add -A` without a prior `git status`.
+  evener-namingcheck gate). Never `git add -A` without a prior `git status`.
 
 ## File Structure
 
@@ -111,7 +111,7 @@ moved these):
 - `agent/sandbox/seatbelt_base.sbpl` (new, embedded) — `(version 1)` +
   `(deny default)` + `process-exec`/`process-fork`/`signal (target same-sandbox)`
   + `process-info* (target same-sandbox)` + the minimal sysctl/pty/`/dev/null`
-  floor. Trimmed from codex's base (drop CFPrefs/IOKit lines serf doesn't need;
+  floor. Trimmed from codex's base (drop CFPrefs/IOKit lines evener doesn't need;
   keep exec+pty+process-info-same-sandbox — the last is the macOS analog of
   Linux's private-`/proc`).
 - `agent/sandbox/seatbelt_platform_defaults.sbpl` (new, embedded) — the macOS
@@ -259,7 +259,7 @@ moved these):
   `pathToSeatbelt`, and the `runtime.GOOS == "darwin"` arm in M3's dispatch at
   `shellCommand`/`execPreparedCommand`/`StreamCommand`. If M3's seam is absent,
   introduce it minimally, guarded so nil/`off` is untouched. Verify `ExtraFiles`
-  stays empty and serf fds stay `O_CLOEXEC` through the wrap.
+  stays empty and evener fds stay `O_CLOEXEC` through the wrap.
 - [ ] Cross-build gate on **this Linux host**: `CGO_ENABLED=0 GOOS=darwin
   GOARCH=arm64 go build ./...` must pass (proves the darwin files compile without
   a Mac).
@@ -277,8 +277,8 @@ Run on the Mac:
 
 ```
 ssh paradise-park
-git -C ~/serf fetch && git -C ~/serf worktree add ~/serf-m6 wip/sandbox-m6   # or clone
-cd ~/serf-m6 && make test && make test-race
+git -C ~/evener fetch && git -C ~/evener worktree add ~/evener-m6 wip/sandbox-m6   # or clone
+cd ~/evener-m6 && make test && make test-race
 SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/... -run Seatbelt
 scripts/seatbelt-smoke.sh    # live /usr/bin/sandbox-exec allow/deny assertions
 ```

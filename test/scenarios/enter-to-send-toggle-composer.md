@@ -61,7 +61,7 @@ Shift+Enter/steer keybind collision (commit `4510a984`).
     (default, absent from `localStorage`): bare Enter does NOT submit
     (submit count stays at whatever Cmd/Ctrl+Enter produced), Shift+Enter
     clicks the steer trigger; and with the toggle ON
-    (`localStorage.setItem("serf-hub.composer", '{"enterToSend":true}')`):
+    (`localStorage.setItem("evener-hub.composer", '{"enterToSend":true}')`):
     bare Enter submits, Shift+Enter does NOT steer and leaves
     `defaultPrevented === false` (so the browser's native newline insertion
     proceeds) — this is the exact behavior this card describes, exercised

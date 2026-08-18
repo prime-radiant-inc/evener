@@ -1531,7 +1531,7 @@ git commit -m "feat: surface EventToolCallRepaired in projector and CLI"
 
 - [ ] **Run the whole suite:** `go test ./...` — Expected: PASS.
 - [ ] **Vet + race on the touched packages:** `go vet ./agent/... ./internal/appprojector/... && go test -race ./agent/ -run 'Repair|PrepareToolCall'` — Expected: clean, no data races (validates the name-map-snapshot concurrency fix).
-- [ ] **Manual smoke (optional):** run `serf` against an Anthropic model on a task that reliably triggers `old_str`/`path` drift and confirm the repaired event appears in the CLI output and the tool runs.
+- [ ] **Manual smoke (optional):** run `evener` against an Anthropic model on a task that reliably triggers `old_str`/`path` drift and confirm the repaired event appears in the CLI output and the tool runs.
 
 ## Notes carried forward (out of scope this plan)
 

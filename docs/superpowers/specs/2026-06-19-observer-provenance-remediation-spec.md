@@ -425,14 +425,14 @@ Use this checklist before accepting the remediation:
 
 ## Sprout Comparison Note
 
-Sprout's observer implementation is not a direct blueprint for Serf, but it
+Sprout's observer implementation is not a direct blueprint for Evener, but it
 highlights the right standard. Sprout makes observer identity and caller routing
 runtime-owned: observer telemetry is filtered before observer delivery, observer
 handles are private and owner-checked, and observer comments use a trusted
 `caller` route instead of a model-provided raw handle.
 
-Serf can keep its smaller public API, but then provenance carriage must be
-treated as a runtime invariant. If any rail drops provenance, Serf has neither
+Evener can keep its smaller public API, but then provenance carriage must be
+treated as a runtime invariant. If any rail drops provenance, Evener has neither
 Sprout's explicit observer telemetry filter nor complete causal suppression.
 
 ## Implementation Notes

@@ -36,7 +36,7 @@ fixed provider *types* instead of actual instances.
 ## 2. Why
 
 Phase 1b added the config path (`NewFromProviders`) **alongside** the still-default
-env path (`NewFromEnv`). With no `providers.toml`, serf runs the env path — implicit
+env path (`NewFromEnv`). With no `providers.toml`, evener runs the env path — implicit
 one-instance-per-type. The hub's Providers/Credentials screens enumerate the
 hardcoded type set, so a user sees "a column of unconfigured providers" and no way
 to add an instance, because there are *two* sources of truth. Phase 1c makes
@@ -63,7 +63,7 @@ to add an instance, because there are *two* sources of truth. Phase 1c makes
 - **Persistence is the hub's job.** A read-shaped client build must not have a write
   side effect, so the on-disk `providers.toml` is written only by the **hub on
   startup** (`cmdutil.MaterializeProvidersConfig`, §4); the hub failing to write is
-  a **loud error** (it already needs a writable state root). Standalone `serf` runs
+  a **loud error** (it already needs a writable state root). Standalone `evener` runs
   on the in-memory seed.
 - **Secrets are never written to `providers.toml`** and are resolved per instance
   at load time (§5).
@@ -77,7 +77,7 @@ to add an instance, because there are *two* sources of truth. Phase 1c makes
   writes the file **atomically** (`os.CreateTemp` + rename, mode `0644`). Only the
   **hub** calls it, **once on startup when the file is absent** — never overwriting
   an existing file. The hub passes the path to spawned children via
-  `SERF_PROVIDERS_CONFIG`, so `serf serve` / `launch-check` load the same file
+  `SERF_PROVIDERS_CONFIG`, so `evener serve` / `launch-check` load the same file
   rather than re-seeding.
 - **Seed:** build a throwaway client via `NewFromEnv`, enumerate
   `ProviderNames()`, and emit one `[instances.<name>]` descriptor per configured

@@ -400,7 +400,7 @@ type BootstrapFlags struct {
 	PluginOptions     map[string]map[string]string // --plugin-option <plugin>.<key>=<value>
 	Prompter          UserConfigPrompter           // surface-specific prompter from SP7 §4.2
 	AskFallback       AskFallback                  // surface-specific ask resolution from SP2 §9
-	IsRemote          bool                         // serf-hub spawns set this true
+	IsRemote          bool                         // evener-hub spawns set this true
 	WatchConfig       bool                         // starts the SP5 §3.9 watcher when true
 }
 ```
@@ -521,7 +521,7 @@ UserConfigPrompter UserConfigPrompter
 // ConfigChange events. Source: SP5 §3.9.
 WatchConfig bool
 
-// IsRemote signals serf-hub-style embedding. SP5 reads this when setting
+// IsRemote signals evener-hub-style embedding. SP5 reads this when setting
 // CLAUDE_CODE_REMOTE on spawned hook processes.
 IsRemote bool
 ```
@@ -666,7 +666,7 @@ func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps boo
 	// Step 1: load merged SerfConfig.
 	cfg, err := deps.discover(env, flags.ConfigPaths)
 	if err != nil {
-		return SessionConfig{}, fmt.Errorf("load serf config: %w", err)
+		return SessionConfig{}, fmt.Errorf("load evener config: %w", err)
 	}
 
 	sc := SessionConfig{
@@ -790,7 +790,7 @@ func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps boo
 
 	cfg, err := deps.discover(env, flags.ConfigPaths)
 	if err != nil {
-		return SessionConfig{}, fmt.Errorf("load serf config: %w", err)
+		return SessionConfig{}, fmt.Errorf("load evener config: %w", err)
 	}
 
 	if deps.trust != nil {
@@ -952,12 +952,12 @@ In `agent/session_bootstrap.go`, before the final `return sc, nil` in `BuildSess
 		for _, spec := range keys {
 			plugin, marketplace, err := splitPluginSpec(spec)
 			if err != nil {
-				log.Printf("serf: skipping malformed enabledPlugins entry %q: %v", spec, err)
+				log.Printf("evener: skipping malformed enabledPlugins entry %q: %v", spec, err)
 				continue
 			}
 			entry, lerr := deps.installer.Lookup(plugin, marketplace)
 			if errors.Is(lerr, ErrPluginNotInstalled) {
-				log.Printf(`serf: plugin %q is enabled but not installed; run 'serf plugin install %s' to install`, spec, spec)
+				log.Printf(`evener: plugin %q is enabled but not installed; run 'evener plugin install %s' to install`, spec, spec)
 				continue
 			}
 			if lerr != nil {
@@ -1589,7 +1589,7 @@ In `agent/session.go`'s `initPlugins`, after the existing `LoadPlugin` call for 
 		// Try prompter.
 		values, perr := s.cfg.UserConfigPrompter.PromptUserConfig(p.PluginID, lp.UserConfigOptions)
 		if perr != nil {
-			log.Printf("serf: skipping plugin %q (userConfig unresolved): %v", p.PluginID, perr)
+			log.Printf("evener: skipping plugin %q (userConfig unresolved): %v", p.PluginID, perr)
 			continue
 		}
 		resolved, err = ResolveUserConfigWithValues(p.PluginID, lp.UserConfigOptions, values, s.cfg.PluginConfigStore, s.cfg.SecureStore)
@@ -2335,7 +2335,7 @@ In `processOneInput`, locate where `ActivatedSkillBodies` is populated and the e
 	}
 ```
 
-Adjust field names (`activatedSkills`, `skill.Name`) to match existing serf identifiers.
+Adjust field names (`activatedSkills`, `skill.Name`) to match existing evener identifiers.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2657,13 +2657,13 @@ In `agent/session.go`'s `initPlugins`, replace the existing iteration with:
 	for _, p := range cfg.EnabledPluginPaths {
 		lp, err := LoadPlugin(p.CachePath)
 		if err != nil {
-			log.Printf("serf: skipping plugin at %s: %v", p.CachePath, err)
+			log.Printf("evener: skipping plugin at %s: %v", p.CachePath, err)
 			continue
 		}
 		// Name collision: --plugin-dir wins, but enabled comes first in our slice,
 		// so any later same-name entry simply overwrites. Log when overriding.
 		if existing, dup := loaded[lp.Name]; dup {
-			log.Printf("serf: --plugin-dir %s overrides enabledPlugins entry %q for this session", p.CachePath, existing.SourceID)
+			log.Printf("evener: --plugin-dir %s overrides enabledPlugins entry %q for this session", p.CachePath, existing.SourceID)
 		}
 		lp.SourceID = p.PluginID
 		lp.Version = p.Version
@@ -2707,7 +2707,7 @@ Insert next to the existing `--plugin-dir` registration:
 
 ```go
 	cmd.Flags().StringArrayVar(&runFlags.ConfigPaths, "config", nil,
-		"Path to a serf config.json (repeatable; merged after global/project)")
+		"Path to a evener config.json (repeatable; merged after global/project)")
 	cmd.Flags().StringArrayVar(&runFlags.TrustMarketplaces, "trust-marketplace", nil,
 		"Trust a project-declared marketplace by name (repeatable)")
 	cmd.Flags().StringArrayVar(&runFlags.PluginOptionsRaw, "plugin-option", nil,
@@ -2754,7 +2754,7 @@ git commit -m "cmd/evener: register --config, --trust-marketplace, --plugin-opti
 
 **Files:**
 - Modify: `cmd/evener/run.go` (function `run`, spec cites line 68)
-- Test: build + an existing serf integration test stays green
+- Test: build + an existing evener integration test stays green
 
 - [ ] **Step 1: Add the wiring**
 
@@ -2802,7 +2802,7 @@ func parsePluginOptions(raw []string) map[string]map[string]string {
 		dot := strings.Index(s, ".")
 		eq := strings.Index(s, "=")
 		if dot <= 0 || eq <= dot+1 {
-			fmt.Fprintf(os.Stderr, "serf: ignoring malformed --plugin-option %q\n", s)
+			fmt.Fprintf(os.Stderr, "evener: ignoring malformed --plugin-option %q\n", s)
 			continue
 		}
 		plugin := s[:dot]
@@ -2866,7 +2866,7 @@ go build ./cmd/evener
 
 Expected: clean.
 
-- [ ] **Step 3: Run existing serf smoke test**
+- [ ] **Step 3: Run existing evener smoke test**
 
 ```bash
 go test ./agent/ -run TestNewSession_Basic -v
@@ -2978,7 +2978,7 @@ Locate the Spawner's `SpawnRequest` formation. Add the merged-config-derived fla
 	req.Flags = append(req.Flags, h.config.ConfigPaths...)
 ```
 
-If the Hub spawns serf as a subprocess (per spec §5.3), this is the simplest correct wiring: the spawned serf process re-runs `BuildSessionConfig` itself.
+If the Hub spawns evener as a subprocess (per spec §5.3), this is the simplest correct wiring: the spawned evener process re-runs `BuildSessionConfig` itself.
 
 - [ ] **Step 3: Build**
 
@@ -2992,7 +2992,7 @@ Expected: clean.
 
 ```bash
 git add cmd/evener-hub/web.go
-git commit -m "cmd/evener-hub: pass --config through to spawned serf processes"
+git commit -m "cmd/evener-hub: pass --config through to spawned evener processes"
 ```
 
 ---
@@ -3147,7 +3147,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prime-radiant-inc/serf/internal/plugins"
+	"github.com/prime-radiant-inc/evener/internal/plugins"
 )
 
 func requireBash(t *testing.T) {
@@ -3341,7 +3341,7 @@ Expected: PASS for each subtest after SP5 fire sites are in place (Tasks 17–22
 
 ```bash
 git add agent/integration_sp8_test.go
-git commit -m "test: SP8 each new SP5 event fires from its serf integration point"
+git commit -m "test: SP8 each new SP5 event fires from its evener integration point"
 ```
 
 ---
@@ -3357,7 +3357,7 @@ git commit -m "test: SP8 each new SP5 event fires from its serf integration poin
 func TestSP8_PermissionsEnforcedFromConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
-	cfgPath := filepath.Join(home, "serf", "config.json")
+	cfgPath := filepath.Join(home, "evener", "config.json")
 	os.MkdirAll(filepath.Dir(cfgPath), 0755)
 	os.WriteFile(cfgPath, []byte(`{"permissions":{"deny":["Bash(rm:*)"]}}`), 0644)
 
@@ -3906,8 +3906,8 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home)
 	proj := t.TempDir()
-	os.MkdirAll(filepath.Join(proj, ".serf"), 0755)
-	os.WriteFile(filepath.Join(proj, ".serf/config.json"), []byte(`{
+	os.MkdirAll(filepath.Join(proj, ".evener"), 0755)
+	os.WriteFile(filepath.Join(proj, ".evener/config.json"), []byte(`{
 		"marketplaces":{"untrusted":{"source":{"type":"directory","path":"/tmp/x"}}}
 	}`), 0644)
 
@@ -3928,7 +3928,7 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 		t.Fatalf("prompt calls = %v, want [untrusted]", pr.calls)
 	}
 	// trusted_projects.json should have an entry.
-	data, _ := os.ReadFile(filepath.Join(home, "serf", "plugins", "trusted_projects.json"))
+	data, _ := os.ReadFile(filepath.Join(home, "evener", "plugins", "trusted_projects.json"))
 	if !strings.Contains(string(data), proj) {
 		t.Fatalf("trusted_projects.json missing %q: %s", proj, data)
 	}
@@ -4027,7 +4027,7 @@ git commit -m "test: SP8 backward compat — PluginDirs-only sessions still work
 
 ---
 
-## Task 50: E2E test 17 — Backward compat: `.serf/mcp.json` only
+## Task 50: E2E test 17 — Backward compat: `.evener/mcp.json` only
 
 **Files:**
 - Modify: `agent/integration_sp8_test.go`
@@ -4037,7 +4037,7 @@ git commit -m "test: SP8 backward compat — PluginDirs-only sessions still work
 ```go
 func TestSP8_BackwardCompat_McpJsonOnly(t *testing.T) {
 	dir := t.TempDir()
-	mcpPath := filepath.Join(dir, ".serf", "mcp.json")
+	mcpPath := filepath.Join(dir, ".evener", "mcp.json")
 	os.MkdirAll(filepath.Dir(mcpPath), 0755)
 	os.WriteFile(mcpPath, []byte(`{"mcpServers":{"legacy":{"command":"echo","type":"stdio"}}}`), 0644)
 
@@ -4060,7 +4060,7 @@ func TestSP8_BackwardCompat_McpJsonOnly(t *testing.T) {
 ```bash
 go test ./agent/ -run TestSP8_BackwardCompat_McpJsonOnly -v
 git add agent/integration_sp8_test.go
-git commit -m "test: SP8 backward compat — .serf/mcp.json still discovered"
+git commit -m "test: SP8 backward compat — .evener/mcp.json still discovered"
 ```
 
 ---
@@ -4244,7 +4244,7 @@ git commit -m "agent: SP8 cleanup pass — vet/fmt"
 
 - The plan assumes SP1..SP7 exports exist by names cited in the spec. If SP1's `PermissionsConfig.IsEmpty()` or SP7's `ResolvedUserConfig.Set/Lookup` carry different exact signatures, Tasks 11, 14, 15 will need a one-line rename. The task code shows the expected signatures in comments.
 - Two tests use small adapter helpers (`installerAdapter`, `recordingTrustPrompter`) that satisfy interface seams SP8 declares; these are test-only and don't compromise the "no mocking" rule for production code paths.
-- The Hub-side prompter for the post-install `serf plugin enable` web UI is out of scope here (per §5.3 the Hub spawns serf as a subprocess that re-runs `BuildSessionConfig` itself); a future SP can lift it inside the Hub if/when in-process plugin enable is added.
+- The Hub-side prompter for the post-install `evener plugin enable` web UI is out of scope here (per §5.3 the Hub spawns evener as a subprocess that re-runs `BuildSessionConfig` itself); a future SP can lift it inside the Hub if/when in-process plugin enable is added.
 
 **Placeholder scan.** Re-scanned the document for the forbidden patterns ("TBD", "implement later", "similar to X", "TODO" outside cited collaborator stubs). Each remaining `// TODO SP{N}` comment is a deliberate marker for the collaborator boundary, not a planning placeholder.
 

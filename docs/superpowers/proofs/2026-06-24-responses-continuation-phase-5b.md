@@ -17,7 +17,7 @@ The adapter reports value-like attempts only. The session owns attempt-index all
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAdapter_Stream_Records.*FallbackAttempts|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAdapter_Stream_Records.*FallbackAttempts|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
 ```
 
 Initial result: `./llm` and `./llm/providers/openai` failed to build because `AdapterAttemptRecord`, `AttemptRecorder`, and `RecordAdapterAttempt` did not exist. The session test failed with one transcript `api_call` instead of the required two fallback attempts.
@@ -25,7 +25,7 @@ Initial result: `./llm` and `./llm/providers/openai` failed to build because `Ad
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAPILoggerWrapStreamWritesRawAttemptMetadataOnError|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAPILoggerWrapStreamWritesRawAttemptMetadataOnError|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
 ```
 
 Result: pass.

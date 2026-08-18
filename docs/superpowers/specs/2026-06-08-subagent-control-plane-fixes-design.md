@@ -11,7 +11,7 @@ The subagent control plane (core + proactive notification) shipped to `main` (`5
 3. **Correct the remaining `00` doc drift** the `/par` found (phantom record fields, a mis-attributed `defer`, two minor precision gaps).
 4. **(Already done, `e3a26d56` on this branch)** the notification/goal-interleave description in `00` was corrected to the shipped fold-then-continue-inline design.
 
-**Base / location.** Branch off `main` (`579be5ba`). Work is staged in the worktree at `/Users/jesse/prime-radiant/toil-suite/serf-wt-docfix` (branch `docs-fix-notification-goal`, which already carries fix #4). The implementation may continue on that branch or a fresh branch off main; it must NOT be merged without Jesse's review (main has branch protection: PR + `build-and-test`).
+**Base / location.** Branch off `main` (`579be5ba`). Work is staged in the worktree at `/Users/jesse/prime-radiant/toil-suite/evener-wt-docfix` (branch `docs-fix-notification-goal`, which already carries fix #4). The implementation may continue on that branch or a fresh branch off main; it must NOT be merged without Jesse's review (main has branch protection: PR + `build-and-test`).
 
 **Pre-1.0:** no backward-compatibility shims. Rename/remove freely.
 
@@ -87,7 +87,7 @@ Doc-only edits to `docs/subagent-management/00-subagent-control-plane.md`:
 - **Suppress-at-drain set:** the delivery-time drop list says "consumed/closed/absent"; the code also drops `closing`/`closed` (post-Fix-1: a record with `closed==true` — keep the wording consistent with the merged model).
 
 ### Acceptance (Fix 3)
-- Each corrected passage matches the code (verifiable by reading the cited symbols); `serf-docscheck`/`make lint` pass on the doc.
+- Each corrected passage matches the code (verifiable by reading the cited symbols); `evener-docscheck`/`make lint` pass on the doc.
 
 ---
 
@@ -99,7 +99,7 @@ Already corrected in `e3a26d56` on this branch: `00` now describes the shipped f
 
 ## Cross-cutting
 
-- **Order of implementation:** Fix 1 (data model) is the largest and most interconnected; do it first with a characterization net so the `reason`→`status` flip is visible and the retention/list/snapshot tests are updated deliberately. Fix 2 (redaction removal) is independent and can follow. Fix 3 + the Fix-1 doc edits land together as the `00` reconciliation. Each fix is its own commit (or small group), TDD, `make test`/`make lint` green per commit (run the FULL `make lint`, not just golangci — `serf-namingcheck`/`docscheck` matter).
+- **Order of implementation:** Fix 1 (data model) is the largest and most interconnected; do it first with a characterization net so the `reason`→`status` flip is visible and the retention/list/snapshot tests are updated deliberately. Fix 2 (redaction removal) is independent and can follow. Fix 3 + the Fix-1 doc edits land together as the `00` reconciliation. Each fix is its own commit (or small group), TDD, `make test`/`make lint` green per commit (run the FULL `make lint`, not just golangci — `evener-namingcheck`/`docscheck` matter).
 - **Tests:** update every test that asserts `reason` (subagent snapshot/list/event tests, the notification tests that seed records). Delete redaction tests. Add: a "closed record keeps its outcome" test, a "running record has no reason key / status is the outcome" wire test, a "subagent_output returns raw output" test.
 - **Non-goals:** no change to the seven-tool surface (tools stay: spawn/resume/wait/close/cancel/list/subagent_output); no change to cancel's error-identity discriminator, the notification delivery mechanism, the retention fail-loud policy, or the goal-interleave logic (only their `reason`→`status` and doc touch-ups). The `llm/` provider "redacted thinking" code is unrelated and untouched. Approvals / `tools:all` intersection remain deferred (06/10).
 - **Definition of done:** all four fixes implemented (1-3) or confirmed (4); `make test` + `make lint` green across all modules; `00` reads accurately against the code end-to-end; a short live re-check that `subagent_output` returns raw output and `list_agents` shows `status`+`closed`. Then pause for Jesse's review before merge (branch protection).

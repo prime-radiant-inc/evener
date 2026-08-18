@@ -4,7 +4,7 @@
 
 ## Pre-state
 
-- Fresh `serf-hub` build under test, started in an isolated state dir.
+- Fresh `evener-hub` build under test, started in an isolated state dir.
 - Browser authenticated to the test hub.
 - A controlled local Codex-compatible AppWire source is running, exposes one thread in the sidebar, and advertises at least one enabled action in that thread's workspace.
 
@@ -13,14 +13,14 @@
 1. Open the Codex sidebar row and confirm the browser route is source-qualified for that thread. Note the exact `source:thread-id` identity shown by the row or URL.
 2. In the opened Codex workspace, locate the visible control the UI advertises as available for that thread (the enabled action/button/menu item). Use the label the page shows, not a DOM selector.
 3. Activate that control once.
-4. Read the authoritative logs from the controlled source process and the serf-hub request/route logs for the resulting call.
+4. Read the authoritative logs from the controlled source process and the evener-hub request/route logs for the resulting call.
 
 ## Expected
 
 - The workspace exposes the advertised action and it is enabled for the selected Codex thread.
 - The log evidence shows the action was routed to the same exact source-qualified thread ref captured in step 1.
-- The log evidence names the action that was clicked and does not show a fallback to a bare local Serf session or a different thread.
-- Sending an available action targets a local Serf session, returns not found because the source was lost, or reaches a different thread.
+- The log evidence names the action that was clicked and does not show a fallback to a bare local Evener session or a different thread.
+- Sending an available action targets a local Evener session, returns not found because the source was lost, or reaches a different thread.
 
 ## Cleanup
 

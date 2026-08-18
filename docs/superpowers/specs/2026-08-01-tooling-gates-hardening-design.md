@@ -143,7 +143,7 @@ workspace mapping; the committed module file remains free of local paths.
 
 Verification uses a scratch consumer outside `go.work`. Its `go.mod` requires
 only `primeradiant.com/evener v0.0.0` and contains directory replacements for all
-Serf modules. After populating only the scratch consumer's sums, run explicit
+Evener modules. After populating only the scratch consumer's sums, run explicit
 root package lists with `GOWORK=off`, `GOFLAGS=-mod=readonly`, `GOPROXY=off`,
 and `GOSUMDB=off`, first for dependencies and then with `-test`. The current
 module fails because identifier is replaced but not required; the added root

@@ -1,4 +1,4 @@
-# tui-workspace-navigation: serf-tui dashboard + session keyboard nav
+# tui-workspace-navigation: evener-tui dashboard + session keyboard nav
 
 **What this covers**: kata `57be`. The Bubble Tea TUI in
 `cmd/evener-tui/` is fully covered by Go unit tests (`tmux_e2e_test.go`
@@ -10,13 +10,13 @@ dashboard ↔ session transitions described in the action bars.
 ## Pre-state
 
 - `tmux` installed (`which tmux` returns a path; tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` built and in repo root (`go build -o serf-tui ./cmd/evener-tui`).
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` built and in repo root (`go build -o evener-tui ./cmd/evener-tui`).
 - At least one live or recent session visible on the dashboard. If
-  empty, spawn one first via `~/go/bin/serf spawn ...` or accept that
+  empty, spawn one first via `~/go/bin/evener spawn ...` or accept that
   the leaf-enter step is skipped.
 - The tmux session name is derived from the driving shell's pid
   (`TMUX_SESSION`, set in step 1), so a second agent running this card
@@ -30,13 +30,13 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
 
 1. **Launch in tmux**:
    ```
-   TMUX_SESSION="serf-nav-$$"
+   TMUX_SESSION="evener-nav-$$"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
-   Confirm the first line shows `serf live` and the hub URL + `N live`
+   Confirm the first line shows `evener live` and the hub URL + `N live`
    counter. A row marked `> ▾ ●` or `> ▸ ●` indicates a project header;
    session rows sit under it as a flat state-bar + status-dot + label,
    with no tree-connector glyphs (see step 5). Footer reads:
@@ -105,7 +105,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
 
 ## Expected
 
-- Step 1: pane shows `serf live` header, hub URL, project tree, and
+- Step 1: pane shows `evener live` header, hub URL, project tree, and
   the dashboard footer hint. Falsification: blank pane, "connection
   refused", or no footer.
 - Step 2: `>` marker moves with each `Down`/`j`; bounded at the last

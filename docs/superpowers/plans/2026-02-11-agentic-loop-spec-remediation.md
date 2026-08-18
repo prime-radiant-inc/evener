@@ -1985,7 +1985,7 @@ git commit -m "fix: RegisteredTool embeds llm.Tool, SessionEvent bridges to llm.
 
 **Priority:** P2
 
-Everything is under `internal/` so external Go modules can't import serf as a library. The fix is to move the public API surface out of `internal/`.
+Everything is under `internal/` so external Go modules can't import evener as a library. The fix is to move the public API surface out of `internal/`.
 
 **Approach:** Move `internal/agent/` to `agent/` (top-level package). This is the simplest approach — it makes the entire agent package importable. The `internal/llm/` package should also be moved to `llm/` since it's the SDK layer.
 
@@ -2049,7 +2049,7 @@ find . -name '*.go' -exec sed -i '' \
 
 Also update any references in:
 - `go.mod` (shouldn't need changes — module path stays the same)
-- `.serf/prompts/` files if they reference internal paths
+- `.evener/prompts/` files if they reference internal paths
 - `CLAUDE.md` / `AGENTS.md` if they mention internal paths
 - `coding-agent-loop-spec.md` path references
 

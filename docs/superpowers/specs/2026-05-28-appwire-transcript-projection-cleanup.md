@@ -2,7 +2,7 @@
 
 ## Problem
 
-Serf has two transcript-to-AppWire projection paths:
+Evener has two transcript-to-AppWire projection paths:
 
 - `server/appwire_runtime.go` for the daemon AppWire server.
 - `cmd/evener-hub/app_rpc.go` for hub RPC reads of past/local transcripts.
@@ -141,7 +141,7 @@ metadata.
   request surface. Keep scanner limits unchanged unless tests expose an issue.
 - Provider adapters may mutate tool schemas after `llm.Request` construction.
   If we need byte-for-byte provider payloads later, raw HTTP logging remains the
-  authoritative source. This cleanup targets Serf's provider-normalized
+  authoritative source. This cleanup targets Evener's provider-normalized
   `llm.Request.Tools`.
 - Hub replay handles loose transcript shapes. Preserve loose decoding until the
   shared typed path proves it covers current session files.

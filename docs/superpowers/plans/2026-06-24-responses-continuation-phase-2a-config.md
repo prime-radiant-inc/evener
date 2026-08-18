@@ -39,7 +39,7 @@
 Set `OpenAIResponsesContinuation: "auto"` in `fullSessionConfig()`. Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestConfigSnapshot_ConverterFidelity' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestConfigSnapshot_ConverterFidelity' -count=1
 ```
 
 Expected: FAIL until `SessionConfig`, `ConfigSnapshot`, and conversions carry the field.
@@ -53,7 +53,7 @@ Add `OpenAIResponsesContinuation string` with JSON tag `openai_responses_continu
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestConfigSnapshot_ConverterFidelity' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestConfigSnapshot_ConverterFidelity' -count=1 -v
 ```
 
 Expected: PASS.
@@ -66,7 +66,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Add flags**
 
-Add `--openai-responses-continuation <mode>` to both direct run and `serf serve`. Accepted values are not enforced in this phase beyond simple string trimming; the runtime decision helper already treats anything except `auto` as off when it is used later.
+Add `--openai-responses-continuation <mode>` to both direct run and `evener serve`. Accepted values are not enforced in this phase beyond simple string trimming; the runtime decision helper already treats anything except `auto` as off when it is used later.
 
 - [ ] **Step 2: Thread into session config**
 
@@ -77,7 +77,7 @@ Set `SessionConfig.OpenAIResponsesContinuation` from the flag on new sessions. F
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'Test' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener -run 'Test' -count=1
 ```
 
 Expected: PASS.
@@ -111,7 +111,7 @@ Add the string field to TOML/appwire structs, merge logic, wire conversion, args
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run 'TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/launchconfig -run 'TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs' -count=1 -v
 ```
 
 Expected: PASS.
@@ -136,7 +136,7 @@ Add `openai_responses_continuation` to schema row value extraction, static fallb
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-tui/internal/launchconfig -run 'TestSchemaRows|TestLaunchSettings' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-tui/internal/launchconfig -run 'TestSchemaRows|TestLaunchSettings' -count=1 -v
 ```
 
 Expected: PASS.
@@ -151,7 +151,7 @@ Expected: PASS.
 Run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'TestConfigSnapshot_ConverterFidelity|TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs|TestSchemaRows|TestLaunchSettings|Test' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent ./cmd/evener ./cmd/evener-hub/internal/launchconfig ./cmd/evener-tui/internal/launchconfig -run 'TestConfigSnapshot_ConverterFidelity|TestLaunchOptionSchema|TestMerge|TestWire|TestToArgs|TestSchemaRows|TestLaunchSettings|Test' -count=1
 git diff --check
 ```
 

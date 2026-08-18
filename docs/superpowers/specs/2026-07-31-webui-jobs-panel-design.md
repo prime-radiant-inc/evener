@@ -22,7 +22,7 @@ dead-session fallback to persisted state, and the same failure taxonomy
 1. **Push-driven live updates.** The event subscription machinery already
    exists: the session emits `EventJobStarted` / `EventJobFinished`
    (`agent/events/payloads.go`), and the projector already turns that pair
-   into `serf/job/started` / `serf/job/finished`. Those two notifications are
+   into `evener/job/started` / `evener/job/finished`. Those two notifications are
    the panel's refetch trigger — the reducer gains one case covering both,
    and nothing new goes on the wire. A third, lighter notification fired at
    exactly those two instants with a strict subset of the same payload, so
@@ -41,19 +41,19 @@ dead-session fallback to persisted state, and the same failure taxonomy
 session jobstore ──► daemon appwire handlers ──► hub handler ──► frontend store ──► JobsPanel
        │                      ▲                          ▲
        └── EventJobStarted/ ──┘ (projection)             └── dead-session fallback
-          Finished push       (serf/job/started|finished)    (past index + jobs.jsonl)
+          Finished push       (evener/job/started|finished)    (past index + jobs.jsonl)
 ```
 
 ## 1. Wire types (appwire/types.go)
 
 New methods and types:
 
-- `MethodSerfJobsList = "serf/jobs/list"`
+- `MethodSerfJobsList = "evener/jobs/list"`
   - `JobsListParams{ Ref string }`
   - `JobsListResponse{ Data any }` — same envelope style as
     `TaskListResponse`: the daemon returns its native job-summary shape and
     the frontend parser owns interpretation.
-- `MethodSerfJobsOutput = "serf/jobs/output"`
+- `MethodSerfJobsOutput = "evener/jobs/output"`
   - `JobsOutputParams{ Ref string; JobID string; MaxBytes int64 }`
   - `JobsOutputResponse{ Data any }` carrying
     `{ tail: string, totalBytes: int64, retainedStart: int64, truncated: bool }`.
@@ -123,8 +123,8 @@ dir, notify state) stay out of the wire shape.
 **Projection (internal/appprojector/appwire_projection.go)**
 
 - Nothing to add. `case events.EventJobStarted:` and
-  `case events.EventJobFinished:` already project `serf/job/started` and
-  `serf/job/finished` from `JobStartedData` / `JobFinishedData`, and that
+  `case events.EventJobFinished:` already project `evener/job/started` and
+  `evener/job/finished` from `JobStartedData` / `JobFinishedData`, and that
   pair is the only job push on the wire — it serves the webui's subagent
   rows, the TUI's transcript reducer, and this panel's refetch trigger
   alike.
@@ -146,8 +146,8 @@ dir, notify state) stay out of the wire shape.
   not in the persisted store is `InvalidParams`.
 - Route registration beside the tasks handler in `app_rpc.go` (the
   `hubTasksList` dispatch site).
-- `serf/job/started` and `serf/job/finished` relay through the existing
-  notification bridge with no hub changes (same as `serf/task/updated`).
+- `evener/job/started` and `evener/job/finished` relay through the existing
+  notification bridge with no hub changes (same as `evener/task/updated`).
 
 The projection code that turns a `JobRecord` into a summary lives in one
 place shared by the daemon jobs function and the hub fallback, so the wire
@@ -163,17 +163,17 @@ from crossing the library boundary into `cmd/evener-hub`.
 - `types.gen.ts`: generated types for the new methods. `appwire/doc.go`
   drives this; `make generate` (`go generate ./appwire/...`) regenerates the
   protocol doc and the frontend types together.
-- `reducer.ts`: one case over `serf/job/started` and `serf/job/finished`
+- `reducer.ts`: one case over `evener/job/started` and `evener/job/finished`
   setting `model.jobsUpdatedAt` (per-thread monotonic timestamp), analogous
   to the `tasks` aggregate case. Both ends bump it, because starting and
-  finishing both change what `serf/jobs/list` returns.
+  finishing both change what `evener/jobs/list` returns.
   `protocol/model.ts` gains the field.
 
 **stores/threads.ts**
 
-- `listJobs(ref): Promise<unknown>` — `client.request("serf/jobs/list", { ref })`.
+- `listJobs(ref): Promise<unknown>` — `client.request("evener/jobs/list", { ref })`.
 - `jobOutput(ref, jobId): Promise<unknown>` —
-  `client.request("serf/jobs/output", { ref, jobId })`. No `maxBytes`: the
+  `client.request("evener/jobs/output", { ref, jobId })`. No `maxBytes`: the
   panel wants the daemon's default tail, and a client-chosen size would be a
   second place for the 4 KiB number to live.
 
@@ -255,7 +255,7 @@ Per `docs/testing.md`: deterministic, no provider credentials or network.
 
 **Go**
 
-- appwire round-trip tests for `serf/jobs/list` and `serf/jobs/output`,
+- appwire round-trip tests for `evener/jobs/list` and `evener/jobs/output`,
   asserting decoded field content and not merely that decoding succeeded.
 - Projector tests pinning that `EventJobStarted`/`EventJobFinished` each
   produce exactly one notification, the lifecycle one — the guard against a
@@ -275,7 +275,7 @@ Per `docs/testing.md`: deterministic, no provider credentials or network.
   stale-on-refetch-failure with Try again, lazy tail fetch on expand — plus
   this panel's own edges: the closed-panel badge refresh and its three
   guards, the silent background failure, and the two no-clock cases.
-- `reducer.test.ts`: `serf/job/started` and `serf/job/finished` both bump
+- `reducer.test.ts`: `evener/job/started` and `evener/job/finished` both bump
   `jobsUpdatedAt`, and neither touches another thread.
 - `SessionChrome.test.tsx`: trigger placement and overflow collapse item.
 

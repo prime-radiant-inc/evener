@@ -22,7 +22,7 @@ part of this list.
   zero callers.
 - Composer action-state at rest: `cmd/evener-tui/composer_panel.go`
   `sessionTurnActionState()` treats `awaiting` like `active` (pre-existing
-  Codex-era line, activated for every rested serf session by rest=awaiting).
+  Codex-era line, activated for every rested evener session by rest=awaiting).
   Adjudicate what the composer should show at rest.
 
 ## Small correctness/comment residue (from WS3's final report)
@@ -58,7 +58,7 @@ part of this list.
 
 ## Pre-existing consistency grab-bag (from the original 2026-07-03 diagnostic)
 
-- Transport stragglers: the task-status-row 5s poller; `serf/task/updated` is
+- Transport stragglers: the task-status-row 5s poller; `evener/task/updated` is
   defined but never emitted.
 - Vocabulary: Working|Idle vs awaiting|processing|errored vs
   Current|Recent|Archived; ⟳/◆ glyph semantics (⟳N reads as "working" but means

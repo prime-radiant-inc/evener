@@ -18,7 +18,7 @@ and the observer callback (`communicate(end_turn:true)`).
 - Fresh binaries from the branch under test; hub reachable (own hub via
   `docs/agentic-testing.md`, or an isolated `$HOME` hub on a spare port —
   the PASS run below used the isolated form); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-actually-observer-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-actually-observer-XXXXX)`.
 
 ## Steps
 
@@ -57,7 +57,7 @@ and the observer callback (`communicate(end_turn:true)`).
    > nothing else.
 
 6. Read the parent transcript, the observer transcript, the parent's
-   durable `jobs.jsonl`, and `serf-doctor watches <parent SID>
+   durable `jobs.jsonl`, and `evener-doctor watches <parent SID>
    --state-dir <state base>` (plus `--self-loops`).
 
 ## Expected
@@ -81,7 +81,7 @@ and the observer callback (`communicate(end_turn:true)`).
   (`responded to your last message`, then `~N exchanges deep —
   consider disengaging`).
 - The loop stays bounded WITHOUT the fuse: no `watch_send_dropped` with
-  `diagnostic_reason: "runaway"`. `serf-doctor watches` reports
+  `diagnostic_reason: "runaway"`. `evener-doctor watches` reports
   `breaker: bounded self-influence, max depth N (no runaway)` with
   per-delivery `depth=` stamps; `--self-loops` returns no watches.
 - Exact frame counts are not a contract — coalescing is latest-wins
@@ -95,7 +95,7 @@ triggers, ignored the plain marker, and each acknowledgement re-fired
 the watch with the gradient escalating `responded to your last message`
 → `~2` → `~3` → `~4 exchanges deep — consider disengaging`. The
 participants then disengaged and CLEARED the watch themselves (watch
-`ended: cleared`), before the depth-8 fuse. `serf-doctor watches` read
+`ended: cleared`), before the depth-8 fuse. `evener-doctor watches` read
 back `breaker: bounded self-influence, max depth 4 (no runaway)` with
 depth stamps 1–4 on the deliveries; `--self-loops` returned
 `no watches where the runaway fuse fired`.

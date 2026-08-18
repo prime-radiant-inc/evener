@@ -378,8 +378,8 @@ single-pane mode needs to replicate through its own layout state.
       `TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument`
       (`web_test.go:2477-2488`: must contain `<!DOCTYPE html>`, `body.thread-document`,
       `#conversation`, `data-input-form`, `renderer.js`, `appwire.js`)
-- [ ] Title format is `"{Title} · serf thread"` when a title is set, else bare `"serf thread"` —
-      differs from `app.html`'s fixed `"serf hub"` — `templates/thread.html:7`
+- [ ] Title format is `"{Title} · evener thread"` when a title is set, else bare `"evener thread"` —
+      differs from `app.html`'s fixed `"evener hub"` — `templates/thread.html:7`
 - [ ] Own inline SVG data-URI favicon (a filled grey circle) — not the PNG touch-icon `app.html`
       uses — `templates/thread.html:8`
 - [ ] Own theme-boot IIFE — same enum-validated (`light`/`dark` only), uncaught form as `app.html`'s
@@ -532,11 +532,11 @@ to drop).
 
 ### 3.3 Persistence keys
 
-- [ ] `serf-hub.panes` (localStorage) — JSON array of `{href, title}` for every currently-open pane,
+- [ ] `evener-hub.panes` (localStorage) — JSON array of `{href, title}` for every currently-open pane,
       rewritten on every open/close — `panes.js:248`, `panes.js:410-420`
-- [ ] `serf-hub.panes.width` (localStorage) — last side-region width in px —
+- [ ] `evener-hub.panes.width` (localStorage) — last side-region width in px —
       `panes.js:249`, `panes.js:291`
-- [ ] `serf-hub.panes.closed` (localStorage) — JSON array of suppressed hrefs (see §3.4) —
+- [ ] `evener-hub.panes.closed` (localStorage) — JSON array of suppressed hrefs (see §3.4) —
       `panes.js:250`, `panes.js:255-264`
 - [ ] Restore precedence: URL `?pane=` query params, when present (even just one), COMPLETELY
       override localStorage for that load — the stored layout is not merged with URL panes, it's
@@ -554,11 +554,11 @@ to drop).
 
 - [ ] Suppression is the mechanism that keeps AUTO-OPENED panes (observers, see §3.7) from
       reappearing after a user explicitly dismisses them — a closed pane's href is added to
-      `serf-hub.panes.closed` and checked by `renderer.js`'s auto-open path before it calls
+      `evener-hub.panes.closed` and checked by `renderer.js`'s auto-open path before it calls
       `SerfPanes.open()` — `panes.js:271-284` (`suppress`/`unsuppress`/`isSuppressed`),
       `renderer.js:403` (`isSuppressed` check gating `autoOpenObservers`)
 - [ ] Suppression persists across reload/re-init (it's the whole point) — it survives independently
-      of the `serf-hub.panes` open-set key, so a dismissed pane stays dismissed even though it's no
+      of the `evener-hub.panes` open-set key, so a dismissed pane stays dismissed even though it's no
       longer listed in the "currently open" set — `panes.js:255-264` vs. `panes.js:248`
 - [ ] A MANUAL `open()`/`openAfter()` call (user explicitly requesting the href again — e.g.
       re-clicking "open beside") clears suppression for that href FIRST, before checking whether
@@ -567,7 +567,7 @@ to drop).
 
 ### 3.5 Open-beside postMessage protocol
 
-- [ ] Message shape: `{type: "serf:open-beside", href, title, afterHref?}`, posted to
+- [ ] Message shape: `{type: "evener:open-beside", href, title, afterHref?}`, posted to
       `window.location.origin` (never `"*"`) — producer side `renderer.js:379`
 - [ ] The host's `onMessage` listener rejects any event whose `origin` isn't EXACTLY
       `window.location.origin` before inspecting the payload at all — `panes.js:150-151`
@@ -605,7 +605,7 @@ to drop).
       file — `panes.js:322-349` and `panes.js:351-389`
 - [ ] `#pane-splitter` drag formula: width = `window.innerWidth - event.clientX` (panes grow as the
       pointer moves left), clamped to `[280, min(1200, innerWidth - 360)]`, persisted to
-      `serf-hub.panes.width` on every move — `panes.js:337-342`, `panes.js:286-293`
+      `evener-hub.panes.width` on every move — `panes.js:337-342`, `panes.js:286-293`
 - [ ] `#sidebar-resizer` drag formula: width = `event.clientX` directly, clamped to
       `[180, min(480, innerWidth * 0.45)]`, sets the `--sidebar-w` CSS custom property directly with
       NO localStorage persistence (unlike the pane-width splitter) — `panes.js:360-369`

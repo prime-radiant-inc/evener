@@ -1,4 +1,4 @@
-# War-game: a flat session scheduler for serf
+# War-game: a flat session scheduler for evener
 
 Adversarial design exploration. Design-only; no code was changed.
 Baseline: branch `job-control-spec`, HEAD `5f3c2e7d` ("feat(recursion): drive-down delivery").
@@ -6,7 +6,7 @@ Author posture: skeptic of this design. The job is to bend it until it breaks, n
 
 ---
 
-## 0. The problem, stated in serf's terms
+## 0. The problem, stated in evener's terms
 
 A session takes a "turn" (an LLM call via `Session.ProcessInputKind`, `agent/session_lifecycle.go:260`) only while a goroutine is executing that method. Notifications are durable (`pendingJobNotifs`, `agent/session.go:124`) and a wake (`notify()`, `:290`) is just a kick; the *delivery* happens inside the next `ProcessInputKind(..., EntryNotification)` turn. So a session can only "hear" its inbox while something is running its loop.
 
@@ -48,7 +48,7 @@ A central `scheduler` holds a queue of `(sessionID, EntryKind)` wake-tickets. A 
 
 **(a) parked-loop-per-live-non-terminal-session**, not the worker pool — *if* the flat scheduler is built at all (see §8, where the recommendation is "don't, yet").
 
-Justification: serf's turn engine is already written around "one goroutine owns this session's loop." Shape (a) preserves that ownership model exactly and changes only the *wake target*. Shape (b) is a genuine actor runtime — the mailbox design explicitly lists "No full actor/mailbox runtime conversion. The session loop, serve.go driver, and lock model stay" as a **non-goal** (`docs/.../2026-06-11-job-control-watch-mailbox-design.md:39`). Shape (b) violates that non-goal head-on; shape (a) honors it. The goroutine-cost objection to (a) is real but is solved by the "park only non-terminal sessions" rule, which also happens to be *correct* (terminal sessions have no live inbox).
+Justification: evener's turn engine is already written around "one goroutine owns this session's loop." Shape (a) preserves that ownership model exactly and changes only the *wake target*. Shape (b) is a genuine actor runtime — the mailbox design explicitly lists "No full actor/mailbox runtime conversion. The session loop, serve.go driver, and lock model stay" as a **non-goal** (`docs/.../2026-06-11-job-control-watch-mailbox-design.md:39`). Shape (b) violates that non-goal head-on; shape (a) honors it. The goroutine-cost objection to (a) is real but is solved by the "park only non-terminal sessions" rule, which also happens to be *correct* (terminal sessions have no live inbox).
 
 The honest caveat: shape (a) re-introduces a long-lived goroutine per child, and a long-lived goroutine needs a clean park/unpark/teardown protocol — which is exactly the hard part (§3). Drive-down avoids that entirely by being **edge-triggered and stateless**: there is no parked goroutine to leak, because the goroutine is created on demand and exits when the turn ends.
 
@@ -232,7 +232,7 @@ Reasoning:
 
 - **Trigger A — deep idle trees with latency-sensitive notifications.** If recursion ships and real coordinator trees run deep (depth ≥ 3) with long-idle middles, drive-down's depth-by-depth, loop-boundary-cadence delivery imposes serial wake latency: a leaf's notification must wait for root→mid→…→leaf drives to ripple down, each gated on the prior level's loop boundary. If measured end-to-end notification latency on deep trees becomes a complaint, the flat scheduler's direct wake is the fix. *Measure first.*
 
-- **Trigger B — persistent / cross-process children.** The mailbox non-goals name "no cross-process owners, no persistent child sessions (future work; this design must not block them)" (`:41`). If serf grows persistent child sessions (a child that outlives a single tasked run and accumulates work over time, e.g. a long-lived specialist), drive-down's "parent must be looping to drive me" model breaks down — a persistent child *is* a session that needs its own scheduling. That is the natural trigger, and it is exactly the spec's framing ("a persistent child is one whose parent drives it continuously" → just give it its own loop).
+- **Trigger B — persistent / cross-process children.** The mailbox non-goals name "no cross-process owners, no persistent child sessions (future work; this design must not block them)" (`:41`). If evener grows persistent child sessions (a child that outlives a single tasked run and accumulates work over time, e.g. a long-lived specialist), drive-down's "parent must be looping to drive me" model breaks down — a persistent child *is* a session that needs its own scheduling. That is the natural trigger, and it is exactly the spec's framing ("a persistent child is one whose parent drives it continuously" → just give it its own loop).
 
 - **Trigger C — the parent-cadence coupling causes a correctness bug, not just latency.** If a real scenario surfaces where a child must take a turn *while its parent is blocked in a long LLM call* (the parent's loop boundary is the only drive point, and it won't arrive for minutes), and `job_send_message`/steering can't paper over it, that is a behavioral break drive-down cannot fix without the scheduler.
 

@@ -95,7 +95,7 @@ Then change the 404 branch in `RequestDeviceCode` from:
 
 ```go
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, errors.New("device-code login is not enabled for this OpenAI client; use the browser flow (`serf openai login`) instead")
+		return DeviceCode{}, errors.New("device-code login is not enabled for this OpenAI client; use the browser flow (`evener openai login`) instead")
 	}
 ```
 
@@ -103,7 +103,7 @@ to:
 
 ```go
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`serf openai login`) instead", ErrDeviceCodeNotEnabled)
+		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`evener openai login`) instead", ErrDeviceCodeNotEnabled)
 	}
 ```
 
@@ -210,14 +210,14 @@ git commit -m "feat(auth/openai): PollDeviceAuthOnce + ErrDeviceCodeNotEnabled s
 - [ ] **Step 1: Add method constants.** In `internal/appwire/types.go`, alongside the other `MethodSerfAuth*` constants (after `MethodSerfAuthApiKeySet`):
 
 ```go
-	MethodSerfAuthDeviceStart      = "serf/auth/device/start"
-	MethodSerfAuthDevicePoll       = "serf/auth/device/poll"
+	MethodSerfAuthDeviceStart      = "evener/auth/device/start"
+	MethodSerfAuthDevicePoll       = "evener/auth/device/poll"
 ```
 
 - [ ] **Step 2: Add the params/response types.** Add near the other `Auth*` types (after `AuthApiKeySetParams`):
 
 ```go
-// AuthDeviceStartParams is the params for serf/auth/device/start.
+// AuthDeviceStartParams is the params for evener/auth/device/start.
 type AuthDeviceStartParams struct {
 	Provider string `json:"provider"`
 }
@@ -234,7 +234,7 @@ type AuthDeviceStartResponse struct {
 	Fallback        bool   `json:"fallback,omitempty"`
 }
 
-// AuthDevicePollParams is the params for serf/auth/device/poll.
+// AuthDevicePollParams is the params for evener/auth/device/poll.
 type AuthDevicePollParams struct {
 	Provider string `json:"provider"`
 	FlowID   string `json:"flowId"`
@@ -485,7 +485,7 @@ Expected: PASS — new device tests pass; existing auth tests still pass.
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(serf-hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
+git commit -m "feat(evener-hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
 ```
 
 ---
@@ -519,7 +519,7 @@ Expected: BUILD OK; package tests PASS (the new methods are wired; existing RPC 
 
 ```bash
 git add cmd/evener-hub/app_rpc.go
-git commit -m "feat(serf-hub): wire device-code auth RPCs (PRI-1878)"
+git commit -m "feat(evener-hub): wire device-code auth RPCs (PRI-1878)"
 ```
 
 ---
@@ -532,16 +532,16 @@ git commit -m "feat(serf-hub): wire device-code auth RPCs (PRI-1878)"
 - [ ] **Step 1: Add the wrappers.** In `cmd/evener-hub/assets/launchconfig.js`, replace:
 
 ```js
-    authLogout: (provider) => request("serf/auth/logout", { provider }),
+    authLogout: (provider) => request("evener/auth/logout", { provider }),
   };
 ```
 
 with:
 
 ```js
-    authLogout: (provider) => request("serf/auth/logout", { provider }),
-    authDeviceStart: (provider) => request("serf/auth/device/start", { provider }),
-    authDevicePoll: (provider, flowId) => request("serf/auth/device/poll", { provider, flowId }),
+    authLogout: (provider) => request("evener/auth/logout", { provider }),
+    authDeviceStart: (provider) => request("evener/auth/device/start", { provider }),
+    authDevicePoll: (provider, flowId) => request("evener/auth/device/poll", { provider, flowId }),
   };
 ```
 
@@ -554,7 +554,7 @@ Expected: `OK`.
 
 ```bash
 git add cmd/evener-hub/assets/launchconfig.js
-git commit -m "feat(serf-hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
+git commit -m "feat(evener-hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
 ```
 
 ---
@@ -643,7 +643,7 @@ const openaiRow = (dom) => dom.window.document.querySelector('li[data-provider="
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-credentials-device.js; echo exit=$?`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-credentials-device.js; echo exit=$?`
 Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` directly, so no `device` editor appears.
 
 - [ ] **Step 3: Add the `device` editor branch.** In `cmd/evener-hub/templates/partials/credentials.html`, inside `renderEditor(p, e)`, after the `if (e.kind === "oauth-redirect") { ... }` block and before the final `return "";`, add:
@@ -755,19 +755,19 @@ to:
 
 - [ ] **Step 6: Run the new test + the existing credentials test**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-credentials-device.js && node test-credentials.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-credentials-device.js && node test-credentials.js`
 Expected: both print `OK`.
 
 - [ ] **Step 7: Run the full jstest suite + Go build (template still parses)**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh >/dev/null && echo JS_OK; cd /Users/jesse/prime-radiant/toil-suite/serf && go build ./... && echo BUILD_OK`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh >/dev/null && echo JS_OK; cd /Users/jesse/prime-radiant/toil-suite/evener && go build ./... && echo BUILD_OK`
 Expected: `JS_OK` then `BUILD_OK`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add cmd/evener-hub/templates/partials/credentials.html cmd/evener-hub/jstest/test-credentials-device.js
-git commit -m "feat(serf-hub): device-code sign-in UI on the credentials page (PRI-1878)"
+git commit -m "feat(evener-hub): device-code sign-in UI on the credentials page (PRI-1878)"
 ```
 
 ---
@@ -788,7 +788,7 @@ Expected: all PASS, pristine output.
 
 - [ ] **Step 3: Full jstest suite**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh 2>&1 | tail -3`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh 2>&1 | tail -3`
 Expected: ends cleanly, no FAIL.
 
 - [ ] **Step 4: Manual webui smoke (recommended).** Launch the hub in an isolated temp HOME (see the PRI-1877 smoke approach), open `/credentials`, click OpenAI "Sign in…", and confirm the device editor shows a user code + verification link and a "Waiting…" state. (Full authorization needs a real OpenAI account; verifying the editor renders and polls is sufficient for the smoke.)

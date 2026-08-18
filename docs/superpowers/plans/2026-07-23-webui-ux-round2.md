@@ -683,7 +683,7 @@ Expected: FAIL — no search field / New button / settings exist yet.
 
 - [ ] **Step 3: Add the header + footer scaffold**
 
-In `src/shell/rail/Rail.tsx`, wrap the existing header (`<h2>Sessions</h2>` region ~303-334) and body (~335-382) so that when NOT `hostedInSheet` the component renders, top to bottom: a header zone (brand `serf` + home `IconButton`; a `data-search-trigger` search field `data-testid="rail-search"` showing the `⌘K` chord; a full-width `<Button variant="primary">+ New session</Button>` wired to the existing new-session action the rail already knows — reuse whatever `ProjectRow`'s "New session" `IconButton` calls), then the existing scrolling body, then a footer zone (`data-testid="rail-settings"` gear + identity). Keep the existing `hostedInSheet` branch header-less. Reuse `Button`/`IconButton` widgets (both allowlisted; primary button uses `--accent`, allowed everywhere).
+In `src/shell/rail/Rail.tsx`, wrap the existing header (`<h2>Sessions</h2>` region ~303-334) and body (~335-382) so that when NOT `hostedInSheet` the component renders, top to bottom: a header zone (brand `evener` + home `IconButton`; a `data-search-trigger` search field `data-testid="rail-search"` showing the `⌘K` chord; a full-width `<Button variant="primary">+ New session</Button>` wired to the existing new-session action the rail already knows — reuse whatever `ProjectRow`'s "New session" `IconButton` calls), then the existing scrolling body, then a footer zone (`data-testid="rail-settings"` gear + identity). Keep the existing `hostedInSheet` branch header-less. Reuse `Button`/`IconButton` widgets (both allowlisted; primary button uses `--accent`, allowed everywhere).
 
 - [ ] **Step 4: Style header/footer**
 

@@ -12,8 +12,8 @@ The mechanism moved wholesale. There is no `doResync()` and no
 resolved per row by `overrideLookup` (`railNodes.ts:106-108`) and persisted on
 every toggle by `setExpanded` (`Rail.tsx:197-205`). The refetch is
 `treeStore.refresh()` (`stores/tree.ts:339-352`), scheduled on a 250ms debounce
-by any of `thread/started`, `thread/closed`, `serf/attention/changed`,
-`serf/tree/changed` (`REFRESH_NOTIFICATIONS`, `stores/tree.ts:443-450,455-467`).
+by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
+`evener/tree/changed` (`REFRESH_NOTIFICATIONS`, `stores/tree.ts:443-450,455-467`).
 Those two live in different stores and never touch each other, which is exactly
 the property this card exists to keep true.
 
@@ -38,7 +38,7 @@ regression guard rather than a known-bug note.
 
 ## Pre-state
 
-- A freshly built `serf-hub` + daemon on an isolated `$HOME` and a kernel-
+- A freshly built `evener-hub` + daemon on an isolated `$HOME` and a kernel-
   assigned port — the Setup checklist in `docs/agentic-testing.md`. Never a
   real hub. Build the frontend (`make build-web`) before the hub.
 - Browser authenticated to the test hub, on its own Chrome profile (see the
@@ -76,7 +76,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
    ```
 4. Click `$A`'s row (or its chevron, `[data-testid="rail-chevron"]`, scoped
    inside that row) to expand it. Confirm the session row now renders and
-   `localStorage["serf.rail.expanded.v1"]` parses to an object with
+   `localStorage["evener.rail.expanded.v1"]` parses to an object with
    `"projectnode:<A key>": true` (`railExpansion.ts:19`, id scheme
    `railNodes.ts:209-211`).
 5. **Arm a refetch counter, then cause live activity elsewhere.** There is no
@@ -123,7 +123,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
   dropped to zero, or a title reverted to a stale value — the refetch dropped
   the client's expand bookkeeping and the regression is back.
 - **Step 7**: `$A` is still expanded on a cold page load, from
-  `serf.rail.expanded.v1` alone. Falsify: it comes back collapsed — the write
+  `evener.rail.expanded.v1` alone. Falsify: it comes back collapsed — the write
   in step 4 is not being read at mount (`loadExpansion` is the lazy `useState`
   initializer, `Rail.tsx:164`).
 

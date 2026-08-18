@@ -14,7 +14,7 @@ and the env-driven registry that wires them up (`env_registry.go`).
   per-vendor wire protocols (Responses vs Chat Completions vs Messages).
 - [`docs/llm-provider-config-and-launch.md`](../docs/llm-provider-config-and-launch.md)
   — credentials store, the provider env-var reference, OpenAI OAuth, and how the
-  hub spawns `serf serve` / `serf launch-check`.
+  hub spawns `evener serve` / `evener launch-check`.
 
 Routing keys on `req.Provider` (= the profile id / instance name), not on a
 model-string prefix. The behavior tag (`profile.BehaviorTag()`, defined by

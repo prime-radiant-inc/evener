@@ -11,12 +11,12 @@ by Jesse on 2026-07-17 and is not a prerequisite.
 
 Agents need a private place for temporary diagnostics and intermediate reports
 that does not pollute the product worktree or collide with another delegate.
-They also need concise Serf-owned guidance for choosing existing isolation,
+They also need concise Evener-owned guidance for choosing existing isolation,
 verification, and compaction controls well.
 
-Serf already provisions an owned temporary directory for sandboxed delegates.
+Evener already provisions an owned temporary directory for sandboxed delegates.
 This design promotes that lifecycle to every agent session and exposes it as an
-intentional facility. It also tightens Serf's own orchestration posture without
+intentional facility. It also tightens Evener's own orchestration posture without
 changing Superpowers.
 
 ## Universal Session Scratch
@@ -34,7 +34,7 @@ Properties:
 - not a durable artifact or cross-session communication channel.
 
 Allocation enforces the worktree exclusion even when ambient `TMPDIR` points
-inside the checkout. Serf selects a safe operating-system temporary/cache base
+inside the checkout. Evener selects a safe operating-system temporary/cache base
 instead of accepting an in-worktree scratch path.
 
 Promote/rename the existing sandbox `SessionTmp` ownership mechanism rather than
@@ -42,7 +42,7 @@ building a parallel cleanup system.
 
 ### Environment
 
-Serf sets both:
+Evener sets both:
 
 - `TMPDIR=<scratch-path>`;
 - `SERF_SCRATCH_DIR=<scratch-path>`.
@@ -61,7 +61,7 @@ Every agent receives this semantic instruction with its actual path:
 
 > Your session-scoped scratch directory is `<path>`. Use it for temporary files,
 > generated diagnostics, intermediate reports, and disposable working data. It
-> is private to this session and may be deleted when the session closes or Serf
+> is private to this session and may be deleted when the session closes or Evener
 > restarts. Move anything needed after handoff into the workspace or another
 > durable location.
 
@@ -82,18 +82,18 @@ durability fact is normative.
 - Normal close/dispose removes the directory recursively.
 - Spawn, restore, and abandoned-candidate failure paths clean a newly
   provisioned directory.
-- Startup/provisioning sweeps Serf-owned crash leftovers older than 24 hours,
+- Startup/provisioning sweeps Evener-owned crash leftovers older than 24 hours,
   but an operating-system-released liveness lease prevents an old yet active
   session directory from being swept.
-- Cleanup recognizes only Serf's reserved directory prefix and never removes
+- Cleanup recognizes only Evener's reserved directory prefix and never removes
   unrelated operating-system temporary files.
 
 ## Worktree-Isolation Posture
 
-Isolation remains the parent agent's decision. Serf does not automatically put
+Isolation remains the parent agent's decision. Evener does not automatically put
 every writable delegate in a worktree.
 
-Serf's delegation guidance explains:
+Evener's delegation guidance explains:
 
 - worktree isolation is recommended for independent writable tasks, especially
   concurrent subagents;
@@ -104,7 +104,7 @@ Serf's delegation guidance explains:
   shared delegate must not modify them.
 
 When a second concurrent delegate is launched with shared isolation into the
-same working directory, Serf returns one advisory warning identifying the shared
+same working directory, Evener returns one advisory warning identifying the shared
 workspace and suggesting worktree isolation. The warning does not block creation
 or override the agent's choice.
 
@@ -112,7 +112,7 @@ No new `protected_paths` parameter is added.
 
 ## Verification Posture
 
-Serf's parent and delegate instructions state:
+Evener's parent and delegate instructions state:
 
 - a required gate counts as passed only when it actually ran and exited zero;
 - timeout, launch failure, sandbox denial, or environmental blockage leaves
@@ -127,7 +127,7 @@ This spec adds no gate service or result schema.
 
 ## Compaction and Review-Loop Posture
 
-Serf's orchestration instructions state:
+Evener's orchestration instructions state:
 
 - after completing and reporting a task, consider the existing
   `compact_context` tool before starting unrelated work, especially after a
@@ -158,7 +158,7 @@ Cover:
 - worktree re-root keeps the same live-session scratch;
 - close, spawn failure, and parent teardown clean scratch after process shutdown;
 - restore gets a new empty scratch;
-- 24-hour sweep removes only stale Serf-owned directories;
+- 24-hour sweep removes only stale Evener-owned directories;
 - build-cache variables and `HOME` are not newly redirected;
 - second shared concurrent delegate returns an advisory but still launches;
 - isolated or non-overlapping delegates do not warn;

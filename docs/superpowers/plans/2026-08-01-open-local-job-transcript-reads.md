@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
-**Goal:** Replace observer-specific job read grants with exact-reference reads of any local job transcript under the same Serf state home.
+**Goal:** Replace observer-specific job read grants with exact-reference reads of any local job transcript under the same Evener state home.
 
 **Architecture:** Jobs receive a flag-day identifier containing their complete owner session ID and a short random suffix. read_transcript(job:...) parses that owner, checks the current project first, then performs a bounded exact-owner lookup across local sibling projects and reads a non-mutating output snapshot; every discovery and control tool keeps its existing scope. Watch delivery retains SessionMeta.ObservedBy only as best-effort UI metadata while the durable grant event, runtime callbacks, and hub grant inversion are deleted.
 
@@ -11,9 +11,9 @@
 ## Global Constraints
 
 - The sole valid job ID is job_<22-character-owner-session-id>_<12-character-base62-suffix>, exactly 39 characters.
-- Collision safety covers ordinary Serf concurrency and names present at the
+- Collision safety covers ordinary Evener concurrency and names present at the
   defined creation checks; adversarial same-user pathname substitution after
-  Serf creates an artifact or between cleanup observation and removal is out of
+  Evener creates an artifact or between cleanup observation and removal is out of
   scope.
 - This is a flag day: no old-ID parser, migration, state detection, fallback scan, or compatibility branch may remain.
 - An exact job read checks the current project first; an exact current-project record wins immediately.
@@ -25,7 +25,7 @@
 - SessionMeta.ObservedBy is append-only, deduplicated, best-effort UI metadata. Whole-meta saves preserve prior entries, and delivery-time metadata work is scheduled only after the message is sent and its delivered state is durable. It never gates, delays, or alters delivery or read access.
 - Every abbreviated job ID in a web or TUI summary retains all 12 random-suffix characters. Full detail and copy surfaces retain the complete ID.
 - Fuzz execution belongs only to make fuzz; default test targets must remain deterministic and non-fuzz.
-- Do not touch port 9180, ~/.serf/, ~/.local/state/serf/, Jesse's live askDock/layoutguard files, or notes.txt.
+- Do not touch port 9180, ~/.evener/, ~/.local/state/evener/, Jesse's live askDock/layoutguard files, or notes.txt.
 - Do not widen a timeout, add a sleep, use npm ci, stash, or stage a directory.
 - New production code must be substantially outweighed by deletion of the grant subsystem. Stop for design reassessment if the scoped production diff is not materially net-negative.
 

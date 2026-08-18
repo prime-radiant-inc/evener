@@ -10,8 +10,8 @@ model behavior, or ambient developer machine state.
 
 Use this boundary:
 
-- Serf plumbing: use a scripted provider at the LLM boundary and exercise real
-  Serf code below it. Examples: CLI wiring, appwire RPC, daemon queues, session
+- Evener plumbing: use a scripted provider at the LLM boundary and exercise real
+  Evener code below it. Examples: CLI wiring, appwire RPC, daemon queues, session
   loops, tool execution, transcript writes, event emission, goal continuation
   routing, hook dispatch, and prompt composition.
 - Model behavior or provider API behavior: keep it live, but require explicit

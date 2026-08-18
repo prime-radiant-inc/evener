@@ -1,4 +1,4 @@
-# tui-paste-image-from-clipboard: Ctrl+V attaches a clipboard image in serf-tui
+# tui-paste-image-from-clipboard: Ctrl+V attaches a clipboard image in evener-tui
 
 **What this covers**: kata `2frx` (live e2e for image attachments) over
 the TUI clipboard pipeline — kata `c7pv` (the multi-source clipboard
@@ -7,7 +7,7 @@ composer chip rendering + Ctrl+V keybind in `hub_model.go`), and
 kata `re91` (submit/queue/drain-as-steer carrying attachments). When
 the user is in the SESSION composer and the system clipboard holds a
 PNG/JPEG/etc., Ctrl+V (or Ctrl+Alt+V) reads the bytes, writes a
-`serf-clipboard-*.png` temp file, and pushes a `PastedImage` onto
+`evener-clipboard-*.png` temp file, and pushes a `PastedImage` onto
 `pendingAttachments`. The next `enter` send/queue ships those bytes
 through the daemon to the model as a `ContentImage` part.
 
@@ -18,16 +18,16 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` and `./serf-hub` built in repo root.
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` and `./evener-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials; both accept image
   inputs.
 - A display server reachable from the TUI process AND a clipboard
-  tool serf-tui knows about — one of:
+  tool evener-tui knows about — one of:
   - X11 with `xclip` on PATH (handled by
     `clipboard_system.go:readImageBytesX11`).
   - Wayland with `wl-paste` on PATH (`readImageBytesWayland`).
@@ -49,7 +49,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    needs to live on disk only long enough to load into the clipboard
    — the TUI re-saves the bytes into its own temp file on paste:
    ```bash
-   FIXDIR=$(mktemp -d -t serf-e2e-clip-fixture-XXXX)
+   FIXDIR=$(mktemp -d -t evener-e2e-clip-fixture-XXXX)
    convert -size 64x64 xc:red "$FIXDIR/red.png"
    # Linux / X11 — for Wayland use: wl-copy --type image/png < red.png
    # For macOS use: osascript -e 'set the clipboard to (read POSIX file "/path/red.png" as «class PNGf»)'
@@ -63,13 +63,13 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    chosen so the assistant's first message is short and the test
    spends most of its time on the image turn:
    ```bash
-   WORKDIR=$(mktemp -d -t serf-tui-clip-work-XXXX)
-   TMUX_SESSION="serf-clip-$(basename "$WORKDIR")"
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   WORKDIR=$(mktemp -d -t evener-tui-clip-work-XXXX)
+   TMUX_SESSION="evener-clip-$(basename "$WORKDIR")"
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"serf\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"evener\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn")
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
    for i in $(seq 1 30); do
@@ -81,11 +81,11 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    done
    ```
 
-3. **Launch serf-tui in tmux** with the display server visible to its
+3. **Launch evener-tui in tmux** with the display server visible to its
    subprocess (else `xclip` will return `ErrClipboardUnavailable`):
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "DISPLAY=:99 ./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "DISPLAY=:99 ./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
    (On native X11 with `DISPLAY=:0` already set, omit the `DISPLAY=:99`
@@ -103,7 +103,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    tmux capture-pane -t "$TMUX_SESSION" -p | head -20
    ```
    The captured pane should show
-   `serf / session / <SID>` in the title bar and a
+   `evener / session / <SID>` in the title bar and a
    `composer: message` footer.
 
 5. **Press Ctrl+V** to paste the clipboard image:
@@ -113,7 +113,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    tmux capture-pane -t "$TMUX_SESSION" -p | head -30
    ```
    The footer should now include an `attachments` row with a chip
-   like `📎 serf-clipboard-3431062677.png [×]`. The composer textarea
+   like `📎 evener-clipboard-3431062677.png [×]`. The composer textarea
    should still be empty — Ctrl+V did NOT insert characters into the
    text input.
 
@@ -128,7 +128,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
 7. **Cross-check the transcript on disk**:
    ```bash
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    for i, line in enumerate(open("$TFILE")):
@@ -148,7 +148,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Expected
 
 - **Step 5 (chip render)**: pane shows a chip
-  `📎 serf-clipboard-<n>.png [×]` beneath the composer textarea.
+  `📎 evener-clipboard-<n>.png [×]` beneath the composer textarea.
   The textarea body is empty (Ctrl+V did not insert character bytes).
   Falsification:
   - Pane shows `Clipboard paste failed: …` system-line — likely
@@ -175,22 +175,22 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Cleanup
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/s/$SID/shutdown" >/dev/null
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$FIXDIR" "$WORKDIR"
 # Optional, for hermeticity:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/evener/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges
 
 - **`DISPLAY` must be exported into the TUI's process**, not just the
   shell that called `tmux new-session`. The session-creation form
-  `tmux new-session -d -s … "DISPLAY=:99 ./serf-tui …"` does this.
-  If you instead `tmux new-session -d -s … "./serf-tui …"`, the
+  `tmux new-session -d -s … "DISPLAY=:99 ./evener-tui …"` does this.
+  If you instead `tmux new-session -d -s … "./evener-tui …"`, the
   process inherits the controlling terminal's environment — which
   in a sandboxed agent context often lacks `DISPLAY`, and `xclip
   -selection clipboard -t image/png -o` will fail with
@@ -203,7 +203,7 @@ rm -rf "$FIXDIR" "$WORKDIR"
   matching path (osascript / wl-paste); the
   `clipboard_system.go` GOOS branches handle all three.
 - **The TUI re-saves bytes to its own temp file.** The chip's
-  filename is `serf-clipboard-<n>.png`, not whatever you `xclip`'d.
+  filename is `evener-clipboard-<n>.png`, not whatever you `xclip`'d.
   That's intentional — the TUI's paste path always re-encodes via
   Go's `image/png` so JPEG-from-clipboard, colour-profile
   weirdness, and EXIF strip away cleanly. Cleanup happens on

@@ -6,11 +6,11 @@
 
 **Architecture:** This is a focused deletion in the session post-tool steering path. The implementation removes the read-only streak detector from `injectPostToolSteering`, deletes its loop-private session state, and keeps all adjacent steering mechanisms in place: loop detection, watch/delegate callback handoff, queued steering drain, and task reminders.
 
-**Tech Stack:** Go, standard `go test`, existing Serf agent package and session lifecycle code.
+**Tech Stack:** Go, standard `go test`, existing Evener agent package and session lifecycle code.
 
 ## Global Constraints
 
-- Work in the isolated worktree: `/home/jesse/git/prime-radiant/serf/.worktrees/remove-read-only-nudge`.
+- Work in the isolated worktree: `/home/jesse/git/prime-radiant/evener/.worktrees/remove-read-only-nudge`.
 - Remove only the read-only streak nudge in `agent/session_tool_round.go`.
 - Do not remove `ReadOnly` metadata from tools.
 - Do not remove loop detection or stuck escalation.
@@ -50,7 +50,7 @@
 Run:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/.worktrees/remove-read-only-nudge
+cd /home/jesse/git/prime-radiant/evener/.worktrees/remove-read-only-nudge
 sed -n '267,360p' agent/session_tool_round.go
 sed -n '71,82p' agent/session.go
 sed -n '247,250p' agent/session.go
@@ -231,7 +231,7 @@ Expected: commit succeeds and includes only the two Go files.
 Run:
 
 ```bash
-cd /home/jesse/git/prime-radiant/serf/.worktrees/remove-read-only-nudge
+cd /home/jesse/git/prime-radiant/evener/.worktrees/remove-read-only-nudge
 git log --oneline -5
 ```
 
@@ -278,7 +278,7 @@ Expected: no uncommitted changes. If verification required a directly related fi
 Report:
 
 ```text
-Implemented in worktree: /home/jesse/git/prime-radiant/serf/.worktrees/remove-read-only-nudge
+Implemented in worktree: /home/jesse/git/prime-radiant/evener/.worktrees/remove-read-only-nudge
 Commits:
 - <hash> docs: design read-only nudge removal
 - <hash> docs: clarify read-only nudge removal spec

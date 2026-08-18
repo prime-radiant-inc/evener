@@ -29,7 +29,7 @@ Relevant findings:
 - Codex sets `previous_response_id` from the previous completed WebSocket response when reusing a Responses WebSocket connection and sending an incremental delta.
 - ChatGPT/Codex auth modes default to `https://chatgpt.com/backend-api/codex`, and HTTP requests append `responses`, producing `/backend-api/codex/responses`.
 
-This means the live backend rejection is consistent with Codex's own HTTP request shape. Serf's HTTP Codex adapter must not send `previous_response_id` or `conversation` to `/backend-api/codex/responses`; a future Codex continuation project would need a separate Responses WebSocket transport and proof, not a public `/v1/responses` HTTP continuation clone.
+This means the live backend rejection is consistent with Codex's own HTTP request shape. Evener's HTTP Codex adapter must not send `previous_response_id` or `conversation` to `/backend-api/codex/responses`; a future Codex continuation project would need a separate Responses WebSocket transport and proof, not a public `/v1/responses` HTTP continuation clone.
 
 ## Registry State
 
@@ -51,7 +51,7 @@ Deterministic registry coverage asserts this split:
 Test:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryPublicEnabledCodexDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestDefaultResponsesContinuationSupportRegistryPublicEnabledCodexDisabled|TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge' -count=1 -v
 ```
 
 ## Decision

@@ -11,11 +11,11 @@
 ## Global Constraints
 
 - JSON/TOML keys stay snake_case; wire enum values `active`/`awaiting`/`warning`/`errored` are the Codex-shaped contract and are **never** renamed. `processing`→`working` touches only CSS custom-property names, TUI theme-token identifiers (`StateProcessing`→`StateWorking`), and Go/JS display-word strings — never the wire state string `"active"`.
-- `appwire`/`hubcore` parallel-type camelCase JSON fields (e.g. `askPending`) require a `// serf:naming-ignore` comment on the line immediately above the field (bare comment, no suffix — confirmed against the existing `AttentionEntry.ID`/`AttentionSummary.NeedsYou` precedent and `cmd/evener-namingcheck/main.go`'s `ignoreMarker`).
+- `appwire`/`hubcore` parallel-type camelCase JSON fields (e.g. `askPending`) require a `// evener:naming-ignore` comment on the line immediately above the field (bare comment, no suffix — confirmed against the existing `AttentionEntry.ID`/`AttentionSummary.NeedsYou` precedent and `cmd/evener-namingcheck/main.go`'s `ignoreMarker`).
 - New struct **fields** (e.g. `PendingAsk` on `StatusInfo`, `AskPending` on `TreeNode`/`AttentionEntry`/`SerfThread`) need no appwire dual-router catalog change — only new/renamed **methods** do (confirmed: `server/appwire_catalog_test.go`'s `TestDaemonRouterMatchesCatalog` and `appwire/cov_rhub_appwire_test.go` diff only registered method names against `appwire.Methods`/`Notifications`, never struct shape).
 - `make lint` runs `lint-naming` (`go run ./cmd/evener-namingcheck`) in addition to `golangci-lint`; per-task `golangci-lint run ./...` misses the naming check, so run `make lint` before any merge-readiness claim.
 - `GO_MODULES := . agent llm auth envvars fuzz invariant` (root Makefile) — run `go test ./...` from the relevant module root; everything this track touches (`hubapi`, `hubcore`, `cmd/evener-tui`, `server`, `cmd/evener`, `appwire`) is in the root module `.`, so `go test ./...` from the repo root covers it (no `cd agent`/`cd llm` needed for this track).
-- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/serf-jstest-jsdom/node_modules`).
+- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/evener-jstest-jsdom/node_modules`).
 - Never `git add -A`; every commit lists exact paths.
 - **Corrected module-boundary fact** (the design spec's phrasing is imprecise): `cmd/evener-tui` and `cmd/evener-hub/internal/hubcore` are **not** separate Go modules — there is no `cmd/evener-tui/go.mod`; both live in the root module `primeradiant.com/evener`. The reason `cmd/evener-tui` cannot import `hubcore` directly is Go's `internal/` visibility rule (an `internal` package is importable only by code rooted at the parent of `internal/`, i.e. anything under `cmd/evener-hub/`), not a module boundary. `hubapi` has no such restriction and is already imported by `cmd/evener-tui/internal/hubstart/hub_start.go`, making it the correct shared home.
 - Icon SVGs are vendored verbatim from `https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<name>.svg` (ISC license) — fetched and verified during planning (2026-07-05); do not hand-author path data.
@@ -729,7 +729,7 @@ console.log("test-icons.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
 Expected: FAIL — `cmd/evener-hub/assets/icons.js` does not exist.
 
 - [ ] **Step 3: Write the implementation**
@@ -801,7 +801,7 @@ Add `<script src="/assets/icons.js"></script>` to `cmd/evener-hub/templates/app.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-icons.js`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -853,7 +853,7 @@ console.log("test-sidebar-icons.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — no `.status-icon` element, `window.SerfSidebarInternal` undefined.
 
 - [ ] **Step 3: Add the icon element + tooltip word to `buildRow`/`patchRow`**
@@ -939,7 +939,7 @@ Add the `.status-icon` sizing rule to `cmd/evener-hub/assets/style.css` next to 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — including every pre-existing `test-sidebar-*.js` (row structure gained a sibling element, which reconciliation-keyed tests should tolerate; if a pre-existing test snapshot-matches `a.innerHTML` exactly, update its expected markup to include the new `.status-icon` span).
 
 - [ ] **Step 5: Commit**
@@ -971,7 +971,7 @@ assert.strictEqual(badge.textContent.trim(), "3", "rollup badge count text must 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — `buildRollupBadge` not exposed / still sets `textContent` to a glyph character, no `<svg>`.
 
 - [ ] **Step 3: Implement**
@@ -1021,7 +1021,7 @@ Update `.rollup-glyph`'s CSS (style.css, currently `font-family: var(--font-mono
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1185,7 +1185,7 @@ assert.ok(glyphEl.querySelector("svg"), "reconnecting banner must render the wor
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js`
 Expected: FAIL — the banner glyph span still has `textContent = "⟳"`, no child `<svg>`.
 
 - [ ] **Step 3: Implement**
@@ -1220,7 +1220,7 @@ Add sizing CSS next to `.connection-banner-glyph`'s existing rule in `style.css`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-connection-banner.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1260,7 +1260,7 @@ console.log("test-renderer-subagent-glyphs.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js`
 Expected: FAIL — `subagentGlyph("done")` returns `"✓"`, not svg markup; `SerfRendererInternal` may not yet expose `subagentGlyph` (if not already exposed, add it to whatever internal-test-surface object the sibling tests use).
 
 - [ ] **Step 3: Implement**
@@ -1290,7 +1290,7 @@ Check how `parts` is later joined into DOM (grep the variable a few lines below 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — fix any sibling test that string-matched the old `"✓"`/`"✕"`/`"⟳"` glyph characters by updating its assertion to check for `<svg` presence instead (grep the failure output for the exact assertion to update).
 
 - [ ] **Step 5: Commit**
@@ -1332,7 +1332,7 @@ console.log("test-renderer-format-plan-glyphs.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js`
 Expected: FAIL — `planGlyphForStatus("done")` returns `"✓"`.
 
 - [ ] **Step 3: Implement**
@@ -1359,7 +1359,7 @@ Update every call site assigning the return value via `.textContent` to `.innerH
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1409,7 +1409,7 @@ console.log("test-renderer-needsyou-affordances.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js`
 Expected: FAIL — each site still sets `.textContent` to a string containing `"◆"`.
 
 - [ ] **Step 3: Implement**
@@ -1456,7 +1456,7 @@ Every string concatenated with `askedSummary`/user-provided text **must** go thr
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1716,7 +1716,7 @@ Update `cmd/evener-tui/hub_session_view.go`'s badge line (currently line 29):
 	badge := tuiprim.StatusBadge(stateColor(normalizedState), displayWord(state, m.detail.AskPending))
 ```
 
-Add `AskPending bool` to `hubSessionDetail` in `cmd/evener-tui/hub_types.go` (next to the existing `State string` field), and set it to `false` in `hubDetailFromThread` for now (Phase 4 Task 26 reads the real `thread.Serf.AskPending`):
+Add `AskPending bool` to `hubSessionDetail` in `cmd/evener-tui/hub_types.go` (next to the existing `State string` field), and set it to `false` in `hubDetailFromThread` for now (Phase 4 Task 26 reads the real `thread.Evener.AskPending`):
 
 ```go
 type hubSessionDetail struct {
@@ -2281,11 +2281,11 @@ git commit -m "feat(hub): ask_pending flows hubcore.TreeNode -> hubapi.TreeNode 
 - Modify: `cmd/evener-hub/internal/hubcore/attention.go`
 - Modify: `cmd/evener-hub/internal/hubcore/attention_test.go`
 
-Without this task's `Tick` change, a session whose `askPending` flips while its `Level` stays `"needs_you"` throughout (e.g. a second question arrives right after the first is answered, or vice versa) produces no `serf/attention/changed` diff — the client's loud-scope gating (Task 26) and row marker (Task 28) would then only refresh on the next unrelated level transition or a full tree refetch. `Tick` must treat an ask-only flip as a change too.
+Without this task's `Tick` change, a session whose `askPending` flips while its `Level` stays `"needs_you"` throughout (e.g. a second question arrives right after the first is answered, or vice versa) produces no `evener/attention/changed` diff — the client's loud-scope gating (Task 26) and row marker (Task 28) would then only refresh on the next unrelated level transition or a full tree refetch. `Tick` must treat an ask-only flip as a change too.
 
 **Interfaces:**
 - Consumes: `LiveEntry.PendingAsk` (Task 20).
-- Produces: `AttentionEntry.AskPending bool` (`json:"askPending,omitempty"`, needs its own `// serf:naming-ignore` line). Consumed by Task 26 (loud-scope gating reads `ch.askPending`).
+- Produces: `AttentionEntry.AskPending bool` (`json:"askPending,omitempty"`, needs its own `// evener:naming-ignore` line). Consumed by Task 26 (loud-scope gating reads `ch.askPending`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2329,12 +2329,12 @@ In `cmd/evener-hub/internal/hubcore/attention.go`, add to `AttentionEntry` (curr
 
 ```go
 type AttentionEntry struct {
-	// serf:naming-ignore
+	// evener:naming-ignore
 	ID      string `json:"threadId"`
 	Title   string `json:"title"`
 	Project string `json:"project"`
 	Level   string `json:"level"`
-	// serf:naming-ignore
+	// evener:naming-ignore
 	AskPending bool `json:"askPending,omitempty"`
 }
 ```
@@ -2488,7 +2488,7 @@ The web path (Tasks 19-23) travels through `/status` HTTP polling; the TUI reads
 
 **Interfaces:**
 - Consumes: `Server.pendingAskFn` (Task 19, already wired to `getSession().HasPendingAsk()` in `cmd/evener/serve.go`).
-- Produces: `appwire.SerfThread.AskPending bool` (`json:"askPending,omitempty"`). Consumed by Task 25 (TUI reads it off `thread.Serf.AskPending`).
+- Produces: `appwire.SerfThread.AskPending bool` (`json:"askPending,omitempty"`). Consumed by Task 25 (TUI reads it off `thread.Evener.AskPending`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2515,8 +2515,8 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
 	srv.SetPendingAskFunc(func() bool { return true })
 	thread := srv.appThread()
-	if !thread.Serf.AskPending {
-		t.Fatal("expected appThread().Serf.AskPending=true")
+	if !thread.Evener.AskPending {
+		t.Fatal("expected appThread().Evener.AskPending=true")
 	}
 }
 ```
@@ -2589,7 +2589,7 @@ git commit -m "feat(appwire): SerfThread.AskPending for the TUI's JSON-RPC wire 
 `hubRow.askPending` and `hubSessionDetail.AskPending` were already declared as stub fields in Task 17 (defaulted false everywhere); this task populates them from the real wire value and wires the three-band sort.
 
 **Interfaces:**
-- Consumes: `thread.Serf.AskPending` (Task 24), `hubapi.NeedsYouBand` (Task 18).
+- Consumes: `thread.Evener.AskPending` (Task 24), `hubapi.NeedsYouBand` (Task 18).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2609,18 +2609,18 @@ Append to `cmd/evener-tui/hub_dashboard_view_test.go` (or wherever `hubNodeFromT
 
 ```go
 func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.SerfThread{AskPending: true}}
 	node := hubNodeFromThread(thread)
 	if !node.AskPending {
-		t.Fatal("expected hubTreeNode.AskPending=true from thread.Serf.AskPending")
+		t.Fatal("expected hubTreeNode.AskPending=true from thread.Evener.AskPending")
 	}
 }
 
 func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Serf: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.SerfThread{AskPending: true}}
 	detail := hubDetailFromThread(thread)
 	if !detail.AskPending {
-		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Serf.AskPending")
+		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Evener.AskPending")
 	}
 }
 ```
@@ -2635,13 +2635,13 @@ Expected: FAIL — `dashboardRowLess` has no band term; `hubTreeNode.AskPending`
 In `cmd/evener-tui/hub_types.go`, add `AskPending bool` to `hubTreeNode` (currently lines 24-38, next to `State`). In `hubNodeFromThread` (currently lines 159-185), add to the returned literal:
 
 ```go
-		AskPending:  thread.Serf.AskPending,
+		AskPending:  thread.Evener.AskPending,
 ```
 
 In `hubDetailFromThread` (currently building the `hubSessionDetail{...}` literal), replace the Task-17 placeholder:
 
 ```go
-		AskPending:          thread.Serf.AskPending,
+		AskPending:          thread.Evener.AskPending,
 ```
 
 In `cmd/evener-tui/hub_dashboard.go`'s `addSession` closure (currently lines 90-140), add to the `hubRow{...}` literal (next to `state: n.State,`):
@@ -2710,17 +2710,17 @@ const assert = require("assert");
 
 // Migration backfills loudScope: "asks" for an existing v2 blob with no
 // loudScope key, and bumps the version so migration doesn't re-run.
-localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: false, sound: false }));
-localStorage.setItem("serf-hub.notifications.v", "2");
+localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: false, sound: false }));
+localStorage.setItem("evener-hub.notifications.v", "2");
 window.SerfNotificationsInternal.migratePrefs();
-let prefs = JSON.parse(localStorage.getItem("serf-hub.notifications"));
+let prefs = JSON.parse(localStorage.getItem("evener-hub.notifications"));
 assert.strictEqual(prefs.loudScope, "asks", "existing v2 users must backfill to the asks default, not off");
-assert.strictEqual(localStorage.getItem("serf-hub.notifications.v"), "3", "migration must bump the version so it does not re-run");
+assert.strictEqual(localStorage.getItem("evener-hub.notifications.v"), "3", "migration must bump the version so it does not re-run");
 
 // A fresh install gets loudScope: "asks" outright.
 localStorage.clear();
 window.SerfNotificationsInternal.migratePrefs();
-prefs = JSON.parse(localStorage.getItem("serf-hub.notifications"));
+prefs = JSON.parse(localStorage.getItem("evener-hub.notifications"));
 assert.strictEqual(prefs.loudScope, "asks");
 
 // Gating: under "asks" (default), a generic needs_you transition (no error,
@@ -2731,7 +2731,7 @@ window.SerfNotificationsInternal.setTestHooks({
   fireOsNotification: () => { osNotified++; },
   playTone: () => { soundPlayed++; },
 });
-localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: true, loudScope: "asks" }));
+localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: true, loudScope: "asks" }));
 window.SerfNotificationsInternal.setLeaderForTest(true);
 window.SerfNotificationsInternal.setBaselineForTest({ needsYou: 0, error: 0, working: 0 });
 window.SerfNotificationsInternal.onAttentionChanged({
@@ -2753,7 +2753,7 @@ console.log("test-notifications-loudscope.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js`
 Expected: FAIL — `loudScope` absent from `DEFAULT_PREFS`; version stays `"2"`; gating fires for every needs_you transition regardless of `askPending`.
 
 - [ ] **Step 3: Implement**
@@ -2820,7 +2820,7 @@ Add the test-hook seam (near the module's existing `leader`/`summary` module-sco
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-notifications-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -30`
 Expected: PASS — fix any pre-existing `test-notifications-migration.js`/`test-notifications-attention.js` case that hardcoded version `"2"` or the old unconditional gating, updating it to version `"3"` / the new loud-scope-aware behavior.
 
 - [ ] **Step 5: Commit**
@@ -2859,7 +2859,7 @@ const allRadio = document.querySelector('input[value="all"]');
 allRadio.checked = true;
 allRadio.dispatchEvent(new window.Event("change", { bubbles: true }));
 
-const stored = JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}");
+const stored = JSON.parse(localStorage.getItem("evener-hub.notifications") || "{}");
 assert.strictEqual(stored.loudScope, "all", "selecting the 'all' radio must persist loudScope=all");
 
 console.log("test-settings-loudscope.js: OK");
@@ -2867,7 +2867,7 @@ console.log("test-settings-loudscope.js: OK");
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js`
 Expected: FAIL — no handler matches `input[data-notif-radio]`; `stored.loudScope` is undefined.
 
 - [ ] **Step 3: Implement**
@@ -2900,7 +2900,7 @@ Add the radio-commit handler to `cmd/evener-hub/assets/settings.js`, in the same
       const cur = readNotifPrefs();
       cur[key] = desired;
       writeNotifPrefs(cur);
-      document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
+      document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
         detail: { key, value: desired },
       }));
       if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
@@ -2920,7 +2920,7 @@ Reflect the stored value on settings-pane load, in `applySettingsState` (next to
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-settings-loudscope.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2953,7 +2953,7 @@ assert.ok(!askOffRow.hasAttribute("data-ask"), "a your-move row must not carry d
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
 Expected: FAIL — `data-ask` never set.
 
 - [ ] **Step 3: Implement**
@@ -2972,7 +2972,7 @@ In `patchRow` (after the existing `if (n.favorite) ... else ...` line):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
+Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js && sh cmd/evener-hub/jstest/run-all.sh 2>&1 | tail -20`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -3135,8 +3135,8 @@ Idle/Ended).
 
 ## Pre-state
 
-- Hub running with a fresh `$HOME` (isolated `~/.serf`), real credentials, no prior sessions.
-- A TUI (`serf-tui`) pointed at the same hub, in a tmux session for scriptable interaction.
+- Hub running with a fresh `$HOME` (isolated `~/.evener`), real credentials, no prior sessions.
+- A TUI (`evener-tui`) pointed at the same hub, in a tmux session for scriptable interaction.
 - `superpowers-chrome:browsing` available for the web assertions.
 
 ## Steps
@@ -3218,7 +3218,7 @@ fetch('/api/tree', { headers: { Authorization: 'Bearer ' + '<TOKEN>' } }).then(r
 
 Update the "Expected" step-5 bullet: `present` is `true`; `askPending` is `true` (Session A asked a question — this is the band-ordering wire bit this track adds, Task 21); `count` reflects the live NeedsYou population at execution time (assert it is `>= 1` and specifically includes Session A, rather than hardcoding a stale `(1)`/`(2)` expectation that predates this track).
 
-Update the "Sharp edges" bullet currently describing `templates/partials/sidebar.html`/`hx-trigger="load, sidebar:refresh from:body"` to describe the actual current mechanism: `sidebar.js` refetches `/api/tree` on `serf/attention/changed` (and other refresh triggers already wired in `sidebar.js`), reconciling the DOM via keyed `RowID`s rather than re-rendering an htmx partial.
+Update the "Sharp edges" bullet currently describing `templates/partials/sidebar.html`/`hx-trigger="load, sidebar:refresh from:body"` to describe the actual current mechanism: `sidebar.js` refetches `/api/tree` on `evener/attention/changed` (and other refresh triggers already wired in `sidebar.js`), reconciling the DOM via keyed `RowID`s rather than re-rendering an htmx partial.
 
 Add a new step 6 + Expected bullet for the `loudScope` default:
 
@@ -3259,7 +3259,7 @@ Grep `test/scenarios/*.md` for a polling loop like `[ "$st" = "idle" ] && break`
 
 - [ ] **Step 2: `ask-noninteractive-invisible.md` — locate by session id, not `working_dir` grep**
 
-Open `test/scenarios/ask-noninteractive-invisible.md`. Find the step that greps a transcript file by `working_dir` (fails on macOS because `/tmp` resolves to `/private/tmp` inside the daemon but the test script's `$tmpdir` variable holds the unresolved `/tmp/...` path). Change the grep/find to key on the session id instead (e.g. `find ~/.serf -name '*<SID>*'` or whatever this card's existing transcript-location convention is elsewhere in the same file — match it, don't invent a new one).
+Open `test/scenarios/ask-noninteractive-invisible.md`. Find the step that greps a transcript file by `working_dir` (fails on macOS because `/tmp` resolves to `/private/tmp` inside the daemon but the test script's `$tmpdir` variable holds the unresolved `/tmp/...` path). Change the grep/find to key on the session id instead (e.g. `find ~/.evener -name '*<SID>*'` or whatever this card's existing transcript-location convention is elsewhere in the same file — match it, don't invent a new one).
 
 - [ ] **Step 3: `ask-subagent-invisible.md` — assert the delegate's `communicate` call argument, not a raw grep**
 
@@ -3294,10 +3294,10 @@ git commit -m "fix(e2e): scenario-card hermetics batch — mechanics only, falsi
 Run: `go test ./... 2>&1 | tail -80`
 Expected: PASS across every package this track touched (`hubapi`, `cmd/evener-hub/...`, `cmd/evener-tui/...`, `server`, `cmd/evener`, `appwire`).
 
-- [ ] **Step 2: Run the full lint gate (includes `serf-namingcheck`, which per-task `golangci-lint` misses)**
+- [ ] **Step 2: Run the full lint gate (includes `evener-namingcheck`, which per-task `golangci-lint` misses)**
 
 Run: `make lint`
-Expected: PASS. If `serf-namingcheck` flags a camelCase JSON tag this track introduced (`askPending` on `AttentionEntry`, `AskPending` json tags elsewhere), confirm the `// serf:naming-ignore` comment sits on the line immediately above the flagged field (added in Task 22) — it should already pass; if it doesn't, the marker is misplaced relative to what the checker expects, not a design flaw — fix the comment placement.
+Expected: PASS. If `evener-namingcheck` flags a camelCase JSON tag this track introduced (`askPending` on `AttentionEntry`, `AskPending` json tags elsewhere), confirm the `// evener:naming-ignore` comment sits on the line immediately above the flagged field (added in Task 22) — it should already pass; if it doesn't, the marker is misplaced relative to what the checker expects, not a design flaw — fix the comment placement.
 
 - [ ] **Step 3: Run the appwire doc regen gate**
 

@@ -15,7 +15,7 @@ Status: Approved design (brainstorming-style). Drives one implementation plan.
 
 ## Context
 
-`docs/job-control.md` is the evergreen reference contract for Serf's target job-control
+`docs/job-control.md` is the evergreen reference contract for Evener's target job-control
 model: a generic, durable, `job_id`-keyed background-work system for two job types,
 `shell` and `delegate`. It deliberately leaves implementation sequencing, the concrete
 tool definitions, and the model-facing description prose to a separate spec. This is that
@@ -155,10 +155,10 @@ in-memory running-delegate overlay; it is not kept as a parallel tracking system
 
 ### 3.1 On-disk layout
 
-Extends today's `.serf/sessions/`:
+Extends today's `.evener/sessions/`:
 
 ```
-.serf/sessions/
+.evener/sessions/
   <session_id>.meta.json            unchanged
   <session_id>.transcript.jsonl     unchanged — conversation only
   <session_id>/jobs.jsonl           NEW — durable append-only job-event log
@@ -327,7 +327,7 @@ comments back — implementable.
 
 > ## Background jobs
 >
-> Serf runs background work as *jobs*. There are two kinds: shell commands and `delegate`
+> Evener runs background work as *jobs*. There are two kinds: shell commands and `delegate`
 > conversations. Every durable job has a `job_id` — your handle for reading, watching, and
 > stopping it.
 >
@@ -337,11 +337,11 @@ comments back — implementable.
 > shell command that outruns its `block_timeout_ms` is promoted to a background job and
 > announced.
 >
-> After you start a background job, keep working. Serf injects exactly one
+> After you start a background job, keep working. Evener injects exactly one
 > `<job-notification>` when the job becomes terminal — completed, failed, cancelled, or
 > stopped. The notification names the job and carries its `job_id`, `status`, and a short
 > preview, so you can read the result straight from it. Wait for it; do not poll `job_list`,
-> loop on `job_read_output`, or block on a job you just started. (Under `serf run` there is no
+> loop on `job_read_output`, or block on a job you just started. (Under `evener run` there is no
 > later turn to wake you, so wait inline with `background=false` instead.)
 >
 > Branch on `status`. `completed` means the work ran to a normal end, not that it achieved
@@ -405,7 +405,7 @@ Description:
 > server, or a long command you should not wait on — and get back a `job_id`.
 > `block_timeout_ms` bounds only the foreground wait: a command still running at the timeout is
 > promoted to a background job, not killed. `max_runtime_ms` is the separate limit on how long
-> the process itself may run before Serf stops it.
+> the process itself may run before Evener stops it.
 
 Defaults and bounds:
 
@@ -416,7 +416,7 @@ Defaults and bounds:
 - `max_runtime_ms`: min positive `1000`; negative → `invalid_request`. Implementation
   documents default/max/clamp. Recommended policy: a finite default for foreground/promoted
   jobs, no default cap for explicit `background=true`. If the process is still running after
-  `max_runtime_ms`, Serf stops it and finalizes `stopped/run_timeout`.
+  `max_runtime_ms`, Evener stops it and finalizes `stopped/run_timeout`.
 
 Behavior. The key mechanism: **every shell command streams to a per-job log from the first byte**
 via a new optional `execenv.StreamingExecutor` interface that `LocalExecutionEnvironment` implements
@@ -432,7 +432,7 @@ boundary differs:
   appears in `job_list`, and no terminal notification fires (the result is already in the tool
   result).
 - `background=false`, still running at `block_timeout_ms`: **promotion** — the already-streaming
-  process keeps running untouched; Serf commits `job_started` (with the real start time), returns
+  process keeps running untouched; Evener commits `job_started` (with the real start time), returns
   the bounded output-so-far with a `job_id` and `reason=foreground_timeout`, arms the terminal
   notification, and injects the non-terminal promotion `<job-notification>`. There is no output
   seam: the log the background job reads is the same stream the foreground wait was tailing.
@@ -507,7 +507,7 @@ Defaults/behavior:
 - `block_timeout_ms`: same semantics/bounds as shell; a timeout leaves the job running.
 - `result_schema`: a JSON Schema that **becomes** the child's structured `communicate` output (it
   replaces the `output` property wholesale — see §5.4.1, which corrects how this seam actually
-  behaves). The prose output remains readable; Serf validates the structured output and surfaces
+  behaves). The prose output remains readable; Evener validates the structured output and surfaces
   `structured_result` (+ `structured_result_valid`).
 - Turn-based: a delegate needing more input finishes with a request; the parent follows up via
   `job_send_message`. `status="completed"` means the turn ended normally, not that the task
@@ -536,7 +536,7 @@ string produced by the `communicate` tool (`agent/session_tools_communicate.go` 
 `wait`/`subagent_output`, with a `communicateNudge` if the child stops without communicating. The
 job model changes three things:
 
-- **Durable output log (new).** As the delegate runs, Serf streams its user-facing result — the
+- **Durable output log (new).** As the delegate runs, Evener streams its user-facing result — the
   `communicate` message, and optionally streamed assistant text, tool-use summaries, and nested
   `<job-notification>`s — into `jobs/<job_id>.log`. No per-invocation delegate log exists today; this
   capture path is what makes `job_read_output` work after the runtime is gone.
@@ -590,7 +590,7 @@ required: [target, message]
 Description:
 
 > Send a follow-up message to a delegate by `job_id`. If that delegate is still running, your
-> message steers the live run; if it has finished, Serf resumes the same conversation as a new
+> message steers the live run; if it has finished, Evener resumes the same conversation as a new
 > job and returns the new `job_id`. Set `on_finished="fail"` to require a live target — if the
 > delegate has already finished, the call then fails (`target_terminal`) instead of resuming.
 > The same tool delivers observer commentary to a session alias (`caller`, `main`, `watched`).
@@ -729,7 +729,7 @@ Description:
 
 > Request cancellation of a running job by `job_id`. Use it only to stop work — it does not
 > delete the job's output or history, and it never acknowledges, hides, or cleans up a result.
-> A confirmed stop reports `cancelled`; if Serf cannot confirm the runtime stopped, it reports
+> A confirmed stop reports `cancelled`; if Evener cannot confirm the runtime stopped, it reports
 > `stopped`. By default it targets just that job; pass `include_children=true` to also stop
 > visible nested jobs.
 
@@ -919,7 +919,7 @@ whose owner runtime is believed live but cannot route fails synchronously with
 
 ```xml
 <job-notification job_id="job_..." event="stopped" job_type="shell" status="stopped" reason="runtime_lost">
-Job job_... stopped because Serf restarted and no live runtime was attached. Use job_list and job_read_output to inspect captured state.
+Job job_... stopped because Evener restarted and no live runtime was attached. Use job_list and job_read_output to inspect captured state.
 </job-notification>
 ```
 
@@ -1047,13 +1047,13 @@ functions; the inventory below was built by grepping the tree, not from memory.
   (`case "spawn_agent"` output-truncation limit → add `delegate`/job-tool cases); and
   `agent/internal/contextmgr/context_manager.go:583` (`case "spawn_agent"` compaction render that
   extracts `agent_id` → repoint to `delegate`/`job_id`).
-- **serf-tui renderers** keyed on the old tool names: `cmd/evener-tui/internal/msgrender/tool_renderers.go`,
+- **evener-tui renderers** keyed on the old tool names: `cmd/evener-tui/internal/msgrender/tool_renderers.go`,
   `cmd/evener-tui/internal/msgrender/tool_bodies.go`, `cmd/evener-tui/internal/toolsummary/tool_summary.go`
   → repoint to the job tools.
-- **serf-hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
+- **evener-hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
   otherwise leave red): `cmd/evener-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
   `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/evener-hub/assets/appwire.js`
-  (the `serf/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +
+  (the `evener/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +
   job-tool names. (Earlier the inventory grepped only the Go tree — this is the JS consumer of the
   same wire notifications.)
 
@@ -1065,7 +1065,7 @@ they need explicit handling):**
   `internal/appprojector/appwire_projection.go:410` (it switches on the `events.EventSubagentStart`
   **symbol**, which the gate's string token does NOT catch — see the gate below), translating to the
   **wire-protocol** notifications `appwire.NotifySerfSubagentStarted`/`Ended`
-  (`"serf/subagent/started"`/`"serf/subagent/completed"`, `appwire/types.go:68`) and `SerfSubagentInfo`
+  (`"evener/subagent/started"`/`"evener/subagent/completed"`, `appwire/types.go:68`) and `SerfSubagentInfo`
   / `Subagents`; `server/server.go`'s `SubagentStatusInfo`/`Subagents` carry it onward to the
   hub/web/tui clients. **Full repoint (decided): emit new job-lifecycle events + wire notifications
   and repoint `appprojector` + `appwire/types.go` + `server` + every UI renderer** — do NOT keep the
@@ -1119,7 +1119,7 @@ reconciled now. Legacy subagent test files are deleted or rewritten against the 
 
 ## 14. Testing strategy
 
-TDD, smallest reasonable commits, `make test` + `make lint` (full — `serf-namingcheck`/
+TDD, smallest reasonable commits, `make test` + `make lint` (full — `evener-namingcheck`/
 `docscheck` included) green per commit. Test output pristine; intentional error output captured
 and asserted.
 
@@ -1150,7 +1150,7 @@ and asserted.
   not-armed for synchronous-terminal shell.
 - **Nested:** forwarded visibility (`include_nested`); parent read/stop via parent-visible
   `job_id`; `include_children`; runtime-loss finalize on delegate teardown.
-- **Live e2e scenario-cards** (`serf` built, real provider, via the `e2e-scenario-testing`
+- **Live e2e scenario-cards** (`evener` built, real provider, via the `e2e-scenario-testing`
   skill): delegate fan-out with notification wake in serve mode; shell promotion; an observer
   sidecar commenting back through `job_send_message`.
 - **Comprehension regression:** keep the Haiku scenario probe as a documented manual check when

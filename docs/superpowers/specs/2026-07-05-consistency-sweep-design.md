@@ -115,7 +115,7 @@ pending-ask set) already shipped to main. Anchors re-verified on `6647b744` per
   `HasPendingAsk()` to serve.go. Prober (`statusInfo`, prober.go:19-22) decodes it; `LiveEntry`
   (roster.go:23) gains `PendingAsk`. `hubapi.TreeNode` (hubapi/types.go:78) gains
   `ask_pending,omitempty`; `hubcore.AttentionEntry` (attention.go:17) gains `askPending`
-  (camelCase, matching the AttentionSummary parallel-type precedent) so `serf/attention/changed`
+  (camelCase, matching the AttentionSummary parallel-type precedent) so `evener/attention/changed`
   rows carry it without a tree refetch.
   - **appwire cross-check:** `pending_ask` is a new struct *field*, not a new method — so it does
     not require the dual-router catalog change (per handoff appwire rule); confirm during build.
@@ -263,7 +263,7 @@ Three new controls in the web settings pane:
 - **Stale comments** at session_init.go:1204/1212 claiming SourceMCP "doesn't exist yet (Task 10)"
   — it shipped; remove.
 - **`conn.reconnecting` clear** uses per-branch writes; a `defer` is strictly safer at zero cost.
-- **`serf/task/updated`** is defined but never emitted; the task-status-row 5s poller is a
+- **`evener/task/updated`** is defined but never emitted; the task-status-row 5s poller is a
   transport straggler. **Decision (Jesse):** emit the event on task-status change, subscribe the
   status row to it, and retire the 5s poll — event-driven, no polling lag. Needs an emit site
   (daemon/hub, wherever task status transitions) + client subscription; the appwire method/topic
@@ -351,13 +351,13 @@ Per repo process — TDD red-first for every behavioral change; test output must
   encodeURIComponent; row-menu Unarchive; reconnect-recovery hint; T8/T18 behavior or comment;
   the TestReconnect flake via fake clock).
 - **e2e scenario cards** (test/scenarios/ format): run fully live with an isolated fake `$HOME`
-  (real `~/.serf` untouched), dedicated Chrome profile; evidence over assertion. New/updated cards
+  (real `~/.evener` untouched), dedicated Chrome profile; evidence over assertion. New/updated cards
   for: the unified status vocabulary round-trip; ask-tiering loud-scope default; composer-at-rest
   send vs queue; model-picker Recent + browse; cost display + Show-cost toggle. Plus the ask-card
   hermetics batch (§2 companion).
 - **Lint:** `make lint` (namingcheck runs only here) before each merge — the `processing`→
   `working` rename and any new fields must pass namingcheck; deliberate camelCase (e.g.
-  `askPending` parallel-type) takes a `// serf:naming-ignore:` line.
+  `askPending` parallel-type) takes a `// evener:naming-ignore:` line.
 - **Golden churn:** any new `SessionMeta` field regenerates `goldenMeta()`/`goldenMetaJSON`
   (agent/snapshot_golden_test.go, omitzero keeps legacy round-trip). This sweep adds no
   SessionMeta fields by design (metrics fields already exist); confirm.
@@ -393,4 +393,4 @@ depth.
    base branch); A and C then own different files. See §Tracks.
 2. **Rank-function consolidation:** do it properly — explicit Track A task, one shared source in a
    common package, tests, sequenced before the §2 band work. See §1.
-3. **`serf/task/updated`:** emit the event + retire the 5s poller (Track D). See §8.
+3. **`evener/task/updated`:** emit the event + retire the 5s poller (Track D). See §8.

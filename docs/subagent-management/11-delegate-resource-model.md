@@ -647,7 +647,7 @@ appending the canonical bounded terminal_error preparation and the one
 delegate_run_finished event. Owner delivery and restart therefore use the same
 shape as every other non-settling failed finish, and the send returns a
 structured stable-ID/failed-outcome result. A process crash after run-start but
-before input persistence reconciles as failed/runtime_lost; Serf never claims
+before input persistence reconciles as failed/runtime_lost; Evener never claims
 the input was accepted to a caller whose tool result did not commit.
 
 If both input persistence and that compensating atomic batch append fail, the
@@ -1276,7 +1276,7 @@ conversation seen by a later resumable generation.
 This is a flag-day cutover. There is no migration, mixed loader, compatibility
 window, dual writer, fallback route, or feature flag.
 
-When opening a root, Serf always checks whether the existing root job history
+When opening a root, Evener always checks whether the existing root job history
 contains delegate JobRecords. If it does, startup or restore fails with
 legacy_delegate_state and directs the operator to use a fresh state root,
 whether or not a new delegate-tree store is also present. It must not silently
@@ -1639,7 +1639,7 @@ recency become lifecycle authority.
 Doctor output, AppWire, TUI, and web receive controller snapshots and project
 one row/card per stable delegate. The flag-day client cutover includes live
 notification ingress: the web protocol reducer invalidates the target thread's
-activity view on serf/delegate/updated, and the thread router applies that
+activity view on evener/delegate/updated, and the thread router applies that
 snapshot to the stable delegate module row. Shell job notifications do not
 update delegate rows. A generation may contribute activity to that row or
 transcript, but it does not create a second task/job row.

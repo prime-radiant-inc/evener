@@ -131,12 +131,12 @@ Run at minimum:
 ```bash
 git diff --check
 go test ./cmd/evener-hub -count=1
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 ### Manual smoke
 
-Use a local `serf-hub` server and verify:
+Use a local `evener-hub` server and verify:
 
 - Full `/s/<id>` workspace still has normal title/header behavior.
 - Side-pane `/thread/<id>` iframe hides the redundant inner title row.

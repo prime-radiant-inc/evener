@@ -40,7 +40,7 @@ this rewrite exists to remove. Why it cannot:
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-test-triage-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-test-triage-XXXXX)`.
 
 ## Steps
 

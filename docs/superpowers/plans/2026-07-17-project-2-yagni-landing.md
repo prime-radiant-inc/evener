@@ -9,7 +9,7 @@
 single-owner, synchronously durable API log and observational HTTP capture.
 
 **Architecture:** Keep the accepted semantic transcript, grouping, reader, and
-fuzz work already on `wip/systemic-serf-harness-execution`. Replace the current
+fuzz work already on `wip/systemic-evener-harness-execution`. Replace the current
 batched API-log writer with one locked target file per session, one validated
 newline-terminated write plus sync per record, and sticky quarantine after any
 write or sync uncertainty. Capture only the request/response bytes the provider
@@ -35,7 +35,7 @@ permission to widen Project 2.
 - Do not merge `wip/p2-thirdwave-apilog-core` or copy its rollback markers,
   storage-identity machinery, lock namespace, permission framework, compression
   emulation, `httptrace` wire-cycle splitting, or generalized secret matcher.
-- A session has one owning Serf process. The target-file lock is only a
+- A session has one owning Evener process. The target-file lock is only a
   nonblocking duplicate-owner detector; it is not a concurrent-writer protocol.
 - A resumed session is locked before restore or any transcript, job, metadata,
   or runtime mutation. Fresh unique session IDs remain lazy.
@@ -64,13 +64,13 @@ permission to widen Project 2.
   paths; unknown errors are transport failures. Do not walk arbitrary error
   graphs.
 - One canonical attempt equals one `http.RoundTripper.RoundTrip` invocation.
-  Redirects and explicit provider/Serf retry or fallback calls create distinct
+  Redirects and explicit provider/Evener retry or fallback calls create distinct
   attempts. Internal connection retries do not.
 - Capture only bytes the adapter reads. Do not add reads, drains, closes, gzip
   wrappers, transparent-transport unwrapping, or body-ownership changes.
 - Default tests are deterministic and credential/network independent. Use
   scripted providers and local test servers at external boundaries, never mocks
-  of Serf internals.
+  of Evener internals.
 - Do not fix OpenAI fallback context, SSE timeout policy, DONE cancellation,
   model-list precedence, or other unrelated provider behavior in this project.
 - Tests assert structured behavior, not large rendered strings or generated

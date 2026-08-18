@@ -91,6 +91,6 @@ facts — i.e. **multiple** (5–10) interleaved subtle facts, longer/denser his
 
 **Bottom line:** this is consistent with the prior-art finding that agent-chosen
 compaction has no clean efficacy edge over a strong auto-summary on easy cases. The
-serf-specific signal is: **the steering helps; the note's value is an unfalsified
+evener-specific signal is: **the steering helps; the note's value is an unfalsified
 insurance guarantee** that needs a harder corpus (multi-needle / weaker model) and the
 live choice eval to pin down.

@@ -1887,7 +1887,7 @@ console.log("PASS test-pending-registry.js");
 - [ ] **Step 2: Run, confirm RED**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-pending-registry.js
 ```
 
 Expected: FAIL — `pending.js` doesn't exist.
@@ -2025,7 +2025,7 @@ Add `<script src="/assets/pending.js"></script>` before `<script src="/assets/re
 - [ ] **Step 5: Confirm GREEN**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-pending-registry.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-pending-registry.js
 ```
 
 Expected: all four `ok` lines, ending with `PASS test-pending-registry.js`.
@@ -2147,7 +2147,7 @@ function respondErrorTo(sock, id, code, message) {
 - [ ] **Step 2: Confirm RED**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: FAIL — `SerfAppwire.setPendingRegistry` doesn't exist.
@@ -2226,7 +2226,7 @@ Add `setPendingRegistry` to the public exports at the bottom:
 - [ ] **Step 4: Confirm GREEN**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: PASS.
@@ -2314,7 +2314,7 @@ Append to `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
 - [ ] **Step 2: Confirm RED**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: PASS for the new tests (since tryReconcile is being called directly in the test). This actually confirms the registry works; the renderer-side hook is the missing piece.
@@ -2420,7 +2420,7 @@ function removeEntry(id) {
 - [ ] **Step 4: Confirm GREEN**
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-optimistic-rendering.js
+cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
 Expected: all PASS.
@@ -2481,7 +2481,7 @@ Retry link.
 
 ## Setup
 
-1. `serf-hub serve --listen 127.0.0.1:0` in one shell; capture port.
+1. `evener-hub serve --listen 127.0.0.1:0` in one shell; capture port.
 2. Spawn a session with `anthropic/claude-haiku-4-5-20251001` and
    prompt `please call the read_file tool once on README.md then stop`.
    Wait for the session to reach IDLE.
@@ -2529,7 +2529,7 @@ tmux against the TUI.
 ## Driver
 
 ```
-tmux new-session -d -s testbed 'serf-hub serve & serf-tui'
+tmux new-session -d -s testbed 'evener-hub serve & evener-tui'
 tmux send-keys -t testbed ':spawn anthropic/claude-haiku-4-5-20251001 ...'
 # Wait for IDLE
 tmux send-keys -t testbed 'this should fail visibly'
@@ -2577,7 +2577,7 @@ scenarios: optimistic rendering fails-fast + reconciles paths
 
 Four live e2e scenarios covering the new optimistic-rendering
 pattern: web + TUI, success + failure. Each drives against a real
-serf-hub + serf daemon spawning anthropic/claude-haiku-4-5-20251001
+evener-hub + evener daemon spawning anthropic/claude-haiku-4-5-20251001
 sessions.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

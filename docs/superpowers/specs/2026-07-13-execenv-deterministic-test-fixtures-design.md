@@ -19,7 +19,7 @@ creating the readiness file, so the tracked PID becomes `sleep` and the shell's
 TERM trap no longer exists. Cleanup signals the tracked process correctly, but
 the fixture has discarded the observer that was supposed to write the sentinel.
 
-Third, `TestRunProbeOfflineStates` gives a spawned fake Serf CLI a one-second
+Third, `TestRunProbeOfflineStates` gives a spawned fake Evener CLI a one-second
 deadline even though timeout behavior is not the contract under test. The
 repository gate runs modules concurrently, and under that load the otherwise
 immediate fake process was killed at 1,001 ms and reported `blocked_infra`.

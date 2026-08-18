@@ -17,7 +17,7 @@ terminal `communicate(end_turn:true)` callbacks.
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-passive-observer-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-passive-observer-XXXXX)`.
 - Create the successful read target before spawning:
 
   ```bash
@@ -72,8 +72,8 @@ terminal `communicate(end_turn:true)` callbacks.
 4. Find the parent transcript, observer transcript, and parent job log:
 
    ```bash
-   find ~/.local/state/serf/projects -path "*sessions/$SID.transcript.jsonl"
-   find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"
+   find ~/.local/state/evener/projects -path "*sessions/$SID.transcript.jsonl"
+   find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"
    ```
 
    The observer transcript path is the session id in the captured
@@ -142,7 +142,7 @@ terminal `communicate(end_turn:true)` callbacks.
 
 ## Manual Inspection Recipe
 
-Use `serf-doctor` rather than a one-off transcript or jobs parser.
+Use `evener-doctor` rather than a one-off transcript or jobs parser.
 Replace the selectors with the parent session id and observer
 transcript ref from the run:
 

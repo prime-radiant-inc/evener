@@ -72,7 +72,7 @@ The security test may use reflection over `ResponsesContinuationPlanInput` field
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields' -count=1
 ```
 
 Expected: FAIL because the planner types/helper do not exist yet.
@@ -122,7 +122,7 @@ The method does not need to use `ctx` yet beyond matching `Client` API style; ke
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestClient_PlanResponsesContinuation' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestClient_PlanResponsesContinuation' -count=1
 ```
 
 Expected: FAIL until the client method/interface exists.
@@ -149,7 +149,7 @@ Add tests proving:
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1
 ```
 
 Expected: FAIL until the adapter method exists.
@@ -179,8 +179,8 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-3a.md` w
 - [ ] **Step 2: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1 -v
 git diff --check
 ```
 

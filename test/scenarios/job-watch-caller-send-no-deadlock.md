@@ -19,12 +19,12 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 
 - Binaries built fresh from the watch-mailbox branch under test (the
   setup checklist in `docs/agentic-testing.md`): an isolated hub
-  (never Jesse's real hub on `9180`) spawning the freshly built `serf`.
-- Auth token at `$HOME/.serf/auth-token` (the isolated `$HOME`); a
+  (never Jesse's real hub on `9180`) spawning the freshly built `evener`.
+- Auth token at `$HOME/.evener/auth-token` (the isolated `$HOME`); a
   credentialed model that follows
   multi-step procedural tool instructions (the Phase 5.2 recipe uses
   `oai-work/<model>`; any enumerated live model works).
-- Hermetic workdir: `tmpdir=$(mktemp -d -t serf-e2e-wedge-XXXXX)`.
+- Hermetic workdir: `tmpdir=$(mktemp -d -t evener-e2e-wedge-XXXXX)`.
 
 ## Steps
 
@@ -59,7 +59,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 3. Poll `/api/sessions/local:$SID` until `state` returns `idle`
    (bound: 240s; note the elapsed time).
 4. Find the transcript
-   (`find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
+   (`find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl"`)
    and check the turn shape and tool results.
 
 ## Expected
@@ -135,7 +135,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   shell probes or the no-wedge assertion is vacuous. Small models
   occasionally reorder; re-prompt rather than accept out-of-order
   evidence.
-- On a suspected wedge, `kill -QUIT <serf daemon pid>` makes the Go
+- On a suspected wedge, `kill -QUIT <evener daemon pid>` makes the Go
   runtime dump all goroutine stacks to the daemon's stderr — look for a
   goroutine parked in `sync.(*Mutex).Lock` beneath an event-emission
   frame. Do this BEFORE shutdown, which would destroy the evidence.

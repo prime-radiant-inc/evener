@@ -26,9 +26,9 @@ inline banner.
 
 ## Pre-state
 
-- `serf-hub` running on an isolated `$HOME` and free port
+- `evener-hub` running on an isolated `$HOME` and free port
   (never `9180`, Jesse's real one — see the Setup checklist in
-  `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
+  `docs/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5` reachable
   through configured credentials. Both accept image inputs (verified
   2026-05-18 against the live hub).
@@ -124,7 +124,7 @@ inline banner.
    is where the exact assertion lives — the DOM can only hint at what
    reached the daemon:
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    SID=…  # from step 4
    for i in $(seq 1 60); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" \
@@ -170,12 +170,12 @@ inline banner.
 ## Cleanup
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
+TOKEN=$(cat "$HOME/.evener/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 # Optional, for run-to-run hermeticity:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/evener/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

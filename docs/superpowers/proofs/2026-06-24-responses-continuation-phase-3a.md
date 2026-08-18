@@ -8,8 +8,8 @@ Runtime continuation remains disabled. This phase does not compute request finge
 
 ## Evidence
 
-- `GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v`
-- `GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1 -v`
+- `GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v`
+- `GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation' -count=1 -v`
 - `git diff --check`
 
 ## Contracts Proven

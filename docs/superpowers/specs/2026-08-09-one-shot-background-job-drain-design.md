@@ -5,7 +5,7 @@ Status: Approved
 
 ## Purpose
 
-The one-shot `serf` command must preserve Serf's job lifecycle contract. An
+The one-shot `evener` command must preserve Evener's job lifecycle contract. An
 agent that ends a turn while session-owned work is running is idle, not done.
 The command must keep the session alive, deliver terminal job notifications,
 and run the resulting notification turns before it closes the session.
@@ -14,7 +14,7 @@ and run the resulting notification turns before it closes the session.
 
 Shell execution modes keep these meanings:
 
-- `foreground` waits inside the current model turn until it finishes or Serf
+- `foreground` waits inside the current model turn until it finishes or Evener
   promotes it to a managed job after the foreground wait bound;
 - `background` creates session-owned work that may continue while the agent is
   idle;
@@ -93,7 +93,7 @@ or polling shell output.
 
 ## Testing
 
-Tests use a scripted provider at the LLM boundary and real Serf job/session
+Tests use a scripted provider at the LLM boundary and real Evener job/session
 plumbing below it. They cover:
 
 - a background shell completes after the agent goes idle, its notification

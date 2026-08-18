@@ -1,16 +1,16 @@
 # Environment Variables
 
-Serf's supported environment variables are defined in `envvars`. Runtime code,
+Evener's supported environment variables are defined in `envvars`. Runtime code,
 help text, and tests should refer to those rows instead of hard-coding names.
 
-## Serf Commands
+## Evener Commands
 
 | Variable | Description |
 |---|---|
 | `SERF_ALLOWED_DECISIONS` | Restricts tool-decision modes allowed by the active profile. |
-| `SERF_HUB_ADDR` | Default hub address for `serf-tui`. |
-| `SERF_HUB_AUTH_TOKEN` | Hub capability token for `serf-tui`. |
-| `SERF_HUB_BIN` | Path to the `serf-hub` binary used by `serf-tui` autostart. |
+| `SERF_HUB_ADDR` | Default hub address for `evener-tui`. |
+| `SERF_HUB_AUTH_TOKEN` | Hub capability token for `evener-tui`. |
+| `SERF_HUB_BIN` | Path to the `evener-hub` binary used by `evener-tui` autostart. |
 | `SERF_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
 | `SERF_MODEL` | Default model as `provider/model` when `--model` is omitted. |
 | `SERF_OPENAI_RESPONSES_CONTINUATION` | Default OpenAI Responses continuation mode: `off` or `auto`. The default is `off`; `--openai-responses-continuation` and hub launch settings override it. On resume, an explicit launch value layers over the persisted session snapshot. `auto` is reserved for future continuation enablement and may allow provider-side storage/retention and affect provider-token/cost behavior. |
@@ -18,23 +18,23 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `SERF_PROVIDERS_CONFIG` | Path to `providers.toml`. |
 | `SERF_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
 | `SERF_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
-| `SERF_STATE_DIR` | Overrides the Serf state root. |
-| `SERF_TUI_LOG_FILE` | Writes `serf-tui` startup diagnostics to this file. |
+| `SERF_STATE_DIR` | Overrides the Evener state root. |
+| `SERF_TUI_LOG_FILE` | Writes `evener-tui` startup diagnostics to this file. |
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `SERF_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `SERF_PROVIDER`. |
 
-## Serf Internals
+## Evener Internals
 
-These are set or consumed by Serf-managed processes. Users normally should not
+These are set or consumed by Evener-managed processes. Users normally should not
 set them by hand.
 
 | Variable | Description |
 |---|---|
-| `SERF_HUB_SPAWNED` | Set by `serf-hub` for spawned `serf serve` daemons. |
-| `SERF_HUB_SPAWNED_CODEX` | Set by `serf-hub` for spawned Codex app-server processes. |
-| `SERF_HUB_TOKEN` | Per-hub bearer token passed to spawned `serf serve` daemons. |
-| `SERF_RUN_DIR` | Rendezvous directory passed by `serf-hub` to spawned daemons. |
-| `SERF_SCRATCH_DIR` | Serf-provided private scratch directory for one live session. It may be deleted when the session closes or Serf restarts; move durable artifacts into the workspace or another durable location. |
+| `SERF_HUB_SPAWNED` | Set by `evener-hub` for spawned `evener serve` daemons. |
+| `SERF_HUB_SPAWNED_CODEX` | Set by `evener-hub` for spawned Codex app-server processes. |
+| `SERF_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
+| `SERF_RUN_DIR` | Rendezvous directory passed by `evener-hub` to spawned daemons. |
+| `SERF_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
 
@@ -69,15 +69,15 @@ set them by hand.
 
 ## Inherited Environment
 
-Serf reads or preserves these standard environment variables for path
+Evener reads or preserves these standard environment variables for path
 resolution, graphical/headless detection, clipboard detection, and child
 process environments.
 
 | Variable | Description |
 |---|---|
-| `XDG_CACHE_HOME` | Base for Serf cache data. |
-| `XDG_CONFIG_HOME` | Base for Serf config, skills, plugins, and MCP config discovery. |
-| `XDG_STATE_HOME` | Base for Serf state when `SERF_STATE_DIR` is unset. |
+| `XDG_CACHE_HOME` | Base for Evener cache data. |
+| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery. |
+| `XDG_STATE_HOME` | Base for Evener state when `SERF_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
 | `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](sandboxing.md#caches-are-contained-never-poisoned)). |
@@ -107,5 +107,5 @@ process environments.
 | `SERF_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `SERF_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `SERF_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`SERF_RECORD_APPWIRE`/`SERF_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
-| `SERF_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `serf-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal `~/.serf` source. |
+| `SERF_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal `~/.evener` source. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

@@ -6,7 +6,7 @@
 > verification run and commit, and receives an independent specification and
 > code-quality review before the next task starts.
 
-**Goal:** Make Serf WebUI turn and queue mutations safe across lost responses,
+**Goal:** Make Evener WebUI turn and queue mutations safe across lost responses,
 reconnects, daemon restarts, and full page reloads while making
 `thread/read(subscribe: true)` an atomic snapshot-to-live handoff.
 
@@ -16,7 +16,7 @@ in-scope mutations, their queue projection, reservations, receipts, and
 recovery ownership. The Hub forwards mutation identities and typed outcomes
 without deciding dynamic session state. The browser persists ordered intents
 in IndexedDB before dispatch and reconciles only by mutation identity.
-Source-specific projection gates make Serf snapshot cuts atomic and make Codex
+Source-specific projection gates make Evener snapshot cuts atomic and make Codex
 converge through full-state replacement instead of overlapping deltas.
 
 **Tech Stack:** Go, JSON AppWire, afero filesystem seams, existing transcript
@@ -25,12 +25,12 @@ Library.
 
 ## Binding Constraints
 
-- This is a flag-day change to `serf-appwire-v2`; do not add compatibility
+- This is a flag-day change to `evener-appwire-v2`; do not add compatibility
   negotiation, legacy mutation shapes, or fallback behavior.
 - The first implementation covers exactly `turn/start`, `turn/steer`,
   `turn/queue`, `turn/drainAsSteer`, `turn/promoteQueuedAsSteer`,
   `turn/cancelQueued`, and `turn/interrupt`.
-- Serf and Codex `thread/clear` are unavailable in v2 until replacement has a
+- Evener and Codex `thread/clear` are unavailable in v2 until replacement has a
   separate retry-safe design.
 - The daemon session state machine, not Hub capability projections, owns
   dynamic precondition checks and mutation replay.
@@ -70,7 +70,7 @@ Library.
 **Interfaces:**
 
 - Add required `InitializeParams.ProtocolVersion`.
-- Set `appwire.ProtocolVersion` to `serf-appwire-v2`.
+- Set `appwire.ProtocolVersion` to `evener-appwire-v2`.
 - Add `ClientMutationID` and required method-specific preconditions to all
   seven parameter types.
 - Add `MutationReceipt`, `MutationProjectionState`, typed response structs for
@@ -98,11 +98,11 @@ Library.
   validation, and server initialize gate. Use exact equality; do not introduce
   a capability-negotiation branch.
 
-- [ ] Change Serf source method signatures and forwarding stubs to retain the
+- [ ] Change Evener source method signatures and forwarding stubs to retain the
   complete typed responses. Make Codex mutation methods return unsupported
   without issuing upstream mutation calls.
 
-- [ ] Set `ThreadClear` false for Hub/Serf capabilities and return unsupported
+- [ ] Set `ThreadClear` false for Hub/Evener capabilities and return unsupported
   from direct v2 `thread/clear` handlers.
 
 - [ ] Run `make generate`, then:
@@ -813,7 +813,7 @@ Library.
 - [ ] Search for forbidden stale behavior:
 
   ```bash
-  rg -n 'PendingConfirmationTimeout|PENDING_TIMEOUT_MS|didn.t confirm|view did not update|reload before retry|serf-appwire-v1' .
+  rg -n 'PendingConfirmationTimeout|PENDING_TIMEOUT_MS|didn.t confirm|view did not update|reload before retry|evener-appwire-v1' .
   ```
 
   Expected: no production matches; any fixture match must be an explicit

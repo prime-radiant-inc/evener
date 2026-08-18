@@ -4,7 +4,7 @@
 chain (§1, §5.4) the whole feature exists to light up. From a *different* session's
 viewport, an asking session must (a) enter the hub's `needs_you` tier with `ask_pending`
 set, (b) raise that tab's attention count on the title and favicon, and (c) fire the OS
-notification channel — driven by the hub's `serf/attention/changed` broadcast. Ask-produced
+notification channel — driven by the hub's `evener/attention/changed` broadcast. Ask-produced
 `awaiting` normalizes to `needs_you` exactly like any other producer; there is no
 ask-specific wiring (`docs/superpowers/specs/2026-07-03-attention-status-model-design.md`
 §11).
@@ -18,8 +18,8 @@ Four facts that invert what this card used to say:
   `assets/notifications.js` (deleted at `660376f78`). It reads `treeStore` +
   `prefsStore` and is started once by `AppShell` (`shell/AppShell.tsx:43,48`).
 - **All four notification prefs default OFF** (`stores/prefs.ts:268-273`) and are flat
-  `localStorage` keys `serf.prefs.notifications{Title,Favicon,Os,Sound}` holding `"1"`/`"0"`
-  (`:224-229`), hydrated once at module load. There is no `serf-hub.notifications` JSON
+  `localStorage` keys `evener.prefs.notifications{Title,Favicon,Os,Sound}` holding `"1"`/`"0"`
+  (`:224-229`), hydrated once at module load. There is no `evener-hub.notifications` JSON
   blob any more, and a write *after* the page is up does not retroactively rehydrate the
   store. This card must opt in and reload.
 - **There is no sidebar "Needs you" section to assert on.** The Rail deliberately does not
@@ -27,7 +27,7 @@ Four facts that invert what this card used to say:
   session's own row instead. `tree.needs_you` itself is untouched and is still what the
   notification engine snapshots (`notifications/attention.ts:53-67`) — so the tier
   assertion moves to the REST response, and the DOM assertion moves to the row's gloss.
-- **The client's edge detection is snapshot-diffing, not `prevLevel`.** A `serf/attention/changed`
+- **The client's edge detection is snapshot-diffing, not `prevLevel`.** A `evener/attention/changed`
   broadcast triggers a debounced `/api/tree` refetch (`stores/tree.ts:443-453`, 250 ms);
   `notifications/index.ts` diffs successive tree snapshots and fires on refs that newly
   appear in `needs_you` (`notifications/attention.ts:70-84`).
@@ -46,7 +46,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
@@ -63,8 +63,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    settle `awaiting` (a plain completed turn with nothing pending rests `awaiting`, not
    `idle`; see `status-vocabulary-roundtrip.md`):
    ```bash
-   tmpdir_b=$(mktemp -d -t serf-e2e-ask-notify-b-XXXXX)
-   bodyB=$(jq -n --arg wd "$tmpdir_b" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"serf", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
+   tmpdir_b=$(mktemp -d -t evener-e2e-ask-notify-b-XXXXX)
+   bodyB=$(jq -n --arg wd "$tmpdir_b" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
    SIDB=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyB" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDB" | jq -r '.state // ""')
@@ -81,10 +81,10 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    ```
    ```javascript
    // values are the strings "1"/"0", never JSON (stores/prefs.ts:224-229)
-   localStorage.setItem("serf.prefs.notificationsTitle", "1");
-   localStorage.setItem("serf.prefs.notificationsFavicon", "1");
-   localStorage.setItem("serf.prefs.notificationsOs", "1");
-   localStorage.removeItem("serf.prefs.notificationsLoudScope");  // default "asks"
+   localStorage.setItem("evener.prefs.notificationsTitle", "1");
+   localStorage.setItem("evener.prefs.notificationsFavicon", "1");
+   localStorage.setItem("evener.prefs.notificationsOs", "1");
+   localStorage.removeItem("evener.prefs.notificationsLoudScope");  // default "asks"
    "seeded"
    ```
    ```
@@ -102,8 +102,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
      return {
        armed: true,
        port: location.port,
-       titleOptIn: localStorage.getItem("serf.prefs.notificationsTitle"),
-       osOptIn: localStorage.getItem("serf.prefs.notificationsOs"),
+       titleOptIn: localStorage.getItem("evener.prefs.notificationsTitle"),
+       osOptIn: localStorage.getItem("evener.prefs.notificationsOs"),
      };
    })()
    ```
@@ -113,10 +113,10 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    open.
 3. **(browser-free)** Now spawn Session A with a question-asking first turn:
    ```bash
-   tmpdir_a=$(mktemp -d -t serf-e2e-ask-notify-a-XXXXX)
+   tmpdir_a=$(mktemp -d -t evener-e2e-ask-notify-a-XXXXX)
    bodyA=$(jq -n --arg wd "$tmpdir_a" '{
      prompt: "Before doing any other work, call the ask_user tool once. Ask exactly one question: header \"Rollout\", question \"Should we ship to 10% of traffic first?\", with exactly two options: canary (detail \"10% ramp, safer\") and full (detail \"100% at once, faster\"). Do not do anything else first.",
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
+     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
    }')
    SIDA=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyA" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
@@ -165,8 +165,8 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    survive, the array does not need to), then spawn a **third** throwaway session with a
    no-ask prompt and wait for it to settle `awaiting`:
    ```bash
-   tmpdir_c=$(mktemp -d -t serf-e2e-ask-notify-c-XXXXX)
-   bodyC=$(jq -n --arg wd "$tmpdir_c" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"serf", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
+   tmpdir_c=$(mktemp -d -t evener-e2e-ask-notify-c-XXXXX)
+   bodyC=$(jq -n --arg wd "$tmpdir_c" '{prompt:"Say hello and stop.", model:"openai/gpt-5.5", working_dir:$wd, harness:"evener", branch:"", access_mode:"full", agent:"default", launch_overrides:{}}')
    SIDC=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$bodyC" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
      st=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SIDC" | jq -r '.state // ""')
@@ -191,7 +191,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
   `needs_you` corner dot (`notifications/favicon.ts:14,33-41`). Falsify: no dot after the
   opt-in.
 - **Step 4 (OS channel)**: `captured` contains exactly one entry whose `title` is
-  `serf · <Session A's title or its ref>` (`notifications/channels.ts:22`). This is the
+  `evener · <Session A's title or its ref>` (`notifications/channels.ts:22`). This is the
   **transition into `needs_you` from outside the tier** that `detectFires` looks for
   (`notifications/attention.ts:70-84`), fired only because the tab is unfocused, is the
   Web-Locks leader, and opted in (`notifications/index.ts:77-82`). Falsify: nothing
@@ -247,7 +247,7 @@ gone and 404s silently, leaving the daemon running to poison the next run's stat
   observe and the OS notification for that ask is missed. Not a bug — the documented
   invariant. Always open and settle the watching tab first.
 - **One extra tab on this origin can silently break step 4.** OS/sound fire only on the
-  Web-Locks leader, and the first tab to take the `serf-hub-os-leader` lock holds it for
+  Web-Locks leader, and the first tab to take the `evener-hub-os-leader` lock holds it for
   its whole lifetime (`notifications/leader.ts:12-45`). A leftover hub tab from an earlier
   run makes Session B's tab a follower, and `captured` stays empty with everything else
   correct. Close other hub tabs, or claim a fresh Chrome profile.

@@ -18,12 +18,12 @@ copying while presenting supported ANSI styling to the reader.
 1. Parse SGR sequences into structured runs and render those runs as React
    elements. Use the low-level `anser` parser rather than accepting generated
    HTML. This keeps output escaped by React, supports the common ANSI color and
-   text-attribute vocabulary, and leaves Serf in control of theme integration.
+   text-attribute vocabulary, and leaves Evener in control of theme integration.
 2. Embed a terminal emulator. This would also implement cursor addressing,
    erasure, and alternate-screen behavior, but it would add a large interactive
    subsystem that conflicts with the transcript's wrapped, selectable,
    foldable log presentation.
-3. Implement an ANSI state machine in Serf. This avoids a dependency but
+3. Implement an ANSI state machine in Evener. This avoids a dependency but
    duplicates a subtle standard whose resets, extended colors, and malformed
    input behavior are easy to get wrong.
 
@@ -48,7 +48,7 @@ hidden earlier line and continues into the visible tail. It emits text and
 - selective and full resets.
 
 The sixteen named terminal colors map through dedicated light- and dark-theme
-tokens so they remain legible on Serf surfaces. Extended palette and truecolor
+tokens so they remain legible on Evener surfaces. Extended palette and truecolor
 values use parser-validated color values. Blink is ignored: captured output
 must not introduce animation. Unsupported cursor, erase, device-control, and
 OSC sequences are consumed rather than displayed or executed. This component

@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Worktree: `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/transcript-view-design`, branch `transcript-view-design`. All commands run from `cmd/evener-hub/frontend` unless noted.
+- Worktree: `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/transcript-view-design`, branch `transcript-view-design`. All commands run from `cmd/evener-hub/frontend` unless noted.
 - No new colours, no new type sizes, no new motion (spec §Non-goals).
 - Colour allowlist: non-widget stylesheets may not reference `--danger`/`--attention`/`--alive`; tone comes from `Chip`/`FailureGlyph` widgets only (`styles/token-contract.test.ts` enforces).
 - Eyebrow idiom: `--font-size-caption`, `--font-weight-medium`, `--ink-low`, sentence case, no uppercase transform (design-system.md §Type).

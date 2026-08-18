@@ -20,7 +20,7 @@ paste-back flow automatically.
   is loopback-locked (`http://localhost:1455/auth/callback`). We don't own it,
   so we cannot point a redirect at the hub. Device-code sidesteps redirects
   entirely.
-- **Touching the CLI device flow** (`serf openai login --device`) or the
+- **Touching the CLI device flow** (`evener openai login --device`) or the
   existing redirect/paste-back code, beyond wiring paste-back in as the
   fallback.
 - **Background polling goroutines in the hub.** Polling is UI-driven (§4.2).
@@ -39,7 +39,7 @@ The device-code building blocks already exist and are used by the CLI:
 
 The hub auth RPCs follow one pattern: `appserver.HandleTyped(server.Router(),
 appwire.MethodSerfAuth…, handler)` calling a `hubAuthController` method, with
-`notifyAuthUpdated(server, provider, activeSource)` pushing `serf/auth/updated`
+`notifyAuthUpdated(server, provider, activeSource)` pushing `evener/auth/updated`
 after a state change. `LoginComplete` shows the exchange→claims→`SaveAuth`
 pattern: exchange tokens, `authRecordFromTokens`, enrich via
 `ParseIDTokenClaims`, `SaveAuth(c.stateDir, record)`.
@@ -96,8 +96,8 @@ var ErrDeviceCodeNotEnabled = errors.New("device-code login is not enabled for t
 
 New appwire methods/types (`internal/appwire/types.go`):
 
-- `MethodSerfAuthDeviceStart = "serf/auth/device/start"`
-- `MethodSerfAuthDevicePoll  = "serf/auth/device/poll"`
+- `MethodSerfAuthDeviceStart = "evener/auth/device/start"`
+- `MethodSerfAuthDevicePoll  = "evener/auth/device/poll"`
 - `AuthDeviceStartParams{ Provider string }`
 - `AuthDeviceStartResponse{ Provider, FlowID, UserCode, VerificationURL string; IntervalSeconds int; Fallback bool }`
 - `AuthDevicePollParams{ Provider, FlowID string }`
@@ -158,7 +158,7 @@ In `credentials.html`, the `oauth` action calls `authDeviceStart(provider)`:
 4. UI polls `authDevicePoll` each interval → hub `PollDeviceAuthOnce`.
 5. On success the hub exchanges + saves the OAuth record, returns `authorized`
    + status; UI refreshes and the row shows `oauth` (using PRI-1877's layered
-   display). `serf/auth/updated` fires.
+   display). `evener/auth/updated` fires.
 
 ## 5. Error handling
 

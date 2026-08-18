@@ -1,8 +1,8 @@
-# serf-doctor
+# evener-doctor
 
-Read-only forensic inspector for serf sessions, jobs, watches, and the session
+Read-only forensic inspector for evener sessions, jobs, watches, and the session
 tree. It reads settled on-disk state (`transcript.jsonl`, `api.jsonl`, `meta.json`,
-`jobs.jsonl`, `mutations/<sid>.json`) through the same folds and types the serf
+`jobs.jsonl`, `mutations/<sid>.json`) through the same folds and types the evener
 runtime uses, so a schema change either flows through automatically or fails to
 compile — the numbers it reports are the runtime's numbers, never hand-parsed.
 The client-mutation store is the one exception, and it is a deliberate one: the
@@ -10,15 +10,15 @@ runtime's snapshot types are unexported, so `mutations` mirrors the persisted
 shape and refuses anything it does not recognize rather than reporting a journal
 it could not fully decode.
 
-This is the home of serf's session/transcript diagnostics. The terminal-bench eval
+This is the home of evener's session/transcript diagnostics. The terminal-bench eval
 scripts that used to live in `tools/` were removed (they only served the benchmark);
 the one capability worth keeping — API-call analysis — became the `apilog`
 subcommand here.
 
 Build: `make build-doctor` (or `go build ./cmd/evener-doctor`). Agent-facing usage
-and the diagnose→findings workflow live in the bundled `doctoring-serf` skill;
-design rationale is in `docs/superpowers/specs/2026-06-19-serf-doctor-unified-design.md`
-and `…/2026-06-20-serf-doctor-apilog-design.md`.
+and the diagnose→findings workflow live in the bundled `doctoring-evener` skill;
+design rationale is in `docs/superpowers/specs/2026-06-19-evener-doctor-unified-design.md`
+and `…/2026-06-20-evener-doctor-apilog-design.md`.
 
 ## Subcommands (the tools)
 
@@ -26,7 +26,7 @@ Every session-scoped subcommand takes a session selector first: `local:<id>`,
 `proj:<project-id>:<id>`, or a bare `<id>` (searched across buckets). The
 state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path>`
 (state root; default `SERF_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
-`--json`. Run `serf-doctor <subcommand> -h` for the full flag list.
+`--json`. Run `evener-doctor <subcommand> -h` for the full flag list.
 
 | Tool | What it does | Key flags |
 |---|---|---|
@@ -42,16 +42,16 @@ state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path
 ## Examples
 
 ```sh
-serf-doctor locate local:01KV8MVQ7BZHX0EN8D7ZH5QDE4
-serf-doctor transcript <id> --count delegate_send       # real invocations, not mentions
-serf-doctor transcript <id> --range last:1 --full-text  # the whole turn text — is this one response repeating itself?
-serf-doctor apilog <id> --summary                       # token spend + empties + errors at a glance
-serf-doctor apilog <id> --cache-spikes --threshold 40000
-serf-doctor apilog <id> --validate                      # whole-history integrity scan; nonzero exit if any record is bad
-serf-doctor jobs <id>                                   # what jobs has this session run, and how did each end
-serf-doctor jobs <id> --job job_01KV8MVQ7BZHX0EN8D7ZH5   # what state is this one job in
-serf-doctor mutations <id>                              # did the user's message reach the daemon at all?
-serf-doctor watches <id> --self-loops
-serf-doctor turnids                                     # which sessions carry a reserved turn id that collides with an entry's position
-serf-doctor tree <id> --observers
+evener-doctor locate local:01KV8MVQ7BZHX0EN8D7ZH5QDE4
+evener-doctor transcript <id> --count delegate_send       # real invocations, not mentions
+evener-doctor transcript <id> --range last:1 --full-text  # the whole turn text — is this one response repeating itself?
+evener-doctor apilog <id> --summary                       # token spend + empties + errors at a glance
+evener-doctor apilog <id> --cache-spikes --threshold 40000
+evener-doctor apilog <id> --validate                      # whole-history integrity scan; nonzero exit if any record is bad
+evener-doctor jobs <id>                                   # what jobs has this session run, and how did each end
+evener-doctor jobs <id> --job job_01KV8MVQ7BZHX0EN8D7ZH5   # what state is this one job in
+evener-doctor mutations <id>                              # did the user's message reach the daemon at all?
+evener-doctor watches <id> --self-loops
+evener-doctor turnids                                     # which sessions carry a reserved turn id that collides with an entry's position
+evener-doctor tree <id> --observers
 ```

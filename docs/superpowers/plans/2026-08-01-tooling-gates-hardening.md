@@ -267,12 +267,12 @@ Interfaces:
 From the repository root, use this exact scratch probe. The repository path is captured before changing directory, so every replacement points at the worktree rather than the consumer itself:
 
     repo_root="$(pwd -P)"
-    probe_root="$(mktemp -d -t serf-root-consumer.XXXXXX)"
+    probe_root="$(mktemp -d -t evener-root-consumer.XXXXXX)"
     trap 'rm -rf "$probe_root"' EXIT
     go list ./... >"$probe_root/root-packages"
     (
             cd "$probe_root" || exit 1
-            go mod init example.com/serf-root-consumer
+            go mod init example.com/evener-root-consumer
             go mod edit -require=primeradiant.com/evener@v0.0.0
             go mod edit \
                     -replace=primeradiant.com/evener@v0.0.0="$repo_root" \

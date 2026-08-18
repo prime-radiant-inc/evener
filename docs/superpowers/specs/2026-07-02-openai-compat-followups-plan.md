@@ -12,7 +12,7 @@ Branch: `bot/openaicompat-provider-design`, worktree
 test suite, -race on touched, `make lint`, jstests); e2e verified against a
 fake gateway (wire assertions for every new surface) and LIVE lunaroute
 glm-5.2-nvfp4 (xhigh + none; a later re-check hit the gateway's own
-503 INFERENCE_UNAVAILABLE outage, confirmed via raw curl — not a serf
+503 INFERENCE_UNAVAILABLE outage, confirmed via raw curl — not a evener
 regression).
 
 ## Review-loop state (all closed)
@@ -98,7 +98,7 @@ commits. Rules learned the hard way this session:
 
 ## Wave 3 — DONE (cc06ddb3; scouting found req.SessionID/PromptCacheKey already plumbed, so no session-side changes were needed)
 
-- **G.** Investigate serf's EXISTING `llm.Request.PromptCacheKey` /
+- **G.** Investigate evener's EXISTING `llm.Request.PromptCacheKey` /
   `PromptCacheRetention` fields (seen in `agent/session_model_call.go`
   fallback path — something already sets/clears them; map who populates them
   and for which providers). Then: emit `prompt_cache_key` +
@@ -117,13 +117,13 @@ commits. Rules learned the hard way this session:
    (scratchpad `e2e/fakegw.py` — recreate if gone: POST logger + SSE
    responder; providers.toml with lunaroute-shaped instance) + live lunaroute
    smoke (`--reasoning-effort xhigh` and `none`; key: tomllib-parse
-   `~/.serf/credentials.toml` providers.lunaroute.api_key into
+   `~/.evener/credentials.toml` providers.lunaroute.api_key into
    LUNAROUTE_API_KEY, never echo).
 2. roborev refine loop — ran to convergence; every job in the review-loop
    state above is closed.
 3. Update the base spec §5/§8 + docs/llm-providers.md for D/E/F/G surfaces.
 4. Update memory
-   (`~/.claude/projects/-home-jesse-git-prime-radiant-serf/memory/`) and
+   (`~/.claude/projects/-home-jesse-git-prime-radiant-evener/memory/`) and
    report to Jesse. Jesse merges/pushes; do NOT push.
 
 ## Deliberately out of scope (Jesse has not asked)

@@ -1,4 +1,4 @@
-# Serf Sandboxing — Design (v4)
+# Evener Sandboxing — Design (v4)
 
 Date: 2026-07-08 — lineage: v1 recon; v2 (job 2319: Landlock allowlist-only →
 bwrap-preferred, fail-closed floor); v3 (job 2321: apply_patch bypass, git-config
@@ -17,7 +17,7 @@ from planting anything that runs later outside the sandbox. Opt-in per session;
 **immutable for the session's lifetime** — no tool call can relax it.
 
 Non-goals for v1: rich per-tool approval/allowlist engine (orthogonal,
-deferred); domain-allowlist egress (network is all-or-nothing); confining serf's
+deferred); domain-allowlist egress (network is all-or-nothing); confining evener's
 own long-lived process; Windows (fail closed).
 
 ## Threat model — two layers, one adversary
@@ -31,15 +31,15 @@ processes**, not a fuzzer. Both layers must hold against deliberate evasion.
    Kernel policy is inode/namespace based, inherited by all descendants (an
    `npm install` postinstall is as confined as its shell), and includes a fresh
    PID namespace + private `/proc` so host process state is invisible.
-2. **Serf's own file tools run in the unsandboxed serf process** → **in-process
+2. **Evener's own file tools run in the unsandboxed evener process** → **in-process
    enforcement that is both path-correct and race-safe** (see below). This is
    the *privileged* path — a file tool that follows an attacker-planted symlink
-   writes with serf's full authority. It gets the most scrutiny.
+   writes with evener's full authority. It gets the most scrutiny.
 
 ### Race-safe path enforcement (v4 — the load-bearing in-process requirement)
 
 Resolve-then-open is a TOCTOU hole: a model-spawned background job can swap a
-path component for an out-of-worktree symlink between serf's check and its
+path component for an out-of-worktree symlink between evener's check and its
 `open`/`write`/`rename`. Requirements:
 
 - **Linux**: `openat2(2)` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (via
@@ -67,7 +67,7 @@ path component for an out-of-worktree symlink between serf's check and its
   in-process denylist **must include host pseudo-filesystems**, not just
   credential dirs: `/proc`, `/sys`, `/dev/fd`, `/dev/mem`, `/run/user/*` (agent
   sockets). Rationale (v4 High): file-tool reads are "anywhere − denylist," and
-  `read_file("/proc/<serf-pid>/environ")` would otherwise read **serf's own
+  `read_file("/proc/<evener-pid>/environ")` would otherwise read **evener's own
   environment — including the provider API key**. The spawned-proc `/proc` fix
   does not cover the file-tool path; this does.
 - **Residuals, documented not claimed-closed**: a *pre-existing* hardlink to a
@@ -93,7 +93,7 @@ A sandboxed write that executes *later, unsandboxed* is an escape. Coverage:
 `--sandbox <mode>`, set once. Network is an independent flag. All sandboxed modes
 share: per-session tmp (writable, `TMPDIR`), secrets+pseudo-fs denylist (masked),
 git-metadata protection, `--unshare-pid`+fresh `--proc`, minimal `/dev`, env
-floor, no inherited serf fds/sockets, race-safe file-tool enforcement.
+floor, no inherited evener fds/sockets, race-safe file-tool enforcement.
 
 | Mode | file-tool reads | file-tool writes | spawned reads | spawned writes |
 |---|---|---|---|---|
@@ -111,7 +111,7 @@ floor, no inherited serf fds/sockets, race-safe file-tool enforcement.
   File tools stay worktree-only (tools = what the *model* may browse; kernel =
   what a *process* needs to run).
 - **Secrets denylist** (masked, both layers): `~/.ssh`, `~/.aws`,
-  `~/.config/gcloud`, `~/.netrc`, `~/.config/serf`, `~/.gnupg`,
+  `~/.config/gcloud`, `~/.netrc`, `~/.config/evener`, `~/.gnupg`,
   `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`, **+ pseudo-fs
   (`/proc`, `/sys`, `/dev/fd`, `/dev/mem`, `/run/user/*`)**. User-extensible both
   directions; never model-changeable mid-session.
@@ -140,19 +140,19 @@ floor, no inherited serf fds/sockets, race-safe file-tool enforcement.
   The overlay is a *performance* optimization; the security floor (no poisoning)
   holds regardless of backend.
 - **Session tmp**: per-session (not shared `/tmp`), `TMPDIR`, cleaned on end;
-  crashed-session dirs age-swept at next serf start.
+  crashed-session dirs age-swept at next evener start.
 
 ## Environment & descriptor floor
 
-- Serf already drops `*KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*` env.
+- Evener already drops `*KEY*/*SECRET*/*TOKEN*/*PASSWORD*/*CREDENTIAL*` env.
   Sandbox raises a floor **on top of** the user's `EnvPolicy` (composes; scrub
   stays an independent knob): also drop `SSH_AUTH_SOCK`, cloud cred-agent vars
   (`AWS_*`, `GOOGLE_*`, `GCLOUD_*`, `VAULT_*`, worktree-external `KUBECONFIG`).
 - ssh-agent / gpg-agent Unix sockets are **not** bind-mounted in (a live agent
   socket is sign-anything/exfil even with `~/.ssh` masked).
-- **Spawned commands inherit no serf fds/sockets** beyond stdio: `exec.Cmd`
-  runs with empty `ExtraFiles`, serf's fds are `O_CLOEXEC`, and bwrap passes no
-  extra fds. Prevents inheriting serf's live LLM-API connection or credential
+- **Spawned commands inherit no evener fds/sockets** beyond stdio: `exec.Cmd`
+  runs with empty `ExtraFiles`, evener's fds are `O_CLOEXEC`, and bwrap passes no
+  extra fds. Prevents inheriting evener's live LLM-API connection or credential
   fds.
 
 ## Network — one flag, honest semantics
@@ -162,7 +162,7 @@ load-bearing; egress denial is opt-in — deliberately diverges from
 Codex/Claude-Code default-deny).
 
 `network=off` governs the **tool plane**: spawned procs (`--unshare-net`: no
-interfaces — no TCP/UDP/DNS); serf-process tool egress (`web_fetch`/`web_search`,
+interfaces — no TCP/UDP/DNS); evener-process tool egress (`web_fetch`/`web_search`,
 remote HTTP/SSE MCP servers) disabled with a legible error; and **provider-native
 egress** (server-side web-search / fetch the provider runs for the model) — see
 the provider-capability registry (M-task) which **fails closed for unknown
@@ -285,7 +285,7 @@ Everything flows through `execenv.ExecutionEnvironment` →
 
 ## M7 — In-UI escalation (specced now, built last)
 
-Serf has no harness approval prompt (PreToolUse only denies; `ask_user` is
+Evener has no harness approval prompt (PreToolUse only denies; `ask_user` is
 model-initiated — wrong trust direction). New human-gated AppWire primitive,
 interactive only:
 
@@ -321,7 +321,7 @@ interactive only:
 - **Adversarial escape suite** (named deliverable, extends
   `cmd/evener-hub/sandbox_test.go`'s containment invariant): symlink-out (file
   tools + shell), **TOCTOU symlink-swap race during read/write/rename/apply_patch
-  (concurrent job)**, **`read_file("/proc/<serf-pid>/environ")` + `/proc/1/root`
+  (concurrent job)**, **`read_file("/proc/<evener-pid>/environ")` + `/proc/1/root`
   + `/proc/<pid>/root` aliasing** (expect denied both layers), fd/root aliasing,
   `ld-linux.so <denied-binary>`, `.git/hooks` write + `core.hooksPath` redirect
   persist attempt, `config.worktree`/submodule-config tamper,
@@ -335,7 +335,7 @@ interactive only:
   bwrap + Landlock paths each e2e'd; M1 contract suite runs against both Linux
   backends and Seatbelt (parity).
 - Edge cases pinned: nested worktrees, submodules, resumed sessions re-applying
-  policy, deleted-then-recreated roots, delegate resume after serf restart,
+  policy, deleted-then-recreated roots, delegate resume after evener restart,
   overlay-unavailable degradation.
 
 ## Resolved decisions (Jesse, 2026-07-08)

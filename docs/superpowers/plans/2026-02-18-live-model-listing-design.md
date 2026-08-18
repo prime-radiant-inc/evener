@@ -2,7 +2,7 @@
 
 ## Problem
 
-The serf TUI's `/model` command requires users to type the exact model ID. There's no way to discover which models are available for the current provider. The embedded LiteLLM catalog has model metadata but may be stale and includes models the user's API key can't access.
+The evener TUI's `/model` command requires users to type the exact model ID. There's no way to discover which models are available for the current provider. The embedded LiteLLM catalog has model metadata but may be stale and includes models the user's API key can't access.
 
 ## Solution
 

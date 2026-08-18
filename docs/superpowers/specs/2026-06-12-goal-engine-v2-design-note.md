@@ -17,7 +17,7 @@ to be confirmed or corrected before speccing.**
 
 ## Baseline (goal v1, shipped)
 
-Per `docs/superpowers/specs/2026-06-06-serf-goal-design.md` (revision 4 + amendments):
+Per `docs/superpowers/specs/2026-06-06-evener-goal-design.md` (revision 4 + amendments):
 the model self-declares completion via `update_goal("complete"|"blocked")` behind an
 evidence-audit prompt; the sole automatic stop is the two-tier no-progress breaker
 (`NoProgressLimit` 3 / `NeverProgressedLimit` 6); state persists in
@@ -28,7 +28,7 @@ claim against durable state.
 ## The four directions
 
 1. **"Conditions as queries over durable state."** Reading: a goal can carry
-   machine-evaluable conditions expressed as queries over serf's durable records
+   machine-evaluable conditions expressed as queries over evener's durable records
    (jobstore job records, terminal events, watch state) instead of — or gating —
    the model's self-declaration. The job-control contract's durable-reconstruction
    invariants (`docs/job-control.md` § "Durable reconstruction invariants") are the

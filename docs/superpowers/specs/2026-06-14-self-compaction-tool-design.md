@@ -1,6 +1,6 @@
 # Self-Compaction Tool Design
 
-An agent-invoked `compact` tool that lets serf compact its own context **by choice**
+An agent-invoked `compact` tool that lets evener compact its own context **by choice**
 at a clean task boundary — supplying the keep/clear judgment itself — layered over
 the existing automatic compactor as a safety net.
 
@@ -17,7 +17,7 @@ The subsystem it builds on is documented in
 
 ## Problem
 
-serf already auto-compacts on context pressure (default `compact` strategy:
+evener already auto-compacts on context pressure (default `compact` strategy:
 deterministic checkpoint at 0.80, cheap-model narrative summary at 0.90). The summary
 is authored *post-hoc by a cheap model* that did not do the work. This produces the
 well-documented failure modes catalogued in the prior-art note: **brevity bias**
@@ -43,7 +43,7 @@ any of that. We want to give it one.
 
 - **Not** replacing the automatic compactor. It stays as the fallback.
 - **Not** selective mid-history purging. Dropping specific old turns while keeping
-  others reintroduces the prompt-cache busting serf deliberately removed. Compaction
+  others reintroduces the prompt-cache busting evener deliberately removed. Compaction
   remains whole-prefix replacement.
 - **Not** a bet on agent timing calibration. The warning nudge and the raised
   auto-fallback together cover both "compacts too rarely" and "never compacts."
@@ -78,7 +78,7 @@ and must work with *any* strategy.
 The strategy-independent seam is **`Manager.ForceCompact`** — a `Manager` method,
 reachable regardless of which `Strategy` is active and regardless of whether that
 strategy routes through `Manager.MaybeCompact` or inlines its own layers. (Four of
-serf's seven strategies do **not** call `MaybeCompact`, so a force-flag consumed inside
+evener's seven strategies do **not** call `MaybeCompact`, so a force-flag consumed inside
 `MaybeCompact` would silently no-op for them; the `Manager` seam avoids that.)
 
 - The **trigger** (the tool), the **pinned note**, and the **warning nudge** live at the
@@ -249,7 +249,7 @@ The latch resets after any compaction. MemGPT's proven "memory-pressure warning"
   tool result can jump <0.75 → >0.80 in one round, firing the checkpoint before the agent sees
   the nudge. The nudge gives an *earlier opportunity*; the checkpoint/summary fallback is the
   guarantee.
-- **One audience for the agent; shared estimate, not a single signal.** serf already emits a
+- **One audience for the agent; shared estimate, not a single signal.** evener already emits a
   *user-facing* "context ~80%" warning (`maybeWarnContextUsage`, a char/4 estimate over
   `req.Messages`, fired post-response and latched per-input). **Decision:** the agent nudge is
   the only *agent-facing* signal; the user warning stays user-facing. Drive both off the same

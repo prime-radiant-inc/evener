@@ -6,7 +6,7 @@
 
 **Architecture:** Preserve the valid durable turn sequence at the compaction boundary. Teach the existing `safeCutoff` scan to cross `HOOK_COMPLETED` only while tracing a provider-visible tool result back to its assistant call. Prove both positive cutoff positions through the deterministic checkpoint and the real provider-message projection, while proving standalone hook markers remain valid cutoffs.
 
-**Tech Stack:** Go, Serf `schema.Turn`, context-manager checkpoint tests, agent provider-history projection tests
+**Tech Stack:** Go, Evener `schema.Turn`, context-manager checkpoint tests, agent provider-history projection tests
 
 ## Global Constraints
 

@@ -7,7 +7,7 @@ Companion spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config
 
 ## 1. Goal
 
-SP3 turns a marketplace reference into a usable on-disk catalog of plugin entries. It owns three concerns: cloning or copying the marketplace itself into `~/.config/serf/plugins/marketplaces/<name>/`, parsing the resulting `.claude-plugin/marketplace.json` into typed Go values, and presenting the catalog through the `serf plugin marketplace` subcommand tree. SP3 supports all four source types both for the marketplace container (`directory`, `github`, `url`, `git-subdir`) and for the plugin entries inside it (same four). SP3 maintains a registry file (`known_marketplaces.json`) under the user config, enforces explicit trust on project-declared marketplaces via `trusted_projects.json`, and exposes a single Go package that SP4 will call to resolve a plugin spec to its source. SP3 does not install plugins, does not read or merge the parent `config.json` (SP1 owns that), and does not route `serf plugin install` (SP4 owns that). It does ship the shared `cmd/evener/plugin/` scaffolding that SP4 plugs into.
+SP3 turns a marketplace reference into a usable on-disk catalog of plugin entries. It owns three concerns: cloning or copying the marketplace itself into `~/.config/evener/plugins/marketplaces/<name>/`, parsing the resulting `.claude-plugin/marketplace.json` into typed Go values, and presenting the catalog through the `evener plugin marketplace` subcommand tree. SP3 supports all four source types both for the marketplace container (`directory`, `github`, `url`, `git-subdir`) and for the plugin entries inside it (same four). SP3 maintains a registry file (`known_marketplaces.json`) under the user config, enforces explicit trust on project-declared marketplaces via `trusted_projects.json`, and exposes a single Go package that SP4 will call to resolve a plugin spec to its source. SP3 does not install plugins, does not read or merge the parent `config.json` (SP1 owns that), and does not route `evener plugin install` (SP4 owns that). It does ship the shared `cmd/evener/plugin/` scaffolding that SP4 plugs into.
 
 ## 2. Public API Surface
 
@@ -79,7 +79,7 @@ const (
 )
 
 // MarketplaceSource describes where the marketplace.json itself lives.
-// Used by `serf plugin marketplace add`, persisted in known_marketplaces.json,
+// Used by `evener plugin marketplace add`, persisted in known_marketplaces.json,
 // and read by `update`. SHA pinning is not supported here (per Claude Code
 // docs: marketplace sources accept ref but not sha).
 type MarketplaceSource struct {
@@ -171,8 +171,8 @@ type RegistryEntry struct {
 type Origin int
 
 const (
-    OriginCLI     Origin = iota // added by `serf plugin marketplace add`
-    OriginProject               // added by .serf/config.json after trust prompt
+    OriginCLI     Origin = iota // added by `evener plugin marketplace add`
+    OriginProject               // added by .evener/config.json after trust prompt
 )
 
 // OpenRegistry loads known_marketplaces.json from path. Missing file returns
@@ -215,7 +215,7 @@ func (t TrustStore) IsTrusted(projectPath, marketplace string) bool
 ### 2.6 CLI handlers
 
 ```go
-// Subcommands wires `serf plugin marketplace add|remove|list|update`. SP4
+// Subcommands wires `evener plugin marketplace add|remove|list|update`. SP4
 // adds `install|uninstall|update|list|enable|disable` to the same parent
 // scaffolding (Dispatch, below).
 package marketplacecmd
@@ -226,7 +226,7 @@ package marketplacecmd
 func Dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (handled bool, exitCode int, err error)
 ```
 
-The parent `serf plugin` router (shared with SP4) lives at `cmd/evener/plugin/plugin.go` and switches on `args[1]` between `marketplace` and the SP4-owned verbs. The top-level `dispatchCLICommand` in `cmd/evener/main.go` gains one new case (`"plugin"`).
+The parent `evener plugin` router (shared with SP4) lives at `cmd/evener/plugin/plugin.go` and switches on `args[1]` between `marketplace` and the SP4-owned verbs. The top-level `dispatchCLICommand` in `cmd/evener/main.go` gains one new case (`"plugin"`).
 
 ## 3. The `marketplace.json` Schema
 
@@ -253,9 +253,9 @@ The schema is the one Claude Code documents at https://code.claude.com/docs/en/p
 }
 ```
 
-Required fields: `name`, `owner.name`, `plugins`. Everything else is optional. `plugins` may be an empty array; SP3 surfaces that as a warning on `serf plugin marketplace add` ("marketplace has no plugins") but it is not an error. Unknown top-level fields are preserved in `Marketplace.Extra` for forward compatibility; one stderr warning is emitted per unknown field, prefixed with the file path.
+Required fields: `name`, `owner.name`, `plugins`. Everything else is optional. `plugins` may be an empty array; SP3 surfaces that as a warning on `evener plugin marketplace add` ("marketplace has no plugins") but it is not an error. Unknown top-level fields are preserved in `Marketplace.Extra` for forward compatibility; one stderr warning is emitted per unknown field, prefixed with the file path.
 
-Reserved-name enforcement (`claude-plugins-official`, `anthropic-marketplace`, etc.) is **not** carried over from Claude Code. Rationale: Claude Code uses those reservations to police impersonation in its centrally-listed marketplaces. Serf has no such central listing in v1; reintroducing the block would surprise users who already added an Anthropic marketplace. SP3 records this as a known divergence (§11).
+Reserved-name enforcement (`claude-plugins-official`, `anthropic-marketplace`, etc.) is **not** carried over from Claude Code. Rationale: Claude Code uses those reservations to police impersonation in its centrally-listed marketplaces. Evener has no such central listing in v1; reintroducing the block would surprise users who already added an Anthropic marketplace. SP3 records this as a known divergence (§11).
 
 ### 3.2 `metadata.pluginRoot`
 
@@ -282,7 +282,7 @@ This matches Claude Code's behaviour: `metadata.pluginRoot` lets a marketplace s
 }
 ```
 
-The discriminator is the JSON type of the `source` field: a string means `directory`. The string must begin with `./` and must not contain `..`. After resolving against the marketplace root (and `metadata.pluginRoot` if set), the path must point inside the marketplace tree. SP3 does not require the directory to exist at parse time — that check is the install-time responsibility of SP4 — but `serf plugin marketplace add` does run a presence check and prints a warning if the directory is missing, because a directory source that is missing the moment the marketplace is added is almost certainly a typo.
+The discriminator is the JSON type of the `source` field: a string means `directory`. The string must begin with `./` and must not contain `..`. After resolving against the marketplace root (and `metadata.pluginRoot` if set), the path must point inside the marketplace tree. SP3 does not require the directory to exist at parse time — that check is the install-time responsibility of SP4 — but `evener plugin marketplace add` does run a presence check and prints a warning if the directory is missing, because a directory source that is missing the moment the marketplace is added is almost certainly a typo.
 
 #### 3.3.2 `github`
 
@@ -372,7 +372,7 @@ Behaviour:
 
 1. Stat `src.Path`. If missing or not a directory, return `ErrDirectorySource`.
 2. Stat `filepath.Join(src.Path, ".claude-plugin", "marketplace.json")`. If missing, return `ErrMissingMarketplaceJSON`.
-3. If `installDir == src.Path`, no-op. (This is the path the CLI takes for `serf plugin marketplace add /abs/path` once we decide §11.2's question.)
+3. If `installDir == src.Path`, no-op. (This is the path the CLI takes for `evener plugin marketplace add /abs/path` once we decide §11.2's question.)
 4. Otherwise, *symlink* `installDir` → `src.Path`. Rationale: a local directory source is by definition under user control and not shared cache state; symlinking gives the user a live view, matches Claude Code's behaviour for local sources, and sidesteps the "should I rsync changes?" question on `update`.
 5. If `installDir` exists and is a symlink to a different path, replace it. If it exists and is a real directory, return `ErrInstallDirOccupied`.
 
@@ -423,7 +423,7 @@ Network errors during `update` do not wipe the existing checkout. If `git fetch`
 
 ## 5. CLI Surface
 
-### 5.1 `serf plugin marketplace add <source> [flags]`
+### 5.1 `evener plugin marketplace add <source> [flags]`
 
 The `<source>` argument follows Claude Code's grammar:
 
@@ -442,9 +442,9 @@ Flags:
 
 | Flag | Meaning |
 |---|---|
-| `--scope=user\|project` | Where to declare. `user` writes to `~/.config/serf/plugins/known_marketplaces.json` (default). `project` writes to `<git-root>/.serf/config.json`'s `marketplaces` block; SP1 picks it up next session. |
+| `--scope=user\|project` | Where to declare. `user` writes to `~/.config/evener/plugins/known_marketplaces.json` (default). `project` writes to `<git-root>/.evener/config.json`'s `marketplaces` block; SP1 picks it up next session. |
 | `--sparse <path>` (repeatable) | Turns the source into a `git-subdir`-style sparse checkout for monorepos. Equivalent to setting `Sparse` on the marketplace source. |
-| `--name <name>` | Override the directory name under `~/.config/serf/plugins/marketplaces/`. Defaults to the parsed marketplace's `name` field. |
+| `--name <name>` | Override the directory name under `~/.config/evener/plugins/marketplaces/`. Defaults to the parsed marketplace's `name` field. |
 | `--trust-marketplace <name>` | Bypass the trust prompt for `<name>`. Only meaningful for `--scope=project` adds; ignored otherwise. |
 | `--json` | Emit machine-readable output (see §5.5). |
 
@@ -460,13 +460,13 @@ Exit codes:
 Behaviour:
 
 1. Parse the positional source into a `MarketplaceSource`.
-2. Compute `installDir = ~/.config/serf/plugins/marketplaces/<name>/` (name resolved either from `--name`, the trailing path segment, or, for github, the repo name).
+2. Compute `installDir = ~/.config/evener/plugins/marketplaces/<name>/` (name resolved either from `--name`, the trailing path segment, or, for github, the repo name).
 3. Call `FetchMarketplace`. On error, abort without touching the registry.
 4. Call `ParseMarketplace(installDir)`. On error, delete `installDir` (it was empty before; rollback is removing the clone) and abort.
-5. If parsed `name` conflicts with an existing registry entry whose source differs, abort with `marketplace <name> already added from a different source (use 'serf plugin marketplace remove <name>' first)`.
+5. If parsed `name` conflicts with an existing registry entry whose source differs, abort with `marketplace <name> already added from a different source (use 'evener plugin marketplace remove <name>' first)`.
 6. Write the registry entry (atomic tmp+rename), print the parsed name + plugin count.
 
-### 5.2 `serf plugin marketplace remove <name>`
+### 5.2 `evener plugin marketplace remove <name>`
 
 `<name>` is the marketplace's `name` field, not the source string (matches Claude Code).
 
@@ -481,7 +481,7 @@ Like Claude Code, removing a marketplace renders any plugins installed from it u
 
 Exit codes: 0 on success, 1 on unknown marketplace or filesystem error.
 
-### 5.3 `serf plugin marketplace list [--json]`
+### 5.3 `evener plugin marketplace list [--json]`
 
 Reads the registry and prints one line per entry. The default format is fixed-column human-readable:
 
@@ -495,7 +495,7 @@ local-tools       directory:///Users/jesse/code/my-marketplace      2026-04-30 0
 
 `--json` emits an array of objects with `name`, `source`, `installDir`, `addedAt`, `plugins` (array of `{name, source}` summaries), and `origin` ("cli" or "project").
 
-### 5.4 `serf plugin marketplace update [name]`
+### 5.4 `evener plugin marketplace update [name]`
 
 Without a name, refreshes every entry whose source supports updates (everything except `directory`, which is a symlink and always up to date).
 
@@ -524,7 +524,7 @@ Error codes: `fetch_failed`, `parse_failed`, `unknown_marketplace`, `name_confli
 
 ```
 cmd/evener/plugin/
-├── plugin.go        // top-level "serf plugin <verb>" dispatcher
+├── plugin.go        // top-level "evener plugin <verb>" dispatcher
 ├── marketplace.go   // owned by SP3; "marketplace add|remove|list|update"
 └── install.go       // owned by SP4; "install|uninstall|list|enable|disable|update"
 ```
@@ -532,23 +532,23 @@ cmd/evener/plugin/
 `plugin.go` (SP3 ships this) defines a `Dispatch(args []string, ...)` that switches on `args[0]`:
 
 ```
-serf plugin marketplace add ...  -> marketplace.Dispatch(args[1:], ...)
-serf plugin install ...          -> install.Dispatch(args, ...)
-serf plugin help                 -> printHelp()
+evener plugin marketplace add ...  -> marketplace.Dispatch(args[1:], ...)
+evener plugin install ...          -> install.Dispatch(args, ...)
+evener plugin help                 -> printHelp()
 ```
 
 `cmd/evener/main.go`'s `dispatchCLICommand` gains:
 
 ```go
 case "plugin":
-    return true, "serf plugin", plugin.Dispatch(args[1:], stdin, stdout, stderr)
+    return true, "evener plugin", plugin.Dispatch(args[1:], stdin, stdout, stderr)
 ```
 
 That single addition is the only change SP3 makes to existing files.
 
 ## 6. Registry File Format
 
-Path: `~/.config/serf/plugins/known_marketplaces.json`. UTF-8, 2-space indented, trailing newline. Schema:
+Path: `~/.config/evener/plugins/known_marketplaces.json`. UTF-8, 2-space indented, trailing newline. Schema:
 
 ```json
 {
@@ -560,7 +560,7 @@ Path: `~/.config/serf/plugins/known_marketplaces.json`. UTF-8, 2-space indented,
         "repo": "company/plugins",
         "ref": "main"
       },
-      "installDir": "/Users/jesse/.config/serf/plugins/marketplaces/company-tools",
+      "installDir": "/Users/jesse/.config/evener/plugins/marketplaces/company-tools",
       "addedAt": "2026-05-12T14:03:00Z",
       "origin": "cli"
     },
@@ -569,7 +569,7 @@ Path: `~/.config/serf/plugins/known_marketplaces.json`. UTF-8, 2-space indented,
         "kind": "directory",
         "path": "/Users/jesse/code/my-marketplace"
       },
-      "installDir": "/Users/jesse/.config/serf/plugins/marketplaces/local-tools",
+      "installDir": "/Users/jesse/.config/evener/plugins/marketplaces/local-tools",
       "addedAt": "2026-04-30T09:11:00Z",
       "origin": "cli"
     }
@@ -577,7 +577,7 @@ Path: `~/.config/serf/plugins/known_marketplaces.json`. UTF-8, 2-space indented,
 }
 ```
 
-`schemaVersion` is `1`. On load, an unrecognised value is a hard error (`unsupported registry schemaVersion 2: upgrade serf`); a missing `schemaVersion` is treated as `1` for v1.
+`schemaVersion` is `1`. On load, an unrecognised value is a hard error (`unsupported registry schemaVersion 2: upgrade evener`); a missing `schemaVersion` is treated as `1` for v1.
 
 ### 6.1 Atomic writes
 
@@ -598,7 +598,7 @@ If `OpenRegistry` finds JSON it cannot parse, it does **not** silently zero the 
 
 ## 7. Trust Flow
 
-Trust applies to marketplaces declared in a project's `.serf/config.json` (i.e. SP1's `Marketplaces` map at project tier). User-scope adds via the CLI are implicitly trusted: the user typed the command.
+Trust applies to marketplaces declared in a project's `.evener/config.json` (i.e. SP1's `Marketplaces` map at project tier). User-scope adds via the CLI are implicitly trusted: the user typed the command.
 
 ### 7.1 Trigger
 
@@ -612,11 +612,11 @@ Trust is checked the first time a session encounters a project-declared marketpl
 ### 7.2 Prompt text (interactive CLI)
 
 ```
-Project .serf/config.json declares marketplace "company-tools":
+Project .evener/config.json declares marketplace "company-tools":
   source: github://company/plugins@main
 
 Adding this marketplace will let it ship hooks and MCP servers that
-run with serf's full privileges. Only trust marketplaces from sources
+run with evener's full privileges. Only trust marketplaces from sources
 you control or have audited.
 
 Trust this marketplace for this project? [y/N/always]:
@@ -624,11 +624,11 @@ Trust this marketplace for this project? [y/N/always]:
 
 - `y`: trust for this session only (no persistence).
 - `always` (or `a`): trust permanently — write to `trusted_projects.json`.
-- `n` or anything else: refuse. The marketplace is recorded as untrusted; SP3 does not clone it; `serf plugin marketplace list` shows it with `(untrusted)` and a hint.
+- `n` or anything else: refuse. The marketplace is recorded as untrusted; SP3 does not clone it; `evener plugin marketplace list` shows it with `(untrusted)` and a hint.
 
 ### 7.3 Persistence format
 
-`~/.config/serf/plugins/trusted_projects.json`:
+`~/.config/evener/plugins/trusted_projects.json`:
 
 ```json
 {
@@ -647,12 +647,12 @@ Atomic write semantics identical to the registry (§6.1).
 
 This is the open question §11.1 resolves. Decision:
 
-- **CLI (`serf plugin ...`, `serf` foreground task mode):** prompts inline on stderr/stdin.
-- **`serf-tui` / `serf-hub` / `serf serve`:** non-interactive. Project marketplaces remain *listed but uncloned* until explicitly trusted. The session emits a single warning event (`marketplace_trust_required`) and proceeds without those marketplaces' plugins.
+- **CLI (`evener plugin ...`, `evener` foreground task mode):** prompts inline on stderr/stdin.
+- **`evener-tui` / `evener-hub` / `evener serve`:** non-interactive. Project marketplaces remain *listed but uncloned* until explicitly trusted. The session emits a single warning event (`marketplace_trust_required`) and proceeds without those marketplaces' plugins.
 - **Scripted CLI (no tty on stdin):** identical to the non-interactive surfaces. To trust from CI/scripts, use one of:
-  - `--trust-marketplace <name>` flag on `serf plugin marketplace add` and on `serf` (top-level), repeatable. Implies a "this session only" trust.
+  - `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on `evener` (top-level), repeatable. Implies a "this session only" trust.
   - `SERF_TRUST_MARKETPLACES=<name>,<name>` env var. Same semantics — session-scoped, not persisted.
-  - `serf plugin marketplace trust <name>` (a fifth subcommand, SP3 ships it). Persists to `trusted_projects.json` from the command line; the inverse is `serf plugin marketplace untrust <name>`.
+  - `evener plugin marketplace trust <name>` (a fifth subcommand, SP3 ships it). Persists to `trusted_projects.json` from the command line; the inverse is `evener plugin marketplace untrust <name>`.
 
 Rationale: the `trust` subcommand makes scripting clean (one command, exit code) and the env var covers the "I am running this in a container and have no persistent home directory" case. The flag covers the "run-once with confirmation suppressed" case.
 
@@ -681,13 +681,13 @@ Every public function returns an error annotated with the relevant file or sourc
 | Network timeout (git) | `Fetch*` | `git operation timed out after <duration>: <command>` |
 | HTTP non-2xx (future URL-served marketplace.json) | n/a in v1 | reserved code `fetch_failed` |
 | Registry parse failure | `OpenRegistry` | `parsing known_marketplaces.json at <path>: <wrapped err>` |
-| Registry version unsupported | `OpenRegistry` | `unsupported registry schemaVersion <n>: upgrade serf` |
+| Registry version unsupported | `OpenRegistry` | `unsupported registry schemaVersion <n>: upgrade evener` |
 | Registry write failure | `Registry.Save` | `writing known_marketplaces.json at <path>: <wrapped err>` |
 | Lock contention | `Registry.Save` | `registry locked by another process; retry shortly` |
 | Trust declined | `EnforceTrustOnConfig` | `marketplace <name> declared by project not trusted` |
 | Install dir collision | `FetchMarketplace` | `install directory <path> exists and is not empty; remove it or pick another --name` |
 
-The CLI prefixes user-facing error output with `serf plugin marketplace: ` — matching the existing `fmt.Fprintf(stderr, "%s: %v\n", label, err)` convention in `cmd/evener/main.go:28`.
+The CLI prefixes user-facing error output with `evener plugin marketplace: ` — matching the existing `fmt.Fprintf(stderr, "%s: %v\n", label, err)` convention in `cmd/evener/main.go:28`.
 
 `http://` URLs (non-TLS) parse successfully but emit a one-time warning: `warning: <url> is not HTTPS; marketplaces fetched over plain HTTP may be tampered with`. They are not blocked — some self-hosted environments still serve over HTTP — but the warning is loud.
 
@@ -852,7 +852,7 @@ Each subcommand has at least one happy path and one error path. The CLI tests co
 | 2 | `add` | `--source owner/repo` against stub git | clone happens, registry written, exit 0 |
 | 3 | `add` | Bad source | exit 2, message |
 | 4 | `add` | Marketplace already added with different source | exit 1, suggests `remove` |
-| 5 | `add` | Project scope writes to `.serf/config.json` | file updated, no registry change |
+| 5 | `add` | Project scope writes to `.evener/config.json` | file updated, no registry change |
 | 6 | `remove` | Known entry | install dir gone, registry trimmed, exit 0 |
 | 7 | `remove` | Unknown entry | exit 1 |
 | 8 | `list` | Two entries | output rows match |
@@ -881,9 +881,9 @@ Every exported function in §2 has at least one direct test. Every error in §8 
 
 ### 11.1 Trust prompt UX in non-interactive surfaces
 
-**Decision.** CLI `serf plugin marketplace add` and foreground `serf` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `serf-tui`, `serf-hub`, `serf serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `serf plugin marketplace add` and on the top-level `serf` command (session-scoped); the `SERF_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `serf plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
+**Decision.** CLI `evener plugin marketplace add` and foreground `evener` (when stdin is a tty) prompt inline as described in §7.2. Non-interactive surfaces — `evener-tui`, `evener-hub`, `evener serve`, and any CLI invocation without a tty on stdin — *refuse* untrusted project marketplaces: they are listed but not cloned, a `marketplace_trust_required` event is emitted, and the session proceeds without their plugins. To trust without a prompt, scripts pass one of: the repeatable `--trust-marketplace <name>` flag on `evener plugin marketplace add` and on the top-level `evener` command (session-scoped); the `SERF_TRUST_MARKETPLACES=<name>,<name>` env var (session-scoped); or the dedicated `evener plugin marketplace trust <name>` subcommand (persisted to `trusted_projects.json`).
 
-**Rationale.** A blocking prompt inside `serf serve` would deadlock an HTTP-driven session. Refusing-until-trusted is the safe default; the env var covers ephemeral CI; the explicit `trust` subcommand covers operators who want a one-time persistent decision without an interactive run. `SERF_TRUST_ALL_MARKETPLACES=1` exists as an emergency hatch for sandboxed environments and logs a startup warning.
+**Rationale.** A blocking prompt inside `evener serve` would deadlock an HTTP-driven session. Refusing-until-trusted is the safe default; the env var covers ephemeral CI; the explicit `trust` subcommand covers operators who want a one-time persistent decision without an interactive run. `SERF_TRUST_ALL_MARKETPLACES=1` exists as an emergency hatch for sandboxed environments and logs a startup warning.
 
 ### 11.2 Network access during tests
 
@@ -898,5 +898,5 @@ Every exported function in §2 has at least one direct test. Every error in §8 
 - Reserved-name enforcement (`anthropic-plugins`, etc.). See §3.1.
 - `extraKnownMarketplaces` and `strictKnownMarketplaces` enterprise-style policy. SP3's trust flow is the v1 substitute.
 - `CLAUDE_CODE_PLUGIN_SEED_DIR` (pre-populated marketplace cache). Future ticket; the registry schema reserves `origin: "seed"` for it.
-- Background auto-updates with `GITHUB_TOKEN` etc. `serf plugin marketplace update` is foreground-only in v1.
-- `serf plugin validate` (Claude Code's `claude plugin validate`). Useful but separable; tracked separately.
+- Background auto-updates with `GITHUB_TOKEN` etc. `evener plugin marketplace update` is foreground-only in v1.
+- `evener plugin validate` (Claude Code's `claude plugin validate`). Useful but separable; tracked separately.

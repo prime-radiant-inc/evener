@@ -9,7 +9,7 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 ```
 
 Result: pass.

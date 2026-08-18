@@ -94,7 +94,7 @@ func (s *clientMutationStore) queueHeld() bool {
 Run: `go test ./agent/ -run TestQueueHeldIsReadableWithoutCloningTheSnapshot -count=1`
 Expected: PASS.
 
-- [ ] **Step 5: Update serf-doctor's mirror of this schema**
+- [ ] **Step 5: Update evener-doctor's mirror of this schema**
 
 `agent/doctor/mutations.go` decodes the snapshot with unknown-field rejection, so this will otherwise fail `TestClientMutationSnapshotStaysReadableByTheDoctor`. Add to `clientMutationStoreFile` after `InputQueue`:
 
@@ -594,7 +594,7 @@ The span to replace runs from the `// MEASURED, and it is the state of play rath
 		t.Fatalf("a model round followed the Stop (carries the queued text: %v): a restart rail is still open", carries)
 	}
 	awaitThread(ctx, t, client, ref, "the stopped session to settle with its message parked", func(thread appwire.Thread) bool {
-		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Serf.Queue.Depth == 1
+		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Evener.Queue.Depth == 1
 	})
 	t.Logf("the Stop cancelled its turn and parked the queued message (wms7)")
 ```

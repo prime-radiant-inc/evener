@@ -9,7 +9,7 @@ models, harnesses, and acceptance criteria stay fixed.
 ## Session Interrogation Summary
 
 Before designing new variants, I resumed representative failed sessions with
-`serf --resume-with` and asked the agents why they struggled.
+`evener --resume-with` and asked the agents why they struggled.
 
 Findings:
 
@@ -44,7 +44,7 @@ is evidence for the same tool fluency problem, not a usable self-diagnosis.
 - Use the CLI harness for ordinary one-shot tools.
 - Avoid negative "do not" prompting in variants; phrase the desired behavior
   positively.
-- Inspect results with `serf-fluency` output, `result.json`, and `serf-doctor`
+- Inspect results with `evener-fluency` output, `result.json`, and `evener-doctor`
   where needed. No custom Python or jq parsing.
 
 ## Experiment Matrix
@@ -87,19 +87,19 @@ Kimi block separately below.
 The runner and CLI binary were built once for the campaign:
 
 ```sh
-go build -o /tmp/serf-fluency-exp-serf ./cmd/evener
-go build -o /tmp/serf-fluency-runner ./tools/tool-fluency/cmd/evener-fluency
+go build -o /tmp/evener-fluency-exp-evener ./cmd/evener
+go build -o /tmp/evener-fluency-runner ./tools/tool-fluency/cmd/evener-fluency
 ```
 
-Each result directory is `/tmp/serf-fluency-improve-eNN`.
+Each result directory is `/tmp/evener-fluency-improve-eNN`.
 
 ## Blocked Kimi Runs
 
 Kimi provider quota blocked the intended Kimi-specific marker runs:
 
-- `/tmp/serf-fluency-improve-e12`: `read_file.happy_path`, 429 before tool call.
-- `/tmp/serf-fluency-improve-e13`: `shell.command`, 429 before tool call.
-- `/tmp/serf-fluency-improve-e16`: `web_fetch.example`, 429 before tool call.
+- `/tmp/evener-fluency-improve-e12`: `read_file.happy_path`, 429 before tool call.
+- `/tmp/evener-fluency-improve-e13`: `shell.command`, 429 before tool call.
+- `/tmp/evener-fluency-improve-e16`: `web_fetch.example`, 429 before tool call.
 
 I did not launch further Kimi runs after the repeated 429s.
 
@@ -157,14 +157,14 @@ Post-fix GPT 5.4 mini reruns without prompt-append variants:
 
 | Probe | Result | Artifact |
 | --- | --- | --- |
-| `apply_patch.happy_path` | 3/3 passed | `/tmp/serf-fluency-postfix-apply-patch` |
-| `list_dir.inventory` | 3/3 passed | `/tmp/serf-fluency-postfix-list-dir` |
-| `web_fetch.example` before explicit-tool wording | 2/3 passed | `/tmp/serf-fluency-postfix-web-fetch` |
-| `web_fetch.example` after explicit-tool wording | 3/3 passed | `/tmp/serf-fluency-postfix2-web-fetch` |
-| `job_watch.observer_callback` after prompt-only fixes | 2/3 passed | `/tmp/serf-fluency-postfix2-jobwatch` |
-| `job_watch.observer_callback` after notification wording | 0/3 passed | `/tmp/serf-fluency-postfix4-jobwatch` |
-| `job_watch.observer_callback` after `job_watch` schema description | 2/3 passed | `/tmp/serf-fluency-postfix5-jobwatch` |
-| `job_watch.observer_callback` after `communicate` schema description | 1/3 passed | `/tmp/serf-fluency-postfix6-jobwatch` |
+| `apply_patch.happy_path` | 3/3 passed | `/tmp/evener-fluency-postfix-apply-patch` |
+| `list_dir.inventory` | 3/3 passed | `/tmp/evener-fluency-postfix-list-dir` |
+| `web_fetch.example` before explicit-tool wording | 2/3 passed | `/tmp/evener-fluency-postfix-web-fetch` |
+| `web_fetch.example` after explicit-tool wording | 3/3 passed | `/tmp/evener-fluency-postfix2-web-fetch` |
+| `job_watch.observer_callback` after prompt-only fixes | 2/3 passed | `/tmp/evener-fluency-postfix2-jobwatch` |
+| `job_watch.observer_callback` after notification wording | 0/3 passed | `/tmp/evener-fluency-postfix4-jobwatch` |
+| `job_watch.observer_callback` after `job_watch` schema description | 2/3 passed | `/tmp/evener-fluency-postfix5-jobwatch` |
+| `job_watch.observer_callback` after `communicate` schema description | 1/3 passed | `/tmp/evener-fluency-postfix6-jobwatch` |
 
 The watch path remains unstable. The remaining failures are not one thing:
 

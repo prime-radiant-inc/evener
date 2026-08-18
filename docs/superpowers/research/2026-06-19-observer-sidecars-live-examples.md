@@ -150,7 +150,7 @@ Observers do not need a special public type. They need:
 - a narrow output read grant when watching a concrete job;
 - causal provenance on events, durable notifications, steering, and delegate job records.
 
-The safety boundary should stay implementation-level, not policy-level. A sidecar can inject memory, advice, snark, quotes, or nothing at all. Serf's job is to make those policies easy to implement without accidental loops, lost frame content, or ambiguous handles.
+The safety boundary should stay implementation-level, not policy-level. A sidecar can inject memory, advice, snark, quotes, or nothing at all. Evener's job is to make those policies easy to implement without accidental loops, lost frame content, or ambiguous handles.
 
 ## Recommended Agent Playbook
 

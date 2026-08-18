@@ -58,14 +58,14 @@ def harbor_job_dir(tmp_path):
         full-test/full-test/
             build-widget__abc123/
                 verifier/reward.txt (1.0 - pass)
-                agent/serf-state/sessions/sess-main.transcript.jsonl
-                agent/serf-state/sessions/sess-reviewer.transcript.jsonl
-                agent/serf-state/api.jsonl
+                agent/evener-state/sessions/sess-main.transcript.jsonl
+                agent/evener-state/sessions/sess-reviewer.transcript.jsonl
+                agent/evener-state/api.jsonl
                 agent/command-0/stdout.txt
                 result.json
             fix-bug__def456/
                 verifier/reward.txt (0.0 - fail)
-                agent/serf-state/sessions/sess-main2.transcript.jsonl
+                agent/evener-state/sessions/sess-main2.transcript.jsonl
                 agent/command-0/stdout.txt
                 result.json
     """
@@ -95,7 +95,7 @@ def _make_task(task_dir, reward, transcript_entries, agent_stdout=""):
         )
 
     # Sessions
-    sessions = task_dir / "agent" / "serf-state" / "sessions"
+    sessions = task_dir / "agent" / "evener-state" / "sessions"
     sessions.mkdir(parents=True)
 
     # Write transcript
@@ -258,7 +258,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import os
 
-app = FastAPI(title="Serf Eval Dashboard")
+app = FastAPI(title="Evener Eval Dashboard")
 
 
 @app.get("/health")
@@ -282,7 +282,7 @@ Create empty `data.py`, `trajectory.py`, `markdown_render.py`, and minimal `stat
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serf Eval Dashboard</title>
+    <title>Evener Eval Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -348,7 +348,7 @@ class TestRunDiscovery:
         task.mkdir(parents=True)
         (task / "reward.txt").write_text("1.0")
         # Agent dirs
-        sessions = job2 / "some-task__xyz789" / "agent" / "serf-state" / "sessions"
+        sessions = job2 / "some-task__xyz789" / "agent" / "evener-state" / "sessions"
         sessions.mkdir(parents=True)
 
         store = RunStore([harbor_job_dir, tmp_path / "other-run"])
@@ -639,7 +639,7 @@ class RunStore:
 
     def _count_sessions(self, task_dir: str) -> int:
         sessions_dir = os.path.join(
-            task_dir, "agent", "serf-state", "sessions"
+            task_dir, "agent", "evener-state", "sessions"
         )
         if not os.path.isdir(sessions_dir):
             return 0
@@ -650,7 +650,7 @@ class RunStore:
 
     def _find_transcripts(self, task_dir: str) -> list[str]:
         sessions_dir = os.path.join(
-            task_dir, "agent", "serf-state", "sessions"
+            task_dir, "agent", "evener-state", "sessions"
         )
         if not os.path.isdir(sessions_dir):
             return []
@@ -730,7 +730,7 @@ class TestTranscriptLoading:
 
         # Add a child session transcript to the task
         sessions_dir = os.path.join(
-            task["dir"], "agent", "serf-state", "sessions"
+            task["dir"], "agent", "evener-state", "sessions"
         )
         child_entries = [
             {"kind": "header", "format_version": 1,
@@ -1582,10 +1582,10 @@ from data import RunStore
 from trajectory import build_trajectory
 from markdown_render import render_run_list, render_run_detail, render_task_detail
 
-app = FastAPI(title="Serf Eval Dashboard")
+app = FastAPI(title="Evener Eval Dashboard")
 
 # Configure data dirs from env or defaults.
-_data_dirs_str = os.environ.get("DASHBOARD_DATA_DIRS", "/data/serf-evals/runs")
+_data_dirs_str = os.environ.get("DASHBOARD_DATA_DIRS", "/data/evener-evals/runs")
 _data_dirs = [d.strip() for d in _data_dirs_str.split(",") if d.strip()]
 store = RunStore(_data_dirs)
 
@@ -1897,7 +1897,7 @@ Add an `if __name__ == "__main__":` block that accepts `--data-dir` (repeatable)
 ```python
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Serf Eval Dashboard")
+    parser = argparse.ArgumentParser(description="Evener Eval Dashboard")
     parser.add_argument("--data-dir", action="append", default=[],
                         help="Directory to scan for eval runs (repeatable)")
     parser.add_argument("--host", default="0.0.0.0")
@@ -1958,7 +1958,7 @@ git commit -m "feat(dashboard): CLI args and requirements for deployment"
 
 - **Comparison views:** `/compare` for cross-run diff, `/tasks/{task}` for task history
 - **Multi-trial support:** Per-task pass rates across reps, trajectory comparison
-- **Cross-harness comparison:** serf vs codex on same tasks
+- **Cross-harness comparison:** evener vs codex on same tasks
 - **Auto-refresh:** Poll for new results on running evals
 - **Agent workflow integration:** Agent dispatches investigation tasks via dashboard API
 - **Write eval data to /data/ directly** (Task #50)

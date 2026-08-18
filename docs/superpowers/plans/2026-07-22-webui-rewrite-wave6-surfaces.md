@@ -82,18 +82,18 @@ export interface SpawnRequest {
   prompt: string;              // RAW, untrimmed — floor §1.12 (spawn.js:1251,1273-1275)
   attachments?: InputAttachment[];
   harness?: string;
-  modelProvider?: string;      // serf-model harness: "<provider>/<model>" split → provider half
-  model?: string;              // model id (bare id for a non-serf harness — floor §1.4)
+  modelProvider?: string;      // evener-model harness: "<provider>/<model>" split → provider half
+  model?: string;              // model id (bare id for a non-evener harness — floor §1.4)
   reasoningEffort?: string;    // wire camelCase — floor §1.11 (spawn.js:1122-1125,1277,1281-1282)
   branch?: string;
   accessMode?: string;         // merged into launchOverrides.sandbox iff schema didn't set it — floor §1.8
   launchOverrides?: LaunchConfigLayer;
 }
-export interface SpawnResult { ref: string; } // the QUALIFIED thread.serf.ref verbatim (e.g. "local:abc"). Floor §1.14's local:-strip (spawn.js:404-417) is a RULED divergence: ParseRef (appwire/refs.go:23-34) rejects a bare id, so the stripped form is dead-on-arrival — T1-proven live, T1-review-verified against Go source. T2 keeps it qualified; the close sweep records the divergence.
+export interface SpawnResult { ref: string; } // the QUALIFIED thread.evener.ref verbatim (e.g. "local:abc"). Floor §1.14's local:-strip (spawn.js:404-417) is a RULED divergence: ParseRef (appwire/refs.go:23-34) rejects a bare id, so the stripped form is dead-on-arrival — T1-proven live, T1-review-verified against Go source. T2 keeps it qualified; the close sweep records the divergence.
 export function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult>;
 
 // panes/spawn/preflight.ts — working-dir preflight (T1 defines; T2 fills) — floor §1.13
-//   validate via appwire "serf/path/validate" (PathValidateParams{path,kind:"dir"} →
+//   validate via appwire "evener/path/validate" (PathValidateParams{path,kind:"dir"} →
 //   {valid,error?}); fail-OPEN if the CHECK itself throws (spawn.js:573-580); create via REST
 //   POST /api/dirs/create (no appwire method exists — verified). Returns the caller's next step.
 export type PreflightOutcome =
@@ -135,9 +135,9 @@ export function RailHost(props: { railSlot?: never }): JSX.Element; // desktop: 
   **no default layer of its own**. Wave-7 already baked the decided **all-OFF** defaults into
   `prefs.ts` (the "code-wins" resolution): `loadNotifications()` returns `title:false, favicon:false,
   os:false, sound:false` (`prefs.ts:197-204`); `notificationsLoudScope` defaults `"asks"`
-  (`prefs.ts:300`). Keys (`prefs.ts:177-182,356-359`): `serf.prefs.notificationsTitle` /
+  (`prefs.ts:300`). Keys (`prefs.ts:177-182,356-359`): `evener.prefs.notificationsTitle` /
   `…Favicon` / `…Os` / `…Sound` (booleans, `"1"`/`"0"` via `readBool`/`writeBool`, `prefs.ts:143-152`);
-  `serf.prefs.notificationsLoudScope` (`"asks"`|`"all"`, `readEnum`, `prefs.ts:154-157,163`).
+  `evener.prefs.notificationsLoudScope` (`"asks"`|`"all"`, `readEnum`, `prefs.ts:154-157,163`).
   **THE top cross-wave trap** (final review Duty 3, schedule-W6 #4): the legacy runtime engine's v3
   migration defaults `title`/`favicon` **TRUE** (`notifications.js:31`, floor §3.1) — that default
   is **explicitly NOT ported**. T4 wires prefs → behavior; it must not resurrect the TRUE defaults.
@@ -148,10 +148,10 @@ export function RailHost(props: { railSlot?: never }): JSX.Element; // desktop: 
   because the favicon renders against dark browser chrome, not the app surface.)
 - **Sound (T4)** (floor §3.5, `notifications.js:199-213`): 800 Hz oscillator, gain `0.1`, stopped +
   context closed after **120 ms**; every failure silently swallowed.
-- **Display prefs (T5 applies).** `serf.prefs.fontSize` (`"s"|"m"|"l"|"xl"`, default `"m"`) mirrors
+- **Display prefs (T5 applies).** `evener.prefs.fontSize` (`"s"|"m"|"l"|"xl"`, default `"m"`) mirrors
   to `document.body.dataset.fontSize` → attribute `data-font-size` (`prefs.ts:265-267,287`).
-  `serf.prefs.phoneDensity` (`"compact"|"comfortable"`, default `"compact"`) → `data-phone-density`
-  (`prefs.ts:261-263,286`). `serf.prefs.sidebarMode` (`"auto"|"pane"|"rail"`, default `"auto"`,
+  `evener.prefs.phoneDensity` (`"compact"|"comfortable"`, default `"compact"`) → `data-phone-density`
+  (`prefs.ts:261-263,286`). `evener.prefs.sidebarMode` (`"auto"|"pane"|"rail"`, default `"auto"`,
   `prefs.ts:294`) has **no document mirror** — its consumer is the rail (T5).
 - **sidebarMode semantics** are already fixed by the shipped Wave-7 help copy (`theme.tsx:103-104`,
   verbatim): "Collapsed hides the sidebar entirely — reopen it with the ☰ chip (top-left) as an
@@ -201,7 +201,7 @@ edit a chokepoint. Steps:
    (renders nothing until T3), `notifications/index.ts` (no-op), `shell/rail/railController.ts`
    (no-op) + `shell/rail/RailHost.tsx` (pass-through to `<Rail/>`).
 5. **Gate:** full suite (tsc→vitest, count up); `npm run build`+restore placeholder; Biome; **live
-   smoke** against a fake-`$HOME` hub (`serf-hub` holds a host-global flock at `$HOME/.serf/hub.lock`
+   smoke** against a fake-`$HOME` hub (`evener-hub` holds a host-global flock at `$HOME/.evener/hub.lock`
    — `.superpowers/project_web_rearchitecture_study`; W5 close lesson): `/new` opens the spawn shell,
    a bare-prompt spawn creates a session and routes to `/s/{ref}`, ⌘K opens an (empty) overlay.
    Suggested tier: **opus** (contract-establishing; the seam signatures every stream imports).
@@ -211,15 +211,15 @@ edit a chokepoint. Steps:
 - **T2 — spawn body** (manifest: `panes/spawn/**`). Fills the pane on T1's seams. Covers floor §1
   (**109 items**): the 6-chip bar in order harness/model/reasoning_effort/working_dir/branch/
   access_mode (§1.1, spawn.html:11-39) with desktop+mobile mirrored rows; the dir-picker
-  (`serf/projects/recent` recent-projects **only on first listing** §1.6/dir-picker.js:47-55,
-  `serf/dirs/complete` completions debounced 150 ms §1.6/dir-picker.js:303-307, accept-recent vs
+  (`evener/projects/recent` recent-projects **only on first listing** §1.6/dir-picker.js:47-55,
+  `evener/dirs/complete` completions debounced 150 ms §1.6/dir-picker.js:303-307, accept-recent vs
   browse-into-dir §1.6/dir-picker.js:249-vs-270, `..` parent row, stale-response `requestID`
   drop); sticky-defaults/prefill layering (§1.9, spawn.js:1132-1149 — harness/branch/access before
-  working_dir so branch auto-resolution sees the winner) keyed `serf-hub.spawn-defaults.<cwd|global>`;
+  working_dir so branch auto-resolution sees the winner) keyed `evener-hub.spawn-defaults.<cwd|global>`;
   stale-model detection/cleanup (§1.10, spawn.js:154-175,249-256 — malformed/stale clear, unknown
-  left, inline dismissible notice); advanced schema options (§1.11, `serf/launch/schema` →
+  left, inline dismissible notice); advanced schema options (§1.11, `evener/launch/schema` →
   select/radio/boolean/modelPicker/text/integer/pathList/modelList/envMap/mcpServerList, path
-  validation, `serf/launch/resolve` "show resolved config", camelCase `reasoningEffort` precedence);
+  validation, `evener/launch/resolve` "show resolved config", camelCase `reasoningEffort` precedence);
   attachments (§1.12 — the shared `Dropzone` widget + paste/picker → base64 `InputAttachment`,
   submit blocked while any is `.pending`, attachment-only submit allowed); preflight (§1.13, T1's
   `preflight.ts`); submission (§1.14, `startThread`); `?dir=`/`?prompt=` URL prefill (spec §5) read
@@ -247,11 +247,11 @@ edit a chokepoint. Steps:
   session pane + best-effort scroll (precise virtualized scroll-to-hit is beyond-parity, flagged in
   the sweep); **command-filter mode** (§2.4 — the 22-command registry search.js:326-518, scope
   gating global/ended-ok/session, `commandScore` fuzzy ranking, Recent from
-  `localStorage["serf.search.recentCommands"]`); **every command** (§2.5) via the pinned
+  `localStorage["evener.search.recentCommands"]`); **every command** (§2.5) via the pinned
   threadsStore map + navigation (`/new`,`/spawn`,`/settings`,`/dashboard`→`routing.navigate`),
   `/theme`→`prefsStore.setTheme` (the hazard-#1 FIX), `/copy-id`, `/tasks`/`/status` (synthesize the
   chrome trigger clicks), `/project`→`railController.revealSessionInRail(ref)` (PIN below),
-  `/upgrade`→`serf/upgrade`; command-args mode (§2.6); execution/error surfacing via the
+  `/upgrade`→`evener/upgrade`; command-args mode (§2.6); execution/error surfacing via the
   `{paletteBlocked,message}` sentinel + inline `.palette-error` strip (§2.7); the 7-row help panel
   (§2.8). Suggested tier: **opus** (mode state machine + 22-command registry + Conflict/idle-guarded
   session commands).
@@ -261,7 +261,7 @@ edit a chokepoint. Steps:
   Reads the pinned all-OFF prefs; derives **title count** (§3.2 — `"(needsYou+error) "` prefix, only
   when >0, gated on the `title` pref; base title from the focused pane via `workspaceStore` +
   `paneRegistry.title()` since the SPA has panes, not the legacy's server sections — the one honest
-  divergence from §3.2's `"<section> · serf hub"`); **favicon dot** (§3.3, the pinned colors, inline
+  divergence from §3.2's `"<section> · evener hub"`); **favicon dot** (§3.3, the pinned colors, inline
   `data:image/svg+xml` rebuilt per apply on a single `link[rel="icon"]`); **OS notification** (§3.4
   — requires `Notification.permission==="granted"` AND document not focused; click focuses window +
   navigates `/s/<threadId>`); **sound** (§3.5, pinned 800 Hz/0.1/120 ms); **baseline + edge-fire
@@ -269,9 +269,9 @@ edit a chokepoint. Steps:
   unconditionally, but OS/sound fire only on a transition INTO `needs_you`/`error`, only when
   unfocused, only on the elected leader; **loudScope** narrows: `"asks"` fires only for an
   `ask_pending` transition or an `error`, `"all"` for every qualifying transition); **single-tab
-  election via Web Locks only** (§3.7 — `navigator.locks.request("serf-hub-os-leader",{ifAvailable:
+  election via Web Locks only** (§3.7 — `navigator.locks.request("evener-hub-os-leader",{ifAvailable:
   true})`; no-locks env → every tab is leader; **no BroadcastChannel**, floor hazard #2). The engine
-  gets its data from `treeStore` (already subscribed to `serf/attention/changed` + `serf/tree/changed`
+  gets its data from `treeStore` (already subscribed to `evener/attention/changed` + `evener/tree/changed`
   and re-fetched on reconnect, `tree.ts:246-289`): title/favicon from `treeStore.attentionSummary`
   (`{needsYou,error,working}`, `tree.ts:81-85`); per-thread transitions by diffing the `needs_you`
   tier + `ask_pending` node flag (`tree.ts` TreeNode) across snapshots. **First step:** trace the
@@ -295,7 +295,7 @@ edit a chokepoint. Steps:
   desktop threshold (distinct from the 900 px mobile/stack breakpoint in `useIsMobile`), `pane`
   always expanded, `rail`/"Collapsed" hidden behind a top-left **☰ overlay drawer**, and a global
   **⌘B** listener cycling `rail → pane → auto` (`prefsStore.setSidebarMode`); reconcile with the
-  rail's existing boolean collapse (`serf.rail.collapsed.v1`, `Rail.tsx:49-66`) — the `rail` mode
+  rail's existing boolean collapse (`evener.rail.collapsed.v1`, `Rail.tsx:49-66`) — the `rail` mode
   subsumes it. Mobile is unaffected ("Desktop only" per the copy): `RailHost` renders the plain
   `<Rail/>` inside `StackHost`'s drawer via `useIsMobile`. Fill `revealSessionInRail(ref)` for T3
   (lift the rail's `expandedOverrides`/scroll to an imperative handle). Coordinate the `/theme`
@@ -308,14 +308,14 @@ edit a chokepoint. Steps:
 Parity sweep of **all 250 floor items** across the 4 sections (annotating the W8-deferred rich-model
 rows §1.4/§1.5, the accept-permanently divergences, and each hazard-note resolution — hazard #1
 `/theme` FIXED, hazard #2 Web-Locks-only KEPT); **live proof** on a real hub under an **isolated
-fake `$HOME`** (the host-global `$HOME/.serf/hub.lock` flock forbids a shared hub;
+fake `$HOME`** (the host-global `$HOME/.evener/hub.lock` flock forbids a shared hub;
 `.superpowers/project_web_rearchitecture_study`): spawn a real session from the pane (bare + with an
 image attachment + `?dir=`/`?prompt=` prefill), drive the palette (search, `/steer`,`/model`,
 `/theme`-applies-immediately,`/project`-reveals), notifications (grant OS permission, background the
 tab, force a `needs_you`/`ask_pending` transition, observe title+favicon+OS+sound under each
 loudScope, confirm a fresh load does NOT re-alert on pre-existing attention), and display (font-size
 + density visibly change, ⌘B cycles the sidebar through all three modes). **Critically: the
-queue/steer/edit/promote-under-load journey Wave 5 could not run** — a bare `serf serve` advertises
+queue/steer/edit/promote-under-load journey Wave 5 could not run** — a bare `evener serve` advertises
 those capabilities false, so it must run against a **HUB-SPAWNED** session (now possible via the W6
 spawn pane; W5 close lesson, ledger 202). Full gates + wave6-report. **The merge to integration is
 controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
@@ -346,7 +346,7 @@ controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
 ## Controller watch items (no W6 stream code)
 
 - **Triage W6 #5 — instance-CRUD cross-client live-update** is **already fixed on `main`**
-  (`28e2b2141`, reuses `serf/auth/updated` BroadcastAll which `credentialsStore` already subscribes
+  (`28e2b2141`, reuses `evener/auth/updated` BroadcastAll which `credentialsStore` already subscribes
   to) but is **main-only, not yet on this branch**. No W6 code: it arrives with the next
   main→integration re-absorb. The controller verifies it lands at that absorb (and that the absorb's
   likely `app_rpc.go` conflict — main's CRUD-broadcast vs the branch's W7-T1a overview method,
@@ -360,7 +360,7 @@ controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
 - **Spec coverage (design §13 M6 = "spawn, palette/search, notifications/badges, theme/prefs"):**
   spawn → T2; palette/search → T3; notifications/badges → T4; theme/prefs application → T5 (theme
   core already shipped Wave-7; §5 "theme light/dark + density + font size" application gaps covered).
-  §5 spawn sub-items (dir picker + `serf/projects/recent` #35, path validation, model/harness
+  §5 spawn sub-items (dir picker + `evener/projects/recent` #35, path validation, model/harness
   pickers, launch overrides, `?dir=`/`?prompt=`) all in T2. §5 "single-tab election (Web Locks +
   BroadcastChannel)" → **resolved to Web-Locks-only** (see ambiguities). All 5 final-review
   schedule-W6 items folded (#1→T3, #2→T5, #3→T4, #4→T4, #5→controller watch).
@@ -408,7 +408,7 @@ controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
 **RULED (Jesse, 2026-07-22): DROP THE ROW.** The spawn pane ships without recent prompts — an accepted parity drop (floor §1.1's `.RecentPrompts` row). T2 builds no recent-prompts UI and no storage for it; the close-task parity sweep records the row as consciously-dropped with this ruling as the citation. The question below is retained for the record.
 
 - **Recent *prompts* (floor §1.1, `spawn.html:117-124` `.RecentPrompts`) has no appwire method**
-  (only `serf/projects/recent` for *directories* exists — verified). The legacy sourced them from a
+  (only `evener/projects/recent` for *directories* exists — verified). The legacy sourced them from a
   server-rendered template var that the deletion wave removes. Options: (a) localStorage-back
   per-project recent prompts client-side (simplest, matches the "per-device" ethos; my
   recommendation), or (b) defer with sign-off as an accepted parity drop. T2 needs the answer before

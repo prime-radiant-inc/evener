@@ -2,13 +2,13 @@
 
 ## Summary
 
-Serf already has working OpenAI OAuth login in the CLI and working OpenAI model execution in the common runtime, but the current OpenAI Responses streaming adapter needed defensive aliasing after a real protocol bug, and `serf-tui` has no first-class OpenAI login UX. This design cleans up the stream tool-call state machine and adds a TUI-native OpenAI login/logout/status flow that reuses the existing `internal/auth/openai` service instead of shelling out to the CLI.
+Evener already has working OpenAI OAuth login in the CLI and working OpenAI model execution in the common runtime, but the current OpenAI Responses streaming adapter needed defensive aliasing after a real protocol bug, and `evener-tui` has no first-class OpenAI login UX. This design cleans up the stream tool-call state machine and adds a TUI-native OpenAI login/logout/status flow that reuses the existing `internal/auth/openai` service instead of shelling out to the CLI.
 
 The scope is intentionally narrow:
 
 - make the OpenAI streamed tool-call state machine explicit and canonical
 - preserve the existing CLI auth commands and storage format
-- add clean `serf-tui` login UX for OpenAI-backed sessions
+- add clean `evener-tui` login UX for OpenAI-backed sessions
 - avoid adding a generic multi-provider TUI auth framework
 
 ## Problem Statement
@@ -16,7 +16,7 @@ The scope is intentionally narrow:
 Two independent issues exist:
 
 1. The OpenAI Responses SSE adapter currently works, but the internal implementation is harder to reason about than it should be. The backend uses both `item_id` and `call_id` for the same logical function call. A prior bug treated them as separate calls, which produced phantom tool calls with empty names and invalid replay input. The live fix is correct, but the logic should be made clearer and harder to regress.
-2. `serf-tui` requires the user to leave the TUI and run `serf openai login` in the shell. That is functional but poor UX for an interactive client that already owns the session state dir, status bar, and event loop.
+2. `evener-tui` requires the user to leave the TUI and run `evener openai login` in the shell. That is functional but poor UX for an interactive client that already owns the session state dir, status bar, and event loop.
 
 ## Goals
 
@@ -96,7 +96,7 @@ The TUI should reuse that branch-local service layer directly. It should not she
 
 ### Concrete v1 UX choice
 
-Use one explicit slash-command-triggered OpenAI auth menu inside `serf-tui`, not a free-form mixture of menus, modals, and transcript-only commands.
+Use one explicit slash-command-triggered OpenAI auth menu inside `evener-tui`, not a free-form mixture of menus, modals, and transcript-only commands.
 
 Concrete interaction model:
 
@@ -162,7 +162,7 @@ Responsibilities:
 - clear auth on logout
 - report success/failure back into the TUI message stream
 
-The TUI must not shell out to `serf openai login`. It should call `internal/auth/openai.Service` directly with TUI-provided browser and manual-input hooks.
+The TUI must not shell out to `evener openai login`. It should call `internal/auth/openai.Service` directly with TUI-provided browser and manual-input hooks.
 
 Controller contract:
 
@@ -176,7 +176,7 @@ Controller contract:
 - starting login while login is already in progress is rejected with a user-visible system message
 - quitting the TUI or cancelling the flow must cancel the in-flight auth context cleanly
 
-### 4. Clean UX in `serf-tui`
+### 4. Clean UX in `evener-tui`
 
 User-visible behavior:
 
@@ -209,7 +209,7 @@ This keeps the UX consistent with the rest of the TUI: transcript-driven, keyboa
 The TUI must reflect the same runtime precedence as the underlying provider resolution:
 
 1. `OPENAI_API_KEY`
-2. stored OpenAI OAuth session in the Serf state dir
+2. stored OpenAI OAuth session in the Evener state dir
 3. signed out
 
 Behavior matrix:
@@ -243,11 +243,11 @@ The branch-local auth service remains the primary source of truth for active aut
 
 ### 6. Live runtime reconfiguration
 
-Successful OpenAI login/logout inside `serf-tui` must affect the current interactive session without requiring the user to restart the TUI manually.
+Successful OpenAI login/logout inside `evener-tui` must affect the current interactive session without requiring the user to restart the TUI manually.
 
 Chosen strategy:
 
-- when `serf-tui` starts with `--provider openai` and no usable OpenAI auth, it starts in auth-first mode:
+- when `evener-tui` starts with `--provider openai` and no usable OpenAI auth, it starts in auth-first mode:
   - do not start the embedded OpenAI session yet
   - append a one-time system message pointing the user at `/openai`
   - allow slash-command help, auth actions, and quit/navigation only
@@ -320,7 +320,7 @@ Minimum supported event sequences:
 
 ### TUI auth flow
 
-1. User triggers OpenAI login action in `serf-tui`.
+1. User triggers OpenAI login action in `evener-tui`.
 2. TUI creates `authopenai.Service` with:
    - browser opener callback that both opens and surfaces the URL in the transcript
    - manual redirect reader bound to a temporary paste-input mode

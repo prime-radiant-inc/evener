@@ -1,7 +1,7 @@
 # Transcript Structure View — Design
 
 Date: 2026-04-05
-Context: Serf eval dashboard (`tools/dashboard/`)
+Context: Evener eval dashboard (`tools/dashboard/`)
 
 ## Purpose
 

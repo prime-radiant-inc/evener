@@ -24,7 +24,7 @@ replacement daemon's authoritative snapshot without a page reload.
 
 ## Design
 
-Add a hub-originated `serf/thread/resync` AppWire notification with `ref` and
+Add a hub-originated `evener/thread/resync` AppWire notification with `ref` and
 `threadId` fields.
 
 The relay supervisor broadcasts this notification to the relay's existing
@@ -48,7 +48,7 @@ continuity.
 
 ## Why a Targeted Notification
 
-`serf/tree/changed` is intentionally broad: roster, past-index, archive,
+`evener/tree/changed` is intentionally broad: roster, past-index, archive,
 favorite, rename, and project-delete changes all emit it. Rehydrating every
 open transcript for that event would add unrelated full thread reads,
 particularly costly on cellular connections.
@@ -78,7 +78,7 @@ Backend tests will prove that:
 
 Frontend tests will prove that:
 
-- a tracked stale ended model receives `serf/thread/resync`, performs one fresh
+- a tracked stale ended model receives `evener/thread/resync`, performs one fresh
   `thread/read`, and is replaced by the active replacement snapshot;
 - notifications arriving during that read are buffered and replayed;
 - an untracked ref does not trigger a read;

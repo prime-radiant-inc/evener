@@ -9,11 +9,11 @@
 > how to run/extend the toolkit today see [`docs/fuzzing.md`](../fuzzing.md).
 
 **Status:** Phases 0–5 BUILT on `wip/fuzzing-toolkit`; Phase 6+ (§8) is the full-coverage roadmap, each item planned under `docs/design/plans/`. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit` (worktree `.worktrees/fuzzing-toolkit`).
-**Builds on:** [`docs/research/api-fuzzing-toolkit.md`](../research/api-fuzzing-toolkit.md) — read that first for prior art, the four API surfaces, and why serf is unusually fuzz-ready. This doc is the *how*: package layout, Go signatures, the promoter internals, and a file-by-file build plan.
+**Builds on:** [`docs/research/api-fuzzing-toolkit.md`](../research/api-fuzzing-toolkit.md) — read that first for prior art, the four API surfaces, and why evener is unusually fuzz-ready. This doc is the *how*: package layout, Go signatures, the promoter internals, and a file-by-file build plan.
 
 ## 0. Goal & non-goals
 
-**Goal.** A toolkit that (a) fuzzes serf's API surfaces at unit + integration granularity and (b) turns any *deterministic* failure into a permanent, named regression test — leaning on Go's free corpus auto-promotion where possible and building a promoter only where the failing artifact is a sequence. The portable core (the loop + the flake-guard-before-promote discipline + schema-driven generation + the oracle taxonomy) is later extracted into a general **superpowers skill**; serf is the proving ground.
+**Goal.** A toolkit that (a) fuzzes evener's API surfaces at unit + integration granularity and (b) turns any *deterministic* failure into a permanent, named regression test — leaning on Go's free corpus auto-promotion where possible and building a promoter only where the failing artifact is a sequence. The portable core (the loop + the flake-guard-before-promote discipline + schema-driven generation + the oracle taxonomy) is later extracted into a general **superpowers skill**; evener is the proving ground.
 
 **Non-goals (now).** External fuzzing infra (OSS-Fuzz/ClusterFuzz). Cross-provider *differential* testing (we do *metamorphic* — research §4). JS renderer fuzzing (jstest isn't gated — defer to Phase 5). Auto-commit without a human-reviewable diff.
 
@@ -29,7 +29,7 @@ All new code under a single module-spanning tree so each module's `go test` pick
 ```
 fuzz/                              # NEW top-level dir; doc + shared, module-agnostic libs
   README.md                       # how to run: make fuzz, make fuzz-nightly
-  schemagen/                      # schema -> value generator (Phase 1); pure, no serf deps
+  schemagen/                      # schema -> value generator (Phase 1); pure, no evener deps
     schemagen.go                  #   JSONSchema -> rapid.Generator (valid + schema-adjacent)
     schemagen_test.go
   promoter/                       # the failure->regression harness (Phase 3); generic core
@@ -51,7 +51,7 @@ llm/providers/openai/responses_fuzz_test.go            # Phase 4 #7
 cmd/evener-hub/web_fuzz_test.go                           # Phase 4 #8
 ```
 
-Rationale: `testing.F` targets must be in the package under test (they call unexported seams and their `testdata/fuzz/` corpus lives beside them). The `fuzz/` module holds only the *reusable* pieces (generator, promoter) that have no serf dependency — these become the skill's travelling tooling. `fuzz/` is added to `GO_MODULES` in the Makefile so it's gated.
+Rationale: `testing.F` targets must be in the package under test (they call unexported seams and their `testdata/fuzz/` corpus lives beside them). The `fuzz/` module holds only the *reusable* pieces (generator, promoter) that have no evener dependency — these become the skill's travelling tooling. `fuzz/` is added to `GO_MODULES` in the Makefile so it's gated.
 
 ## 2. Phase 0 — free Go-native wins (do first, ~250–450 LoC)
 
@@ -173,7 +173,7 @@ Written next to the surface's tests (path from the Emit hook). Provenance traile
 
 ## 5. Generalization seam (the future skill)
 
-The `promoter.Adapter` (four hooks) + `schemagen.FromJSONSchema` are the portable tooling. The skill (`docs/skills/fuzzing-an-api-surface/`, Phase 5) is methodology-first: when to reach for it, how to pick a surface+seam, the 7-step procedure (research §8), and the flake-guard/dedup rubric. Per-language fuzzers (Go `testing.F`+`rapid`, JS fast-check, Python hypothesis) sit behind the same Adapter; only the engine, corpus format, and emitter syntax differ. **Nothing in `fuzz/promoter` or `fuzz/schemagen` imports serf** — that's the test of whether the core is truly portable.
+The `promoter.Adapter` (four hooks) + `schemagen.FromJSONSchema` are the portable tooling. The skill (`docs/skills/fuzzing-an-api-surface/`, Phase 5) is methodology-first: when to reach for it, how to pick a surface+seam, the 7-step procedure (research §8), and the flake-guard/dedup rubric. Per-language fuzzers (Go `testing.F`+`rapid`, JS fast-check, Python hypothesis) sit behind the same Adapter; only the engine, corpus format, and emitter syntax differ. **Nothing in `fuzz/promoter` or `fuzz/schemagen` imports evener** — that's the test of whether the core is truly portable.
 
 ## 6. Build order & acceptance
 
@@ -200,14 +200,14 @@ Phases 0–5 are **built** (see git history on `wip/fuzzing-toolkit`). They cove
 Each work item below gets its own detailed implementation plan under `docs/design/plans/`. The item text here is the charter (scope + the real seams + rough size + dependencies); the plan doc is the *how*.
 
 ### A. More per-surface targets — no new infra, just more `testing.F` (mechanical, high-yield)
-- **8.1 Persistence round-trip + replay-idempotence targets** → `docs/design/plans/01-persistence-roundtrip-targets.md`. Seams: `agent/schema/snapshot.go`, transcript write/replay, the jobstore event log, `agent/schema` session meta. Oracles: decode→encode→decode fixed point; **replay-idempotence** (replaying a persisted log reproduces the same in-memory state). Highest-yield next surface — serf's historical bugs cluster at reload/replay. ~300–500 LoC.
+- **8.1 Persistence round-trip + replay-idempotence targets** → `docs/design/plans/01-persistence-roundtrip-targets.md`. Seams: `agent/schema/snapshot.go`, transcript write/replay, the jobstore event log, `agent/schema` session meta. Oracles: decode→encode→decode fixed point; **replay-idempotence** (replaying a persisted log reproduces the same in-memory state). Highest-yield next surface — evener's historical bugs cluster at reload/replay. ~300–500 LoC.
 - **8.2 Codex-compat input/item + config decode targets** → `docs/design/plans/02-codex-compat-and-config-targets.md`. Seams: appwire `InputItem`/item parsing (the codex-compat path), `providers.toml`, plugin manifests, session config. Same decode-surface pattern as Phase 0. ~250–450 LoC.
 
 ### B. The stateful agent core — the one real infrastructure investment
 - **8.3 Deterministic offline agent harness + first stateful agent-core target** → `docs/design/plans/03-offline-agent-harness.md`. The 47K-LoC `agent` core is unfuzzed because driving a real turn/job lifecycle deterministically needs a fake LLM, a fake clock, and a sandboxed exec env. The seed already exists: `agent/internal/agenttest.FakeAdapter` (scripted `llm.Response`s). The work: (1) a **fuzz-driven programmable provider** so a `rapid` state machine can drive a session through fuzzed sequences of (LLM responses, tool results, steers, interrupts, job events); (2) a first-class **fake clock** seam (extend the existing `freezeClock` test helper); (3) a **sandboxed `execenv`** (replace/deny over `agent/execenv/local.go`, which runs real commands) — this is also what would unblock fuzzing tool *handler execution*, not just validation. Then one stateful target over the session/turn/job machinery: invariants = no wedge, status monotonicity, no lost turns, transcript↔state consistency. This is the high-effort, high-value piece; everything else in B depends on it. ~800–1500 LoC.
 
 ### C. Tooling that multiplies coverage
-- **8.4 Corpus harvesting from recorded traffic** → `docs/design/plans/04-corpus-harvesting.md`. serf already records `RawRequestBody`/`RawResponseBody` and full transcripts. A tool that sanitizes those into `fuzz/corpus/` seeds beats hand-written `f.Add` seeds by orders of magnitude (real provider quirks for free). Highest-leverage tooling item. ~200–400 LoC.
+- **8.4 Corpus harvesting from recorded traffic** → `docs/design/plans/04-corpus-harvesting.md`. evener already records `RawRequestBody`/`RawResponseBody` and full transcripts. A tool that sanitizes those into `fuzz/corpus/` seeds beats hand-written `f.Add` seeds by orders of magnitude (real provider quirks for free). Highest-leverage tooling item. ~200–400 LoC.
 - **8.5 Unified wire-type → generator registry** → `docs/design/plans/05-unified-schema-registry.md`. Tool args have `schemagen`; appwire params/responses are reflected ad-hoc. One registry mapping every wire type (all 46 `appwire.Methods` params + response types) to a generator lets a single harness cover the whole protocol uniformly instead of one target per surface. Builds on `schemagen`. ~300–500 LoC.
 
 ### D. Automation — the difference between a one-shot and a standing capability

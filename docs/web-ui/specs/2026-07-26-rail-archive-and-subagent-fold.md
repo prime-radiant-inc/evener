@@ -97,9 +97,9 @@ id.
 New module `railExpansion.ts`: load/save of the override map, pure
 functions over `localStorage`, no React.
 
-Storage is one JSON blob under `serf.rail.expanded.v1`, following the
-`serf.workspace.layout.v2` precedent (`DockHost.tsx`) rather than the
-htmx UI's one-key-per-row `serf-hub.sidebar.expanded.<key>`. Same
+Storage is one JSON blob under `evener.rail.expanded.v1`, following the
+`evener.workspace.layout.v2` precedent (`DockHost.tsx`) rather than the
+htmx UI's one-key-per-row `evener-hub.sidebar.expanded.<key>`. Same
 behavior row by row; one read at boot instead of a key scan, and no
 orphaned keys scattered across the namespace.
 

@@ -5,7 +5,7 @@ Status: Approved
 
 ## Summary
 
-A provider can reject a turn for reasons the user can recover from by switching models: exhausted quota, invalid or expired credentials, retired model access, or provider policy. Serf currently turns a non-retryable `llm.Error` into a closed session. The web then disables its model control because the daemon advertises `ChangeModel=false` for closed sessions. This strands the user on the provider that failed.
+A provider can reject a turn for reasons the user can recover from by switching models: exhausted quota, invalid or expired credentials, retired model access, or provider policy. Evener currently turns a non-retryable `llm.Error` into a closed session. The web then disables its model control because the daemon advertises `ChangeModel=false` for closed sessions. This strands the user on the provider that failed.
 
 Change the lifecycle rule: a terminal provider error fails the current turn and returns the session to idle. Provider retryability continues to control automatic retries, but no longer decides whether the conversation closes. The existing idle status and capability notification then restore model switching without a new protocol or UI feature.
 
@@ -101,7 +101,7 @@ Add a web regression test to prove that a control disabled by an active status b
 | Explicit shutdown | Session closes |
 | Engine/session integrity failure outside the provider-call path | Existing owning lifecycle may close the session |
 
-The user sees the same provider error that failed the turn. Serf does not imply that switching will repair every error; it merely preserves the recovery action.
+The user sees the same provider error that failed the turn. Evener does not imply that switching will repair every error; it merely preserves the recovery action.
 
 ## Compatibility
 

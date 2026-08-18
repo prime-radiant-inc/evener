@@ -1,9 +1,9 @@
 # job-restart-durability: kill -9 mid-job; restart reconciles stopped/runtime_lost, retains output, notifies exactly once
 
 **What this covers**: the durable-substrate headline of
-`docs/job-control.md` — jobs survive a Serf process death as durable
+`docs/job-control.md` — jobs survive a Evener process death as durable
 records even though running processes do not ("Summary" "Running
-processes are not required to survive a Serf process restart";
+processes are not required to survive a Evener process restart";
 "Design principles" "No automatic process resume after restart").
 Restart reconciliation ("Restart behavior"): a `running` record with
 no live runtime is finalized exactly once as `stopped`/`runtime_lost`
@@ -22,13 +22,13 @@ is not command failure. It is supervision loss").
 ## Pre-state
 
 - Fresh binaries from the branch under test. Serve mode through the
-  hub is REQUIRED, with the hub's `-serf` flag set so it can respawn
+  hub is REQUIRED, with the hub's `-evener` flag set so it can respawn
   daemons: the restart leg rides the hub's auto-resume
   (`reconnect-auto-resume.md` is the plumbing-side card for that
   path). An isolated hub, per the Setup checklist in
   `docs/agentic-testing.md` (never Jesse's real hub on `9180`).
-- Credentialed model; `tmpdir=$(mktemp -d -t serf-e2e-jrestart-XXXXX)`;
-  `TOKEN=$(cat "$HOME/.serf/auth-token")`; `HUB=http://127.0.0.1:$PORT`.
+- Credentialed model; `tmpdir=$(mktemp -d -t evener-e2e-jrestart-XXXXX)`;
+  `TOKEN=$(cat "$HOME/.evener/auth-token")`; `HUB=http://127.0.0.1:$PORT`.
 
 ## Steps
 
@@ -41,13 +41,13 @@ is not command failure. It is supervision loss").
    > wait on it.
 2. Capture `JOB` from the transcript; poll `/api/sessions/local:$SID`
    until `state` is `idle`. Locate the durable substrate now:
-   `JOBS=$(find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl")`
+   `JOBS=$(find $HOME/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl")`
    and the output log `sessions/$SID/jobs/$JOB.log` next to it.
 3. OPERATOR-STEP (the crash): at ~20s after the job started, find the
    session's daemon PID and SIGKILL it —
 
    ```bash
-   PID=$(for f in $HOME/.serf/run/*.json; do python3 -c "
+   PID=$(for f in $HOME/.evener/run/*.json; do python3 -c "
    import json,sys; d=json.load(open('$f'))
    print(d['pid']) if d.get('session_id')=='$SID' else None" 2>/dev/null; done | head -1)
    PRODUCER=$(pgrep -P "$PID")   # this run's producer, while the daemon is still its parent
@@ -65,7 +65,7 @@ is not command failure. It is supervision loss").
    (`tail -2 "sessions/$SID/jobs/$JOB.log"`).
 5. OPERATOR-STEP (the restart): resume the session by sending a new
    turn through the hub — this is the daemon's actual restart path
-   (the hub spawns `serf serve --resume $SID`):
+   (the hub spawns `evener serve --resume $SID`):
 
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
@@ -147,14 +147,14 @@ is not command failure. It is supervision loss").
   the pattern matches a concurrent agent's producer as readily as your own
   (kata `pcev`).
 - Shut down the resumed session (`POST /s/$SID/shutdown`); remove the
-  stale rendezvous files of the killed PIDs under `$HOME/.serf/run/` if
+  stale rendezvous files of the killed PIDs under `$HOME/.evener/run/` if
   present; `rm -rf "$tmpdir"` and `rm -f "$run/jobs-before-restart.jsonl"`.
 
 ## Sharp edges
 
-- One daemon per session: the hub spawns a dedicated `serf serve`
+- One daemon per session: the hub spawns a dedicated `evener serve`
   process per spawn/resume, and the rendezvous file
-  `$HOME/.serf/run/<pid>.json` carries `session_id` — that is the
+  `$HOME/.evener/run/<pid>.json` carries `session_id` — that is the
   authoritative PID lookup. `kill -9` leaves the stale file behind;
   match on session_id AND a live pid.
 - The crash must land while the job is mid-run and the session idle:
@@ -169,7 +169,7 @@ is not command failure. It is supervision loss").
   kill moment); assert the contiguous prefix and the step-4 equality,
   not an exact n.
 - Restart reconciliation does NOT auto-resume anything ("Restart
-  behavior" "Jobs do not auto-resume after a Serf process restart"); the
+  behavior" "Jobs do not auto-resume after a Evener process restart"); the
   producer does not restart. If a fresh producer process appears after
   resume, that is auto-resume creeping in — file it.
 - Shell jobs are not resumable; `resumable` on the row stays

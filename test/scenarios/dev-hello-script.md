@@ -1,6 +1,6 @@
 # dev-hello-script: agent writes and runs a one-file Python script
 
-**What this covers**: end-to-end smoke test that serf-as-coding-agent
+**What this covers**: end-to-end smoke test that evener-as-coding-agent
 can use an LLM to actually build software. Exercises `write_file` +
 `exec_command` + `communicate` tools, the system prompt's "use code
 for actions" guidance, and the agent loop's turn shape (USER_INPUT →
@@ -11,10 +11,10 @@ shell.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable (sibling or PATH), on an
+- Hub running with `--evener` resolvable (sibling or PATH), on an
   isolated `$HOME` and a free port (never Jesse's port `9180` — see
   the Setup checklist in `docs/agentic-testing.md`).
-- OpenAI OAuth signed in (`./serf openai status` shows `source=oauth`),
+- OpenAI OAuth signed in (`./evener openai status` shows `source=oauth`),
   with quota available.
 - `python3` on PATH so the agent can run the script.
 
@@ -23,16 +23,16 @@ shell.
 1. Create a run-specific temp directory so the test is hermetic and
    parallel-safe:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-dev-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-dev-XXXXX)
    ```
 2. Spawn a session via `/api/spawn` with `model=openai/gpt-5.5`,
    `working_dir=$tmpdir`, a one-paragraph prompt that asks for a
    single small artifact:
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   TOKEN=$(cat "$HOME/.evener/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
-        -d "{\"prompt\":\"Create a file named hello.py in the current directory that prints exactly 'hello world' when run. Then run it with python3 to confirm the output. Report what you did.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+        -d "{\"prompt\":\"Create a file named hello.py in the current directory that prints exactly 'hello world' when run. Then run it with python3 to confirm the output. Report what you did.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
         $HUB/api/spawn
    ```
 3. Capture `session_id` from the response.
@@ -56,7 +56,7 @@ shell.
   outputs exactly `hello world`.
 - Running `python3 $tmpdir/hello.py` prints `hello world` on
   stdout, exit 0.
-- Transcript (`find $HOME/.local/state/serf/projects -name "<id>.transcript.jsonl"`)
+- Transcript (`find $HOME/.local/state/evener/projects -name "<id>.transcript.jsonl"`)
   has the expected turn shape:
   - 1 USER_INPUT (the prompt)
   - 1+ ASSISTANT turns containing `write_file` (with
@@ -75,8 +75,8 @@ shell.
 rm -rf "$tmpdir"
 ```
 
-Session metadata under `$HOME/.local/state/serf/projects/...` lingers
-but is harmless. Optional: `find $HOME/.local/state/serf/projects
+Session metadata under `$HOME/.local/state/evener/projects/...` lingers
+but is harmless. Optional: `find $HOME/.local/state/evener/projects
 -name "<session_id>*" -delete`.
 
 ## Sharp edges

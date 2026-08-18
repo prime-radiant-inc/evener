@@ -16,25 +16,25 @@ This phase keeps the production registry disabled. It does not add live OpenAI t
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor|TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor|TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta' -count=1 -v
 ```
 
 Initial result: failed before sidecar attachment because the fallback-capable fake path still used full history instead of `responses_delta` with `FullHistoryFallbackMessages`.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesContinuationPhase9.*Gate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesContinuationPhase9.*Gate' -count=1 -v
 ```
 
 Initial result: failed before delta eligibility gates because orphaned tool results, unsafe media content, and unsupported delta turn kinds could still pass through candidate selection.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelection' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelection' -count=1 -v
 ```
 
 Initial result: failed before the real-session retry path had a fallback-capable delta request carrying the full-history sidecar.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Disabled' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Disabled' -count=1 -v
 ```
 
 Initial result: failed because the same live session selected a second `responses_delta` after an endpoint rejected the first continuation handle for the same provider, model, scope, policy, and stream path.
@@ -44,13 +44,13 @@ The sanitizer proof test passed when added after sidecar/retry work, showing no 
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9|TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestFallbackChain_Continuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9|TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestFallbackChain_Continuation' -count=1 -v
 ```
 
 Result: pass.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_Continuation|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_ClassifyResponsesError' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_Continuation|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_ClassifyResponsesError' -count=1 -v
 ```
 
 Result: pass.

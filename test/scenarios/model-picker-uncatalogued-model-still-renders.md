@@ -59,7 +59,7 @@ So the assertion is **absence of the element**, not an empty one.
    `openai` row) so the difference is visible rather than asserted in a
    vacuum.
 3. Launch it: `POST /api/spawn
-   {"prompt":"hi","harness":"serf","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
+   {"prompt":"hi","harness":"evener","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
    Poll `GET /api/sessions/local:$SID` to `state: idle`, then read the
    transcript with `go run ./cmd/evener-doctor transcript "$SID"
    --state-dir "$state" --format outline --range last:30`.
@@ -82,7 +82,7 @@ So the assertion is **absence of the element**, not an empty one.
      };
    })()
    ```
-5. Open `/settings/launch-serf` and run the identical snippet — the same
+5. Open `/settings/launch-evener` and run the identical snippet — the same
    widget, so the same expectation.
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap

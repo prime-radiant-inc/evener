@@ -7,7 +7,7 @@ Model: `kimi/kimi-for-coding`
 These notes record the live sidecar scenario attempts used to seed the
 scenario cards in `test/scenarios/sidecar-*.md`. The first pass used an
 ad hoc runner; that was the wrong long-term shape. The durable sessions
-below were then audited with `serf-doctor`, which is the supported
+below were then audited with `evener-doctor`, which is the supported
 inspection surface for transcripts, watches, and observer topology.
 
 Current shipped observer callbacks use `communicate(end_turn:true)` from a
@@ -46,7 +46,7 @@ the watch shape:
 | Stuckness error | `01KVHNH1NB30XZERAKPP4B6GGZ` | Recovered pass with notes: first observer used a leaf agent without `delegate_send`; parent restarted with a default agent and completed. |
 | Test triage | `01KVHNKYWK1ADH74A6G88YEGDD` | Pass with notes: output-match watch delivered; observer triaged; parent emitted extra narrative after completion. |
 | Progress digest | `01KVHNPZVFZRZZ8XV9GZVJB4GV` | Pass with notes: output-match watch delivered; parent used one extra `job_list`. |
-| Handoff packager | `01KVHNRQK1PAFPBC8GMJX3YV1Y` | Pass with notes: `job.notification` watch delivered; worker and observer children were both visible in `serf-doctor tree`. |
+| Handoff packager | `01KVHNRQK1PAFPBC8GMJX3YV1Y` | Pass with notes: `job.notification` watch delivered; worker and observer children were both visible in `evener-doctor tree`. |
 | Runbook capture | `01KVHNVJMKY9AZ2NBQ1W6D0MTJ` | Pass with notes: output-match watch delivered; parent used extra waiting/summary turns. |
 | Feedback governor | `01KVHNXA99NENT08QQJV7DVYFC` | Pass: `events: [communicate]` watch delivered and was cleared. |
 | Quality auditor | `01KVHPNCYTGQE00HZ7HK8H04E9` | Pass with notes: tightened manual run used `events: [communicate]`; observer sent `QUALITY_FINDING` with one `delegate_send`, two `communicate` calls, and no `job_list`. |
@@ -54,19 +54,19 @@ the watch shape:
 ## Tooling conclusion
 
 The current scenario corpus is human/agent-readable markdown, and
-`serf-doctor` is the correct audit surface. The missing tool is a
+`evener-doctor` is the correct audit surface. The missing tool is a
 first-class live scenario runner that can:
 
 1. create hermetic workdirs and fixtures from a structured scenario
    definition;
 2. spawn a session with a chosen model;
 3. wait for terminal state with bounded cleanup;
-4. run `serf-doctor` audits against the resulting parent and observer
+4. run `evener-doctor` audits against the resulting parent and observer
    sessions; and
 5. report semantic pass/fail plus fluency notes.
 
 Until that exists, do not build new one-off JSONL parsers around these
-scenarios. Run the markdown cards manually and audit with `serf-doctor`.
+scenarios. Run the markdown cards manually and audit with `evener-doctor`.
 
 ## Final callback-fluency retest
 
@@ -80,7 +80,7 @@ uses `communicate(end_turn:true)` for observer callbacks, so a sidecar does
 not need `delegate_send(to="caller")` to report upward.
 
 Fresh binaries were rebuilt and the memory/approval sidecar scenarios
-were rerun through the hub REST shim, with `serf-doctor` transcript
+were rerun through the hub REST shim, with `evener-doctor` transcript
 audits:
 
 | Model | Scenario | Parent session | Observer session | Audit result |

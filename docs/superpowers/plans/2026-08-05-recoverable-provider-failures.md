@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep a Serf session open and model-switchable after a terminal provider failure, including a non-retryable quota response.
+**Goal:** Keep a Evener session open and model-switchable after a terminal provider failure, including a non-retryable quota response.
 
 **Architecture:** Make provider errors terminal to the current turn and any active goal, but not to the session. Preserve the existing failed-turn and idle-boundary event flow so AppWire derives `changeModel=true`; prove the real daemon path and existing web control consume that recovery without production protocol or frontend changes.
 
@@ -303,7 +303,7 @@ After receiving the failed-turn and idle-capability milestones, assert:
 ```go
 read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 // read.Thread.Status.Type == appwire.ThreadStatusIdle
-// read.Thread.Serf.Capabilities.ChangeModel == true
+// read.Thread.Evener.Capabilities.ChangeModel == true
 
 err = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
     Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol",

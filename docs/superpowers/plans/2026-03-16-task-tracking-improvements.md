@@ -48,7 +48,7 @@ In `agent/task_store_test.go`, replace all references to `TaskUndone` with `Task
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_AppendAndView|TestTaskStore_ViewReturnsCopy|TestTaskListTool_AppendViewUpdate' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_AppendAndView|TestTaskStore_ViewReturnsCopy|TestTaskListTool_AppendViewUpdate' -v`
 
 Expected: compilation error — `TaskOpen` undefined.
 
@@ -75,7 +75,7 @@ Update the error message (line 154) to say `"open, in_progress, done, or cancell
 
 - [ ] **Step 4: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore' -v`
 
 Expected: all pass.
 
@@ -105,7 +105,7 @@ Note: this test will fail until we add the system prompt guidance in Task 9. Tha
 
 - [ ] **Step 7: Run full agent test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -count=1`
 
 Expected: all pass except `TestAllProfiles_SystemPromptContainsTaskListGuidance` (fixed in Task 9).
 
@@ -161,7 +161,7 @@ func TestTaskStore_AppendWithDependsOn(t *testing.T) {
 
 - [ ] **Step 2: Run test — verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestTaskStore_AppendWithDependsOn -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestTaskStore_AppendWithDependsOn -v`
 
 Expected: compilation error — `TaskInput` has no `DependsOn` field.
 
@@ -199,7 +199,7 @@ t := Task{
 
 - [ ] **Step 4: Run test — verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestTaskStore_AppendWithDependsOn -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestTaskStore_AppendWithDependsOn -v`
 
 Expected: PASS.
 
@@ -226,7 +226,7 @@ func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
 
 - [ ] **Step 6: Run test — verify it passes** (JSON serialization handles this already)
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestTaskStore_DependsOnPersistsAcrossLoads -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestTaskStore_DependsOnPersistsAcrossLoads -v`
 
 Expected: PASS.
 
@@ -305,7 +305,7 @@ func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_UpdateDependsOn|TestTaskStore_UpdateOmittedDependsOnPreserves' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_UpdateDependsOn|TestTaskStore_UpdateOmittedDependsOnPreserves' -v`
 
 Expected: compilation error — `TaskUpdate` has no `DependsOn` field.
 
@@ -332,7 +332,7 @@ if u.DependsOn != nil {
 
 - [ ] **Step 4: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_UpdateDependsOn|TestTaskStore_UpdateOmittedDependsOnPreserves' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_UpdateDependsOn|TestTaskStore_UpdateOmittedDependsOnPreserves' -v`
 
 Expected: PASS.
 
@@ -450,7 +450,7 @@ func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_.*Reject.*Depend|TestTaskStore_.*Cycl|TestTaskStore_.*Batch' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_.*Reject.*Depend|TestTaskStore_.*Cycl|TestTaskStore_.*Batch' -v`
 
 Expected: FAIL — no validation yet.
 
@@ -599,7 +599,7 @@ if u.DependsOn != nil {
 
 - [ ] **Step 6: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore' -v`
 
 Expected: all pass.
 
@@ -713,7 +713,7 @@ func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_NextEligible' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_NextEligible' -v`
 
 Expected: compilation error — `NextEligible` not defined.
 
@@ -757,7 +757,7 @@ func (s *TaskStore) NextEligible() []Task {
 
 - [ ] **Step 4: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskStore_NextEligible' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskStore_NextEligible' -v`
 
 Expected: all pass.
 
@@ -801,7 +801,7 @@ func TestTaskStore_Progress(t *testing.T) {
 
 - [ ] **Step 2: Run test — verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestTaskStore_Progress -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestTaskStore_Progress -v`
 
 Expected: compilation error.
 
@@ -825,7 +825,7 @@ func (s *TaskStore) Progress() (total, done int) {
 
 - [ ] **Step 4: Run test — verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestTaskStore_Progress -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestTaskStore_Progress -v`
 
 Expected: PASS.
 
@@ -867,7 +867,7 @@ Update the `updates` items properties to include:
 
 - [ ] **Step 2: Run existing tool tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskListTool' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskListTool' -v`
 
 Expected: PASS (schema change is additive).
 
@@ -1070,7 +1070,7 @@ func TestTaskListTool_UpdateShowsBlocked(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskListTool_AppendWithDependsOn|TestTaskListTool_UpdateShows' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskListTool_AppendWithDependsOn|TestTaskListTool_UpdateShows' -v`
 
 Expected: FAIL.
 
@@ -1159,13 +1159,13 @@ return msg.String(), nil
 
 - [ ] **Step 5: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskListTool' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskListTool' -v`
 
 Expected: all pass.
 
 - [ ] **Step 6: Run full agent test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -count=1`
 
 Expected: all pass except `TestAllProfiles_SystemPromptContainsTaskListGuidance` (fixed next).
 
@@ -1205,13 +1205,13 @@ Use the task_list tool to plan and track multi-step work.
 
 - [ ] **Step 2: Run the guidance test**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run TestAllProfiles_SystemPromptContainsTaskListGuidance -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run TestAllProfiles_SystemPromptContainsTaskListGuidance -v`
 
 Expected: PASS.
 
 - [ ] **Step 3: Run full test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -count=1`
 
 Expected: all pass.
 
@@ -1368,7 +1368,7 @@ func TestTaskReminderNudge(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskReminder' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskReminder' -v`
 
 Expected: compilation error — functions not defined.
 
@@ -1456,7 +1456,7 @@ func taskReminderNudge() string {
 
 - [ ] **Step 4: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestTaskReminder' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestTaskReminder' -v`
 
 Expected: all pass.
 
@@ -1568,7 +1568,7 @@ func TestMaybeInjectTaskReminder_NoNudgeIfEverUsed(t *testing.T) {
 
 - [ ] **Step 2: Run tests — verify they fail**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestMaybeInjectTaskReminder' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestMaybeInjectTaskReminder' -v`
 
 Expected: compilation error — method not defined.
 
@@ -1645,13 +1645,13 @@ s.contextMgr.OnCompactionTurn = func(t Turn) {
 
 - [ ] **Step 6: Run tests — verify they pass**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestMaybeInjectTaskReminder' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestMaybeInjectTaskReminder' -v`
 
 Expected: all pass.
 
 - [ ] **Step 7: Run full agent test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -count=1`
 
 Expected: all pass.
 
@@ -1688,7 +1688,7 @@ if meta != nil && len(meta.TaskSnapshot) > 0 {
 
 - [ ] **Step 2: Run context manager tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -run 'TestContext' -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -run 'TestContext' -v`
 
 Expected: all pass.
 
@@ -1705,13 +1705,13 @@ git commit -m "feat: include dependencies in compaction task snapshot"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./agent/ -count=1 -v 2>&1 | tail -40`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./agent/ -count=1 -v 2>&1 | tail -40`
 
 Expected: all pass.
 
 - [ ] **Step 2: Run the full project test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./... -count=1`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./... -count=1`
 
 Expected: all pass.
 

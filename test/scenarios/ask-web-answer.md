@@ -32,18 +32,18 @@ gesture.
   `docs/agentic-testing.md`. Never a real hub, never a hardcoded port — one `mktemp` run
   directory names everything:
   ```bash
-  run=$(mktemp -d -t serf-e2e-ask-web-XXXXXX)
-  go build -o "$run/serf"     ./cmd/evener
-  go build -o "$run/serf-hub" ./cmd/evener-hub
+  run=$(mktemp -d -t evener-e2e-ask-web-XXXXXX)
+  go build -o "$run/evener"     ./cmd/evener
+  go build -o "$run/evener-hub" ./cmd/evener-hub
   ```
 - Export credentials from the MAIN checkout (not this worktree):
   ```bash
-  set -a; . /Users/jesse/prime-radiant/toil-suite/serf/.env; set +a
+  set -a; . /Users/jesse/prime-radiant/toil-suite/evener/.env; set +a
   ```
 - **Isolate.** This card has no OAuth requirement (it authenticates via the exported
   `OPENAI_API_KEY` above, not stored OAuth state), so it gets the normal Setup-checklist
   treatment: a throwaway `$HOME` keeps auth-token, `credentials.toml`, and session history
-  off the real `~/.serf` and `~/.local/state/serf` entirely.
+  off the real `~/.evener` and `~/.local/state/evener` entirely.
   ```bash
   export HOME="$run/home"
   mkdir -p "$HOME"
@@ -55,7 +55,7 @@ gesture.
   roster and each daemon's `/status` agree (the isolated `$HOME` above still gives each its
   own default):
   ```bash
-  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   echo "$HUBPID" >"$run/hub.pid"
   for i in $(seq 1 50); do
@@ -65,7 +65,7 @@ gesture.
     sleep 0.1
   done
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
   export SERF_E2E_RUN="$run"   # how the sibling ask cards find this hub
   ```
@@ -85,12 +85,12 @@ gesture.
 
 1. **(browser-free)** Spawn a session whose first turn asks a question:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-ask-web-wd-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-ask-web-wd-XXXXX)
    body=$(jq -n --arg wd "$tmpdir" '{
      prompt: "Before doing any other work, call the ask_user tool once. Ask exactly one question: header \"DB choice\", question \"Which database should the new ingest path use?\", with exactly two options: Postgres (recommended: true, detail \"matches prod; heavier local setup\") and SQLite (detail \"zero setup; diverges from prod\"). Do not do anything else first.",
      model: "openai/gpt-5.5",
      working_dir: $wd,
-     harness: "serf",
+     harness: "evener",
      branch: "",
      access_mode: "full",
      agent: "default",
@@ -124,7 +124,7 @@ gesture.
      const q = dock.querySelector('[data-ask-question]');
      const opts = [...q.querySelectorAll('input[type="radio"][aria-label]')]
        .map((el) => el.getAttribute('aria-label'))
-       .filter((l) => l !== 'Something else…' && l !== 'let serf decide');
+       .filter((l) => l !== 'Something else…' && l !== 'let evener decide');
      const tagged = [...q.querySelectorAll('input[type="radio"][aria-label]')]
        .filter((el) => el.closest('label')?.textContent.includes('recommended'))
        .map((el) => el.getAttribute('aria-label'));
@@ -241,7 +241,7 @@ leaves the daemon running, which then poisons the next run's state poll.
   tool's `type` action (real key events), or, if you must do it from `eval`, go through the
   native setter: `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(note, text)`
   followed by `dispatchEvent(new Event("input",{bubbles:true}))`. The same applies to the
-  "Something else…" free-text and "let serf decide" leaning inputs. Radio/checkbox
+  "Something else…" free-text and "let evener decide" leaning inputs. Radio/checkbox
   `.click()` is fine — a native click already fires the change React listens for.
 - **The primary button is not always "Send answers".** In a multi-question batch the
   footer button relabels to `Next question` while an unanswered question remains

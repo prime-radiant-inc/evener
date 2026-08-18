@@ -10,7 +10,7 @@ the existing transcript and wire identities, materializes one daemon-owned
 snapshot, and makes client hydration self-healing without adding transcript
 format v3 or public stream epochs.
 
-**Scope:** Serf daemon transcript identity, live AppWire projection, transcript
+**Scope:** Evener daemon transcript identity, live AppWire projection, transcript
 paging, and atomic subscribing hydration.
 
 ## Decision

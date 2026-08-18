@@ -21,7 +21,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/agentic-testing.md`. Token at
-  `$HOME/.serf/auth-token` (that isolated one).
+  `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` containing a small valid PNG, `fixture.png`.
 - A cheap image-capable model, e.g. `anthropic/claude-haiku-4-5-20251001`.
 - For the browser step only: run `make build-web` before building the hub. A

@@ -1,8 +1,8 @@
 # Runtime Contracts
 
-Status: Proposed evergreen spec. This is doc 10 for subagent management and replaces the skipped declarative workflow-template spec. Serf already has task/template design coverage and plugin agent task seeds; this spec defines the cross-cutting runtime contracts that docs 6-9 depend on instead of adding another workflow-template layer.
+Status: Proposed evergreen spec. This is doc 10 for subagent management and replaces the skipped declarative workflow-template spec. Evener already has task/template design coverage and plugin agent task seeds; this spec defines the cross-cutting runtime contracts that docs 6-9 depend on instead of adding another workflow-template layer.
 
-> **As-of update (2026-06-14):** Parts of Contract 1 have since shipped and the doc's current-state notes have drifted. In particular, `delegate`/`job_watch` for child agents are now **allowance-gated** (a non-zero `delegation_allowance`), **not** categorically root-only and **not** "stripped by depth" — so rule 5 and the "Current Serf treats … stripped by depth" note below describe the pre-recursion design, not current behavior. The authoritative, current tool-availability/allowance contract lives in the evergreen [`docs/job-control.md`](../job-control.md) (sections **"Delegation allowance (recursive delegation)"** and **"V1 tool availability"**). More broadly, the parts of all six contracts here that have actually shipped are documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md); this spec is retained as the point-in-time design record (target contracts, acceptance criteria, test matrix). Consult those evergreen docs for what ships today.
+> **As-of update (2026-06-14):** Parts of Contract 1 have since shipped and the doc's current-state notes have drifted. In particular, `delegate`/`job_watch` for child agents are now **allowance-gated** (a non-zero `delegation_allowance`), **not** categorically root-only and **not** "stripped by depth" — so rule 5 and the "Current Evener treats … stripped by depth" note below describe the pre-recursion design, not current behavior. The authoritative, current tool-availability/allowance contract lives in the evergreen [`docs/job-control.md`](../job-control.md) (sections **"Delegation allowance (recursive delegation)"** and **"V1 tool availability"**). More broadly, the parts of all six contracts here that have actually shipped are documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md); this spec is retained as the point-in-time design record (target contracts, acceptance criteria, test matrix). Consult those evergreen docs for what ships today.
 
 ## Purpose
 
@@ -16,7 +16,7 @@ Declarative workflow templates are intentionally not specified here. Agent `task
 - Define effective capability policy so child agents can narrow but not expand authority.
 - Define event ordering and blocking boundaries for tools, subagents, hooks, helpers, and clients.
 - Define diagnostic/error conventions that are useful and safe to display.
-- Define compatibility tiers for Serf-native behavior and Claude/Codex-compatible subsets.
+- Define compatibility tiers for Evener-native behavior and Claude/Codex-compatible subsets.
 - Define lightweight helper isolation so helper LLM calls do not become hidden subagents.
 - Define history metadata invariants for forks, subagents, transcripts, and derived tree views.
 - Prefer small reusable helpers and existing infrastructure over new registries, event buses, middleware stacks, or schema frameworks.
@@ -62,7 +62,7 @@ These current files are the implementation surface this contract should cite and
 - **Lifecycle event**: an observation of a runtime boundary. It may feed clients, logs, metrics, or hooks, but is not automatically blocking.
 - **Blocking hook**: a lifecycle integration point that can alter, block, or continue execution under explicit timeout/cancellation policy.
 - **Validation diagnostic**: a structured or consistently formatted issue with source, field/component, severity, and sanitized message.
-- **Compatibility tier**: a documented stability/compatibility label: `serf-native`, `claude-compatible-subset`, `reserved-placeholder`, or `experimental`.
+- **Compatibility tier**: a documented stability/compatibility label: `evener-native`, `claude-compatible-subset`, `reserved-placeholder`, or `experimental`.
 - **Lightweight helper**: a bounded one-shot LLM call owned by another operation and isolated from subagent registry/transcripts/tools.
 - **Lineage metadata**: parent/child/fork fields that let clients pivot between related transcripts without merging transcript bodies.
 
@@ -70,7 +70,7 @@ These current files are the implementation surface this contract should cite and
 
 ### Definition
 
-At every model-call, tool-call, plugin-agent, child-agent, hook, and helper boundary, Serf must compute or reuse an effective capability set. Effective capabilities include:
+At every model-call, tool-call, plugin-agent, child-agent, hook, and helper boundary, Evener must compute or reuse an effective capability set. Effective capabilities include:
 
 - registered built-in tools;
 - root-only tool filters;
@@ -96,7 +96,7 @@ At every model-call, tool-call, plugin-agent, child-agent, hook, and helper boun
 8. Provider feature policy must run before request construction. A helper/subagent/session cannot request unsupported provider features merely because an agent definition names them.
 9. Cancellation and close state are part of effective policy. A closed/cancelling session must deny new child work and unblock/abort pending approvals where possible.
 
-Current Serf treats plugin-agent `tools: all` as an unrestricted child registry request after child session initialization, with root-only management tools stripped by depth. The stronger parent/session effective-policy intersection above is the target contract; implementation should characterize current root-only stripping and add tests that hidden non-root tools cannot be re-enabled before claiming the target is enforced.
+Current Evener treats plugin-agent `tools: all` as an unrestricted child registry request after child session initialization, with root-only management tools stripped by depth. The stronger parent/session effective-policy intersection above is the target contract; implementation should characterize current root-only stripping and add tests that hidden non-root tools cannot be re-enabled before claiming the target is enforced.
 
 ### Implementation guidance
 
@@ -137,9 +137,9 @@ Tool lifecycle:
 11. tool-end/failure event emits;
 12. compatibility `PostToolUse` hooks run according to the lifecycle-hooks spec. Failure/batch hook names are reserved until implemented and tiered in the lifecycle-hooks spec.
 
-Current Serf emits `TOOL_CALL_START` before registry lookup, schema validation, middleware, and execution policy. Until migrated, treat that event as an attempted-call observation and test both current and target ordering during the migration.
+Current Evener emits `TOOL_CALL_START` before registry lookup, schema validation, middleware, and execution policy. Until migrated, treat that event as an attempted-call observation and test both current and target ordering during the migration.
 
-Current Serf starts the delegate child run through `spawnAgent` before `attachDelegateJobWithID` emits `JOB_STARTED`. On completion, `finishJob` emits `JOB_FINISHED` before `armFinalizedJob` closes the run's `done` channel. The sequence below remains the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for bounded readers, event subscribers, and hook execution.
+Current Evener starts the delegate child run through `spawnAgent` before `attachDelegateJobWithID` emits `JOB_STARTED`. On completion, `finishJob` emits `JOB_FINISHED` before `armFinalizedJob` closes the run's `done` channel. The sequence below remains the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for bounded readers, event subscribers, and hook execution.
 
 Delegate job lifecycle target:
 
@@ -226,7 +226,7 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 
 ### Tiers
 
-- `serf-native`: behavior owned by Serf, expected to remain stable except for documented migrations.
+- `evener-native`: behavior owned by Evener, expected to remain stable except for documented migrations.
 - `claude-compatible-subset`: a current implemented subset of Claude/Codex plugin/hook/agent behavior. Compatibility is only claimed for tested fields/events/semantics.
 - `reserved-placeholder`: names or mapping points reserved for future compatibility, but not guaranteed as implemented behavior.
 - `experimental`: opt-in behavior that may change and must be labeled in docs/API/tests.
@@ -234,10 +234,10 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 ### Rules
 
 1. Do not claim full Claude hook or plugin parity until event types, handler types, matcher semantics, output parsing, environment variables, permission filters, async behavior, UI/status fields, and config-change behavior are implemented and tested.
-2. The `.claude-plugin` / `.codex-plugin` loading behavior in `agent/plugin/plugin.go` must be documented and tested: when both `<dir>/.claude-plugin/plugin.json` and `<dir>/.codex-plugin/plugin.json` exist, Serf loads `.claude-plugin` and ignores `.codex-plugin` for that plugin root (Claude is preferred because serf's resume preserves context, so the codex SessionStart-on-resume re-injection is never wanted). The chosen flavor is recorded in `Instance.ManifestFlavor` and emitted in `PluginLoadedData`.
+2. The `.claude-plugin` / `.codex-plugin` loading behavior in `agent/plugin/plugin.go` must be documented and tested: when both `<dir>/.claude-plugin/plugin.json` and `<dir>/.codex-plugin/plugin.json` exist, Evener loads `.claude-plugin` and ignores `.codex-plugin` for that plugin root (Claude is preferred because evener's resume preserves context, so the codex SessionStart-on-resume re-injection is never wanted). The chosen flavor is recorded in `Instance.ManifestFlavor` and emitted in `PluginLoadedData`.
 3. Namespacing rules must be stable and unambiguous: plugin agents use `plugin:agent`; plugin skills and MCP names must have documented equivalent prefixes or mappings. If plugin-provided tools are added later, define their namespace as a reserved or experimental surface before documenting them as supported.
 4. Unsupported high-risk fields should fail clearly or be explicitly ignored according to the relevant compatibility policy. They must not be documented as working.
-5. Compatibility shims must not bypass Serf-native effective policy, diagnostics, event ordering, cancellation, or helper-isolation contracts.
+5. Compatibility shims must not bypass Evener-native effective policy, diagnostics, event ordering, cancellation, or helper-isolation contracts.
 6. Reserved placeholders may appear in docs only with clear language that they are not yet implemented guarantees.
 
 ### Implementation guidance
@@ -312,7 +312,7 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 - Lightweight helpers are isolated from subagent registry/transcripts/tools/task mutation.
 - History invariants preserve parent lineage across fork/resume/meta rewrite/compaction/repair.
 - The implementation plan is YAGNI/DRY and does not introduce large new frameworks.
-- All citations point to current Serf files rather than external inspiration repos.
+- All citations point to current Evener files rather than external inspiration repos.
 
 ## Test matrix
 

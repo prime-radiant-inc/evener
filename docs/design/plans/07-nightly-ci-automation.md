@@ -15,7 +15,7 @@ This item is reframed from "nightly CI automation" to **local, on-demand tooling
 
 ## 1. What exists today (verified against the tree)
 
-**CI = GitHub Actions, one gate (`ci.yml`).** Triggers `push`/`pull_request` on `main`. Steps: `go build ./...`, `make vet`, `serf-namingcheck`, `serf-internalcheck`, `serf-docscheck`, `make lint-golangci`, `make test-race`. `permissions: contents: read` (verified). **There is no `make fuzz` step in the gate yet** — the charter says `make fuzz` *should* run seed corpora in the gate; wiring that one-line step (§5, step 0) is the *only* CI change this item makes. (`binaries.yml` and `trigger-build.yml` exist but are untouched here — we add no new workflow and no scheduler.)
+**CI = GitHub Actions, one gate (`ci.yml`).** Triggers `push`/`pull_request` on `main`. Steps: `go build ./...`, `make vet`, `evener-namingcheck`, `evener-internalcheck`, `evener-docscheck`, `make lint-golangci`, `make test-race`. `permissions: contents: read` (verified). **There is no `make fuzz` step in the gate yet** — the charter says `make fuzz` *should* run seed corpora in the gate; wiring that one-line step (§5, step 0) is the *only* CI change this item makes. (`binaries.yml` and `trigger-build.yml` exist but are untouched here — we add no new workflow and no scheduler.)
 
 **No `schedule:` trigger exists anywhere in the repo, and this item adds none.** Everything below is a local command a developer runs on demand.
 
@@ -74,7 +74,7 @@ Add an env-gated persistent destination so the gate stays clean but the local to
 - `SERF_FUZZ_PERSIST=1` (set only by `fuzz-triage.sh`/`run-fuzz.sh` when invoked from triage) switches the adapter's `emitDir` from `t.TempDir()` to the surface's own package directory (so the generated `*_test.go` compiles in-package) and the bucket-store path from a temp file to the committed **`fuzz/state/buckets.json`** (repo-root, shared across all targets for cross-target dedup).
 - Unset (the default — `make fuzz`, `make test`, every gate run) keeps the current temp-dir behavior: the promoter still runs and is still tested, but writes nothing into the tree.
 
-Implementation: a tiny shared helper, e.g. `promoter.PersistPaths(pkgDir string) (emitDir, bucketsPath string, persist bool)` reading the env, used by both `_test.go` harnesses in place of the inline `t.TempDir()` calls (`registry_schemafuzz_test.go:58-59`, `router_seqfuzz_test.go:58-59`). ~30 LoC + two call-site edits. (Keeping it in `fuzz/promoter` avoids each surface re-implementing the env contract; it imports only stdlib, preserving the "no serf deps" property of the package.)
+Implementation: a tiny shared helper, e.g. `promoter.PersistPaths(pkgDir string) (emitDir, bucketsPath string, persist bool)` reading the env, used by both `_test.go` harnesses in place of the inline `t.TempDir()` calls (`registry_schemafuzz_test.go:58-59`, `router_seqfuzz_test.go:58-59`). ~30 LoC + two call-site edits. (Keeping it in `fuzz/promoter` avoids each surface re-implementing the env contract; it imports only stdlib, preserving the "no evener deps" property of the package.)
 
 ### 3.3 Dedup — do not reopen the same crasher
 Three layers, in order:

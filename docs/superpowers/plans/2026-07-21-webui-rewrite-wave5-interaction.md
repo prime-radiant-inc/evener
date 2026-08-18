@@ -101,7 +101,7 @@ real message through the new store path.
   gauge via Meter, cost), mid-session model switch (Combobox off reasoningEffortLevels/models),
   session actions (fork/aside via forkFromTurn, compact, clear, shutdown, rename) with
   destructive-action confirmation via Dialog, goal display/set (snapshot + optimistic local
-  update; live push = wire-candidate), tasks panel — FIRST STEP: investigate `serf/tasks/list`'s
+  update; live push = wire-candidate), tasks panel — FIRST STEP: investigate `evener/tasks/list`'s
   real daemon response shape (the catalog types it `any`) and pin it with a wire-true fixture
   before building; steering classification (task-nudge/full-list suppression) lands here WITH the
   tasks panel since the panel owns that surface — NOTE: touches `transcript/messages/SteeringItem.tsx`

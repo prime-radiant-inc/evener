@@ -216,7 +216,7 @@ Assert before implementation:
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 If that external path is absent, point `NODE_PATH` at an already-installed external jsdom. Expected: current children remain hidden behind the old generic disclosure and recursive assertions fail.
@@ -237,9 +237,9 @@ Use indentation and spacing only. Do not add a lineage border or left-edge selec
 - [ ] **Step 4: Run focused sidebar tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
 ```
 
 Expected: PASS with pristine output.
@@ -289,8 +289,8 @@ In `test-sidebar-children.js`, stub `SerfPanes.openAfter`, click a current child
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 Expected: `openAfter` is missing and child row clicks navigate rather than opening panes.
@@ -309,10 +309,10 @@ In the sidebar, intercept activation only for rows stamped `__child` when `windo
 - [ ] **Step 4: Run focused JS tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
 ```
 
 Expected: PASS with no warnings.
@@ -347,12 +347,12 @@ Expected: PASS.
 - [ ] **Step 2: Run production frontend tests**
 
 ```bash
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-children.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-aria.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-survivors.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-url.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-panes-error.js
 ```
 
 Expected: PASS with pristine output.

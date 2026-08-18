@@ -451,8 +451,8 @@ test("recovery resend rebuilds queue CAS values from the current thread", async 
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", {
-    serf: {
-      ...testThread("ref_a").serf,
+    evener: {
+      ...testThread("ref_a").evener,
       activeTurnId: "turn-current",
       queue: { revision: 7 },
     },
@@ -1034,7 +1034,7 @@ test("sending recovered text uses current Composer routing and clears once", asy
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       activeTurnId: "turn-current",

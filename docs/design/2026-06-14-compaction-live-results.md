@@ -1,6 +1,6 @@
 # Live end-to-end compaction comparison: does the note help a real agent?
 
-_Real `serf` CLI sessions on the OAuth OpenAI endpoint (gpt-5.5), isolated `$HOME`/state.
+_Real `evener` CLI sessions on the OAuth OpenAI endpoint (gpt-5.5), isolated `$HOME`/state.
 Harness: `test/live-compaction-retention-eval.sh`._
 
 ## Design
@@ -59,7 +59,7 @@ that a single post-hoc summary would drop (controlled multi-needle: clear +1.70 
 and the note is redundant** (live: 7/7 both arms). **Steering** (`compaction_instructions`)
 improves handoff quality broadly (+0.91 judge) regardless of difficulty.
 
-For serf this argues for shipping the capability (it's cheap insurance + a quality lever),
+For evener this argues for shipping the capability (it's cheap insurance + a quality lever),
 while setting honest expectations: the note earns its keep in dense/long-context work, not
 in every compaction. The agent-choice dimension looks healthy — a real agent used the tool
 and authored a sensible note when asked.

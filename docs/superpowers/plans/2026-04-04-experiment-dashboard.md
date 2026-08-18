@@ -822,8 +822,8 @@ from live_store import LiveStore
 
 @pytest.fixture
 def launches_dir(tmp_path):
-    """Create a .serf-launches directory with sample wave metadata."""
-    d = tmp_path / ".serf-launches"
+    """Create a .evener-launches directory with sample wave metadata."""
+    d = tmp_path / ".evener-launches"
     d.mkdir()
     wave = {
         "run_id": "wave-test123-20260404-1200",
@@ -845,7 +845,7 @@ class TestDiscoverWaves:
         assert waves[0]["run_id"] == "wave-test123-20260404-1200"
 
     def test_empty_directory(self, tmp_path):
-        d = tmp_path / ".serf-launches"
+        d = tmp_path / ".evener-launches"
         d.mkdir()
         store = LiveStore(str(d), bucket="test-bucket")
         assert store.discover_waves() == []
@@ -913,7 +913,7 @@ class LiveStore:
         self.s3 = S3Client(bucket, region)
 
     def discover_waves(self):
-        """Find wave metadata files in .serf-launches/ directory.
+        """Find wave metadata files in .evener-launches/ directory.
 
         Returns list of wave dicts sorted by launched_at (newest first).
         """
@@ -1085,7 +1085,7 @@ Update the `if __name__ == "__main__"` block to accept live monitoring args:
 
 ```python
     parser.add_argument("--launches-dir", default=None,
-                        help="Directory with .serf-launches wave metadata")
+                        help="Directory with .evener-launches wave metadata")
     parser.add_argument("--s3-bucket", default=None,
                         help="S3 bucket for eval results")
 ```
@@ -1098,7 +1098,7 @@ And add after the experiments-dir handling:
         sys.modules[__name__].live_store = LiveStore(args.launches_dir, bucket=bucket)
     elif not live_store:
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        launches = os.path.join(repo_root, ".serf-launches")
+        launches = os.path.join(repo_root, ".evener-launches")
         if os.path.isdir(launches):
             sys.modules[__name__].live_store = LiveStore(launches)
 ```
@@ -1136,7 +1136,7 @@ Replace the contents of `tools/dashboard/static/index.html` with:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serf Experiment Dashboard</title>
+    <title>Evener Experiment Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
     <style>
         #app:empty { display: flex; align-items: center; justify-content: center;
@@ -2413,7 +2413,7 @@ function LiveMonitorPage() {
         </div>
 
         ${!waves || waves.length === 0
-            ? html`<div class="info-box">No active waves found in .serf-launches/</div>`
+            ? html`<div class="info-box">No active waves found in .evener-launches/</div>`
             : html`
                 ${summary && html`
                     <div class="stat-cards">
@@ -2448,7 +2448,7 @@ export default LiveMonitorPage
 
 - [ ] **Step 2: Verify in browser**
 
-Start the dashboard with `--launches-dir ../../.serf-launches`. Navigate to Live. Verify:
+Start the dashboard with `--launches-dir ../../.evener-launches`. Navigate to Live. Verify:
 - Wave selector shows discovered waves
 - Task grid renders with color-coded cells
 - Stat cards update (may need a running wave to test SSE)
@@ -2622,7 +2622,7 @@ Run:
 ```bash
 cd tools/dashboard && python server.py \
     --experiments-dir ../../docs/experiments \
-    --launches-dir ../../.serf-launches \
+    --launches-dir ../../.evener-launches \
     --host 0.0.0.0 --port 8080
 ```
 

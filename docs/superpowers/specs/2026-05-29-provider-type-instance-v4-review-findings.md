@@ -72,7 +72,7 @@ dissolve #1 (no selector to inject) and #3 (no instance-name prefix ambiguity).
 
 5. **[SERIOUS] Migration is non-deterministic: env is per-process, not global.**
    §4.10 claims "every source is global → whichever process migrates produces the
-   same file." False: hub (launchd/systemd) and standalone `serf` (shell) are
+   same file." False: hub (launchd/systemd) and standalone `evener` (shell) are
    separate binaries with different env (`OPENAI_API_KEY` etc.). flock+atomic
    prevents a torn file but not divergent content. *(Both.)*
 
@@ -90,8 +90,8 @@ dissolve #1 (no selector to inject) and #3 (no instance-name prefix ambiguity).
 
 **Resolution direction (needs a decision):** make migration **hub-owned** (single
 writer; the hub has `credentials.toml` and is the management surface). Standalone
-`serf` **reads** `providers.toml` but does not migrate — dissolving #5 and #6. Open
-question: what does standalone serf do if `providers.toml` is absent **and** the hub
+`evener` **reads** `providers.toml` but does not migrate — dissolving #5 and #6. Open
+question: what does standalone evener do if `providers.toml` is absent **and** the hub
 has never run? **Decision needed (see report).**
 
 ## Residual inventory misses (fold into v5)
@@ -120,7 +120,7 @@ has never run? **Decision needed (see report).**
 
 11. **[SERIOUS] Auth surface larger than stated + an internal contradiction.**
     Five type→env/mode maps, not four (the 5th: `cmdutil.go:266 providerEnvConfig`).
-    Uninventoried branches: `serf-tui/auth.go:26/27/80`, `spawn.go:466
+    Uninventoried branches: `evener-tui/auth.go:26/27/80`, `spawn.go:466
     validateProviderCredentials` (own `openai`/`openai-compatible` branches +
     `LoadAuth`). And §4.9 (OAuth file = `auth/<instanceName>.json`) **contradicts**
     §4.11 ("OAuth record **by behavior tag**") — per-instance filename vs shared

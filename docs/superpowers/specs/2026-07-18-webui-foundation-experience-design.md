@@ -1,4 +1,4 @@
-# Serf Web Hub — Foundation + Experience Pass
+# Evener Web Hub — Foundation + Experience Pass
 
 Status: approved (2026-07-18), revised after two adversarial-review rounds (v3).
 Work branch: `webui-joy`.
@@ -107,7 +107,7 @@ extends it the doc gets an addendum in the same commit.
   `appendAssistantBlock` a duplicate). Turn-meta is (re)appended **after** any
   (re)parse, since re-parsing destroys children. A jstest covers the
   codex-shape `TURN_COMPLETED → ASSISTANT_TEXT_END` sequence, not just the
-  serf-source shape.
+  evener-source shape.
 - **Reasoning deltas** append text nodes; the 200-char preview tail is
   recomputed at most once per frame, not per delta.
 - **Tool output.** During streaming: append-only `textContent` on a single `<pre>`

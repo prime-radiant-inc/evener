@@ -21,7 +21,7 @@ This spec does not:
 - cache lint results;
 - hide failure output;
 - print per-module success lines;
-- modify production Serf behavior.
+- modify production Evener behavior.
 
 - Treat every requirement outside `docs/superpowers/specs/2026-07-15-aggregate-quiet-lint-design.md` as a defect. Stop and ask Jesse instead of expanding the implementation scope.
 
@@ -56,7 +56,7 @@ alter failures owned by another project.
 Capture the exact commit before either implementation commit. A private ref survives separate shells and makes the final audit independent of how many scoped correction commits are needed.
 
 ```bash
-base_ref=refs/serf-plan-bases/aggregate-quiet-lint
+base_ref=refs/evener-plan-bases/aggregate-quiet-lint
 if git show-ref --verify --quiet "$base_ref"; then
   echo "ref already exists; inspect it before resuming: $base_ref" >&2
   exit 1
@@ -78,7 +78,7 @@ set -uo pipefail
 
 runner="$(cd "$(dirname "$0")" && pwd)/run-module-lint.sh"
 makefile="$(cd "$(dirname "$0")/.." && pwd)/Makefile"
-work="$(mktemp -d -t serf-module-lint-selftest.XXXXXX)"
+work="$(mktemp -d -t evener-module-lint-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
 checks=0
@@ -145,7 +145,7 @@ assert_not_has "$out" "stdout:" "successful stdout chatter is absent"
 assert_not_has "$out" "stderr:" "successful stderr chatter is absent"
 assert_eq "$(cut -f1 "$state/calls" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent llm" "all requested modules ran"
 assert_eq "$(cut -f2 "$state/calls" | sort -u)" "run ./..." "every module receives the unchanged golangci-lint argv"
-assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "successful temporary logs are removed"
+assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'evener-module-lint.*' | wc -l | tr -d ' ')" "0" "successful temporary logs are removed"
 
 new_case
 out="$case_dir/failure.out"
@@ -307,7 +307,7 @@ if [ -f "$state/runner-timeout" ]; then bad "interrupted runner exceeded its bou
 if [ "$rc" -ne 0 ]; then ok "interrupted runner exits nonzero"; else bad "interrupted runner exits zero"; fi
 if [ -f "$state/stopped" ]; then ok "interrupted child handled termination"; else bad "interrupted child was not terminated"; fi
 if [ "$child_pid" != missing ] && ! kill -0 "$child_pid" 2>/dev/null; then ok "interrupted child was waited"; else bad "interrupted child remains alive"; fi
-assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "interruption removes temporary logs"
+assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'evener-module-lint.*' | wc -l | tr -d ' ')" "0" "interruption removes temporary logs"
 
 echo "----"
 echo "run-module-lint-selftest: $checks checks, $fails failed"
@@ -385,7 +385,7 @@ trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
 trap 'interrupted 143' TERM
 
-if ! logdir="$(mktemp -d -t serf-module-lint.XXXXXX)"; then
+if ! logdir="$(mktemp -d -t evener-module-lint.XXXXXX)"; then
   printf 'lint: unable to create temporary log directory\n' >&2
   exit 1
 fi
@@ -597,7 +597,7 @@ Add this definition immediately before `lint-naming`. It creates one log per non
 ```make
 # Successful lint families are quiet; failures replay their complete output.
 define run_quiet_lint
-	@set -u; log="$$(mktemp -t serf-lint-check.XXXXXX)" || exit 1; \
+	@set -u; log="$$(mktemp -t evener-lint-check.XXXXXX)" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
 	if ( $(1) ) >"$$log" 2>&1; then \
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
@@ -618,7 +618,7 @@ lint-naming:
 	$(call run_quiet_lint,go run ./cmd/evener-namingcheck)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
-# libraries names a serf-internal type — keeping them externally importable.
+# libraries names a evener-internal type — keeping them externally importable.
 lint-internal:
 	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
@@ -628,7 +628,7 @@ lint-docs:
 	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
 
 build-namingcheck:
-	go build -o serf-namingcheck ./cmd/evener-namingcheck/
+	go build -o evener-namingcheck ./cmd/evener-namingcheck/
 
 # golangci-lint across every module (./... is per-module under go.work).
 lint-golangci:
@@ -706,7 +706,7 @@ Expected on a fully healthy checkout with gitleaks installed: exactly one `lint:
 - [ ] **Step 3: Audit the diff against the Scope Lock**
 
 ```bash
-base_ref=refs/serf-plan-bases/aggregate-quiet-lint
+base_ref=refs/evener-plan-bases/aggregate-quiet-lint
 git rev-parse --verify "$base_ref"
 git diff --check "$base_ref"..HEAD
 git diff --name-only "$base_ref"..HEAD
@@ -718,7 +718,7 @@ git diff --cached --name-only
 git status --short
 ```
 
-Expected: the base ref resolves; `git diff --check "$base_ref"..HEAD`, `git diff --check`, and `git diff --cached --check` exit 0. The committed base-to-HEAD range names only `Makefile`, `scripts/run-module-lint.sh`, and `scripts/run-module-lint-selftest.sh`; the staged and unstaged name lists are empty after the implementation commits. `GO_MODULES`, tool versions, lint flags, the `lint` family list, test/race/fuzz/live gates, cache behavior, generated artifacts, and production Serf files are unchanged. If pre-existing unrelated worktree files are visible, inspect and report them separately; they must not be staged or modified.
+Expected: the base ref resolves; `git diff --check "$base_ref"..HEAD`, `git diff --check`, and `git diff --cached --check` exit 0. The committed base-to-HEAD range names only `Makefile`, `scripts/run-module-lint.sh`, and `scripts/run-module-lint-selftest.sh`; the staged and unstaged name lists are empty after the implementation commits. `GO_MODULES`, tool versions, lint flags, the `lint` family list, test/race/fuzz/live gates, cache behavior, generated artifacts, and production Evener files are unchanged. If pre-existing unrelated worktree files are visible, inspect and report them separately; they must not be staged or modified.
 
 - [ ] **Step 4: Commit only if verification required a scoped correction**
 
@@ -737,7 +737,7 @@ Expected: no third commit when no correction was needed. Never create an empty c
 If Step 4 created a correction commit, first repeat Steps 1-3 in full. Once the executable tests, real lint gate, committed range, staged diff, and unstaged diff all have fresh passing evidence, run:
 
 ```bash
-base_ref=refs/serf-plan-bases/aggregate-quiet-lint
+base_ref=refs/evener-plan-bases/aggregate-quiet-lint
 git diff --check "$base_ref"..HEAD
 git diff --name-only "$base_ref"..HEAD
 git diff --check

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep budget accounting in `Session`, convert both budget exits into one typed internal exhaustion error, and translate that error at the delegate boundary into a durable `exhausted` job terminal state. Persist the budget name, limit, delegate resumability, accepted-input turn count, and warning latch in the existing session/job stores; project those same facts through job tools, notifications, AppWire, Hub, TUI, and transcript events without changing the 500-turn delegate default or any continuation/retry policy.
 
-**Tech Stack:** Go, Serf's append-only job store, Serf transcript/event types, AppWire, JavaScript Hub renderer tests, deterministic scripted LLM adapters, standard Go testing.
+**Tech Stack:** Go, Evener's append-only job store, Evener transcript/event types, AppWire, JavaScript Hub renderer tests, deterministic scripted LLM adapters, standard Go testing.
 
 ## Global Constraints
 
@@ -28,7 +28,7 @@ This spec does not:
 - Persist the exhausted terminal record before arming or delivering its parent notification. Reuse the existing terminal generation and notification-deduplication machinery on recovery.
 - A failure to persist the exhausted terminal record must settle the job as `failed`; it must never be surfaced as `completed` or `exhausted`.
 - Do not add fallback handling for legacy state shapes. The only restore derivation is exact detection of the new warning steering text when its transcript append won a crash race against session-meta persistence.
-- Before changing any test, re-read `docs/testing.md` and keep the tests below aligned with its deterministic Serf-plumbing boundary.
+- Before changing any test, re-read `docs/testing.md` and keep the tests below aligned with its deterministic Evener-plumbing boundary.
 
 ---
 
@@ -103,7 +103,7 @@ This spec does not:
 - [ ] **Step 0: Capture the pre-project base commit**
 
 ```bash
-base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+base_ref=refs/evener-plan-bases/delegate-budget-truthfulness
 if git show-ref --verify --quiet "$base_ref"; then
   echo "ref already exists; inspect it before resuming: $base_ref" >&2
   exit 1
@@ -124,7 +124,7 @@ git status --short
 git branch --show-current
 ```
 
-Expected: testing guidance requires scripted providers for default Serf plumbing tests; the implementation branch is a WIP branch; unrelated user changes remain untouched.
+Expected: testing guidance requires scripted providers for default Evener plumbing tests; the implementation branch is a WIP branch; unrelated user changes remain untouched.
 
 - [ ] **Step 2: Add failing warning and goal-routing tests**
 
@@ -188,7 +188,7 @@ For `TestSession_GoalRoundCapExitIsNotToolBudgetExhaustion`, use table cases `Ma
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_(TurnBudgetWarning|UnlimitedNeverWarns|BudgetExhaustionLeavesActiveGoalUnchanged|GoalRoundCapExitIsNotToolBudgetExhaustion)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_(TurnBudgetWarning|UnlimitedNeverWarns|BudgetExhaustionLeavesActiveGoalUnchanged|GoalRoundCapExitIsNotToolBudgetExhaustion)' -count=1 -v
 ```
 
 Expected: FAIL because the warning constants, persisted accepted-turn count, warning latch, typed budget errors, threshold injection, budget-specific goal-error routing, and binding-cap distinction do not exist.
@@ -379,7 +379,7 @@ For the tool-round case, assert the returned text equals the last assistant text
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test(Session_(TurnBudgetWarning|UnlimitedNeverWarns|MaxTurns|MaxToolRounds|BudgetExhaustionLeavesActiveGoalUnchanged|GoalRoundCapExitIsNotToolBudgetExhaustion)|GoalErrorBlockIsPersisted|RoundCapSelection)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test(Session_(TurnBudgetWarning|UnlimitedNeverWarns|MaxTurns|MaxToolRounds|BudgetExhaustionLeavesActiveGoalUnchanged|GoalRoundCapExitIsNotToolBudgetExhaustion)|GoalErrorBlockIsPersisted|RoundCapSelection)' -count=1 -v
 ```
 
 Expected: PASS. The warning appears exactly once, survives restore without duplication, does not increment accepted turns, and uses child-only parent wording. Binding lifetime/tool-round budgets return typed errors without changing active-goal state, while `-1` and over-goal-cap continuation configurations stop at `GoalTurnMaxRounds` with the established nil error. The ordinary goal-error regression still blocks and persists exactly as before.
@@ -427,7 +427,7 @@ The fold test must append `job_started`, then one exhausted `job_finished` with 
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/jobstore -run 'Test(StatusIsTerminal_Exhausted|Fold_Exhausted)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/jobstore -run 'Test(StatusIsTerminal_Exhausted|Fold_Exhausted)' -count=1 -v
 ```
 
 Expected: FAIL because `StatusExhausted` and the exhaustion fields do not exist.
@@ -472,7 +472,7 @@ In the `EventJobFinished` arm in `agent/internal/jobstore/fold.go`, copy `Exhaus
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/jobstore -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/jobstore -count=1
 ```
 
 Expected: PASS, including the new exhausted first-terminal-wins contract and all prior completed/failed/cancelled/stopped cases.
@@ -560,7 +560,7 @@ The existing-status regression test must table-drive `resolveDelegateTerminalSta
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestDelegate_(LifetimeBudget|ToolRoundBudget|BudgetExhaustion|ExhaustedFinish|BudgetTruthfulness)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestDelegate_(LifetimeBudget|ToolRoundBudget|BudgetExhaustion|ExhaustedFinish|BudgetTruthfulness)' -count=1 -v
 ```
 
 Expected: FAIL because subagents currently translate nil/error exits only into completed/failed/cancelled and job finalization has no exhausted status or metadata.
@@ -749,7 +749,7 @@ Never clear the latch while the job remains in `jobManager.running`. Do not set 
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test(Delegate_(LifetimeBudget|ToolRoundBudget|BudgetExhaustion|ExhaustedFinish|BudgetTruthfulness)|FinalizeDelegate|Subagent.*Exhausted)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test(Delegate_(LifetimeBudget|ToolRoundBudget|BudgetExhaustion|ExhaustedFinish|BudgetTruthfulness)|FinalizeDelegate|Subagent.*Exhausted)' -count=1 -v
 ```
 
 Expected: PASS. Lifetime exhaustion is durable/non-resumable, tool-round exhaustion is durable/resumable, both retain evidence, and the first exhausted terminal append failure permanently latches every retry to failed.
@@ -825,7 +825,7 @@ The recovery test must persist an exhausted `job_finished` and `job_notification
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent ./agent/events -run 'Test(JobTools_Exhausted|MarshalDelegateSendResult_Exhaustion|JobNotification_Exhausted|JobFinishedData_Exhaustion)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent ./agent/events -run 'Test(JobTools_Exhausted|MarshalDelegateSendResult_Exhaustion|JobNotification_Exhausted|JobFinishedData_Exhaustion)' -count=1 -v
 ```
 
 Expected: FAIL because the projections, notification attributes, schema enum, and event payload do not admit exhaustion.
@@ -907,7 +907,7 @@ Update `emitJobFinished` in `agent/jobs.go` to copy those values from the durabl
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent ./agent/events -run 'Test(JobTools_Exhausted|MarshalDelegateSendResult_Exhaustion|JobNotification_Exhausted|JobFinishedData_Exhaustion)' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent ./agent/events -run 'Test(JobTools_Exhausted|MarshalDelegateSendResult_Exhaustion|JobNotification_Exhausted|JobFinishedData_Exhaustion)' -count=1 -v
 ```
 
 Expected: PASS, including one-shot pending notification replay and identical status/budget/limit/resumability across tools, `delegate_send` tool state, notification, and transcript event.
@@ -917,7 +917,7 @@ Expected: PASS, including one-shot pending notification replay and identical sta
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/... -count=1
 ```
 
 Expected: PASS. Existing completed, failed, stopped, cancelled, unlimited-turn, goal-continuation, and provider-retry contracts remain unchanged.
@@ -1058,7 +1058,7 @@ await scenario("exhausted child is terminal non-success without spinner", [
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'Exhaust' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'Exhaust' -count=1 -v
 bash cmd/evener-hub/jstest/run-all.sh
 ```
 
@@ -1127,8 +1127,8 @@ Keep the literal `exhausted` status/reason text in the body so lifetime and tool
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./appwire ./internal/appprojector ./server ./cmd/evener-hub ./cmd/evener-tui/... -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent ./cmd/evener -count=1
+GOCACHE=/tmp/evener-gocache go test ./appwire ./internal/appprojector ./server ./cmd/evener-hub ./cmd/evener-tui/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent ./cmd/evener -count=1
 bash cmd/evener-hub/jstest/run-all.sh
 ```
 
@@ -1157,7 +1157,7 @@ Expected: one UI-projection commit with no unrelated paths staged.
 Run:
 
 ```bash
-base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+base_ref=refs/evener-plan-bases/delegate-budget-truthfulness
 git diff "$base_ref"..HEAD -- agent/subagents.go agent/session_config.go agent/session_goal.go agent/session_lifecycle.go
 rg -n 'MaxTurns:[[:space:]]*500|MaxTurns[[:space:]]*=[[:space:]]*500' agent
 rg -n 'Goal.*Limit|MaxGoal|retry' agent/session_goal.go agent/session_lifecycle.go agent/session_config.go
@@ -1170,7 +1170,7 @@ Expected: the delegate default remains 500; no goal iteration/continuation const
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/... ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'TurnBudgetWarning|MaxTurns|MaxToolRounds|Exhausted|BudgetExhaustion' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/... ./appwire ./internal/appprojector ./server ./cmd/evener ./cmd/evener-hub ./cmd/evener-tui/... -run 'TurnBudgetWarning|MaxTurns|MaxToolRounds|Exhausted|BudgetExhaustion' -count=1 -v
 bash cmd/evener-hub/jstest/run-all.sh
 ```
 
@@ -1193,7 +1193,7 @@ Run:
 ```bash
 git status --short
 git diff --check
-base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+base_ref=refs/evener-plan-bases/delegate-budget-truthfulness
 git diff --stat "$base_ref"..HEAD
 git diff "$base_ref"..HEAD -- . ':(exclude)docs/superpowers/specs/2026-07-15-delegate-budget-truthfulness-design.md'
 rg -n 'StatusExhausted|SubagentExhausted|ExhaustionBudget|ExhaustionLimit|turn_budget_exhausted|tool_round_budget_exhausted' agent appwire internal server cmd

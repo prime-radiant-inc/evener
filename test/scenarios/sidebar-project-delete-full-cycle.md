@@ -29,7 +29,7 @@ than dropped.
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
   the frontend (`make build-web`) before the hub for step 5.
 - Three disposable scratch directories, **none of them inside a git repo** (see
@@ -91,7 +91,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
   on disk. Falsify: a delete going through while a daemon is registered.
 - **Step 3 (exact)**: `200 {"deleted":["<SID>"],"skipped":[]}` (`:193`), and
   the session's `.meta.json`, `.transcript.jsonl`, and session subdirectory are
-  gone — `find "$HOME/.local/state/serf/projects" -name "<SID>*"` (the isolated
+  gone — `find "$HOME/.local/state/evener/projects" -name "<SID>*"` (the isolated
   state root from the Setup checklist) returns nothing. Falsify: `deleted`
   empty on a genuine delete, or files surviving a `200`.
 - **Step 4 (exact)**: `<key>` absent from `projects[]`, `archived_projects[]`,
@@ -123,7 +123,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
 
 - Shut down any session still live; delete `$W2`'s project again if you want a
   clean slate.
-- Remove all three scratch directories. The delete endpoint only removes serf's
+- Remove all three scratch directories. The delete endpoint only removes evener's
   own session bookkeeping — it never touches the working directory or any git
   worktrees on disk.
 - Kill the hub by the PID you captured and `rm -rf` the run directory (Cleanup

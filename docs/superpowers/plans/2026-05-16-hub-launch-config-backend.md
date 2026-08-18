@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the hub-side layered launch-config resolver, credentials store, RPC surface, and spawn integration so that hub-launched `serf serve` daemons pick up the merged config from disk and per-launch overrides. UI work is in separate plans.
+**Goal:** Build the hub-side layered launch-config resolver, credentials store, RPC surface, and spawn integration so that hub-launched `evener serve` daemons pick up the merged config from disk and per-launch overrides. UI work is in separate plans.
 
-**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.serf/credentials.toml`. The hub wires `serf/launch/*` and extends `serf/auth/*` to surface both via JSON-RPC. `cmd/evener-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[serf_launch]` shape.
+**Architecture:** New `internal/launchconfig` package owns layer types, TOML I/O, merging, ToArgs/ToEnv, and TOFU. New `internal/credentials` package owns `~/.evener/credentials.toml`. The hub wires `evener/launch/*` and extends `evener/auth/*` to surface both via JSON-RPC. `cmd/evener-hub/spawn.go` is rewritten to consume a `Resolved` value instead of the current ad-hoc scalar list. No back-compat for the old `[serf_launch]` shape.
 
 **Tech Stack:** Go 1.21+, `github.com/BurntSushi/toml`, existing `internal/appwire` JSON-RPC framework, existing `cmd/evener-hub/appserver.HandleTyped` registration pattern.
 
-**Spec:** `docs/superpowers/specs/2026-05-16-hub-serf-launch-config-design.md`
+**Spec:** `docs/superpowers/specs/2026-05-16-hub-evener-launch-config-design.md`
 
 ---
 
@@ -34,7 +34,7 @@
 
 - `internal/appwire/types.go` — add `LaunchConfigLayer`, `LaunchConfigResolved`, `RepoLaunchConfigStatus`, `LaunchConfigDiagnostic`, `MCPServerSpec`, `AuthListResponse`, `AuthApiKeySetParams`; extend `AuthStatusResponse` with `AuthModes`; add `Method*` and `Notify*` constants
 - `cmd/evener-hub/spawn.go` — `SpawnRequest`/`ResumeRequest` carry `Resolved`; `buildSpawnArgs` delegates to `launchconfig.ToArgs`; env via `launchconfig.ToEnv`; credential validation via `credentials.Resolver`
-- `cmd/evener-hub/app_rpc.go` — register `serf/launch/*`, `serf/auth/list`, `serf/auth/apiKey/set`; thread `LaunchOverrides` through `ThreadStart`
+- `cmd/evener-hub/app_rpc.go` — register `evener/launch/*`, `evener/auth/list`, `evener/auth/apiKey/set`; thread `LaunchOverrides` through `ThreadStart`
 - `cmd/evener-hub/app_auth.go` — `hubAuthController` gains `List`, `ApiKeySet`, gains `credentials.Store` dependency, `Status`/`Logout` become provider-generic
 - `cmd/evener-hub/config.go` — drop `SerfLaunchConfig` and `Env` map; introduce `LaunchConfigGlobalPath` etc. accessors
 - `cmd/evener-hub/main.go` — construct `credentials.Store` + thread into hub config
@@ -143,8 +143,8 @@ Expected: package or type undefined.
 `internal/launchconfig/types.go`:
 
 ```go
-// Package launchconfig owns the layered configuration that hub-serf
-// passes when launching a serf serve subprocess. Layers (global, in-repo,
+// Package launchconfig owns the layered configuration that hub-evener
+// passes when launching a evener serve subprocess. Layers (global, in-repo,
 // hub-side-per-project, per-launch) are merged into a single Resolved
 // value which is then turned into argv + env via ToArgs/ToEnv.
 package launchconfig
@@ -173,7 +173,7 @@ type Layer struct {
 }
 
 // MCPServerSpec describes one MCP server entry. Matches the shape passed
-// to `serf serve --mcp name:command args...`.
+// to `evener serve --mcp name:command args...`.
 type MCPServerSpec struct {
 	Name    string   `toml:"name"`
 	Command string   `toml:"command"`
@@ -200,7 +200,7 @@ type Resolved struct {
 	Diagnostics []Diagnostic
 }
 
-// TrustState describes the in-repo .serf/launch.toml trust outcome.
+// TrustState describes the in-repo .evener/launch.toml trust outcome.
 type TrustState string
 
 const (
@@ -226,7 +226,7 @@ type Diagnostic struct {
 	Message string
 }
 
-// Meta is the contents of ~/.serf/projects/<id>/meta.toml.
+// Meta is the contents of ~/.evener/projects/<id>/meta.toml.
 type Meta struct {
 	Schema    int       `toml:"schema"`
 	CWD       string    `toml:"cwd"`
@@ -486,8 +486,8 @@ import (
 )
 
 func TestProjectID_Stable(t *testing.T) {
-	a := ProjectID("/home/jesse/git/prime-radiant/serf")
-	b := ProjectID("/home/jesse/git/prime-radiant/serf")
+	a := ProjectID("/home/jesse/git/prime-radiant/evener")
+	b := ProjectID("/home/jesse/git/prime-radiant/evener")
 	if a != b {
 		t.Errorf("ProjectID not stable: %q vs %q", a, b)
 	}
@@ -505,13 +505,13 @@ func TestProjectID_Differs(t *testing.T) {
 }
 
 func TestPathsFor(t *testing.T) {
-	root := "/var/serf"
+	root := "/var/evener"
 	cwd := "/proj"
 	p := PathsFor(root, cwd)
 	wantGlobal := filepath.Join(root, "launch.toml")
 	wantProject := filepath.Join(root, "projects", ProjectID(cwd), "launch.toml")
 	wantMeta := filepath.Join(root, "projects", ProjectID(cwd), "meta.toml")
-	wantRepo := filepath.Join(cwd, ".serf", "launch.toml")
+	wantRepo := filepath.Join(cwd, ".evener", "launch.toml")
 	if p.Global != wantGlobal {
 		t.Errorf("Global = %q, want %q", p.Global, wantGlobal)
 	}
@@ -589,19 +589,19 @@ func ProjectID(cwd string) string {
 // and cwd.
 type Paths struct {
 	Global  string // <root>/launch.toml
-	Repo    string // <cwd>/.serf/launch.toml
+	Repo    string // <cwd>/.evener/launch.toml
 	Project string // <root>/projects/<id>/launch.toml
 	Meta    string // <root>/projects/<id>/meta.toml
 }
 
 // PathsFor computes layer paths given the hub state root (typically
-// ~/.serf) and the working directory.
+// ~/.evener) and the working directory.
 func PathsFor(stateRoot, cwd string) Paths {
 	id := ProjectID(cwd)
 	projectDir := filepath.Join(stateRoot, "projects", id)
 	return Paths{
 		Global:  filepath.Join(stateRoot, "launch.toml"),
-		Repo:    filepath.Join(cwd, ".serf", "launch.toml"),
+		Repo:    filepath.Join(cwd, ".evener", "launch.toml"),
 		Project: filepath.Join(projectDir, "launch.toml"),
 		Meta:    filepath.Join(projectDir, "meta.toml"),
 	}
@@ -890,7 +890,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				if prev, ok := mcpNames[m.Name]; ok {
 					diags = append(diags, Diagnostic{
 						Layer: name, Field: "mcps",
-						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); serf launch-check will reject this", m.Name, prev),
+						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); evener launch-check will reject this", m.Name, prev),
 					})
 				} else {
 					mcpNames[m.Name] = name
@@ -1143,7 +1143,7 @@ func TestResolve_LayersMerge(t *testing.T) {
 skills_dirs = ["/g"]
 `)
 	// Trusted in-repo file.
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["sub"]`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `skills_dirs = ["sub"]`)
 	repoHash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["sub"]`))
 	pid := ProjectID(cwd)
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
@@ -1175,7 +1175,7 @@ decision = "trusted"
 func TestResolve_UntrustedRepoSkipped(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `model = "from-repo"`)
 	got, err := Resolve(stateRoot, cwd, Layer{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -1194,7 +1194,7 @@ func TestResolve_UntrustedRepoSkipped(t *testing.T) {
 func TestResolve_RejectedRepoSkippedSilently(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `model = "from-repo"`)
 	hash, _ := CanonicalHashTOML([]byte(`model = "from-repo"`))
 	pid := ProjectID(cwd)
 	writeFile(t, filepath.Join(stateRoot, "projects", pid, "meta.toml"), `schema = 1
@@ -1215,7 +1215,7 @@ decision = "rejected"
 func TestResolve_RepoPathsExpandedAndValidated(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
 	// Pre-trust whatever the file currently is.
 	hash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["../outside", "good/dir"]`))
 	pid := ProjectID(cwd)
@@ -1263,7 +1263,7 @@ import (
 )
 
 // Resolve loads and merges every layer for the given cwd, applying the
-// per-launch override on top. stateRoot is typically ~/.serf. The repo
+// per-launch override on top. stateRoot is typically ~/.evener. The repo
 // layer is honored only when its trust state is "trusted".
 func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	paths := PathsFor(stateRoot, cwd)
@@ -1298,21 +1298,21 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 }
 
 func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	data, err := os.ReadFile(repoPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, nil
 		}
 		return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".serf/launch.toml",
+			Layer: LayerRepo, Field: ".evener/launch.toml",
 			Message: fmt.Sprintf("read: %v", err),
 		}}
 	}
 	hash, err := CanonicalHashTOML(data)
 	if err != nil {
 		return &RepoStatus{Path: repoPath, Trust: TrustUntrusted, Preview: string(data)}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".serf/launch.toml",
+			Layer: LayerRepo, Field: ".evener/launch.toml",
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
@@ -1328,7 +1328,7 @@ func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
 	var diags []Diagnostic
 	if state == TrustTrusted {
 		if _, err := decodeLayerInto(data, &layer); err != nil {
-			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()})
+			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()})
 			return status, Layer{}, diags
 		}
 		layer, diags = validateAndExpandRepoLayer(cwd, layer)
@@ -1515,8 +1515,8 @@ import (
 )
 
 // ToArgs renders the Effective layer of Resolved into the argv slice
-// `serf serve` understands. Order is deterministic and matches the order
-// serf's flag parser sees them: scalars first, then list fields in the
+// `evener serve` understands. Order is deterministic and matches the order
+// evener's flag parser sees them: scalars first, then list fields in the
 // order they appear in the Layer struct.
 func ToArgs(r Resolved) []string {
 	var out []string
@@ -1583,7 +1583,7 @@ Expected: PASS.
 
 ```bash
 git add internal/launchconfig/args.go internal/launchconfig/args_test.go
-git commit -m "launchconfig: ToArgs renders Resolved into serf serve flags"
+git commit -m "launchconfig: ToArgs renders Resolved into evener serve flags"
 ```
 
 ---
@@ -1699,7 +1699,7 @@ go test ./internal/credentials/ -v
 `internal/credentials/store.go`:
 
 ```go
-// Package credentials owns ~/.serf/credentials.toml. Provider API keys
+// Package credentials owns ~/.evener/credentials.toml. Provider API keys
 // are stored verbatim with chmod 600; encryption-at-rest is deliberately
 // not provided (see spec §5.5 non-goals).
 package credentials
@@ -2034,7 +2034,7 @@ type EnvInputs struct {
 	HubToken  string
 }
 
-// providerEnvVar maps provider name → the canonical env var that serf
+// providerEnvVar maps provider name → the canonical env var that evener
 // reads for that provider.
 var providerEnvVar = map[string]string{
 	"openai":               "OPENAI_API_KEY",
@@ -2049,12 +2049,12 @@ var providerEnvVar = map[string]string{
 	"openai-compatible":    "OPENAI_COMPATIBLE_BASE_URL",
 }
 
-// ToEnv produces the env slice for the spawned `serf serve`. Order of
+// ToEnv produces the env slice for the spawned `evener serve`. Order of
 // precedence per the spec §4.5:
 //   1. Per-launch env from Resolved.Effective.Env (last-write-wins).
 //   2. The matching credential env var (from Creds).
 //   3. Parent process env (typically os.Environ()).
-//   4. Provider-specific on-disk OAuth state — handled by serf itself.
+//   4. Provider-specific on-disk OAuth state — handled by evener itself.
 //
 // Items earlier in the priority list are applied later in setEnv so they
 // overwrite earlier writes.
@@ -2130,29 +2130,29 @@ git commit -m "launchconfig: ToEnv with priority-ordered credential injection"
 
 Run:
 ```bash
-grep -n "MethodSerfAuthLogout\s*=\s*\"serf/auth/logout\"" internal/appwire/types.go
+grep -n "MethodSerfAuthLogout\s*=\s*\"evener/auth/logout\"" internal/appwire/types.go
 ```
 
-Expected output: a single line like `30:	MethodSerfAuthLogout            = "serf/auth/logout"`.
+Expected output: a single line like `30:	MethodSerfAuthLogout            = "evener/auth/logout"`.
 
 - [ ] **Step 2: Add the new method and notification constants**
 
 Open `internal/appwire/types.go`. After the `MethodSerfAuthLogout` line, before the next group, add:
 
 ```go
-	MethodSerfAuthList              = "serf/auth/list"
-	MethodSerfAuthApiKeySet         = "serf/auth/apiKey/set"
-	MethodSerfLaunchResolve         = "serf/launch/resolve"
-	MethodSerfLaunchGetLayer        = "serf/launch/getLayer"
-	MethodSerfLaunchSetLayer        = "serf/launch/setLayer"
-	MethodSerfLaunchTrustRepo       = "serf/launch/trustRepo"
+	MethodSerfAuthList              = "evener/auth/list"
+	MethodSerfAuthApiKeySet         = "evener/auth/apiKey/set"
+	MethodSerfLaunchResolve         = "evener/launch/resolve"
+	MethodSerfLaunchGetLayer        = "evener/launch/getLayer"
+	MethodSerfLaunchSetLayer        = "evener/launch/setLayer"
+	MethodSerfLaunchTrustRepo       = "evener/launch/trustRepo"
 ```
 
 Then after `NotifySerfSubagentEnded` in the notifications block, add:
 
 ```go
-	NotifySerfAuthUpdated   = "serf/auth/updated"
-	NotifySerfLaunchUpdated = "serf/launch/updated"
+	NotifySerfAuthUpdated   = "evener/auth/updated"
+	NotifySerfLaunchUpdated = "evener/launch/updated"
 ```
 
 - [ ] **Step 3: Extend `AuthStatusResponse` with `AuthModes`**
@@ -2182,12 +2182,12 @@ type AuthStatusResponse struct {
 At the end of the file:
 
 ```go
-// AuthListResponse is the result of serf/auth/list.
+// AuthListResponse is the result of evener/auth/list.
 type AuthListResponse struct {
 	Providers []AuthStatusResponse `json:"providers"`
 }
 
-// AuthApiKeySetParams is the params for serf/auth/apiKey/set.
+// AuthApiKeySetParams is the params for evener/auth/apiKey/set.
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
@@ -2294,7 +2294,7 @@ Expected: no errors.
 
 ```bash
 git add internal/appwire/types.go
-git commit -m "appwire: launch-config types and serf/auth extensions"
+git commit -m "appwire: launch-config types and evener/auth extensions"
 ```
 
 ---
@@ -2509,7 +2509,7 @@ git commit -m "launchconfig: wire-type adapters"
 
 ---
 
-## Task 12 — Hub-side `serf/launch/*` RPC handlers
+## Task 12 — Hub-side `evener/launch/*` RPC handlers
 
 **Files:**
 - Create: `cmd/evener-hub/app_launch.go`
@@ -2572,7 +2572,7 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2598,7 +2598,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2634,7 +2634,7 @@ import (
 	"primeradiant.com/evener/internal/launchconfig"
 )
 
-// hubLaunchController owns the serf/launch/* RPC handlers.
+// hubLaunchController owns the evener/launch/* RPC handlers.
 type hubLaunchController struct {
 	stateRoot string
 	now       func() time.Time
@@ -2701,7 +2701,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	// Refuse credential keys in env before persisting.
 	for k := range layer.Env {
 		if launchconfig.IsCredentialEnvKey(k) {
-			return appwire.LaunchConfigResolved{}, appwire.InvalidParams(fmt.Sprintf("env key %q looks like a credential; route through serf/auth/apiKey/set", k))
+			return appwire.LaunchConfigResolved{}, appwire.InvalidParams(fmt.Sprintf("env key %q looks like a credential; route through evener/auth/apiKey/set", k))
 		}
 	}
 	if err := launchconfig.SaveLayer(path, layer); err != nil {
@@ -2724,7 +2724,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 		return appwire.LaunchConfigResolved{}, err
 	}
 	if resolved.Repo == nil || resolved.Repo.Trust == string(launchconfig.TrustAbsent) {
-		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("no .serf/launch.toml in repo")
+		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("no .evener/launch.toml in repo")
 	}
 	if resolved.Repo.Hash != params.Hash {
 		return appwire.LaunchConfigResolved{}, appwire.WireError{Code: -32009, Message: "file changed since review"}
@@ -2766,12 +2766,12 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_launch.go cmd/evener-hub/app_launch_test.go internal/launchconfig/merge.go
-git commit -m "serf-hub: launch-config RPC handlers"
+git commit -m "evener-hub: launch-config RPC handlers"
 ```
 
 ---
 
-## Task 13 — Extend `serf/auth/*` with list + apiKey/set
+## Task 13 — Extend `evener/auth/*` with list + apiKey/set
 
 **Files:**
 - Modify: `cmd/evener-hub/app_auth.go`
@@ -2984,7 +2984,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
 	if provider == "openai" {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams("openai api keys must be configured via env or hub.env; use serf/auth/login/start for OAuth")
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams("openai api keys must be configured via env or hub.env; use evener/auth/login/start for OAuth")
 	}
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
@@ -3040,7 +3040,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go internal/appwire/types.go
-git commit -m "serf-hub: auth controller manages credentials store"
+git commit -m "evener-hub: auth controller manages credentials store"
 ```
 
 ---
@@ -3057,7 +3057,7 @@ git commit -m "serf-hub: auth controller manages credentials store"
 grep -n "MethodSerfAuthLogout\|MethodSerfAuthStatus" cmd/evener-hub/app_rpc.go
 ```
 
-You'll see four `appserver.HandleTyped(...)` calls registering the existing serf/auth methods.
+You'll see four `appserver.HandleTyped(...)` calls registering the existing evener/auth methods.
 
 - [ ] **Step 2: Add new handler registrations**
 
@@ -3167,7 +3167,7 @@ if err != nil {
 authController := newHubAuthControllerWithStore(cfg.HubStateRoot, credsStore)
 ```
 
-(`cfg.HubStateRoot` is a new field — add it to `Config` in `cmd/evener-hub/config.go` defaulting to `$HOME/.serf`.)
+(`cfg.HubStateRoot` is a new field — add it to `Config` in `cmd/evener-hub/config.go` defaulting to `$HOME/.evener`.)
 
 - [ ] **Step 5: Run tests**
 
@@ -3184,7 +3184,7 @@ go build ./...
 
 ```bash
 git add cmd/evener-hub/app_rpc.go cmd/evener-hub/main.go cmd/evener-hub/config.go
-git commit -m "serf-hub: register launch + auth RPCs and notifications"
+git commit -m "evener-hub: register launch + auth RPCs and notifications"
 ```
 
 ---
@@ -3241,7 +3241,7 @@ go test ./cmd/evener-hub/ -run TestBuildSpawnArgs_FromResolved -v
 Replace the existing types and functions in `cmd/evener-hub/spawn.go`:
 
 ```go
-// SpawnRequest carries everything needed to spawn one `serf serve` child.
+// SpawnRequest carries everything needed to spawn one `evener serve` child.
 type SpawnRequest struct {
 	Resolved        launchconfig.Resolved
 	WorkingDir      string
@@ -3266,7 +3266,7 @@ type ResumeRequest struct {
 	SSERingSize int
 }
 
-// buildSpawnArgs assembles argv for `serf serve` from the resolved
+// buildSpawnArgs assembles argv for `evener serve` from the resolved
 // launch config plus the daemon-control flags (addr, dir, state-dir,
 // run-dir, sse-ring-size).
 func buildSpawnArgs(req SpawnRequest) []string {
@@ -3346,7 +3346,7 @@ func validateProviderCredentials(provider string, store *credentials.Store) erro
 		return nil
 	}
 	if v == "" {
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via evener/auth/apiKey/set or set the matching env var", provider))
 	}
 	return nil
 }
@@ -3365,7 +3365,7 @@ Expected: PASS + clean build.
 
 ```bash
 git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
-git commit -m "serf-hub: spawn.go consumes launchconfig.Resolved"
+git commit -m "evener-hub: spawn.go consumes launchconfig.Resolved"
 ```
 
 ---
@@ -3475,7 +3475,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
-git commit -m "serf-hub: ThreadStart honors launchOverrides via Resolve"
+git commit -m "evener-hub: ThreadStart honors launchOverrides via Resolve"
 ```
 
 ---
@@ -3500,7 +3500,7 @@ In `cmd/evener-hub/config.go`, remove the `SerfLaunchConfig` struct and the `Ser
 ```go
 type Config struct {
 	Addr               string                        `toml:"addr"`
-	HubStateRoot       string                        `toml:"hub_state_root"` // default ~/.serf
+	HubStateRoot       string                        `toml:"hub_state_root"` // default ~/.evener
 	StateGlob          string                        `toml:"state_glob"`
 	RunDir             string                        `toml:"run_dir"`
 	PastIndexDB        string                        `toml:"past_index_db"`
@@ -3514,7 +3514,7 @@ type Config struct {
 }
 ```
 
-In `DefaultConfig` and `LoadConfig`, default `HubStateRoot` to `$HOME/.serf`:
+In `DefaultConfig` and `LoadConfig`, default `HubStateRoot` to `$HOME/.evener`:
 
 ```go
 if cfg.HubStateRoot == "" {
@@ -3522,7 +3522,7 @@ if cfg.HubStateRoot == "" {
 	if err != nil || home == "" {
 		home = "."
 	}
-	cfg.HubStateRoot = filepath.Join(home, ".serf")
+	cfg.HubStateRoot = filepath.Join(home, ".evener")
 }
 ```
 
@@ -3533,7 +3533,7 @@ Run:
 go test ./cmd/evener-hub/ -run TestLoadConfig -v
 ```
 
-Update any test that referenced `[serf_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.serf/launch.toml` and assert via the resolver.
+Update any test that referenced `[serf_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.evener/launch.toml` and assert via the resolver.
 
 - [ ] **Step 4: Update main.go to use HubStateRoot for everything**
 
@@ -3556,7 +3556,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/config.go cmd/evener-hub/config_test.go cmd/evener-hub/main.go
-git commit -m "serf-hub: drop legacy [serf_launch] config, add hub_state_root"
+git commit -m "evener-hub: drop legacy [serf_launch] config, add hub_state_root"
 ```
 
 ---
@@ -3568,7 +3568,7 @@ git commit -m "serf-hub: drop legacy [serf_launch] config, add hub_state_root"
 
 - [ ] **Step 1: Plan the e2e scenario**
 
-A real hub instance with: a global launch.toml, a project hub-side launch.toml, a trusted in-repo .serf/launch.toml, plus a per-launch override. Verify the final argv handed to `serf serve` is what `serf launch-check --json` reports.
+A real hub instance with: a global launch.toml, a project hub-side launch.toml, a trusted in-repo .evener/launch.toml, plus a per-launch override. Verify the final argv handed to `evener serve` is what `evener launch-check --json` reports.
 
 - [ ] **Step 2: Write the test**
 
@@ -3603,7 +3603,7 @@ func TestE2E_LayeredLaunchConfig(t *testing.T) {
 	repoTOML := []byte(`skills_dirs = ["sub"]
 context_strategy = "ooda"
 `)
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	_ = os.MkdirAll(filepath.Dir(repoPath), 0o755)
 	_ = os.WriteFile(repoPath, repoTOML, 0o600)
 	hash, _ := launchconfig.CanonicalHashTOML(repoTOML)
@@ -3663,7 +3663,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/e2e_test.go
-git commit -m "serf-hub: e2e test for layered launch config"
+git commit -m "evener-hub: e2e test for layered launch config"
 ```
 
 ---
@@ -3675,20 +3675,20 @@ git commit -m "serf-hub: e2e test for layered launch config"
 
 - [ ] **Step 1: Update the README**
 
-In `cmd/evener-hub/README.md`, remove the section describing `[serf_launch]` and `[serf_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.serf/launch.toml`, `<project>/.serf/launch.toml`, `~/.serf/projects/<id>/launch.toml`, and `~/.serf/credentials.toml`. Reference the spec for details.
+In `cmd/evener-hub/README.md`, remove the section describing `[serf_launch]` and `[serf_launch.env]`. Add a "Launch Configuration" section pointing readers at `~/.evener/launch.toml`, `<project>/.evener/launch.toml`, `~/.evener/projects/<id>/launch.toml`, and `~/.evener/credentials.toml`. Reference the spec for details.
 
 Replace the existing example `hub.toml`:
 
 ```toml
 addr = "127.0.0.1:9180"
-hub_state_root = "$HOME/.serf"
-run_dir = "$HOME/.serf/run"
-state_glob = "$HOME/.local/state/serf/projects/*"
-past_index_db = "$HOME/.serf/index.db"
+hub_state_root = "$HOME/.evener"
+run_dir = "$HOME/.evener/run"
+state_glob = "$HOME/.local/state/evener/projects/*"
+past_index_db = "$HOME/.evener/index.db"
 spawn_timeout = "30s"
 ```
 
-Note: `[serf_launch]` is gone. Launch configuration goes in `~/.serf/launch.toml` (form-editable from the Hub UI).
+Note: `[serf_launch]` is gone. Launch configuration goes in `~/.evener/launch.toml` (form-editable from the Hub UI).
 
 - [ ] **Step 2: Run full test suite**
 
@@ -3700,7 +3700,7 @@ go test ./... && go build ./...
 
 ```bash
 git add cmd/evener-hub/README.md
-git commit -m "serf-hub: README points at new launch-config layout"
+git commit -m "evener-hub: README points at new launch-config layout"
 ```
 
 ---
@@ -3718,8 +3718,8 @@ git commit -m "serf-hub: README points at new launch-config layout"
 - [ ] Task 9 — `ToEnv` with credential injection
 - [ ] Task 10 — Appwire wire types
 - [ ] Task 11 — launchconfig ↔ appwire adapters
-- [ ] Task 12 — Hub `serf/launch/*` handlers
-- [ ] Task 13 — Hub `serf/auth/*` extensions
+- [ ] Task 12 — Hub `evener/launch/*` handlers
+- [ ] Task 13 — Hub `evener/auth/*` extensions
 - [ ] Task 14 — Register handlers + notifications
 - [ ] Task 15 — `spawn.go` rewrite
 - [ ] Task 16 — ThreadStart applies overrides

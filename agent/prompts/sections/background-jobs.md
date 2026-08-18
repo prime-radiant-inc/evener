@@ -2,12 +2,12 @@
 
 Shell commands can run as durable background jobs identified by a `job_id` (`job_...`).
 Delegates are durable resources identified by `delegate_id`
-(`dlg_...`), never activation jobs. Both can outlive your turn, and Serf notifies
+(`dlg_...`), never activation jobs. Both can outlive your turn, and Evener notifies
 you automatically when your shell job or direct delegate finishes. Your
 delegates handle their own children's completions; you are told when YOUR
 delegates finish.
 
-Background jobs outlive a turn, but not their Serf session. Use `detached`, not
+Background jobs outlive a turn, but not their Evener session. Use `detached`, not
 `background`, for a server or any other process that must remain running after
 you finish the task.
 
@@ -32,7 +32,7 @@ speeds the job nor changes its result, and a running job is no reason to keep
 your turn alive. To block on one specific future signal, create a `job_watch`;
 never spin on `job_status`.
 
-Serf's quiet watchdog reports a running delegate once per continuous quiet
+Evener's quiet watchdog reports a running delegate once per continuous quiet
 stretch without steering or stopping it. Treat that as supervision evidence,
 not proof of a hang. Admission-time `max_retained_terminal` reclamation removes
 only exact quiescent retained delegate subtrees when capacity is needed; it is

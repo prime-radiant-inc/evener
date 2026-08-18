@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Clean up OpenAI Responses streamed tool-call handling and add first-class OpenAI OAuth login/logout/status UX inside `serf-tui`.
+**Goal:** Clean up OpenAI Responses streamed tool-call handling and add first-class OpenAI OAuth login/logout/status UX inside `evener-tui`.
 
-**Architecture:** Keep the existing OpenAI auth service and storage model, and move TUI auth into a native interactive flow that calls the branch-local `internal/auth/openai.Service` directly. Use the existing slash-command and picker patterns in `serf-tui`, and recreate the embedded OpenAI session after login/logout so live requests pick up the new auth state without requiring a full TUI restart. Refactor the OpenAI streaming adapter so one logical backend function call always maps to one canonical Serf tool call keyed by `call_id`, with `item_id` used only as an internal alias.
+**Architecture:** Keep the existing OpenAI auth service and storage model, and move TUI auth into a native interactive flow that calls the branch-local `internal/auth/openai.Service` directly. Use the existing slash-command and picker patterns in `evener-tui`, and recreate the embedded OpenAI session after login/logout so live requests pick up the new auth state without requiring a full TUI restart. Refactor the OpenAI streaming adapter so one logical backend function call always maps to one canonical Evener tool call keyed by `call_id`, with `item_id` used only as an internal alias.
 
 **Tech Stack:** Go, Bubble Tea, existing `internal/auth/openai` service, OpenAI Responses SSE adapter tests.
 
@@ -329,7 +329,7 @@ Expected:
 
 ```bash
 git add cmd/evener-tui/openai_auth.go cmd/evener-tui/model.go cmd/evener-tui/input.go cmd/evener-tui/model_picker.go cmd/evener-tui/*_test.go
-git commit -m "feat: add OpenAI login flow to serf-tui"
+git commit -m "feat: add OpenAI login flow to evener-tui"
 ```
 
 ## Chunk 4: TUI Status And UX Polish
@@ -400,7 +400,7 @@ Expected:
 
 ```bash
 git add cmd/evener-tui/statusbar.go cmd/evener-tui/model.go cmd/evener-tui/message.go cmd/evener-tui/*_test.go
-git commit -m "feat: surface OpenAI auth status in serf-tui"
+git commit -m "feat: surface OpenAI auth status in evener-tui"
 ```
 
 ## Chunk 5: End-To-End Verification
@@ -428,8 +428,8 @@ Expected:
 Run:
 
 ```bash
-go build -o ./serf-tui ./cmd/evener-tui
-go build -o ./serf ./cmd/evener
+go build -o ./evener-tui ./cmd/evener-tui
+go build -o ./evener ./cmd/evener
 ```
 
 Expected:
@@ -441,7 +441,7 @@ Expected:
 Run:
 
 ```bash
-env -u OPENAI_API_KEY ./serf-tui --state-dir /tmp/serf-openai-empty --provider openai --model gpt-5.5
+env -u OPENAI_API_KEY ./evener-tui --state-dir /tmp/evener-openai-empty --provider openai --model gpt-5.5
 ```
 
 Verify:
@@ -483,9 +483,9 @@ Verify:
 Run:
 
 ```bash
-./serf openai status
-./serf openai login --help
-./serf openai logout --help
+./evener openai status
+./evener openai login --help
+./evener openai logout --help
 ```
 
 Expected:
@@ -504,5 +504,5 @@ git commit -m "fix: finalize OpenAI TUI auth integration"
 Document in the final handoff:
 
 - that the stream root cause was protocol identity confusion between `item_id` and `call_id`
-- that `serf-tui` now owns an in-app OpenAI login flow
+- that `evener-tui` now owns an in-app OpenAI login flow
 - any remaining rough edges, such as future opportunities to share auth UI patterns across providers

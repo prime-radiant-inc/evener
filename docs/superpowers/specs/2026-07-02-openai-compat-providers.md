@@ -8,12 +8,12 @@ Branch: `bot/openaicompat-provider-design` (worktree `.worktrees/openaicompat-pr
 
 ## 1. Problem
 
-Serf's OpenAI-compatible provider path (glm, kimi, openrouter, ollama, and
+Evener's OpenAI-compatible provider path (glm, kimi, openrouter, ollama, and
 `type="openai"` + `api_style="chat-completions"` instances) handles reasoning
 poorly for the growing class of gateway-served models (z.ai GLM, lunaroute,
 LiteLLM proxies, vLLM):
 
-1. **No per-model thinking-level mapping.** Serf clamps effort against a
+1. **No per-model thinking-level mapping.** Evener clamps effort against a
    model's `ReasoningEffortLevels`, but has no way to say "user asks `xhigh`,
    this model wants the wire string `max`" or "this model can't turn thinking
    off". For uncataloged models the openai-compat profile defaults to
@@ -24,7 +24,7 @@ LiteLLM proxies, vLLM):
    `thinking: {"type":"enabled"}` (its GLM models don't accept
    `reasoning_effort` at all except glm-5.2); DeepSeek wants
    `thinking:{"type":"enabled"}` too; OpenRouter wants `reasoning:{"effort"}`.
-   Serf's GLM provider today never enables thinking explicitly and sends a
+   Evener's GLM provider today never enables thinking explicitly and sends a
    field z.ai may reject or ignore.
 3. **`reasoning_effort` is emitted unconditionally** whenever the session set
    an effort — there is no per-model "supports the parameter" gate on this
@@ -33,11 +33,11 @@ LiteLLM proxies, vLLM):
    `type/api_style/base_url/api_key/quirks` (`llm/providercfg/providercfg.go`).
    A new gateway model absent from the embedded catalog silently gets 128K
    context, 3 effort levels, and the default wire format. No knob can fix it
-   without a serf release.
+   without a evener release.
 5. **Quirks are hardcoded presets.** `QuirksPreset(name)` recognizes a fixed
    set of names; nothing is composable from config.
 6. **Streaming loses thinking** for providers that emit `reasoning` or
-   `reasoning_text` deltas (serf only parses `reasoning_content`;
+   `reasoning_text` deltas (evener only parses `reasoning_content`;
    `llm/providers/openaicompat/response.go:73-78`) or that stream
    `reasoning_details` (parsed non-stream only).
 
@@ -82,7 +82,7 @@ Reference user config we want to be able to express (from Pi):
   `reasoning_content` / `reasoning` / `reasoning_text`; the winning field
   name is remembered per block and replayed to the same field next turn.
 
-## 3. What serf has
+## 3. What evener has
 
 - Vocabulary centralized in `llm` (`llm/types.go:528-621`):
   `minimal/low/medium/high/xhigh/max` with **xhigh ≡ max** (both rank 5),
@@ -93,8 +93,8 @@ Reference user config we want to be able to express (from Pi):
 - Effort flows: session snapshot → `ClampReasoningEffort(effort,
   profile.ReasoningEffortLevels())` (`agent/session_model_call.go:636-642`)
   → `req.ReasoningEffort *string` → each provider's request builder.
-- Model metadata: embedded LiteLLM catalog + serf overrides overlay
-  (`llm/model_catalog_embedded.go`), which can materialize serf-only models
+- Model metadata: embedded LiteLLM catalog + evener overrides overlay
+  (`llm/model_catalog_embedded.go`), which can materialize evener-only models
   (kimi-for-coding). Live enrichment via `ListModels` → `WithLiveModelInfo`.
 - Per-instance `ProviderQuirks` presets (`llm/providers/openaicompat/quirks.go`):
   param locks, `ToolChoiceAutoOnly`, `MaxStopSequences`, `StripEmptyContent`,
@@ -105,7 +105,7 @@ Reference user config we want to be able to express (from Pi):
 
 ## 4. Design
 
-Principles: keep serf's shipped vocabulary (xhigh≡max aliases); express
+Principles: keep evener's shipped vocabulary (xhigh≡max aliases); express
 provider divergence as **data** (per-model/per-instance compat) with built-in
 defaults, user-overridable in `providers.toml`; keep `llm.ClampReasoningEffort`
 the single clamp — the new map layer *translates after clamping*, it does not
@@ -138,8 +138,8 @@ supports_reasoning_effort = false
   reasoning capability → `ModelInfo`, so `/api/models`, the effort chip, and
   the session clamp all see it with zero new plumbing) and **carries
   compat/levels to the adapter**.
-- Precedence: instance model config > serf catalog overrides > LiteLLM
-  catalog > profile defaults. Same "materialize if unknown" rule the serf
+- Precedence: instance model config > evener catalog overrides > LiteLLM
+  catalog > profile defaults. Same "materialize if unknown" rule the evener
   overlay already uses.
 - Instance-level `[instances.X.compat]` also allowed; per-model compat
   overlays it field-by-field.
@@ -147,25 +147,25 @@ supports_reasoning_effort = false
 ### 4.2 Thinking-level map
 
 New per-model field (config + `llm.ModelInfo`):
-`ThinkingLevels map[string]*string` — key = canonical serf level
+`ThinkingLevels map[string]*string` — key = canonical evener level
 (`minimal/low/medium/high/xhigh`, plus optional `off`), value = wire string,
 or explicit null = unsupported.
 
 Semantics (deliberately simpler than Pi's partial-map defaults):
 
 - **When a map is present it is the complete authority**: the supported
-  ladder is exactly the keys with non-null values, in serf rank order. From
+  ladder is exactly the keys with non-null values, in evener rank order. From
   it we *derive* `ReasoningEffortLevels`, so the existing clamp, spawn-form
   chip, task_list enum, and appwire validation keep working unchanged.
 - **`off` key**: absent → thinking disabled by omitting the field (today's
   behavior); string (e.g. `"none"`) → send that value to disable; null →
-  model cannot disable thinking (an always-on reasoner: serf treats
+  model cannot disable thinking (an always-on reasoner: evener treats
   effort="" as "send nothing", letting the provider default rule).
 - **At request build** (adapter): after the session's clamp picks a level,
   the adapter translates `map[level]` → wire value. No map → level passes
   through by name (today's behavior, fully backward compatible).
 - `max` accepted as an alias of `xhigh` in config keys (normalized at load),
-  matching serf's rank table.
+  matching evener's rank table.
 - Pi's "xhigh is opt-in" rule falls out naturally: no map → default levels
   (`low/medium/high`) as today; a model earns `xhigh`/`max` by declaring it.
 
@@ -195,7 +195,7 @@ Wire behavior per `thinking_format` (effort = post-clamp, post-map value):
 | `openrouter` | `reasoning: {"effort": <effort>}` | `reasoning: {"effort":"none"}` or omit per off-mapping |
 | `deepseek` | `thinking: {"type":"enabled"}` + optional `reasoning_effort` | `thinking: {"type":"disabled"}` |
 
-Initial scope: `openai`, `zai`, `openrouter`, `deepseek` — formats serf has
+Initial scope: `openai`, `zai`, `openrouter`, `deepseek` — formats evener has
 (or is about to have) real providers for. Pi's other six variants (qwen,
 chat-template, together, string-thinking, ant-ling) are cheap to add later
 inside the same switch; YAGNI now.
@@ -204,7 +204,7 @@ Layering: `QuirksPreset(name)` stays as the built-in base (the `glm-5`
 preset gains `ThinkingFormat:"zai"`, `ToolStream:true`; `openrouter` preset
 gains `ThinkingFormat:"openrouter"`), then instance `[instances.X.compat]`
 overlays, then per-model compat overlays. No baseURL sniffing (Pi does this;
-serf keys on `type` + preset, which is explicit and already there).
+evener keys on `type` + preset, which is explicit and already there).
 
 The `openrouter` preset's `TranslateMaxToXHigh` becomes redundant where a
 model has a thinking_levels map, but stays as the blanket fallback.
@@ -230,7 +230,7 @@ as "provider-side small default".
 Adopt Pi's `$ENV_VAR` form for `providers.toml api_key` (literal `$` via
 `$$`). Today the field is literal-only; gateway keys want env indirection
 and Jesse's example config already assumes it. No `!command` execution
-(serf has the credentials store for real secret management; running shell
+(evener has the credentials store for real secret management; running shell
 commands from providers.toml is surface we don't need).
 
 ### 4.6 Streaming/response parsing
@@ -239,7 +239,7 @@ commands from providers.toml is surface we don't need).
   `reasoning_text` — first non-empty wins per Pi's dedup rationale
   (chutes.ai sends two with identical content). Remember the winning field
   name and replay assistant thinking to the same field on subsequent turns
-  (serf currently hardcodes `reasoning_content` replay).
+  (evener currently hardcodes `reasoning_content` replay).
 - Parse streamed `reasoning_details` deltas (currently non-stream only) so
   OpenRouter/MiniMax reasoning isn't lost in the streaming path.
 
@@ -267,10 +267,10 @@ commands from providers.toml is surface we don't need).
 | supportsStore / supportsDeveloperRole / stream_options gate | **Implemented this pass** — `CompatConfig.SupportsStore` / `SupportsDeveloperRole` / `SupportsUsageInStreaming`, applied as `ProviderQuirks.SendStoreFalse` / `UseDeveloperRole` / `OmitStreamUsage` (see §8 on the action-named field mismatch) |
 | cacheControlFormat:"anthropic", supportsLongCacheRetention, session-affinity headers | ALL **implemented** across the two passes: `cache_control_format = "anthropic"` markers; then the follow-up waves added `supports_long_cache_retention` (prompt_cache_key derived from the session id + prompt_cache_retention 24h + cache_control ttl 1h) and `send_session_affinity_headers` (session_id/x-client-request-id/x-session-affinity) — `req.SessionID` was already on every request, so no new session plumbing was needed |
 | chat_template_kwargs formats (local vLLM/qwen) | **Later** |
-| baseURL compat auto-detection | **Skip** — serf's explicit type+preset covers it; less magic |
+| baseURL compat auto-detection | **Skip** — evener's explicit type+preset covers it; less magic |
 | openRouterRouting/vercelGatewayRouting structs | **Skip** — ProviderOptions passthrough already emits arbitrary body fields |
 | !command key resolution | **Skip** — credentials store exists; don't execute config |
-| Cost fields per user model | **Skip for now** — serf catalog has pricing; gateway models are usually flat/zero; add to model entry later if wanted |
+| Cost fields per user model | **Skip for now** — evener catalog has pricing; gateway models are usually flat/zero; add to model entry later if wanted |
 | Per-model headers | **Skip** — instance DefaultHeaders exist; no known need |
 
 ## 6. Open questions for Jesse
@@ -341,7 +341,7 @@ tests ~600–850. Plus a docs/llm-providers.md section.
   null = cannot-disable). None of that shipped: `thinking_levels` may only
   contain the five real effort levels (`minimal`/`low`/`medium`/`high`/
   `xhigh`, `max` folded into `xhigh`); a key literally named `off` is a load
-  error (`llm/providercfg/load.go:149-152`). Serf's existing `none` effort
+  error (`llm/providercfg/load.go:149-152`). Evener's existing `none` effort
   already clears the setting to the provider default, so a per-model `off`
   wire value would have been a second, redundant way to say the same thing.
 - **The `ProviderQuirks` field names are action-named, not
@@ -349,7 +349,7 @@ tests ~600–850. Plus a docs/llm-providers.md section.
   *provider supports* (`supports_store`, `supports_developer_role`,
   `supports_usage_in_streaming`); `ApplyCompatConfig`
   (`llm/providers/openaicompat/compat.go:60-136`) translates each into a
-  `ProviderQuirks` field that describes what *serf does* about it:
+  `ProviderQuirks` field that describes what *evener does* about it:
   `SupportsStore` → `SendStoreFalse`, `SupportsDeveloperRole` →
   `UseDeveloperRole`, `SupportsUsageInStreaming` → `OmitStreamUsage` (and this
   last one **inverts**: `supports_usage_in_streaming = true` sets
@@ -366,7 +366,7 @@ tests ~600–850. Plus a docs/llm-providers.md section.
   `thinking_format = "openrouter"` (the canonical `reasoning: {"effort"}`
   object) — flipped 2026-07-02 after live verification with a real key
   showed identical behavior to top-level `reasoning_effort` on OpenAI and
-  Anthropic routed models and acceptance of the full serf vocabulary.
+  Anthropic routed models and acceptance of the full evener vocabulary.
 - **Pre-existing `WithModel` shallow-clone staleness bug, found and fixed.**
   While wiring instance model definitions through `WithModel` rebuilds
   (`agent/provider/profile.go`), this pass found that

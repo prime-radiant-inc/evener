@@ -26,7 +26,7 @@ list.
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (Setup
-  checklist in `docs/agentic-testing.md`), with `--serf` resolvable.
+  checklist in `docs/agentic-testing.md`), with `--evener` resolvable.
 - For the browser step only: a frontend built with `make build-web`
   before the hub binary.
 - A provider whose live listing carries **both** a bare model id and its
@@ -54,7 +54,7 @@ list.
 
 ### Browser (does the rendered list preserve it)
 
-3. Open `/settings/launch-serf`, click the model field's trigger (the
+3. Open `/settings/launch-evener`, click the model field's trigger (the
    `<button>` whose accessible name ends `— change model`,
    `widgets/modelCatalog/index.tsx:388-406`), and read the listbox in
    DOM order:
@@ -75,7 +75,7 @@ list.
    (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
-4. In a tmux session running `serf-tui --hub-addr 127.0.0.1:$PORT`,
+4. In a tmux session running `evener-tui --hub-addr 127.0.0.1:$PORT`,
    press `n` (opens the spawn form focused on Prompt,
    `cmd/evener-tui/hub_keys.go:95`, `hub_spawn.go:300-311`), then
    `BTab BTab` to reach the Model field (field order is
@@ -166,7 +166,7 @@ can reach.
 ## Re-running this card live
 
 If `lunarouter`'s tunnel is restored, or Anthropic OAuth credentials are
-added to this hub's isolated `$XDG_STATE_HOME/serf/auth/anthropic.json`
+added to this hub's isolated `$XDG_STATE_HOME/evener/auth/anthropic.json`
 (mirroring the `openai.json` pattern used elsewhere in this set), re-run
 steps 1-4 against a provider group containing a known Anthropic
 dated-snapshot family (`claude-opus-4-6` / `claude-opus-4-6-20251101`,

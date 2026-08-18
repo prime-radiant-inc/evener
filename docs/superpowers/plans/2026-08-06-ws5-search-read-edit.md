@@ -121,7 +121,7 @@ Anchors verified 2026-08-06; trust symbol names over line numbers.
   itself unchanged — no fuzzy matching, per the plan);
   (b) a file created or fully written via write_file this session is
   editable by edit_file without the not-read warning; a shell-heredoc
-  write still warns (serf can't know that content).
+  write still warns (evener can't know that content).
 - [ ] **Step 2:** implement both.
 - [ ] **Step 3:** gates; commit
   (`fix(tools): apply_patch points at re-read; edit_file credits session writes`).

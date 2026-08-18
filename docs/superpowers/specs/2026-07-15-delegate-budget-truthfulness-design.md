@@ -7,7 +7,7 @@ Program order: Project 1 of 6.
 
 ## Purpose
 
-Serf must never present an exhausted delegate turn as successful completion. A
+Evener must never present an exhausted delegate turn as successful completion. A
 delegate approaching its lifetime limit also needs enough warning to report its
 state before the final turn is consumed.
 
@@ -32,11 +32,11 @@ turn boundary or successful child result.
 
 ### Keep the existing delegate default
 
-The default lifetime budget remains 500 turns. Serf will not guess a higher
+The default lifetime budget remains 500 turns. Evener will not guess a higher
 number without observed distribution data. Callers may still supply a positive
 override.
 
-Serf keeps these budgets distinct:
+Evener keeps these budgets distinct:
 
 | Budget | Meaning | Exhaustion effect |
 |---|---|---|
@@ -46,7 +46,7 @@ Serf keeps these budgets distinct:
 
 ### Five-turn warning
 
-When a bounded session has exactly five lifetime turns remaining, Serf injects
+When a bounded session has exactly five lifetime turns remaining, Evener injects
 one steering message before the model request:
 
 > You have 5 turns remaining in this session. Report your current status and
@@ -63,7 +63,7 @@ The warning:
 - is emitted through the normal steering/transcript path so it is auditable.
 
 If a session is restored or configured after the threshold has already passed,
-Serf injects the warning once at the next accepted turn rather than omitting it.
+Evener injects the warning once at the next accepted turn rather than omitting it.
 
 ### Exhausted is a terminal job outcome
 
@@ -92,7 +92,7 @@ outcome classification; it does not discard the handoff material.
 
 ### Parent-visible contract
 
-All Serf surfaces that expose job state use the same status:
+All Evener surfaces that expose job state use the same status:
 
 - durable job-store records;
 - `job_status` and `job_list`;
@@ -115,7 +115,7 @@ exhausted.
 
 ## Testing
 
-Use scripted providers and real Serf session/job plumbing.
+Use scripted providers and real Evener session/job plumbing.
 
 Cover:
 

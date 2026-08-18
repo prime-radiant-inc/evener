@@ -24,11 +24,11 @@ The wiring lives in:
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on an isolated `$HOME` and free port
+- `evener-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
-- `./serf-tui` and `./serf-hub` built in repo root.
+  `$HOME/.evener/auth-token`.
+- `./evener-tui` and `./evener-hub` built in repo root.
 - Anthropic OAuth or API key configured so
   `anthropic/claude-haiku-4-5-20251001` can be invoked.
 - The tmux session name is derived from this run's own scratch dir
@@ -40,11 +40,11 @@ The wiring lives in:
 
 1. **Hermetic workdir + tmux + spawn**:
    ```
-   WORKDIR=$(mktemp -d -t serf-drain-XXXX)
-   TMUX_SESSION="serf-drain-$(basename "$WORKDIR")"
+   WORKDIR=$(mktemp -d -t evener-drain-XXXX)
+   TMUX_SESSION="evener-drain-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux send-keys -t "$TMUX_SESSION" "n"
    sleep 0.5
@@ -110,7 +110,7 @@ The wiring lives in:
    ```
    SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
-   TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TS=$(find $HOME/.local/state/evener/projects -name "$SID.transcript.jsonl")
    grep -c '"kind":"STEERING"' "$TS"
    ```
    At least one. Inspect the STEERING entry:

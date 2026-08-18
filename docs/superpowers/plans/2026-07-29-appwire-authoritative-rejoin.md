@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Serf session panes converge without a page reload after
+**Goal:** Make Evener session panes converge without a page reload after
 transient cellular/WebSocket RPC failures, while keeping one daemon-owned
 snapshot authority and truthful retry-safe mutation receipts.
 
@@ -23,13 +23,13 @@ seams.
 
 - Read `AGENTS.md` and `docs/testing.md` before changing code or tests.
 - Start in
-  `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/appwire-authoritative-rejoin`
+  `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/appwire-authoritative-rejoin`
   on branch `wip/appwire-authoritative-rejoin`.
 - The approved design is
   `docs/superpowers/specs/2026-07-29-appwire-authoritative-rejoin-design.md`.
   Re-read it before starting each task.
 - Do not touch
-  `/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/appwire-v2-task7-integration`;
+  `/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/appwire-v2-task7-integration`;
   it contains intentionally preserved WIP.
 - Do not create or update Linear issues. Jesse explicitly excluded Linear from
   this work.
@@ -46,7 +46,7 @@ seams.
   injected schedulers. Do not use sleeps, provider credentials, network
   access, or wall-clock race windows.
 - Keep the real `CaptureSubscription` and `CommitProjection` path in
-  integration tests. Do not mock Serf internals.
+  integration tests. Do not mock Evener internals.
 - Preserve the last published frontend model during refresh failure.
 - Stage explicit files only after `git status --short`; never use
   `git add -A`, skip hooks, or mix unrelated changes into a task commit.
@@ -436,7 +436,7 @@ retained-window storage and switches every read path to the reducer.
   - `turn/started` sets `activeTurnID`;
   - matching `turn/completed` clears `activeTurnID`;
   - `item/agentMessage/reset` removes only the named item from the named turn;
-  - `serf/steering/injected` appends to `activeTurnID` only; and
+  - `evener/steering/injected` appends to `activeTurnID` only; and
   - steering IDs and fields match the frontend reducer exactly.
 
   Do not invent a turn when no active turn exists. That case is recovered by

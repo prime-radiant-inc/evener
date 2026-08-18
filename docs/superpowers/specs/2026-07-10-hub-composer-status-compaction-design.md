@@ -6,7 +6,7 @@
 
 Reduce the Hub workspace composer and nearby status chrome so the transcript retains more vertical space, especially in non-maximized windows, while retaining the operational telemetry needed during active work.
 
-The compact default must keep a concise running state, one authoritative task count, grouped project location (`branch`, `worktree`, and `cwd`), and a compact context-window/token figure. It must remove redundant or low-value default telemetry, including `src serf`, directional input/output token detail, cost, and turn count.
+The compact default must keep a concise running state, one authoritative task count, grouped project location (`branch`, `worktree`, and `cwd`), and a compact context-window/token figure. It must remove redundant or low-value default telemetry, including `src evener`, directional input/output token detail, cost, and turn count.
 
 ## Context
 
@@ -23,7 +23,7 @@ The workspace also currently exposes overlapping activity and task signals. In p
 - A single-line, adaptive telemetry rail below the composer controls.
 - Grouping `branch`, `worktree`, and `cwd` into one location item.
 - Retaining a compact context-window/token figure on the default rail.
-- Removing `src serf` from the default status rail.
+- Removing `src evener` from the default status rail.
 - Removing cost, turn count, and directional input/output token figures from the default rail.
 - Showing task count exactly once, in the task trigger.
 - Eliminating duplicate running/working wording across composer-adjacent surfaces.
@@ -63,7 +63,7 @@ The default visual priority is:
 2. **Location:** one grouped location item containing `branch`, `worktree`, and `cwd`, separated visually but exposed as one accessible unit.
 3. **Context window:** a compact `used / window` value such as `42k / 128k`.
 
-The rail does not show `src serf`, separate input/output token totals, cost, or turn count by default. The model remains available through its composer control. Full operational telemetry remains available through Details.
+The rail does not show `src evener`, separate input/output token totals, cost, or turn count by default. The model remains available through its composer control. Full operational telemetry remains available through Details.
 
 ### Task count and active task
 
@@ -95,7 +95,7 @@ The rail uses horizontal priority and truncation instead of wrapping.
 
 This is a presentation and rendering-boundary change. The existing status partial, status model, and refresh behavior remain authoritative.
 
-- `serf-hub:status-refresh` continues to be triggered through `window.htmx.trigger(document.body, ...)` at its existing lifecycle points.
+- `evener-hub:status-refresh` continues to be triggered through `window.htmx.trigger(document.body, ...)` at its existing lifecycle points.
 - The active-only ten-second freshness tick remains unchanged.
 - Server-provided source, state, location, token, task, and cost data remain available to the template/Details surface even if they are no longer default-visible in the compact rail.
 - Ask-response mode continues to replace the normal composer surface and must not create a competing normal composer/status interaction.
@@ -121,7 +121,7 @@ Add or extend deterministic tests to assert:
 - The normal composer has a compact raised/light presentation and no longer relies on a full surrounding border as its primary separation treatment.
 - The telemetry rail has a stable hook and does not wrap into a second metadata row under constrained-width CSS contracts.
 - The visible default rail contains one state/activity item, one grouped location item, and one `used / window` context item.
-- `src serf`, directional token totals, cost, and turn count are absent from the default rail but remain available through the existing detailed state surface where applicable.
+- `src evener`, directional token totals, cost, and turn count are absent from the default rail but remain available through the existing detailed state surface where applicable.
 - Branch, worktree, and CWD occur once in the rail's grouped location presentation and retain full-value accessibility/title behavior under truncation.
 - Task count appears exactly once in the task trigger and is not repeated in the rail or a second task-count element.
 - Active work renders a single concise activity message rather than repeated neighboring working text.
@@ -130,7 +130,7 @@ Add or extend deterministic tests to assert:
 
 Retain and run existing deterministic coverage proving:
 
-- Status refresh uses `window.htmx.trigger(document.body, "serf-hub:status-refresh")` for relevant lifecycle signals.
+- Status refresh uses `window.htmx.trigger(document.body, "evener-hub:status-refresh")` for relevant lifecycle signals.
 - The active-only freshness tick starts and stops at the correct state transitions.
 - Textarea auto-grow/reset and send failure behavior remain unchanged.
 - Send/queue capability state remains correct through active/idle transitions.
@@ -141,11 +141,11 @@ Retain and run existing deterministic coverage proving:
 Run at minimum:
 
 ```sh
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-input-area.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-status-refresh.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
-NODE_PATH=/tmp/serf-jstest-jsdom/node_modules timeout 180 sh cmd/evener-hub/jstest/run-all.sh
-GOCACHE=/tmp/serf-go-build-cache go test ./cmd/evener-hub -count=1
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-input-area.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-status-refresh.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 90 node cmd/evener-hub/jstest/test-mobile-css.js
+NODE_PATH=/tmp/evener-jstest-jsdom/node_modules timeout 180 sh cmd/evener-hub/jstest/run-all.sh
+GOCACHE=/tmp/evener-go-build-cache go test ./cmd/evener-hub -count=1
 git diff --check
 ```
 
@@ -154,7 +154,7 @@ git diff --check
 1. The workspace composer uses materially less vertical chrome without losing normal composer, attachment, queue, capability, model, or ask-dock behavior.
 2. The composer surface has a quiet raised/light visual treatment rather than a prominent container border, while focus affordances remain clear.
 3. One nonwrapping telemetry rail shows one concise state/activity item, grouped branch/worktree/CWD, and compact `used / window` context telemetry.
-4. `src serf`, cost, turn count, and directional input/output token figures do not consume default rail space.
+4. `src evener`, cost, turn count, and directional input/output token figures do not consume default rail space.
 5. The task count appears exactly once, on the task trigger; active-task wording does not repeat that number.
 6. Running status wording appears once in the composer-adjacent hierarchy.
 7. On constrained desktops, phones, and short landscape, the rail remains one line and prioritizes state/activity plus context-window telemetry over location detail; it does not add vertical wrapping.

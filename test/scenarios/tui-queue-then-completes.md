@@ -16,7 +16,7 @@ the same queue state.
 
 - Complete the full Setup checklist in `docs/agentic-testing.md` in the same
   Bash shell through the `TOKEN=...` step. Its single `run=$(mktemp -d ...)`
-  owns fresh `$run/serf-hub`, `$run/serf`, and `$run/serf-tui` binaries, the
+  owns fresh `$run/evener-hub`, `$run/evener`, and `$run/evener-tui` binaries, the
   isolated `$HOME=$run/home` and session state, the kernel-assigned hub port,
   and `$run/hub.log` / `$run/hub.pid`. Do not create or reuse another run root.
 - `tmux`, `curl`, and `jq` installed (`tmux` 3.4 is known to work).
@@ -91,7 +91,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
      exit 1
    fi
    case "$(basename "$RUN_ROOT")" in
-     serf-e2e-*) ;;
+     evener-e2e-*) ;;
      *) printf 'run is not a Setup checklist directory: %s\n' "$RUN_ROOT" >&2; exit 1 ;;
    esac
    if [ "${HOME:-}" != "$RUN_ROOT/home" ]; then
@@ -118,22 +118,22 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    OWNED_HUBPID="$RECORDED_HUBPID"
    RUN_OWNED=1
 
-   test -x "$RUN_ROOT/serf-hub"
-   test -x "$RUN_ROOT/serf"
-   test -x "$RUN_ROOT/serf-tui"
+   test -x "$RUN_ROOT/evener-hub"
+   test -x "$RUN_ROOT/evener"
+   test -x "$RUN_ROOT/evener-tui"
    test -f "$RUN_ROOT/hub.log"
 
    WORKDIR="$RUN_ROOT/work"
    run_suffix="${RUN_ROOT##*/}"
    run_suffix="${run_suffix//[^A-Za-z0-9_-]/-}"
-   TMUX_SESSION="serf-queue-${run_suffix}-$$"
+   TMUX_SESSION="evener-queue-${run_suffix}-$$"
    if [ -z "${PORT:-}" ]; then
      printf 'PORT must name the Setup checklist hub\n' >&2
      exit 1
    fi
    HUB_ADDR="127.0.0.1:$PORT"
    test "$HUB" = "http://$HUB_ADDR"
-   RECORDED_TOKEN=$(cat "$HOME/.serf/auth-token")
+   RECORDED_TOKEN=$(cat "$HOME/.evener/auth-token")
    test "$TOKEN" = "$RECORDED_TOKEN"
 
    mkdir "$WORKDIR"
@@ -222,7 +222,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
    jq -n --arg prompt "$FIRST_PROMPT" --arg workdir "$WORKDIR" '{
      prompt: $prompt,
-     harness: "serf",
+     harness: "evener",
      model: "anthropic/claude-haiku-4-5-20251001",
      working_dir: $workdir,
      branch: "",
@@ -270,7 +270,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "\"$RUN_ROOT/serf-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
+     "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
    capture_until "$RUN_ROOT/dashboard-live-pane.txt" 'SERF LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-live-pane.txt" 'Command palette'
@@ -326,7 +326,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    tmux kill-session -t "$TMUX_SESSION"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "\"$RUN_ROOT/serf-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
+     "\"$RUN_ROOT/evener-tui\" --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
    capture_until "$RUN_ROOT/dashboard-cold-pane.txt" 'SERF LIVE'
    tmux send-keys -t "$TMUX_SESSION" "/"
    capture_until "$RUN_ROOT/palette-cold-pane.txt" 'Command palette'
@@ -364,7 +364,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    queue has drained**:
 
    ```bash
-   TS=$(find "$HOME/.local/state/serf/projects" \
+   TS=$(find "$HOME/.local/state/evener/projects" \
      -name "$SID.transcript.jsonl" -print -quit)
    test -n "$TS"
 

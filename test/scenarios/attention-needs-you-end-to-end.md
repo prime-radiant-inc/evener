@@ -42,13 +42,13 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
   port — never Jesse's real `9180`, where his own hub runs host-wide flock'd with his real
   token and history:
   ```bash
-  run=$(mktemp -d -t serf-e2e-attn-XXXXXX)
-  go build -o "$run/serf"     ./cmd/evener
-  go build -o "$run/serf-hub" ./cmd/evener-hub
+  run=$(mktemp -d -t evener-e2e-attn-XXXXXX)
+  go build -o "$run/evener"     ./cmd/evener
+  go build -o "$run/evener-hub" ./cmd/evener-hub
   export HOME="$run/home"
   mkdir -p "$HOME"
   unset XDG_STATE_HOME
-  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -57,7 +57,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
     sleep 0.1
   done
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   ```
 - `ANTHROPIC_API_KEY` in the environment; the cheap model is
   `anthropic/claude-haiku-4-5-20251001` (this repo's standard cheap-model convention).
@@ -74,9 +74,9 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
 
 1. **(browser-free)** Spawn a session that will finish quickly, and note `SID`:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-attn-wd-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-attn-wd-XXXXX)
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Reply with exactly the word PONG.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Reply with exactly the word PONG.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn" | jq -r '.session_id')
    echo "SID=$SID"
    ```
@@ -89,8 +89,8 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
    ```
    ```javascript
    // strings "1"/"0", never JSON (stores/prefs.ts:224-229)
-   localStorage.setItem("serf.prefs.notificationsTitle", "1");
-   localStorage.setItem("serf.prefs.notificationsFavicon", "1");
+   localStorage.setItem("evener.prefs.notificationsTitle", "1");
+   localStorage.setItem("evener.prefs.notificationsFavicon", "1");
    "seeded"
    ```
    ```
@@ -160,9 +160,9 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
 
 5. Spawn a second session with a long-running prompt, in its own hermetic workdir:
    ```bash
-   tmpdir2=$(mktemp -d -t serf-e2e-attn-interrupt-XXXXX)
+   tmpdir2=$(mktemp -d -t evener-e2e-attn-interrupt-XXXXX)
    SID2=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Run \\\"sleep 60\\\" via the shell tool, then reply DONE.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir2\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Run \\\"sleep 60\\\" via the shell tool, then reply DONE.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir2\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      "$HUB/api/spawn" | jq -r '.session_id')
    # wait for the turn to actually be in flight
    for i in $(seq 1 15); do
@@ -250,7 +250,7 @@ kill "$HUBPID" 2>/dev/null
 rm -rf "$run" "$tmpdir" "$tmpdir2"
 ```
 
-Kill the hub by the PID you captured — never `pkill -f serf-hub`, which would also kill a
+Kill the hub by the PID you captured — never `pkill -f evener-hub`, which would also kill a
 concurrent agent's test hub.
 
 ## Sharp edges

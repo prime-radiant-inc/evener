@@ -1,6 +1,6 @@
 # Working in the Go workspace
 
-serf is a `go.work` workspace of eight modules: the root plus `agent`,
+evener is a `go.work` workspace of eight modules: the root plus `agent`,
 `llm`, `auth`, `envvars`, `invariant`, `identifier`, and `fuzz`. Most of
 what is surprising about working here follows from that one fact.
 
@@ -11,7 +11,7 @@ per-module. Run from the root, they say nothing about `agent` or `llm`.
 A change that breaks a sibling module passes every one of them.
 
 `make lint` and `make test` loop the modules explicitly
-(`serf-dev module-lint`, driven by `GO_MODULES` in the Makefile).
+(`evener-dev module-lint`, driven by `GO_MODULES` in the Makefile).
 **Those are the gates.** A green `./...` is not evidence that the
 workspace builds.
 
@@ -54,11 +54,11 @@ failure for that consumer even though the workspace is green — the
 workspace fills the gap from a sibling's `go.mod`, and a consumer has no
 sibling. Pin each indirect at the version the workspace itself selects
 (`go list -m <module>` from the root), so a consumer resolves the code
-serf tested.
+evener tested.
 
 To check a module, build a consumer OUTSIDE the workspace: a scratch
 module whose `go.mod` requires just that module, plus a directory
-`replace` for every serf module, and no other requires. Then
+`replace` for every evener module, and no other requires. Then
 
 ```
 GOWORK=off GOFLAGS= GOPROXY=off go list -deps primeradiant.com/evener/agent/...
@@ -107,7 +107,7 @@ became a `[]summarizationRoute` stranded a `//go:build eval` caller for
 six weeks.
 
 **`golangci-lint` still does not look inside a tagged file.**
-`serf-dev module-lint` runs a bare `golangci-lint run ./...` per
+`evener-dev module-lint` runs a bare `golangci-lint run ./...` per
 module and `.golangci.yml` sets no `build-tags`, so the lint rules
 proper — unused, staticcheck, the rest — never see a `//go:build
 serffuzz` or `//go:build eval` source. The floors are type-checking, not

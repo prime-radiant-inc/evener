@@ -129,7 +129,7 @@ homed**, not re-triages.
 ### Already resolved on-branch (confirm still fixed) — 3
 - Denied/errored `ask_user` renders answerable → **A1** `deriveAskQuestions` `item.error===undefined` gate.
 - Escalation-resolve not Conflict-terminal → **A1** `resolveEscalation` → `mapConflict`.
-- `serf/sandbox/escalation/resolved` multi-client clear → **A1** reducer case (`reducer.ts:628`).
+- `evener/sandbox/escalation/resolved` multi-client clear → **A1** reducer case (`reducer.ts:628`).
 
 ### schedule-W6 (verify W6 delivered) — 5
 - `/` command palette → **W6-T3** (⌘K, 23 commands).
@@ -180,20 +180,20 @@ the shipped behavior and moves on.
 
 **Shell / routing / panes**
 - Mobile **nav-as-page** via React conditional render (< 900px), not `body[data-settings-pane]`.
-- **Qualified `thread.serf.ref`** everywhere (wire-truth; legacy `local:`-strip is dead-on-arrival).
+- **Qualified `thread.evener.ref`** everywhere (wire-truth; legacy `local:`-strip is dead-on-arrival).
 - dockview-native **§3 divergences**: `panes.js` iframe/postMessage not ported; **max-3-pane cap** and
   **auto-open-observer** not ported (dockview manages space); popout is dockview-native.
 - `/thread` **single-pane pending M9 ratification** (§8 #2) — the composer-live reading.
 - `/thread` **unknown-ref fallback title kept** (beyond-parity; legacy blanked it).
 
 **Settings / prefs / notifications**
-- Read-only settings sections fetch **`serf/settings/overview`**, not server-rendered HTML.
+- Read-only settings sections fetch **`evener/settings/overview`**, not server-rendered HTML.
 - **Theme `prefers-color-scheme` listener KEPT** — **Jesse 2026-07-21** (veto not exercised).
 - **credentialsStore staleness extension** stands as reviewed (Jesse no-veto).
 - **launchConfigStore no-cross-client-live-update** boundary (§9/§11/§18 hold no cached state).
 - **All-OFF notification defaults** (the safety pin; W6 engine follows it).
 - **Web-Locks-only** leader election (no BroadcastChannel).
-- Notifications **title base `"<pane> · serf hub"`**; **/theme immediate apply** (hazard-1 fix).
+- Notifications **title base `"<pane> · evener hub"`**; **/theme immediate apply** (hazard-1 fix).
 - **envMap** structured NAME/value inputs restored; **CustomEvents** replaced by prefs-store reactivity;
   launch-engine path/pathList = **validated free-text** (no PathPicker); `showCost`/`enterToSend` not
   mirrored to `body.dataset`.

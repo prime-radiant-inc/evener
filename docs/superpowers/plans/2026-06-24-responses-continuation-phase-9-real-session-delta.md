@@ -86,7 +86,7 @@ Also add a package-agent fake-adapter test in `agent/session_openai_continuation
 - [x] **Step 2: Run RED tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesDeltaWithFallbackSidecar|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesDeltaWithFallbackSidecar|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar' -count=1 -v
 ```
 
 Expected: fake-adapter sidecar test fails because fallback-capable paths still use full history when `FullHistoryFallbackMessages` is empty.
@@ -107,7 +107,7 @@ Remove the old fallback-capable early return that forced full history only becau
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor|TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor|TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta' -count=1 -v
 ```
 
 Update the old Phase 4D fallback-capable fake test name/expectations if the test now belongs to Phase 9.
@@ -176,7 +176,7 @@ Assert each request uses `HistoryModeFullHistory`, has no `PreviousResponseID`, 
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesContinuationPhase9.*Gate' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesContinuationPhase9.*Gate' -count=1 -v
 ```
 
 - [x] **Step 5: Commit**
@@ -218,7 +218,7 @@ Use an eligible anchor containing a malformed historical tool call and a linked 
 - [x] **Step 3: Run focused retry and sanitizer tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer' -count=1 -v
 ```
 
 Observed: retry and sanitizer tests passed after the Phase 9 sidecar work because full-history fallback messages already flow through the existing OpenAI full-history serializer.
@@ -230,7 +230,7 @@ If fallback messages already use `req.Messages` before delta shaping, no code ch
 - [x] **Step 5: Run focused tests and commit**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay' -count=1 -v
 git status --short
 git add agent/session_openai_continuation_phase9_test.go agent/session_openai_malformed_tool_call_test.go docs/superpowers/plans/2026-06-24-responses-continuation-phase-9-real-session-delta.md
 git commit -m "test(agent): prove responses continuation retry real path"
@@ -277,7 +277,7 @@ Before selecting a delta, if the key is disabled, use full history. When `callMo
 - [x] **Step 4: Run focused tests and commit**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Disabled' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Disabled' -count=1 -v
 git status --short
 git add agent/session_model_call.go agent/session_config.go agent/session_openai_continuation_phase9_test.go docs/superpowers/plans/2026-06-24-responses-continuation-phase-9-real-session-delta.md
 git commit -m "feat(agent): add session-local responses continuation disablement"
@@ -294,8 +294,8 @@ git commit -m "feat(agent): add session-local responses continuation disablement
 - [x] **Step 1: Run full focused Phase 9 verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9|TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestFallbackChain_Continuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_Continuation|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_ClassifyResponsesError' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9|TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestFallbackChain_Continuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_Continuation|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_ClassifyResponsesError' -count=1 -v
 git diff --check
 ```
 

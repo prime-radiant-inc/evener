@@ -4,7 +4,7 @@ Date: 2026-06-25
 
 ## Goal
 
-The Serf web UI workspace content should not stretch indefinitely on wide screens. When the available workspace area is wider than a sensible reading/composition width, the content column should cap its width and center itself. On narrower screens it should continue to use the available width.
+The Evener web UI workspace content should not stretch indefinitely on wide screens. When the available workspace area is wider than a sensible reading/composition width, the content column should cap its width and center itself. On narrower screens it should continue to use the available width.
 
 ## Context
 

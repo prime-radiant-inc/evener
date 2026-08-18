@@ -910,7 +910,7 @@ Replace the entire coordinator.md with the new version. Keep the YAML tasks from
 
 - [ ] **Step 2: Verify binary embeds correctly**
 
-Run: `make build-linux && strings serf-linux-amd64 | grep "Your task list defines"`
+Run: `make build-linux && strings evener-linux-amd64 | grep "Your task list defines"`
 Expected: The new coordinator prompt text appears in the binary.
 
 - [ ] **Step 3: Commit**
@@ -933,7 +933,7 @@ Add the 4 default tasks (understand, implement w/ parent_tasks placeholder, veri
 
 - [ ] **Step 2: Verify binary embeds correctly**
 
-Run: `make build-linux && strings serf-linux-amd64 | grep "insert: parent_tasks"`
+Run: `make build-linux && strings evener-linux-amd64 | grep "insert: parent_tasks"`
 Expected: Appears in binary.
 
 - [ ] **Step 3: Commit**

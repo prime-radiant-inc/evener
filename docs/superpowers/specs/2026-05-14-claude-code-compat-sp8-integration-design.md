@@ -1,7 +1,7 @@
 # SP8 — Discovery Integration (Detailed Design)
 
 Date: 2026-05-14
-Status: ready for TDD implementation (2026-05-14 scope reduction: SP2 permissions, SP3 marketplace, and SP4 install are deferred. Their wire-up sections in this spec are skipped for the initial release. SP-A — filesystem plugin discovery — replaces SP4's `enabledPlugins`→cache-path resolution: the loader walks known plugin directories and `--plugin-dir` paths instead. End-to-end test no longer requires `serf plugin install`; it stages a fixture plugin directory directly under a temp plugins root.)
+Status: ready for TDD implementation (2026-05-14 scope reduction: SP2 permissions, SP3 marketplace, and SP4 install are deferred. Their wire-up sections in this spec are skipped for the initial release. SP-A — filesystem plugin discovery — replaces SP4's `enabledPlugins`→cache-path resolution: the loader walks known plugin directories and `--plugin-dir` paths instead. End-to-end test no longer requires `evener plugin install`; it stages a fixture plugin directory directly under a temp plugins root.)
 Parent spec: `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
 Depends on: SP1, SP5, SP6, SP7, SP-A, SP-B (formerly also SP2, SP3, SP4 — deferred)
 
@@ -18,7 +18,7 @@ SP8 is the seam. It owns the order in which every prior sub-project's output is 
 What SP8 does not own:
 
 - Any internal logic of SP1..SP7. SP8 only composes their exported surfaces.
-- The CLI subcommand tree for `serf plugin` ([ref: SP3 §5], [ref: SP4 §8]).
+- The CLI subcommand tree for `evener plugin` ([ref: SP3 §5], [ref: SP4 §8]).
 - The matcher, evaluator, or fire-site implementations of new hook events ([ref: SP5 §3]) — SP8 lists which events fire where; SP5 implements them.
 
 ## 2. Session-Startup Pipeline
@@ -118,7 +118,7 @@ For each key `"plugin@marketplace"` in `cfg.EnabledPlugins`:
 3. A missing entry warns and skips ([ref: §10]).
 4. Trust enforcement for project-tier marketplaces runs before resolution ([ref: SP3 §7.1]) — `EnforceTrustOnConfig(cfg, env, prompter)` is called by SP8 between steps 1 and 2 of the pipeline.
 
-The value side of `enabledPlugins` (`true` vs `{"version": "..."}`) does not affect SP8's resolution — the version was pinned at install time and lives in the registry. The pinned-version object is consulted only by `serf plugin update` ([ref: SP4 §6]).
+The value side of `enabledPlugins` (`true` vs `{"version": "..."}`) does not affect SP8's resolution — the version was pinned at install time and lives in the registry. The pinned-version object is consulted only by `evener plugin update` ([ref: SP4 §6]).
 
 ## 4. SessionConfig Schema Changes
 
@@ -158,7 +158,7 @@ UserConfigPrompter UserConfigPrompter
 // ConfigChange events (SP5 §3.9). Default false.
 WatchConfig bool
 
-// IsRemote signals serf-hub-style embedding; SP5 reads this when setting
+// IsRemote signals evener-hub-style embedding; SP5 reads this when setting
 // the CLAUDE_CODE_REMOTE env var on spawned hook processes.
 IsRemote bool
 ```
@@ -221,9 +221,9 @@ Prompter selection: `TUIPrompter` ([ref: SP7 §4.2]).
 
 Files touched: `cmd/evener-hub/web.go`.
 
-Functions touched: `WebConfig` grows `ConfigPaths []string` and the routes that spawn or resume sessions thread the merged config into `SessionConfig`. The Hub does not call `agent.NewSession` directly today (it spawns serf processes); the wiring is in the Spawner's `SpawnRequest` formation. SP8 adds the new flags to that request.
+Functions touched: `WebConfig` grows `ConfigPaths []string` and the routes that spawn or resume sessions thread the merged config into `SessionConfig`. The Hub does not call `agent.NewSession` directly today (it spawns evener processes); the wiring is in the Spawner's `SpawnRequest` formation. SP8 adds the new flags to that request.
 
-Prompter selection: `HubPrompter` ([ref: SP7 §4.2]). The Hub's prompter is a web form bound to the plugin-enable endpoint and is not used in already-spawned sessions; it runs only when `serf plugin enable` is invoked from the Hub UI.
+Prompter selection: `HubPrompter` ([ref: SP7 §4.2]). The Hub's prompter is a web form bound to the plugin-enable endpoint and is not used in already-spawned sessions; it runs only when `evener plugin enable` is invoked from the Hub UI.
 
 `PermissionAskFallback`: `AskFallbackInteractive` (Hub blocks tool calls on a permission API call [ref: SP2 §11.1]).
 
@@ -249,7 +249,7 @@ Existing fields on `SessionConfig` (`MCPConfigFiles`, `MCPInline`, `PluginDirs`,
 
 ## 6. New Lifecycle Event Fire Sites
 
-SP5 owns the events; SP8 lists where they fire in serf source. Two of the nine (PermissionRequest, PermissionDenied) fire from SP2's enforcement layer, which is itself wired by SP8 into `Session.execTool`.
+SP5 owns the events; SP8 lists where they fire in evener source. Two of the nine (PermissionRequest, PermissionDenied) fire from SP2's enforcement layer, which is itself wired by SP8 into `Session.execTool`.
 
 | SP5 event | File:function | When it fires | Input fields populated where |
 | --- | --- | --- | --- |
@@ -362,7 +362,7 @@ Collisions across the two slices are handled at load time per §13.
 | --- | --- |
 | `DiscoverSerfConfig` returns error (malformed JSON, missing CLI file) | Fatal. Abort startup with the file path. SP1 §6 contract. |
 | `NewPermissionMatcher` returns error (bad rule string) | Fatal. Abort startup. Error names the rule and the source file. SP2 §8.1. |
-| `installer.Lookup` returns `ErrNotInstalled` for an `enabledPlugins` entry | Warning. Skip the plugin. Log `serf: plugin "<id>" is enabled but not installed; run 'serf plugin install <id>' to install`. Continue startup. |
+| `installer.Lookup` returns `ErrNotInstalled` for an `enabledPlugins` entry | Warning. Skip the plugin. Log `evener: plugin "<id>" is enabled but not installed; run 'evener plugin install <id>' to install`. Continue startup. |
 | Marketplace declared by project but not trusted ([ref: SP3 §7]) | Warning. Skip the marketplace and any plugins from it. The plugin's `enabledPlugins` entry effectively skips too. |
 | `LoadPlugin` fails for one cache path | Warning. Skip the plugin. Other plugins continue loading. |
 | `ResolveUserConfig` reports missing required keys, interactive surface | Run the prompter. If the prompter cancels, skip the plugin with a warning. |
@@ -406,9 +406,9 @@ The integration test suite lives in `agent/integration_sp8_test.go` (new file). 
 
 2. **TestSP8_HookEventFires_NewEvents.** For each of the seven new events SP8 fires (`PostToolUseFailure`, `PostToolBatch`, `StopFailure`, `SubagentStart`, `UserPromptExpansion`, `PostCompact`, `ConfigChange`), uses a fixture plugin that declares a `command` hook for the event, drives a session through the trigger condition, and asserts the hook ran by reading a sentinel file. Each event is one subtest.
 
-3. **TestSP8_PermissionsEnforcedFromConfig.** Writes `~/.config/serf/config.json` with `permissions.deny: ["Bash(rm:*)"]`, starts a session, model emits `Bash{command: "rm /tmp/x"}`, asserts the call is denied without executing. Verifies `PermissionDenied` hook fires.
+3. **TestSP8_PermissionsEnforcedFromConfig.** Writes `~/.config/evener/config.json` with `permissions.deny: ["Bash(rm:*)"]`, starts a session, model emits `Bash{command: "rm /tmp/x"}`, asserts the call is denied without executing. Verifies `PermissionDenied` hook fires.
 
-4. **TestSP8_PermissionsAskFallback_NonInteractive.** Same as #3 but with no rule and `defaultMode: "default"`, on a `serf -p` surface. Asserts the call is denied (AskFallbackDeny) and `PermissionRequest` hook fires.
+4. **TestSP8_PermissionsAskFallback_NonInteractive.** Same as #3 but with no rule and `defaultMode: "default"`, on a `evener -p` surface. Asserts the call is denied (AskFallbackDeny) and `PermissionRequest` hook fires.
 
 5. **TestSP8_HookUnion_ConfigAndPlugin.** Both `config.json` and a plugin declare a `PreToolUse` hook. Both run. Asserts firing order: config first, then plugin.
 
@@ -426,19 +426,19 @@ The integration test suite lives in `agent/integration_sp8_test.go` (new file). 
 
 12. **TestSP8_PluginMissingWarnsNotFatal.** `enabledPlugins` references `not-installed@x`. Startup succeeds with a warning logged; other plugins still load.
 
-13. **TestSP8_MalformedConfigFatal.** Project `.serf/config.json` has invalid JSON. `NewSession` returns an error naming the file.
+13. **TestSP8_MalformedConfigFatal.** Project `.evener/config.json` has invalid JSON. `NewSession` returns an error naming the file.
 
-14. **TestSP8_TrustPrompt_ProjectMarketplace.** `.serf/config.json` declares a marketplace; test injects a `TrustPrompter` that records the call and returns "always". After session, `trusted_projects.json` has the entry.
+14. **TestSP8_TrustPrompt_ProjectMarketplace.** `.evener/config.json` declares a marketplace; test injects a `TrustPrompter` that records the call and returns "always". After session, `trusted_projects.json` has the entry.
 
 15. **TestSP8_SubagentInheritsConfig.** Parent session has `permissions.deny: ["Bash(rm:*)"]`. Subagent attempts `Bash{rm}`. Subagent's tool call is denied.
 
 16. **TestSP8_BackwardCompat_PluginDirOnly.** Session created with only `cfg.PluginDirs` set (no `EnabledPluginPaths`, no `MergedConfig`). Behaves exactly like the current code path: plugin loads, hooks fire, tests at `agent/plugin_e2e_test.go` continue to pass without modification.
 
-17. **TestSP8_BackwardCompat_McpJsonOnly.** Session with only `.serf/mcp.json` (no `config.json`). MCP server loads via the existing path. Asserts no regression.
+17. **TestSP8_BackwardCompat_McpJsonOnly.** Session with only `.evener/mcp.json` (no `config.json`). MCP server loads via the existing path. Asserts no regression.
 
 18. **TestSP8_AdditionalContext_Plumbed.** PostToolUse hook returns `hookSpecificOutput.additionalContext`. Next LLM round's history contains the steering turn. Verifies SP5's plumbing path through SP8's wiring.
 
-19. **TestSP8_ConfigChange_Reload.** With `WatchConfig: true`, mutate `.serf/config.json` mid-session. Asserts `ConfigChange` hook fires and `s.cfg.MergedConfig.Sources` reflects the new file.
+19. **TestSP8_ConfigChange_Reload.** With `WatchConfig: true`, mutate `.evener/config.json` mid-session. Asserts `ConfigChange` hook fires and `s.cfg.MergedConfig.Sources` reflects the new file.
 
 ### 12.2 Fixture reuse
 
@@ -462,10 +462,10 @@ Every existing flag, file, and behavior continues to work.
 
 - `--plugin-dir <path>` (existing) populates `SessionConfig.PluginDirs` ([ref: existing]). When `EnabledPluginPaths` is empty, SP8 maps `PluginDirs` onto it transparently. Existing `agent/plugin_e2e_test.go` continues to pass without modification.
 - `--mcp-config <path>` and `--mcp <spec>` (existing) populate `SessionConfig.MCPConfigFiles` and `MCPInline`. SP8 does not touch the existing MCP discovery; it only adds two new layers (global+project `config.json` mcpServers, and plugin-provided) on either side.
-- `~/.config/serf/mcp.json` and `.serf/mcp.json` (existing) continue to load via the existing `DiscoverMCPConfigs` ([ref: existing `agent/mcp_config.go`]). SP8 does not consolidate them — they remain separate input slots.
+- `~/.config/evener/mcp.json` and `.evener/mcp.json` (existing) continue to load via the existing `DiscoverMCPConfigs` ([ref: existing `agent/mcp_config.go`]). SP8 does not consolidate them — they remain separate input slots.
 - A session built without any SP8-new fields populated (i.e., `Permissions`, `EnabledPluginPaths`, etc. are zero) behaves exactly like the current pre-SP8 session. Tests pinning this invariant are in §12.16 and §12.17.
 
-**Name collision rule.** When `enabledPlugins` resolves a plugin `foo@market` to a cache directory, and `--plugin-dir <path>` loads a plugin whose `plugin.json.name == "foo"`, the `--plugin-dir` plugin wins for that session. Rationale: matches Claude Code's documented behavior at [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins) for the `--plugin-dir` flag, which is the dev-loop equivalent of `claude --plugin <dir>`. SP8 enforces this in `initPlugins` by walking `EnabledPluginPaths` first, recording each `pluginID`, then walking `--plugin-dir` entries and *replacing* any prior entry with the same name. A warning logs the override: `serf: --plugin-dir <path> overrides enabledPlugins entry "foo@market" for this session`.
+**Name collision rule.** When `enabledPlugins` resolves a plugin `foo@market` to a cache directory, and `--plugin-dir <path>` loads a plugin whose `plugin.json.name == "foo"`, the `--plugin-dir` plugin wins for that session. Rationale: matches Claude Code's documented behavior at [code.claude.com/docs/en/plugins](https://code.claude.com/docs/en/plugins) for the `--plugin-dir` flag, which is the dev-loop equivalent of `claude --plugin <dir>`. SP8 enforces this in `initPlugins` by walking `EnabledPluginPaths` first, recording each `pluginID`, then walking `--plugin-dir` entries and *replacing* any prior entry with the same name. A warning logs the override: `evener: --plugin-dir <path> overrides enabledPlugins entry "foo@market" for this session`.
 
 No deprecation warnings are emitted for any existing flag.
 
@@ -473,7 +473,7 @@ No deprecation warnings are emitted for any existing flag.
 
 ### 14.1 Settled here
 
-**Missing plugin in enabledPlugins.** Warn at startup and skip the plugin. Other plugins continue to load. Documented in §10. Rationale: a typo or stale lockfile should not block the entire session; the user sees the warning and runs `serf plugin install` to fix it.
+**Missing plugin in enabledPlugins.** Warn at startup and skip the plugin. Other plugins continue to load. Documented in §10. Rationale: a typo or stale lockfile should not block the entire session; the user sees the warning and runs `evener plugin install` to fix it.
 
 **Hook union ordering.** Both fire. Config-tier first (global → project → CLI in SP1's order), plugin-provided last. Settled by SP1 §9.1 and re-affirmed by §3.1.
 
@@ -484,4 +484,4 @@ No deprecation warnings are emitted for any existing flag.
 - **Mid-session permission re-build.** `ConfigChange` fires when `config.json` changes mid-session ([ref: SP5 §3.9]). SP8 does not rebuild `PermissionMatcher` mid-session — the matcher is captured at `NewSession`. A future SP can wire `ConfigChange` into a matcher rebuild; the integration point is `s.permissionMatcher = NewPermissionMatcher(newCfg.Permissions, env)` invoked from the watcher's callback.
 - **Subagent re-prompt for new userConfig keys.** When a parent session's plugin updates and a new required `userConfig` key appears, the parent prompts; subagents inherit the resolved values. If a subagent spawns after the update but before the parent prompts (unlikely with current locking but possible), the subagent inherits a missing-required state. SP8 ships the parent-side resolution; subagent re-prompt is a follow-up.
 - **Persistence of `addPermissionRule` across sessions.** SP5 §3.7 extends the live session's allow set but does not persist. SP8 inherits that contract; persistence is a future SP after SP2 settles its rule-mutation API.
-- **`serf plugin enable` mid-session reload.** Enabling a plugin via `serf plugin enable` from a separate shell does not affect the running session. The user must restart. `WatchConfig: true` makes the change visible via `ConfigChange` events but does not load the new plugin's components — that requires session restart. Hot plugin load is deferred.
+- **`evener plugin enable` mid-session reload.** Enabling a plugin via `evener plugin enable` from a separate shell does not affect the running session. The user must restart. `WatchConfig: true` makes the change visible via `ConfigChange` events but does not load the new plugin's components — that requires session restart. Hot plugin load is deferred.

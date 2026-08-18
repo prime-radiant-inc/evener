@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Preserve the top-level Chat Completions SSE response ID on Serf's final streaming `llm.Response`.
+**Goal:** Preserve the top-level Chat Completions SSE response ID on Evener's final streaming `llm.Response`.
 
 **Architecture:** Reuse the already-decoded `chatCompletionChunk.ID`, retain the latest non-empty value during `decodeStream`, and assign it to the final response on `[DONE]`. Prove the behavior with the existing deterministic captured OpenRouter SSE fixture.
 
-**Tech Stack:** Go, `httptest`, Server-Sent Events, Serf `llm` response types.
+**Tech Stack:** Go, `httptest`, Server-Sent Events, Evener `llm` response types.
 
 ## Global Constraints
 
 - Default tests perform no live provider request.
-- Empty chunk IDs never erase an observed ID and never cause Serf to invent one.
+- Empty chunk IDs never erase an observed ID and never cause Evener to invent one.
 - Provider-handle export remains redacted by default.
 - No prompt, response body, tool argument, credential, or raw HTTP body is newly persisted.
 

@@ -100,7 +100,7 @@ Run one `ProcessInput` through an injected enabled public OpenAI registry. Asser
 - [x] **Step 3: Run RED tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DII' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DII' -count=1 -v
 ```
 
 Expected: fail because the second fake-provider request remains `full_history` and does not set `PreviousResponseID`.
@@ -158,7 +158,7 @@ req.Continuation = &llm.ContinuationMetadata{
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 ```
 
 Expected: pass.
@@ -193,7 +193,7 @@ Phase 4D-ii proves real-session second-turn delta consumption through a Response
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 ```
 
 Result: pass.
@@ -217,7 +217,7 @@ Result: pass.
 - [x] **Step 2: Run verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 git diff --check
 ```
 

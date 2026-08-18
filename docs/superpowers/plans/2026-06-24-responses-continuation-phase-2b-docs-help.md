@@ -51,14 +51,14 @@ Add deterministic tests that prove:
 - env var value is used when the CLI/serve flag is empty;
 - values are trimmed;
 - direct CLI help env list includes `SERF_OPENAI_RESPONSES_CONTINUATION`;
-- `serf serve` help env list includes `SERF_OPENAI_RESPONSES_CONTINUATION`.
+- `evener serve` help env list includes `SERF_OPENAI_RESPONSES_CONTINUATION`.
 
 Keep assertions narrow: call the resolver and `printRunEnvVars` / `printServeEnvVars`; do not snapshot the full help output.
 
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1
 ```
 
 Expected: FAIL because the env var row/resolver/help entries do not exist yet.
@@ -117,7 +117,7 @@ if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFOpenAIResponses
 Expected first run:
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1
 ```
 
 Expected: FAIL until the schema advertises the env fallback.
@@ -150,9 +150,9 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-2b.md` w
 - [ ] **Step 1: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test . -run '^TestSupportedEnvVarsAreDocumented$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener -run 'TestResolveOpenAIResponsesContinuation|TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation|TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/launchconfig -run '^TestLaunchOptionSchema_OpenAIResponsesContinuation$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test . -run '^TestSupportedEnvVarsAreDocumented$' -count=1 -v
 git diff --check
 ```
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an agent-invoked `compact` tool that pins an agent-authored note verbatim across compactions and steers the summary of the rest, layered over serf's existing automatic compactor.
+**Goal:** Add an agent-invoked `compact` tool that pins an agent-authored note verbatim across compactions and steers the summary of the rest, layered over evener's existing automatic compactor.
 
 **Architecture:** The capability is strategy-independent. Agent-triggered compaction runs through `Manager.ForceCompact` (the shared `Manager` seam) at the tool-round tail. An agent-authored `note_to_self` is persisted in `SessionMeta` and re-stamped verbatim into history at every compaction via `runPreCompactHook` (the same once-per-compaction callback that preserves the goal objective). Optional `compaction_instructions` steer the summarizer prompt. A best-effort warning nudge and a raised auto-summary threshold cover the "agent never compacts" case.
 
@@ -823,7 +823,7 @@ In `agent/schema/snapshot.go`, in `SessionMeta` after `Goal`:
 
 ```go
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
-	// survives daemon restart and serf resume (mirrors Goal).
+	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
 ```
 
@@ -1034,7 +1034,7 @@ Expected: PASS
 
 ```bash
 git add cmd/evener-tui/statusbar.go cmd/evener-tui/hub_status.go cmd/evener-tui/statusbar_test.go
-git commit -m "fix(serf-tui): source compaction thresholds from config, drop hardcoded 0.90"
+git commit -m "fix(evener-tui): source compaction thresholds from config, drop hardcoded 0.90"
 ```
 
 ---

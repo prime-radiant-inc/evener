@@ -12,7 +12,7 @@ Isolation delegate worktree lanes (`dlg_*`) are only disposed in the parent
 session's close path — and only when **unchanged** (`worktree.Unchanged`);
 merged-but-committed lanes are KEPT at close and collected only by the
 model-invoked `prune` operation. A lane locked with the live session's own
-`serf:dlg:` marker is skipped even by that.
+`evener:dlg:` marker is skipped even by that.
 
 Observed failures (2026-07-13):
 

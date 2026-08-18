@@ -1,4 +1,4 @@
-# Serf Sandboxing — Master Implementation Plan (sequencing, worktrees, SDD protocol)
+# Evener Sandboxing — Master Implementation Plan (sequencing, worktrees, SDD protocol)
 
 > **For agentic workers:** This is the umbrella plan. Each milestone Mn has its
 > own `2026-07-08-sandboxing-mN-*.md` plan. Implement a milestone with
@@ -80,7 +80,7 @@ Nothing is pushed or merged to `main` in this campaign. Jesse merges to main.
   dep (use `unix.Openat2` for M2; no new dep needed there). M3 adds
   `github.com/landlock-lsm/go-landlock`.
 - Commands: `make test-short` (fast gate), `make test`, `make test-race`,
-  `make vet`, `make lint` (runs `serf-namingcheck` — **all new JSON/wire keys
+  `make vet`, `make lint` (runs `evener-namingcheck` — **all new JSON/wire keys
   MUST be snake_case**), `make build-all`.
 - New Go code matches surrounding style; JSON tags snake_case; no backward-compat
   shims without Jesse's explicit OK.

@@ -2,7 +2,7 @@
 
 **Status:** PLANNED, decisions locked (see §8). **Charter:** design doc §8.4 (`docs/design/fuzzing-toolkit-design.md`). **Branch:** `wip/fuzzing-toolkit`. **Size:** ~500–700 LoC — the two new recorders (decision 4), jobs harvesting (decision 7), and the gitleaks gate (decision 5) push it well past the original ~250–400 estimate; sanitization rigor stays the load-bearing part.
 
-serf already records real provider traffic and full conversation transcripts. A tool that scrubs those into seed corpora beats hand-written `f.Add` seeds by orders of magnitude — real provider framing quirks, real tool-argument shapes, for free. This is the highest-leverage tooling item: it multiplies the yield of every existing single-input target without writing a single new target.
+evener already records real provider traffic and full conversation transcripts. A tool that scrubs those into seed corpora beats hand-written `f.Add` seeds by orders of magnitude — real provider framing quirks, real tool-argument shapes, for free. This is the highest-leverage tooling item: it multiplies the yield of every existing single-input target without writing a single new target.
 
 ## Ordering & dependency (read first)
 
@@ -16,12 +16,12 @@ serf already records real provider traffic and full conversation transcripts. A 
 3. **Shape-scrub is the default** (every string/number leaf → synthetic placeholder, structure/framing/enum values preserved — destroys PII/secrets by construction). `--keep-values` (real values) is **LOCAL-ONLY, never committed**, and is gated (decision 6).
 4. **Build the recorders first** — an opt-in WebSocket frame recorder + a hub HTTP request recorder (§1.3), both default-off, so the appwire and http surfaces get real recorded seeds.
 5. **Secret scanner = gitleaks**, introduced repo-wide here (none exists in CI today): a `make` secret-scan target plus a write-time self-check the harvester runs with the same engine, aborting on any hit.
-6. **Personal `~/.serf` is an allowed source, but shape-scrub is FORCED on it.** `--keep-values` is permitted only in a designated capture environment (§2, §3.4).
+6. **Personal `~/.evener` is an allowed source, but shape-scrub is FORCED on it.** `--keep-values` is permitted only in a designated capture environment (§2, §3.4).
 7. **Fold `jobs.jsonl` harvesting into this tool** — the harvester also emits `jobstore.Event` seeds for 8.1's jobstore targets (§1.4).
 
 ## 0. What the charter named vs. what the code actually has
 
-Charter: "serf already records `RawRequestBody`/`RawResponseBody` and full transcripts. A tool that sanitizes those into `fuzz/corpus/` seeds…" Verified against code — with two corrections the implementer must not skip:
+Charter: "evener already records `RawRequestBody`/`RawResponseBody` and full transcripts. A tool that sanitizes those into `fuzz/corpus/` seeds…" Verified against code — with two corrections the implementer must not skip:
 
 - **`RawRequestBody`/`RawResponseBody` are NOT persisted as those fields.** They are `Response` fields tagged `json:"-"` (`llm/types.go:471-472`) — deliberately excluded from `api.jsonl` to avoid bloat. They are persisted **only** when `SERF_LOG_RAW_HTTP=1` (`llm.RawBodyEnabled`, `llm/apilog.go:196-209`), and then to a **separate file** `api-raw.jsonl` as `APIRawLogEntry.{RequestBody,ResponseBody}` (`llm/apilog.go:177-192`, written by `writeRaw`/`writeRawResponse` `:398-450`). For streaming calls `ResponseBody` holds the **verbatim SSE stream** (e.g. `anthropic/adapter.go:640` `rp.RawResponseBody = sseBuf.String()`). This is the gold mine for SSE seeds.
 - **The default-on record is `api.jsonl` (`APILogEntry`), which carries no raw bodies** — only metadata + the parsed `Raw map[string]any` and the `Tools []ToolDefinition` schema list (`llm/apilog.go:118-174`). Useful for tool *schemas*, not for raw decode-surface bytes.
@@ -33,7 +33,7 @@ So the two harvest substrates are:
 | `<stateDir>/api-raw.jsonl` | `llm.APIRawLogEntry` (`llm/apilog.go:177`) | verbatim HTTP request body + response body (SSE for streams), `provider`, `model`, `mode` | **only if `SERF_LOG_RAW_HTTP=1`** |
 | `<stateDir>/sessions/<SID>.transcript.jsonl` | `transcript.{Header,Entry,APICall}` (`agent/transcript/transcript.go:27/54/61`) | every `schema.Turn` incl. `llm.Message.Content[].ToolCall.{Name,Arguments}` | **always** (written whenever `stateDir != ""`) |
 
-`<stateDir>` resolves via `cmdutil.DefaultStateRoot()` (`cmdutil/statedir.go:17`): `$SERF_STATE_DIR`, else `~/.serf`. Directory layout (confirmed): `api.jsonl` + `api-raw.jsonl` at the root; per session `sessions/<SID>.transcript.jsonl` (file), `sessions/<SID>.meta.json`, and `sessions/<SID>/jobs.jsonl` (`agent/jobs.go:306` `jobsDir` returns the `sessions/<SID>` dir; `newJobManager` appends `jobs.jsonl`). The jobs event log is `jobstore.Event`, one JSON object per line (`agent/internal/jobstore/event.go:33`, written/read via `ReadEvents` `read_events.go:16`, replayed by `Fold` `fold.go:12`). Per **decision 7** it **is** harvested here now (§1.4) — as raw NDJSON lines, no typed decode needed — to seed 8.1's jobstore-Event decode/Fold targets.
+`<stateDir>` resolves via `cmdutil.DefaultStateRoot()` (`cmdutil/statedir.go:17`): `$SERF_STATE_DIR`, else `~/.evener`. Directory layout (confirmed): `api.jsonl` + `api-raw.jsonl` at the root; per session `sessions/<SID>.transcript.jsonl` (file), `sessions/<SID>.meta.json`, and `sessions/<SID>/jobs.jsonl` (`agent/jobs.go:306` `jobsDir` returns the `sessions/<SID>` dir; `newJobManager` appends `jobs.jsonl`). The jobs event log is `jobstore.Event`, one JSON object per line (`agent/internal/jobstore/event.go:33`, written/read via `ReadEvents` `read_events.go:16`, replayed by `Fold` `fold.go:12`). Per **decision 7** it **is** harvested here now (§1.4) — as raw NDJSON lines, no typed decode needed — to seed 8.1's jobstore-Event decode/Fold targets.
 
 Two new substrates are introduced by **decision 4** (the recorders, §1.3): `<stateDir>/appwire-frames.jsonl` and `<stateDir>/hub-http.jsonl`, both written only when their opt-in recorder is enabled (default off, exactly like `api-raw.jsonl`). They are what let the previously-dead `appwire` and `http` surfaces produce real seeds.
 
@@ -74,19 +74,19 @@ For each `sessions/<SID>/jobs.jsonl`: read it line by line; each non-empty line 
 
 ## 2. Tool location & shape
 
-**Location: `cmd/evener-fuzz-harvest` (a serf-module command), reusing `agent/doctor`'s session locator.** Rationale:
-- The harvester must import serf types — `llm.APIRawLogEntry`, `agent/transcript.{Header,Entry,APICall}`, `llm.ToolCallData`, the core-tool registry. So it **cannot** live in the dep-free `fuzz/` module (§5 portability rule: "nothing in `fuzz/` imports serf"). The promoter/schemagen stay pure; the harvester is serf-coupled by nature.
-- `serf-doctor` already walks sessions/transcripts/jobs via `agent/doctor` (`agent/doctor/locate.go`) and reads recorded state; reuse its locator for multi-bucket discovery instead of re-implementing path-walking. The transcript types in `agent/transcript` are exported, so the harvester reads the NDJSON directly with stock `encoding/json` (no unexported reader needed).
+**Location: `cmd/evener-fuzz-harvest` (a evener-module command), reusing `agent/doctor`'s session locator.** Rationale:
+- The harvester must import evener types — `llm.APIRawLogEntry`, `agent/transcript.{Header,Entry,APICall}`, `llm.ToolCallData`, the core-tool registry. So it **cannot** live in the dep-free `fuzz/` module (§5 portability rule: "nothing in `fuzz/` imports evener"). The promoter/schemagen stay pure; the harvester is evener-coupled by nature.
+- `evener-doctor` already walks sessions/transcripts/jobs via `agent/doctor` (`agent/doctor/locate.go`) and reads recorded state; reuse its locator for multi-bucket discovery instead of re-implementing path-walking. The transcript types in `agent/transcript` are exported, so the harvester reads the NDJSON directly with stock `encoding/json` (no unexported reader needed).
 
 Surface:
 ```
-serf-fuzz-harvest \
+evener-fuzz-harvest \
   [--state-dir DIR ...]            # default: cmdutil.DefaultStateRoot(); repeatable for multi-bucket
   [--out-root DIR]                 # default: repo root; seeds land under each target's testdata/fuzz/<Name>/
   [--surface sse,toolargs,appwire,http,jobs]  # default: all surfaces with a present source
   [--keep-values]                  # GATED: skip shape-scrub (real values). Refused unless the
                                    #   designated-capture-env marker is set, AND forced off for any
-                                   #   personal ~/.serf source (decision 6, §3.4). Local-only; never committed.
+                                   #   personal ~/.evener source (decision 6, §3.4). Local-only; never committed.
   [--max-seed-bytes N]             # default 32768 (oversize dropped, not truncated — §4)
   [--dry-run]                      # report counts + would-write paths, write nothing
 ```
@@ -122,7 +122,7 @@ A seed leaks nothing only if we *prove* it. **gitleaks is the canonical scanner*
 The implementer adds a committed `.gitleaks.toml` (the shared ruleset), the two `make` targets, and the CI hook. All three gates are tested adversarially: a fixture transcript/raw-log/recorder-log seeded with a planted `sk-…` key must (a) make gitleaks red **before** redaction and (b) be absent from the written seed **and** green after — proving the pipeline actually strips, not just that clean input stays clean.
 
 ### 3.4 Source policy — personal state vs. capture environment (decision 6)
-- **Personal `~/.serf` is an allowed source, but shape-scrub is FORCED on it.** Any `--state-dir` that resolves to the personal default state root (`cmdutil.DefaultStateRoot()` with no `$SERF_STATE_DIR` override, i.e. `~/.serf`) is harvested with Layer A shape-scrub unconditionally; `--keep-values` is **ignored** (and logged as ignored) for that source. PII/secrets in a developer's own state can never become real-value seeds.
+- **Personal `~/.evener` is an allowed source, but shape-scrub is FORCED on it.** Any `--state-dir` that resolves to the personal default state root (`cmdutil.DefaultStateRoot()` with no `$SERF_STATE_DIR` override, i.e. `~/.evener`) is harvested with Layer A shape-scrub unconditionally; `--keep-values` is **ignored** (and logged as ignored) for that source. PII/secrets in a developer's own state can never become real-value seeds.
 - **`--keep-values` is permitted only in a designated capture environment.** It is refused (non-zero exit, no output) unless a designated-capture-env marker is present — a new opt-in signal (proposed env var `SERF_FUZZ_CAPTURE_ENV=1`, set only on the dedicated capture box). Even there, output is local-only and never committed, and still runs Layer B + the gitleaks self-check. This makes the airtight committed corpus the default everywhere and real-value capture a deliberate, isolated act.
 
 ## 4. Determinism & corpus file format
@@ -159,7 +159,7 @@ go test fuzz v1
 10. **`emit.go`** — corpus-literal encoder, content-hash filenames, dedup, size bound, write to `testdata/fuzz/<Name>/`. (~50 LoC)
 
 **Phase C — gates & docs.**
-11. **`.gitleaks.toml` + Makefile** — the shared gitleaks ruleset; add `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (corpus dirs), wire both into the gate; document `serf-fuzz-harvest` + the two recorder env vars in `fuzz/README.md`. (~30 LoC)
+11. **`.gitleaks.toml` + Makefile** — the shared gitleaks ruleset; add `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (corpus dirs), wire both into the gate; document `evener-fuzz-harvest` + the two recorder env vars in `fuzz/README.md`. (~30 LoC)
 12. **Tests** — unit tests per file + recorder tests (frame/request round-trips to the JSONL) + the adversarial planted-secret end-to-end test against gitleaks (§3.3) + a determinism test that harvests a fixture and asserts `go test -run '^Fuzz'` loads the output clean.
 
 ## 6. Dependencies & risks
@@ -176,12 +176,12 @@ go test fuzz v1
 - *Recorder is new code on a hot path* → kept default-off and side-effect-only (append a line; never alter the frame/request or its error path); a failed record write is logged and swallowed, never propagated.
 - *testdata bloat / slower `go test`* → size bound + shape-scrub-driven dedup (§4) collapse near-duplicates; re-runs are idempotent so the set does not grow without genuinely new shapes.
 - *Internal-package boundary* (`agent/internal/jobstore`) → sidestepped: jobs are harvested as raw NDJSON `[]byte`, no `jobstore` import (§0, §1.4). typed access is needed only for `toolargs`, which uses exported `agent/transcript`.
-- *PII in personal `~/.serf`* → resolved by decision 6: personal sources are allowed but shape-scrub is forced and `--keep-values` ignored (§3.4).
+- *PII in personal `~/.evener`* → resolved by decision 6: personal sources are allowed but shape-scrub is forced and `--keep-values` ignored (§3.4).
 
 ## 7. Acceptance
 
 - **Recorders (Phase A):** with `SERF_RECORD_APPWIRE=1` / `SERF_RECORD_HTTP=1` set, a driven hub/daemon session writes `appwire-frames.jsonl` and `hub-http.jsonl`; with them unset, neither file appears and there is no behavior change (a recorder-off regression test asserts byte-identical handler/transport behavior).
-- **Harvest + load:** `serf-fuzz-harvest` over a fixture `~/.serf` (incl. fixture recorder logs + a `jobs.jsonl`) writes seeds; `go test -run '^Fuzz' ./...` in `llm`, `llm/providers/...`, `agent`, `appwire`, and the root module (`cmd/evener-hub`) loads and runs every harvested seed **green** (determinism + format correctness).
+- **Harvest + load:** `evener-fuzz-harvest` over a fixture `~/.evener` (incl. fixture recorder logs + a `jobs.jsonl`) writes seeds; `go test -run '^Fuzz' ./...` in `llm`, `llm/providers/...`, `agent`, `appwire`, and the root module (`cmd/evener-hub`) loads and runs every harvested seed **green** (determinism + format correctness).
 - **Known recorded edge case appears as a seed:** a captured `response.completed` stream with `status:"incomplete"` / `max_output_tokens` harvested from a fixture raw-log shows up in `llm/providers/openai/testdata/fuzz/FuzzOpenAIResponsesMetamorphic/`; a captured appwire request frame shows up in `appwire/testdata/fuzz/FuzzMessageDecode/`; an allowlisted GET shows up reverse-mapped in `cmd/evener-hub/testdata/fuzz/FuzzWebHandler/`.
 - **jobs surface (decision 7):** `--surface jobs` over a fixture `jobs.jsonl` emits scrubbed `jobstore.Event` seeds (to staging until 8.1 registers its target dir), exercised in a test so 8.1 can consume them.
 - **Secret-scan passes (gitleaks, decision 5):** `make secret-scan` and `make fuzz-corpus-scan` are green, and the adversarial planted-secret test proves the pipeline strips a real `sk-…` key (gitleaks red before, key absent from the written seed + gitleaks green after).
@@ -194,5 +194,5 @@ All seven are settled; this section records the resolution so the rest of the pl
 3. **Shape-scrub vs. keep-values for the committed corpus?** → **RESOLVED: shape-scrub is the default; `--keep-values` is local-only** and gated (§3, §3.4, decision 3).
 4. **appwire/http have no recorded source.** → **RESOLVED: build the recorders here** (decision 4). Two opt-in, default-off recorders (§1.3) are a prerequisite sub-deliverable of 8.4, not a separate item; hook points verified (`appwire/ws_transport.go:47/39`, `cmd/evener-hub/web.go:208-209`).
 5. **Canonical scanner + is it in CI?** → **RESOLVED: gitleaks**, and it is **not** in CI today — this item introduces repo-wide secret scanning (`make secret-scan` + `make fuzz-corpus-scan` + write-time self-check, §3.3, decision 5).
-6. **Personal `~/.serf` as a source?** → **RESOLVED: allowed, but shape-scrub is forced**; `--keep-values` only in a designated capture environment (§3.4, decision 6).
+6. **Personal `~/.evener` as a source?** → **RESOLVED: allowed, but shape-scrub is forced**; `--keep-values` only in a designated capture environment (§3.4, decision 6).
 7. **jobs.jsonl as a corpus source?** → **RESOLVED: folded into this tool** (decision 7). The harvester emits `jobstore.Event` seeds for 8.1's targets as raw NDJSON (§1.4); **8.1 runs after 8.4 because it depends on these seeds** (§"Ordering").

@@ -156,7 +156,7 @@ mid-turn, and this card previously asserted that it was.
   a live session.
 - The busy signal the daemon reads is its own `s.processing` plus
   `s.appReservedTurnID` (`server/appwire_runtime.go:820-824`) — **not**
-  `ActiveFlags` (serf daemons never populate it; only the codex mapping
+  `ActiveFlags` (evener daemons never populate it; only the codex mapping
   does). Don't assert on `ActiveFlags`.
 - The queued-input rejection (step 6) is easy to miss if the drain is fast
   on a quick model — use a prompt with a few tool rounds, or the AGENTS.md

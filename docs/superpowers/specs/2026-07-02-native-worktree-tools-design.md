@@ -7,7 +7,7 @@ adversarial rounds)
 
 ## Summary
 
-Serf gets native git-worktree support, modeled on codex's detection approach
+Evener gets native git-worktree support, modeled on codex's detection approach
 (linked-worktree root resolution) and Claude Code's creation lifecycle, with
 one correction the live evidence demands: **disposal is designed in from day
 one**. An audit of this repo found ~90 stale harness-created worktrees and
@@ -55,7 +55,7 @@ in the main checkout.
   worktree.
 - Resolve the main repo root correctly inside linked worktrees (the codex port).
 - Use the resolved main root where this feature needs stable repository
-  identity: managed worktree placement, `serf run`/`serve` runtime state
+  identity: managed worktree placement, `evener run`/`serve` runtime state
   keying, and hub launch trust/project state.
 - Keep the full lifecycle (create, list, switch, exit, remove, prune) in one
   tool, with disposal safe by default: no destruction of uncommitted files,
@@ -103,7 +103,7 @@ in the main checkout.
 | Placement | `<worktreeRoot>/<projectid>/<name>/` | Outside the project tree → no gitignore, immune to `git clean -dxf`; honors runtime state-dir selection |
 | projectid | `<basename>-<sha256[:16]>` of canonical abs root | Collision-resistant, fixed-length (see §6) |
 | baseRef default | active HEAD, optional validated `base_ref` arg | Parity with `git worktree add -b <name>`; no network |
-| `delete_branch` | optional, default false; serf's merge-target gate, then `-D`; `force` skips the gate | `git branch -d`'s built-in check is HEAD-relative and untrustworthy (see merged-predicate row); committed work is never silently lost |
+| `delete_branch` | optional, default false; evener's merge-target gate, then `-D`; `force` skips the gate | `git branch -d`'s built-in check is HEAD-relative and untrustworthy (see merged-predicate row); committed work is never silently lost |
 | Disposal metadata | sidecar JSON per worktree (creator, base SHA, delegate id) | Retrofitting metadata onto anonymous directories is the mess we audited; provenance enables prune, resume, and residue reconciliation |
 | Orphan cleanup | `prune` operation now; scheduled trigger deferred | The evidence says disposal is the hard problem; primitives can't be deferred |
 | Detection scope | root identity only | Full config/hook/trust layering remains separate |
@@ -126,7 +126,7 @@ this repo's worktree population. What transferred:
   session — never manual ones, never prior-session ones. Rev 4 records creator
   provenance in metadata and defaults to not destroying other sessions' work.
 - **Enter-existing by path, validated by git.** EnterWorktree(path) admits any
-  worktree registered in `git worktree list`. Serf users keep long-lived
+  worktree registered in `git worktree list`. Evener users keep long-lived
   sibling worktrees; `switch` gains a `path` mode for them (§4).
 - **Per-agent isolation is the dominant use.** Nearly all of the ~90 stale
   worktrees audited were created by agent fan-outs, not by a session entering
@@ -147,7 +147,7 @@ Algorithm:
 
 1. Find the nearest ancestor directory containing a `.git` entry (file or
    directory), walking up from `cwd`. **The walk and the `.git` pointer read
-   use direct `os` calls, not the env's confined file API** — when serf is
+   use direct `os` calls, not the env's confined file API** — when evener is
    launched in a repo subdirectory, `.git` lives above `RootDir`, where
    `ensureUnderRoot` would reject env file reads and silently break the
    structural path.
@@ -155,7 +155,7 @@ Algorithm:
 3. **If `.git` is a file** → read it, parse `gitdir: <path>`. Resolve the path
    (relative paths resolved against the found ancestor dir;
    `filepath.EvalSymlinks` on the result to handle macOS `/var → /private/var`
-   and `~/.serf` symlink targets). The resolved path should end in
+   and `~/.evener` symlink targets). The resolved path should end in
    `.git/worktrees/<id>`. Walk up two levels (→ `worktrees/` → common `.git`
    dir), then one more to the main repo root. Return that root.
 4. **If the pointer doesn't match the `worktrees/<id>` shape** (e.g. a
@@ -289,7 +289,7 @@ still sees the old env, which is correct.
 Strict validation before any git call (R2 MAJOR #4):
 
 - Must match `^[A-Za-z0-9_][A-Za-z0-9_./-]*$` and be at most 100 bytes.
-  Underscore is a legal git-ref character and appears in serf's own generated
+  Underscore is a legal git-ref character and appears in evener's own generated
   ids (`dlg_…`, `job_…`), which §9 uses as worktree names — a regex without it
   would reject the feature's own names (rev-5 review finding).
 - Reject git-ref rules: no `..`, no leading `-`, no trailing `/`, no `@{`, no
@@ -387,7 +387,7 @@ itself; the control env's `workingDir` stays at the main root.
    `force`.
 6. `MkdirAll` the parent of the worktree path (handles slash-containing
    names), then create **and lock in one atomic command**:
-   `git worktree add --lock --reason "serf:<session-id>" -b <name> -- <path>
+   `git worktree add --lock --reason "evener:<session-id>" -b <name> -- <path>
    <resolved-base-sha>` through the git control env, with all tokens escaped
    (verified working on git 2.43). The lock is the occupancy marker (§5):
    while the session is rooted here, git itself refuses `worktree
@@ -395,7 +395,7 @@ itself; the control env's `workingDir` stays at the main root.
    review finding): a separate add-then-lock two-step leaves a freshly added
    worktree registered, unlocked, clean, and `unchanged` — all four of a
    concurrent session's prune conditions — for a window in which it can be
-   legally destroyed mid-create. **Serf requires a git whose `worktree add`
+   legally destroyed mid-create. **Evener requires a git whose `worktree add`
    supports `--lock --reason` (git ≥ 2.33; the `--reason`-on-add series
    landed July 2021), verified once per session by a preflight check with a
    clear too-old error.** There is no older-git fallback — rev-7 review
@@ -474,7 +474,7 @@ By `path` (any registered worktree — Claude Code parity):
    only cited the by-name check) and entered unlocked managed worktrees
    without taking the lock (leaving the occupant prune-collectible).
 3. For genuinely non-managed registered worktrees: same env swap + refresh as
-   above, **no lock choreography** — serf does not mutate lock state on
+   above, **no lock choreography** — evener does not mutate lock state on
    worktrees it does not manage (the user may have their own locking
    conventions). If leaving a *managed* worktree for a by-path one, the
    managed worktree is unlocked as in step 3 above.
@@ -513,8 +513,8 @@ impossible under file-tool confinement.
 ### Occupancy locks (shared mechanism)
 
 A session or isolated delegate rooted in a managed worktree holds a
-`git worktree lock` on it with a structured reason (`serf:<session-id>` or
-`serf:dlg:<delegate-id>:<parent-session-id>`), taken on enter/create —
+`git worktree lock` on it with a structured reason (`evener:<session-id>` or
+`evener:dlg:<delegate-id>:<parent-session-id>`), taken on enter/create —
 including **at session init when the launch cwd is already inside a managed
 worktree** (rev-7 review finding: a session merely *launched* inside a kept
 lane held no lock and was prune-collectible mid-session; init applies the
@@ -522,7 +522,7 @@ idempotent rule below, and if the lane is foreign-locked the session
 continues but warns loudly that it is co-occupying) — and released on exit,
 switch-away, **create-away** (creating a new worktree from inside one leaves
 the old one, §3 step 7), disposal, **and clean session close**. The
-`serf:dlg:` lock on a delegate lane is owned by the **parent's disposal
+`evener:dlg:` lock on a delegate lane is owned by the **parent's disposal
 lifecycle**, not the child: a child session's own clean close never unlocks
 it (rev-7 review finding: if child-close released it, the child-close →
 disposal gap would be an unlocked window in which a concurrent prune collects
@@ -537,7 +537,7 @@ disposal (§9). This is the one mechanism that makes all the occupancy hazards
 found in review converge:
 
 - git itself refuses `git worktree remove`/`git worktree prune` on a locked
-  tree — even from other serf sessions, other tools, or a bare `git` command;
+  tree — even from other evener sessions, other tools, or a bare `git` command;
 - `list` can *show* who is where (the porcelain output carries
   `locked <reason>`; note reasons containing spaces/newlines are C-quoted in
   porcelain output — the parser must unquote before display/compare);
@@ -547,12 +547,12 @@ found in review converge:
 
 **Lock-taking is idempotent on the session's own marker.** `git worktree
 lock` is fatal on an already-locked tree — even with an identical reason
-(empirically verified) — so every serf lock step means: if unlocked → lock;
+(empirically verified) — so every evener lock step means: if unlocked → lock;
 if locked with this session's own marker → adopt it (no-op; this is the
 crash-resume case, where the stale lock carries the *same* session id); if
 locked with a foreign marker → refuse the operation. **A lock with no reason
-or a reason that doesn't parse as a serf marker is foreign** (rev-7 review:
-bare `git worktree lock` emits a reasonless `locked` porcelain line; serf
+or a reason that doesn't parse as a evener marker is foreign** (rev-7 review:
+bare `git worktree lock` emits a reasonless `locked` porcelain line; evener
 itself never creates reasonless locks, so any such lock is someone else's).
 A worktree found locked
 with the session's own marker while the session is *not* occupying it (crash
@@ -595,8 +595,8 @@ a bug — report it.
 | resume re-entry (§7) | lock | adopt | refuse re-entry → restore root + notice |
 | `remove` target, session not inside | proceed | unlock (crash residue) + proceed | refuse; `force` does not override |
 | `remove` target, session inside | proceed | unlock at the restore step | — |
-| delegate creation (§9) | atomic `add --lock` with `serf:dlg:` marker | — | — |
-| delegate revival (`delegate_send` on a kept lane) | lock (`serf:dlg:`) | adopt | refuse revival |
+| delegate creation (§9) | atomic `add --lock` with `evener:dlg:` marker | — | — |
+| delegate revival (`delegate_send` on a kept lane) | lock (`evener:dlg:`) | adopt | refuse revival |
 | disposal, unchanged lane | unlock (vacuous) → remove | unlock → remove | — (the dlg lock is the disposer's) |
 | disposal, changed lane | keep | unlock, keep | — |
 | `prune` candidate | eligible (other conditions apply) | skip | skip |
@@ -610,7 +610,7 @@ a bug — report it.
    whose directory is momentarily absent — e.g. a user's sibling worktree on
    an unmounted volume — which `list` must never do). Instead, surface the
    porcelain `prunable <reason>` annotation on affected entries.
-2. Filter to serf-managed worktrees: keep only entries whose worktree path is
+2. Filter to evener-managed worktrees: keep only entries whose worktree path is
    under `<worktreeRoot>/<projectid>/`. **Canonicalize both sides with
    `filepath.EvalSymlinks` before comparing** (git prints recorded paths;
    symlinked state homes and macOS `/var → /private/var` otherwise make
@@ -681,7 +681,7 @@ a bug — report it.
 8. Run `git worktree remove [--force] -- <path>` through the git control env.
    `--force` is included only when `force: true` (and only covers git's
    dirty/untracked refusal — never locks, per step 3).
-9. If `delete_branch: true` without `force`: delete the branch only if serf's
+9. If `delete_branch: true` without `force`: delete the branch only if evener's
    **own merged check** passes — the branch tip is `unchanged` (== recorded
    `base_sha`) or merged per §5 prune's two-arm `merge_target` predicate
    (ancestry or patch-equivalence). Do **not** rely on `git branch -d`'s
@@ -748,7 +748,7 @@ sweeps, all through the control env:
      If `merge_target` is empty (created from a detached HEAD)
      or no target ref exists, the merged arm is disabled for
      that entry — only the `unchanged` arm applies, and the entry is reported
-     with `merge target unknown`. Deletion is via `-D` after serf's own
+     with `merge target unknown`. Deletion is via `-D` after evener's own
      merged gate (see `remove` step 9 for why `-d` is not trusted).
    Sidecar-less worktrees inside the managed dir are skipped (provenance
    unknown → not ours to judge).
@@ -768,7 +768,7 @@ sweeps, all through the control env:
    - branch exists, sidecar has `worktree_removed: true`, and the tip is
      **neither `tip_sha_at_removal` nor `base_sha`** → the user adopted the
      branch (rebases included); delete the sidecar, keep the branch, report
-     `adopted` (rev-6 review finding — serf's claim on a kept branch must
+     `adopted` (rev-6 review finding — evener's claim on a kept branch must
      expire the moment someone else builds on it). The two-SHA rule is the
      precise definition rev-7 review asked for: a branch **reset back to
      `base_sha`** is *not* adopted — it is collectible via the `unchanged`
@@ -808,7 +808,7 @@ at creation.
   truncated to 48 bytes, and replaced with `repo` if empty.
 - `<sha256[:16]>` is the first 16 hex chars of `sha256(canonicalAbsRoot)`.
 
-Example: `/home/jesse/git/prime-radiant/serf` → `serf-a1b2c3d4e5f6a7b8`.
+Example: `/home/jesse/git/prime-radiant/evener` → `evener-a1b2c3d4e5f6a7b8`.
 
 This replaces the originally-proposed sanitized-path scheme (option C), which
 adversarial review (R2 MAJOR #3) showed collides (`/a/b` and `/a/b_` both
@@ -826,8 +826,8 @@ session:
 
 1. If `s.stateDir` is non-empty, use `filepath.Join(s.stateDir, "worktrees")`.
    This respects `--state-dir`, `SERF_STATE_DIR`, and the normal
-   `agent.RuntimeDir(...)` project state directory selected by `serf run` and
-   `serf serve` — which, per §1, must key off the resolved main repo root so
+   `agent.RuntimeDir(...)` project state directory selected by `evener run` and
+   `evener serve` — which, per §1, must key off the resolved main repo root so
    that sessions launched inside a linked worktree land in the same state dir.
 2. If `s.stateDir` is empty (tests or persistence-off sessions), derive a
    fallback with agent-owned state logic, not `cmdutil.DefaultStateRoot()`.
@@ -835,7 +835,7 @@ session:
    mainRoot, "")` and then append `worktrees`.
 
 The agent package should not import `cmdutil`. `cmdutil.DefaultStateRoot()`
-currently points at provider/auth state (`$SERF_STATE_DIR` else `~/.serf`) and
+currently points at provider/auth state (`$SERF_STATE_DIR` else `~/.evener`) and
 would ignore the resolved runtime state directory in common launches.
 
 ### Metadata sidecar
@@ -1026,7 +1026,7 @@ Fix:
 Delegate children mostly ride the existing machinery: their restore
 descriptors already persist `WorkingDir` (`job_delegate.go:881-889`), which
 will simply be a worktree path — but a **revived kept lane must re-take its
-`serf:dlg:` lock** via the idempotent rule (rev-7 review finding: close-time
+`evener:dlg:` lock** via the idempotent rule (rev-7 review finding: close-time
 disposal unlocks kept lanes, so a later `delegate_send(on_idle:"start")`
 would otherwise run a live delegate in an unlocked worktree — prune-collectible
 the moment its branch merges; and if the lane is now foreign-locked because
@@ -1087,7 +1087,7 @@ a **false positive** — discarded.
   files, without changing the session env. `force` alone does NOT clear this
   (rev 10, F3).
 - `remove` with `delete_branch` on an unmerged branch without `force` →
-  worktree removed, branch deletion refused by **serf's merge-target gate**
+  worktree removed, branch deletion refused by **evener's merge-target gate**
   with the unmerged evidence (never `git branch -d`'s HEAD-relative check —
   §5 remove step 9), sidecar retained as branch-residue record.
 - git older than the `worktree add --lock --reason` floor (≥ 2.33) →
@@ -1118,7 +1118,7 @@ This section makes isolation a property of the *delegation*, not a behavior
 the child must remember to perform. It ships in the same delivery as the rest
 of this spec.
 
-**The lifecycle unit is the delegate, not the job.** Serf delegates are
+**The lifecycle unit is the delegate, not the job.** Evener delegates are
 durable multi-job sessions: `delegate` returns a durable `delegate_id`, and
 `delegate_send(to=<delegate_id>, on_idle="start")` starts further jobs on the
 same retained (or restored) child, whose env — and persisted restore
@@ -1148,7 +1148,7 @@ ever added, it and `isolation` must be mutually exclusive.)
    per §2's active-root rule (`git -C <parent activeRoot> rev-parse
    --verify HEAD^{commit}`, SHA passed explicitly); writes the metadata
    sidecar with `delegate_id` and the parent's session id; **locks the
-   worktree** with reason `serf:dlg:<delegate_id>:<parent-session-id>`; and
+   worktree** with reason `evener:dlg:<delegate_id>:<parent-session-id>`; and
    roots the child env at the worktree via `WithWorkingDirectory`. The child's
    restore descriptor `WorkingDir` is the worktree path, so delegate resume
    works through the existing machinery unchanged. All jobs sent to this
@@ -1183,7 +1183,7 @@ ever added, it and `isolation` must be mutually exclusive.)
    disposal keeps the lane.)
 4. **Disposal inside `Session.close`, on every close surface.** Rev 6 hung
    disposal off "after `DrainJobTree`", but `DrainJobTree` has exactly one
-   production call site — one-shot `serf run` (`cmd/evener/run.go:238`); serve
+   production call site — one-shot `evener run` (`cmd/evener/run.go:238`); serve
    and hub closes go through `Session.close`, which *kills* running delegates
    rather than draining them (`agent/session_lifecycle.go:88-121`) — so rev
    6's precondition existed on one of three surfaces (rev-6 review finding).
@@ -1262,7 +1262,7 @@ ever added, it and `isolation` must be mutually exclusive.)
      (hardening that also covers out-of-band deletion, for all delegates, not
      just isolated ones).
 6. **Hard parent death** (crash, SIGKILL): no disposal ran; the worktrees
-   remain locked with the `serf:dlg:…` reason. `list` shows them; clearing
+   remain locked with the `evener:dlg:…` reason. `list` shows them; clearing
    the stale lock is the deliberate `git worktree unlock` act described in §5,
    after which `prune` collects the unchanged/merged ones. This is fail-safe
    in the same direction as everything else in this spec: crashes never
@@ -1279,7 +1279,7 @@ lane happens read-only from outside (shell `git -C <path> log/diff/status`
 from the main root, or the per-job report). After close-time disposal keeps a
 changed lane, it is unlocked and `switch`-able like any managed worktree —
 until the lane's delegate is revived by `delegate_send`, which re-takes the
-`serf:dlg:` lock (§7) and refuses if someone has switched in meanwhile.
+`evener:dlg:` lock (§7) and refuses if someone has switched in meanwhile.
 
 ## 10. Testing
 
@@ -1311,7 +1311,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
 - `remove` clean and dirty (with/without `force`, with/without
   `delete_branch`).
 - `remove` with `delete_branch` on a branch with unmerged commits → branch
-  survives (serf's merge-target gate refuses with the unmerged evidence; `-d`
+  survives (evener's merge-target gate refuses with the unmerged evidence; `-d`
   is never invoked) without `force`; deleted (`-D`) with `force`; sidecar
   retained with `worktree_removed: true` + `tip_sha_at_removal` whenever the
   branch survives.
@@ -1340,7 +1340,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   `adopted` and drops its sidecar without touching the branch, and keeps
   unmerged residue with a report; repo-wide `git worktree prune` runs only when no non-managed entry
   is prunable (fixture: a deregistrable non-managed worktree must survive a
-  serf `prune`).
+  evener `prune`).
 - Lock lifecycle: clean `Session.close` inside a managed worktree unlocks it;
   crash-resume adopts the same-marker stale lock (no fatal re-lock);
   resume onto a foreign-locked worktree lands at the restore root with a
@@ -1355,12 +1355,12 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   winner's provenance (`O_EXCL`).
 - `remove`/`prune` branch deletion never relies on `git branch -d`'s
   HEAD-relative merged check (fixture: detached-HEAD review session; `-d`
-  would succeed, serf's merge-target gate refuses); a branch checked out
+  would succeed, evener's merge-target gate refuses); a branch checked out
   elsewhere is reported with its checkout location.
 - `list` returns expected entries with staleness fields (age, dirty, ahead,
   merged, creator, lock state, prunable annotation); **does not** run
   `git worktree prune` (fixture: a momentarily-absent non-managed worktree
-  stays registered after `list`); non-serf worktrees excluded;
+  stays registered after `list`); non-evener worktrees excluded;
   prefix-collision filtering correct; symlinked worktreeRoot still matches
   (canonicalization).
 - Resume: persist meta with an active managed worktree → `RestoreSessionFromMeta*`
@@ -1379,7 +1379,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
 - Root semantics: project docs, project skills, project MCP config, and project
   prompt sections continue to read from the active worktree root, while managed
   worktree placement and hub launch trust/meta state key off the stable main
-  repo root from inside a linked worktree. `serf run`/`serve` state keying:
+  repo root from inside a linked worktree. `evener run`/`serve` state keying:
   launching from inside a linked worktree of an origin-less repo resolves the
   same runtime state dir as launching from the main root.
 - Git control env: after entering a worktree, `list`, `switch`, `remove`,
@@ -1409,7 +1409,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   in the assertion window (the rev-5 gap was precisely there).
 - Delegate isolation: delegate with `isolation: "worktree"` → child env rooted
   at a fresh managed worktree named `<delegate_id>` with `delegate_id`
-  metadata and a `serf:dlg:` lock taken atomically at `add`; a **second job
+  metadata and a `evener:dlg:` lock taken atomically at `add`; a **second job
   via `delegate_send`** runs in the same, still-existing worktree; every job
   result carries path/branch/ahead/dirty; session close (one-shot AND a
   serve-style `Session.close` without drain) → unchanged lane auto-removed
@@ -1442,7 +1442,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   init (foreign-locked → loud co-occupancy warning); reconciliation judges
   the grace by sidecar mtime; a branch reset back to `base_sha` after a
   branch-kept removal is collected as unchanged, not misreported adopted; a
-  revived kept lane re-takes its `serf:dlg:` lock, and revival refuses when
+  revived kept lane re-takes its `evener:dlg:` lock, and revival refuses when
   the lane is foreign-locked.
 - Hub consumers: sidebar grouping and spawn prefill use the restore root for
   a worktree-active session; hub-driven resume launches at the restore root
@@ -1475,7 +1475,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   same session id share one lock marker and cannot be distinguished by it —
   the second silently co-occupies, and either's exit unlocks the tree under
   the other. Multi-process resume of a single session is undefined behavior
-  in serf generally; the lock scheme does not fix that and does not try to.
+  in evener generally; the lock scheme does not fix that and does not try to.
 - **Case-insensitive filesystems:** two casings of the same repo root produce
   two projectids (see §6). Not defended against.
 - **Shell `cd` escapes:** the live-work guard keys off recorded launch working
@@ -1555,7 +1555,7 @@ Two subagents reviewed the original design adversarially. Reviewer #2 won the
 scoring (5 pts): 8/8 legitimate findings vs reviewer #1's 9/10 (1
 false-positive sandbox-escape blocker that R2 empirically disproved). All 8
 legitimate findings are incorporated above as revision notes. The false
-positive (sandbox-escape via `RootDir` under `~/.serf`) is discarded with
+positive (sandbox-escape via `RootDir` under `~/.evener`) is discarded with
 evidence.
 
 Rev 3 added the follow-up implementation-feasibility fixes: root-sensitive
@@ -1574,11 +1574,11 @@ git forks); disposal designed in (metadata sidecar, `unchanged` predicate,
 `prune`, `-d`-unless-force branch deletion, `list` staleness, close-time
 keep-and-record); shell-job launch-workdir plumbing named (the live-work guard
 had no data source for shell jobs); cross-session creator guard;
-`switch`-by-path for git-registered worktrees; `serf run`/`serve` RuntimeDir
+`switch`-by-path for git-registered worktrees; `evener run`/`serve` RuntimeDir
 keying moved to the main root (origin-less repos); symlink-canonicalized path
 comparisons; structural walk pinned to direct `os` calls; corrected the
 projectid case-sensitivity claim; and delegate worktree isolation.
-Placement stayed in the state dir (decided against in-repo `.serf/worktrees/`:
+Placement stayed in the state dir (decided against in-repo `.evener/worktrees/`:
 immunity to `git clean -dxf` outweighs path legibility, and the run/serve
 keying fix removes the discovery-instability argument).
 
@@ -1600,7 +1600,7 @@ eager prompt render would have forked git under `s.mu`, and the `SetModel`
 justification was wrong in the cold-cache case); **git-native occupancy locks**
 (unifying four findings: prune's same-creator occupant deletion, prune's
 dead-session starvation, delegate-worktree occupancy, and unhandled locked
-worktrees); **underscore admitted in names** (the regex rejected serf's own
+worktrees); **underscore admitted in names** (the regex rejected evener's own
 `dlg_`/`job_` ids); **sidecar-first creation ordering + `worktree_removed`
 retention + prune reconciliation sweep** (branch/sidecar residue was invisible
 once the worktree was gone); **`list` no longer runs `git worktree prune`**
@@ -1642,7 +1642,7 @@ reverse order left a race loser occupying its old worktree unlocked);
 **merged predicate pinned to a recorded `merge_target` branch, never the main
 root's floating HEAD** (empirically: `git branch -d` deletes a never-merged
 branch under detached-HEAD review, and a main root parked elsewhere starves
-genuinely merged lanes; serf now applies its own ancestry gate and deletes
+genuinely merged lanes; evener now applies its own ancestry gate and deletes
 with `-D`); **branch adoption expiry** (`tip_sha_at_removal`: a kept branch
 whose tip later moved was adopted by the user — the sidecar's claim expires,
 report-don't-collect); **isolation deny survives restore and all-tools agent
@@ -1673,7 +1673,7 @@ false for changed lanes; the `WorkingDir` stat is the crash net, and
 `Session.close` ordering — after children close, before `closeStoreOnly()`,
 non-force remove downgrading to keep — is now stated); **switch-to-current
 is a no-op** (the adopt+unlock composition unlocked the active root on a
-redundant re-switch); **kept-lane revival re-takes the `serf:dlg:` lock**
+redundant re-switch); **kept-lane revival re-takes the `evener:dlg:` lock**
 (a resumed delegate otherwise ran in an unlocked, prune-collectible
 worktree); **`switch` by path reroutes through by-name guards for managed
 paths** (it was a full lock-scheme bypass, including into live delegate

@@ -46,7 +46,7 @@ The removal targets only step 2. The remaining steps should stay in the same ord
 
 ## Desired behavior
 
-After removal, consecutive read-only rounds are not special. A session can inspect files, transcripts, or other read-only data for any number of tool rounds without Serf injecting the read-only nudge messages.
+After removal, consecutive read-only rounds are not special. A session can inspect files, transcripts, or other read-only data for any number of tool rounds without Evener injecting the read-only nudge messages.
 
 If another mechanism injects steering, that mechanism still works. For example, loop detection can still emit its warning, queued steering can still drain, and task reminders can still be injected.
 

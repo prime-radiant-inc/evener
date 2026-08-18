@@ -34,7 +34,7 @@ turn's first `TranscriptEntryIndex`); `thread/turns/list` returns up to `limit`
 turns *older than* the cursor plus a `nextCursor` (empty when the head is
 reached).
 
-### Daemon (`serf serve`)
+### Daemon (`evener serve`)
 
 1. **Bound the initial read.** `thread/read` gains an optional turn window: when
    set, return only the latest N turns and a cursor for older ones. The
@@ -45,7 +45,7 @@ reached).
    `limit` turns older than `cursor`, newest-first, returning `nextCursor`.
 3. Flip `FeatureSet.ThreadTurnsList` to true.
 
-### Hub (`serf-hub`)
+### Hub (`evener-hub`)
 
 1. Route `thread/turns/list` to the resolved source:
    - **local daemon / live:** the new daemon handler.
@@ -98,7 +98,7 @@ daemon/hub catalog cross-check tests then enforce the new wiring.
 1. **Load-earlier trigger:** auto-load on scroll-near-top. The renderer holds
    the pre-prepend scroll height and restores it after prepending so the
    viewport stays anchored on the turn the user was reading.
-2. **v1 source scope:** all sources — serf live + past **and** Codex (proxy to
+2. **v1 source scope:** all sources — evener live + past **and** Codex (proxy to
    the Codex app-server's native `thread/turns/list`). `ListTurns` becomes a
    Source-interface method; past/not-loaded sessions slice the transcript file.
 

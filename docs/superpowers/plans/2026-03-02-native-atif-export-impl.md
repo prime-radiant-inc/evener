@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Serf writes a `trajectory.json` (ATIF v1.6) alongside its transcript when `--export-atif <path>` is passed.
+**Goal:** Evener writes a `trajectory.json` (ATIF v1.6) alongside its transcript when `--export-atif <path>` is passed.
 
 **Architecture:** Post-hoc conversion at `Session.Close()` — read the transcript JSONL back, convert to ATIF structs, marshal to JSON, write to the specified path. The converter is a pure function `ConvertToATIF(header, entries)` tested independently of Session.
 
@@ -67,8 +67,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 	if traj.SessionID != "sess-001" {
 		t.Errorf("session_id = %q, want sess-001", traj.SessionID)
 	}
-	if traj.Agent.Name != "serf" {
-		t.Errorf("agent.name = %q, want serf", traj.Agent.Name)
+	if traj.Agent.Name != "evener" {
+		t.Errorf("agent.name = %q, want evener", traj.Agent.Name)
 	}
 	if traj.Agent.Version != "v0.1.0-abc1234" {
 		t.Errorf("agent.version = %q, want v0.1.0-abc1234", traj.Agent.Version)
@@ -216,14 +216,14 @@ type ATIFFinalMetrics struct {
 	Extra                 map[string]any `json:"extra,omitempty"`
 }
 
-// ConvertToATIF converts a serf transcript (header + entries) to an ATIF v1.6 trajectory.
+// ConvertToATIF converts a evener transcript (header + entries) to an ATIF v1.6 trajectory.
 // Lossless: all internal data is preserved in extra fields.
 func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTrajectory {
 	traj := ATIFTrajectory{
 		SchemaVersion: "ATIF-v1.6",
 		SessionID:     header.SessionID,
 		Agent: ATIFAgent{
-			Name:      "serf",
+			Name:      "evener",
 			Version:   header.BuildVersion,
 			ModelName: header.Model,
 			Extra:     map[string]any{},
@@ -899,7 +899,7 @@ git commit -m "feat: --export-atif flag writes ATIF v1.6 trajectory at session c
 
 **Files:**
 - Modify: `tools/serf_agent.py:109-124` (add --export-atif to command)
-- Modify: `tools/serf_agent.py:126-158` (copy trajectory from serf-state)
+- Modify: `tools/serf_agent.py:126-158` (copy trajectory from evener-state)
 
 **Step 1: Add `--export-atif` flag to the adapter command**
 
@@ -916,7 +916,7 @@ And include it in the command string:
 return [
     ExecInput(
         command=(
-            f"serf --provider {self._provider} "
+            f"evener --provider {self._provider} "
             f"--model {self._model} "
             f"--max-rounds {self._max_rounds} "
             f"{min_result_flag}"
@@ -935,7 +935,7 @@ return [
 **Step 2: Copy trajectory to logs_dir in `run()`**
 
 In `tools/serf_agent.py`, in the `run()` method's `finally` block, after downloading
-serf-state and artifacts, add:
+evener-state and artifacts, add:
 
 ```python
 # Copy ATIF trajectory to logs_dir root for harbor viewer.
@@ -956,8 +956,8 @@ git commit -m "feat: adapter passes --export-atif flag and copies trajectory for
 
 ```bash
 # Build
-cd /Users/jesse/prime-radiant/serf
-GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/evener/ --version 2>&1 | head -1 || echo '')" -o /tmp/serf-linux-amd64 ./cmd/evener/
+cd /Users/jesse/prime-radiant/evener
+GOOS=linux GOARCH=amd64 go build -ldflags "$(go run ./cmd/evener/ --version 2>&1 | head -1 || echo '')" -o /tmp/evener-linux-amd64 ./cmd/evener/
 
 # Deploy updated binary + adapter to magic-kingdom
 ./tools/run_eval.py launch --task build-cython-ext --reps 1 --dry-run
@@ -973,10 +973,10 @@ After completion, verify:
 
 ```bash
 # Check trajectory exists
-ssh jesse@magic-kingdom 'find /data/serf-evals/runs/ -name "trajectory.json" -newer /tmp/check-timestamp 2>/dev/null | head -5'
+ssh jesse@magic-kingdom 'find /data/evener-evals/runs/ -name "trajectory.json" -newer /tmp/check-timestamp 2>/dev/null | head -5'
 
 # Verify it's valid JSON with ATIF structure
-ssh jesse@magic-kingdom 'cat $(find /data/serf-evals/runs/ -name "trajectory.json" | head -1) | python3 -m json.tool | head -20'
+ssh jesse@magic-kingdom 'cat $(find /data/evener-evals/runs/ -name "trajectory.json" | head -1) | python3 -m json.tool | head -20'
 ```
 
 Open harbor viewer at `http://magic-kingdom:8081`, navigate to the trial, check the Trajectory tab.
@@ -991,6 +991,6 @@ Open harbor viewer at `http://magic-kingdom:8081`, navigate to the trial, check 
 2. `go test ./agent/ -run TestExportATIF -v` — file export test passes
 3. `go test ./... -short` — all Go tests pass, no regressions
 4. `go build ./cmd/evener/` — binary builds
-5. `./serf --export-atif /tmp/test-traj.json --provider openai --model gpt-5-mini-2025-08-07 -- "echo hello"` — trajectory.json written
+5. `./evener --export-atif /tmp/test-traj.json --provider openai --model gpt-5-mini-2025-08-07 -- "echo hello"` — trajectory.json written
 6. Single-task harbor run produces valid trajectory.json
 7. Harbor viewer at magic-kingdom:8081 renders trajectory tab with steps

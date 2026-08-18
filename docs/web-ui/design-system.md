@@ -1,4 +1,4 @@
-# Serf Web Hub — Design System & Style Guide (v2)
+# Evener Web Hub — Design System & Style Guide (v2)
 
 Status: **current**. This is the wave-2 rewrite's design system: tokens, fonts, and a widget
 library under `cmd/evener-hub/frontend/src/widgets/`, built as React function components + CSS
@@ -21,7 +21,7 @@ elevation, and motion described below (§2 onward) are adapted from
 [Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine — full
 license text at `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`. Beautiful UI ships as React +
 Tailwind components; nothing is copy-pasted from it — every value and structure is translated
-into serf's own CSS-module + token system, which is why the token-contract machinery in §4
+into evener's own CSS-module + token system, which is why the token-contract machinery in §4
 continues to hold unchanged. See
 `docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-design.md` and this document's
 sibling `decisions.md` (2026-08-13 entry) for what was kept, what changed, and why.
@@ -162,7 +162,7 @@ shadow embeds its own 1px ring, so a shadowed element never also declares a sepa
 the same edge: `--shadow-card` (panes/cards — Card uses this instead of a border now),
 `--shadow-overlay` (menus/popovers/toasts/dialogs/sheets), and `--shadow-inset-field` (sinks
 form controls into `--field`). Beautiful UI's btn/raised/hairline rungs were deliberately not
-adopted — serf's Button has no bordered-neutral variant and nothing needed a mid float, so those
+adopted — evener's Button has no bordered-neutral variant and nothing needed a mid float, so those
 tokens would have shipped with zero consumers. The soft-layer alphas are per-theme
 (dark heavier, light whisper-light), declared as literal color values in `tokens.css` per the
 token contract — `--shadow-color` still feeds the sheet's edge-directed variants, which keep

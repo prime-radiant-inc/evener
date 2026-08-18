@@ -6,11 +6,11 @@ canceled by Jesse on 2026-07-17, so steps that consume
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give every live root and child session one private temporary directory with truthful lifecycle exposure, and add concise Serf-owned guidance for shared-workspace isolation, verification, compaction, and repeated review loops.
+**Goal:** Give every live root and child session one private temporary directory with truthful lifecycle exposure, and add concise Evener-owned guidance for shared-workspace isolation, verification, compaction, and repeated review loops.
 
 **Architecture:** Promote the existing sandbox `SessionTmp` primitive into a universal `SessionScratch` owned by each local session execution environment. A session-preserving `WithWorkingDirectory` view shares the path and process tracker without gaining cleanup ownership, while a new child-session constructor gets a distinct scratch and process tracker; sandbox wrappers, shells, hooks, and stdio MCP servers all receive the same `TMPDIR` and `SERF_SCRATCH_DIR`. Expose the live path through a non-serialized `EnvironmentInfo` field and one focused prompt component, keep orchestration posture in focused prompt sections, and return a non-blocking warning on a second concurrently running shared-workspace delegate.
 
-**Tech Stack:** Go 1.x, local execution environments, Serf sandbox wrappers, embedded Go templates, JSON tool results, deterministic scripted-provider tests.
+**Tech Stack:** Go 1.x, local execution environments, Evener sandbox wrappers, embedded Go templates, JSON tool results, deterministic scripted-provider tests.
 
 ## Global Constraints
 
@@ -46,7 +46,7 @@ projects.
 
 - Read and follow `docs/testing.md` before changing tests.
 - Keep every default test deterministic: no provider credentials, network access, quota, ambient daemon, or current-model behavior.
-- Put scripted providers at the LLM boundary and exercise real Serf session, delegation, prompt, environment, process, and cleanup behavior beneath them.
+- Put scripted providers at the LLM boundary and exercise real Evener session, delegation, prompt, environment, process, and cleanup behavior beneath them.
 - Assert structured environment values, filesystem outcomes, tool-result fields, and focused prompt sections; do not snapshot or regex-match a large rendered system prompt.
 - Do not use sleeps or wall-clock races. Use channels for process/delegate ordering and injected timestamps for stale-directory sweep tests.
 - Preserve unrelated uncommitted and untracked files. Run `git status --short` before every staging step, and never use `git add -A`.
@@ -55,7 +55,7 @@ projects.
 
 ## File Structure
 
-- Rename `agent/sandbox/session_tmp.go` to `agent/sandbox/session_scratch.go`: retain the one Serf-owned temporary-directory allocator/sweeper, add workspace-aware base selection, and hold an OS-released liveness lease for each live scratch.
+- Rename `agent/sandbox/session_tmp.go` to `agent/sandbox/session_scratch.go`: retain the one Evener-owned temporary-directory allocator/sweeper, add workspace-aware base selection, and hold an OS-released liveness lease for each live scratch.
 - Rename `agent/sandbox/session_tmp_test.go` to `agent/sandbox/session_scratch_test.go`: prove permissions, cleanup, outside-worktree fallback, and the 24-hour prefix-and-liveness-limited sweep.
 - Create `agent/sandbox/session_scratch_lock_unix.go`: acquire/release a non-blocking exclusive lease with `golang.org/x/sys/unix` on supported Unix platforms.
 - Create `agent/sandbox/session_scratch_lock_windows.go`: acquire/release the same lease with `golang.org/x/sys/windows`.
@@ -65,7 +65,7 @@ projects.
 - Modify `agent/sandbox/env_floor_test.go`: prove both scratch variables agree, all current security filters remain enforced, and `HOME`/durable caches remain unchanged except under the pre-existing session-private sandbox cache strategy.
 - Modify `envvars/envvars.go`: register `SERF_SCRATCH_DIR` and use its `envvars.Var` at call sites.
 - Modify `envvars/envvars_test.go`: keep the supported-variable registry and ordering audit green.
-- Modify `docs/environment.md`: document `SERF_SCRATCH_DIR` as Serf-provided, session-scoped, private, and non-durable.
+- Modify `docs/environment.md`: document `SERF_SCRATCH_DIR` as Evener-provided, session-scoped, private, and non-durable.
 - Modify `agent/execenv/execenv.go`: define the optional scratch capability and its nil-safe path helper.
 - Modify `agent/execenv/local.go`: provision scratch at environment initialization, expose it, preserve it across worktree re-rooting, create distinct child-session environments, inject both variables into commands, and remove scratch only after tracked processes stop.
 - Modify `agent/execenv/local_test.go`: cover universal unsandboxed provisioning, workspace-aware allocation, environment values, unchanged `HOME`/caches, and close cleanup.
@@ -129,7 +129,7 @@ projects.
 - [ ] **Step 0: Capture the pre-project base commit**
 
 ```bash
-base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+base_ref=refs/evener-plan-bases/session-scratch-orchestration-posture
 if git show-ref --verify --quiet "$base_ref"; then
   echo "ref already exists; inspect it before resuming: $base_ref" >&2
   exit 1
@@ -141,7 +141,7 @@ git rev-parse "$base_ref"
 Use this ref for every whole-project diff and review range. Do not replace it with `HEAD~N`; task review fixes may add commits.
 
 **Interfaces:**
-- Consumes: `os.TempDir`, the existing `serf-sandbox-` reserved prefix, and the existing 24-hour best-effort sweep.
+- Consumes: `os.TempDir`, the existing `evener-sandbox-` reserved prefix, and the existing 24-hour best-effort sweep.
 - Produces:
 
 ```go
@@ -171,7 +171,7 @@ var SERFScratchDir = Var{
 }
 ```
 
-Keep the existing `serf-sandbox-` prefix rather than adding a second prefix or compatibility sweep. It is already the reserved Serf-owned namespace, and retaining it lets the renamed implementation continue sweeping existing crash leftovers without a backward-compatibility alias.
+Keep the existing `evener-sandbox-` prefix rather than adding a second prefix or compatibility sweep. It is already the reserved Evener-owned namespace, and retaining it lets the renamed implementation continue sweeping existing crash leftovers without a backward-compatibility alias.
 
 - [ ] **Step 1: Rename the primitive and write failing lifecycle/environment tests**
 
@@ -215,15 +215,15 @@ func TestSessionScratchCleanupRefusesUnownedPath(t *testing.T) {
 func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
     in := []string{
         "TMPDIR=/ambient/tmp",
-        "SERF_SCRATCH_DIR=/ambient/serf",
+        "SERF_SCRATCH_DIR=/ambient/evener",
         "HOME=/home/jesse",
         "GOCACHE=/cache/go",
         "npm_config_cache=/cache/npm",
         "CARGO_HOME=/cache/cargo",
     }
-    out := ApplySessionScratchEnv(in, "/tmp/serf-sandbox-owned")
+    out := ApplySessionScratchEnv(in, "/tmp/evener-sandbox-owned")
     for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
-        if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
+        if got, _ := envValue(out, name); got != "/tmp/evener-sandbox-owned" {
             t.Fatalf("%s = %q, want session scratch", name, got)
         }
     }
@@ -256,7 +256,7 @@ Add `TestEnvFloorScratchPreservesSecurityFilters` before implementation. Its inp
 - [ ] **Step 2: Run the focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/sandbox ./envvars \
+GOCACHE=/tmp/evener-gocache go test ./agent/sandbox ./envvars \
   -run 'TestSessionScratch|TestApplySessionScratchEnv|TestAll' -count=1 -v
 ```
 
@@ -311,7 +311,7 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 }
 ```
 
-Canonicalize `workspaceRoot` with `filepath.Abs` plus `filepath.EvalSymlinks` before calling this helper. Never fall back to a lexical or symlink-resolved candidate that is inside that root; a safe failure is preferable to putting scratch in the Git worktree. Candidate bases must already exist and are never chmodded or otherwise mutated. `os.MkdirTemp(cleanBase, sessionScratchPrefix+"*")` atomically creates the Serf-owned private subdirectory beneath the selected base; chmod only that returned directory. Acquire and retain its lease, and sweep only stale prefixed sibling directories whose lease can be acquired:
+Canonicalize `workspaceRoot` with `filepath.Abs` plus `filepath.EvalSymlinks` before calling this helper. Never fall back to a lexical or symlink-resolved candidate that is inside that root; a safe failure is preferable to putting scratch in the Git worktree. Candidate bases must already exist and are never chmodded or otherwise mutated. `os.MkdirTemp(cleanBase, sessionScratchPrefix+"*")` atomically creates the Evener-owned private subdirectory beneath the selected base; chmod only that returned directory. Acquire and retain its lease, and sweep only stale prefixed sibling directories whose lease can be acquired:
 
 ```go
 func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
@@ -328,7 +328,7 @@ func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
         _ = os.RemoveAll(dir)
         return nil, fmt.Errorf("sandbox: secure session scratch: %w", err)
     }
-    lease, contended, err := acquireScratchLease(filepath.Join(dir, ".serf-session.lock"))
+    lease, contended, err := acquireScratchLease(filepath.Join(dir, ".evener-session.lock"))
     if err != nil {
         _ = os.RemoveAll(dir)
         return nil, fmt.Errorf("sandbox: acquire session scratch lease: %w", err)
@@ -383,10 +383,10 @@ Preserve `ApplyEnvFloor`'s current `floorDrops`, external-`KUBECONFIG`, and cach
 
 - [ ] **Step 4: Register and document `SERF_SCRATCH_DIR`**
 
-Add `SERFScratchDir` to `allVars` beside the other internal Serf variables. Add this row to the internal/provided-variable table in `docs/environment.md`:
+Add `SERFScratchDir` to `allVars` beside the other internal Evener variables. Add this row to the internal/provided-variable table in `docs/environment.md`:
 
 ```markdown
-| `SERF_SCRATCH_DIR` | Serf-provided private scratch directory for one live session. It may be deleted when the session closes or Serf restarts; move durable artifacts into the workspace or another durable location. |
+| `SERF_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
 ```
 
 Do not describe it as a user configuration input, persistence location, handoff store, `HOME`, or build-cache override.
@@ -394,7 +394,7 @@ Do not describe it as a user configuration input, persistence location, handoff 
 - [ ] **Step 5: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/sandbox ./envvars -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/sandbox ./envvars -count=1
 ```
 
 Expected: PASS. The sweep removes only stale prefixed directories whose liveness lease is acquirable, skips an old live lease, direct cleanup refuses paths outside the allocator's recorded base/prefix, allocation falls outside an adversarial workspace-local temp base without changing either candidate base's mode, scratch mode is `0700`, security filters remain active, both environment variables agree, and ordinary `HOME`/caches are unchanged.
@@ -553,7 +553,7 @@ Add `TestSessionCloseWithoutScratchProvider` and `TestDiscardRestoredCandidateWi
 - [ ] **Step 3: Run focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/execenv ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent/execenv ./agent \
   -run 'TestLocalExecutionEnvironmentInitializesUniversalScratch|TestSessionEnvironmentScratchOwnership|TestSessionScratch|TestSandboxInvocationGrantPreservesSessionScratch|Test.*Restore.*Scratch|TestDiscardRestoredCandidateCleansEnvironmentScratch|Test.*WithoutScratchProvider' \
   -count=1 -v
 ```
@@ -728,13 +728,13 @@ Mechanically rename `ownedSessionTmp` to `ownedSessionScratch` and `DisposeSandb
 - [ ] **Step 8: Run focused lifecycle suites**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/execenv \
+GOCACHE=/tmp/evener-gocache go test ./agent/execenv \
   -run 'TestLocalExecutionEnvironment|TestSessionEnvironment|TestCleanupDisposes|TestEnableSandbox|TestDisposeSessionScratch|Test.*InvocationGrant.*Scratch' \
   -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestSessionScratch|TestPrepareSubagentRun.*Scratch|TestParentClose.*Scratch|Test.*Restore.*Scratch|TestDiscardRestoredCandidate.*Scratch|TestSessionCloseWithoutScratchProvider|TestDiscardRestoredCandidateWithoutScratchProvider' \
   -count=1 -v
-GOCACHE=/tmp/serf-gocache go test -tags=serffuzz ./agent/execenv \
+GOCACHE=/tmp/evener-gocache go test -tags=serffuzz ./agent/execenv \
   -run 'FuzzSandboxLifecycleProgram|FuzzProcessRuntimeProgram' -count=1
 ```
 
@@ -815,7 +815,7 @@ Also assert configured server env cannot override either reserved scratch variab
 - [ ] **Step 2: Run focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/hooks ./agent/internal/mcp \
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/hooks ./agent/internal/mcp \
   -run 'Test.*SessionScratch' -count=1 -v
 ```
 
@@ -923,8 +923,8 @@ mgr, outcomes := mcp.NewManager(ctx, configs, nil,
 - [ ] **Step 5: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/hooks ./agent/internal/mcp -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test.*Plugin|Test.*MCP' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/hooks ./agent/internal/mcp -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test.*Plugin|Test.*MCP' -count=1
 ```
 
 Expected: PASS. Shell, hook, and stdio MCP child processes agree on the owning session's two scratch variables in both sandbox-off and enforced modes.
@@ -989,25 +989,25 @@ func embeddedSectionResolverForTest(agentName string) *sectionResolver {
 
 - [ ] **Step 1: Write failing structured environment/prompt tests**
 
-Extend the environment JSON fixture with `ScratchDir: "/tmp/serf-sandbox-session"`. After marshal, assert the encoded object has no `scratch_dir` key. After unmarshal, assert `ScratchDir == ""`, then compare the remaining persisted fields with the fixture after clearing its `ScratchDir`. This makes restart behavior explicit: restore creates a fresh environment and `envInfoFromEnv` supplies its new path rather than replaying a stale one from metadata.
+Extend the environment JSON fixture with `ScratchDir: "/tmp/evener-sandbox-session"`. After marshal, assert the encoded object has no `scratch_dir` key. After unmarshal, assert `ScratchDir == ""`, then compare the remaining persisted fields with the fixture after clearing its `ScratchDir`. This makes restart behavior explicit: restore creates a fresh environment and `envInfoFromEnv` supplies its new path rather than replaying a stale one from metadata.
 
 Add a focused section test that renders only `environment` and `session-scratch`:
 
 ```go
 func TestSessionScratchPromptSectionsExposeLifecycle(t *testing.T) {
     resolver := embeddedSectionResolverForTest("coordinator")
-    data := promptData{ScratchDir: "/tmp/serf-sandbox-session"}
+    data := promptData{ScratchDir: "/tmp/evener-sandbox-session"}
 
     environment := resolver.Section("environment", data)
-    if !strings.Contains(environment, "Scratch directory: /tmp/serf-sandbox-session") {
+    if !strings.Contains(environment, "Scratch directory: /tmp/evener-sandbox-session") {
         t.Fatalf("environment section missing exact path: %s", environment)
     }
 
     guidance := resolver.Section("session-scratch", data)
     for _, want := range []string{
-        "/tmp/serf-sandbox-session",
+        "/tmp/evener-sandbox-session",
         "temporary files", "generated diagnostics", "intermediate reports",
-        "private to this session", "session closes or Serf restarts",
+        "private to this session", "session closes or Evener restarts",
         "workspace or another durable location", "Do not force-add ignored",
     } {
         if !strings.Contains(guidance, want) {
@@ -1022,7 +1022,7 @@ In the real lifecycle test, assert `sess.envInfo.ScratchDir`, `execenv.SessionSc
 - [ ] **Step 2: Run focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestEnvironmentInfo_JSONRoundTrip|TestSessionScratchPromptSectionsExposeLifecycle|TestSessionScratchEnvironmentPromptParity' \
   -count=1 -v
 ```
@@ -1061,7 +1061,7 @@ Create `session-scratch.md.tmpl` with the normative contract:
 
 Your session-scoped scratch directory is `{{ .ScratchDir }}`. Use it for temporary
 files, generated diagnostics, intermediate reports, and disposable working data.
-It is private to this session and may be deleted when the session closes or Serf
+It is private to this session and may be deleted when the session closes or Evener
 restarts. Move anything needed after handoff into the workspace or another durable
 location.
 
@@ -1078,7 +1078,7 @@ Extend the real lifecycle test: render once, execute another turn, and assert th
 - [ ] **Step 6: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestEnvironmentInfo_JSONRoundTrip|TestSessionScratchPrompt|TestSessionScratchEnvironmentPromptParity|TestSessionScratchSurvivesWorktreeReroot' \
   -count=1 -v
 ```
@@ -1169,7 +1169,7 @@ Add a case where `workingDir == ""`, the parent current environment is `/work/pr
 - [ ] **Step 2: Run focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestCreateDelegateSharedWorkspaceAdvisory|TestSharedWorkspaceDelegateWarning' \
   -count=1 -v
 ```
@@ -1228,7 +1228,7 @@ Add `Warning` to `delegateToolResult`, map it in `marshalDelegateResult` with `s
 - [ ] **Step 5: Run focused tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestCreateDelegateSharedWorkspaceAdvisory|TestSharedWorkspaceDelegateWarning|TestMarshalDelegate' \
   -count=1 -v
 ```
@@ -1250,7 +1250,7 @@ durable job state, and isolated/non-overlapping launches unchanged."
 
 ---
 
-### Task 6: Add Focused Serf-Owned Orchestration Posture
+### Task 6: Add Focused Evener-Owned Orchestration Posture
 
 **Files:**
 - Modify: `agent/prompts/sections/delegation.md`
@@ -1307,7 +1307,7 @@ Add small template-inclusion tests: root includes all three; a leaf child includ
 - [ ] **Step 2: Run focused tests and record the expected red failure**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestDelegationSectionExplainsIsolationChoice|TestVerificationSectionDefinesIncompleteGates|TestContextManagementSectionIsAdvisoryAndBounded|TestOrchestrationPostureTemplateInclusion' \
   -count=1 -v
 ```
@@ -1372,7 +1372,7 @@ Include it in both master templates. Do not add automatic compaction calls, cycl
 - [ ] **Step 6: Run prompt tests**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'Test.*Section|Test.*Template|TestSubagentPrompt' -count=1
 ```
 
@@ -1386,11 +1386,11 @@ git add agent/prompts/sections/delegation.md \
   agent/prompts/sections/verification.md agent/prompts/sections/context-management.md \
   agent/prompts/templates/system.md.tmpl agent/prompts/templates/subagent.md.tmpl \
   agent/section_resolver_test.go
-git commit -m "docs(prompts): state Serf orchestration posture
+git commit -m "docs(prompts): state Evener orchestration posture
 
 Teach parent and child agents truthful gate reporting, explicit worktree versus
 shared-workspace judgment, advisory post-task compaction, and a two-cycle stop
-rule using existing Serf tools only."
+rule using existing Evener tools only."
 ```
 
 ---
@@ -1407,8 +1407,8 @@ rule using existing Serf tools only."
 - [ ] **Step 1: Run the focused contract matrix**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/sandbox ./agent/execenv ./agent/internal/hooks ./agent/internal/mcp ./envvars -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent \
+GOCACHE=/tmp/evener-gocache go test ./agent/sandbox ./agent/execenv ./agent/internal/hooks ./agent/internal/mcp ./envvars -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent \
   -run 'TestSessionScratch|Test.*Restore.*Scratch|TestDiscardRestoredCandidate.*Scratch|Test.*WithoutScratchProvider|TestCreateDelegateSharedWorkspaceAdvisory|TestSharedWorkspaceDelegateWarning|TestDelegationSectionExplainsIsolationChoice|TestVerificationSectionDefinesIncompleteGates|TestContextManagementSectionIsAdvisoryAndBounded|TestOrchestrationPostureTemplateInclusion' \
   -count=1 -v
 ```
@@ -1418,7 +1418,7 @@ Expected: PASS with no live-provider or network calls.
 - [ ] **Step 2: Run static scope-lock audits**
 
 ```bash
-base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+base_ref=refs/evener-plan-bases/session-scratch-orchestration-posture
 IMPLEMENTATION_BASE="$(git rev-parse "$base_ref")"
 git diff --unified=0 "$IMPLEMENTATION_BASE"..HEAD -- agent envvars docs/environment.md | \
   rg -n 'protected_paths|automatic.*worktree|auto.*compact|cycle detector|HOME=' || true
@@ -1435,7 +1435,7 @@ Expected:
 - `SERF_SCRATCH_DIR` is sourced from `envvars.SERFScratchDir`, not duplicated raw throughout production Go code.
 - The scratch sweep requires both age and an acquirable OS lease; no old live directory can be removed merely because its mtime crossed 24 hours.
 - Base selection rejects lexical and canonical paths inside the active workspace and uses only an outside OS temp/cache candidate.
-- Candidate OS temp/cache and caller-provided base directories retain their original modes; only the `MkdirTemp`-created Serf scratch child is chmodded to `0700`.
+- Candidate OS temp/cache and caller-provided base directories retain their original modes; only the `MkdirTemp`-created Evener scratch child is chmodded to `0700`.
 - Existing `ApplyEnvFloor` SSH-agent, cloud-variable, and external-`KUBECONFIG` drops remain in the implementation diff.
 - No files under Superpowers code/skills/prompts changed; only this implementation plan lives under `docs/superpowers/plans`.
 - Pre-existing untracked files remain unmodified and unstaged.
@@ -1453,7 +1453,7 @@ Expected: PASS. A provider credential by itself causes no live request; all new 
 - [ ] **Step 4: Inspect final diff for exact exclusions and accidental churn**
 
 ```bash
-base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+base_ref=refs/evener-plan-bases/session-scratch-orchestration-posture
 IMPLEMENTATION_BASE="$(git rev-parse "$base_ref")"
 git diff --check
 git diff --check "$IMPLEMENTATION_BASE"..HEAD
@@ -1482,7 +1482,7 @@ If the gate passes without corrections, make no empty commit.
 
 - [ ] Every live local root and child session owns one `0700` scratch directory outside the worktree.
 - [ ] An ambient/explicit scratch base inside the workspace is rejected in favor of a canonical OS cache/temp base outside it; if no safe candidate exists, provisioning fails without creating scratch in the workspace.
-- [ ] Allocation never chmods `os.TempDir()`, the OS cache directory, or a caller-provided base; it creates and chmods only the Serf-owned child directory.
+- [ ] Allocation never chmods `os.TempDir()`, the OS cache directory, or a caller-provided base; it creates and chmods only the Evener-owned child directory.
 - [ ] Parent, child, sibling, and restored fork sessions have distinct scratch paths.
 - [ ] `TMPDIR`, `SERF_SCRATCH_DIR`, runtime-only `EnvironmentInfo.ScratchDir`, sandbox wrapper, subprocesses, and prompt data agree on the exact owning path.
 - [ ] Worktree re-rooting and `WithSandboxInvocationGrant` within one live session preserve scratch and prompt-cache/environment stability without transferring cleanup ownership.
@@ -1490,7 +1490,7 @@ If the gate passes without corrections, make no empty commit.
 - [ ] Normal close, parent teardown, child dispose, spawn/construction failure, every unadopted restored-delegate exit, and `discardRestoredCandidate` remove owned scratch after process shutdown.
 - [ ] Close and restored-candidate discard remain safe for execution environments that do not implement the optional `SessionScratchProvider` capability.
 - [ ] Restore gets a new empty scratch; scratch is never persisted in session metadata as a reusable path.
-- [ ] The 24-hour sweep removes only old directories with Serf's reserved prefix whose OS liveness lease is acquirable; an old live lease is never removed.
+- [ ] The 24-hour sweep removes only old directories with Evener's reserved prefix whose OS liveness lease is acquirable; an old live lease is never removed.
 - [ ] `HOME` and durable caches are unchanged; only the pre-existing explicit session-private sandbox cache strategy redirects caches, and all existing SSH-agent/cloud/external-`KUBECONFIG` filters remain active.
 - [ ] A second concurrently running shared delegate in the same directory launches and returns one advisory suggesting `isolation="worktree"`; an omitted working directory resolves to the parent's absolute current directory.
 - [ ] First, isolated, non-overlapping, and finished-delegate launches do not warn.

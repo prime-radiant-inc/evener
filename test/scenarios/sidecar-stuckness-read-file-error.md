@@ -12,7 +12,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-stuckness-error-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-stuckness-error-XXXXX)`.
 
 ## Steps
 
@@ -79,7 +79,7 @@ go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range l
   do not create a delivery, pending row, notification, or observer
   wake"), so a filtered-out tool call
   leaves no pending row to assert on — the negative here is an absence
-  in `serf-doctor watches`, bounded by the positive alert.
+  in `evener-doctor watches`, bounded by the positive alert.
 - The alert and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
   (`docs/job-control.md` "`job_watch`" "That terminal communicate is

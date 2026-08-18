@@ -78,7 +78,7 @@ Assert transcript `api_call` records persist a non-empty attempt group id and th
 - [x] **Step 5: Run RED tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 ```
 
 Expected: fail because `attempt_group_id` and raw attempt fields are missing.
@@ -107,7 +107,7 @@ Add `AttemptGroupID` to `APILogContext`, `APILogEntry`, and `APIRawLogEntry`; co
 - [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 ```
 
 Expected: pass.
@@ -135,7 +135,7 @@ Record the focused test command, `git diff --check`, and the Phase 5A boundaries
 - [x] **Step 2: Run verification**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 git diff --check
 ```
 

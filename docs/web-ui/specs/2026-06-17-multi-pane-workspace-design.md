@@ -2,7 +2,7 @@
 
 Date: 2026-06-17
 Status: Draft for Jesse's review. **No implementation** — this is a design/feasibility doc.
-Scope: the Serf web hub (`cmd/evener-hub`).
+Scope: the Evener web hub (`cmd/evener-hub`).
 
 ## What we're trying to do
 
@@ -248,7 +248,7 @@ document-global state (below) live in **separate `document` contexts** and never
 - **Cross-pane communication** is limited to `postMessage`. For the MVP we need almost none (the
   host sets `src`; the iframe streams itself). "Esc-to-parent" inside a subagent iframe would just
   navigate that iframe; a host-level "close pane" is cleaner.
-- **Styling/theme propagation:** the theme is chosen at load via `localStorage["serf-hub.theme"]`
+- **Styling/theme propagation:** the theme is chosen at load via `localStorage["evener-hub.theme"]`
   applied inline in `<head>` — `app.html:9-16`. Same-origin iframes read the same `localStorage`,
   so theme is consistent. A live theme *toggle* would need a `postMessage` (or each iframe re-reads
   on a storage event) — minor, deferrable.
@@ -404,7 +404,7 @@ Riskiest assumptions to validate early:
 
 **Phase 2 — richer documents**
 - `/doc/file` route + path sanitization (reuse `internal/fspaths` path containment); for
-  remote sources, a `serf/file/read`-style RPC over appwire (the missing piece called out above).
+  remote sources, a `evener/file/read`-style RPC over appwire (the missing piece called out above).
 - Markdown file pane via `marked.parse`; optional syntax highlighting (net-new; none today).
 - Optional: modifier-click an `sb-row` to open any session beside the current — `sidebar.html`.
 

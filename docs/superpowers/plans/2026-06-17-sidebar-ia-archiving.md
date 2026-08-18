@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the project-tier sidebar with projects ordered by recency whose sessions are tiered Current/Recent/Archived, add manual + auto-aged (2-week) archiving for sessions and projects, and remove the `serf-e2e-*` prefix bucket.
+**Goal:** Replace the project-tier sidebar with projects ordered by recency whose sessions are tiered Current/Recent/Archived, add manual + auto-aged (2-week) archiving for sessions and projects, and remove the `evener-e2e-*` prefix bucket.
 
-**Architecture:** A new sqlite-backed `ArchiveStore` (in the existing `~/.serf/index.db`) records explicit user archive/unarchive decisions. `hubcore.BuildTree` takes those decisions plus a `now` and computes each session's tier (effective-archived = user decision if present, else last-activity > 2 weeks) and each project's placement (active list vs. archived group), ordering active projects by most-recent session start. The template, sidebar JS, and CSS render the new shape; a `POST /api/archive` endpoint persists decisions.
+**Architecture:** A new sqlite-backed `ArchiveStore` (in the existing `~/.evener/index.db`) records explicit user archive/unarchive decisions. `hubcore.BuildTree` takes those decisions plus a `now` and computes each session's tier (effective-archived = user decision if present, else last-activity > 2 weeks) and each project's placement (active list vs. archived group), ordering active projects by most-recent session start. The template, sidebar JS, and CSS render the new shape; a `POST /api/archive` endpoint persists decisions.
 
 **Tech Stack:** Go (`database/sql` + `modernc.org/sqlite`), Go `html/template`, vanilla JS (no bundler), CSS. Tests: Go `testing`, the hub's `jstest` harness (`cmd/evener-hub/jstest/run-all.sh`, run from inside that dir).
 
@@ -621,6 +621,6 @@ git commit -m "Sidebar: style session tiers + archived disclosures"
 
 ## Self-review notes (author)
 
-- **Spec coverage:** Needs-you retained (Task 3); projects-by-recency (Task 3); session tiers Current/Recent/Archived (Tasks 2–3); manual + auto-2wk archive with unarchive + provenance rule (Tasks 1–2, effective-archived in `classifySession`); index.db persistence (Task 1) + endpoint (Task 5) + wiring (Task 4); template/JS/CSS (Tasks 3,6,7); `serf-e2e-*` bucket removed (Task 3 deletes `isTestProject`/`e2eProjectPrefix`). Scale fast-follow is explicitly out of scope (Global Constraints).
+- **Spec coverage:** Needs-you retained (Task 3); projects-by-recency (Task 3); session tiers Current/Recent/Archived (Tasks 2–3); manual + auto-2wk archive with unarchive + provenance rule (Tasks 1–2, effective-archived in `classifySession`); index.db persistence (Task 1) + endpoint (Task 5) + wiring (Task 4); template/JS/CSS (Tasks 3,6,7); `evener-e2e-*` bucket removed (Task 3 deletes `isTestProject`/`e2eProjectPrefix`). Scale fast-follow is explicitly out of scope (Global Constraints).
 - **Type consistency:** `ArchiveKey{Kind,ID}`, `classifySession(decision *bool, lastActivity, now)`, `BuildTree(metas, live, decisions)` / `BuildTreeAt(..., now)`, `TreeProject.{Current,Recent,Archived,IsArchived,MostRecentStart}`, `Tree.{Projects,ArchivedProjects}` used consistently across tasks.
 - **Adapt-to-codebase flags:** Tasks 3–6 intentionally say "match existing helpers/markup/refresh path" for the template session-row, the hub test request helper, and the sidebar refresh — these must be read from the live files; the novel logic (archive store, classification, BuildTree shape, endpoint contract) is given in full.

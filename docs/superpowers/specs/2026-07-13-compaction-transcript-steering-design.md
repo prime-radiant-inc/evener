@@ -2,9 +2,9 @@
 
 ## Problem
 
-One logical compaction can create two artifacts: a deterministic checkpoint and an LLM-generated summary. The context manager invokes `OnCompactionTurn` for each artifact. Serf binds that callback to `handleCompactionTurn`, which queues the same transcript-recovery steering message every time. A successful multi-layer compaction therefore queues the message twice.
+One logical compaction can create two artifacts: a deterministic checkpoint and an LLM-generated summary. The context manager invokes `OnCompactionTurn` for each artifact. Evener binds that callback to `handleCompactionTurn`, which queues the same transcript-recovery steering message every time. A successful multi-layer compaction therefore queues the message twice.
 
-The message tells the agent to recover pre-compaction context through `read_session_transcript`. Serf should provide that guidance once per compaction operation, not once per artifact.
+The message tells the agent to recover pre-compaction context through `read_session_transcript`. Evener should provide that guidance once per compaction operation, not once per artifact.
 
 ## Design
 

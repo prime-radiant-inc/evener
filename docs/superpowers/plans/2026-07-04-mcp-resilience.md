@@ -11,7 +11,7 @@
 **Working rules for every task:**
 - Run Go tests per-module: `cd <module> && go test ./<pkg>/ -run <Name> -count=1` (modules: repo root `.`, `agent`, `llm`). Each task ends green on the touched module's lint slice (`cd <module> && golangci-lint run ./<pkg>/...`) and its `go test`.
 - Full gates (Task 21 only): `make test-short`, `make test-race`, `make lint`, and `sh cmd/evener-hub/jstest/run-all.sh` from repo root.
-- jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
+- jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
 - Commit after every green task with the exact message given. NEVER use `git add -A`; add the named files only.
 - Read the anchor code before editing it — the design turns on details at specific lines.
 
@@ -135,7 +135,7 @@ assert.strictEqual(ok, "ok", "MCP-namespaced tool without error still renders ok
 
 - [ ] **Step 6: Run — pass** (this pins existing behavior against regression; the default renderer already keys on `data.error`)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-mcp-error-marker.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-mcp-error-marker.js`
 Expected: PASS (exit 0). If the accessor differs, fix the harness lines until it passes — the assertion contract is fixed.
 
 - [ ] **Step 7: Lint + commit**
@@ -604,7 +604,7 @@ Append to each `diagnostic_test.go`:
 
 ```go
 func TestFromFields_MCPSource_GetsMCPHints(t *testing.T) {
-	// A connection-refused MCP failure classifies as MCP, not the generic serf hint.
+	// A connection-refused MCP failure classifies as MCP, not the generic evener hint.
 	got := FromFields("mcp", "", "", "MCP server \"linear\" failed to connect: connection refused")
 	if got.Source != SourceMCP {
 		t.Fatalf("Source=%q, want %q", got.Source, SourceMCP)
@@ -650,7 +650,7 @@ Expected: PASS in both modules.
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd agent && golangci-lint run ./internal/diagnostic/... && cd /Users/jesse/prime-radiant/toil-suite/serf && golangci-lint run ./internal/diagnostic/...`
+Run: `cd agent && golangci-lint run ./internal/diagnostic/... && cd /Users/jesse/prime-radiant/toil-suite/evener && golangci-lint run ./internal/diagnostic/...`
 Commit:
 - `git add agent/internal/diagnostic/diagnostic.go agent/internal/diagnostic/diagnostic_test.go internal/diagnostic/diagnostic.go internal/diagnostic/diagnostic_test.go`
 - `git commit -m "feat(diagnostic): SourceMCP classifier so MCP failures get MCP hints, not provider"`
@@ -670,7 +670,7 @@ A global/project `mcp.json` that fails to parse or expand its `${VAR}` today has
 
 - [ ] **Step 1: Failing tests**
 
-In `config_test.go`: point `XDG_CONFIG_HOME` at a temp dir containing `serf/mcp.json` with malformed JSON; assert `Discover` returns the parsed configs it could (none here) **plus** a warning naming the path, and **no** fatal error. Add a second case: valid JSON but an unset `${NOPE}` → warning, non-fatal. Add a not-exist case: missing global file → no warning, no error.
+In `config_test.go`: point `XDG_CONFIG_HOME` at a temp dir containing `evener/mcp.json` with malformed JSON; assert `Discover` returns the parsed configs it could (none here) **plus** a warning naming the path, and **no** fatal error. Add a second case: valid JSON but an unset `${NOPE}` → warning, non-fatal. Add a not-exist case: missing global file → no warning, no error.
 
 - [ ] **Step 2: Run — fails to compile** (`Discover` returns two or three values)
 
@@ -810,7 +810,7 @@ In the converter test nearest `appDiagnosticsFromDetailedStatus`, feed a `Detail
 
 - [ ] **Step 2: Run — fails to compile** (fields undefined on `server.MCPServerInfo` / `SerfMCPServerInfo`)
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./server/ ./cmd/evener/ -run MCP -count=1`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./server/ ./cmd/evener/ -run MCP -count=1`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement + converters + regen**
@@ -823,12 +823,12 @@ Regenerate: `make generate` (updates `docs/appwire-protocol.md` if the reflected
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./server/ ./cmd/evener/ ./appwire/ -count=1 && make lint-generated`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./server/ ./cmd/evener/ ./appwire/ -count=1 && make lint-generated`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && golangci-lint run ./server/... ./cmd/evener/... ./appwire/...`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && golangci-lint run ./server/... ./cmd/evener/... ./appwire/...`
 Commit:
 - `git add server/server.go appwire/types.go cmd/evener/serve.go server/appwire_runtime.go docs/appwire-protocol.md appwire/testdata server/appwire_runtime_test.go cmd/evener/serve_test.go`
 - `git commit -m "feat(wire): thread MCP Status/Error through the status carrier chain"`
@@ -852,7 +852,7 @@ In the nearest existing TUI render test, build a status with one `connected` ser
 
 - [ ] **Step 2: Run — fails** (renderer omits status/error)
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./cmd/evener-tui/ -run 'MCP|Details|HubStatus' -count=1`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./cmd/evener-tui/ -run 'MCP|Details|HubStatus' -count=1`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
@@ -871,12 +871,12 @@ Guard for an empty `Status` (older daemons / no MCP) so the em-dash suffix is om
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./cmd/evener-tui/ -count=1`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./cmd/evener-tui/ -count=1`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && golangci-lint run ./cmd/evener-tui/...`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && golangci-lint run ./cmd/evener-tui/...`
 Commit:
 - `git add cmd/evener-tui/details_drawer.go cmd/evener-tui/hub_status.go cmd/evener-tui/details_drawer_test.go cmd/evener-tui/hub_status_test.go`
 - `git commit -m "feat(tui): render MCP server status and last error"`
@@ -969,7 +969,7 @@ Go: assert `discoverMCPsForSettings` for a config file with one stdio (present c
 
 - [ ] **Step 2: Run — fails**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./cmd/evener-hub/ -run 'MCPStatus|DiscoverMCP' -count=1`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./cmd/evener-hub/ -run 'MCPStatus|DiscoverMCP' -count=1`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
@@ -978,12 +978,12 @@ Expected: FAIL.
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && go test ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-settings-mcp-status.js`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && go test ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-settings-mcp-status.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && golangci-lint run ./cmd/evener-hub/...`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && golangci-lint run ./cmd/evener-hub/...`
 Commit:
 - `git add cmd/evener-hub/web_settings.go cmd/evener-hub/web_types.go cmd/evener-hub/templates/partials/settings/mcp.html cmd/evener-hub/web_settings_test.go cmd/evener-hub/jstest/test-settings-mcp-status.js`
 - `git commit -m "feat(settings): render discovered MCP servers with a probed status column"`
@@ -1001,12 +1001,12 @@ Now orphaned (its sole consumer, `discoverMCPsForSettings`, moved to `mcpprobe` 
 
 - [ ] **Step 1: Confirm no references remain**
 
-Run: `cd /Users/jesse/prime-radiant/toil-suite/serf && grep -rn "mcpstatus" --include="*.go" .`
+Run: `cd /Users/jesse/prime-radiant/toil-suite/evener && grep -rn "mcpstatus" --include="*.go" .`
 Expected: no matches.
 
 - [ ] **Step 2: Delete + build**
 
-Run: `git rm -r cmd/evener-hub/internal/mcpstatus && cd /Users/jesse/prime-radiant/toil-suite/serf && go build ./... && go test ./cmd/evener-hub/ -count=1`
+Run: `git rm -r cmd/evener-hub/internal/mcpstatus && cd /Users/jesse/prime-radiant/toil-suite/evener && go build ./... && go test ./cmd/evener-hub/ -count=1`
 Expected: builds clean, tests pass.
 
 - [ ] **Step 3: Commit**
@@ -1030,7 +1030,7 @@ Invoke the `e2e-scenario-testing` skill. One server cannot be both startup-faile
   - **Server C (connected but Channel-B-erroring):** an http/stdio server that connects but returns `IsError:true` on every `tools/call` → the tool result renders **red** in web + TUI (error marker / error body); `Servers()` shows C `connected` with `Error` populated; status is still `connected` (Decision 3).
   - **Reconnect:** kill + restart Server A's process, then issue the next call → it reconnects **immediately** (zero-init backoff) and succeeds; a reconnect diagnostic line renders.
 
-- [ ] **Step 2: Build + run** a live `serf-hub` + `serf serve` (per `reference_serf_live_run`: `go build -o /tmp/serf ./cmd/evener`; source the repo `.env`; use a real `--model oai-work/<model>`). Drive the web UI (and TUI where cheap) capturing screenshots/DOM + event-stream excerpts proving each assertion. Record any assertion that fails as a defect, not a pass.
+- [ ] **Step 2: Build + run** a live `evener-hub` + `evener serve` (per `reference_serf_live_run`: `go build -o /tmp/evener ./cmd/evener`; source the repo `.env`; use a real `--model oai-work/<model>`). Drive the web UI (and TUI where cheap) capturing screenshots/DOM + event-stream excerpts proving each assertion. Record any assertion that fails as a defect, not a pass.
 
 - [ ] **Step 3: Commit** the proof:
 - `git add docs/superpowers/proofs/2026-07-04-mcp-resilience-e2e.md`
@@ -1048,7 +1048,7 @@ Run, from repo root:
 - `make test-short`
 - `make test-race`
 - `make lint`
-- `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+- `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 
 Expected: all pass. Fix any failure at root cause (a gate failure is in scope). If a full-suite MCP test outside the ones touched here now fails, it is a regression from this branch — fix it, do not skip it.
 

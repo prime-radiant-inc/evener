@@ -108,7 +108,7 @@ one-to-few-line patch reintroducing a real or plausible regression:
   of `slices.Sorted(maps.Keys(...))` (`646d…`). Target:
   `llm:FuzzOpenAIChatCompletionsMetamorphic`.
 - `instance-name-no-base` → drop `filepath.Base` from `AuthFilePath` (the
-  path-traversal `.json`-delete fix). Target: the serf/instance dispatch target.
+  path-traversal `.json`-delete fix). Target: the evener/instance dispatch target.
 - `jobstore-terminal-unsticky` → let a terminal job event be overwritten (the
   `applyEvent` terminal-sticky invariant). Target: `agent:TestJobstoreSeqFuzz`.
 - `frontmatter-determinism-naive` → revert the NaN-aware equal to
@@ -200,7 +200,7 @@ before promoting to an inline invariant.
 ## W3 — Extend the differential oracle (the proven winner)
 
 **Goal.** The differential oracle found both Phase-8 bugs; apply it where
-user-visible bugs keep recurring: the **two projection paths**. serf projects a
+user-visible bugs keep recurring: the **two projection paths**. evener projects a
 turn two ways — live (`internal/appprojector`) and on reload
 (`internal/apptranscript` + the hub replay `cmd/evener-hub` …
 `app_threadread.go#replayTurnToAgentTurn`). Divergence between them is a

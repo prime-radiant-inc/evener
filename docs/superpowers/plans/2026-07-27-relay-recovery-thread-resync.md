@@ -12,7 +12,7 @@
 
 - Implement kata `mz8j` and the approved design in `docs/superpowers/specs/2026-07-27-relay-recovery-thread-resync-design.md`.
 - Emit the resync hint only after a recovery subscription succeeds, never on initial attachment or failed retries.
-- Refresh only the affected tracked ref; do not react to broad `serf/tree/changed`.
+- Refresh only the affected tracked ref; do not react to broad `evener/tree/changed`.
 - Reuse the existing buffered hydration and generation/client guards.
 - Keep refresh failure best-effort: retain the stale model and continue relaying notifications.
 - Tests must be deterministic and perform no live provider calls.
@@ -35,7 +35,7 @@
 
 **Interfaces:**
 
-- Produces: `appwire.NotifySerfThreadResync = "serf/thread/resync"`.
+- Produces: `appwire.NotifySerfThreadResync = "evener/thread/resync"`.
 - Produces:
 
   ```go
@@ -49,7 +49,7 @@
 
   ```ts
   {
-    method: "serf/thread/resync";
+    method: "evener/thread/resync";
     params: { threadId: string; ref: string };
   }
   ```
@@ -137,7 +137,7 @@
 
   In `threads.test.ts`, hydrate `ref_a` with an active model whose snapshot
   explicitly has `capabilities.queue === false`. Emit
-  `serf/thread/resync` for `ref_a`, hold the replacement `thread/read`
+  `evener/thread/resync` for `ref_a`, hold the replacement `thread/read`
   response pending, emit a matching live notification during the read, then
   resolve an authoritative active snapshot with `capabilities.queue === true`.
   Assert:
@@ -165,7 +165,7 @@
 
   In `threads.ts`, generalize the current ready/reconnect rehydrate helper to
   accept an optional target ref. Preserve its existing full-set behavior for
-  `onReady`; when a `serf/thread/resync` notification arrives, invoke it with
+  `onReady`; when a `evener/thread/resync` notification arrives, invoke it with
   only `n.params.ref` and return without folding the hint through the
   incremental reducer.
 
@@ -192,7 +192,7 @@
   In `Composer.integration.test.tsx`, mount against a stale active snapshot
   whose explicit queue capability is false. Before resync, submit content and
   assert the client-side unavailable toast appears with no turn mutation.
-  Emit `serf/thread/resync`, return a fresh active snapshot with queue true,
+  Emit `evener/thread/resync`, return a fresh active snapshot with queue true,
   submit again, and assert the composer calls `turn/queue` without remounting
   or reconnecting the FakeClient.
 

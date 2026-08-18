@@ -29,7 +29,7 @@ Out of scope:
 
 - Administrative actions: `thread/interrupt`, `thread/compact`, `thread/clear`, `thread/model`. These already surface their own banners on completion and fire rarely; uniform treatment is overkill.
 - Wire-protocol changes (no new correlation-ID field on appwire params).
-- Codex-backend correctness — the wrapper works against codex sessions via text-match the same way it does against serf sessions; no daemon changes outside serf.
+- Codex-backend correctness — the wrapper works against codex sessions via text-match the same way it does against evener sessions; no daemon changes outside evener.
 
 ## Architecture
 

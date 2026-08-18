@@ -10,7 +10,7 @@ Live end-to-end, real provider (billed).
 
 ## Pre-state
 
-Same harness as `worktree-create-and-orient`: fresh serf binary, hermetic repo
+Same harness as `worktree-create-and-orient`: fresh evener binary, hermetic repo
 with a committed `main.go`, isolated `SERF_STATE_DIR` with config symlinked.
 
 ## Steps
@@ -49,6 +49,6 @@ Remove the scratch state + demo repo (unique temp paths).
   check and the main-checkout diff still show isolation, but the "commit"
   assertion is vacuous — note which path the agent took.
 - `remove` with `delete_branch=true` on an unmerged branch is refused by
-  serf's own merge gate unless `force` — the agent may need `force:true` since
+  evener's own merge gate unless `force` — the agent may need `force:true` since
   feature-x was never merged. Watch whether it discovers that from the refusal
   message.

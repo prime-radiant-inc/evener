@@ -7,7 +7,7 @@ is accepted as graceful-skip, not enforced.
 
 ## Problem
 
-The fast/cheap model serf uses for auxiliary "side calls" is locked to the
+The fast/cheap model evener uses for auxiliary "side calls" is locked to the
 **same provider** as the main model. Two enforcement points:
 
 1. `applyFastCheapModel` (`cmd/evener/serve.go:492`) rejects a cheap model whose
@@ -160,7 +160,7 @@ Fix: persist the cheap ref and rebuild it on restore.
   time; on `RestoreSessionFromMetaWithConfig` (`serve.go:219`) re-apply via
   `WithCheapModel`.
 - Stop clearing `FastCheapModel` in `spawn.go` resume args (or re-pass it from
-  the persisted launch config) so the relaunched `serf serve` re-applies it.
+  the persisted launch config) so the relaunched `evener serve` re-applies it.
 - Verify which mechanism is authoritative (launch-config replay vs. SessionMeta)
   and use one; do not double-apply.
 

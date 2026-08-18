@@ -120,4 +120,4 @@ This spec does not:
 - cache lint results;
 - hide failure output;
 - print per-module success lines;
-- modify production Serf behavior.
+- modify production Evener behavior.

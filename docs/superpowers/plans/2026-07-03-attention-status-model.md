@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Serf daemons report `awaiting` on the existing status field whenever the ball is in the user's court, and every surface (sidebar NeedsYou tier, badges, OS notifications, TUI) lights up from that truth — plus a first-class red `errored` lane.
+**Goal:** Evener daemons report `awaiting` on the existing status field whenever the ball is in the user's court, and every surface (sidebar NeedsYou tier, badges, OS notifications, TUI) lights up from that truth — plus a first-class red `errored` lane.
 
-**Architecture:** Daemon-truth (spec v5, `docs/superpowers/specs/2026-07-03-attention-status-model-design.md` — READ IT FIRST). The agent arms `awaiting` at the drain-loop settle (only reachable on clean turn completion); a wire-state helper reports `active` while delegated children run; the hub un-collapses `systemError→errored` in `NormalizeState` and adds an attention watcher that broadcasts `serf/attention/changed`; notifications.js goes event-driven.
+**Architecture:** Daemon-truth (spec v5, `docs/superpowers/specs/2026-07-03-attention-status-model-design.md` — READ IT FIRST). The agent arms `awaiting` at the drain-loop settle (only reachable on clean turn completion); a wire-state helper reports `active` while delegated children run; the hub un-collapses `systemError→errored` in `NormalizeState` and adds an attention watcher that broadcasts `evener/attention/changed`; notifications.js goes event-driven.
 
 **Tech Stack:** Go (agent + server + hub modules under go.work), Go html/template, vanilla JS + JSDOM tests (`cmd/evener-hub/jstest`), bubbletea/lipgloss TUI.
 
@@ -827,7 +827,7 @@ git commit -m "feat(hub): errored render lane — tier passthrough, row accent, 
 
 ---
 
-### Task 7: Hub — attention derive + watcher + `serf/attention/changed` broadcast
+### Task 7: Hub — attention derive + watcher + `evener/attention/changed` broadcast
 
 **Files:**
 - Create: `cmd/evener-hub/internal/hubcore/attention.go`
@@ -949,7 +949,7 @@ type AttentionChanged struct {
 	PrevLevel string `json:"prevLevel"`
 }
 
-// AttentionChangedPayload is the serf/attention/changed notification body.
+// AttentionChangedPayload is the evener/attention/changed notification body.
 type AttentionChangedPayload struct {
 	Changed []AttentionChanged `json:"changed"`
 	Summary AttentionSummary   `json:"summary"`
@@ -1076,9 +1076,9 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 
 `appwire/types.go`, in the Notify const block after `NotifySerfLaunchUpdated`:
 ```go
-	NotifySerfAttentionChanged  = "serf/attention/changed"
+	NotifySerfAttentionChanged  = "evener/attention/changed"
 ```
-`appwire/protocol.go`: find the catalog entry for `NotifySerfLaunchUpdated` (grep) and add a sibling entry for `serf/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
+`appwire/protocol.go`: find the catalog entry for `NotifySerfLaunchUpdated` (grep) and add a sibling entry for `evener/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
 
 `cmd/evener-hub/main.go` — after `archive` and the roster/past wiring (grep for `go roster.Watch(ctx)` at ~:209), add the watcher loop:
 
@@ -1129,7 +1129,7 @@ IMPLEMENTER NOTE: the variable names (`appRPCServer`, `past`, `roster`, `archive
 
 ```bash
 git add cmd/evener-hub/internal/hubcore/attention.go cmd/evener-hub/internal/hubcore/attention_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/main.go cmd/evener-hub/web_api_archive.go cmd/evener-hub/web_api_tree.go <touched config/type files>
-git commit -m "feat(hub): attention watcher broadcasts serf/attention/changed; /api/tree carries attentionSummary"
+git commit -m "feat(hub): attention watcher broadcasts evener/attention/changed; /api/tree carries attentionSummary"
 ```
 
 ---
@@ -1156,7 +1156,7 @@ const { JSDOM } = require("jsdom");
 const src = fs.readFileSync("../assets/notifications.js", "utf8");
 
 function boot(opts) {
-  const dom = new JSDOM(`<!DOCTYPE html><html><head><title>serf hub</title></head><body></body></html>`, {
+  const dom = new JSDOM(`<!DOCTYPE html><html><head><title>evener hub</title></head><body></body></html>`, {
     runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/",
   });
   const w = dom.window;
@@ -1173,8 +1173,8 @@ function boot(opts) {
   w.fetch = (url) => Promise.resolve({
     json: () => Promise.resolve({ attentionSummary: (opts && opts.summary) || { needsYou: 0, error: 0, working: 0 } }),
   });
-  w.localStorage.setItem("serf-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false }));
-  w.localStorage.setItem("serf-hub.notifications.v", "2");
+  w.localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: false }));
+  w.localStorage.setItem("evener-hub.notifications.v", "2");
   w.eval(src);
   return { w, fireNotif: (m, p) => notifHandler && notifHandler(m, p), fired };
 }
@@ -1187,7 +1187,7 @@ function boot(opts) {
     throw new Error("title after baseline = " + a.w.document.title);
   }
   // 2) A changed event updates counts and fires OS on into-needs_you (unfocused).
-  a.fireNotif("serf/attention/changed", {
+  a.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01X", title: "T", project: "p", level: "needs_you", prevLevel: "working" }],
     summary: { needsYou: 3, error: 0, working: 0 },
   });
@@ -1197,7 +1197,7 @@ function boot(opts) {
   // 3) Focused tab suppresses OS but still counts.
   const b = boot({ focused: true, summary: { needsYou: 0, error: 0, working: 0 } });
   await new Promise((r) => setTimeout(r, 20));
-  b.fireNotif("serf/attention/changed", {
+  b.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01Y", title: "U", project: "p", level: "error", prevLevel: "working" }],
     summary: { needsYou: 0, error: 1, working: 0 },
   });
@@ -1206,7 +1206,7 @@ function boot(opts) {
   if (!b.w.document.title.startsWith("(1) ")) throw new Error("error counts in title: " + b.w.document.title);
   // 4) No baseline yet -> no edge firing (event before fetch resolves).
   const c = boot({ summary: { needsYou: 0, error: 0, working: 0 } });
-  c.fireNotif("serf/attention/changed", {
+  c.fireNotif("evener/attention/changed", {
     changed: [{ threadId: "01Z", title: "V", project: "p", level: "needs_you", prevLevel: "idle" }],
     summary: { needsYou: 1, error: 0, working: 0 },
   });
@@ -1232,20 +1232,20 @@ function boot(pre) {
   w.document.hasFocus = () => false;
   w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.fetch = () => Promise.resolve({ json: () => Promise.resolve({ attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
-  if (pre) w.localStorage.setItem("serf-hub.notifications", JSON.stringify(pre));
+  if (pre) w.localStorage.setItem("evener-hub.notifications", JSON.stringify(pre));
   w.eval(src);
   return w;
 }
 
 const fresh = boot(null);
-const freshPrefs = JSON.parse(fresh.localStorage.getItem("serf-hub.notifications"));
+const freshPrefs = JSON.parse(fresh.localStorage.getItem("evener-hub.notifications"));
 if (freshPrefs.title !== true || freshPrefs.favicon !== true || freshPrefs.os !== false || freshPrefs.sound !== false) {
   throw new Error("fresh defaults wrong: " + JSON.stringify(freshPrefs));
 }
-if (fresh.localStorage.getItem("serf-hub.notifications.v") !== "2") throw new Error("version stamp missing");
+if (fresh.localStorage.getItem("evener-hub.notifications.v") !== "2") throw new Error("version stamp missing");
 
 const legacy = boot({ os: true });
-const legacyPrefs = JSON.parse(legacy.localStorage.getItem("serf-hub.notifications"));
+const legacyPrefs = JSON.parse(legacy.localStorage.getItem("evener-hub.notifications"));
 if (legacyPrefs.title !== false || legacyPrefs.favicon !== false || legacyPrefs.os !== true) {
   throw new Error("legacy backfill wrong: " + JSON.stringify(legacyPrefs));
 }
@@ -1256,14 +1256,14 @@ console.log("ok");
 
 - [ ] **Step 3: Rewrite the first IIFE of `notifications.js`**
 
-Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("serf · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `serf-hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
+Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("evener · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `evener-hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
 
 Delete: `POLL_MS`, `poll`, `startPolling`, `prevState` transition machinery, `isAlertTransition`, `detectTransitions`, `/api/search` usage.
 
 Add (structure — write it in the file's existing style):
 
 ```js
-  const PREFS_VERSION_KEY = "serf-hub.notifications.v";
+  const PREFS_VERSION_KEY = "evener-hub.notifications.v";
   const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false };
   let summary = null; // null until baseline: no edge-firing before it (spec v5)
 
@@ -1303,7 +1303,7 @@ Add (structure — write it in the file's existing style):
     // One tab fires OS/sound. Web Locks held-lock election; localStorage
     // heartbeat fallback for environments without navigator.locks.
     if (navigator.locks && navigator.locks.request) {
-      navigator.locks.request("serf-hub-os-leader", { ifAvailable: true }, (lock) => {
+      navigator.locks.request("evener-hub-os-leader", { ifAvailable: true }, (lock) => {
         if (lock) { cb(true); return new Promise(() => {}); } // hold forever while this tab lives
         cb(false);
         return Promise.resolve();
@@ -1339,13 +1339,13 @@ Add (structure — write it in the file's existing style):
     fetchBaseline();
     if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
       window.SerfAppwire.onNotification(function (method, params) {
-        if (method === "serf/attention/changed") onAttentionChanged(params);
+        if (method === "evener/attention/changed") onAttentionChanged(params);
       });
     }
     if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
       window.SerfAppwire.onConnectionRestored(fetchBaseline);
     }
-    document.addEventListener("serf-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
+    document.addEventListener("evener-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
   }
 ```
 
@@ -1354,13 +1354,13 @@ IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation 
 In `cmd/evener-hub/assets/renderer.js`, find the thread-status handler (search `showConnectionBanner` neighborhood / where `THREAD_STATUS_CHANGED` events update the status pill — the handler that processes decoded `["THREAD_STATUS_CHANGED", ...]` events) and add one line after it applies the status:
 
 ```js
-    document.dispatchEvent(new CustomEvent("serf-hub:thread-status", { detail: { status: status } }));
+    document.dispatchEvent(new CustomEvent("evener-hub:thread-status", { detail: { status: status } }));
 ```
 
 In `cmd/evener-hub/assets/sidebar.js`, add to `notificationAffectsSidebar`:
 
 ```js
-      case "serf/attention/changed":
+      case "evener/attention/changed":
 ```
 
 In `templates/partials/settings/notifications.html`: change the page help line to `Title and favicon default on; OS notification and sound are opt-in. Saved per-browser.`, the OS help to `Native notification when a thread needs you or errors.`, and the sound help to `Short tone on the same transitions.` (unchanged). Title/favicon `<span class="state">` initial text can stay `OFF` — `applySettingsState()` syncs it from prefs on render.
@@ -1482,7 +1482,7 @@ Expected: all green. Fix anything red before proceeding — test output must be 
 
 - [ ] **Step 2: Write the e2e scenario card** (content; adapt the framing to the house format from docs/agentic-testing.md):
 
-> **Scenario: attention — needs-you end to end.** Build serf + serf-hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
+> **Scenario: attention — needs-you end to end.** Build evener + evener-hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
 
 - [ ] **Step 3: Update the spec status header and commit**
 

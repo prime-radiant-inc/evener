@@ -287,7 +287,7 @@ hydrates, and the dead endpoint is not dialed.
 
 Inspect the fresh transcript and adjacent durable state with the strict
 transcript reader and the repository naming checker. AppWire JSON remains
-camelCase by protocol; Serf-owned transcript and durable-state JSON keys remain
+camelCase by protocol; Evener-owned transcript and durable-state JSON keys remain
 snake_case.
 
 - [x] **Step 4: Commit the scoped implementation**

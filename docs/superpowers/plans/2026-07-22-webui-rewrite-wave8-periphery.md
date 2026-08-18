@@ -50,7 +50,7 @@ the **post-W6-merge integration tip** (not a pinned SHA: at authoring time W6 is
 its own branch `w6-surfaces`). Wherever a W8 item builds on W6 content (the spawn `ModelField`
 Combobox, the `⌘K` palette, the notifications engine, the `RailHost`/`useSidebarMode` rail), its
 current form was read READ-ONLY from the wave-6 worktree
-`/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/webui-w6-surfaces` (branch
+`/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/webui-w6-surfaces` (branch
 `w6-surfaces`) and is cited as such; the streams import the MERGED form on integration. Wave worktree
 **`webui-w8-periphery`** off the post-W6-merge integration tip; sub-streams branch off the wave branch
 after T1. **Per-stream worktrees** (the git index is worktree-global — a stream must never share a
@@ -202,7 +202,7 @@ export function PendingChips(props: { sessionRef: string }): JSX.Element;
   back to this ladder for a reasoning-capable model whose ladder the hub does not enumerate. The
   current `StatusRow.ReasoningEffortControl` (`chrome/StatusRow.tsx:57-103`) deliberately does NOT — it
   renders no selector when `model.reasoningEffortLevels` is empty. **T4's FIRST step is wire truth:**
-  determine whether serf's live `thread.serf` ever emits `supports_reasoning:true` with an empty ladder
+  determine whether evener's live `thread.evener` ever emits `supports_reasoning:true` with an empty ladder
   (`web_spawn.go:487-493` can; the reducer coerces it to `[]`, `reducer.ts:262-263,584-585`). If it can,
   T4 restores the 4-level fallback (parity, w5-close MEDIUM #6); if it provably cannot, T4 records the
   StatusRow comment's "no ambiguous third state" reasoning as the CONSCIOUS-DIVERGE citation and builds
@@ -307,7 +307,7 @@ chokepoint. Steps:
 5. **Barrel (chokepoint `widgets/index.ts`):** add the export line for `ModelCatalog` (and any new
    shared widget T3/T4/T5 report needing a barrel entry — collected at dispatch, appended once).
 6. **Gate:** full suite (tsc→vitest, count up); `npm run build` + restore placeholder; Biome; **live
-   smoke** against a fake-`$HOME` hub (`serf-hub` holds a host-global flock at `$HOME/.serf/hub.lock`
+   smoke** against a fake-`$HOME` hub (`evener-hub` holds a host-global flock at `$HOME/.evener/hub.lock`
    — `.superpowers/project_web_rearchitecture_study`; W5 close lesson): `/thread/{ref}` opens one
    chrome-stripped pane with a live composer, `/settings/providers` lands on credentials, the interim
    model picker still works (widget stub), an empty doc-open call no-ops cleanly. Suggested tier:
@@ -335,7 +335,7 @@ chokepoint. Steps:
   no-split, per `.superpowers/feedback_parallel_review_worktree_collision`). Covers the deferred
   clusters + triage #2. **First step (trace, may branch to the controller):** confirm the wire shapes
   the reducer preserves for (a) a `task_list` tool call's `argumentsJSON` on a settled item, (b) a
-  `serf/steering/injected` item's classifiable content/summary, (c) `turn.error`. If any needed field
+  `evener/steering/injected` item's classifiable content/summary, (c) `turn.error`. If any needed field
   is DROPPED by `reducer.ts`, STOP and report — the controller lands the reducer/Go change (no stream
   edits `reducer.ts`). Then build:
   - **`ItemModel.error` rendering** (triage #2): every tool descriptor surfaces `item.error` text when
@@ -424,7 +424,7 @@ triage items — annotating every conscious divergence (the read-only-transcript
 the dockview-native §3 items, the pending-chips-beside-composer placement, the beyond-parity doc
 sanitization + truncation notice) and folding in W6's close divergence ledger + punch items per
 §W6-close fold-in. **Live proof** on a real hub under an **isolated fake `$HOME`** (the host-global
-`$HOME/.serf/hub.lock` flock forbids a shared hub; `.superpowers/project_web_rearchitecture_study`):
+`$HOME/.evener/hub.lock` flock forbids a shared hub; `.superpowers/project_web_rearchitecture_study`):
 open a doc pane from a session's file tool card (text + markdown-sanitized + image + a >512 KiB
 truncation) beside the session; open a `/thread/{ref}` share link and confirm one chrome-stripped
 pane with a LIVE composer + the fallback title persisting for an unknown ref; pop out a pane; pick a

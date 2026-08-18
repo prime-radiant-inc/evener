@@ -405,7 +405,7 @@ git commit -m "feat(subagent): retain terminal records; fail-loud spawn at cap w
 
 ## Task 8: Redaction helper + `subagent_output`
 
-**Spec:** §"`subagent_output`", §"Tool descriptions", plan step 8. Note: serf has **no** credential redactor today — build it first.
+**Spec:** §"`subagent_output`", §"Tool descriptions", plan step 8. Note: evener has **no** credential redactor today — build it first.
 
 **Files:** Create `agent/redact.go`, `agent/subagent_output.go`, `agent/redact_test.go`, `agent/subagent_output_test.go`; Modify `agent/internal/tool/definitions.go`, `agent/session_tools_subagent.go`.
 

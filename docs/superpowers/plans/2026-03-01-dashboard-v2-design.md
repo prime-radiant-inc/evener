@@ -241,6 +241,6 @@ The design surfaces data that already exists on disk:
 - **Real-time monitoring of in-progress runs.** This is a post-hoc analysis tool.
 - **Database.** File-based data with disk caching is sufficient for single-user
   access to <100 tasks per run.
-- **Agent-specific logic.** No hardcoded knowledge of serf's tools, reviewer gate,
+- **Agent-specific logic.** No hardcoded knowledge of evener's tools, reviewer gate,
   or delegation patterns. The tool classifies tools by pattern matching and
   computes generic metrics.

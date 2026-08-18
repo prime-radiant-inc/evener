@@ -51,7 +51,7 @@ default).**"); this card only runs with the raised config below.
   credentialed model that can drive a multi-step delegation plan
   (the orchestrator picks the spawn model at run time, e.g.
   `openai/gpt-5.5`).
-- `tmpdir=$(mktemp -d -t serf-e2e-recfan-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-recfan-XXXXX)`.
 - **The recursion opt-in is config + per-spawn grant (BOTH required —
   "Delegation allowance" "**Double opt-in (dark by default).**").**
   Raise `MaxSubagentDepth` to 2 on the spawn so the root's
@@ -61,7 +61,7 @@ default).**"); this card only runs with the raised config below.
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
-   "harness":"serf","access_mode":"full","agent":"default",
+   "harness":"evener","access_mode":"full","agent":"default",
    "launch_overrides":{"maxSubagentDepth":2}}
   ```
 
@@ -149,7 +149,7 @@ default).**"); this card only runs with the raised config below.
    >    reusable resource's lifecycle instead.
    > 7. End your turn.
 6. Read the durable logs and the transcripts:
-   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/delegates.jsonl"`
+   - root: `find $HOME/.local/state/evener/projects -path "*sessions/$SID/delegates.jsonl"`
      for delegate lifecycle — COORD/COORD2 and every worker live in
      this single root-owned journal, never a per-descendant copy
      (`agent/delegate_runtime.go#bootstrapDelegateResources`: a child

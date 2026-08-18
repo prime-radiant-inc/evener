@@ -17,21 +17,21 @@ credentials and makes billed calls.
 ## Pre-state
 
 - A Kimi coding-plan key exported as `KIMI_API_KEY` (or in the repo-root
-  `.env`) — do not read it out of Jesse's real `~/.serf/credentials.toml`;
+  `.env`) — do not read it out of Jesse's real `~/.evener/credentials.toml`;
   export it directly so this card never touches his live credential store.
 - An Anthropic API key in the repo-root `.env` as `ANTHROPIC_API_KEY` (or
   exported in the environment).
-- A `serf` binary built from this branch, into a unique run directory that also
-  holds this card's provider config — never a fixed `/tmp/serf-eff` +
+- A `evener` binary built from this branch, into a unique run directory that also
+  holds this card's provider config — never a fixed `/tmp/evener-eff` +
   `/tmp/eff-cfg` pair, which a card running beside this one would overwrite
   mid-run (kata `k2rx`):
 
   ```sh
-  run=$(mktemp -d -t serf-e2e-XXXXXX)
-  go build -o "$run/serf" ./cmd/evener
+  run=$(mktemp -d -t evener-e2e-XXXXXX)
+  go build -o "$run/evener" ./cmd/evener
   ```
 
-- An isolated provider config so the live `~/.serf/providers.toml` is untouched.
+- An isolated provider config so the live `~/.evener/providers.toml` is untouched.
   Write `$run/providers.toml` with both Kimi routes (the sanctioned
   anthropic-compatible one used for completions, and the OpenAI-style one used
   only to observe the clamp in step 2):
@@ -50,7 +50,7 @@ credentials and makes billed calls.
 - Export the Kimi key (the raw curl in step 1 needs it) and write the isolated
   credentials file **beside** `providers.toml` — the credential store is read
   from the directory of `SERF_PROVIDERS_CONFIG` (`cmdutil/load_client.go`
-  `LoadProviderConfigAt`). serf's credential store **rejects** a
+  `LoadProviderConfigAt`). evener's credential store **rejects** a
   credentials.toml unless it is mode `0600`, so create it restrictively:
 
   ```sh
@@ -70,19 +70,19 @@ credentials and makes billed calls.
   chmod 600 "$run/credentials.toml"
   ```
 
-  Run serf with `SERF_PROVIDERS_CONFIG="$run/providers.toml"`.
+  Run evener with `SERF_PROVIDERS_CONFIG="$run/providers.toml"`.
 
 A one-shot invocation looks like:
 
 ```
-SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
+SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/evener" \
   --model <provider>/<model> --reasoning-effort <level> \
   --max-rounds 1 --no-project-prompts "reply with the single word OK"
 ```
 
 ## Steps
 
-1. **Reproduce the original enum bug (raw, no serf).** POST to the Kimi
+1. **Reproduce the original enum bug (raw, no evener).** POST to the Kimi
    OpenAI-style route with an out-of-range effort:
 
    ```
@@ -92,15 +92,15 @@ SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
           "messages":[{"role":"user","content":"OK"}]}'
    ```
 
-2. **Clamp on the OpenAI route via serf.** Run serf against the `kimi-openai`
+2. **Clamp on the OpenAI route via evener.** Run evener against the `kimi-openai`
    instance (`--model kimi-openai/kimi-for-coding --reasoning-effort xhigh`).
    (This route is User-Agent gated for non-coding-agents, so a successful
    completion is not expected — what matters is the *kind* of failure.)
 
-3. **Kimi via the sanctioned anthropic-compatible route.** Run serf against the
+3. **Kimi via the sanctioned anthropic-compatible route.** Run evener against the
    `kimi` (type `kimi-anthropic`) instance with `--reasoning-effort high`.
 
-4. **Real Anthropic, both thinking modes.** Run serf with
+4. **Real Anthropic, both thinking modes.** Run evener with
    `--reasoning-effort high` against `anthropic/claude-opus-4-6` (adaptive
    thinking) and `anthropic/claude-opus-4-5-20251101` (legacy budget thinking).
 
@@ -132,19 +132,19 @@ SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
 
 - `rm -rf "$run"` (binary and provider config both live there) and any
   one-shot session dirs under
-  `~/.local/state/serf/projects/*/sessions/` created by the run.
+  `~/.local/state/evener/projects/*/sessions/` created by the run.
 
 ## Sharp edges
 
 - The Kimi anthropic-compatible endpoint (`https://api.kimi.com/coding`) is
-  ungated; the OpenAI-style `/coding/v1` endpoint is User-Agent gated — serf
+  ungated; the OpenAI-style `/coding/v1` endpoint is User-Agent gated — evener
   cannot complete on it, only validate the request shape. Deploy Kimi as
   `type = "kimi-anthropic"`.
 - The enum-validation 400 (step 1) fires *before* the UA-gate 403, so an `xhigh`
   request on the OpenAI route returns 400 while a valid effort returns 403. Don't
   read the 403 in step 2 as a failure — it confirms the param was accepted.
 - Provider enforcement of "thinking + forced tool_choice" can be intermittent;
-  the request serf builds is what matters. Re-run if a single call flakes.
+  the request evener builds is what matters. Re-run if a single call flakes.
 - `--max-rounds 1` forces the result tool, which is the path that exercises the
   forced-`tool_choice` + thinking interaction. A multi-round natural finish
   exercises the same first-call shape.

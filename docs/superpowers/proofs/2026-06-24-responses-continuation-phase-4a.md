@@ -24,19 +24,19 @@ Deferred by design:
 ## Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope|TestContinuationStoreOverride|TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope|TestContinuationStoreOverride|TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
 ```
 
 Result: pass.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceParamsFromConfig|TestInstanceFactory_EnvTunables' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceParamsFromConfig|TestInstanceFactory_EnvTunables' -count=1 -v
 ```
 
 Result: pass.
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
 ```
 
 Result: pass.

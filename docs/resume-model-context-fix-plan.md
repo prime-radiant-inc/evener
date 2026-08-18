@@ -13,7 +13,7 @@ The fix should make resume faithfully restore the session's persisted provider/m
 
 ### Fresh sessions
 
-Fresh `serf serve` sessions build a `SessionConfig` containing:
+Fresh `evener serve` sessions build a `SessionConfig` containing:
 
 ```go
 ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
@@ -252,7 +252,7 @@ Optional but useful:
 Hub resume code:
 
 - `cmd/evener-hub/spawn.go`
-  - `ResumeDaemon(...)` runs `serf serve --resume <sessionID>` and does not pass `--model`.
+  - `ResumeDaemon(...)` runs `evener serve --resume <sessionID>` and does not pass `--model`.
 
 With the changed precedence, hub resume should continue the persisted model regardless of `SERF_MODEL` in env.
 
@@ -301,4 +301,4 @@ If full `cmd/evener-hub` has known local-environment failures, document exact fa
 1. `cmdutil`: add `ResolveResumeModelRef` and tests.
 2. `agent`: extend restore API/config; set `s.resolveProfile`; add restore resolver/context tests.
 3. `cmd/evener`: update `run.go` and `serve.go` resume call sites and model precedence; add tests.
-4. Optional `cmd/evener-hub`: add a small regression test or document that hub relies on `serf serve --resume` with no model override.
+4. Optional `cmd/evener-hub`: add a small regression test or document that hub relies on `evener serve --resume` with no model override.

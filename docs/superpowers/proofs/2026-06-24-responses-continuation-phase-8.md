@@ -16,7 +16,7 @@ This phase uses package-local session tests with a test-only delta-shaped reques
 ## RED Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry' -count=1 -v
 ```
 
 Initial result: failed.
@@ -28,7 +28,7 @@ Initial result: failed.
 ## GREEN Evidence
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
 ```
 
 Result: pass.

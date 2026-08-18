@@ -175,7 +175,7 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 ### Helpers worth knowing about
 
 - `copyToClipboard(text)` — prefers `navigator.clipboard.writeText`; falls back to textarea + `document.execCommand("copy")` for non-secure-context deployments. On both-fail, surfaces via `window.SerfRenderer.appendBanner("error", …)`.
-- `applyTheme(name)` — toggles `body.light-theme` / `body.dark-theme` and persists `localStorage["serf-hub.theme"]`. Shared between the palette and the settings page.
+- `applyTheme(name)` — toggles `body.light-theme` / `body.dark-theme` and persists `localStorage["evener-hub.theme"]`. Shared between the palette and the settings page.
 - `revealProject(ctx)` — finds the sidebar link for `ctx.sessionId`, uncollapses its enclosing `[data-project-key]` section, scrolls into view.
 - `renderHelpPanel()` — paints the keyboard-shortcut reference into the results pane; clears `items` so Enter is a no-op until the user types again.
 - `Nav.go(url)` — production calls `window.location.assign`; tests replace this function to capture nav targets.
@@ -271,7 +271,7 @@ Two domains share the word and only one is the rename target:
 - README and docs
 
 **Wire / storage (deferred to #47):**
-- POST `/api/spawn` JSON field `"task"` — consumed by serf-tui via `hubapi.SpawnRequest`
+- POST `/api/spawn` JSON field `"task"` — consumed by evener-tui via `hubapi.SpawnRequest`
 - `.meta.json` field `"original_task"` — every saved session has it
 - HTML form field `<textarea name="task">` — consumed by spawn.go + spawn.js (internal-scope, but observable through DOM)
 
@@ -301,7 +301,7 @@ Two domains share the word and only one is the rename target:
 #### Kata #47 — wire migration (blocked by #46)
 
 1. `spawnRequest` accepts both `"task"` and `"prompt"` JSON keys on input; emits `"prompt"` on output. Custom `UnmarshalJSON` or paired tags.
-2. `internal/hubapi/SpawnRequest`: add `Prompt string`, deprecate `Task string`. Serf-tui updated to send `prompt`.
+2. `internal/hubapi/SpawnRequest`: add `Prompt string`, deprecate `Task string`. Evener-tui updated to send `prompt`.
 3. `agent/snapshot.go` `SessionMeta`: accept both `original_task` and `original_prompt`; write `original_prompt`. Test coverage for reading legacy meta files.
 4. After a release cycle where both names are accepted, drop `task` / `original_task`.
 

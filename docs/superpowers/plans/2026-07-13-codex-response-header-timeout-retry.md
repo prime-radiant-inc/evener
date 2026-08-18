@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stop Serf from replaying a fully written model-generation request after its response-header wait times out.
+**Goal:** Stop Evener from replaying a fully written model-generation request after its response-header wait times out.
 
 **Architecture:** The configured standard HTTP transport records whether `WroteRequest` completed and converts only transport-owned post-write timeouts into a distinct `llm.Error`. That error remains `KindTimeout` but is non-retryable; generic request timeouts and retryable HTTP responses retain their current behavior.
 
-**Tech Stack:** Go, `net/http`, `net/http/httptrace`, `httptest`, Serf's `llm.Error` and retry classifier.
+**Tech Stack:** Go, `net/http`, `net/http/httptrace`, `httptest`, Evener's `llm.Error` and retry classifier.
 
 ## Global Constraints
 
@@ -58,7 +58,7 @@ asserts `KindTimeout`, `ErrorClassPermanent`, `Retryable() == false`, and
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeoutDoesNotRetry)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeoutDoesNotRetry)' -count=1
 ```
 
 Expected: FAIL because response-header timeouts still use the generic retryable
@@ -132,7 +132,7 @@ request test proving a caller-expired context is not reclassified.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeoutDoesNotRetry|ClientWithAdapterTimeout|Classify|WrapContextError)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeoutDoesNotRetry|ClientWithAdapterTimeout|Classify|WrapContextError)' -count=1
 ```
 
 Expected: PASS.
@@ -142,7 +142,7 @@ Expected: PASS.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -count=1
 ```
 
 Expected: PASS.

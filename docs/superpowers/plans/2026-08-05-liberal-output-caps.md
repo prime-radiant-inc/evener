@@ -6,7 +6,7 @@
 
 **Architecture:** A catalog-lookup method on `llm.ModelCatalog` is the shared resolution primitive. The anthropic adapter uses it to replace its hardcoded 4096 default (fallback 32000 when the catalog is silent). The agent layer independently fills `Request.MaxTokens` from instance config then catalog (defense in depth). Separately, the round's finish reason is threaded into tool prevalidation so a `length`-stopped turn with unparseable tool args produces a truncation-specific error and never attempts JSON repair.
 
-**Tech Stack:** Go. Repo is a go workspace (`go.work`); run builds/tests from the repo root `/Users/jesse/prime-radiant/toil-suite/serf`.
+**Tech Stack:** Go. Repo is a go workspace (`go.work`); run builds/tests from the repo root `/Users/jesse/prime-radiant/toil-suite/evener`.
 
 **Spec:** `docs/superpowers/specs/2026-08-05-liberal-output-caps-design.md`
 

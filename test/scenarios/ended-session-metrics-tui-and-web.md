@@ -19,9 +19,9 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
 
 ## Pre-state
 
-- An isolated `serf-hub` (fake `$HOME`, non-`9180` port — never Jesse's
+- An isolated `evener-hub` (fake `$HOME`, non-`9180` port — never Jesse's
   real hub; see the Setup checklist in `docs/agentic-testing.md`) with
-  `-serf` pointed at a freshly built `serf` binary.
+  `-evener` pointed at a freshly built `evener` binary.
 - A session spawned via `POST /api/spawn`, sent one prompt to completion, then
   ended via `POST /api/sessions/local:<id>/shutdown`.
 - For step 4 only: a real SPA bundle. A checkout that has never run
@@ -68,7 +68,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
    `[data-testid="status-row-cost"]` inside `EndedSummary`
    (`StatusRow.tsx:250-279`) — so `strip` cross-checks the panel for free.
 
-5. **[TUI]** Launch `serf-tui --hub-addr <host:port> --auth-token <token>
+5. **[TUI]** Launch `evener-tui --hub-addr <host:port> --auth-token <token>
    --no-auto-start-hub` (flags: `cmd/evener-tui/internal/hubstart/hub_start.go:78-85`),
    navigate Dashboard → project → the ended session's row → Enter to open it,
    open the command palette, select `/details`, Enter.

@@ -1,6 +1,6 @@
 # Context Management
 
-How serf manages conversation history as it grows toward the context window limit.
+How evener manages conversation history as it grows toward the context window limit.
 
 ## Overview
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep lifecycle truth in the existing jobstore records and terminal generations. Delete the unreachable public `job_read_output` definition/result path, extend only the `job:<job_id>` arm of `read_transcript` with byte-window metadata and the existing nested/watch-grant routing, persist terminal state before explicitly flushing output and arming notification, and preserve each terminal notification's durable pending/delivered ledger while presenting all deliverable terminals in one already-durable steering turn. Session transcript/API-log behavior, watch matching, process execution, retention, and AppWire remain unchanged.
 
-**Tech Stack:** Go, Serf tool registry, append-only jobstore/output files, scripted provider tests, YAML tool-fluency probes, Markdown operational scenarios.
+**Tech Stack:** Go, Evener tool registry, append-only jobstore/output files, scripted provider tests, YAML tool-fluency probes, Markdown operational scenarios.
 
 ## Global Constraints
 
@@ -336,8 +336,8 @@ Add `TestJobStatusDelegateCarriesNotResumableReason` beside it. Project a delega
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/tool -run '^TestToolProgramDefinitionsUseCurrentJobSupervisionSurface$' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface|TestJobStatusPreservesExhaustionMetadataWithoutOutput|TestJobStatusDelegateCarriesNotResumableReason' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/tool -run '^TestToolProgramDefinitionsUseCurrentJobSupervisionSurface$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface|TestJobStatusPreservesExhaustionMetadataWithoutOutput|TestJobStatusDelegateCarriesNotResumableReason' -count=1 -v
 ```
 
 Expected: the definition-corpus and coordinator tests FAIL because they still name `job_read_output`; the not-resumable-reason test FAILS because Project 1 intentionally does not add that result field. The exhaustion preservation test PASSes on the prerequisite baseline; a failure means Project 1 is missing or was regressed, so stop rather than recreating budget semantics here. `TestJobReadOutputAbsentFromCallableSurface` is deliberately not part of this RED command because dispatch removal already landed; it runs in the final focused check.
@@ -372,8 +372,8 @@ Do not add a replacement alias, hidden registration, deprecated schema, provider
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/tool -run '^TestToolProgramDefinitionsUseCurrentJobSupervisionSurface$' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestJobReadOutputAbsentFromCallableSurface|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface|TestJobStatusPreservesExhaustionMetadataWithoutOutput|TestJobStatusDelegateCarriesNotResumableReason|TestJobStatusRunningShellProjectsSupervisionFields' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/tool -run '^TestToolProgramDefinitionsUseCurrentJobSupervisionSurface$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestJobReadOutputAbsentFromCallableSurface|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface|TestJobStatusPreservesExhaustionMetadataWithoutOutput|TestJobStatusDelegateCarriesNotResumableReason|TestJobStatusRunningShellProjectsSupervisionFields' -count=1 -v
 rg -n 'DefJobReadOutput' agent/internal/tool
 ```
 
@@ -525,7 +525,7 @@ Add table tests for `range="bytes:2-7"`, malformed ranges, negative/oversized ar
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestReadTranscriptJobRef' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestReadTranscriptJobRef' -count=1 -v
 ```
 
 Expected: FAIL because the current job-ref reader ignores `range`, has no `cursor`/`max_bytes` schema or byte metadata, and replays the retained tail.
@@ -714,9 +714,9 @@ Update these `scripts/run-fuzz.sh` entries exactly and remove the old names:
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestReadTranscriptJobRef|Test.*Transcript.*Grant|Test.*Nested.*Transcript|TestShell.*Transcript' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent ./agent/internal/tool -run 'ReadSessionTranscript|APILogSource|AttemptExpansion|OversizedExpansion' -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestReadTranscriptJobRef|Test.*Transcript.*Grant|Test.*Nested.*Transcript|TestShell.*Transcript' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent ./agent/internal/tool -run 'ReadSessionTranscript|APILogSource|AttemptExpansion|OversizedExpansion' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -count=1
 make fuzz-registry-check
 ```
 
@@ -1005,8 +1005,8 @@ func TestReconcileLostJobFlushesOutputBeforePendingNotification(t *testing.T) {
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/jobstore -run '^TestOutputStoreFlushPersistsCurrentBoundary$' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFinalizePersistsTerminalBeforeOutputFlushAndLeavesNotificationUnarmedOnFailure|TestFinalizeEnqueuesOnlyAfterTerminalAndOutputAreDurable|TestRestartRearmFlushesTerminalOutputBeforePendingNotification|TestReconcileLostJobFlushesOutputBeforePendingNotification' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/jobstore -run '^TestOutputStoreFlushPersistsCurrentBoundary$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFinalizePersistsTerminalBeforeOutputFlushAndLeavesNotificationUnarmedOnFailure|TestFinalizeEnqueuesOnlyAfterTerminalAndOutputAreDurable|TestRestartRearmFlushesTerminalOutputBeforePendingNotification|TestReconcileLostJobFlushesOutputBeforePendingNotification' -count=1 -v
 ```
 
 Expected: the first test FAILS to compile because `Flush` is absent. The agent group FAILS because current live finalization has no explicit post-terminal flush boundary, restart re-arming appends pending without reopening/flushing terminal output, and runtime-lost reconciliation batches `EventJobFinished` with pending before any flush gate.
@@ -1106,8 +1106,8 @@ In `reconcileLostJobsWithLoad`, replace the current combined `finished + pending
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/jobstore -run 'TestOutputStoreFlush|TestOutputStore' -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFinalize|TestJobManagerFinalize|TestRestartRearmFlushesTerminalOutputBeforePendingNotification|TestReconcileLostJobFlushesOutputBeforePendingNotification|TestRunShell.*Finaliz|Test.*Delegate.*Finaliz' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/jobstore -run 'TestOutputStoreFlush|TestOutputStore' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestFinalize|TestJobManagerFinalize|TestRestartRearmFlushesTerminalOutputBeforePendingNotification|TestReconcileLostJobFlushesOutputBeforePendingNotification|TestRunShell.*Finaliz|Test.*Delegate.*Finaliz' -count=1
 ```
 
 Expected: PASS, including existing same-generation retry and crash/rearm tests.
@@ -1396,7 +1396,7 @@ Add a pure rendering table for `completed`, `failed`, `stopped`, and `exhausted`
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestTerminalNotificationsCoalesce|TestCoalescedTerminalTranscriptAppendFailure|TestCoalescedTerminalDeliveryFailure|TestTerminalNotificationStatusesRenderDistinctly' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestTerminalNotificationsCoalesce|TestCoalescedTerminalTranscriptAppendFailure|TestCoalescedTerminalDeliveryFailure|TestTerminalNotificationStatusesRenderDistinctly' -count=1 -v
 ```
 
 Expected: PASS on the inspected implementation. A failure contradicts the characterized baseline: apply systematic debugging and stop to revise this plan with Jesse before changing production. This task remains test-only; do not change `acceptNotificationInput`, transcript writer code, jobstore event shapes, or watch delivery.
@@ -1509,8 +1509,8 @@ func TestJobSupervisionProbesUseCurrentSurface(t *testing.T) {
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test.*Background.*Prompt|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./tools/tool-fluency/... -run '^TestJobSupervisionProbesUseCurrentSurface$' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test.*Background.*Prompt|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface' -count=1 -v
+GOCACHE=/tmp/evener-gocache go test ./tools/tool-fluency/... -run '^TestJobSupervisionProbesUseCurrentSurface$' -count=1 -v
 ```
 
 Expected: FAIL because the prompt lacks the exact bounded-cursor/quiet-time guidance and `jobs_control.yaml` still expects `job_read_output`.
@@ -1572,8 +1572,8 @@ Update the tool-fluency README Jobs/Transcripts rows to:
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'Test.*Prompt|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface' -count=1
-GOCACHE=/tmp/serf-gocache go test ./tools/tool-fluency/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'Test.*Prompt|TestCoordinatorWorkflowUsesCurrentJobSupervisionSurface' -count=1
+GOCACHE=/tmp/evener-gocache go test ./tools/tool-fluency/... -count=1
 rg -n 'job_read_output' agent/prompts agent/internal/tool/definitions.go internal/bundled/plugins/coordinator-workflow/agents tools/tool-fluency/probes tools/tool-fluency/README.md
 ```
 
@@ -1739,11 +1739,11 @@ Expected: exit 0 and no unrelated file changes.
 - [ ] **Step 2: Run focused contract suites**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/internal/jobstore -run 'TestOutputStoreFlush|TestFold.*Notification|Test.*Notification' -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestJobStatus|TestJobTools_Exhausted|TestJobNotification_Exhausted|TestReadTranscriptJobRef|Test.*Transcript.*Grant|TestFinalize|TestRestartRearm|TestReconcileLost|TestTerminalNotification|TestCoalescedTerminal' -count=1
-GOCACHE=/tmp/serf-gocache go test ./agent ./agent/internal/tool -run 'ReadSessionTranscript|APILogSource|AttemptExpansion|OversizedExpansion' -count=1
-GOCACHE=/tmp/serf-gocache go test ./tools/tool-fluency/... -count=1
-GOCACHE=/tmp/serf-gocache go test ./internal/appprojector ./server -run 'TestProjectJobRecord_Exhausted|Test.*Exhausted|TestAppDiagnosticsFromDetailedStatus|TestServerAppWireThreadReadReturnsStatus' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/internal/jobstore -run 'TestOutputStoreFlush|TestFold.*Notification|Test.*Notification' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestJobStatus|TestJobTools_Exhausted|TestJobNotification_Exhausted|TestReadTranscriptJobRef|Test.*Transcript.*Grant|TestFinalize|TestRestartRearm|TestReconcileLost|TestTerminalNotification|TestCoalescedTerminal' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent ./agent/internal/tool -run 'ReadSessionTranscript|APILogSource|AttemptExpansion|OversizedExpansion' -count=1
+GOCACHE=/tmp/evener-gocache go test ./tools/tool-fluency/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./internal/appprojector ./server -run 'TestProjectJobRecord_Exhausted|Test.*Exhausted|TestAppDiagnosticsFromDetailedStatus|TestServerAppWireThreadReadReturnsStatus' -count=1
 make fuzz-registry-check
 ```
 
@@ -1752,8 +1752,8 @@ Expected: PASS. The server command is the AppWire no-protocol-change proof.
 - [ ] **Step 3: Run default deterministic suites**
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent/... -count=1
-GOCACHE=/tmp/serf-gocache go test ./server/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent/... -count=1
+GOCACHE=/tmp/evener-gocache go test ./server/... -count=1
 make test
 ```
 

@@ -7,9 +7,9 @@ Depends on: `docs/superpowers/specs/2026-05-14-claude-code-compat-sp1-config-loa
 
 ## 1. Goal
 
-SP2 takes the `permissions` block produced by SP1's loader and turns it into a decision oracle that serf consults on every tool call. It parses Claude Code's permission-rule grammar (`Bash`, `Bash(git push *)`, `Read(./.env)`, `Skill(*)`, `mcp__server__tool`, `WebFetch(domain:example.com)`, `Agent(Explore)`), evaluates `permissions.allow`, `permissions.deny`, and `permissions.defaultMode` against a `(tool_name, tool_input)` pair, and returns one of three decisions: `allow`, `deny`, or `ask`. The matcher itself is a pure function. The enforcement layer wires that function into `Session.execTool` immediately after `PreToolUse` hooks fire and before the tool registry executes the call, where SP5's `PermissionRequest`/`PermissionDenied` hooks will later attach.
+SP2 takes the `permissions` block produced by SP1's loader and turns it into a decision oracle that evener consults on every tool call. It parses Claude Code's permission-rule grammar (`Bash`, `Bash(git push *)`, `Read(./.env)`, `Skill(*)`, `mcp__server__tool`, `WebFetch(domain:example.com)`, `Agent(Explore)`), evaluates `permissions.allow`, `permissions.deny`, and `permissions.defaultMode` against a `(tool_name, tool_input)` pair, and returns one of three decisions: `allow`, `deny`, or `ask`. The matcher itself is a pure function. The enforcement layer wires that function into `Session.execTool` immediately after `PreToolUse` hooks fire and before the tool registry executes the call, where SP5's `PermissionRequest`/`PermissionDenied` hooks will later attach.
 
-SP2 ships the contract Claude Code's docs define ([code.claude.com/docs/en/permissions](https://code.claude.com/docs/en/permissions)) for the tool families serf actually exposes. Tool families serf does not host (PowerShell, the sandbox crossover) parse but are inert; tests pin that contract so plugins shipping such rules under serf do not crash.
+SP2 ships the contract Claude Code's docs define ([code.claude.com/docs/en/permissions](https://code.claude.com/docs/en/permissions)) for the tool families evener actually exposes. Tool families evener does not host (PowerShell, the sandbox crossover) parse but are inert; tests pin that contract so plugins shipping such rules under evener do not crash.
 
 ## 2. Public API Surface
 
@@ -90,7 +90,7 @@ The unexported `parsedRule` struct stores `(rule Rule, source string)` so decisi
 
 ```go
 // AskFallback dictates what Evaluate returns when a rule yields "ask" on a
-// surface that has no human (serf -p, serfeval, hub batch). Surfaces opt in
+// surface that has no human (evener -p, serfeval, hub batch). Surfaces opt in
 // to one of these at session construction.
 type AskFallback int
 
@@ -111,9 +111,9 @@ A rule is `Tool` or `Tool(specifier)`. The empty specifier `Tool()` is rejected 
 
 Supported tool keywords:
 
-| Keyword       | Specifier form                                          | Source name on a serf tool call                          |
+| Keyword       | Specifier form                                          | Source name on a evener tool call                          |
 | ---           | ---                                                      | ---                                                       |
-| `Bash`        | command pattern with glob                                | serf's `shell` tool, mapped to `Bash` by `MapSerfToolNameToClaude` |
+| `Bash`        | command pattern with glob                                | evener's `shell` tool, mapped to `Bash` by `MapSerfToolNameToClaude` |
 | `Read`        | gitignore-style path pattern                             | `read_file`, `Grep`, `Glob` (Claude's "best effort")     |
 | `Edit`        | gitignore-style path pattern                             | `edit_file`, `write_file`, `notebook_edit`               |
 | `Write`       | alias for `Edit`                                         | same as `Edit`                                            |
@@ -122,7 +122,7 @@ Supported tool keywords:
 | `Skill`       | skill name, `*` allowed                                  | invoked via the skills subsystem; tool name `Skill`      |
 | `Agent`       | subagent name                                            | `spawn_agent`, mapped to `Agent`                          |
 | `mcp__<srv>`  | bare server, `mcp__<srv>__<tool>`, `mcp__<srv>__*`       | tool name as registered (`mcp__server__tool`)            |
-| `PowerShell`  | parses; never matches (serf has no PowerShell tool)      | inert                                                     |
+| `PowerShell`  | parses; never matches (evener has no PowerShell tool)      | inert                                                     |
 
 Any other tool keyword parses as bare-or-specifier (treated as an exact-match on tool name and an opaque specifier) and warns once per startup that the matcher will treat the specifier as a literal-equality check. This keeps user-typed rules for third-party tools from being silently dropped.
 
@@ -145,7 +145,7 @@ Compound commands split on `&&`, `||`, `;`, `|`, `|&`, `&`, and newline. A rule 
 
 Process-wrapper stripping is implemented per the docs: `timeout`, `time`, `nice`, `nohup`, `stdbuf`, and bare `xargs` (no flags) are peeled before matching. Other wrappers (`devbox`, `docker exec`, `find -exec`, `watch`, etc.) are not stripped.
 
-**Out of scope for v1, documented as a deferral in §11:** the Claude-Code "built-in read-only command" allowlist (`ls`, `cat`, `echo`, …) that bypasses permission checks entirely. Serf does not run a sandbox, and serf's `shell` tool already has its own pre-existing safety review path. SP2 does **not** auto-allow these commands; if a user wants them prompt-free, they write `"Bash(ls *)"` in their allow list. Tests pin this behavior so the deferral is explicit.
+**Out of scope for v1, documented as a deferral in §11:** the Claude-Code "built-in read-only command" allowlist (`ls`, `cat`, `echo`, …) that bypasses permission checks entirely. Evener does not run a sandbox, and evener's `shell` tool already has its own pre-existing safety review path. SP2 does **not** auto-allow these commands; if a user wants them prompt-free, they write `"Bash(ls *)"` in their allow list. Tests pin this behavior so the deferral is explicit.
 
 ### 3.3 Read / Edit path patterns
 
@@ -162,7 +162,7 @@ Glob semantics inside the path are gitignore: `*` matches within one path segmen
 
 `Edit` rules also fire on `write_file` and `notebook_edit`. `Write` is an alias for `Edit`.
 
-Implementation note: serf already vendors a gitignore implementation in `agent/git_snapshot.go` (verify when implementing; if it does not expose a `Match(path, pattern)` function, pull `github.com/sabhiram/go-gitignore` or implement a minimal matcher restricted to the patterns Claude Code documents — no `!` negation, no escaped `#`).
+Implementation note: evener already vendors a gitignore implementation in `agent/git_snapshot.go` (verify when implementing; if it does not expose a `Match(path, pattern)` function, pull `github.com/sabhiram/go-gitignore` or implement a minimal matcher restricted to the patterns Claude Code documents — no `!` negation, no escaped `#`).
 
 Symlink resolution is **out of scope for v1**. Tests pin that SP2 evaluates against the literal path the tool was called with. Symlink double-checking is a follow-up; documented in §11.
 
@@ -189,13 +189,13 @@ MCP rules have no parenthesized specifier. The tool-name itself **is** the rule,
 - `Skill(name)` — exact match on skill name.
 - `Skill(prefix:*)` / `Skill(prefix *)` — same wildcard rules as Bash (matches a name prefix). Tested but lightly used.
 
-Tool name on the serf side is `Skill`. The skill name lives in `tool_input.name`.
+Tool name on the evener side is `Skill`. The skill name lives in `tool_input.name`.
 
 ### 3.7 Agent
 
 - `Agent(Explore)`, `Agent(Plan)`, `Agent(my-custom)` — exact match on subagent name.
 - Wildcards as for Skill.
-- Tool name on the serf side is `Agent` (mapped from `spawn_agent` by `MapSerfToolNameToClaude`). The subagent type lives in `tool_input.subagent_type`.
+- Tool name on the evener side is `Agent` (mapped from `spawn_agent` by `MapSerfToolNameToClaude`). The subagent type lives in `tool_input.subagent_type`.
 
 ### 3.8 Parse-error cases
 
@@ -212,7 +212,7 @@ Errors are reported during `NewPermissionMatcher` and carry the source string ve
 
 `PermissionMatcher.Evaluate(toolName, toolInput)`:
 
-1. If `mode == PermissionModeBypassPermissions`, return `{Outcome: allow, Reason: "bypassPermissions mode"}`. Deny rules are still consulted as a circuit breaker for `rm -rf /`-class commands; **deferred to a follow-up** — the docs say only the literal-root removal still prompts, and serf has no sandbox to enforce it. Tests pin "bypass means allow" for v1 and note the gap.
+1. If `mode == PermissionModeBypassPermissions`, return `{Outcome: allow, Reason: "bypassPermissions mode"}`. Deny rules are still consulted as a circuit breaker for `rm -rf /`-class commands; **deferred to a follow-up** — the docs say only the literal-root removal still prompts, and evener has no sandbox to enforce it. Tests pin "bypass means allow" for v1 and note the gap.
 2. If `mode == PermissionModePlan` and the tool is in the *writes-files* set (`Edit`, `Write`, `NotebookEdit`, and `Bash` when the command parses as non-read-only — see §6.2), return `{Outcome: deny, Reason: "plan mode forbids file mutation"}`.
 3. Walk `deny` rules in order. First match: return `{Outcome: deny, Rule: r.source, Reason: "denied by " + r.source}`.
 4. Walk `ask` rules in order. First match: return `{Outcome: ask, Rule: r.source, Reason: "ask required by " + r.source}`.
@@ -234,7 +234,7 @@ A rule matches a `(toolName, toolInput)` pair when:
 - The rule's **tool keyword** equals `toolName` (after `MapSerfToolNameToClaude`), **or** for MCP rules the rule string is a prefix-or-exact match on `toolName`.
 - The rule's **specifier** matches the relevant slice of `toolInput`:
   - `Bash` → `toolInput["command"]` as a string. The command is split on the shell operators in §3.2; every subcommand must satisfy the pattern after wrapper-stripping.
-  - `Read` / `Edit` → `toolInput["file_path"]` (the canonical serf field — verify in `agent/tool_registry.go`). For `Grep`/`Glob`, the field is the search root.
+  - `Read` / `Edit` → `toolInput["file_path"]` (the canonical evener field — verify in `agent/tool_registry.go`). For `Grep`/`Glob`, the field is the search root.
   - `WebFetch` → `toolInput["url"]` parsed via `url.Parse`; specifier matched against `.Host`.
   - `Skill` → `toolInput["name"]`.
   - `Agent` → `toolInput["subagent_type"]`.
@@ -311,7 +311,7 @@ if s.permissionMatcher != nil {
 
 The matcher consumes `call.Arguments` **after** any `updatedInput` rewrite from a PreToolUse hook (the hook block at line 1278–1300 already mutates the call indirectly — SP5 hardens this; SP2 just reads `call.Arguments` from whatever it is at that point).
 
-Tools that have side effects merely by being parsed (none today) would need a redesign; serf's tool registry is execution-only.
+Tools that have side effects merely by being parsed (none today) would need a redesign; evener's tool registry is execution-only.
 
 ### 6.2 Session wiring
 
@@ -338,7 +338,7 @@ func (s *Session) permissionDeniedResult(call llm.ToolCallData, d PermissionDeci
 func (s *Session) resolveAsk(ctx context.Context, call llm.ToolCallData, d PermissionDecision) PermissionDecision
 ```
 
-`resolveAsk` is the integration seam where SP5 owns the *hook firing* and serf surfaces (CLI/TUI/Hub) own the *user prompt*. SP2 owns the contract:
+`resolveAsk` is the integration seam where SP5 owns the *hook firing* and evener surfaces (CLI/TUI/Hub) own the *user prompt*. SP2 owns the contract:
 
 - If a `PermissionRequest` hook returns `permissionDecision: "allow"`, `"deny"`, or `"defer"` (per SP5), that result overrides the matcher's `ask`.
 - Else, dispatch to a surface-specific resolver based on `cfg.PermissionAskFallback`.
@@ -367,7 +367,7 @@ Deny rules outrank hooks — a `PermissionRequest` hook cannot upgrade a `deny`-
 
 `NewPermissionMatcher` returns `(nil, error)` if any rule fails to parse. Error text format: `permission rule %q: <reason>` — e.g. `permission rule "Bash(rm": unbalanced parentheses`.
 
-`DiscoverSerfConfig` (SP1) does not call `NewPermissionMatcher`; SP8 does, at session bootstrap. A parse error aborts session startup with the rule-source and the originating file path (SP8 wraps with `serf config <path>:`).
+`DiscoverSerfConfig` (SP1) does not call `NewPermissionMatcher`; SP8 does, at session bootstrap. A parse error aborts session startup with the rule-source and the originating file path (SP8 wraps with `evener config <path>:`).
 
 ### 8.2 Runtime
 
@@ -408,10 +408,10 @@ Default for `PermissionAskFallback` per surface:
 
 | Surface                             | Default |
 | ---                                  | ---      |
-| `serf` interactive (TTY)             | `AskFallbackInteractive` |
-| `serf` non-interactive (`-p`, stdin) | `AskFallbackDeny`        |
-| `serf-tui`                           | `AskFallbackInteractive` |
-| `serf-hub` (web)                     | `AskFallbackInteractive` |
+| `evener` interactive (TTY)             | `AskFallbackInteractive` |
+| `evener` non-interactive (`-p`, stdin) | `AskFallbackDeny`        |
+| `evener-tui`                           | `AskFallbackInteractive` |
+| `evener-hub` (web)                     | `AskFallbackInteractive` |
 | `serfeval`                           | `AskFallbackDeny`        |
 | Subagents                            | inherit from parent      |
 
@@ -459,7 +459,7 @@ TDD: write all of §10 first, then implement §2–6 until tests pass. No mocked
 | 30 | (empty string) | error |
 | 31 | `Unknown(thing)` | parses (forward-compat); warning recorded |
 | 32 | `Read(\x00foo)` | error NUL byte |
-| 33 | `PowerShell(Get-ChildItem *)` | parses; inert under serf |
+| 33 | `PowerShell(Get-ChildItem *)` | parses; inert under evener |
 
 ### 10.2 `Evaluate` table (Bash semantics)
 
@@ -563,21 +563,21 @@ Cases:
 
 **Decision.** Each entry point picks an `AskFallback` value at session construction. Defaults are listed in §9. Three concrete behaviors:
 
-- **TTY-attached `serf` and `serf-tui`**: an interactive prompt. `serf` prompts on stdin/stderr; `serf-tui` opens a dialog overlay. The `PermissionRequest` hook fires *before* the prompt so a hook can short-circuit ("auto-approve all calls in this CI run").
-- **`serf-hub`**: enqueues a permission request in the session's event stream (`EventPermissionRequest`) and *blocks the tool call* on a `RespondToPermission(sessionID, callID, decision)` API call. Until the API returns, the call hangs. A timeout (default 60s, configurable per-session) collapses to the `AskFallback` value — `AskFallbackDeny` for hub.
-- **`serf -p`, `serfeval`**: no human. `AskFallbackDeny` is the default. Documented in `--help`.
+- **TTY-attached `evener` and `evener-tui`**: an interactive prompt. `evener` prompts on stdin/stderr; `evener-tui` opens a dialog overlay. The `PermissionRequest` hook fires *before* the prompt so a hook can short-circuit ("auto-approve all calls in this CI run").
+- **`evener-hub`**: enqueues a permission request in the session's event stream (`EventPermissionRequest`) and *blocks the tool call* on a `RespondToPermission(sessionID, callID, decision)` API call. Until the API returns, the call hangs. A timeout (default 60s, configurable per-session) collapses to the `AskFallback` value — `AskFallbackDeny` for hub.
+- **`evener -p`, `serfeval`**: no human. `AskFallbackDeny` is the default. Documented in `--help`.
 
 **Why this and not "always prompt on stdin"?** Hub is multi-user and async; blocking on stdin breaks it. Eval runs are batched; prompts deadlock them. Letting each surface declare its policy keeps the matcher pure.
 
 **Why `AskFallbackDeny` and not `AskFallbackAllow` as the non-interactive default?** Falling open is the worst class of permission bug. `AskFallbackAllow` exists for the narrow case of an internal test harness; SP2 ships it but the CLI flags do not expose it. Surfaced only via `SessionConfig`.
 
-### 11.2 `acceptEdits` and `plan` mode behavior in serf
+### 11.2 `acceptEdits` and `plan` mode behavior in evener
 
-**`acceptEdits`.** Documented CC behavior: auto-accepts file edits and common filesystem commands (`mkdir`, `touch`, `mv`, `cp`) within the working directory. Serf's v1 implementation: short-circuit `allow` for `Edit`, `Write`, `NotebookEdit` calls whose `file_path` resolves under `env.WorkingDir()`. Bash shortcuts for `mkdir`/`touch`/`mv`/`cp` are **deferred** — they require parsing the command line to identify the operand, which overlaps the read-only-Bash deferral. Tests pin "Edit auto-accepts in cwd; Bash falls through". Plugins relying on the Bash shortcut see an `ask` they would not see under CC; documented in the SP2 README the implementer ships.
+**`acceptEdits`.** Documented CC behavior: auto-accepts file edits and common filesystem commands (`mkdir`, `touch`, `mv`, `cp`) within the working directory. Evener's v1 implementation: short-circuit `allow` for `Edit`, `Write`, `NotebookEdit` calls whose `file_path` resolves under `env.WorkingDir()`. Bash shortcuts for `mkdir`/`touch`/`mv`/`cp` are **deferred** — they require parsing the command line to identify the operand, which overlaps the read-only-Bash deferral. Tests pin "Edit auto-accepts in cwd; Bash falls through". Plugins relying on the Bash shortcut see an `ask` they would not see under CC; documented in the SP2 README the implementer ships.
 
-**`plan` mode.** Documented CC behavior: read-only exploration; no file edits. Serf's v1 implementation: deny `Edit`/`Write`/`NotebookEdit` outright; allow `Read`/`Grep`/`Glob`/`WebFetch`/`WebSearch` outright; everything else (`Bash`, `Skill`, `Agent`, `mcp__*`) falls through to the normal rule pipeline. The Bash read-only-allowlist (`ls`, `cat`, …) is **not** implemented in v1; users wanting "cats are fine in plan mode" write `Bash(cat *)` in their allow list. Documented in §11 deferrals.
+**`plan` mode.** Documented CC behavior: read-only exploration; no file edits. Evener's v1 implementation: deny `Edit`/`Write`/`NotebookEdit` outright; allow `Read`/`Grep`/`Glob`/`WebFetch`/`WebSearch` outright; everything else (`Bash`, `Skill`, `Agent`, `mcp__*`) falls through to the normal rule pipeline. The Bash read-only-allowlist (`ls`, `cat`, …) is **not** implemented in v1; users wanting "cats are fine in plan mode" write `Bash(cat *)` in their allow list. Documented in §11 deferrals.
 
-**`auto` mode.** CC's auto-mode runs an Anthropic-internal classifier we cannot reproduce. Serf's v1: `auto` collapses to `default` (ask on no match). Deferred.
+**`auto` mode.** CC's auto-mode runs an Anthropic-internal classifier we cannot reproduce. Evener's v1: `auto` collapses to `default` (ask on no match). Deferred.
 
 **`dontAsk` mode.** Implemented as documented: deny everything not pre-approved. No deferral.
 
@@ -596,7 +596,7 @@ Each is testable as a pinned "v1 does not do this; here is the workaround" asser
 7. `additionalDirectories` for `acceptEdits` scope expansion. SP1 does not carry this field yet; SP2 reads cwd only.
 8. `auto` mode classifier.
 9. `permissions.disableBypassPermissionsMode` / `disableAutoMode` / `disableAutoModeWarning`. These are CC managed-settings flags; SP2 treats them as inert.
-10. The `--allowedTools` / `--disallowedTools` CLI flags. Existing serf fields (`AllowedToolNames`, `DeniedToolNames`) cover the bare-tool form; the CC-style flag with full rule syntax is deferred to SP8.
+10. The `--allowedTools` / `--disallowedTools` CLI flags. Existing evener fields (`AllowedToolNames`, `DeniedToolNames`) cover the bare-tool form; the CC-style flag with full rule syntax is deferred to SP8.
 
 ### 11.4 Dependencies on other sub-specs (NOT resolved here)
 

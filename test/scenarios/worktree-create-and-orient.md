@@ -11,20 +11,20 @@ This is a live end-to-end test against a real provider API (billed).
 
 ## Pre-state
 
-- A `serf` binary from this branch, built into a unique run directory —
-  never a fixed `/tmp/serf-wt` that a card running beside this one would
+- A `evener` binary from this branch, built into a unique run directory —
+  never a fixed `/tmp/evener-wt` that a card running beside this one would
   overwrite mid-run (kata `k2rx`):
-  `run=$(mktemp -d -t serf-e2e-XXXXXX); go build -o "$run/serf" ./cmd/evener`.
+  `run=$(mktemp -d -t evener-e2e-XXXXXX); go build -o "$run/evener" ./cmd/evener`.
 - A hermetic git repo with at least one commit (the working dir).
 - An isolated `SERF_STATE_DIR` with `providers.toml`/`credentials.toml`/
-  `auth-token` symlinked from `~/.serf` (read-only config, isolated mutable
+  `auth-token` symlinked from `~/.evener` (read-only config, isolated mutable
   state). Managed worktrees then land under `$SERF_STATE_DIR/worktrees/`.
 - A model string for the tier under test (e.g. `kimi/kimi-for-coding`,
   `openai/gpt-5.4-mini`, `lunaroute/glm-5.2-nvfp4`).
 
 ## Steps
 
-1. Run serf non-interactively with a prompt that asks for isolated work
+1. Run evener non-interactively with a prompt that asks for isolated work
    **without naming the tool**:
    `"You need to make a risky experimental change to main.go in isolation,
    without touching the current working copy. Set up an isolated worktree for
@@ -46,7 +46,7 @@ This is a live end-to-end test against a real provider API (billed).
   not understand that it entered the worktree.
 - On disk: the worktree dir exists with a `.git` pointer file and a
   `.meta/<name>.json` sidecar; `git -C <mainrepo> worktree list --porcelain`
-  shows it `locked` with a `serf:` reason.
+  shows it `locked` with a `evener:` reason.
 
 ## Cleanup
 
@@ -56,7 +56,7 @@ temp paths so reruns don't collide). No shared state touched.
 ## Sharp edges
 
 - Pointing `SERF_STATE_DIR` at a bare dir loses provider config — symlink
-  `providers.toml`/`credentials.toml`/`auth-token` in first, or serf reports
+  `providers.toml`/`credentials.toml`/`auth-token` in first, or evener reports
   "unknown instance".
 - Weak models may emit extra args (e.g. a `purpose` field); the tool ignores
   unknown args, so that's not a failure — note it as a prompt-shape signal.

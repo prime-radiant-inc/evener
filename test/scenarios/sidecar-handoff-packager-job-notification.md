@@ -16,7 +16,7 @@ observer's terminal `communicate(end_turn:true)` callback — see
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-handoff-packager-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-handoff-packager-XXXXX)`.
 
 ## Steps
 

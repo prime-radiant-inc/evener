@@ -27,7 +27,7 @@ this card is rebuilt around, because they invert what it used to say:
   composer drop. `sendBatch`'s own `catch` + toast (`AskDock.tsx:295-306`) is for a
   **local enqueue** failure only; a lost race does not reach it.
 - **Two tabs of one Chrome profile do not race.** The outbox is one origin-scoped
-  IndexedDB (`stores/mutationOutboxIndexedDB.ts:31`, `"serf-mutation-outbox"`), drained
+  IndexedDB (`stores/mutationOutboxIndexedDB.ts:31`, `"evener-mutation-outbox"`), drained
   serially per ref, so the two intents are dispatched back to back rather than
   concurrently. The genuinely simultaneous race is two *separate* clients — which is why
   the exact assertions moved to the REST half below.
@@ -47,7 +47,7 @@ and assert what each tab converges to.
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.serf/auth-token")
+  TOKEN=$(cat "$HOME/.evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```
@@ -60,10 +60,10 @@ and assert what each tab converges to.
 
 1. **(browser-free)** Spawn a session with one question and two clearly distinct options:
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-ask-twoclients-XXXXX)
+   tmpdir=$(mktemp -d -t evener-e2e-ask-twoclients-XXXXX)
    body=$(jq -n --arg wd "$tmpdir" '{
      prompt: "Before doing any other work, call the ask_user tool once. Ask exactly one question: header \"Deploy\", question \"Deploy now or wait for review?\", with exactly two options: now (detail \"ship immediately\") and wait (detail \"hold for a second pair of eyes\"). Do not do anything else first.",
-     model: "openai/gpt-5.5", working_dir: $wd, harness: "serf", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
+     model: "openai/gpt-5.5", working_dir: $wd, harness: "evener", branch: "", access_mode: "full", agent: "default", launch_overrides: {}
    }')
    SID=$(curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$body" "$HUB/api/spawn" | jq -r '.session_id')
    for i in $(seq 1 60); do
@@ -77,7 +77,7 @@ and assert what each tab converges to.
    with deliberately different choices so the transcript shows unambiguously which one won.
    Both bodies are the exact `[answers]` form the dock composes (`askCompose.ts:84-93`):
    ```bash
-   out=$(mktemp -d -t serf-e2e-ask-race-XXXXX)
+   out=$(mktemp -d -t evener-e2e-ask-race-XXXXX)
    answer() { jq -n --arg l "$1" '{text: ("[answers]\n1. [Deploy] → \"" + $l + "\"")}'; }
    curl -s -o "$out/a.body" -w '%{http_code}' -X POST \
      -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \

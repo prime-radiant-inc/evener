@@ -20,7 +20,7 @@ with the vanilla frontend (`660376f78`).
 
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/agentic-testing.md`. Token at
-  `$HOME/.serf/auth-token` (that isolated one).
+  `$HOME/.evener/auth-token` (that isolated one).
 - A hermetic `$WORK` as the session's `working_dir`, and a small valid PNG
   staged somewhere the model can copy or reproduce from.
 - A cheap model, e.g. `anthropic/claude-haiku-4-5-20251001`.

@@ -924,7 +924,7 @@ Keep normal transcript reads semantic and isolated from API files. Add bounded A
 
 Add `APILogPath` to `doctor.Paths`, resolved as `<bucket>/sessions/<sid>.api.jsonl`. `doctor.APILog` opens that file directly and consumes the same `apilog.NewDecoder`/`apilog.DecodeRecord` durable codec from Task 2. Doctor owns only its row aggregation/filtering/rendering. It type-switches over attempts and settlements, tolerates only `apilog.ErrPartialTail` at EOF, and derives existing filters/totals from parsed response/outcome fields. Extend rows with `attempt_id`, `attempt_group_id`, `attempt_index`, `provider_instance`, `outcome`, derived `final`, `settlement_state`, and `final_attempt_count`; do not print bodies or credential-bearing material in default human/JSON summary output. A full clean-EOF doctor scan may report `unsettled`; a partial tail reports `unknown_outside_range` and no invented final count.
 
-`doctor.Count` now counts structural semantic tool calls and assistant-text mentions only. Delete `mentions_api_calls`; doctor users who need provider request inspection use `serf-doctor apilog` explicitly.
+`doctor.Count` now counts structural semantic tool calls and assistant-text mentions only. Delete `mentions_api_calls`; doctor users who need provider request inspection use `evener-doctor apilog` explicitly.
 
 **Hub behavior:**
 
@@ -967,7 +967,7 @@ git status --short
 git add agent/doctor/locate.go agent/doctor/doctor.go agent/doctor/apilog.go agent/doctor/apilog_test.go agent/doctor/filesystem_program_fuzz_test.go agent/doctor/dr2_build_report_fuzz_test.go cmd/evener-doctor/main.go cmd/evener-doctor/main_test.go cmd/evener-doctor/README.md cmd/evener-hub/internal/hubcore/wedge.go cmd/evener-hub/internal/hubcore/wedge_test.go cmd/evener-hub/internal/hubcore/scenarios_fuzz_test.go cmd/evener-hub/main_background.go cmd/evener-hub/app_threadlist.go cmd/evener-hub/main.go
 git commit -m "Read provider diagnostics from the canonical API log
 
-Move serf-doctor API analysis off transcript records and expose attempt identity without bodies. Remove Hub's dependency on failed transcript API-call tails so semantic cold-load paths never inspect private provider data."
+Move evener-doctor API analysis off transcript records and expose attempt identity without bodies. Remove Hub's dependency on failed transcript API-call tails so semantic cold-load paths never inspect private provider data."
 ```
 
 ## Task 8: Remove obsolete raw-log controls and correct current documentation

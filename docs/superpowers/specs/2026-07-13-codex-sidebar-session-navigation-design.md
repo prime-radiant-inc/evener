@@ -12,14 +12,14 @@ The tree API supplies two identities:
 - `ref`: the globally qualified AppWire identity, such as `codex-local:thread-id`
 - `session_id`: the source's bare session identifier
 
-The sidebar currently builds every primary session URL from `session_id`. The server interprets a bare route ID as a local Serf session. It therefore looks for a local session instead of dispatching the request to the Codex source.
+The sidebar currently builds every primary session URL from `session_id`. The server interprets a bare route ID as a local Evener session. It therefore looks for a local session instead of dispatching the request to the Codex source.
 
 The backend already supports source-qualified route IDs and can read and drive Codex threads through AppWire. The defect lies in client-side route construction.
 
 ## Goals
 
 - Open external Codex threads from the sidebar.
-- Preserve current canonical URLs for local Serf sessions.
+- Preserve current canonical URLs for local Evener sessions.
 - Use one route-identity rule for row links, HTMX partial requests, pushed URLs, menu actions, active-row matching, and reveal logic.
 - Add deterministic regression coverage.
 
@@ -89,5 +89,5 @@ Run the existing Go tests that exercise source-qualified Codex workspace renderi
 | Card | Covers | Falsification |
 |---|---|---|
 | codex-sidebar-open | Clicking a Codex session in the sidebar opens its source-qualified workspace and displays that thread. | The click requests a bare local session URL, shows not found, or opens a different source's thread. |
-| codex-sidebar-drive | An opened Codex workspace exposes and routes the controls advertised by the Codex AppWire source. | Sending an available action targets a local Serf session, returns not found because the source was lost, or reaches a different thread. |
-| local-sidebar-url-stability | Local Serf sessions retain their existing canonical `/s/<session-id>` URLs. | A local sidebar row changes to a qualified URL or no longer opens its existing workspace. |
+| codex-sidebar-drive | An opened Codex workspace exposes and routes the controls advertised by the Codex AppWire source. | Sending an available action targets a local Evener session, returns not found because the source was lost, or reaches a different thread. |
+| local-sidebar-url-stability | Local Evener sessions retain their existing canonical `/s/<session-id>` URLs. | A local sidebar row changes to a qualified URL or no longer opens its existing workspace. |

@@ -1,4 +1,4 @@
-# Serf Go monorepo — module architecture
+# Evener Go monorepo — module architecture
 
 Date: 2026-06-01 · Ratified by Jesse.
 Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **current as each phase lands** — see §1a.
@@ -13,30 +13,30 @@ Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **curr
 
 **Decisions made during execution (these AMEND the original plan below):**
 - **`auth/openai` = its own module** (`primeradiant.com/evener/auth`), NOT folded into llm. Review-panel call: it's OpenAI-OAuth machinery (login flow + a localhost callback server, ~31 symbols) that the hub drives far more than llm consumes; keeping it separate preserves llm's Pike-grade surface. It sits below llm; llm/agent/apps all depend on it.
-- **Build version = injected, never imported.** A library must not import the app's `buildinfo`. `llm` exposes `openai.ClientVersion`; `agent` exposes `agent.BuildVersion` (both default `"dev"`, per-process package-level settings); the serf binaries set them from build info at startup.
+- **Build version = injected, never imported.** A library must not import the app's `buildinfo`. `llm` exposes `openai.ClientVersion`; `agent` exposes `agent.BuildVersion` (both default `"dev"`, per-process package-level settings); the evener binaries set them from build info at startup.
 - **`frontmatter`, `diagnostic` = duplicated** into `agent/internal/` (the §6 "duplicate" decision) so agent is self-contained; the app keeps the top-level copies.
 - **The three binaries stay under `cmd/`** of one app module (Jesse-confirmed): they are one application coupled only by protocols (AppWire subprocess, hubapi HTTP), so module boundaries are reserved for the *libraries* (which have importers), not the run-only binaries.
 
 **go.work mechanics (load-bearing).** `go.work use ./auth ./llm …` ALONE fails to resolve an *unpublished* sibling once a module has external deps — `go build` 404s trying to fetch it. **Fix: versioned `replace … v0.0.0 => ./dir` directives IN `go.work`** (committed, repo-local — invisible to external `go get`), with the go.mod requires at `@v0.0.0`. This keeps the published go.mods replace-free while a fresh clone builds out-of-the-box. `go.work` is committed.
 
-**Correction to §4/§7 below:** the original annotation sinking `appprojector`/`apptranscript`/`appserver` into **serf-hub** is **wrong per the import graph** — all three are imported by the *engine's* top-level `server/` package (and `appprojector` isn't imported by serf-hub at all). They travel with the engine in M4. `binresolve` → duplicate (hub+tui); `credentials` → stays top-level until `cmdutil` dissolves (M4).
+**Correction to §4/§7 below:** the original annotation sinking `appprojector`/`apptranscript`/`appserver` into **evener-hub** is **wrong per the import graph** — all three are imported by the *engine's* top-level `server/` package (and `appprojector` isn't imported by evener-hub at all). They travel with the engine in M4. `binresolve` → duplicate (hub+tui); `credentials` → stays top-level until `cmdutil` dissolves (M4).
 
 ## 1. Decision
 
-Serf is a **monorepo of multiple products**, not one application. Restructure it as a
+Evener is a **monorepo of multiple products**, not one application. Restructure it as a
 **multi-module Go monorepo**:
 
 - `llm` and `agent` are **published libraries** — consumed by other code **inside and outside
   Prime Radiant**. Each becomes its own Go module so external consumers inherit only the
   library's own dependencies (no Bubble Tea, no hub/tui transitive deps).
-- The **serf application** (engine + supervisor + client binaries, plus the wire/HTTP
+- The **evener application** (engine + supervisor + client binaries, plus the wire/HTTP
   contracts between them) is the root module.
 - `go.work` ties the modules together for local development; import paths are unchanged
   (the modules keep the `primeradiant.com/evener/...` prefix), so this is **additive**, not a
   repo-wide rename.
 
 This makes "what goes where" **compiler-enforced**: the app module physically cannot reach
-`agent/internal/`, and an external consumer physically cannot reach the serf app.
+`agent/internal/`, and an external consumer physically cannot reach the evener app.
 
 ## 2. The products and their boundaries (verified)
 
@@ -45,13 +45,13 @@ This makes "what goes where" **compiler-enforced**: the app module physically ca
 | `llm` | LLM client library (providers, request/response, streaming) | — | (lowest layer) |
 | `agent` | Agent engine + **public persistence schema** (`SessionMeta`, `Turn`, `TranscriptHeader`, `Task`, …) | `llm` | direct |
 | `cmd/evener` | **Engine** binary — runs `agent.Session`, serves per-session AppWire/HTTP | agent, llm | direct |
-| `cmd/evener-hub` | **Supervisor** — **spawns `serf` subprocesses**, persists metadata, serves clients | serf (spawn), agent (schema only) | **AppWire protocol** + agent schema |
-| `cmd/evener-tui` | **Client** — terminal UI | serf-hub | **hubapi** (HTTP) + agent schema |
+| `cmd/evener-hub` | **Supervisor** — **spawns `evener` subprocesses**, persists metadata, serves clients | evener (spawn), agent (schema only) | **AppWire protocol** + agent schema |
+| `cmd/evener-tui` | **Client** — terminal UI | evener-hub | **hubapi** (HTTP) + agent schema |
 
-Verified: serf-hub does `exec.Command(serfBinary, …, "--protocol", appwire.ProtocolVersion)`
+Verified: evener-hub does `exec.Command(serfBinary, …, "--protocol", appwire.ProtocolVersion)`
 (spawn.go) — it does **not** embed the engine; its `agent` usage is schema types only
 (`SessionMeta` ×89, `TranscriptHeader`, `Turn`, …), never `NewSession`/`ProcessInput`.
-serf-tui uses `hubapi.NewClient(baseURL, httpClient)` and only `agent` schema types for
+evener-tui uses `hubapi.NewClient(baseURL, httpClient)` and only `agent` schema types for
 rendering. The genuinely shared things are the **contracts** (`appwire`, `hubapi`) and
 **agent's public schema**.
 
@@ -94,17 +94,17 @@ primeradiant.com/evener/                      (repo root)
     ├── appwire/                             CONTRACT: versioned engine↔hub↔tui wire protocol
     ├── hubapi/                              CONTRACT: hub HTTP API (client + server types)
     └── cmd/
-        ├── serf/       + internal/          ENGINE
-        ├── serf-hub/   + internal/          SUPERVISOR  ← appprojector, apptranscript, appserver,
+        ├── evener/       + internal/          ENGINE
+        ├── evener-hub/   + internal/          SUPERVISOR  ← appprojector, apptranscript, appserver,
         │                                                   auth, credentials, binresolve sink here
-        ├── serf-tui/   + internal/          CLIENT
+        ├── evener-tui/   + internal/          CLIENT
         └── llmcall/                         (small llm CLI — its own internal/ if it grows)
 ```
 
 ## 5. Boundaries Go will enforce
 
 - `agent` (module) cannot import the app module → the engine library can never depend on
-  serf-app glue. An attempt won't compile.
+  evener-app glue. An attempt won't compile.
 - The app module imports `agent` + `llm` as **versioned dependencies** (local via `go.work`).
 - `cmd/evener-hub/internal/...` is importable only by `cmd/evener-hub` → hub-private code can't
   leak into the tui or the engine.
@@ -140,14 +140,14 @@ cleanup batch. The per-product `internal/` carving is itself part of this archit
 
 - **M1 — App-side `internal/` de-mix.** Move each app-only top-level `internal/` package into its
   owning binary's `cmd/<bin>/internal/` (appprojector/apptranscript/appserver/auth/credentials/
-  binresolve → serf-hub or the owning product per its importers). Keep `appwire`/`hubapi` as
+  binresolve → evener-hub or the owning product per its importers). Keep `appwire`/`hubapi` as
   top-level contract packages. Cut the agent-test layering smell. Gate: build/vet/test green.
-- **M2 — `go.work` + carve `llm`.** Add `llm/go.mod` (module `…/serf/llm`) + a root `go.work`.
-  `llm` is the lowest layer (no serf-internal deps), so it carves cleanly first. Gate: whole-repo
+- **M2 — `go.work` + carve `llm`.** Add `llm/go.mod` (module `…/evener/llm`) + a root `go.work`.
+  `llm` is the lowest layer (no evener-internal deps), so it carves cleanly first. Gate: whole-repo
   build/test under `go.work`.
 - **M3 — Carve `agent`.** Add `agent/go.mod` (requires `llm`). Resolve the cross-cutting utils
   (§6) so `agent` has no app dependency. Gate.
-- **M4 — Root module = the serf app.** Root `go.mod` requires `agent` + `llm`; holds `appwire`,
+- **M4 — Root module = the evener app.** Root `go.mod` requires `agent` + `llm`; holds `appwire`,
   `hubapi`, `cmd/*`. Gate.
 - **M5 — Per-module hygiene.** Run `namingcheck`/`internalcheck` per library module; per-module
   CI; doc/READMEs note each module's public surface. Confirm `go get …/agent` from a scratch
@@ -162,7 +162,7 @@ Three modules, boundaries enforced by the compiler:
 
 - **`llm`** — a clean, independently-consumable LLM client library.
 - **`agent`** — a clean agent engine + public schema library (depends only on `llm`).
-- **serf app** — three product binaries (engine / supervisor / client) over two real API
+- **evener app** — three product binaries (engine / supervisor / client) over two real API
   boundaries (AppWire, hubapi), each owning its `internal/`, sharing only the contracts.
 
 A newcomer (or an external consumer) can tell exactly what's public, what's a contract, and

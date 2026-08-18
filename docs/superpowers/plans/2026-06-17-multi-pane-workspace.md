@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a user open a subagent's live session as one or more vertical panes beside the main session in the Serf web hub, using iframe-per-pane so the existing single-instance renderer runs unchanged in each pane.
+**Goal:** Let a user open a subagent's live session as one or more vertical panes beside the main session in the Evener web hub, using iframe-per-pane so the existing single-instance renderer runs unchanged in each pane.
 
 **Architecture:** The top page stays the host shell and renders the PRIMARY session top-level exactly as today. A new sibling region `#side-panes` (a flex-row of columns inside `body.app`, after `#workspace`) holds one `<iframe>` per side pane, each loading `/s/<id>` — so each pane is its own document and the renderer's hard-singleton state never collides. A small host module `panes.js` manages open/close/resize, caps the count, and restores open panes on reload from `localStorage`. An "open beside" affordance on subagent rows calls the host instead of the existing one-way `navigateTo`. The CSP is relaxed from `frame-ancestors 'none'` to `'self'` to permit same-origin framing.
 
@@ -147,7 +147,7 @@ git commit -m "Add empty side-pane region + splitter shell and pane CSS"
   - `window.SerfPanes.openHrefs()` — returns the array of currently-open pane hrefs (used by Task 4 persistence).
   - `MAX_SIDE_PANES = 3`.
 
-- [ ] **Step 1: Read a sibling module** (`cmd/evener-hub/assets/sidebar.js`) for the IIFE wrapper, the `window.Serf*` export style, and how it guards missing DOM. Read `cmd/evener-hub/jstest/test-sidebar-archive.js` for the jstest harness (JSDOM setup, `process.exit(0)`).
+- [ ] **Step 1: Read a sibling module** (`cmd/evener-hub/assets/sidebar.js`) for the IIFE wrapper, the `window.Evener*` export style, and how it guards missing DOM. Read `cmd/evener-hub/jstest/test-sidebar-archive.js` for the jstest harness (JSDOM setup, `process.exit(0)`).
 
 - [ ] **Step 2: Write the failing test.** `cmd/evener-hub/jstest/test-panes.js`:
 ```js
@@ -298,13 +298,13 @@ git commit -m "Add panes.js host module: open/close side panes with a cap"
 
 **Interfaces:**
 - Consumes: `open`/`openHrefs` (Task 3).
-- Produces: panes (href+title) are written to `localStorage["serf-hub.panes"]` on every open/close, and restored on load. Adds `window.SerfPanes.restore()` (idempotent) and an internal `_persist`.
+- Produces: panes (href+title) are written to `localStorage["evener-hub.panes"]` on every open/close, and restored on load. Adds `window.SerfPanes.restore()` (idempotent) and an internal `_persist`.
 
 - [ ] **Step 1: Extend the failing test.** Append to `test-panes.js` BEFORE `process.exit(0)`:
 ```js
 // persistence: opening writes localStorage; a fresh load restores
 P.open("/s/keep-1", "Keep 1");
-const stored = JSON.parse(dom.window.localStorage.getItem("serf-hub.panes") || "[]");
+const stored = JSON.parse(dom.window.localStorage.getItem("evener-hub.panes") || "[]");
 if (!stored.some(p => p.href === "/s/keep-1")) throw new Error("open not persisted");
 
 // simulate reload: clear DOM panes, call restore()
@@ -321,7 +321,7 @@ Run: `cd cmd/evener-hub/jstest && node test-panes.js`
 
 - [ ] **Step 3: Implement persistence in `panes.js`.** Replace the placeholder `persist()` and the export, and add `restore()`:
 ```js
-  var STORE_KEY = "serf-hub.panes";
+  var STORE_KEY = "evener-hub.panes";
 
   function persist() {
     var r = region();
@@ -370,15 +370,15 @@ git commit -m "Persist + restore open side panes across reload via localStorage"
 
 **Interfaces:**
 - Consumes: `#pane-splitter`, the `.pane` width var `--pane-w` (Task 2 CSS).
-- Produces: `window.SerfPanes.setSidePanesWidth(px)` clamps to `[280, 900]`, applies it to the `.side-panes` width (or each `.pane` `--pane-w`), and persists to `localStorage["serf-hub.panes.width"]`; restored on load. The mousedown/mousemove/mouseup handler on `#pane-splitter` calls `setSidePanesWidth` (drag itself is verified manually).
+- Produces: `window.SerfPanes.setSidePanesWidth(px)` clamps to `[280, 900]`, applies it to the `.side-panes` width (or each `.pane` `--pane-w`), and persists to `localStorage["evener-hub.panes.width"]`; restored on load. The mousedown/mousemove/mouseup handler on `#pane-splitter` calls `setSidePanesWidth` (drag itself is verified manually).
 
 - [ ] **Step 1: Extend the failing test.** Append before the final exit:
 ```js
 P.setSidePanesWidth(10000);
-if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 900)
+if (parseInt(dom.window.localStorage.getItem("evener-hub.panes.width"), 10) !== 900)
   throw new Error("width not clamped to max");
 P.setSidePanesWidth(10);
-if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 280)
+if (parseInt(dom.window.localStorage.getItem("evener-hub.panes.width"), 10) !== 280)
   throw new Error("width not clamped to min");
 console.log("test-panes width: ok");
 ```
@@ -388,7 +388,7 @@ Run: `cd cmd/evener-hub/jstest && node test-panes.js`
 
 - [ ] **Step 3: Implement.** In `panes.js`:
 ```js
-  var WIDTH_KEY = "serf-hub.panes.width";
+  var WIDTH_KEY = "evener-hub.panes.width";
   function setSidePanesWidth(px) {
     var w = Math.max(280, Math.min(900, Math.round(px)));
     var r = region();
@@ -520,4 +520,4 @@ git commit -m "Add 'open beside' affordance on subagent rows -> side pane"
 
 - **Scope coverage:** subagent live pane via iframe (Tasks 2–3,6); fully interactive (iframe is real `/s/<id>` — inherent); a few tiled vertical columns + cap (Task 3 `MAX_SIDE_PANES=3`, Task 2 flex-row); restore-on-reload (Task 4); CSP relax approved (Task 1); resize (Task 5). Auto-open-observer + documents + compressed rendering + shareable URLs explicitly deferred with reasons.
 - **Placeholder scan:** no TBD/"handle errors"; each code step has concrete code; the one unavoidable adapt-to-codebase points (the app-shell render helper name in web_test.go, the subagent row-builder local names) are called out as "read Step 1 / mirror existing" rather than invented.
-- **Type/name consistency:** `window.SerfPanes.{open(href,title), close(href), openHrefs(), restore(), setSidePanesWidth(px), MAX_SIDE_PANES}`, DOM ids `#side-panes`/`#pane-splitter`, classes `.pane/.pane-header/.pane-title/.pane-close/.pane-frame/.pane-splitter/.open-beside-btn`, storage keys `serf-hub.panes` + `serf-hub.panes.width` — used consistently across tasks.
+- **Type/name consistency:** `window.SerfPanes.{open(href,title), close(href), openHrefs(), restore(), setSidePanesWidth(px), MAX_SIDE_PANES}`, DOM ids `#side-panes`/`#pane-splitter`, classes `.pane/.pane-header/.pane-title/.pane-close/.pane-frame/.pane-splitter/.open-beside-btn`, storage keys `evener-hub.panes` + `evener-hub.panes.width` — used consistently across tasks.

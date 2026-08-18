@@ -32,7 +32,7 @@ The panel is an operational inspector, not a second global navigation tree. Open
 
 ## Wire Contract and Server Architecture
 
-Replace the flat `serf/jobs/list` response with a rooted activity-tree response for the requested session. Do not add a parallel endpoint.
+Replace the flat `evener/jobs/list` response with a rooted activity-tree response for the requested session. Do not add a parallel endpoint.
 
 The recursive response contains three concepts. It represents one subagent
 conversation once, even when that conversation has several delegate turns.
@@ -134,7 +134,7 @@ The logical tree has no product-level depth limit, but one response must have
 resource limits. The server stops a response at 2,000 work units, 32 newly
 expanded delegation levels, or 4 MiB of encoded tree data, whichever comes
 first. A cut branch returns an explicit `truncated` marker and opaque
-continuation token. **Load more activity** calls the same `serf/jobs/list`
+continuation token. **Load more activity** calls the same `evener/jobs/list`
 method with that token and grafts the returned branch by stable ID. Tokens are
 scoped to the root session and rejected if used elsewhere.
 
@@ -145,11 +145,11 @@ than a continuation token.
 
 ### Supported sources
 
-The recursive contract is a Serf-local capability. A live local root resolves
+The recursive contract is a Evener-local capability. A live local root resolves
 live descendants through their delegate transcript references. An exited local
-root resolves durable descendants only within the same configured Serf state
+root resolves durable descendants only within the same configured Evener state
 directory; a missing past-index or child record becomes an unavailable branch.
-Non-Serf sources, foreign state directories, and sources that do not implement
+Non-Evener sources, foreign state directories, and sources that do not implement
 the replacement contract use the capability-gap state. The server never crosses
 source or state-directory boundaries while following a retained transcript
 reference.
@@ -263,7 +263,7 @@ Validates the new wire response before rendering. A malformed sibling must not c
 Opening **Activity** fetches the first bounded page of the rooted tree. Each job lifecycle push updates `model.jobsUpdatedAt`. While the sheet is open, a new bump refetches the loaded portion of the tree. Once the trigger has a count, lifecycle bumps also refresh it while the sheet is closed.
 
 Direct root-job notifications keep their existing behavior. Descendant job and
-delegate lifecycle changes also emit a root-scoped `serf/jobs/treeUpdated`
+delegate lifecycle changes also emit a root-scoped `evener/jobs/treeUpdated`
 notification containing the root ref and an opaque monotonic tree revision. The
 hub routes that notification to every open client watching the root. The reducer
 stores the revision and bumps `jobsUpdatedAt` on the root model. This ancestor

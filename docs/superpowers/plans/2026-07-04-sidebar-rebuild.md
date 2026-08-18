@@ -17,12 +17,12 @@ Two Go modules are touched (`go.work` maps `.` and `./agent`; `envvars` is its o
 - **Agent module `primeradiant.com/evener/agent`** (`./agent`): `agent`, `agent/schema`.
 - **Envvars module** (`./envvars`): the `SERF_SESSION_ORIGIN` declaration only.
 
-Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/serf`):
+Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/evener`):
 
 - Root Go tests for a hub change: `go test ./cmd/evener-hub/... ./hubapi/... ./appwire/...`
 - Agent Go tests: `cd agent && go test ./...`
 - Root lint: `golangci-lint run ./...` (root) / `cd agent && golangci-lint run ./...` (agent).
-- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (JSDOM; each `test-*.js` exits 0/1). Requires `NODE_PATH` to a jsdom install; `run-all.sh` auto-detects `./node_modules` or `/tmp/serf-jstest-jsdom/node_modules`.
+- jstest: `sh cmd/evener-hub/jstest/run-all.sh` (JSDOM; each `test-*.js` exits 0/1). Requires `NODE_PATH` to a jsdom install; `run-all.sh` auto-detects `./node_modules` or `/tmp/evener-jstest-jsdom/node_modules`.
 - AppWire doc regen: `make generate` (runs `go generate ./appwire/...` → `docs/appwire-protocol.md`); `make lint-generated` fails if stale.
 - Full gate (final task): `make lint && make test && sh cmd/evener-hub/jstest/run-all.sh`.
 
@@ -44,7 +44,7 @@ Never `git add -A`; every commit lists exact paths.
 
 **Created (client + tests):** rewritten `cmd/evener-hub/assets/sidebar.js`; new `cmd/evener-hub/jstest/test-sidebar-model.js`, `test-sidebar-reconcile.js`, `test-sidebar-overlay.js`, `test-sidebar-menu.js`, `test-sidebar-migration.js`, `test-sidebar-survivors.js`.
 
-**Modified (client + docs):** `cmd/evener-hub/templates/app.html`, `cmd/evener-hub/assets/style.css`, `docs/environment.md`, `docs/appwire-protocol.md` (generated), `docs/serf-hub-web-routing.md`.
+**Modified (client + docs):** `cmd/evener-hub/templates/app.html`, `cmd/evener-hub/assets/style.css`, `docs/environment.md`, `docs/appwire-protocol.md` (generated), `docs/evener-hub-web-routing.md`.
 
 **Deleted (final Phase B task, once the new suite is green):** `cmd/evener-hub/templates/partials/sidebar.html`, hub sidebar handlers/routes, and the subsumed `test-sidebar-*.js` files.
 
@@ -445,7 +445,7 @@ type TreeResponse struct {
 	Projects         []TreeProject    `json:"projects"`
 	ArchivedProjects []TreeProject    `json:"archived_projects"`
 	TestRuns         []TreeProject    `json:"test_runs"`
-	AttentionSummary AttentionSummary `json:"attentionSummary"` // serf:naming-ignore
+	AttentionSummary AttentionSummary `json:"attentionSummary"` // evener:naming-ignore
 }
 ```
 
@@ -765,7 +765,7 @@ git commit -m "feat(hub): cap subagent children per tier like top-level rows"
 
 ## Task 7: FavoriteStore + `Delete` on both decision stores
 
-Add a `favorite` table (clone of `ArchiveStore`'s shape) and a `Delete(kind, id)` on both stores. Both live in the same `~/.serf/index.db`.
+Add a `favorite` table (clone of `ArchiveStore`'s shape) and a `Delete(kind, id)` on both stores. Both live in the same `~/.evener/index.db`.
 
 **Files:**
 - Create: `cmd/evener-hub/internal/hubcore/favorite.go`
@@ -2184,7 +2184,7 @@ git commit -m "feat(hub): project delete endpoint (path-validated, live-refusing
 
 ## Task 15: `Origin` on `SessionMeta` + `SERF_SESSION_ORIGIN` plumb + TestRuns classification
 
-Add `Origin string` to `schema.SessionMeta`, fed from `SERF_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `serf serve` and one-shot `serf run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
+Add `Origin string` to `schema.SessionMeta`, fed from `SERF_SESSION_ORIGIN` through the shared `agent.NewSession` path (both `evener serve` and one-shot `evener run`), preserved on resume; then classify a project into "Test runs" when it has ≥1 session and *every* session carries `Origin=="test"` (TestRuns precedence over ArchivedProjects — round-2 B6). NOTE: this coordinates with WS2's `SessionMeta` fields — regenerate `goldenMetaJSON` from live marshal output, do not hand-edit assuming other WS2 keys landed.
 
 **Files:**
 - Modify: `agent/schema/snapshot.go` (`Origin`), `agent/session.go` (`origin` field), `agent/session_state.go` (`Meta` stamp), `agent/session_init.go` (set from env + restore from meta), `envvars/envvars.go` (`SERFSessionOrigin`), `docs/environment.md`
@@ -2291,7 +2291,7 @@ In `envvars/envvars.go`, add to the `var (...)` block (near `SERFStateDir`):
 	SERFSessionOrigin = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
 ```
 
-and add `SERFSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Serf Commands`:
+and add `SERFSessionOrigin,` to the `allVars` slice (else it is invisible to `All()`/`Find()` and the audit). Add a row to `docs/environment.md` under `## Evener Commands`:
 
 ```
 | `SERF_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
@@ -2484,7 +2484,7 @@ func TestThreadNameSetInCatalog(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("serf/thread/name/set missing from the catalog")
+		t.Fatal("evener/thread/name/set missing from the catalog")
 	}
 	var caps ThreadCapabilities
 	caps.Rename = true // must compile
@@ -2501,7 +2501,7 @@ Expected: FAIL — `MethodSerfThreadNameSet`, `ThreadCapabilities.Rename` undefi
 In `appwire/types.go`, add to the method const block (near `MethodSerfThreadTranscriptsList`):
 
 ```go
-	MethodSerfThreadNameSet = "serf/thread/name/set"
+	MethodSerfThreadNameSet = "evener/thread/name/set"
 ```
 
 Add the params type (near `ThreadModelSetParams`, types.go:576):
@@ -2517,7 +2517,7 @@ type ThreadNameSetParams struct {
 Add to `ThreadCapabilities` (types.go:233-250), after `Goal`:
 
 ```go
-	// Rename advertises support for serf/thread/name/set. True for a live serf
+	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for Codex-bridged threads.
 	Rename bool `json:"rename"`
@@ -2661,7 +2661,7 @@ Expected: PASS, both cross-checks green.
 
 ```bash
 git add appwire/types.go appwire/protocol.go appwire/client.go appwire/rename_test.go docs/appwire-protocol.md server/server.go server/appwire_runtime.go cmd/evener/serve.go cmd/evener-hub/internal/appsource/source.go cmd/evener-hub/internal/appsource/local_daemon.go cmd/evener-hub/internal/appsource/codex_source.go cmd/evener-hub/app_rpc.go cmd/evener-hub/app_compact.go cmd/evener-hub/app_threadread.go
-git commit -m "feat(appwire,server,hub): serf/thread/name/set — types, catalog, daemon handler, hub relay in one atom"
+git commit -m "feat(appwire,server,hub): evener/thread/name/set — types, catalog, daemon handler, hub relay in one atom"
 ```
 
 ---
@@ -2746,7 +2746,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// handleAPIRename renames a session. Live serf sessions route through the
+// handleAPIRename renames a session. Live evener sessions route through the
 // daemon method (daemon-truth); ended local sessions have their meta edited
 // behind a probe-resolved Roster.Find re-check. Both paths refresh the past
 // index (UpdateMeta) + bump inputs so the next resync reflects the new name
@@ -3002,7 +3002,7 @@ Replace `cmd/evener-hub/assets/sidebar.js` with the client-rendered renderer. Co
 (function () {
   "use strict";
 
-  var EXPAND_PREFIX = "serf-hub.sidebar.expanded.";
+  var EXPAND_PREFIX = "evener-hub.sidebar.expanded.";
   var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
   window.SerfSidebarModel = model; // test/inspection surface
 
@@ -3408,9 +3408,9 @@ Filter dropped nodes in `flatten` (skip `n.__drop`). Add the coalesced resync + 
     }).catch(function () {});
   }
 
-  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "serf/job/started": 1, "serf/job/finished": 1, "serf/attention/changed": 1 };
+  var QUALIFYING = { "thread/started": 1, "thread/closed": 1, "thread/status/changed": 1, "evener/job/started": 1, "evener/job/finished": 1, "evener/attention/changed": 1 };
   function onNotification(method, params) {
-    if (method === "serf/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
+    if (method === "evener/attention/changed") { applyAttentionInstant(params); scheduleResync(); return; }
     if (QUALIFYING[method]) scheduleResync();
   }
   // Instant path: attention changed[] carries the coarse 4-value level and only
@@ -3660,7 +3660,7 @@ const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
 const w = dom.window;
-w.localStorage.setItem("serf-hub.sidebar.expanded.foo", "true"); // legacy basename key
+w.localStorage.setItem("evener-hub.sidebar.expanded.foo", "true"); // legacy basename key
 const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [],
   projects: [
     { key: "foo-aaaa1111", name: "foo", working_dir: "/a/foo", default_expanded: false, sessions: [] },
@@ -3671,8 +3671,8 @@ w.htmx = { process() {} };
 w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 setTimeout(() => {
-  if (w.localStorage.getItem("serf-hub.sidebar.expanded.foo-aaaa1111") !== "true") throw new Error("migration must copy to first co-basename key");
-  if (w.localStorage.getItem("serf-hub.sidebar.expanded.foo-bbbb2222") !== "true") throw new Error("migration must copy to all co-basename keys");
+  if (w.localStorage.getItem("evener-hub.sidebar.expanded.foo-aaaa1111") !== "true") throw new Error("migration must copy to first co-basename key");
+  if (w.localStorage.getItem("evener-hub.sidebar.expanded.foo-bbbb2222") !== "true") throw new Error("migration must copy to all co-basename keys");
   console.log("ok expansion-key migration post-first-render + copy-to-all");
   process.exit(0);
 }, 20);
@@ -3697,7 +3697,7 @@ w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 w.document.querySelector("[data-sidebar-rail-toggle]").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!w.document.body.hasAttribute("data-sidebar-rail")) throw new Error("rail toggle must set body[data-sidebar-rail]");
-if (w.localStorage.getItem("serf-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
+if (w.localStorage.getItem("evener-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
 if (typeof w.SerfSidebar.close !== "function") throw new Error("drawer close API must survive");
 console.log("ok survivors: rail toggle + persistence + close API");
 process.exit(0);
@@ -3888,7 +3888,7 @@ Prove the rebuilt surface end-to-end against a freshly built hub, per the `e2e-s
 
 - [ ] **Step 1: Invoke the skill and author the cards**
 
-Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/serf-hub ./cmd/evener-hub && go build -o /tmp/serf ./cmd/evener`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `SERF_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
+Use the `e2e-scenario-testing` skill. Build the binaries: `go build -o /tmp/evener-hub ./cmd/evener-hub && go build -o /tmp/evener ./cmd/evener`. Source the repo `.env` (`. "$PWD/.env"`) and launch the hub against a scratch `SERF_STATE_DIR`. Write one card per scenario with explicit pass/fail assertions on the live DOM (e.g. via the browser skill or `curl /api/tree` + JSON assertions).
 
 - [ ] **Step 2: Card — expand-non-live survives a working session**
 
@@ -3920,7 +3920,7 @@ git commit -m "test(e2e): sidebar rebuild scenario cards (expand/favorite/delete
 ## Task 26: Full-repo gates + doc regen + "what changed" note
 
 **Files:**
-- Modify: `docs/serf-hub-web-routing.md` (route changes), `docs/appwire-protocol.md` (already regenerated in Task 17 — verify fresh)
+- Modify: `docs/evener-hub-web-routing.md` (route changes), `docs/appwire-protocol.md` (already regenerated in Task 17 — verify fresh)
 - Verify: whole-repo lint + tests + jstest.
 
 - [ ] **Step 1: Regenerate + verify the appwire doc is fresh**
@@ -3930,7 +3930,7 @@ Expected: no diff (Task 17 already committed the regenerated `docs/appwire-proto
 
 - [ ] **Step 2: Update the web-routing doc**
 
-In `docs/serf-hub-web-routing.md`, replace the `/_partials/sidebar` + `/_partials/sidebar/project` entries with the new endpoints: `GET /api/tree` (now the sidebar's data source), `GET /api/tree/project?key=`, `POST /api/favorite`, `POST /api/project/delete`, `POST /api/sessions/{ref}/rename`; note the sidebar is client-rendered (no server partial). Use the `maintaining-documentation` skill to keep terminology consistent.
+In `docs/evener-hub-web-routing.md`, replace the `/_partials/sidebar` + `/_partials/sidebar/project` entries with the new endpoints: `GET /api/tree` (now the sidebar's data source), `GET /api/tree/project?key=`, `POST /api/favorite`, `POST /api/project/delete`, `POST /api/sessions/{ref}/rename`; note the sidebar is client-rendered (no server partial). Use the `maintaining-documentation` skill to keep terminology consistent.
 
 - [ ] **Step 3: Full-repo gates**
 
@@ -3944,10 +3944,10 @@ Expected: all green across every module (root, agent, llm, auth, fuzz, invariant
 
 - [ ] **Step 4: "What changed" note + commit**
 
-Append a short "What changed (2026-07-04 sidebar rebuild)" section to `docs/serf-hub-web-routing.md` (or the web-ui README) summarizing: client-rendered keyed sidebar off `/api/tree`; path-based project identity + slug keys; favorites + Pinned; project delete; test-run classification; in-scope rename; the dead server-rendered sidebar removed.
+Append a short "What changed (2026-07-04 sidebar rebuild)" section to `docs/evener-hub-web-routing.md` (or the web-ui README) summarizing: client-rendered keyed sidebar off `/api/tree`; path-based project identity + slug keys; favorites + Pinned; project delete; test-run classification; in-scope rename; the dead server-rendered sidebar removed.
 
 ```bash
-git add docs/serf-hub-web-routing.md docs/appwire-protocol.md
+git add docs/evener-hub-web-routing.md docs/appwire-protocol.md
 git commit -m "docs: web-routing + appwire protocol reflect the sidebar rebuild"
 ```
 
@@ -3965,7 +3965,7 @@ Every Review-log fold and mechanism maps to a task that implements **and** tests
 - **Remote async cache:** → Task 13.
 - **Delete:** resolution from `All()` w/ StateDir (A1), key↔workingDir validation (A11), per-session `Roster.Find` re-check (A9), `.log.jsonl` + `<id>/` removal (B2), store scrubs incl. legacy row (B7/G3), live-refusal 409, deleted/skipped → Task 14.
 - **Origin (Decision 4):** SessionMeta.Origin + `SERF_SESSION_ORIGIN` (coordinates w/ WS2 goldens), **TestRuns-over-Archived** (B6) → Task 15.
-- **Rename (Decision 2):** `serf/thread/name/set` + catalog + `ThreadCapabilities.Rename` + docs regen (B5) → Task 17; agent in-memory naming update (A8) + namer suppression → Task 16; live path UpdateMeta+bump + ended pre-write re-check (A2) + UpdateMeta+bump (G1) + legacy-daemon 404 toast, no live file-edit fallback (G2) + `TreeNode.Rename` resolution (G2) → Task 18.
+- **Rename (Decision 2):** `evener/thread/name/set` + catalog + `ThreadCapabilities.Rename` + docs regen (B5) → Task 17; agent in-memory naming update (A8) + namer suppression → Task 16; live path UpdateMeta+bump + ended pre-write re-check (A2) + UpdateMeta+bump (G1) + legacy-daemon 404 toast, no live file-edit fallback (G2) + `TreeNode.Rename` resolution (G2) → Task 18.
 - **Renderer/overlay:** RowID keying incl. cross-tier duplicates (B3) → Task 19; sequence guard, instant attention path, ≥2s + 60s resync, per-op predicates, **post-POST resync** (H1), 30s eviction → Task 20; menu incl. anchor-removal close → Task 21; **migration post-first-render + copy-to-all** (G4) + survivors (H5: resizer app-shell + rail + open-beside) → Task 22; delete old only after new suite covers surviving contract → Task 23.
 - **Typography/density:** → Task 24. **e2e cards** (all four spec scenarios) → Task 25. **Final gates + doc regen** → Task 26.
 

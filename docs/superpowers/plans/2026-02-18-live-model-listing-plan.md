@@ -83,7 +83,7 @@ func TestClient_ListModels_UnknownProvider(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/ -run TestClient_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/ -run TestClient_ListModels -v`
 Expected: FAIL — `ModelLister` and `Client.ListModels` don't exist yet.
 
 **Step 3: Write minimal implementation**
@@ -122,12 +122,12 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/ -run TestClient_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/ -run TestClient_ListModels -v`
 Expected: PASS
 
 **Step 5: Run full llm package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/ -v`
 Expected: All PASS (no regressions)
 
 **Step 6: Commit**
@@ -224,7 +224,7 @@ func TestAdapter_ListModels(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openai/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openai/ -run TestAdapter_ListModels -v`
 Expected: FAIL — `ListModels` not defined.
 
 **Step 3: Write minimal implementation**
@@ -293,12 +293,12 @@ func skipOpenAIModel(id string) bool {
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openai/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openai/ -run TestAdapter_ListModels -v`
 Expected: PASS
 
 **Step 5: Run full openai package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openai/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openai/ -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -366,7 +366,7 @@ func TestAdapter_ListModels(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/anthropic/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/anthropic/ -run TestAdapter_ListModels -v`
 Expected: FAIL
 
 **Step 3: Write minimal implementation**
@@ -428,12 +428,12 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/anthropic/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/anthropic/ -run TestAdapter_ListModels -v`
 Expected: PASS
 
 **Step 5: Run full anthropic package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/anthropic/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/anthropic/ -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -516,7 +516,7 @@ func TestAdapter_ListModels(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/google/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/google/ -run TestAdapter_ListModels -v`
 Expected: FAIL
 
 **Step 3: Write minimal implementation**
@@ -599,12 +599,12 @@ func supportsGenerateContent(methods []string) bool {
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/google/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/google/ -run TestAdapter_ListModels -v`
 Expected: PASS
 
 **Step 5: Run full google package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/google/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/google/ -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -662,7 +662,7 @@ func TestAdapter_ListModels(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openaicompat/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openaicompat/ -run TestAdapter_ListModels -v`
 Expected: FAIL
 
 **Step 3: Write minimal implementation**
@@ -720,12 +720,12 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openaicompat/ -run TestAdapter_ListModels -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openaicompat/ -run TestAdapter_ListModels -v`
 Expected: PASS
 
 **Step 5: Run full openaicompat package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./llm/providers/openaicompat/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./llm/providers/openaicompat/ -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -820,7 +820,7 @@ func TestModelsEndpoint_MethodNotAllowed(t *testing.T) {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./server/ -run TestModelsEndpoint -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./server/ -run TestModelsEndpoint -v`
 Expected: FAIL — types and handler don't exist.
 
 **Step 3: Write minimal implementation**
@@ -884,12 +884,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 **Step 4: Run test to verify it passes**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./server/ -run TestModelsEndpoint -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./server/ -run TestModelsEndpoint -v`
 Expected: PASS
 
 **Step 5: Run full server package tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./server/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./server/ -v`
 Expected: All PASS
 
 **Step 6: Commit**
@@ -931,7 +931,7 @@ This requires adding `"context"` to imports if not already present. The `profile
 
 **Step 2: Verify it compiles**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/evener/`
+Run: `cd /Users/jesse/prime-radiant/evener && go build ./cmd/evener/`
 Expected: Build succeeds.
 
 **Step 3: Commit**
@@ -1208,7 +1208,7 @@ func (m modelPicker) View() string {
 
 **Step 3: Run picker test**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/evener-tui/ -run TestModelPicker -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./cmd/evener-tui/ -run TestModelPicker -v`
 Expected: PASS
 
 **Step 4: Add `fetchModels` HTTP command to `input.go`**
@@ -1350,7 +1350,7 @@ In `cmd/evener-tui/input.go`, update the `/model` help line:
 
 **Step 7: Run all TUI tests**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./cmd/evener-tui/ -v`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./cmd/evener-tui/ -v`
 Expected: All PASS
 
 **Step 8: Commit**
@@ -1369,12 +1369,12 @@ git commit -m "feat: add interactive model picker to TUI /model command"
 
 **Step 1: Run full test suite**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go test ./... 2>&1 | tail -30`
+Run: `cd /Users/jesse/prime-radiant/evener && go test ./... 2>&1 | tail -30`
 Expected: All packages PASS.
 
 **Step 2: Build binaries**
 
-Run: `cd /Users/jesse/prime-radiant/serf && go build ./cmd/evener/ && go build ./cmd/evener-tui/`
+Run: `cd /Users/jesse/prime-radiant/evener && go build ./cmd/evener/ && go build ./cmd/evener-tui/`
 Expected: Both build successfully.
 
 **Step 3: Commit any remaining changes**

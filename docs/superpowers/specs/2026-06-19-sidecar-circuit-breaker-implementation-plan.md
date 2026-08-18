@@ -100,13 +100,13 @@ Anchors below are current as of `8a12938e` (line numbers in the design's §8 had
 - Test: a self-delivering `assistant.tool` / `communicate` / wildcard watch is now accepted (no `invalid_request`); the existing rejection tests are inverted/removed.
 - Impl: relax `validateWatchDeliveryLoop` to `return nil` (or delete the function + call, per what reads cleanest); confirm no other callers depend on the error.
 
-**Step 6 — re-point `serf-doctor watches --self-loops` to *read* recorded telemetry.** `agent/doctor/watches.go` (+ `cmd/evener-doctor`, tests).
+**Step 6 — re-point `evener-doctor watches --self-loops` to *read* recorded telemetry.** `agent/doctor/watches.go` (+ `cmd/evener-doctor`, tests).
 - Test: `--self-loops` reports per-watch **max stamped depth** and **whether the fuse fired** (a `runaway` drop); a merely self-influenced (bounded) watch is **not** flagged; only unbounded/fused is. Update `watches_test.go` and `cmd/evener-doctor/main_test.go` (the `SELF-LOOP` assertion changes meaning).
 - Impl: **delete `deliverySelfLoop` and the `SelfLoop` field** — the doctor stops re-deriving. Read the stamped `SelfInfluenceDepth` off the delivered/dropped records and the `runaway` `DiagnosticReason` it already surfaces (watches.go:316). No shared compute with the runtime.
 
-**Step 7 — re-baseline scenarios + docs.** `test/scenarios/`, `docs/skills/doctoring-serf/`.
+**Step 7 — re-baseline scenarios + docs.** `test/scenarios/`, `docs/skills/doctoring-evener/`.
 - Rewrite `job-watch-actually-monty-python-injection.md` and `job-watch-observer-snide-thread.md` to assert **deliver-and-bound** (inform line appears; depth climbs; fuse caps a runaway) instead of **drop**.
-- Fix `doctoring-serf` `failure-modes.md`/runbooks that assert "healthy ⇒ zero self-loops" → "self-influence is normal; flag unbounded depth / runaway drops."
+- Fix `doctoring-evener` `failure-modes.md`/runbooks that assert "healthy ⇒ zero self-loops" → "self-influence is normal; flag unbounded depth / runaway drops."
 
 **Step 8 — prompt breaker paragraph.** (Find the agent system prompt source.)
 - Add one paragraph: a sidecar reads the depth `<system-reminder>` line and is expected to back off / change tack / disengage as it climbs; the machinery hard-stops a runaway at depth N. The broader "how to use sidecar agents + subagents" guide is a **separate** task (its own spec) — not smuggled in here.
@@ -117,7 +117,7 @@ Anchors below are current as of `8a12938e` (line numbers in the design's §8 had
 
 - `make test` (all modules: `.`, `agent`, `llm`, `auth`) + `make lint`, `-race -short` green at each step.
 - **Live E2E feel-test** (the design is behavioral): run the rewritten monty-python + snide scenarios against a real provider; confirm (a) the worker now *sees* its echoes with the gradient line, (b) the sidecar disengages as depth climbs, (c) a forced runaway trips the fuse with `runaway` drops and terminates. Unit tests can't judge "does the sidecar actually back off" — that's the E2E's job (the lesson from the launch-time-watch revert).
-- `serf-doctor watches --self-loops` on the live session shows the new depth/breaker telemetry (max depth, fuse fired y/n), not a bare loop count.
+- `evener-doctor watches --self-loops` on the live session shows the new depth/breaker telemetry (max depth, fuse fired y/n), not a bare loop count.
 
 ---
 

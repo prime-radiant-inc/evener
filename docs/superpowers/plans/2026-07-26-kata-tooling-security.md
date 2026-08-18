@@ -44,7 +44,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	fixtureRoot := t.TempDir()
-	frontendDir := filepath.Join(fixtureRoot, "cmd", "serf-hub", "frontend")
+	frontendDir := filepath.Join(fixtureRoot, "cmd", "evener-hub", "frontend")
 	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
 	}

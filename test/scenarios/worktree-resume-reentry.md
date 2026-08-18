@@ -19,7 +19,7 @@ Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked).
    called resume-lane and stay in it. Add a file NOTES.md containing the word
    BEACON inside the worktree (do not commit). Report the worktree path, then
    stop."` Capture the session id from the run output.
-2. **Run 2 (resume):** `serf --resume <id> --dir <repo>` with prompt: `"Where
+2. **Run 2 (resume):** `evener --resume <id> --dir <repo>` with prompt: `"Where
    are you working right now? Run pwd and list the files in the current
    directory, and tell me whether NOTES.md with BEACON is present here."`
 3. Inspect Run 2's transcript + the tool the agent sees.
@@ -33,8 +33,8 @@ Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked).
   directory. **Falsify**: if the resumed agent reports the main repo root, or
   says NOTES.md is absent, re-entry did not fire — the swap silently reverted
   on resume (the exact bug §7 exists to prevent).
-- On disk: the lane is re-locked with the resumed session's `serf:` marker
-  (`git worktree list --porcelain` shows `locked serf:<id>`).
+- On disk: the lane is re-locked with the resumed session's `evener:` marker
+  (`git worktree list --porcelain` shows `locked evener:<id>`).
 
 ## Cleanup
 

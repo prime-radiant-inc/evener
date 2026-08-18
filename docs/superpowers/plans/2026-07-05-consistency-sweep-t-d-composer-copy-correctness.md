@@ -6,18 +6,18 @@
 
 **Goal:** A settled `awaiting` session presents plain **Send** (no Stop/steer/queue) on both surfaces; the task-status row is event-driven (no 5s poll, no eternal "loading…" on ended sessions); a scatter of copy, comment, and correctness residue is cleaned up with a red-first test for each; and two live-only questions (project ordering feel, spawn-failure UX) get explicit investigate-tasks. No behavior regresses; every mechanical fix ships behind its own reviewer gate.
 
-**Architecture:** Composer affordance is decided in three places that currently collapse `awaiting`==`active` in one line — the TUI `sessionTurnActionState` (composer_panel.go), the web `turnAcceptsActions` (renderer.js), and the server-rendered initial markup (workspace.html). Each learns to distinguish a rested `awaiting` (plain Send) from a running `active` (Stop/steer/queue). The `serf/task/updated` notification — defined in the appwire catalog but emitted by nothing — gets an emit site at the task-store mutation point in the agent (projected through the existing `EventQueueChanged`-style path), the web client subscribes the task-status row to it, and the 5s `startTaskBadgePoller` is retired. The remaining items are localized fixes to hub HTTP handlers, JS, CSS, Go comments, and one flaky MCP test.
+**Architecture:** Composer affordance is decided in three places that currently collapse `awaiting`==`active` in one line — the TUI `sessionTurnActionState` (composer_panel.go), the web `turnAcceptsActions` (renderer.js), and the server-rendered initial markup (workspace.html). Each learns to distinguish a rested `awaiting` (plain Send) from a running `active` (Stop/steer/queue). The `evener/task/updated` notification — defined in the appwire catalog but emitted by nothing — gets an emit site at the task-store mutation point in the agent (projected through the existing `EventQueueChanged`-style path), the web client subscribes the task-status row to it, and the 5s `startTaskBadgePoller` is retired. The remaining items are localized fixes to hub HTTP handlers, JS, CSS, Go comments, and one flaky MCP test.
 
 **Tech Stack:** Go (`cmd/evener-tui`, `cmd/evener-hub`, `agent`, `server`, `internal/appprojector`, `appwire`), JS (JSDOM jstest under `cmd/evener-hub/jstest`), CSS (`cmd/evener-hub/assets/style.css`), Go html/template (`cmd/evener-hub/templates`). Modules per `GO_MODULES` in Makefile (`.`, `agent`, `llm`, `auth`, `envvars`, `fuzz`, `invariant`) — run tests per-module; `agent` is its own module.
 
 **Global Constraints (verbatim, apply to every task):**
 - Run Go tests per-module: `cd <module> && go test ./<pkg>/ -run <Name> -count=1`. The web/hub/server code is in the **repo-root** module (`.`); the agent code is in `agent`.
-- jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
-- `make lint` runs `serf-namingcheck`; per-task golangci misses it. Wire keys stay snake_case; do **not** rename any wire enum value (`active`, `awaiting` on the wire are the Codex-shaped contract). Deliberate camelCase takes a `// serf:naming-ignore:` line.
+- jstest: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` (or `node test-<name>.js` for one file).
+- `make lint` runs `evener-namingcheck`; per-task golangci misses it. Wire keys stay snake_case; do **not** rename any wire enum value (`active`, `awaiting` on the wire are the Codex-shaped contract). Deliberate camelCase takes a `// evener:naming-ignore:` line.
 - Test output MUST be pristine. Any intentional error output must be captured and asserted, never left printing.
 - Commit after every green task with the exact message given. NEVER `git add -A`; add the named files only.
 - Read the anchor code before editing it — re-locate symbols after the Track A rebase.
-- `docs/appwire-protocol.md` is generated (`make generate`); do not hand-edit it. New appwire **methods/notifications** need catalog + both routers in one commit; a notification that already exists in the catalog (like `serf/task/updated`) needs **no** catalog change (see Correctness task "emit serf/task/updated").
+- `docs/appwire-protocol.md` is generated (`make generate`); do not hand-edit it. New appwire **methods/notifications** need catalog + both routers in one commit; a notification that already exists in the catalog (like `evener/task/updated`) needs **no** catalog change (see Correctness task "emit evener/task/updated").
 - **§12 (stdio probe `LookPath`-only): intentionally left as-is** — a documented limit, not in this track. No task.
 
 ## File Structure
@@ -43,16 +43,16 @@ cmd/evener-hub/
   jstest/test-sidebar-workingdir-escape.js   # (new) encodeURIComponent test — Correctness T6
   jstest/test-task-updated-subscription.js   # (new) event-driven task row — Correctness T9
 agent/
-  session_tools_task.go          # task tool exec — emit serf/task/updated — Correctness T9
+  session_tools_task.go          # task tool exec — emit evener/task/updated — Correctness T9
   session_init.go                # stale SourceMCP comments (~1343/1351) — Correctness T7
   internal/mcp/manager.go        # conn.reconnecting clear → defer (~537/560) — Correctness T8
   internal/mcp/cov_reconnect_test.go   # TestReconnect flake (~688) — Correctness T10
   internal/diagnostic/diagnostic.go    # reconnect-recovery hint — Correctness T2
 internal/appprojector/
-  appwire_projection.go          # project EventTaskUpdated → serf/task/updated (~588 EventQueueChanged pattern) — Correctness T9
+  appwire_projection.go          # project EventTaskUpdated → evener/task/updated (~588 EventQueueChanged pattern) — Correctness T9
 appwire/
   types.go                       # NotifySerfTaskUpdated (~87, exists), TaskUpdatedParams (new type) — Correctness T9
-  protocol.go                    # Notifications catalog — add serf/task/updated entry (remove "intentionally absent" note) — Correctness T9
+  protocol.go                    # Notifications catalog — add evener/task/updated entry (remove "intentionally absent" note) — Correctness T9
 docs/superpowers/plans/
   2026-07-05-consistency-sweep-t-d-composer-copy-correctness.md   # this plan
 ```
@@ -185,7 +185,7 @@ if (R && typeof R.updateThreadState === "function") {
 
 - [ ] **Step 2: Run — fails** (`turnAcceptsActions("awaiting")` is true, so awaiting flips to queue mode)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-actions.js`
 Expected: FAIL — awaiting put the send button in queue mode / advertised steer.
 
 - [ ] **Step 3: Implement — narrow the running-affordance predicate**
@@ -211,12 +211,12 @@ In `syncTurnActionControls()` replace the two `turnAcceptsActions` reads that ga
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-actions.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-actions.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-actions.js`
 - `git commit -m "fix(web): rested awaiting composer shows Send, not Stop/steer/queue"`
@@ -244,7 +244,7 @@ func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
 			ID: "th_await", SessionID: "th_await", Source: "codex",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
 			ModelProvider: "gpt-5",
-			Serf: appwire.SerfThread{
+			Evener: appwire.SerfThread{
 				Ref:          "codex:th_await",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
 			},
@@ -327,7 +327,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "th_tasks", SessionID: "th_tasks", Source: "codex",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Serf:   appwire.SerfThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:   appwire.SerfThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_tasks")+"/workspace", nil)
@@ -395,7 +395,7 @@ assert.strictEqual(textEl.textContent, "no tasks yet",
 
 - [ ] **Step 2: Run — fails** (current text is `"no tasks"`)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-tasks-panel.js`
 Expected: FAIL — got `"no tasks"`, want `"no tasks yet"`.
 
 - [ ] **Step 3: Implement**
@@ -408,12 +408,12 @@ In `renderer-panels.js` line 375, change `if (total === 0) textEl.textContent = 
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-tasks-panel.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-tasks-panel.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add cmd/evener-hub/assets/renderer-panels.js cmd/evener-hub/jstest/test-tasks-panel.js`
 - `git commit -m "fix(web): task badge reads 'no tasks yet', matching the panel"`
@@ -422,7 +422,7 @@ _~5 loc._
 
 ### Copy T3: Retire the 5s task badge poller (client half)
 
-`startTaskBadgePoller()` re-fetches `/tasks` every 5s (renderer.js:466-483) to keep the badge fresh — the transport straggler the design calls out. Correctness T9 makes the badge event-driven via `serf/task/updated`. This task removes the interval; the initial hydrate fetch (`hydrateDescriptions`, kept) plus the T9 subscription cover freshness. **Sequence this AFTER Correctness T9** so the badge is never stale between removing the poll and wiring the event.
+`startTaskBadgePoller()` re-fetches `/tasks` every 5s (renderer.js:466-483) to keep the badge fresh — the transport straggler the design calls out. Correctness T9 makes the badge event-driven via `evener/task/updated`. This task removes the interval; the initial hydrate fetch (`hydrateDescriptions`, kept) plus the T9 subscription cover freshness. **Sequence this AFTER Correctness T9** so the badge is never stale between removing the poll and wiring the event.
 
 **Files:**
 - Modify: `cmd/evener-hub/assets/renderer.js`
@@ -442,7 +442,7 @@ assert.ok(!intervals.includes(5000),
 
 - [ ] **Step 2: Run — fails** (the 5s poller is still armed)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: FAIL — intervals include 5000.
 
 - [ ] **Step 3: Implement — drop the interval, keep the one-shot hydrate**
@@ -451,15 +451,15 @@ In `renderer.js`, delete the `this.startTaskBadgePoller();` call (~241) and remo
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
-- `git commit -m "perf(web): retire the 5s task-badge poll (event-driven via serf/task/updated)"`
+- `git commit -m "perf(web): retire the 5s task-badge poll (event-driven via evener/task/updated)"`
 
 _~15 loc._
 
@@ -490,7 +490,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run — fails** (clamp lives only in the phone block)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — clamp on the base rule**
@@ -505,12 +505,12 @@ In `style.css`, extend the base `.spawn-recent-row` rule (line 3128) with the cl
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-spawn-recent-clamp.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-spawn-recent-clamp.js`
 - `git commit -m "fix(web): clamp recent-prompt rows to 2 lines on desktop too"`
@@ -542,7 +542,7 @@ process.exit(0);
 
 - [ ] **Step 2: Run — fails**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-errored-light-tint.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — add the override**
@@ -557,12 +557,12 @@ In `style.css`, after the existing light-theme row overrides (line 214), add:
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-errored-light-tint.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-errored-light-tint.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-errored-light-tint.js`
 - `git commit -m "fix(web): light-theme errored sidebar-row tint (WS1 leftover)"`
@@ -639,7 +639,7 @@ _~5 loc._
 
 ### Correctness T1: `GET /api/sessions/<id>` honors a live rename (WS3 T25 Bug 2)
 
-`apiSessionDetail` seeds Title from `workspaceData` (web_api_tree.go:673-704). For a live serf session `workspaceData` calls `liveTitle(id, le, s.cfg.Past)` (web_workspace.go:280), which prefers the persisted meta name; but a **live rename** goes through `SetThreadName` on the daemon and `refreshRenamedMeta` bumps the past index — yet the live-branch replacement in `apiSessionDetail` (the `hubDetailFromAppThread` path, ~714) overwrites Title from `thread.Name`/`thread.Preview`/`thread.SessionID`, and if the daemon thread's Name is empty the detail falls back to the raw session id, ignoring the freshly-renamed meta. Give the endpoint the same name resolution `/api/tree` uses: when the live thread carries no name, fall back to the past-index meta name (via `liveTitle`) before the raw id.
+`apiSessionDetail` seeds Title from `workspaceData` (web_api_tree.go:673-704). For a live evener session `workspaceData` calls `liveTitle(id, le, s.cfg.Past)` (web_workspace.go:280), which prefers the persisted meta name; but a **live rename** goes through `SetThreadName` on the daemon and `refreshRenamedMeta` bumps the past index — yet the live-branch replacement in `apiSessionDetail` (the `hubDetailFromAppThread` path, ~714) overwrites Title from `thread.Name`/`thread.Preview`/`thread.SessionID`, and if the daemon thread's Name is empty the detail falls back to the raw session id, ignoring the freshly-renamed meta. Give the endpoint the same name resolution `/api/tree` uses: when the live thread carries no name, fall back to the past-index meta name (via `liveTitle`) before the raw id.
 
 **Files:**
 - Modify: `cmd/evener-hub/web_api_tree.go` (`apiSessionDetail`)
@@ -676,7 +676,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "01RENAMED", SessionID: "01RENAMED", Source: "local",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Serf: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	detail, ok := web.apiSessionDetail("01RENAMED")
@@ -910,7 +910,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	r.Refresh() // session reads as live
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// scriptedAppSource.SetThreadName returns Unavailable — the daemon rename fails.
-	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: "01RACE", SessionID: "01RACE", Source: "local", CWD: proj, Serf: appwire.SerfThread{Ref: "local:01RACE"}}})
+	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: "01RACE", SessionID: "01RACE", Source: "local", CWD: proj, Evener: appwire.SerfThread{Ref: "local:01RACE"}}})
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01RACE/rename", strings.NewReader(`{"name":"new"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "127.0.0.1:9180"
@@ -1001,7 +1001,7 @@ if (!items.some((t) => /^Unarchive$/.test(t))) throw new Error("archived test-ru
 
 - [ ] **Step 2: Run — fails** (menu offers Archive; `is_archived` is neither on the wire nor consulted)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-sidebar-menu.js`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement — carry `is_archived` on the wire and read it in the menu**
@@ -1022,12 +1022,12 @@ Then update the now-stale `test-sidebar-testruns.js` assertion (lines 137-142): 
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-menu.js && node test-sidebar-testruns.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-sidebar-menu.js && node test-sidebar-testruns.js`
 Expected: PASS
 
 - [ ] **Step 5: Lint + commit**
 
-Run: `go vet ./cmd/evener-hub/ && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `go vet ./cmd/evener-hub/ && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit:
 - `git add hubapi/types.go cmd/evener-hub/web_api_tree.go cmd/evener-hub/assets/sidebar.js cmd/evener-hub/jstest/test-sidebar-menu.js cmd/evener-hub/jstest/test-sidebar-testruns.js`
 - `git commit -m "fix(hub): row-menu Unarchive tracks server archived state, not bucket (WS3 R2)"`
@@ -1062,7 +1062,7 @@ console.log("PASS: working_dir is encodeURIComponent-escaped");
 
 - [ ] **Step 2: Run — pass immediately** (this pins existing-correct behavior against regression; the escaping already exists)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-sidebar-workingdir-escape.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-sidebar-workingdir-escape.js`
 Expected: PASS. If the harness plumbing (menu-open, location stub) needs adjusting, fix the harness until it passes — the assertion contract (encoded URL) is fixed.
 
 - [ ] **Step 3: (no impl change) — regression pin only**
@@ -1071,7 +1071,7 @@ No source change: the test locks in the current correct escaping so a future ref
 
 - [ ] **Step 4: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Expected: PASS (all jstests).
 
 - [ ] **Step 5: Commit**
@@ -1186,18 +1186,18 @@ Commit:
 
 _~15 loc._
 
-### Correctness T9: Emit `serf/task/updated` on task-status change; subscribe the task row
+### Correctness T9: Emit `evener/task/updated` on task-status change; subscribe the task row
 
-`serf/task/updated` is in the appwire notification catalog constant (`NotifySerfTaskUpdated`, types.go:87) but **emitted by nothing** — `protocol.go:152-154` even documents it as "intentionally absent" from the `Notifications` catalog list. The web keeps the task badge fresh with a 5s poll (retired in Copy T3). Jesse's decision: emit the event on task-status change, subscribe the status row to it, delete the poll.
+`evener/task/updated` is in the appwire notification catalog constant (`NotifySerfTaskUpdated`, types.go:87) but **emitted by nothing** — `protocol.go:152-154` even documents it as "intentionally absent" from the `Notifications` catalog list. The web keeps the task badge fresh with a 5s poll (retired in Copy T3). Jesse's decision: emit the event on task-status change, subscribe the status row to it, delete the poll.
 
-**Appwire router question (answered):** the topic constant already exists; this adds a **notification emit**, not a new request **method**. Notification emits do not go through the request routers, and the handoff rule ("new METHODS need catalog + both routers in one commit; new struct fields don't") does not cover notifications. The one catalog touch needed: `serf/task/updated` must appear in the `Notifications` slice in `protocol.go` (it currently does not — it's the "intentionally absent" case), so the generated-doc + `TestNotificationCatalogWellFormed` cross-check stays honest. That is a single-slice append in `appwire/protocol.go` plus a new `TaskUpdatedParams` payload type — **no router change**.
+**Appwire router question (answered):** the topic constant already exists; this adds a **notification emit**, not a new request **method**. Notification emits do not go through the request routers, and the handoff rule ("new METHODS need catalog + both routers in one commit; new struct fields don't") does not cover notifications. The one catalog touch needed: `evener/task/updated` must appear in the `Notifications` slice in `protocol.go` (it currently does not — it's the "intentionally absent" case), so the generated-doc + `TestNotificationCatalogWellFormed` cross-check stays honest. That is a single-slice append in `appwire/protocol.go` plus a new `TaskUpdatedParams` payload type — **no router change**.
 
 **Files:**
 - Modify: `agent/session_tools_task.go` (emit an `EventTaskUpdated` after `store.Append`/`store.Update`)
 - Modify: `agent/events/events.go` (+ `EventTaskUpdated` kind), `agent/events/payloads.go` (+ `TaskUpdatedData`)
 - Modify: `internal/appprojector/appwire_projection.go` (project `EventTaskUpdated` → `NotifySerfTaskUpdated`, mirroring the `EventQueueChanged` case at ~588)
 - Modify: `appwire/types.go` (+ `TaskUpdatedParams`), `appwire/protocol.go` (add the `Notifications` catalog entry; drop `NotifySerfTaskUpdated` from the "intentionally absent" prose)
-- Modify: `cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`: map `serf/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
+- Modify: `cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`: map `evener/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
 - Test: `agent/session_tools_task_test.go` (emit), `internal/appprojector/*_test.go` (projection), `cmd/evener-hub/jstest/test-task-updated-subscription.js` (client)
 
 - [ ] **Step 1: Failing test (agent) — updating a task emits EventTaskUpdated**
@@ -1251,7 +1251,7 @@ In `agent/session_tools_task.go`, after a successful `store.Append` (line ~114) 
 Run: `cd agent && go test ./ -run TestTaskTool_UpdateEmitsTaskUpdated -count=1`
 Expected: PASS
 
-- [ ] **Step 5: Failing test (projector) — EventTaskUpdated projects to serf/task/updated**
+- [ ] **Step 5: Failing test (projector) — EventTaskUpdated projects to evener/task/updated**
 
 In `internal/appprojector/appwire_projection_test.go` (or the suite's projection test file), feed an `EventTaskUpdated` and assert one `NotifySerfTaskUpdated` notification with the mapped params:
 
@@ -1260,7 +1260,7 @@ func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Data: events.TaskUpdatedData{Total: 3, Done: 1}})
 	if len(out) != 1 || out[0].Method != appwire.NotifySerfTaskUpdated {
-		t.Fatalf("want one serf/task/updated notification, got %+v", out)
+		t.Fatalf("want one evener/task/updated notification, got %+v", out)
 	}
 }
 ```
@@ -1275,9 +1275,9 @@ Expected: FAIL.
 In `appwire/types.go` add:
 
 ```go
-// TaskUpdatedParams is the params shape for serf/task/updated: the session's
+// TaskUpdatedParams is the params shape for evener/task/updated: the session's
 // task-list progress after a change, so a client refreshes the status row
-// event-driven instead of polling serf/tasks/list.
+// event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
 	ThreadID string `json:"threadId,omitempty"`
 	Ref      string `json:"ref,omitempty"`
@@ -1309,17 +1309,17 @@ In `internal/appprojector/appwire_projection.go`, add a case alongside `EventQue
 - [ ] **Step 8: Run — pass (projector), and regenerate the protocol doc**
 
 Run: `go test ./internal/appprojector/ -run TestProject_TaskUpdated -count=1 && go test ./appwire/ -count=1 && make generate`
-Expected: PASS; `make generate` updates `docs/appwire-protocol.md` to list `serf/task/updated`. Commit the regenerated doc.
+Expected: PASS; `make generate` updates `docs/appwire-protocol.md` to list `evener/task/updated`. Commit the regenerated doc.
 
-- [ ] **Step 9: Failing test (client) — a serf/task/updated notification refreshes the badge, no 5s poll**
+- [ ] **Step 9: Failing test (client) — a evener/task/updated notification refreshes the badge, no 5s poll**
 
-Create `cmd/evener-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `SerfAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `serf/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
+Create `cmd/evener-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `SerfAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `evener/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
 
 ```js
 const intervals = [];
 window.setInterval = (fn, ms) => { intervals.push(ms); return 0; };
 // attach renderer, deliver notification via the captured onNotification handler:
-deliver("serf/task/updated", { threadId: "01S", total: 3, done: 1 });
+deliver("evener/task/updated", { threadId: "01S", total: 3, done: 1 });
 const textEl = window.document.querySelector("[data-task-status-text]");
 assert.ok(/1\/3/.test(textEl.textContent), "badge must reflect the pushed task progress");
 assert.ok(!intervals.includes(5000), "no 5s task poll after wiring the event");
@@ -1327,7 +1327,7 @@ assert.ok(!intervals.includes(5000), "no 5s task poll after wiring the event");
 
 - [ ] **Step 10: Run — fails** (no client mapping/handler yet; and the 5s poll still armed until Copy T3)
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: FAIL.
 
 - [ ] **Step 11: Implement (client mapping + handler)**
@@ -1335,7 +1335,7 @@ Expected: FAIL.
 In `appwire.js` `eventsFromNotification` (~810), add a branch:
 
 ```js
-    if (method === "serf/task/updated") {
+    if (method === "evener/task/updated") {
       return [["TASKS_CHANGED", {
         total: typeof params.total === "number" ? params.total : 0,
         done: typeof params.done === "number" ? params.done : 0,
@@ -1362,15 +1362,15 @@ In `renderer.js`'s `handleData` switch (alongside `QUEUE_CHANGED`, ~1003), add:
 
 - [ ] **Step 12: Run — pass**
 
-Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules node test-task-updated-subscription.js`
+Run: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-task-updated-subscription.js`
 Expected: PASS (the no-5s-interval assertion still fails until Copy T3 — sequence Copy T3 immediately after this task; if you want this task self-green, drop the interval assertion here and let Copy T3 add it).
 
 - [ ] **Step 13: Full gates + commit**
 
-Run: `cd agent && go test ./ -run 'Task' -count=1 && cd .. && go test ./internal/appprojector/ ./appwire/ ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh`
+Run: `cd agent && go test ./ -run 'Task' -count=1 && cd .. && go test ./internal/appprojector/ ./appwire/ ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit (one commit — wire+emit+projector+client together, since the notification threads all hops):
 - `git add agent/events/events.go agent/events/payloads.go agent/session_tools_task.go agent/session_tools_task_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
-- `git commit -m "feat(tasks): emit serf/task/updated on task-status change; subscribe the status row"`
+- `git commit -m "feat(tasks): emit evener/task/updated on task-status change; subscribe the status row"`
 
 _~90 loc._
 
@@ -1406,7 +1406,7 @@ Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement — injectable clock**
 
-Add a `now func() time.Time` field to `conn` (and a `NewManagerWithClock` test-seam constructor that sets it on every conn; the production `NewManager` delegates with `time.Now`). Replace the three `time.Now()` reads in the reconnect/backoff path (manager.go:500 `time.Now().Before(c.backoffUntil)`, :541 `c.lastErrAt = time.Now()`, :542 `c.backoffUntil = time.Now().Add(reconnectBackoff)`) with `c.now()`. Keep `time.Now` as the default so production is unchanged; only the test drives the fake clock. Guard the new field with a `// serf:naming-ignore:` line only if namingcheck flags `now` (it should not — it's an unexported field).
+Add a `now func() time.Time` field to `conn` (and a `NewManagerWithClock` test-seam constructor that sets it on every conn; the production `NewManager` delegates with `time.Now`). Replace the three `time.Now()` reads in the reconnect/backoff path (manager.go:500 `time.Now().Before(c.backoffUntil)`, :541 `c.lastErrAt = time.Now()`, :542 `c.backoffUntil = time.Now().Add(reconnectBackoff)`) with `c.now()`. Keep `time.Now` as the default so production is unchanged; only the test drives the fake clock. Guard the new field with a `// evener:naming-ignore:` line only if namingcheck flags `now` (it should not — it's an unexported field).
 
 - [ ] **Step 4: Run — pass, repeatedly and under -race**
 
@@ -1426,7 +1426,7 @@ _~35 loc._
 
 ## Investigate
 
-These two are **observation tasks**: run the built app live and gather evidence. Any code they produce is small and folds into this track; the expected outcome may be "reads right, no change" — record that verdict either way. Use the e2e-scenario-testing skill: build a fresh instance, isolated fake `$HOME` (real `~/.serf` untouched), dedicated Chrome profile, falsifiable observations.
+These two are **observation tasks**: run the built app live and gather evidence. Any code they produce is small and folds into this track; the expected outcome may be "reads right, no change" — record that verdict either way. Use the e2e-scenario-testing skill: build a fresh instance, isolated fake `$HOME` (real `~/.evener` untouched), dedicated Chrome profile, falsifiable observations.
 
 ### Investigate T1: Project last-touched ordering feel (LastActivity)
 
@@ -1492,7 +1492,7 @@ _~0–40 loc._
 
 - [ ] `make test-short` and `make test-race` green across `GO_MODULES`.
 - [ ] `make lint` green (namingcheck included — verify any new field/const passes; the `TaskUpdatedParams`/`TaskUpdatedData` additions are snake_case on the wire, PascalCase in Go, no camelCase wire keys).
-- [ ] `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/serf-jstest-jsdom/node_modules sh run-all.sh` green.
+- [ ] `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` green.
 - [ ] `make generate` leaves `docs/appwire-protocol.md` unchanged (the T9 catalog entry already regenerated + committed).
 - [ ] Re-grep the repo for conflict markers and `go vet` the touched packages after the Track A rebase.
 - [ ] Both Investigate verdicts recorded (even if "no change").

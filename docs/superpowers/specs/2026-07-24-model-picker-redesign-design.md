@@ -35,7 +35,7 @@ popover from a chip trigger) has five UX defects Jesse identified:
 
 ### Panel layout (`ModelCatalogPanel`, rebuilt)
 
-One column, in serf tokens, inside the existing `Popover` panel:
+One column, in evener tokens, inside the existing `Popover` panel:
 
 ```
 ┌──────────────────────────────────────────────┐

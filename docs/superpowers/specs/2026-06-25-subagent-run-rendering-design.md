@@ -5,13 +5,13 @@ Status: Approved design
 
 ## Context
 
-Serf currently shows delegate/subagent execution inconsistently across the web UI and TUI:
+Evener currently shows delegate/subagent execution inconsistently across the web UI and TUI:
 
 - Some subagent/job notifications show long raw `job_...` identifiers; some have no useful identifier at all.
 - Job notifications are not reliably tied back to the originating `delegate` or `delegate_send` tool invocation.
 - The original delegate tool call often remains visually disconnected from later job completion.
 - The web UI already has an aggregated subagent module, but it reconciles mostly by `jobId` and can create orphan rows when ordering is unfavorable.
-- The TUI renders delegate/job activity as ordinary tool rows and does not currently apply `serf/job/started` or `serf/job/finished` notifications to update delegate rows.
+- The TUI renders delegate/job activity as ordinary tool rows and does not currently apply `evener/job/started` or `evener/job/finished` notifications to update delegate rows.
 - The desired UI is a coherent inline subagent execution box that can show status, friendly identity, and a bounded preview of the last few child steps.
 
 The durable backend model already carries much of the linkage needed for this: job records know `DelegateID`, `TranscriptRef`, task, and origin tool-call information. The current AppWire job notifications drop most of that linkage before clients see it.
@@ -30,13 +30,13 @@ The design below allows backend/AppWire changes as long as they are additive and
 ## Non-goals
 
 - Do not replace jobstore or the existing job notification machinery.
-- Do not make Codex-compatible clients depend on Serf-specific fields.
+- Do not make Codex-compatible clients depend on Evener-specific fields.
 - Do not recursively inline whole subagent transcript trees.
 - Do not treat a subagent that reports bad findings as a failed job unless the job itself failed to run.
 
 ## Architecture
 
-Introduce a first-class **SubagentRun** projection as the shared Serf UI concept. A SubagentRun has three identities:
+Introduce a first-class **SubagentRun** projection as the shared Evener UI concept. A SubagentRun has three identities:
 
 - `delegateId`: the stable conversation handle. It survives `delegate_send` follow-up turns.
 - `jobId`: the concrete execution attempt. It changes for resumed delegate runs.
@@ -49,16 +49,16 @@ Backend owns truth and linkage. UI owns presentation.
 
 ## Compatibility boundary
 
-Keep existing Codex-compatible `Thread`, `Turn`, `ThreadItem`, and notification methods intact. Changes are additive and Serf-specific.
+Keep existing Codex-compatible `Thread`, `Turn`, `ThreadItem`, and notification methods intact. Changes are additive and Evener-specific.
 
 Existing methods remain:
 
-- `serf/job/started`
-- `serf/job/finished`
+- `evener/job/started`
+- `evener/job/finished`
 
 Existing required fields remain valid. New clients use optional linkage fields; older clients ignore them.
 
-Prefer enriching existing `SerfJobInfo` first. Do not add a new notification method in the initial implementation. A dedicated Serf-only `serf/delegate/updated` notification is a fallback for a later design revision only if implementation proves that enriched `SerfJobInfo` cannot target the originating tool item reliably.
+Prefer enriching existing `SerfJobInfo` first. Do not add a new notification method in the initial implementation. A dedicated Evener-only `evener/delegate/updated` notification is a fallback for a later design revision only if implementation proves that enriched `SerfJobInfo` cannot target the originating tool item reliably.
 
 ## AppWire and backend data model
 
@@ -75,7 +75,7 @@ type SerfJobInfo struct {
     TranscriptRef string `json:"transcriptRef,omitempty"`
     FromWatch     bool   `json:"fromWatch,omitempty"`
 
-    // New optional Serf delegate linkage fields.
+    // New optional Evener delegate linkage fields.
     DelegateID       string `json:"delegateId,omitempty"`
     Task             string `json:"task,omitempty"`
     OriginToolCallID string `json:"originToolCallId,omitempty"`
@@ -158,8 +158,8 @@ Expanded/details display should include full copyable values:
 Merge all of these into the same SubagentRun:
 
 - delegate `TOOL_CALL_START` / `TOOL_CALL_END` tool state;
-- `serf/job/started`;
-- `serf/job/finished`;
+- `evener/job/started`;
+- `evener/job/finished`;
 - `delegate_send` / `job_read_output` / `job_list` reconciliation data;
 - cold transcript reconciliation data after reload.
 
@@ -195,7 +195,7 @@ TUI `/status` and details drawer should not dump long raw IDs as the primary job
 
 1. Parent model calls `delegate`.
 2. Backend creates `delegateId` and `jobId`, persists delegate/job start events, and emits `JOB_STARTED`.
-3. AppWire projects `serf/job/started` with enriched `SerfJobInfo`.
+3. AppWire projects `evener/job/started` with enriched `SerfJobInfo`.
 4. UI creates or updates a SubagentRun.
 
 Ordering cases:
@@ -207,7 +207,7 @@ Ordering cases:
 
 1. Child completes and parent job manager finalizes the delegate job.
 2. Backend persists `job_finished` and emits `JOB_FINISHED`.
-3. AppWire projects `serf/job/finished` with linkage and terminal status.
+3. AppWire projects `evener/job/finished` with linkage and terminal status.
 4. UI updates the same SubagentRun:
    - running becomes completed, failed, stopped, cancelled, or unknown;
    - duration freezes;
@@ -252,7 +252,7 @@ Preferred design:
 3. Backend returns only the latest N child items/turn summaries, default 3-5.
 4. UI renders these snippets under the SubagentRun box and links to the full transcript for everything else.
 
-The preview API can reuse existing transcript read/paging machinery if it can efficiently request the latest bounded child window by `transcriptRef`; otherwise add a small Serf-specific RPC for this purpose.
+The preview API can reuse existing transcript read/paging machinery if it can efficiently request the latest bounded child window by `transcriptRef`; otherwise add a small Evener-specific RPC for this purpose.
 
 Preview content must be projected/sanitized like ordinary transcript items. Nested previews should not recursively inline grandchildren by default.
 

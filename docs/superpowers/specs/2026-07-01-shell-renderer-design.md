@@ -8,7 +8,7 @@
 
 Make shell/bash tool calls readable and intentional while improving the expandable-tool affordance across all visible tools. The shell renderer should feel like a first-class command transcript, not a generic tool row with a clipped command. The broader tool renderer should use standardized components so shell does not become a one-off widget.
 
-The redesign must keep Serf's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
+The redesign must keep Evener's existing transcript tone: quiet annotation tier, low chrome, clear hierarchy, and honest output states.
 
 ## Problems to solve
 
@@ -266,5 +266,5 @@ If Go server/template behavior changes, also run the relevant Go tests under `cm
 These should be resolved in the implementation plan, not by changing the product direction:
 
 - Whether to introduce new wrapper elements (`.tool-main`) immediately or adapt existing `.tool-intent` / `.tool-command` classes with minimal DOM churn.
-- Whether terminal body rails use box-drawing characters literally or achieve the same feel with CSS borders. CSS is likely more robust, but the visual intent is a compact Serf terminal transcript.
+- Whether terminal body rails use box-drawing characters literally or achieve the same feel with CSS borders. CSS is likely more robust, but the visual intent is a compact Evener terminal transcript.
 - How much metadata remains visible in very narrow mobile panes.

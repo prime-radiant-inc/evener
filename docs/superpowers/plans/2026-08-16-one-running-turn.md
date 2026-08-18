@@ -315,7 +315,7 @@ than waved away. Child sessions do run notification turns
       (`agent/session_turn_boundary_test.go:510`), which pins today's behaviour.
 - [ ] Drop the `servedByDaemon()` gate on the emit at
       `agent/session_lifecycle.go:1620`, keeping it on the mint.
-- [ ] Note in the commit that unserved **root** sessions (one-shot `serf run`)
+- [ ] Note in the commit that unserved **root** sessions (one-shot `evener run`)
       also begin emitting the boundary; harmless via `sendEvent`'s drop path,
       but it should be stated rather than discovered.
 

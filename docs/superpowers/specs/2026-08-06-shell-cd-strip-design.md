@@ -6,9 +6,9 @@ Status: approved design, pre-implementation
 ## Problem
 
 Models habitually prefix shell commands with `cd <session cwd> && ` even
-though serf already runs every command in the session's working directory
+though evener already runs every command in the session's working directory
 (execenv sets the process dir; the prefix is a trained-in habit, not a
-serf need). The prefix is pure noise in transcript displays: it repeats a
+evener need). The prefix is pure noise in transcript displays: it repeats a
 long absolute path on nearly every shell row.
 
 ## Rule (both surfaces, identical)

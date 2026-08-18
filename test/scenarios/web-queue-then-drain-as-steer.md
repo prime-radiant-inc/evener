@@ -43,8 +43,8 @@ before the hub binary.
 ## Steps
 
 ```bash
-tmpdir=$(mktemp -d -t serf-e2e-drain-XXXXX)
-TOKEN=$(cat "$HOME/.serf/auth-token")
+tmpdir=$(mktemp -d -t evener-e2e-drain-XXXXX)
+TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 

@@ -167,7 +167,7 @@ leaving fuzz coverage under `make fuzz`, and keeping the protected wave-one
 contention policy unchanged.
 
 The complete logs are under
-`/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/task-4-logs/`.
+`/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-evener--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/task-4-logs/`.
 
 ## Out of scope
 

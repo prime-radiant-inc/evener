@@ -1,4 +1,4 @@
-# Serf Sandboxing — M4: Subagent / Worktree Sandbox Scoping
+# Evener Sandboxing — M4: Subagent / Worktree Sandbox Scoping
 
 > **For agentic workers:** Implement with superpowers:subagent-driven-development,
 > task-by-task, red→green→adversarial-verify→commit. Follow the SDD protocol in
@@ -8,7 +8,7 @@
 
 **Goal:** Make the `SandboxPolicy`/`ResolvedPolicy` **follow a session across every
 env re-root** — subagent spawn, delegate isolation lanes, delegate resume after a
-serf restart, and interactive `manage_worktree` switches — **re-rooted to the
+evener restart, and interactive `manage_worktree` switches — **re-rooted to the
 child's/target's worktree with fresh gitdir resolution**, exactly the way
 `EnvPolicy` is carried today but with the one crucial difference that the sandbox's
 resolved roots are worktree-dependent and must be *recomputed*, never copied. After
@@ -109,7 +109,7 @@ editing; M1/M2/M3 will have shifted these):
   marked not-resumable, a worktree switch is refused — it is never silently dropped
   or downgraded. `off` is exempt (no policy → no re-root → no refusal).
 - **Immutable across restart.** Resume re-resolves the delegate's *persisted* policy
-  inputs, not the parent's current config. A config that loosened between serf runs
+  inputs, not the parent's current config. A config that loosened between evener runs
   must not loosen a live delegate's confinement (spec: policy "immutable for the
   session's lifetime — no tool call can relax it").
 - **Mirror `EnvPolicy` exactly** for the capture→propagate→persist→restore path
@@ -118,7 +118,7 @@ editing; M1/M2/M3 will have shifted these):
 - **Plumbing vs. enforcement.** Tasks 1–5 assert *policy values* (roots/refusals)
   and are green on M1+M2 with a `FakeProber`. Task 6 asserts *real kernel
   confinement* and requires the M3 backend present on this branch.
-- **snake_case** for the new descriptor JSON keys; `make lint` (serf-namingcheck) is
+- **snake_case** for the new descriptor JSON keys; `make lint` (evener-namingcheck) is
   a gate. Never `git add -A` without a prior `git status`.
 
 ## File Structure
@@ -236,7 +236,7 @@ editing; M1/M2/M3 will have shifted these):
 (modify), `agent/sandbox_delegate_test.go` (extend).
 
 - [ ] **Failing test:** spawn a sandboxed isolation delegate, marshal its
-  `DelegateRestoreDescriptor`, drop the live env (simulated serf restart), rebuild
+  `DelegateRestoreDescriptor`, drop the live env (simulated evener restart), rebuild
   a fresh parent env, `restoreDelegateChildEnvironment` → the restored child env's
   `Sandbox` is re-resolved and rooted at the persisted lane with fresh gitdir
   resolution; a JSON round-trip preserves the snapshot (snake_case keys). **Fail
@@ -287,7 +287,7 @@ editing; M1/M2/M3 will have shifted these):
   is also `net=off` (spawned egress denied); **depth** — a grandchild is confined to
   its own lane. These extend `sandbox_test.go`'s containment invariant and are the
   named-deliverable escape tests for M4 (spec Validation: "delegate resume after
-  serf restart", cross-lane isolation).
+  evener restart", cross-lane isolation).
 - [ ] No implementation change expected — this validates Tasks 1–5 end to end. Any
   failure is a real hole; fix at its root, re-run.
 - [ ] Adversarial verify (are these asserting *kernel* denial, not just policy

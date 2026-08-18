@@ -4,15 +4,15 @@
 
 **Goal:** Make delegate/subagent jobs render as one coherent run in the web UI and TUI by carrying backend linkage through AppWire, merging live/cold signals, shortening IDs, and lazily showing bounded child-step previews.
 
-**Architecture:** Add optional Serf-only delegate linkage fields to existing job event and `SerfJobInfo` payloads; do not add a new notification method. Web and TUI clients fold `serf/job/started`, `serf/job/finished`, delegate tool output, and cold thread data into a shared SubagentRun concept keyed by origin item/call first, then `jobId`, then `delegateId`. Preview content is fetched lazily and bounded by `transcriptRef` instead of embedded in notifications.
+**Architecture:** Add optional Evener-only delegate linkage fields to existing job event and `SerfJobInfo` payloads; do not add a new notification method. Web and TUI clients fold `evener/job/started`, `evener/job/finished`, delegate tool output, and cold thread data into a shared SubagentRun concept keyed by origin item/call first, then `jobId`, then `delegateId`. Preview content is fetched lazily and bounded by `transcriptRef` instead of embedded in notifications.
 
 **Tech Stack:** Go backend/AppWire/projector tests, plain JavaScript web renderer with JSDOM tests, Bubble Tea TUI reducer/render tests, deterministic scripted tests only.
 
 ## Global Constraints
 
-- Keep existing AppWire notification methods: `serf/job/started` and `serf/job/finished`.
-- Preserve Codex app server compatibility: all new wire fields are optional `omitempty` Serf fields, and existing required fields keep their names and meanings.
-- Do not add `serf/delegate/updated` in the initial implementation.
+- Keep existing AppWire notification methods: `evener/job/started` and `evener/job/finished`.
+- Preserve Codex app server compatibility: all new wire fields are optional `omitempty` Evener fields, and existing required fields keep their names and meanings.
+- Do not add `evener/delegate/updated` in the initial implementation.
 - Backend owns delegate/job/origin linkage; UI owns rendering, merging, short IDs, and previews.
 - Populate delegate linkage from live `run.rec` / folded job records, not only flattened events.
 - Include `transcriptRef` on delegate job start, not only finish.
@@ -76,7 +76,7 @@
 - Modify `internal/apptranscript/apptranscript.go` and `internal/apptranscript/apptranscript_test.go`
   - Preserve delegate tool-state linkage in `ThreadItem.Raw` and add cold reconciliation helper input/output seams.
 
-- Add or modify a small Serf-only preview RPC in the existing appwire/appserver stack if existing transcript paging cannot fetch the latest bounded items by `transcriptRef`.
+- Add or modify a small Evener-only preview RPC in the existing appwire/appserver stack if existing transcript paging cannot fetch the latest bounded items by `transcriptRef`.
   - Prefer reusing existing thread/turn read plumbing; add a new RPC only if it keeps the implementation smaller and deterministic.
 
 ---
@@ -867,7 +867,7 @@ git commit -m "feat(hub): merge delegate job notifications into subagent runs"
 - Test: `cmd/evener-tui/hub_appwire_test.go`
 
 **Interfaces:**
-- Consumes: `appwire.SerfJobInfo` from `serf/job/started` and `serf/job/finished`.
+- Consumes: `appwire.SerfJobInfo` from `evener/job/started` and `evener/job/finished`.
 - Produces:
 
 ```go
@@ -1475,7 +1475,7 @@ git commit -m "feat(hub): reconcile delegate runs on thread read"
 ### Task 6: Bounded child-step preview
 
 **Files:**
-- Modify: existing AppWire/server transcript read path, or add a small Serf-only preview RPC in `appwire/types.go` and appserver registration files.
+- Modify: existing AppWire/server transcript read path, or add a small Evener-only preview RPC in `appwire/types.go` and appserver registration files.
 - Modify: `cmd/evener-hub/assets/renderer.js`
 - Modify: `cmd/evener-hub/assets/style.css`
 - Modify: `cmd/evener-hub/jstest/test-subagents.js`
@@ -1554,7 +1554,7 @@ Expected: FAIL because rows do not lazy-load preview content.
 Prefer existing `readThread` / `listTurns` if it can request the child transcript and slice latest items without loading unbounded content in the client. If no existing endpoint can do that cleanly, add this AppWire method:
 
 ```go
-const MethodSerfSubagentPreview = "serf/subagentPreview"
+const MethodSerfSubagentPreview = "evener/subagentPreview"
 
 type SerfSubagentPreviewParams struct {
     Ref   string `json:"ref"`
@@ -1568,7 +1568,7 @@ type SerfSubagentPreviewResponse struct {
 }
 ```
 
-Register the method in the hub appserver beside other Serf-only methods. The handler must clamp `Limit` to `1..5`, default to `3`, read the child transcript by `Ref`, project using the same apptranscript path as normal thread read, and return only the latest direct child `ThreadItem`s.
+Register the method in the hub appserver beside other Evener-only methods. The handler must clamp `Limit` to `1..5`, default to `3`, read the child transcript by `Ref`, project using the same apptranscript path as normal thread read, and return only the latest direct child `ThreadItem`s.
 
 - [ ] **Step 4: Add renderer preview loading methods**
 

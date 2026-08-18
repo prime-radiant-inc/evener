@@ -8,7 +8,7 @@ Source: `read-transcript-feedback-2026-08-08.md`
 
 Make every truncated text tool result recoverable without rerunning the tool. During the current root session tree, an agent must be able to retrieve any targeted omitted line in one additional `read_transcript` search call and reconstruct every omitted byte by paging.
 
-The first implementation stays small. It reuses the full output and job-log readers that Serf already has. It adds one temporary output store, one truncation flag, one capture hook, and two read operations.
+The first implementation stays small. It reuses the full output and job-log readers that Evener already has. It adds one temporary output store, one truncation flag, one capture hook, and two read operations.
 
 ## Current behavior
 
@@ -91,13 +91,13 @@ The store captures only results that generic limits truncated. Untruncated resul
 
 ### Retention failure
 
-Generic truncation markers describe only what was removed; they make no availability claim. If `Put` fails, Serf returns the bounded tool result and appends:
+Generic truncation markers describe only what was removed; they make no availability claim. If `Put` fails, Evener returns the bounded tool result and appends:
 
 ```text
 [retention_failed: full output could not be retained]
 ```
 
-Serf must not print “full output is available,” mention the event stream, or invent a ref after a failed write. The tool call itself keeps its original success or error status; retention failure is a separate warning.
+Evener must not print “full output is available,” mention the event stream, or invent a ref after a failed write. The tool call itself keeps its original success or error status; retention failure is a separate warning.
 
 ## `read_transcript` API
 
@@ -233,7 +233,7 @@ Artifact refs must be unguessable. A reader may resolve only refs in its root se
 
 The store writes exact tool output, which may contain secrets. Create its directory and files with owner-only permissions. Do not record tool arguments or duplicate output in metadata. Root-tree cleanup removes the whole directory after descendant shutdown.
 
-Sandboxed tools do not gain filesystem access through artifact refs. The Serf host reads artifacts and returns bounded content through `read_transcript`, as it already does for durable job logs.
+Sandboxed tools do not gain filesystem access through artifact refs. The Evener host reads artifacts and returns bounded content through `read_transcript`, as it already does for durable job logs.
 
 ## Testing
 
@@ -289,7 +289,7 @@ returns every expected matching line, including lines omitted from the preview, 
 
 The change is complete when all these statements hold:
 
-1. Every generic text result truncated by Serf returns an `artifact:` handle or an honest `retention_failed` warning.
+1. Every generic text result truncated by Evener returns an `artifact:` handle or an honest `retention_failed` warning.
 2. During the current root session tree, paging an artifact can reconstruct every original byte exactly.
 3. `read_transcript` can page and search `artifact:` and retained `job:` output, including output of running jobs, with snapshot semantics and reported `job_status`.
 4. Search on a running job never evaluates a growing partial line; continuation guarantees it is evaluated once complete.

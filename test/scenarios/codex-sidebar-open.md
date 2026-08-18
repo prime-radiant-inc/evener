@@ -4,9 +4,9 @@
 
 ## Pre-state
 
-- Fresh `serf-hub` build under test, started in an isolated state dir.
+- Fresh `evener-hub` build under test, started in an isolated state dir.
 - Browser authenticated to the test hub.
-- A controlled local Codex-compatible AppWire source is running and exposes one known thread in the sidebar; keep at least one local Serf session visible as a contrast case.
+- A controlled local Codex-compatible AppWire source is running and exposes one known thread in the sidebar; keep at least one local Evener session visible as a contrast case.
 
 ## Steps
 

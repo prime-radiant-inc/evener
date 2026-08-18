@@ -16,7 +16,7 @@ The workspace bottom area matches the mockup:
 
 [＋] [⚠ full access] [openai · gpt-5 ▾]            [steer] [send ⌘↵]
 ─────────────────────────────────────────────────────────────────
-~/git/serf/.worktrees/serf-hub · serf-hub@7c8450c    context [▓░░] 68k/200k · $0.84
+~/git/evener/.worktrees/evener-hub · evener-hub@7c8450c    context [▓░░] 68k/200k · $0.84
 ```
 
 Users can attach images by clicking `＋`, dragging onto the textarea, or pasting from the clipboard. Selected files render as small chips above the textarea with an `×` to remove. On send, attachments go through the daemon and end up in the user message as `llm.ContentImage` parts.
@@ -309,7 +309,7 @@ Apply to both `toggleTasksPanel` and `toggleDetailsPanel`. Take care that openin
 
 1. Wire `WorkspaceData.WorkingDir` and `WorkspaceData.Branch` from daemon `/status` (verify `git_branch` exists; if not, expose it on `StatusInfo` and have the daemon populate from `s.envInfo.GitBranch`).
 2. Run all Go tests and JSDOM tests.
-3. Rebuild `/tmp/serf-hub`, restart, screenshot two scenarios via chrome MCP:
+3. Rebuild `/tmp/evener-hub`, restart, screenshot two scenarios via chrome MCP:
    - Empty conversation showing the bottom strip per mockup
    - Drag-and-drop or attach demo with 1 chip pending
    - Click-outside dismissal

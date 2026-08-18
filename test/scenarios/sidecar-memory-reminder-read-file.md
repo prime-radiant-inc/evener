@@ -12,7 +12,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Pre-state
 
 - Fresh hub and daemon binaries.
-- `tmpdir=$(mktemp -d -t serf-e2e-memory-reminder-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-memory-reminder-XXXXX)`.
 - Create the memory fixture:
 
   ```bash

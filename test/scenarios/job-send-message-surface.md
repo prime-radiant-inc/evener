@@ -49,7 +49,7 @@ conversation; delegates never use `job:` refs
 
 - Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-dsend-XXXXX)`.
+- `tmpdir=$(mktemp -d -t evener-e2e-dsend-XXXXX)`.
 
 ## Steps
 
@@ -102,7 +102,7 @@ conversation; delegates never use `job:` refs
    > exposes it, the structured tool state. Then end your turn.
 5. Read the parent transcript, DLG2's own transcript (via its
    `transcript_ref`), and
-   `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
+   `find ~/.local/state/evener/projects -path "*sessions/$SID/jobs.jsonl"`.
 
 ## Expected
 

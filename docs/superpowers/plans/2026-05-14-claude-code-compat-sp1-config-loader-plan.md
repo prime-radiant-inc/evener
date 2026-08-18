@@ -105,9 +105,9 @@ import (
 type ConfigTier int
 
 const (
-	// TierGlobal is ~/.config/serf/config.json (lowest precedence).
+	// TierGlobal is ~/.config/evener/config.json (lowest precedence).
 	TierGlobal ConfigTier = iota
-	// TierProject is .serf/config.json at the git root.
+	// TierProject is .evener/config.json at the git root.
 	TierProject
 	// TierCLI is a --config <path> argument (highest precedence).
 	TierCLI
@@ -241,7 +241,7 @@ func LoadSerfConfigFile(path string) (SerfConfig, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return SerfConfig{}, nil
 		}
-		return SerfConfig{}, fmt.Errorf("reading serf config %s: %w", path, err)
+		return SerfConfig{}, fmt.Errorf("reading evener config %s: %w", path, err)
 	}
 	_ = data
 	// Parsing comes in the next task.
@@ -352,17 +352,17 @@ func LoadSerfConfigFile(path string) (SerfConfig, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return SerfConfig{}, nil
 		}
-		return SerfConfig{}, fmt.Errorf("reading serf config %s: %w", path, err)
+		return SerfConfig{}, fmt.Errorf("reading evener config %s: %w", path, err)
 	}
 
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return SerfConfig{}, fmt.Errorf("serf config %s: top-level must be a JSON object", path)
+		return SerfConfig{}, fmt.Errorf("evener config %s: top-level must be a JSON object", path)
 	}
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return SerfConfig{}, fmt.Errorf("parsing serf config %s: %w", path, err)
+		return SerfConfig{}, fmt.Errorf("parsing evener config %s: %w", path, err)
 	}
 
 	cfg := SerfConfig{
@@ -411,8 +411,8 @@ func TestLoadSerfConfigFile_MalformedJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("malformed JSON should error")
 	}
-	if !strings.Contains(err.Error(), "parsing serf config") {
-		t.Errorf("error = %q, want substring %q", err.Error(), "parsing serf config")
+	if !strings.Contains(err.Error(), "parsing evener config") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "parsing evener config")
 	}
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("error = %q, missing file path %q", err.Error(), path)
@@ -423,7 +423,7 @@ func TestLoadSerfConfigFile_MalformedJSON(t *testing.T) {
 - [ ] **Step 2: Run test to verify it passes already**
 
 Run: `go test ./agent/... -run TestLoadSerfConfigFile_MalformedJSON -v`
-Expected: PASS — `json.Unmarshal` rejects `{` and the error already wraps with `parsing serf config %s`. This test pins the contract.
+Expected: PASS — `json.Unmarshal` rejects `{` and the error already wraps with `parsing evener config %s`. This test pins the contract.
 
 - [ ] **Step 3: Commit**
 
@@ -550,17 +550,17 @@ func LoadSerfConfigFile(path string) (SerfConfig, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return SerfConfig{}, nil
 		}
-		return SerfConfig{}, fmt.Errorf("reading serf config %s: %w", path, err)
+		return SerfConfig{}, fmt.Errorf("reading evener config %s: %w", path, err)
 	}
 
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return SerfConfig{}, fmt.Errorf("serf config %s: top-level must be a JSON object", path)
+		return SerfConfig{}, fmt.Errorf("evener config %s: top-level must be a JSON object", path)
 	}
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return SerfConfig{}, fmt.Errorf("parsing serf config %s: %w", path, err)
+		return SerfConfig{}, fmt.Errorf("parsing evener config %s: %w", path, err)
 	}
 
 	cfg := SerfConfig{
@@ -574,7 +574,7 @@ func LoadSerfConfigFile(path string) (SerfConfig, error) {
 		}
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(v, &m); err != nil {
-			return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an object", path, field)
+			return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an object", path, field)
 		}
 		switch field {
 		case "marketplaces":
@@ -694,13 +694,13 @@ Add this block in `LoadSerfConfigFile` after the loop over raw-object fields (be
 	if v, ok := raw["hooks"]; ok {
 		var hooksRaw map[string]json.RawMessage
 		if err := json.Unmarshal(v, &hooksRaw); err != nil {
-			return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an object of event-name to array", path, "hooks")
+			return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an object of event-name to array", path, "hooks")
 		}
 		cfg.Hooks = make(map[string][]json.RawMessage, len(hooksRaw))
 		for event, ev := range hooksRaw {
 			var arr []json.RawMessage
 			if err := json.Unmarshal(ev, &arr); err != nil {
-				return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an array", path, "hooks."+event)
+				return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an array", path, "hooks."+event)
 			}
 			cfg.Hooks[event] = arr
 		}
@@ -796,30 +796,30 @@ Add this block in `LoadSerfConfigFile` after the Hooks block (before `return cfg
 	if v, ok := raw["permissions"]; ok {
 		var permRaw map[string]json.RawMessage
 		if err := json.Unmarshal(v, &permRaw); err != nil {
-			return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an object", path, "permissions")
+			return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an object", path, "permissions")
 		}
 		for k, vv := range permRaw {
 			switch k {
 			case "allow":
 				var allow []string
 				if err := json.Unmarshal(vv, &allow); err != nil {
-					return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an array of strings", path, "permissions.allow")
+					return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an array of strings", path, "permissions.allow")
 				}
 				cfg.Permissions.Allow = allow
 			case "deny":
 				var deny []string
 				if err := json.Unmarshal(vv, &deny); err != nil {
-					return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be an array of strings", path, "permissions.deny")
+					return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be an array of strings", path, "permissions.deny")
 				}
 				cfg.Permissions.Deny = deny
 			case "defaultMode":
 				var mode string
 				if err := json.Unmarshal(vv, &mode); err != nil {
-					return SerfConfig{}, fmt.Errorf("serf config %s: field %q: must be a string", path, "permissions.defaultMode")
+					return SerfConfig{}, fmt.Errorf("evener config %s: field %q: must be a string", path, "permissions.defaultMode")
 				}
 				cfg.Permissions.DefaultMode = mode
 			default:
-				fmt.Fprintf(serfConfigWarnWriter, "serf config %s: ignoring unknown field %q\n", path, "permissions."+k)
+				fmt.Fprintf(serfConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, "permissions."+k)
 			}
 		}
 	}
@@ -992,7 +992,7 @@ Modify `LoadSerfConfigFile` to scan unknown top-level keys after the `raw` unmar
 	}
 	for k := range raw {
 		if _, ok := known[k]; !ok {
-			fmt.Fprintf(serfConfigWarnWriter, "serf config %s: ignoring unknown field %q\n", path, k)
+			fmt.Fprintf(serfConfigWarnWriter, "evener config %s: ignoring unknown field %q\n", path, k)
 		}
 	}
 ```
@@ -1043,8 +1043,8 @@ func TestLoadSerfConfigFile_PermissionDenied(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected permission-denied error")
 	}
-	if !strings.Contains(err.Error(), "reading serf config") {
-		t.Errorf("error = %q, want substring %q", err.Error(), "reading serf config")
+	if !strings.Contains(err.Error(), "reading evener config") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "reading evener config")
 	}
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("error = %q, missing file path %q", err.Error(), path)
@@ -1055,7 +1055,7 @@ func TestLoadSerfConfigFile_PermissionDenied(t *testing.T) {
 - [ ] **Step 2: Run test to verify it passes**
 
 Run: `go test ./agent/... -run TestLoadSerfConfigFile_PermissionDenied -v`
-Expected: PASS — the existing `LoadSerfConfigFile` already wraps non-`ErrNotExist` errors with `reading serf config %s`. This test pins the contract.
+Expected: PASS — the existing `LoadSerfConfigFile` already wraps non-`ErrNotExist` errors with `reading evener config %s`. This test pins the contract.
 
 - [ ] **Step 3: Commit**
 
@@ -1447,7 +1447,7 @@ Append to `agent/config_test.go`:
 func TestGlobalSerfConfigPath_HonorsXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 	got := globalSerfConfigPath()
-	want := filepath.Join("/custom/xdg", "serf", "config.json")
+	want := filepath.Join("/custom/xdg", "evener", "config.json")
 	if got != want {
 		t.Errorf("globalSerfConfigPath = %q, want %q", got, want)
 	}
@@ -1457,7 +1457,7 @@ func TestGlobalSerfConfigPath_FallbackHomeConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/tmp/fakehome")
 	got := globalSerfConfigPath()
-	want := filepath.Join("/tmp/fakehome", ".config", "serf", "config.json")
+	want := filepath.Join("/tmp/fakehome", ".config", "evener", "config.json")
 	if got != want {
 		t.Errorf("globalSerfConfigPath = %q, want %q", got, want)
 	}
@@ -1487,7 +1487,7 @@ func globalSerfConfigPath() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "config.json")
+	return filepath.Join(dir, "evener", "config.json")
 }
 ```
 
@@ -1524,9 +1524,9 @@ import (
 // serfConfigTestRepo builds a temporary directory layout suitable for
 // DiscoverSerfConfig tests:
 //
-//   <tmp>/xdg/serf/config.json        (global, when global!="")
+//   <tmp>/xdg/evener/config.json        (global, when global!="")
 //   <tmp>/repo/.git/...               (initialized git repo)
-//   <tmp>/repo/.serf/config.json      (project, when project!="")
+//   <tmp>/repo/.evener/config.json      (project, when project!="")
 //   <tmp>/cli/<name>.json             (one CLI file per cliFiles entry)
 //
 // It also calls t.Setenv to point XDG_CONFIG_HOME at <tmp>/xdg and returns
@@ -1546,12 +1546,12 @@ func serfConfigTestRepo(t *testing.T, global, project string, cliOrder []string,
 	root := t.TempDir()
 
 	xdg := filepath.Join(root, "xdg")
-	if err := os.MkdirAll(filepath.Join(xdg, "serf"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(xdg, "evener"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	if global != "" {
-		if err := os.WriteFile(filepath.Join(xdg, "serf", "config.json"), []byte(global), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(xdg, "evener", "config.json"), []byte(global), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1566,10 +1566,10 @@ func serfConfigTestRepo(t *testing.T, global, project string, cliOrder []string,
 		t.Fatalf("git init failed: %v: %s", err, out)
 	}
 	if project != "" {
-		if err := os.MkdirAll(filepath.Join(repo, ".serf"), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(repo, ".evener"), 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(repo, ".serf", "config.json"), []byte(project), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(repo, ".evener", "config.json"), []byte(project), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1667,7 +1667,7 @@ func DiscoverSerfConfig(env ExecutionEnvironment, cliPaths []string) (SerfConfig
 		cwd := env.WorkingDirectory()
 		root := gitRootOrEmpty(env, cwd)
 		if root != "" {
-			pp := filepath.Join(root, ".serf", "config.json")
+			pp := filepath.Join(root, ".evener", "config.json")
 			layer, err := LoadSerfConfigFile(pp)
 			if err != nil {
 				return SerfConfig{}, err
@@ -1863,22 +1863,22 @@ Append to `agent/config_test.go`:
 
 ```go
 func TestDiscoverSerfConfig_ProjectSkippedOutsideGit(t *testing.T) {
-	// Build a layout that has a .serf/config.json present but no git repo
+	// Build a layout that has a .evener/config.json present but no git repo
 	// around it. DiscoverSerfConfig must not pick it up via the gitRootOrEmpty
 	// path.
 	root := t.TempDir()
 
 	xdg := filepath.Join(root, "xdg")
-	if err := os.MkdirAll(filepath.Join(xdg, "serf"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(xdg, "evener"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 
 	nonRepo := filepath.Join(root, "nonrepo")
-	if err := os.MkdirAll(filepath.Join(nonRepo, ".serf"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(nonRepo, ".evener"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nonRepo, ".serf", "config.json"), []byte(`{"permissions":{"allow":["P"]}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(nonRepo, ".evener", "config.json"), []byte(`{"permissions":{"allow":["P"]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1926,7 +1926,7 @@ func TestDiscoverSerfConfig_MalformedGlobalAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for malformed global config")
 	}
-	if !strings.Contains(err.Error(), "parsing serf config") || !strings.Contains(err.Error(), "/xdg/serf/config.json") {
+	if !strings.Contains(err.Error(), "parsing evener config") || !strings.Contains(err.Error(), "/xdg/evener/config.json") {
 		t.Errorf("error = %q", err.Error())
 	}
 }
@@ -1937,7 +1937,7 @@ func TestDiscoverSerfConfig_MalformedProjectAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for malformed project config")
 	}
-	wantPath := filepath.Join(repo, ".serf", "config.json")
+	wantPath := filepath.Join(repo, ".evener", "config.json")
 	if !strings.Contains(err.Error(), wantPath) {
 		t.Errorf("error = %q, want substring %q", err.Error(), wantPath)
 	}
@@ -1954,8 +1954,8 @@ func TestDiscoverSerfConfig_MalformedCLIAbortsWithTierPrefix(t *testing.T) {
 	if !strings.Contains(err.Error(), "--config "+cliPaths[0]) {
 		t.Errorf("error = %q, want --config <path> prefix with %q", err.Error(), cliPaths[0])
 	}
-	if !strings.Contains(err.Error(), "parsing serf config") {
-		t.Errorf("error = %q, want inner 'parsing serf config' message", err.Error())
+	if !strings.Contains(err.Error(), "parsing evener config") {
+		t.Errorf("error = %q, want inner 'parsing evener config' message", err.Error())
 	}
 }
 ```
@@ -2170,7 +2170,7 @@ func TestLoadSerfConfigFile_MalformedFixture(t *testing.T) {
 	if err == nil {
 		t.Fatal("malformed fixture should error")
 	}
-	if !strings.Contains(err.Error(), "parsing serf config") {
+	if !strings.Contains(err.Error(), "parsing evener config") {
 		t.Errorf("error = %q", err.Error())
 	}
 }
@@ -2244,7 +2244,7 @@ Expected: PASS.
 - [ ] **Step 2: Verify no other package was touched**
 
 Run: `git diff --name-only main..HEAD -- ':!docs'`
-Expected: only `agent/config.go`, `agent/config_test.go`, and files under `agent/testdata/config/` appear. SP1 must not modify any existing serf file.
+Expected: only `agent/config.go`, `agent/config_test.go`, and files under `agent/testdata/config/` appear. SP1 must not modify any existing evener file.
 
 - [ ] **Step 3: Confirm**
 

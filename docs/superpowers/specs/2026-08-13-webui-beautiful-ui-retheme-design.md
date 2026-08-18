@@ -13,7 +13,7 @@ MIT License, Copyright (c) 2026 Shane Levine. The license text ships at
 `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`; `tokens.css` and any
 widget whose structure is ported from a Beautiful UI component carry a
 one-line attribution comment. Their components are React + Tailwind; nothing
-is copy-pasted — every value and structure is translated into serf's
+is copy-pasted — every value and structure is translated into evener's
 CSS-module + token system, which is why the token contract continues to
 hold.
 

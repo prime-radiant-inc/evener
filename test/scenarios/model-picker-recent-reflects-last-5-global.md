@@ -29,7 +29,7 @@ pickers are the same shared ARIA combobox
 
 **There is no localStorage key for Recent.** It is entirely
 server-derived from session metas; the only spawn-related client storage
-is the unrelated `serf-hub.spawn-defaults.*` namespace. Don't seed
+is the unrelated `evener-hub.spawn-defaults.*` namespace. Don't seed
 Recent — spawn real sessions.
 
 ## Pre-state
@@ -55,7 +55,7 @@ Recent — spawn real sessions.
 ### Browser-free (the exact assertions — (a), (b) and (c) are all checkable here)
 
 1. Spawn 6 real sessions via `POST /api/spawn`
-   (`{"prompt":"hi","harness":"serf","model":"<provider/model>","working_dir":"<projN>"}`),
+   (`{"prompt":"hi","harness":"evener","model":"<provider/model>","working_dir":"<projN>"}`),
    one per distinct model, in this order, 3s apart: `ollama/gemma4:e4b`,
    `openai/codex-auto-review`, `openai/gpt-5.3-codex-spark`,
    `openai/gpt-5.4`, `openai/gpt-5.4-mini`, `openai/gpt-5.5` — 6
@@ -78,7 +78,7 @@ Recent — spawn real sessions.
 4. Cross-check the recency claim against the sessions' own metas — the
    order tracks each session's `updated_at`, not spawn order:
    ```bash
-   find "$XDG_STATE_HOME/serf/projects" -name '*.meta.json' \
+   find "$XDG_STATE_HOME/evener/projects" -name '*.meta.json' \
      -exec jq -r '[.updated_at, .profile_id, .model] | @tsv' {} \; | sort -r
    ```
 
@@ -95,7 +95,7 @@ Recent — spawn real sessions.
        .map(li => ({ role: li.getAttribute("role"), text: li.textContent.trim() })),
    })
    ```
-6. Open `/settings/launch-serf`, open its model field, run the identical
+6. Open `/settings/launch-evener`, open its model field, run the identical
    snippet.
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
@@ -106,7 +106,7 @@ Recent — spawn real sessions.
 
 ### TUI
 
-7. `serf-tui --hub-addr 127.0.0.1:$PORT`, `n` → `BTab BTab` (focus
+7. `evener-tui --hub-addr 127.0.0.1:$PORT`, `n` → `BTab BTab` (focus
    Model) → `Enter` to open the picker; `capture-pane` and read the
    `RECENT` group's rows.
 
@@ -159,7 +159,7 @@ Recent — spawn real sessions.
 - **The ollama credential-gate bug this card used to work around is
   fixed — do not re-add the workaround.** Spawning `ollama/gemma4:e4b`
   against a hub with any `providers.toml` present used to fail with
-  `"provider credentials missing for ollama: set via serf/auth/apiKey/set
+  `"provider credentials missing for ollama: set via evener/auth/apiKey/set
   or set the matching env var"`, because
   `validateProviderCredentials`'s config-path branch had no equivalent
   of the no-config branch's `credentials.SourceNone` bypass. This card

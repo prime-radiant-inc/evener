@@ -197,7 +197,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 - `POST $HUB/api/sessions/local:$SID/shutdown` for the session step 8
   spawned. The old `$HUB/s/$SID/shutdown` shim is gone and 404s
   silently, leaving the daemon running.
-- Kill the hub by the PID you captured — never `pkill -f serf-hub`,
+- Kill the hub by the PID you captured — never `pkill -f evener-hub`,
   which also kills every concurrent agent's test hub — and `rm -rf` your
   own `$run` directory.
 

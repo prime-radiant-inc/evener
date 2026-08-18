@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep Serf's ten-minute per-attempt response-header watchdog while allowing a completely stuck streaming request to advance through the existing ten-retry policy.
+**Goal:** Keep Evener's ten-minute per-attempt response-header watchdog while allowing a completely stuck streaming request to advance through the existing ten-retry policy.
 
 **Architecture:** Preserve the existing transport-phase detection and distinct `responseHeaderTimeoutError`. Change only that error's retry disposition, so both high-level generation and agent sessions automatically reuse their shared `RetryStream` policy. Add local-server contract tests for the exact initial-plus-retries count and immediate caller-cancellation stop; do not add a second retry loop, a whole-chain deadline, or provider-specific behavior.
 
-**Tech Stack:** Go, `net/http`, `httptest`, Serf `llm.Error`, `RetryStream`, Go race detector.
+**Tech Stack:** Go, `net/http`, `httptest`, Evener `llm.Error`, `RetryStream`, Go race detector.
 
 ## Scope and constraints
 
@@ -275,7 +275,7 @@ Run:
 
 ```bash
 gofmt -w llm/errors_test.go llm/context_errors_test.go llm/providers/openai/response_header_timeout_test.go
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeoutError_IsRetryable|WrapContextError_ResponseHeaderTimeoutPreservesRetryability|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeoutError_IsRetryable|WrapContextError_ResponseHeaderTimeoutPreservesRetryability|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout)' -count=1
 ```
 
 Expected: FAIL for the retry disposition. The configured-attempt test must observe one request instead of three, and the cancellation test must return the terminal timeout without invoking its injected retry wait. If the failures occur for fixture cleanup, request construction, or timing unrelated to disposition, correct the tests before proceeding.
@@ -327,7 +327,7 @@ Run:
 
 ```bash
 gofmt -w llm/errors.go
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeoutError_IsRetryable|WrapContextError_ResponseHeaderTimeoutPreservesRetryability|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeoutError_IsRetryable|WrapContextError_ResponseHeaderTimeoutPreservesRetryability|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout)' -count=1
 ```
 
 Expected: PASS. The local server must see exactly three requests for `MaxRetries: 2`, and exactly one request when cancellation interrupts the first retry wait.
@@ -337,7 +337,7 @@ Expected: PASS. The local server must see exactly three requests for `MaxRetries
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai -count=1
 ```
 
 Expected: PASS, including the unchanged healthy-after-headers, caller-deadline, HTTP retry classification, and default retry-policy tests.
@@ -396,7 +396,7 @@ Expected: the pre-commit hook passes; do not skip or disable it.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test -race ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout|ClientWithAdapterTimeout|DefaultRetryPolicy_Values)' -count=1
+GOCACHE=/tmp/evener-gocache go test -race ./llm ./llm/providers/openai -run 'Test(ResponseHeaderTimeout|Adapter_Stream_ResponseHeaderTimeout|StreamGenerate_ResponseHeaderTimeout|ClientWithAdapterTimeout|DefaultRetryPolicy_Values)' -count=1
 ```
 
 Expected: PASS with no races. If the 50 ms local transport watchdog is load-sensitive under `-race`, diagnose the exact phase and adjust only the test fixture's watchdog while keeping a finite guard; do not add sleeps or weaken request-count assertions.
@@ -406,9 +406,9 @@ Expected: PASS with no races. If the 50 ms local transport watchdog is load-sens
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestWireState_(LiveChildDoesNotMakeIdleParentActive|PendingParentWorkMakesIdleParentActive|AwaitingOutranksAutonomy)' -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
-GOCACHE=/tmp/serf-gocache go test ./cmd/evener-hub -run 'Test(HubThreadListProjectsRunningSubagentActive|PastThreadReadProjectsRunningSubagentActive)$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./agent -run 'TestWireState_(LiveChildDoesNotMakeIdleParentActive|PendingParentWorkMakesIdleParentActive|AwaitingOutranksAutonomy)' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+GOCACHE=/tmp/evener-gocache go test ./cmd/evener-hub -run 'Test(HubThreadListProjectsRunningSubagentActive|PastThreadReadProjectsRunningSubagentActive)$' -count=1
 ```
 
 Expected: PASS. `FuzzHubcoreScenarios` runs the checked-in seed corpus containing the status-prober, roster, tree-child, and one-task-tree rollup scenarios; the app tests pin thread-list and thread-read projection.
@@ -418,7 +418,7 @@ Expected: PASS. `FuzzHubcoreScenarios` runs the checked-in seed corpus containin
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore -count=1
+GOCACHE=/tmp/evener-gocache go test ./llm ./llm/providers/openai ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore -count=1
 ```
 
 Expected: PASS.
@@ -438,7 +438,7 @@ Expected: PASS.
 Run:
 
 ```bash
-GOCACHE=/tmp/serf-gocache go test ./... -count=1
+GOCACHE=/tmp/evener-gocache go test ./... -count=1
 ```
 
 Expected target: PASS. This checkout previously exposed two unrelated, pre-existing environment-sensitive failures: `cmd/evener-fuzz-harvest/FuzzHarvestProgram/seed#3` and `cmd/evener-hub/internal/fspaths/FuzzResolveInRoot` seeds `#0` and `#4` (`/var` versus `/private/var`). If any failure remains, capture its exact package, test, seed, and message. Re-run it in isolation on `HEAD`; if it is one of those known failures, also run that exact test at the branch merge base in a disposable worktree to prove it is not introduced here. Do not report the full suite as passing when it did not.

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `HOOK_COMPLETED` turns durable and in their original transcript order, but classify them as transparent while `repairOrphanedToolResults` searches for results belonging to pending assistant tool calls. Prove the behavior at three levels before changing production code: the pure repair function, a real session with a `PreToolUse` hook and scripted provider, and the existing repair fuzzer's seed corpus.
 
-**Tech Stack:** Go, Serf session history (`agent/schema.Turn`), scripted `llm.ProviderAdapter`, plugin hook runner, standard `testing`, Serf fuzz seed replay.
+**Tech Stack:** Go, Evener session history (`agent/schema.Turn`), scripted `llm.ProviderAdapter`, plugin hook runner, standard `testing`, Evener fuzz seed replay.
 
 **Tracking:** kata `jk3q` — “Do not orphan-repair tool calls across hook telemetry”
 

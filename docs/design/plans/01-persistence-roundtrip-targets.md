@@ -24,7 +24,7 @@ come from 8.4. The LoC budget is **advisory** — keep every target. Full text i
 
 ## 0. Why this surface first
 
-serf's historical bugs cluster at **reload / replay**, not at write. The dual-projection split is
+evener's historical bugs cluster at **reload / replay**, not at write. The dual-projection split is
 the recurring fault line: a turn is projected one way live (the agent's own projector) and another
 way on reload (transcript JSONL → hub replay types → `apptranscript.ProjectTurn`). When the reload
 type can't carry a content kind, that kind silently vanishes on refresh. Real instances on this
@@ -81,7 +81,7 @@ Readers are unexported in package `agent`, so the read+replay target must live i
 
 ### Seam C — jobstore event log (`agent/internal/jobstore`, module `agent`)
 On-disk: JSONL, append-only, monotonic `Seq` assigned at append, fsync per append. The folds are
-pure reducers — the strongest replay-idempotence surface in serf.
+pure reducers — the strongest replay-idempotence surface in evener.
 
 | Role | Symbol | Site |
 |---|---|---|
@@ -192,7 +192,7 @@ readAll → Fold`. A field that `Append` writes but `readAllLocked` or `applyEve
 `Seq`-ordering regression, or a marshal/unmarshal asymmetry on `StructuredResult any` /
 `*provenance.Causal` all diverge here — and now diverge on whichever of the six projections carries
 that field, not just job records. This is the in-memory job state a daemon restart reconstructs —
-exactly serf's reload-bug class, at its purest reducer.
+exactly evener's reload-bug class, at its purest reducer.
 
 **Determinism notes:** compare with `json.Marshal` of the folded maps, not `reflect.DeepEqual` —
 JSON normalizes `time.Time` (drops the monotonic reading) and pointer identity. Sort input by `Seq`

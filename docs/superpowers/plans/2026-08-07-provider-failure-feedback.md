@@ -307,7 +307,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 - Modify: `agent/events/payloads.go` (`ModelRetryData` += `GroupElapsedMS int64`, `AttemptCap int`), `agent/session_stream.go` (`emitModelRetry` fills both; cap = policy budget until a consume-phase failure is recorded in the current group, then `FailFastAfter`), `internal/appprojector/appwire_projection.go` (forward both), `appwire/types.go` (`ThreadModelRetryParams` += `GroupElapsedMS`, `AttemptCap`)
 - Test: extend `agent/events` payload tests + projector tests
 
-- [ ] **Step 1: Failing tests:** `emitModelRetry` after 2 open-phase failures → `AttemptCap == policy.MaxRetries+1`; after 1 consume-phase failure → `AttemptCap == 4`; `GroupElapsedMS` monotonic. Projector forwards both fields on `serf/thread/modelRetry`.
+- [ ] **Step 1: Failing tests:** `emitModelRetry` after 2 open-phase failures → `AttemptCap == policy.MaxRetries+1`; after 1 consume-phase failure → `AttemptCap == 4`; `GroupElapsedMS` monotonic. Projector forwards both fields on `evener/thread/modelRetry`.
 - [ ] **Step 2-4: Red / implement / green (regenerate any TS types the repo generates — grep `types.gen.ts` build step). Step 5: Commit** `feat(events): honest retry chip data — GroupElapsedMS + AttemptCap`
 
 ### Task 11: TUI + web chip rendering and clearing rules
@@ -335,7 +335,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 - Modify: `docs/agentic-testing.md` (append the new forensics surfaces: typed in-band errors in api.jsonl, salvaged turns in transcripts) — keep to the file's existing voice
 - Test: the new file
 
-- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`serf-doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
+- [ ] **Step 1: Write both incident-shape scenarios against a scripted fake provider:** (a) stall streak → settle ~4 attempts → steering persisted → resumed turn's `buildHistory` carries it; (b) cap shape (two ≥60s-window attempts with big partials) → 2-attempt stop → salvage + steering persisted → resume → history contains draft; assert the transcript outline (`evener-doctor transcript` rendering path — use the doctor package's renderer directly) shows the salvaged ASSISTANT turn and TURN_FAILURE.
 - [ ] **Step 2: Green everything:** `go test ./... -count=1` (respect the repo's flake/timeout policy in `docs/` if a suite is known-slow).
 - [ ] **Step 3: Commit** `test(agent): provider-failure end-to-end scenarios + forensics doc sync`
 

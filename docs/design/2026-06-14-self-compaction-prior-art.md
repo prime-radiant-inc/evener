@@ -1,13 +1,13 @@
 # Self-Compaction by Choice — Prior Art
 
-Research feeding the design of an **agent-invoked compact tool** for serf: a tool the
+Research feeding the design of an **agent-invoked compact tool** for evener: a tool the
 model itself decides to call at a task boundary, as opposed to the harness-triggered
-auto-compaction serf already runs. See [`context.md`](./context.md) for the existing
+auto-compaction evener already runs. See [`context.md`](./context.md) for the existing
 subsystem this builds on.
 
-## What serf has today (the baseline)
+## What evener has today (the baseline)
 
-serf already does the industry-standard thing. The default `compact` strategy
+evener already does the industry-standard thing. The default `compact` strategy
 (`agent/internal/contextmgr`) auto-compacts on context pressure with two prefix-replacing
 layers:
 
@@ -22,7 +22,7 @@ masking/thinking-clearing layers were **removed from the default path** because 
 mutation busts prefix prompt caches across all providers — a first-order constraint for any
 new design (they survive only in experimental strategies).
 
-**Key takeaway:** the question is not "should serf compact" — it does. The question is
+**Key takeaway:** the question is not "should evener compact" — it does. The question is
 whether handing the *timing decision* (and the *summary authorship*) to the model improves
 on pressure-threshold triggering.
 
@@ -39,14 +39,14 @@ on pressure-threshold triggering.
 **Agent-by-choice compaction is the minority pattern.** Almost every shipped coding agent
 auto-compacts at a token threshold with zero model agency over timing.
 
-### The two most transferable patterns for serf
+### The two most transferable patterns for evener
 
 1. **Self-callable compact tool** (Deep Agents) — a tool registered through the existing
    `Strategy.Tools()` hook, layered over the threshold auto-compactor as a backstop.
 2. **Memory-pressure warning + hard flush** (MemGPT) — inject a warning-threshold steering
    message ("you're at N%, consolidate now") and keep the auto-compactor as the forced
    fallback. This is the single closest prior art to a "compact at a stopping point" design,
-   and it maps onto serf's existing `PreCompact` steering-injection machinery.
+   and it maps onto evener's existing `PreCompact` steering-injection machinery.
 
 ## 1. Decision policy — *when* should it choose?
 
@@ -79,7 +79,7 @@ Canonical handoff format (Anthropic cookbook; their example is harness-triggered
 **Recovery of dropped detail** is where better designs differ. MemGPT pairs compaction with
 **tiered storage** — evicted detail goes to archival/recall databases the agent can later
 `search()` back in. Pure summarize-and-replace (Claude Code, Cline) has *no* recovery path.
-serf's `TurnCheckpoint`/`TurnSummary` model is a head start; the open question is whether
+evener's `TurnCheckpoint`/`TurnSummary` model is a head start; the open question is whether
 dropped turns remain searchable.
 
 ## 3. Evidence it works — read skeptically
@@ -109,9 +109,9 @@ who triggers):
   acc — *below* the no-compaction baseline. Cause: "monolithic rewriting of context by an
   LLM." Mitigation: **delta/append updates to a structured record, not full rewrites.**
 
-## Implications for serf
+## Implications for evener
 
-1. **Measure against the threshold baseline, not "no compaction."** serf already compacts;
+1. **Measure against the threshold baseline, not "no compaction."** evener already compacts;
    the new variable is model agency over timing + summary authorship.
 2. **An agent-authored summary directly attacks brevity bias and structured-detail loss.**
    The agent that did the work writing what-to-keep/what-to-clear is strictly better-informed
@@ -124,7 +124,7 @@ who triggers):
 4. **Fix the failure modes regardless of trigger:** append/delta over monolithic rewrite
    (kills context collapse); keep cleared turns recoverable (tiered/searchable) rather than
    destroyed (addresses structured-detail loss). A full-prefix-replacing self-compact is
-   cache-compatible (it replaces the whole old prefix), consistent with serf's cache
+   cache-compatible (it replaces the whole old prefix), consistent with evener's cache
    constraint.
 
 ## Sources (all adversarially verified)

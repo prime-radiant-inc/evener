@@ -173,11 +173,11 @@ Create `cmd/evener-hub/templates/thread.html`:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Title}}{{.Title}} · {{end}}serf thread</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}evener thread</title>
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>">
   <script>
     (function () {
-      var pref = localStorage.getItem("serf-hub.theme");
+      var pref = localStorage.getItem("evener-hub.theme");
       if (pref === "light" || pref === "dark") {
         document.documentElement.setAttribute("data-theme", pref);
       }
@@ -453,8 +453,8 @@ Adapt to the existing `test-panes-url.js` helper style rather than adding a seco
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-url.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-url.js
 ```
 
 Expected: failures show old `/s/...` hrefs or missing `threadHref`/normalization.
@@ -589,8 +589,8 @@ window.SerfPanes.open(href, title);
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-url.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-url.js
 ```
 
 Expected: both pass.
@@ -674,7 +674,7 @@ function pass(ok, msg) {
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: fails because `openFromChild` does not exist.
@@ -716,7 +716,7 @@ function openFromChild(source, href, title) {
 function onMessage(e) {
   if (!e || e.origin !== window.location.origin) return;
   var data = e.data || {};
-  if (data.type !== "serf:open-beside") return;
+  if (data.type !== "evener:open-beside") return;
   openFromChild(e.source, data.href, data.title);
 }
 ```
@@ -748,7 +748,7 @@ openBeside(spec) {
     return;
   }
   if (this.isFramed && this.isFramed() && window.parent) {
-    window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
+    window.parent.postMessage({ type: "evener:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
   }
 },
 ```
@@ -782,8 +782,8 @@ function openBeside(e) {
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-renderer-open-beside.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-renderer-open-beside.js
 ```
 
 Expected: both pass.
@@ -863,7 +863,7 @@ Run:
 
 ```bash
 go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes' -count=1 -v
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: server test fails because breadcrumb lacks `data-open-parent-beside`; JS test fails until click handling exists.
@@ -915,7 +915,7 @@ Run:
 
 ```bash
 go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes|TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument' -count=1 -v
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-thread-document-bridge.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-thread-document-bridge.js
 ```
 
 Expected: all pass.
@@ -986,7 +986,7 @@ console.log("OK\ttest-panes-error.js");
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-error.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-error.js
 ```
 
 Expected: fails because pane state and `markError` do not exist.
@@ -1081,7 +1081,7 @@ Use existing CSS variables; if names differ, inspect nearby pane styles and use 
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} node test-panes-error.js
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} node test-panes-error.js
 ```
 
 Expected: pass.
@@ -1167,12 +1167,12 @@ go test ./cmd/evener-hub -run 'TestWeb_ThreadDocument' -count=1 -v
 
 Expected: pass after adjusting fixture setup if needed.
 
-- [ ] **Step 3: Run all serf-hub JS tests**
+- [ ] **Step 3: Run all evener-hub JS tests**
 
 Run:
 
 ```bash
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected: `jstest: all tests passed`.
@@ -1218,7 +1218,7 @@ Run:
 git status --short
 ```
 
-Expected: no unstaged tracked changes. Pre-existing untracked `.private-journal/...` and `docs/superpowers/plans/2026-05-07-serf-daemon-prereqs.md` may remain; do not stage them.
+Expected: no unstaged tracked changes. Pre-existing untracked `.private-journal/...` and `docs/superpowers/plans/2026-05-07-evener-daemon-prereqs.md` may remain; do not stage them.
 
 - [ ] **Step 2: Run full targeted verification**
 
@@ -1226,7 +1226,7 @@ Run:
 
 ```bash
 go test ./cmd/evener-hub -count=1
-cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/serf-jstest-jsdom/node_modules} ./run-all.sh
+cd cmd/evener-hub/jstest && NODE_PATH=${NODE_PATH:-/tmp/evener-jstest-jsdom/node_modules} ./run-all.sh
 ```
 
 Expected:
@@ -1279,7 +1279,7 @@ Spec coverage:
 Placeholder scan:
 
 - No `TBD`, `TODO`, or “implement later” placeholders remain.
-- Where implementation choices are allowed by the spec, this plan fixes concrete choices: route `/thread/<encoded-ref>`, template fields `ShowSidebarToggle` and `ThreadDocumentMode`, and bridge message type `serf:open-beside`.
+- Where implementation choices are allowed by the spec, this plan fixes concrete choices: route `/thread/<encoded-ref>`, template fields `ShowSidebarToggle` and `ThreadDocumentMode`, and bridge message type `evener:open-beside`.
 
 Type/interface consistency:
 
