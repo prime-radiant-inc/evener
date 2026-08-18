@@ -26,7 +26,7 @@ type Source string
 // the diagnostic is re-derived downstream.
 const (
 	SourceProvider Source = "provider"
-	SourceSerf     Source = "evener"
+	SourceEvener     Source = "evener"
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
 	SourceHook     Source = "hook"
@@ -45,7 +45,7 @@ type Info struct {
 func Classify(message string) Info {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	switch {
-	case isSerfConfiguration(lower):
+	case isEvenerConfiguration(lower):
 		return evenerConfiguration()
 	case isHubFailure(lower):
 		return hubFailure()
@@ -104,8 +104,8 @@ func normalizeSource(source string) Source {
 	switch Source(strings.ToLower(strings.TrimSpace(source))) {
 	case SourceProvider:
 		return SourceProvider
-	case SourceSerf:
-		return SourceSerf
+	case SourceEvener:
+		return SourceEvener
 	case SourceHub:
 		return SourceHub
 	case SourceUI:
@@ -134,8 +134,8 @@ func defaultForSource(source Source, message string) Info {
 			Title:  "UI error",
 			Hint:   "Check the browser console and UI state.",
 		}
-	case SourceSerf:
-		if isSerfConfiguration(strings.ToLower(strings.TrimSpace(message))) {
+	case SourceEvener:
+		if isEvenerConfiguration(strings.ToLower(strings.TrimSpace(message))) {
 			return evenerConfiguration()
 		}
 		return evenerFailure()
@@ -154,7 +154,7 @@ func defaultForSource(source Source, message string) Info {
 
 func evenerConfiguration() Info {
 	return Info{
-		Source: SourceSerf,
+		Source: SourceEvener,
 		Title:  "Evener configuration error",
 		Hint:   "Hub launched Evener with provider configuration this Evener runtime does not recognize. Check the model/provider passed by Hub and the Evener binary Hub is using.",
 	}
@@ -235,13 +235,13 @@ func hubFailure() Info {
 
 func evenerFailure() Info {
 	return Info{
-		Source: SourceSerf,
+		Source: SourceEvener,
 		Title:  "Evener error",
 		Hint:   "Check the Evener session log and daemon state.",
 	}
 }
 
-func isSerfConfiguration(message string) bool {
+func isEvenerConfiguration(message string) bool {
 	return strings.Contains(message, "unknown provider") ||
 		strings.Contains(message, "configuration error") ||
 		strings.Contains(message, "must use provider/model") ||

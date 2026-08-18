@@ -52,7 +52,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 		total := entry.usageTotal.total
 		c.touch(path)
 		c.mu.Unlock()
-		return cloneSerfUsage(total), nil
+		return cloneEvenerUsage(total), nil
 	}
 	c.mu.Unlock()
 
@@ -68,7 +68,7 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
-	return cloneSerfUsage(total), nil
+	return cloneEvenerUsage(total), nil
 }
 
 // scanUsageTotal reads the transcript once, decoding only each entry's usage
@@ -138,9 +138,9 @@ type usageTotalMemo struct {
 	total *appwire.EvenerUsage
 }
 
-// cloneSerfUsage hands each caller its own copy, so a caller that stamps the
+// cloneEvenerUsage hands each caller its own copy, so a caller that stamps the
 // result onto a wire struct cannot mutate the memo other callers share.
-func cloneSerfUsage(u *appwire.EvenerUsage) *appwire.EvenerUsage {
+func cloneEvenerUsage(u *appwire.EvenerUsage) *appwire.EvenerUsage {
 	if u == nil {
 		return nil
 	}

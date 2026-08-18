@@ -12,10 +12,10 @@ func TestCov_Classify(t *testing.T) {
 		msg  string
 		want Source
 	}{
-		{"unknown provider: foo", SourceSerf},   // evener configuration
+		{"unknown provider: foo", SourceEvener},   // evener configuration
 		{"rendezvous timed out", SourceHub},     // hub failure
 		{"rate limit exceeded", SourceProvider}, // provider failure
-		{"something unexpected blew up", SourceSerf},
+		{"something unexpected blew up", SourceEvener},
 	}
 	for _, c := range cases {
 		if got := Classify(c.msg).Source; got != c.want {
@@ -25,7 +25,7 @@ func TestCov_Classify(t *testing.T) {
 }
 
 func TestCov_FromError(t *testing.T) {
-	if got := FromError(nil).Source; got != SourceSerf {
+	if got := FromError(nil).Source; got != SourceEvener {
 		t.Errorf("nil error → %q, want evener", got)
 	}
 	cfg := &llm.ConfigurationError{Message: "unknown provider: x"}
@@ -69,10 +69,10 @@ func TestCov_DefaultForSource(t *testing.T) {
 		t.Error("hook default")
 	}
 	// Evener with a configuration message → configuration; otherwise plain failure.
-	if defaultForSource(SourceSerf, "unknown provider: x").Title != "Evener configuration error" {
+	if defaultForSource(SourceEvener, "unknown provider: x").Title != "Evener configuration error" {
 		t.Error("evener config default")
 	}
-	if defaultForSource(SourceSerf, "boom").Title != "Evener error" {
+	if defaultForSource(SourceEvener, "boom").Title != "Evener error" {
 		t.Error("evener plain default")
 	}
 	if defaultForSource(Source("weird"), "rate limit").Source != SourceProvider {

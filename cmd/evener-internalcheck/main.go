@@ -157,7 +157,7 @@ func walkType(t types.Type, into map[string]bool, seen map[types.Type]bool) {
 	seen[t] = true
 	switch u := t.(type) {
 	case *types.Named:
-		if pkg := u.Obj().Pkg(); pkg != nil && isSerfInternal(pkg.Path()) {
+		if pkg := u.Obj().Pkg(); pkg != nil && isEvenerInternal(pkg.Path()) {
 			into[pkg.Path()+"."+u.Obj().Name()] = true
 			return
 		}
@@ -201,6 +201,6 @@ func walkTuple(tup *types.Tuple, into map[string]bool, seen map[types.Type]bool)
 	}
 }
 
-func isSerfInternal(pkgPath string) bool {
+func isEvenerInternal(pkgPath string) bool {
 	return strings.HasPrefix(pkgPath, "primeradiant.com/evener/") && strings.Contains(pkgPath, "/internal/")
 }

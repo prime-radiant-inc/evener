@@ -41,9 +41,9 @@ func TestIsSerfInternal(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		got := isSerfInternal(tc.path)
+		got := isEvenerInternal(tc.path)
 		if got != tc.want {
-			t.Errorf("isSerfInternal(%q) = %v, want %v", tc.path, got, tc.want)
+			t.Errorf("isEvenerInternal(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

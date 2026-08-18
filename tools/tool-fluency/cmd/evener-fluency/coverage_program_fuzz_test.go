@@ -111,7 +111,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = run([]string{"run", "--out", filepath.Join(file, "child")})
 		_ = run([]string{"run", "--probes-dir", filepath.Join(t.TempDir(), "missing"), "--out", t.TempDir(), "--evener-bin", file})
 
-		_, _ = buildSerf(filepath.Join(file, "child"))
+		_, _ = buildEvener(filepath.Join(file, "child"))
 		_, _ = catalogTools("unknown/model")
 		_, _ = catalogTools("openai/gpt-5.4-mini")
 		runnerNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
@@ -360,14 +360,14 @@ func FuzzFluencyCoverage(f *testing.F) {
 		if err := os.Chdir(repoRoot); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = buildSerf(buildOut)
+		_, _ = buildEvener(buildOut)
 		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", filepath.Join(suiteDir, "built"), "--build"})
 		if err := os.Chdir(cwd); err != nil {
 			t.Fatal(err)
 		}
 		path := os.Getenv("PATH")
 		t.Setenv("PATH", "")
-		_, _ = buildSerf(t.TempDir())
+		_, _ = buildEvener(t.TempDir())
 		t.Setenv("PATH", path)
 		_ = runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", suiteProbes, "--out", t.TempDir(), "--build"})
 

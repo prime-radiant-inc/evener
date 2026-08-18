@@ -236,7 +236,7 @@ func runSuite(args []string) error {
 		return err
 	}
 	if cfg.harness == "cli" && (cfg.build || cfg.evenerBin == "") {
-		bin, err := buildSerf(cfg.outDir)
+		bin, err := buildEvener(cfg.outDir)
 		if err != nil {
 			return err
 		}
@@ -288,7 +288,7 @@ func defaultModel() string {
 	return "openai/gpt-5.4-mini"
 }
 
-func buildSerf(outDir string) (string, error) {
+func buildEvener(outDir string) (string, error) {
 	binDir := filepath.Join(outDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err

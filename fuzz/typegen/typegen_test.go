@@ -499,9 +499,9 @@ func exerciseTypegenSurface(t *testing.T, data []byte) {
 	}
 }
 
-// TestNoSerfImport is the portability guard: no source file in this package may
+// TestNoEvenerImport is the portability guard: no source file in this package may
 // import a primeradiant.com/evener package other than the fuzz module's own.
-func TestNoSerfImport(t *testing.T) {
+func TestNoEvenerImport(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly) //nolint:staticcheck // parser.ParseDir is adequate here; build tags not relevant. go/packages migration tracked separately.
 	if err != nil {

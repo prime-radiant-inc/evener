@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// Each isSerfConfiguration keyword is tested independently so removing either
+// Each isEvenerConfiguration keyword is tested independently so removing either
 // one would leave a failing case.
 func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
 	cases := []struct{ name, msg string }{
@@ -16,8 +16,8 @@ func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		info := Classify(tc.msg)
-		if info.Source != SourceSerf {
-			t.Errorf("%s: Source=%q, want %q", tc.name, info.Source, SourceSerf)
+		if info.Source != SourceEvener {
+			t.Errorf("%s: Source=%q, want %q", tc.name, info.Source, SourceEvener)
 		}
 		if info.Title != "Evener configuration error" {
 			t.Errorf("%s: Title=%q, want Evener configuration error", tc.name, info.Title)
@@ -34,8 +34,8 @@ func TestDefaultForEverySource(t *testing.T) {
 		message string
 	}{
 		{SourceUI, ""}, {SourceMCP, ""}, {SourceHook, ""},
-		{SourceSerf, "configuration provider invalid"},
-		{SourceSerf, "ordinary failure"},
+		{SourceEvener, "configuration provider invalid"},
+		{SourceEvener, "ordinary failure"},
 		{Source("unknown"), "hub connection failed"},
 	} {
 		if got := defaultForSource(tc.source, tc.message); got.Title == "" {
@@ -45,7 +45,7 @@ func TestDefaultForEverySource(t *testing.T) {
 }
 
 func TestDefaultForSerfConfiguration(t *testing.T) {
-	got := defaultForSource(SourceSerf, "unknown provider supplied")
+	got := defaultForSource(SourceEvener, "unknown provider supplied")
 	if got.Title != "Evener configuration error" {
 		t.Fatalf("got %+v", got)
 	}
@@ -164,8 +164,8 @@ func TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider(t *testing.T) {
 
 func TestFromError_Nil_IsSerfFailure(t *testing.T) {
 	info := FromError(nil)
-	if info.Source != SourceSerf {
-		t.Fatalf("FromError(nil): Source=%q, want %q", info.Source, SourceSerf)
+	if info.Source != SourceEvener {
+		t.Fatalf("FromError(nil): Source=%q, want %q", info.Source, SourceEvener)
 	}
 	if info.Title != "Evener error" {
 		t.Fatalf("FromError(nil): Title=%q, want Evener error", info.Title)
@@ -175,8 +175,8 @@ func TestFromError_Nil_IsSerfFailure(t *testing.T) {
 func TestFromError_ConfigurationError_IsSerfConfiguration(t *testing.T) {
 	err := &llm.ConfigurationError{Message: "bad provider"}
 	info := FromError(err)
-	if info.Source != SourceSerf {
-		t.Fatalf("FromError(ConfigurationError): Source=%q, want %q", info.Source, SourceSerf)
+	if info.Source != SourceEvener {
+		t.Fatalf("FromError(ConfigurationError): Source=%q, want %q", info.Source, SourceEvener)
 	}
 	if info.Title != "Evener configuration error" {
 		t.Fatalf("FromError(ConfigurationError): Title=%q, want Evener configuration error", info.Title)
@@ -223,7 +223,7 @@ func TestFromFields_SourceOverridesClassify(t *testing.T) {
 		{"provider", SourceProvider},
 		{"hub", SourceHub},
 		{"ui", SourceUI},
-		{"evener", SourceSerf},
+		{"evener", SourceEvener},
 		{"hook", SourceHook},
 		{"mcp", SourceMCP},
 	}
