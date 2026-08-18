@@ -8,8 +8,24 @@ import (
 )
 
 var (
-	jobNotificationRe     = regexp.MustCompile(`(?s)^<job-notification\s+([^>]*)>(.*)</job-notification>\s*$`)
-	jobNotificationAttrRe = regexp.MustCompile(`(\w+)="([^"]*)"`)
+	// jobNotificationBlockRe extracts each individual <job-notification …>…
+	// </job-notification> block. The match MUST be non-greedy and unanchored:
+	// the daemon joins every job's block from one poll tick into a single
+	// steering event with "\n" (agent/session_lifecycle.go), so a steering
+	// payload routinely carries several blocks. A greedy or "^...$"-anchored
+	// match would span from the first opening tag to the LAST closing tag,
+	// swallowing every block in between into one body - degrading the first
+	// job's rich headline to its bare status (the aggregated body no longer
+	// parses as that job's own excerpt JSON) and leaving every later job with
+	// no tie at all (issue #49). Non-greedy per-block matching is sound here
+	// because the producer HTML-entity-escapes body text
+	// (agent/job_notify.go's escapeNotificationText, kata 77sf), so a body
+	// never contains a literal '<' that could be mistaken for another
+	// block's opening tag. Mirrors the web side's splitNotificationBlocks
+	// (steeringClassify.ts), which carries the same "MUST be non-greedy"
+	// comment for the identical reason.
+	jobNotificationBlockRe = regexp.MustCompile(`(?s)<job-notification\s+([^>]*?)>(.*?)</job-notification>`)
+	jobNotificationAttrRe  = regexp.MustCompile(`(\w+)="([^"]*)"`)
 )
 
 // decodeNotificationEntities is the paired decoder for
@@ -30,24 +46,60 @@ func decodeNotificationEntities(s string) string {
 	return s
 }
 
-// ParseJobNotificationHeadline extracts the job id, a one-line result headline
-// (test summary / status · short commit · concern count), and whether it
-// reported a failure, from a <job-notification> steering payload. ok=false when
-// the text is not a job notification. Used to tie a notification to its rail row.
+// JobNotificationTie is one <job-notification> block's parsed result: the job
+// id it names, a one-line result headline (test summary / status · short
+// commit · concern count), and whether it reported a failure. Used to tie a
+// notification to its rail row.
+type JobNotificationTie struct {
+	JobID    string
+	Headline string
+	IsError  bool
+}
+
+// ParseJobNotificationHeadlines extracts every <job-notification> block's tie
+// from a steering payload. A single steering event can name several jobs (the
+// daemon joins one poll tick's blocks with "\n"), so callers that want to tie
+// every job named in the payload - not just the first - must use this rather
+// than ParseJobNotificationHeadline. Returns nil when the text carries no
+// <job-notification> block.
+func ParseJobNotificationHeadlines(text string) []JobNotificationTie {
+	matches := jobNotificationBlockRe.FindAllStringSubmatch(strings.TrimSpace(text), -1)
+	if matches == nil {
+		return nil
+	}
+	ties := make([]JobNotificationTie, 0, len(matches))
+	for _, m := range matches {
+		ties = append(ties, parseJobNotificationBlock(m[1], m[2]))
+	}
+	return ties
+}
+
+// ParseJobNotificationHeadline extracts the first <job-notification> block's
+// tie from text. ok=false when the text carries no job notification. Kept
+// for the common single-job case; a payload naming several jobs (see
+// ParseJobNotificationHeadlines) still returns only its first block's tie.
 func ParseJobNotificationHeadline(text string) (jobID, headline string, isError, ok bool) {
-	m := jobNotificationRe.FindStringSubmatch(strings.TrimSpace(text))
-	if m == nil {
+	ties := ParseJobNotificationHeadlines(text)
+	if len(ties) == 0 {
 		return "", "", false, false
 	}
+	tie := ties[0]
+	return tie.JobID, tie.Headline, tie.IsError, true
+}
+
+// parseJobNotificationBlock parses one already-split <job-notification>
+// block's raw attribute string and body into its tie.
+func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 	attrs := map[string]string{}
-	for _, a := range jobNotificationAttrRe.FindAllStringSubmatch(m[1], -1) {
+	for _, a := range jobNotificationAttrRe.FindAllStringSubmatch(attrsRaw, -1) {
 		attrs[a[1]] = decodeNotificationEntities(a[2])
 	}
-	jobID = strings.TrimSpace(attrs["job_id"])
+	jobID := strings.TrimSpace(attrs["job_id"])
 	status := strings.ToLower(strings.TrimSpace(firstNonEmptyStr(attrs["status"], attrs["event"])))
 	exit := strings.TrimSpace(attrs["exit_code"])
-	isError = strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
+	isError := strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
 
+	var headline string
 	// Only a delegate's terminal block legitimately carries a communicate
 	// envelope in its excerpt (agent/session_tools_communicate.go writes it;
 	// agent/job_notify.go stamps job_type on every job block). Shell stdout
@@ -55,12 +107,12 @@ func ParseJobNotificationHeadline(text string) (jobID, headline string, isError,
 	// shape — the same gate the web parser applies (steeringClassify.ts,
 	// kata 9cnq; this is its TUI twin, kata sdvc).
 	if attrs["job_type"] == "delegate" {
-		headline = communicateHeadline(decodeNotificationEntities(m[2]))
+		headline = communicateHeadline(decodeNotificationEntities(body))
 	}
 	if headline == "" && status != "" {
 		headline = status
 	}
-	return jobID, headline, isError, true
+	return JobNotificationTie{JobID: jobID, Headline: headline, IsError: isError}
 }
 
 // communicateHeadline parses the communicate envelope that rides after an
