@@ -307,6 +307,10 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
+		# `go run` collapses its child's exit code to 1 and reports the real
+		# one as an "exit status N" line on stderr, so the runner's 129/130/143
+		# signal exits survive in the binary but not through this call. Only
+		# zero-vs-nonzero is read below, so nothing here depends on them.
 		(cd .. && go run ./cmd/serf-dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
