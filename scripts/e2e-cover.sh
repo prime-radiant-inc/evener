@@ -10,7 +10,7 @@
 #
 # WHAT IT RUNS: a no-network, no-credential battery covering every serf/serf-tui
 # subcommand's help/dispatch/error path (the bulk of the cmd/* surface). With
-# SERF_E2E_LIVE=1 it also runs the live scenario scripts in test/ (which need
+# EVENER_E2E_LIVE=1 it also runs the live scenario scripts in test/ (which need
 # real provider credentials) under the same GOCOVERDIR.
 #
 # USAGE:
@@ -18,7 +18,7 @@
 #   scripts/e2e-cover.sh --merge-unit    # also run unit tests, print COMBINED %
 #   scripts/e2e-cover.sh --tui           # also run the tmux TUI battery (slow)
 #   scripts/e2e-cover.sh --html OUT.html # write an HTML coverage report
-#   SERF_E2E_LIVE=1 scripts/e2e-cover.sh # additionally run live provider scripts
+#   EVENER_E2E_LIVE=1 scripts/e2e-cover.sh # additionally run live provider scripts
 #
 # OUTPUT: a merged textfmt profile (path printed) + a per-package cmd/* summary.
 # The profile is combinable with the unit profile (union) via --merge-unit.
@@ -130,9 +130,9 @@ if command -v curl >/dev/null 2>&1; then
 	fi
 fi
 
-if [ "${SERF_E2E_LIVE:-0}" = "1" ]; then
-	echo "==> SERF_E2E_LIVE=1: running live provider scripts under GOCOVERDIR"
-	export GOCOVERDIR="$covdir" SERF_BIN="$serf"
+if [ "${EVENER_E2E_LIVE:-0}" = "1" ]; then
+	echo "==> EVENER_E2E_LIVE=1: running live provider scripts under GOCOVERDIR"
+	export GOCOVERDIR="$covdir" EVENER_BIN="$serf"
 	for s in test/*.sh; do
 		[ -f "$s" ] || continue
 		echo "    $s"; bash "$s" >/dev/null 2>&1 || true
@@ -141,12 +141,12 @@ fi
 
 # TUI battery: drive the real terminal UI in tmux (slow; needs tmux). The
 # tmux e2e tests build serf-tui with -cover and launch it with GOCOVERDIR set to
-# our covdir when SERF_E2E_COVER is exported, so the TUI subprocess's paint /
+# our covdir when EVENER_E2E_COVER is exported, so the TUI subprocess's paint /
 # interaction coverage — which units give 0% for — merges into this run.
 if $run_tui; then
 	if command -v tmux >/dev/null 2>&1; then
 		echo "==> driving the TUI tmux battery under coverage (slow)"
-		SERF_E2E_COVER="$covdir" go test -run 'TmuxE2E' -count=1 -timeout 20m ./cmd/evener-tui/ >"$workdir/tui.log" 2>&1 \
+		EVENER_E2E_COVER="$covdir" go test -run 'TmuxE2E' -count=1 -timeout 20m ./cmd/evener-tui/ >"$workdir/tui.log" 2>&1 \
 			|| echo "    (some tmux tests failed; coverage still collected — see $workdir/tui.log)"
 	else
 		echo "==> --tui requested but tmux not installed; skipping"

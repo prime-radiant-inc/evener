@@ -16,9 +16,9 @@ This is a live end-to-end test against a real provider API (billed).
   overwrite mid-run (kata `k2rx`):
   `run=$(mktemp -d -t serf-e2e-XXXXXX); go build -o "$run/serf" ./cmd/evener`.
 - A hermetic git repo with at least one commit (the working dir).
-- An isolated `SERF_STATE_DIR` with `providers.toml`/`credentials.toml`/
+- An isolated `EVENER_STATE_DIR` with `providers.toml`/`credentials.toml`/
   `auth-token` symlinked from `~/.serf` (read-only config, isolated mutable
-  state). Managed worktrees then land under `$SERF_STATE_DIR/worktrees/`.
+  state). Managed worktrees then land under `$EVENER_STATE_DIR/worktrees/`.
 - A model string for the tier under test (e.g. `kimi/kimi-for-coding`,
   `openai/gpt-5.4-mini`, `lunaroute/glm-5.2-nvfp4`).
 
@@ -41,7 +41,7 @@ This is a live end-to-end test against a real provider API (billed).
 - The `create` result string names the path, branch, base SHA, and the
   behavioral consequence ("Subsequent tools operate inside it").
 - The agent's final message reports a path under
-  `$SERF_STATE_DIR/worktrees/<projectid>/<name>` and the branch it chose.
+  `$EVENER_STATE_DIR/worktrees/<projectid>/<name>` and the branch it chose.
   **Falsify**: if it reports the main repo path, or the wrong branch, it did
   not understand that it entered the worktree.
 - On disk: the worktree dir exists with a `.git` pointer file and a
@@ -50,12 +50,12 @@ This is a live end-to-end test against a real provider API (billed).
 
 ## Cleanup
 
-Remove the scratch `SERF_STATE_DIR` tree, the demo repo, and `$run` (unique
+Remove the scratch `EVENER_STATE_DIR` tree, the demo repo, and `$run` (unique
 temp paths so reruns don't collide). No shared state touched.
 
 ## Sharp edges
 
-- Pointing `SERF_STATE_DIR` at a bare dir loses provider config — symlink
+- Pointing `EVENER_STATE_DIR` at a bare dir loses provider config — symlink
   `providers.toml`/`credentials.toml`/`auth-token` in first, or serf reports
   "unknown instance".
 - Weak models may emit extra args (e.g. a `purpose` field); the tool ignores

@@ -54,7 +54,7 @@ unavailable → `private`) is reflected honestly in the line.
 The model gets the same facts in its system prompt's `<environment>` block, as a
 short capability preamble: the sandbox mode and network decision, a summary of
 the writable roots, the masked-path count, the scratch directory behind
-`$SERF_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
+`$EVENER_SCRATCH_DIR`/`$TMPDIR`, the cache strategy, the resolved `GOCACHE` /
 `GOMODCACHE`, the toolchain residuals this doc records for the session's mode,
 and two probes (the exit status of `git config --list`, and which of `go`,
 `node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
@@ -524,7 +524,7 @@ granted. The literal spelling is an alias, not extra reach: granting a symlink's
 name alone does not make an ungranted (or masked) target readable through it, which
 is verified against the real kernel. A live parity
 suite runs the generated profiles under the real `sandbox-exec` when
-`SERF_SEATBELT_LIVE=1` is set.
+`EVENER_SEATBELT_LIVE=1` is set.
 
 ## Related
 

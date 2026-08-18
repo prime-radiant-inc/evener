@@ -14,14 +14,14 @@ import (
 )
 
 func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_RESPONSES_DISCOVERY_E2E=1 to run live public OpenAI Responses continuation discovery")
 	}
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY is required for public OpenAI discovery")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_RESPONSES_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_RESPONSES_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -44,8 +44,8 @@ func publicResponsesContinuationDiscoveryAdapter(apiKey string) *Adapter {
 }
 
 func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
-	if os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
+	if os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_CODEX_DISCOVERY_E2E=1 to run live Codex Responses continuation discovery")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Codex discovery in short mode")
@@ -57,7 +57,7 @@ func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
 	if !a.usesCodexBackend() {
 		t.Skip("OpenAI env did not resolve to stored OAuth/Codex backend credentials")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_CODEX_DISCOVERY_MODEL"))
 	if model == "" {
 		model = "gpt-5.4"
 	}

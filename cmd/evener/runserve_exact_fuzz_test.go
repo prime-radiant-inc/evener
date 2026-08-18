@@ -61,7 +61,7 @@ func exactServeArgs(t *testing.T) []string {
 }
 
 func fuzzRunServeStartupBranches(t *testing.T) {
-	t.Setenv("SERF_MODEL", "")
+	t.Setenv("EVENER_MODEL", "")
 	boom := errors.New("boom")
 	tests := []struct {
 		name   string

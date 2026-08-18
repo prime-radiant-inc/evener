@@ -13,7 +13,7 @@ package agent
 // a tool result" is hard-gated deterministically by
 // contextmgr.TestElicitNoteCapturesToolResult — this test is the full-loop smoke.
 //
-// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
+// Run: EVENER_LIVE_TESTS=1 go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
 //
 // SECURITY: uses the current user's real OAuth creds (authorized). Skips when
 // live evals are not explicitly enabled or the local setup is absent.

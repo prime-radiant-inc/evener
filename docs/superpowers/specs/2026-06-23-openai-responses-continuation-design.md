@@ -370,7 +370,7 @@ Hash construction:
 
 - Use a versioned HMAC-SHA256 identity such as `cont-scope-v1:<kind>:<base64url(hmac(scope_subkey, normalized_value))>`.
 - Provider-state handle hashes use the parallel form `cont-handle-v1:<kind>:<base64url(hmac(redaction_subkey, normalized_handle))>`, where `kind` is `response_id`, `previous_response_id`, or `conversation_id`. Changing the handle hash version affects newly written/exported hashes only and must never require rewriting historical raw handles.
-- `local_scope_secret` lives under the resolved private Serf state directory (`SERF_STATE_DIR` / XDG state home), outside per-session transcripts, in a dedicated continuation-secret file chosen in Phase 1B-secret. It is created with private file permissions, is never exported, and is not the provider credential.
+- `local_scope_secret` lives under the resolved private Serf state directory (`EVENER_STATE_DIR` / XDG state home), outside per-session transcripts, in a dedicated continuation-secret file chosen in Phase 1B-secret. It is created with private file permissions, is never exported, and is not the provider credential.
 - `local_scope_secret` is a local root secret, not the direct HMAC key. Phase 1B-secret must derive separate subkeys with distinct labels, for example `serf-continuation-scope-v1` for `ContinuationStorageScope.Fingerprint` / auth-scope hashes and `serf-continuation-redaction-v1` for redacted provider-handle export/display hashes. Rotating one derived-key version must not force rotating the other unless the root secret itself is compromised.
 - API-key `CredentialHash` input is the normalized API key. OAuth `CredentialHash` input is a stable auth-record identity such as auth source plus account/workspace/subject identifiers, never an access token.
 - `AccountHash`, `WorkspaceHash`, `OrgIDHash`, and `ProjectIDHash` inputs are normalized identifiers.
@@ -561,12 +561,12 @@ Launch configuration and storage policy:
 
 - Add a launch-time setting with a global default and per-launch UI override for OpenAI Responses continuation.
 - Use one runtime/config key across direct CLI, `serf serve`, and hub-launched sessions: `openai_responses_continuation`, values `off` / `auto`.
-- Wire that key through `SessionConfig` as the single runtime source of truth, expose it to direct CLI users as `--openai-responses-continuation=off|auto`, and allow `SERF_OPENAI_RESPONSES_CONTINUATION` only as launch-time input into the same setting. The hub UI/global default must write the same config field rather than maintaining a parallel UI-only preference.
+- Wire that key through `SessionConfig` as the single runtime source of truth, expose it to direct CLI users as `--openai-responses-continuation=off|auto`, and allow `EVENER_OPENAI_RESPONSES_CONTINUATION` only as launch-time input into the same setting. The hub UI/global default must write the same config field rather than maintaining a parallel UI-only preference.
 - Persist the resolved launch value in `ConfigSnapshot` for session reproducibility.
 - Restore precedence is: explicit resume override first, persisted `ConfigSnapshot.openai_responses_continuation` second, current global default only for new sessions or old restored sessions with no persisted value.
 - Changing the global default affects new launches only. To disable continuation for a restored session whose snapshot says `auto`, the resume path must pass an explicit override or the UI must let the user change the restored launch setting before resume dispatch.
 - When an explicit resume override is used, record the effective value in the resumed session's snapshot so later resumes are not ambiguous.
-- Add `SERF_OPENAI_RESPONSES_CONTINUATION` to the envvars registry and update `docs/environment.md`, serve/hub environment help, and launch-setting docs so the CLI, server, and UI surfaces describe the same values and retention implications.
+- Add `EVENER_OPENAI_RESPONSES_CONTINUATION` to the envvars registry and update `docs/environment.md`, serve/hub environment help, and launch-setting docs so the CLI, server, and UI surfaces describe the same values and retention implications.
 - The shipping default must preserve existing public OpenAI retention semantics. In practice, public OpenAI/API-key continuation is off until the global default or launch override is set to `auto`.
 - `off` preserves current public OpenAI behavior: Serf must not send `previous_response_id` and must not change public OpenAI requests from `store:false` to `store:true` solely to create continuation anchors.
 - `auto` authorizes Serf to use endpoint-specific provider-side response storage when all continuation eligibility checks pass.
@@ -765,7 +765,7 @@ round N attempt 2: history_mode=full_history_fallback, previous_response_id omit
 optional round N attempt 3: history_mode=full_history, no continuation-owned storage, storage-demotion retry
 ```
 
-When `SERF_LOG_RAW_HTTP=1`, the raw request body should prove the same behavior:
+When `EVENER_LOG_RAW_HTTP=1`, the raw request body should prove the same behavior:
 
 - `responses_delta` raw body includes `previous_response_id` and omits historical assistant `function_call` items.
 - `full_history_fallback` raw body omits `previous_response_id` and includes provider-safe historical tool-call arguments.
@@ -847,7 +847,7 @@ The first user-visible V1-public cut is public OpenAI runtime enablement: Phases
 | 1C-export | Add default ATIF/export redaction for provider handles and the shared `redacted|raw-local` export enum. | Request/response handle hashes are recorded without raw handle leakage in default exports; `raw-local` is recognized but rejected until Phase 11; compatibility audit records whether default raw `response_id` output changed or a compatible redacted shape was preserved. |
 | 1C-surfaces | Add doctor/dashboard redaction for provider handles. | Doctor/dashboard views prefer redacted/hash handles and omit unavailable hashes rather than falling back to raw `APILogResponse.ID` or `Turn.ResponseID`. |
 | 2A-config | Add runtime configuration for OpenAI Responses continuation and provider-side storage, wire direct CLI / `serf serve` / hub launch config to the same setting, and update `ConfigSnapshot` restore conversion. | Config tests prove direct CLI, `serf serve`, and hub-launched sessions resolve the same value; golden snapshots cover persisted values and old snapshots with no value; restore-precedence tests cover global `auto -> off`, global `off -> auto`, and explicit resume override. With endpoint support registry `Enabled=false` and planner/storage eligibility absent, `auto` still sends no `previous_response_id` and does not change public OpenAI from `store:false` to `store:true`; positive `store:true` assertions wait until planner/storage eligibility exists. |
-| 2B-docs-help | Wire envvars registry and docs/help surfaces for the same launch setting. | `SERF_OPENAI_RESPONSES_CONTINUATION`, `docs/environment.md`, direct CLI help, serve help, and hub launch-setting docs describe the same values, defaults, restore behavior, and retention/cost implications. |
+| 2B-docs-help | Wire envvars registry and docs/help surfaces for the same launch setting. | `EVENER_OPENAI_RESPONSES_CONTINUATION`, `docs/environment.md`, direct CLI help, serve help, and hub launch-setting docs describe the same values, defaults, restore behavior, and retention/cost implications. |
 | 3A-auth | Add auth-scope identity propagation and the pure planner helper boundary. | Unit tests prove adapters receive sanitized `AuthScopeIdentity` produced with the Phase 1B-secret HMAC utility, and the pure planner helper cannot read raw credentials, bearer tokens, OAuth tokens, or raw org/project identifiers. Storage-scope fields on the planner result are present but zero/stubbed until Phase 4A. |
 | 3B-fingerprint | Add `llm.Client` planner access, adapter-owned request fingerprint canonicalization, and production-prompt determinism checks. | Unit tests prove the session obtains request-shape fields through `Client.PlanResponsesContinuation` without duplicating adapter body-building logic. Tests render the real production system prompt with fixed `WorkingDir`, `Platform`, `OSVersion`, `Today`, `Model`, and `KnowledgeCutoff` values and prove stable fingerprints, then render two different `Today` values and prove the expected fingerprint mismatch or explicit normalization behavior. Codex fingerprint tests cover the fields known at this phase; later Codex storage-field discovery must update these tests and bump the fingerprint version before Phase 12B-codex. |
 | 4A | Add storage-scope fingerprinting, storage-policy eligibility, and continuation storage override ownership. | Unit tests cover auth/storage-scope mismatch, `off -> auto`, `auto -> off`, disabled endpoint registry, storage field exclusion from request fingerprints, exact storage-scope enforcement, and preservation of explicit user/provider storage settings when continuation-owned storage is cleared. |
@@ -934,7 +934,7 @@ Required deterministic coverage below is grouped by scenario, and each group nam
   - continuation-owned storage overrides are distinguishable from explicit user/provider storage settings and clearing an override never strips explicit settings.
 - Runtime configuration (Phase 2A-config and Phase 2B-docs-help):
   - direct CLI, `serf serve`, env launch input, and hub launch UI all resolve through the same `openai_responses_continuation` runtime field.
-  - envvars registry, `docs/environment.md`, serve/hub help, and launch-setting docs list `SERF_OPENAI_RESPONSES_CONTINUATION` with the same accepted values.
+  - envvars registry, `docs/environment.md`, serve/hub help, and launch-setting docs list `EVENER_OPENAI_RESPONSES_CONTINUATION` with the same accepted values.
   - launch-setting docs disclose provider-side retention and possible provider-token/cost implications without promising billed-token savings.
   - `ConfigSnapshot` persists the resolved launch value; restore precedence is explicit override, then snapshot, then current global default only when no snapshot value exists.
   - resume tests cover global `auto -> off`, global `off -> auto`, and explicit resume override.
@@ -1054,8 +1054,8 @@ Required deterministic coverage below is grouped by scenario, and each group nam
 Live tests remain opt-in:
 
 ```sh
-SERF_OPENAI_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_OpenAIResponsesContinuation' -count=1 -v
-SERF_OPENAI_CODEX_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuation' -count=1 -v
+EVENER_OPENAI_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_OpenAIResponsesContinuation' -count=1 -v
+EVENER_OPENAI_CODEX_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_CodexResponsesContinuation' -count=1 -v
 ```
 
 Live tests prove endpoint acceptance, response-id reuse, two-branch behavior from one stored anchor, invalid/expired `previous_response_id` behavior, the proposed maximum anchor age, and observed provider token counts only. The semantic contract remains covered by deterministic tests.
@@ -1146,7 +1146,7 @@ Live tests prove endpoint acceptance, response-id reuse, two-branch behavior fro
 - Rollout diagnostics expose provider storage-quota failure clustering by endpoint family while keeping disabled state session-local in V1.
 - History mode is represented with typed constants, not free-form strings.
 - ATIF/export preserves the new response metadata fields when present, while redacting provider-state handles by default.
-- Environment/help/docs surfaces describe `SERF_OPENAI_RESPONSES_CONTINUATION` consistently.
+- Environment/help/docs surfaces describe `EVENER_OPENAI_RESPONSES_CONTINUATION` consistently.
 - User-facing docs disclose provider-side retention and possible provider-token/cost implications without promising billed-token savings.
 - User-facing docs disclose that changing or not syncing the Serf state directory across machines changes `local_scope_secret`, invalidates continuation anchors, and causes full-history operation until new anchors are created.
 - Raw provider-handle transcripts/logs are stored with private local permissions or equivalent private state-dir protection.

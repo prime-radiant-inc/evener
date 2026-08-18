@@ -192,7 +192,7 @@ wave-4 precedent port could not start. Rather than disturb a sibling's in-flight
 **fully isolated hub under a fake `HOME`** (its own `hub.lock`, `~/.serf/run` rendezvous, and state
 root — all `HOME`/XDG-derived, verified at `rendezvous.go:40`, `config.go:89`) on port 19281, and
 confirmed W7's hub stayed up and untouched on its own port throughout. This is the same isolation the
-test suite uses (`t.Setenv(SERF_STATE_DIR, t.TempDir())`), not a flock bypass. **The two parallel
+test suite uses (`t.Setenv(EVENER_STATE_DIR, t.TempDir())`), not a flock bypass. **The two parallel
 closes contend on the single-hub-per-host flock — worth noting for any future parallel live-proof
 scheduling.**
 

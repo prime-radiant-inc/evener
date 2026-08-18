@@ -77,7 +77,7 @@ to add an instance, because there are *two* sources of truth. Phase 1c makes
   writes the file **atomically** (`os.CreateTemp` + rename, mode `0644`). Only the
   **hub** calls it, **once on startup when the file is absent** — never overwriting
   an existing file. The hub passes the path to spawned children via
-  `SERF_PROVIDERS_CONFIG`, so `serf serve` / `launch-check` load the same file
+  `EVENER_PROVIDERS_CONFIG`, so `serf serve` / `launch-check` load the same file
   rather than re-seeding.
 - **Seed:** build a throwaway client via `NewFromEnv`, enumerate
   `ProviderNames()`, and emit one `[instances.<name>]` descriptor per configured

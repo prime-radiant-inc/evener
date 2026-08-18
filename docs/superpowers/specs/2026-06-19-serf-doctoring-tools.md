@@ -135,7 +135,7 @@ Shared conventions for all subcommands:
   transcript per `agent/jobs.go:267` (`jobstore.Open(filepath.Join(dir, "jobs.jsonl"))`).
   Canonical layout it resolves to:
   `<base>/serf/projects/<sha256(originURL|workDir)[:8]>/sessions/<SID>.{transcript.jsonl,meta.json,jobs.jsonl}`,
-  where `<base>` = `--state-dir` › `SERF_STATE_HOME`/`SERF_STATE_DIR` › `$XDG_STATE_HOME`
+  where `<base>` = `--state-dir` › `SERF_STATE_HOME`/`EVENER_STATE_DIR` › `$XDG_STATE_HOME`
   › `$HOME/.local/state`, and the bucket hash is 16 hex chars
   (`agent/runtime_dir.go`). The locator *resolves* via the existing selector logic and
   cross-bucket glob — it must not recompute the hash itself (the running session already

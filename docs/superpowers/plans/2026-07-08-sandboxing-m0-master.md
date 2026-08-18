@@ -121,7 +121,7 @@ before editing — they will drift as milestones land):
   review + live feel-test (main agent) before push to main.
 - [x] M6 — macOS Seatbelt (merged `a76d330e` + firmlink fix; Seatbelt wired into
   EnableSandbox `ab5a38b1` so --sandbox enforces via sandbox-exec). ✅ LIVE-VALIDATED
-  on paradise-park 2026-07-09: `SERF_SEATBELT_LIVE` suite (git-config-protected,
+  on paradise-park 2026-07-09: `EVENER_SEATBELT_LIVE` suite (git-config-protected,
   contract-on-host) + `seatbelt-smoke.sh` (generated-policy parity) all PASS on the
   real macOS kernel. A real-Mac run also caught + fixed a symlinked-ancestor
   write-denial bug (macos-fix merge). One pre-existing worktree parallel-load flake

@@ -42,7 +42,7 @@ asymptotic-but-never-zero completeness problem.
    across a switch; the comment (`:555-559`) explicitly warns that without it
    "`SetModel` and subagent model overrides would silently revert the communicate
    schema." v6's session-level resolver builds a fresh profile and never
-   re-applies these. A daemon with `--output-schema`/`SERF_ALLOWED_DECISIONS` that
+   re-applies these. A daemon with `--output-schema`/`EVENER_ALLOWED_DECISIONS` that
    does a cross-instance `/model` (or subagent/fallback) silently loses the
    override. **Fix:** the session re-applies its output-schema/allowed-decisions
    after `ResolveProfileFromConfig`. *(B1 — the standout.)*
@@ -98,10 +98,10 @@ asymptotic-but-never-zero completeness problem.
    unreachable from standalone `serf`; a custom hub root diverges.** §4.10 says
    both read `$hubStateRoot/providers.toml`, but `DefaultHubStateRoot`
    (`config.go:51`) can't be imported by `cmd/evener`, and a `hub.toml`-customized
-   root means a directly-invoked `serf run` (no `SERF_PROVIDERS_CONFIG`) reads
+   root means a directly-invoked `serf run` (no `EVENER_PROVIDERS_CONFIG`) reads
    `~/.serf` while the hub reads the custom root. **Fix:** move the path resolver
    to `internal/providerconfig`; document that hub-spawned daemons get
-   `SERF_PROVIDERS_CONFIG` (so they match) and a custom-root hub requires the env
+   `EVENER_PROVIDERS_CONFIG` (so they match) and a custom-root hub requires the env
    for direct `serf run`. *(A9, B7 — both.)*
 
 9. **[MINOR] `WithModel` same-instance rebuild needs the tag threaded.** The

@@ -173,9 +173,9 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 - Modify: `docs/testing.md`, `docs/conventions/agent-fleets.md` (disk-reclaim mentions → report tools + preflight)
 
 **Interfaces:**
-- Produces: `scripts/disk-preflight.sh` — no flags. Silent exit 0 when free space ≥ floor and GOCACHE answers. Exit 1 with a named diagnosis otherwise. Env: `SERF_DISK_MIN_FREE_GB` (default 5), `SERF_GOCACHE_PROBE_TIMEOUT` (default 10, integer seconds), `SERF_GOCACHE_PROBE_CMD` (test seam, replaces the probe command — carried over verbatim from disk-reclaim.sh:163).
+- Produces: `scripts/disk-preflight.sh` — no flags. Silent exit 0 when free space ≥ floor and GOCACHE answers. Exit 1 with a named diagnosis otherwise. Env: `EVENER_DISK_MIN_FREE_GB` (default 5), `EVENER_GOCACHE_PROBE_TIMEOUT` (default 10, integer seconds), `EVENER_GOCACHE_PROBE_CMD` (test seam, replaces the probe command — carried over verbatim from disk-reclaim.sh:163).
 
-- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `SERF_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/report-tmp-debris.sh` and `scripts/report-orphaned-worktrees.sh`; (c) stalled probe: `SERF_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `SERF_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
+- [ ] **Step 1: Write `disk-preflight-selftest.sh` first** (failing): scenarios (a) healthy fixture → silent, exit 0; (b) `EVENER_DISK_MIN_FREE_GB=999999` → exit 1, message names the floor, the free figure, and points at `scripts/report-tmp-debris.sh` and `scripts/report-orphaned-worktrees.sh`; (c) stalled probe: `EVENER_GOCACHE_PROBE_CMD` set to a script that blocks reading a FIFO no one writes, `EVENER_GOCACHE_PROBE_TIMEOUT=1` → exit 1, message says STALLED and names the GOCACHE path (the 1s here is the smallest supported value of a deliberately-tripped timeout, per Global Constraints); (d) `--help` prints the header. Harness: same `ok`/`assert_eq` pattern as `scripts/setup-gocache-selftest.sh`, `mktemp -d` + `trap rm -rf EXIT`.
 - [ ] **Step 2: Implement `disk-preflight.sh`:** free-space floor via `df -Pk .` awk column 4; GOCACHE path via `go env GOCACHE`; bounded probe lifted from `disk-reclaim.sh` `gocache_probe()` (lines 150-176: backgrounded probe + 20/s status polls capped at the timeout — the poll is a failure ceiling, not sync) with `mkdir -p "$gocache"` as the default probe command; diagnosis text carried from disk-reclaim.sh:238-246 (kata r07s wording). `--help` via the same awk header idiom.
 - [ ] **Step 3:** run the new selftest → PASS. Rewire every consumer listed above; `git rm` the two old scripts.
 - [ ] **Step 4: Verify:** `scripts/merge-approval-gate-selftest.sh` PASS, `go test . -run 'TestNoCardOrScriptPatternKills|RuntimePair' -count=1` PASS, `make selftest` PASS, `grep -rn disk-reclaim scripts/ Makefile docs/ *.go` → no hits.
@@ -184,7 +184,7 @@ Drop `make-selftest` from `SELFTEST_SCRIPTS`. Trim the SELFTEST_SCRIPTS comment 
 ### Task 5: remove remaining wall-clock waits from suites
 
 **Files:**
-- Modify: `scripts/run-module-tests-selftest.sh:531-533` (`SERF_ROOT_PACKAGE_LIST_TIMEOUT=5` → `1`; the `exec sleep 20` ready-keeper and watchdog ceilings shrink to match: keeper 6, watchdogs 10→5)
+- Modify: `scripts/run-module-tests-selftest.sh:531-533` (`EVENER_ROOT_PACKAGE_LIST_TIMEOUT=5` → `1`; the `exec sleep 20` ready-keeper and watchdog ceilings shrink to match: keeper 6, watchdogs 10→5)
 - Modify: `scripts/agent-test-shards-selftest.sh` (replace `wait_for_file` 0.01s-poll loops with FIFO reads; replace `sleep 1000` blocking children with `read _ <fifo` blocks)
 
 **Interfaces:**

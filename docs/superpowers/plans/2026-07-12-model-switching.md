@@ -389,7 +389,7 @@ paragraph, `:663-666`)
 
 - [ ] **Step 1:** Author the live card following
   `test/scenarios/reasoning-effort-providers.md`'s conventions exactly: an
-  **isolated `SERF_PROVIDERS_CONFIG`** declaring the instances the ladder
+  **isolated `EVENER_PROVIDERS_CONFIG`** declaring the instances the ladder
   needs (instance NAMES are deployment-local config, not repo facts — the
   live `~/.serf/providers.toml` on this machine has no `anthropic` instance;
   discover/declare names in the card, refs are `instanceName/model`). Ladder:
@@ -398,11 +398,11 @@ paragraph, `:663-666`)
   anthropic→anthropic model hop (fable-5 → sonnet-5). After each hop assert
   the persisted turn's `response_model` matches the switched model and the
   effort clamps to that model's ladder; assert the persisted markers.
-  Thinking-absence assertion: run with `SERF_LOG_RAW_HTTP=1` and inspect
+  Thinking-absence assertion: run with `EVENER_LOG_RAW_HTTP=1` and inspect
   `sessions/<id>.api-raw.jsonl` request bodies (`llm/apilog.go:176-197` —
   the default api.jsonl records metadata only, NO bodies); the
   deterministic backstop for the same rule is Task 6's unit matrix.
-- [ ] **Step 2:** Run it with `SERF_E2E_LIVE=1`. Record results in the card.
+- [ ] **Step 2:** Run it with `EVENER_E2E_LIVE=1`. Record results in the card.
 - [ ] **Step 3: Full sweep.** `go test ./... -count=1`, `cd
   cmd/evener-hub/jstest && sh run-all.sh`, `make lint`, `git diff --check`,
   `git status --short` (only files named by tasks — as amended during

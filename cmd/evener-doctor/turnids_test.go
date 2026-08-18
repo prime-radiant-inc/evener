@@ -16,7 +16,7 @@ import (
 // and one whose reservation is namespaced ("turn_m2"). The cmd layer writes the
 // on-disk bytes directly — the fold semantics are covered by agent/doctor tests.
 //
-// It also pins SERF_STATE_DIR to the fixture. turnids is the first subcommand
+// It also pins EVENER_STATE_DIR to the fixture. turnids is the first subcommand
 // that sweeps a whole state root, and Go's flag package stops parsing at the
 // first non-flag argument: a `turnids <selector> --state-dir <base>` invocation
 // never parses --state-dir at all, so any regression in the selector refusal
@@ -25,7 +25,7 @@ import (
 func fixtureWithLegacyReservedTurnID(t *testing.T) (base, affected, clean string) {
 	t.Helper()
 	base = t.TempDir()
-	t.Setenv(envvars.SERFStateDir.Name, base)
+	t.Setenv(envvars.EVENERStateDir.Name, base)
 	affected = "02wLIRxqmq3AUo6vl2OW37"
 	clean = "02wLIRxqmq3AUo6vl2OW38"
 	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")

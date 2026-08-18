@@ -637,16 +637,16 @@ func TestPendingTargetRefFallsBackToThreadID(t *testing.T) {
 	}
 }
 
-// recorderStateRoot resolves SERF_STATE_DIR first, else the home-relative
+// recorderStateRoot resolves EVENER_STATE_DIR first, else the home-relative
 // default; the recorder is a low-level codec helper with no dependency on the
 // cmd layer, so this precedence must hold on its own.
 func TestRecorderStateRoot(t *testing.T) {
-	t.Setenv(envvars.SERFStateDir.Name, "/custom/state")
+	t.Setenv(envvars.EVENERStateDir.Name, "/custom/state")
 	if got := recorderStateRoot(); got != "/custom/state" {
-		t.Fatalf("recorderStateRoot with SERF_STATE_DIR=%q", got)
+		t.Fatalf("recorderStateRoot with EVENER_STATE_DIR=%q", got)
 	}
 
-	t.Setenv(envvars.SERFStateDir.Name, "")
+	t.Setenv(envvars.EVENERStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
 	if got := recorderStateRoot(); got != "/home/tester/.serf" {
 		t.Fatalf("recorderStateRoot home fallback=%q", got)

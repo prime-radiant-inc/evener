@@ -45,7 +45,7 @@ func TestAPILogTargetLockRejectsSecondOwnerAndReleasesOnClose(t *testing.T) {
 func TestAPILogTargetLockReleasesWhenOwnerProcessExits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestAPILogTargetLockHolderProcess$")
-	cmd.Env = append(os.Environ(), "SERF_TEST_APILOG_LOCK_PATH="+path)
+	cmd.Env = append(os.Environ(), "EVENER_TEST_APILOG_LOCK_PATH="+path)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)
@@ -87,7 +87,7 @@ func TestAPILogTargetLockReleasesWhenOwnerProcessExits(t *testing.T) {
 }
 
 func TestAPILogTargetLockHolderProcess(t *testing.T) {
-	path := os.Getenv("SERF_TEST_APILOG_LOCK_PATH")
+	path := os.Getenv("EVENER_TEST_APILOG_LOCK_PATH")
 	if path == "" {
 		t.Skip("lock-holder subprocess only")
 	}

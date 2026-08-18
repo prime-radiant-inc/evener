@@ -56,8 +56,8 @@ type schemaValidator interface {
 // failing case before the cleanup promotes it.
 // serf:fuzz rapid
 func TestToolArgsSchemaFuzz(t *testing.T) {
-	if os.Getenv("SERF_FUZZ_TESTS") != "1" {
-		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or SERF_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
+	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
+		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestToolArgsSchemaFuzz -count=1 -v")
 	}
 	tools := coreToolSchemaDefs(t)
 	if len(tools) == 0 {
@@ -69,7 +69,7 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 		schemas[td.name] = td.schema
 	}
 	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
-	// every gate run. The local triage tool sets SERF_FUZZ_PERSIST so a live-found
+	// every gate run. The local triage tool sets EVENER_FUZZ_PERSIST so a live-found
 	// crasher's regression test and bucket land durably in the tree (see
 	// fuzz/promoter/persist.go).
 	pkgDir, err := os.Getwd()

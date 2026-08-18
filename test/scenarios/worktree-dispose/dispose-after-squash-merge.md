@@ -19,7 +19,7 @@ Live end-to-end, real provider (billed). Session must own `manage_worktree`.
 
 ## Pre-state
 
-- Fresh binary + hermetic repo + isolated `SERF_STATE_DIR`, as in the other
+- Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR`, as in the other
   worktree cards.
 - The launch session owns `manage_worktree` with the dispose operation.
 

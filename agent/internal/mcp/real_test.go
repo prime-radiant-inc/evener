@@ -29,8 +29,8 @@ func init() {
 // so these only run when explicitly requested.
 func requireRealMCPServer(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_MCP_E2E") != "1" && os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_MCP_E2E=1 or SERF_LIVE_TESTS=1 to run real MCP server tests")
+	if os.Getenv("EVENER_MCP_E2E") != "1" && os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_MCP_E2E=1 or EVENER_LIVE_TESTS=1 to run real MCP server tests")
 	}
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not found, skipping real MCP server test")

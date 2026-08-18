@@ -28,7 +28,7 @@ func TestResolveStateDirForProjectPreservesExplicitOverride(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "state")
 	project := identifier.Project{ID: "carried-project", CanonicalPath: filepath.Join(t.TempDir(), "canonical")}
 	got, err := resolveStateDirForProject(project, filepath.Join(t.TempDir(), "missing"), map[string]string{
-		"SERF_STATE_DIR": override,
+		"EVENER_STATE_DIR": override,
 		"XDG_STATE_HOME": filepath.Join(t.TempDir(), "unused"),
 	})
 	if err != nil || got != override {

@@ -116,10 +116,10 @@ func TestParseCodexEndpointAcceptsJSONEndpointLine(t *testing.T) {
 }
 
 func TestFakeCodexAppServerHelper(t *testing.T) {
-	if os.Getenv("SERF_FAKE_CODEX_APP_SERVER") == "" {
+	if os.Getenv("EVENER_FAKE_CODEX_APP_SERVER") == "" {
 		return
 	}
-	mode := os.Getenv("SERF_FAKE_CODEX_APP_SERVER")
+	mode := os.Getenv("EVENER_FAKE_CODEX_APP_SERVER")
 	switch mode {
 	case "exit":
 		fmt.Fprintln(os.Stderr, "fake codex exited before ready")
@@ -232,7 +232,7 @@ func fakeCodexLaunchConfig(id, mode string) codexlaunch.CodexLaunchConfig {
 		// allowed to exit, so it must not mint a throwaway root of its own --
 		// it would outlive the run. Hand it this one; TestMain leaves an
 		// inherited root for its owner to remove.
-		Env: map[string]string{"SERF_FAKE_CODEX_APP_SERVER": mode, testEnvRootVar: testEnvRoot},
+		Env: map[string]string{"EVENER_FAKE_CODEX_APP_SERVER": mode, testEnvRootVar: testEnvRoot},
 	}
 }
 

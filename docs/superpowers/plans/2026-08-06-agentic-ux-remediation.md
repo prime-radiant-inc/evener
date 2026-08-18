@@ -278,10 +278,10 @@ two open questions ruled by Jesse the same day.**
    (`agent/execenv/local.go:257-263,1684-1743`); secret-name filtering and
    the sandbox env floor unchanged. Rejected: hardcoding /opt/homebrew/bin
    (host-specific), per-command login shells (slow, side-effectful).
-2. **Scratch dir**: `SERF_SCRATCH_DIR` is documented
+2. **Scratch dir**: `EVENER_SCRATCH_DIR` is documented
    (`docs/environment.md`) as per-session with no sandbox-only caveat; the
    unset cases were unsandboxed sessions. Provision a session scratch dir
-   and export `SERF_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
+   and export `EVENER_SCRATCH_DIR`/`TMPDIR` unconditionally — reality up to
    the documented contract.
 3. **Go telemetry** (amended 2026-08-06, superseding same-day
    `GOTELEMETRY=off` ruling): implementation proved `GOTELEMETRY` is a

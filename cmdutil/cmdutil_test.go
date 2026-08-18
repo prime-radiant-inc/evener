@@ -605,7 +605,7 @@ func TestResolveProfileWithLiveWindow_UnresolvableAuthSkipsProbe(t *testing.T) {
 			Name:    "gw",
 			Type:    "glm",
 			BaseURL: "https://gw.example.com/v1",
-			Headers: map[string]string{"Authorization": "$SERF_TEST_GW_TOKEN_UNSET"},
+			Headers: map[string]string{"Authorization": "$EVENER_TEST_GW_TOKEN_UNSET"},
 		}},
 	}
 	p, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2")
@@ -621,7 +621,7 @@ func TestResolveProfileWithLiveWindow_UnresolvableAuthSkipsProbe(t *testing.T) {
 
 	// Same for an unresolvable api_key.
 	cfg.Instances[0].Headers = nil
-	cfg.Instances[0].APIKey = "$SERF_TEST_GW_KEY_UNSET"
+	cfg.Instances[0].APIKey = "$EVENER_TEST_GW_KEY_UNSET"
 	rec2 := stubQueryModelContextWindow(t, func(provider, model string) int {
 		return 999_999
 	})

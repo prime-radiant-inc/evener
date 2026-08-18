@@ -105,9 +105,9 @@ AGENT_P=${AGENT_P-4}
 # Go caches live on a stalled volume. Keep that failure bounded without changing
 # cache configuration: the operator gets the configured cache paths and an exact
 # repair/retry command instead. This must be a positive integer in seconds.
-ROOT_PACKAGE_LIST_TIMEOUT=${SERF_ROOT_PACKAGE_LIST_TIMEOUT:-30}
+ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-30}
 if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'run-module-tests.sh: SERF_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
 	exit 2
 fi
 
@@ -116,7 +116,7 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
-# SERF_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
+# EVENER_GATE_CAPABILITY_SKIP is exported by scripts/gate-capability-preflight.sh
 # (merge-approval-gate's preflight) when it classified a sandbox capability as
 # blocked. Applied to the ROOT module ONLY: the known test-name patterns
 # (TestE2E_, TestTUITmuxE2E_) live entirely in cmd/evener-hub and cmd/evener-tui,
@@ -130,10 +130,10 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 # directly (ROOT_FULL=1 make test), where an inherited or hand-set value would
 # otherwise narrow root's surface and still report PASS with no trace of it.
 root_skip="$fuzz_test_skip"
-if [ -n "${SERF_GATE_CAPABILITY_SKIP:-}" ]; then
-	root_skip="(${fuzz_test_skip}|${SERF_GATE_CAPABILITY_SKIP})"
-	printf 'run-module-tests.sh: SERF_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
-		"$SERF_GATE_CAPABILITY_SKIP" >&2
+if [ -n "${EVENER_GATE_CAPABILITY_SKIP:-}" ]; then
+	root_skip="(${fuzz_test_skip}|${EVENER_GATE_CAPABILITY_SKIP})"
+	printf 'run-module-tests.sh: EVENER_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
+		"$EVENER_GATE_CAPABILITY_SKIP" >&2
 fi
 
 flags="$*"

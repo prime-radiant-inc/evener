@@ -249,7 +249,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live OpenAI integration test in short mode")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_COUNT_TOKENS_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_COUNT_TOKENS_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}
@@ -2033,7 +2033,7 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	xdgStateHome := os.Getenv("XDG_STATE_HOME")
 	userStateDir := authopenai.DefaultStateDir()
 	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
-	t.Setenv("SERF_STATE_DIR", projectStateDir)
+	t.Setenv("EVENER_STATE_DIR", projectStateDir)
 	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",

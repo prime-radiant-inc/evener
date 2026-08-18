@@ -85,7 +85,7 @@ we want. Re-deriving is cheap: it is the inverse of a known fix.
   `id <TAB> target(module:FuzzName) <TAB> patchfile <TAB> description`.
 - `fuzz/mutations/<id>.patch` — the fault.
 - `scripts/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
-  `fuzz-bisect.sh` conventions: env seams `SERF_FUZZ_RUNNER`, throwaway worktree,
+  `fuzz-bisect.sh` conventions: env seams `EVENER_FUZZ_RUNNER`, throwaway worktree,
   honest reporting). For each mutation: worktree-at-HEAD → `git apply` (loud on
   failure) → `go test -tags serffuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
   → clean up. Then a **gap report**: every native target in `run-fuzz.sh --list`

@@ -151,7 +151,7 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
 	}
 	if f.scratchDir != "" {
-		lines = append(lines, "Scratch ($"+envvars.SERFScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
+		lines = append(lines, "Scratch ($"+envvars.EVENERScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
 	}
 	if f.sandboxed() {
 		lines = append(lines, "Cache: "+f.policy.CacheStrategy.String())

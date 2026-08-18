@@ -39,7 +39,7 @@ var launchCheckLoadProviderConfig = cmdutil.LoadProviderConfig
 // LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
 // is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
 var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
-	path := envvars.SERFProvidersConfig.Getenv()
+	path := envvars.EVENERProvidersConfig.Getenv()
 	if path == "" {
 		path = filepath.Join(cmdutil.DefaultStateRoot(), "providers.toml")
 	}

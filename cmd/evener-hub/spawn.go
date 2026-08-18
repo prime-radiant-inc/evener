@@ -532,18 +532,18 @@ func resolveSerfLaunchProjectStateDir(workDir string, env map[string]string) (id
 	if env == nil {
 		return resolveSerfStateDirWithProject(workDir, "", "")
 	}
-	return resolveSerfStateDirWithProject(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
+	return resolveSerfStateDirWithProject(workDir, env[envvars.EVENERStateDir.Name], env[envvars.XDGStateHome.Name])
 }
 
 // resolveStateDirForProject derives state storage from an identity that was
-// already resolved by the launch entry point. An explicit SERF_STATE_DIR
+// already resolved by the launch entry point. An explicit EVENER_STATE_DIR
 // remains authoritative; the active working directory is intentionally unused
 // in that case and is retained only for the direct-call fallback contract.
 func resolveStateDirForProject(project identifier.Project, workDir string, env map[string]string) (string, error) {
 	override := ""
 	stateHome := ""
 	if env != nil {
-		override = env[envvars.SERFStateDir.Name]
+		override = env[envvars.EVENERStateDir.Name]
 		stateHome = env[envvars.XDGStateHome.Name]
 	}
 	if strings.TrimSpace(override) != "" {

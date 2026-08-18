@@ -86,7 +86,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			_ = openAIStateDirFromEnvList([]string{"HOME=/home/u", "HOME=/last"})
 		case 2:
 			root := t.TempDir()
-			t.Setenv(envvars.SERFRecordHTTP.Name, "1")
+			t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
 			var downstream string
 			h := newHTTPRequestRecorder(root)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
@@ -104,7 +104,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if err != nil || len(line) == 0 {
 				t.Fatalf("recording missing: %v", err)
 			}
-			t.Setenv(envvars.SERFRecordHTTP.Name, "")
+			t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 			if got := newHTTPRequestRecorder(root)(next); got == nil {
 				t.Fatal("identity middleware returned nil")
@@ -205,7 +205,7 @@ func TestCovSpawnMainFaultSeams(t *testing.T) {
 		t.Fatalf("currentExecutable empty fallback = %q", got)
 	}
 
-	t.Setenv(envvars.SERFRecordHTTP.Name, "1")
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
 	httpRecorderOpenFile = func(string, int, os.FileMode) (*os.File, error) {
 		return nil, errors.New("open")
 	}

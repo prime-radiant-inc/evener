@@ -20,7 +20,7 @@ func Enabled(value string) bool {
 // Paths resolves the state-home and provider-config roots used by live evals.
 // A configured state home wins; otherwise it follows the user's home rather
 // than naming one developer's machine. Provider configuration follows the
-// runtime precedence: SERF_PROVIDERS_CONFIG, SERF_STATE_DIR/providers.toml,
+// runtime precedence: EVENER_PROVIDERS_CONFIG, EVENER_STATE_DIR/providers.toml,
 // then ~/.serf/providers.toml. The returned state path is the XDG base, not
 // the child "serf" directory that the auth layer appends.
 func Paths(stateHome, userHome string) (string, string) {
@@ -30,9 +30,9 @@ func Paths(stateHome, userHome string) (string, string) {
 		stateHome = filepath.Join(userHome, ".local", "state")
 	}
 
-	providerPath := envvars.SERFProvidersConfig.Trimmed()
+	providerPath := envvars.EVENERProvidersConfig.Trimmed()
 	if providerPath == "" {
-		stateRoot := envvars.SERFStateDir.Trimmed()
+		stateRoot := envvars.EVENERStateDir.Trimmed()
 		if stateRoot == "" {
 			stateRoot = filepath.Join(userHome, ".serf")
 		}

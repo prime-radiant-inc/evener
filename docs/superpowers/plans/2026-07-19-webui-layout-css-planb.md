@@ -1389,7 +1389,7 @@ Expected: all green.
 
 - [ ] **Step 2: Playwright visual matrix (dev-time, not CI)**
 
-Serve the worktree hub with dev assets (`SERF_HUB_ASSETS_DIR=<worktree>/cmd/evener-hub`) and screenshot: 390 / 768 / 1100 / 1440 / 2560 px widths **plus a short-height 1100×600 case**, × dark/light, × home/session. Review by eye against design-system.md: measure holds 720px at every width; machine bleed 1000→1200px at wide; dock spans the window with the card centered; tablet auto-rails the sidebar; home shows the launchpad; state colors read blue=live / amber=needs-you / neutral=done.
+Serve the worktree hub with dev assets (`EVENER_HUB_ASSETS_DIR=<worktree>/cmd/evener-hub`) and screenshot: 390 / 768 / 1100 / 1440 / 2560 px widths **plus a short-height 1100×600 case**, × dark/light, × home/session. Review by eye against design-system.md: measure holds 720px at every width; machine bleed 1000→1200px at wide; dock spans the window with the card centered; tablet auto-rails the sidebar; home shows the launchpad; state colors read blue=live / amber=needs-you / neutral=done.
 
 - [ ] **Step 3: Commit any fixes the matrix surfaced, then close out**
 

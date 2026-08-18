@@ -103,7 +103,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		_, _ = fmt.Fprintf(stderr, "session: when $%s or $%s is set, or on Linux/BSD when\n", envvars.SSHConnection.Name, envvars.SSHTTY.Name)
 		_, _ = fmt.Fprintf(stderr, "neither $%s nor $%s is set. macOS and Windows default to\n", envvars.Display.Name, envvars.WaylandDisplay.Name)
 		_, _ = fmt.Fprintf(stderr, "the browser flow unless an SSH session is detected. Setting\n")
-		_, _ = fmt.Fprintf(stderr, "%s=1 (or 0) overrides the detection.\n\n", envvars.SERFLoginHeadless.Name)
+		_, _ = fmt.Fprintf(stderr, "%s=1 (or 0) overrides the detection.\n\n", envvars.EVENERLoginHeadless.Name)
 		_, _ = fmt.Fprintf(stderr, "Flags:\n")
 		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		_, _ = fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
@@ -187,7 +187,7 @@ func isHeadlessLogin() bool {
 // isHeadlessLoginFor is the testable core of isHeadlessLogin. Pass a goos
 // string ("linux", "darwin", "windows", ...) and an env lookup function.
 func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
-	if v := envvars.SERFLoginHeadless.FromTrimmed(getenv); v != "" {
+	if v := envvars.EVENERLoginHeadless.FromTrimmed(getenv); v != "" {
 		switch strings.ToLower(v) {
 		case "1", "true", "yes", "on":
 			return true

@@ -82,7 +82,7 @@ This spec finishes the feature. Ten deltas:
 | Model catalog on the wire | `model/list` (scope both) returns `ModelDescriptor`s; spawn path also carries `reasoning_effort_levels` | `cmd/evener-hub/web_spawn.go:382` |
 | Delegate override | `delegate` tool `model` param, "default: parent model"; child inherits parent's *current* profile at spawn | `agent/internal/tool/definitions.go:128`, `agent/subagents.go:361-383` |
 | Delegate restore | Child re-resolves its own persisted `ResolvedProfileID`/`ResolvedModel`, not the parent's current | `agent/job_delegate.go:806-844`, `agent/internal/jobstore/record.go:76-78` |
-| Resume | `ResolveResumeModelRef` (persisted meta beats `SERF_MODEL`); `RestoreSessionFromMetaWithConfig` reattaches the profile resolver | `cmdutil/cmdutil.go:203`, `agent/session_init.go:309` |
+| Resume | `ResolveResumeModelRef` (persisted meta beats `EVENER_MODEL`); `RestoreSessionFromMetaWithConfig` reattaches the profile resolver | `cmdutil/cmdutil.go:203`, `agent/session_init.go:309` |
 | Cross-provider switching seam | `resolveProfileForRef` swaps profiles via resolver, preserves overrides, re-runs provider-conditional tool registration | `agent/session.go:605` (the `:1283` in `docs/llm-providers.md` has drifted) |
 
 ## Defects and gaps this spec closes
@@ -225,7 +225,7 @@ agreement comes from persisted meta (`detail.Model` reads it —
 
 A switch survives: (a) daemon crash immediately after the RPC returns
 (synchronous meta flush), (b) clean shutdown + hub resume (resume passes
-persisted `ProfileID`/`Model`; `SERF_MODEL` must not override — already the
+persisted `ProfileID`/`Model`; `EVENER_MODEL` must not override — already the
 contract per `ResolveResumeModelRef`), (c) CLI resume. Acceptance: a session
 switched from A to B, killed, and resumed starts its next turn on B with B's
 context window and effort ladder.
@@ -368,7 +368,7 @@ Additive only; no changes to existing methods or params.
   `model-switch-resume.md` (switch → kill → resume on new model),
   `tui-effort-command.md`.
 
-**Live ladder (SERF_E2E_LIVE=1, patterned on
+**Live ladder (EVENER_E2E_LIVE=1, patterned on
 `reasoning-effort-providers.md`).**
 - One card walking anthropic → openai → kimi switches in a single session
   with a tool-using turn after each hop, asserting the turn runs on the

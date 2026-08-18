@@ -15,8 +15,8 @@ import (
 
 func codexE2EAdapter(t *testing.T) (*Adapter, string) {
 	t.Helper()
-	if os.Getenv("SERF_OPENAI_CODEX_E2E") != "1" {
-		t.Skip("set SERF_OPENAI_CODEX_E2E=1 to run live Codex backend e2e tests")
+	if os.Getenv("EVENER_OPENAI_CODEX_E2E") != "1" {
+		t.Skip("set EVENER_OPENAI_CODEX_E2E=1 to run live Codex backend e2e tests")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Codex backend e2e test in short mode")
@@ -28,7 +28,7 @@ func codexE2EAdapter(t *testing.T) (*Adapter, string) {
 	if !a.usesCodexBackend() {
 		t.Skip("OpenAI env did not resolve to stored OAuth/Codex backend credentials")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_E2E_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_OPENAI_CODEX_E2E_MODEL"))
 	if model == "" {
 		model = "gpt-5.2"
 	}

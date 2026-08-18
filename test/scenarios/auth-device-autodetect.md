@@ -2,7 +2,7 @@
 
 **What this covers**: commits `4f93712` (device-code login), `8b7762c`
 (auto-detect). Verifies the `isHeadlessLoginFor` decision table:
-`SERF_LOGIN_HEADLESS` env override, `SSH_CONNECTION`/`SSH_TTY`,
+`EVENER_LOGIN_HEADLESS` env override, `SSH_CONNECTION`/`SSH_TTY`,
 platform defaults, `--device` / `--no-device` explicit flags, and the
 conflicting-flags error path.
 
@@ -20,11 +20,11 @@ and reads ONLY the first line of stdout (`auth_mode=...`). Use a
 we only care about the mode it announces. The device URL will leak a
 fresh device code each run; that's expected and harmless.
 
-1. **SERF_LOGIN_HEADLESS=1 forces device**:
-   `timeout 2 bash -c "SERF_LOGIN_HEADLESS=1 ./serf openai login 2>&1 | head -1"`
+1. **EVENER_LOGIN_HEADLESS=1 forces device**:
+   `timeout 2 bash -c "EVENER_LOGIN_HEADLESS=1 ./serf openai login 2>&1 | head -1"`
    Expect: `auth_mode=device auth_mode_reason=auto_no_display`
-2. **SERF_LOGIN_HEADLESS=0 forces browser**:
-   `timeout 2 bash -c "SERF_LOGIN_HEADLESS=0 ./serf openai login 2>&1 | head -1"`
+2. **EVENER_LOGIN_HEADLESS=0 forces browser**:
+   `timeout 2 bash -c "EVENER_LOGIN_HEADLESS=0 ./serf openai login 2>&1 | head -1"`
    Expect: `auth_mode=browser auth_mode_reason=auto`
 3. **--device explicit**:
    `timeout 2 bash -c "./serf openai login --device 2>&1 | head -1"`
@@ -38,7 +38,7 @@ fresh device code each run; that's expected and harmless.
    --no-device cannot both be set`. EXIT=1.
 6. **No env override, default behavior on this box** (Linux,
    typically no `$DISPLAY` over SSH):
-   `timeout 2 bash -c "env -u SERF_LOGIN_HEADLESS ./serf openai login 2>&1 | head -1"`
+   `timeout 2 bash -c "env -u EVENER_LOGIN_HEADLESS ./serf openai login 2>&1 | head -1"`
    On a headless box: `auth_mode=device auth_mode_reason=auto_...`. On a graphical
    Linux: `auth_mode=browser auth_mode_reason=auto`.
 

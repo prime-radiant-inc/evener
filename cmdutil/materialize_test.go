@@ -19,7 +19,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "k1")
 	t.Setenv("ANTHROPIC_API_KEY", "k2")
 	// ensure no OAuth/state interferes:
-	t.Setenv("SERF_STATE_DIR", dir)
+	t.Setenv("EVENER_STATE_DIR", dir)
 
 	cfg, err := MaterializeProvidersConfig(path, llm.WithStateDir(dir))
 	if err != nil {

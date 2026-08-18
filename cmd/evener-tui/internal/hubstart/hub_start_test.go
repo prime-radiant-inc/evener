@@ -13,7 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-const immediateExitHubHelperEnv = "SERF_TUI_HUBSTART_IMMEDIATE_EXIT_HELPER"
+const immediateExitHubHelperEnv = "EVENER_TUI_HUBSTART_IMMEDIATE_EXIT_HELPER"
 
 func init() {
 	if os.Getenv(immediateExitHubHelperEnv) != "1" {

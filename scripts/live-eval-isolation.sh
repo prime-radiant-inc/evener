@@ -5,20 +5,20 @@
 # so sessions, transcripts, answers, and results cannot cross test boundaries.
 
 live_eval_begin() {
-	: "${SERF_LIVE_ENV:?set SERF_LIVE_ENV to the live-eval environment file}"
-	: "${SERF_LIVE_BINARY:?set SERF_LIVE_BINARY to the built serf binary}"
-	if [ ! -f "$SERF_LIVE_ENV" ]; then
-		printf 'live eval environment file not found: %s\n' "$SERF_LIVE_ENV" >&2
+	: "${EVENER_LIVE_ENV:?set EVENER_LIVE_ENV to the live-eval environment file}"
+	: "${EVENER_LIVE_BINARY:?set EVENER_LIVE_BINARY to the built serf binary}"
+	if [ ! -f "$EVENER_LIVE_ENV" ]; then
+		printf 'live eval environment file not found: %s\n' "$EVENER_LIVE_ENV" >&2
 		return 1
 	fi
-	if [ ! -f "$SERF_LIVE_BINARY" ]; then
-		printf 'live eval binary not found: %s\n' "$SERF_LIVE_BINARY" >&2
+	if [ ! -f "$EVENER_LIVE_BINARY" ]; then
+		printf 'live eval binary not found: %s\n' "$EVENER_LIVE_BINARY" >&2
 		return 1
 	fi
 
-	. "$SERF_LIVE_ENV"
-	: "${ISO:?$SERF_LIVE_ENV must define ISO as the source state root}"
-	: "${HOMEISO:?$SERF_LIVE_ENV must define HOMEISO as the source home root}"
+	. "$EVENER_LIVE_ENV"
+	: "${ISO:?$EVENER_LIVE_ENV must define ISO as the source state root}"
+	: "${HOMEISO:?$EVENER_LIVE_ENV must define HOMEISO as the source home root}"
 	if [ ! -d "$ISO" ]; then
 		printf 'live eval source state root not found: %s\n' "$ISO" >&2
 		return 1
@@ -57,7 +57,7 @@ live_eval_prepare_trial() {
 	fi
 	cp -R "$ISO/serf/auth/." "$LIVE_EVAL_STATE/serf/auth/"
 	cp -R "$HOMEISO/.serf/." "$LIVE_EVAL_HOME/.serf/"
-	cp "$SERF_LIVE_BINARY" "$LIVE_EVAL_SERF"
+	cp "$EVENER_LIVE_BINARY" "$LIVE_EVAL_SERF"
 	chmod +x "$LIVE_EVAL_SERF"
 }
 

@@ -198,11 +198,11 @@ pre-sweep low gaps are now closed**: G1 (observer prose, Item 0c), G2 (dead `mod
     wire (`StatusRow.tsx:8-16`); its proposed home (the location cluster) carries no cost number.
 
 Folded W6-close prior decisions (recorded, no W8 work): StatusRow epoch-clock → addressed by T4 (see
-punch P1 for the residue), FOUC successor, the 10 minor W6 gaps, `SERF_HUB_WEB=new` operational note.
+punch P1 for the residue), FOUC successor, the 10 minor W6 gaps, `EVENER_HUB_WEB=new` operational note.
 
 ## Live proof (real hub built from this worktree, real browser, real model — no mocks)
 
-Isolated fake `$HOME=/tmp/w8-live-home` (own `hub.lock`, real host hub untouched), `SERF_HUB_WEB=new`,
+Isolated fake `$HOME=/tmp/w8-live-home` (own `hub.lock`, real host hub untouched), `EVENER_HUB_WEB=new`,
 port 19288, repo `.env` sourced, model `oai-work/gpt-4o-mini`. Screenshots (11) in
 `.superpowers/sdd/w8-close-shots/` (`git add -f`); credential material never echoed.
 
@@ -271,7 +271,7 @@ and landed (MW-B `770800fe8`, MW-A `4e6936fcf`; the plan's own MW-B adjudication
 - **Controller:** the wave → integration serial merge, then integration re-absorb of any newer main;
   a focused re-review of the three controller wiring commits (`9b14e3aaf`, `6c2e51b1e`, `2e2878e3c`).
 - **M10:** deletion of the legacy machinery (`panes.js`, `thread.html`, `doc_serve.go` HTML pages, the
-  legacy JS bundle) + the `SERF_HUB_WEB` flag flip (per the adopted order).
+  legacy JS bundle) + the `EVENER_HUB_WEB` flag flip (per the adopted order).
 - **M9:** full e2e on the final artifact + the ratifications above; the M9 suites.
 - **Final** whole-branch review.
 

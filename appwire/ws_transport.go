@@ -17,7 +17,7 @@ var (
 
 type WSTransport struct {
 	conn *websocket.Conn
-	rec  *FrameRecorder // nil unless SERF_RECORD_APPWIRE selected recording
+	rec  *FrameRecorder // nil unless EVENER_RECORD_APPWIRE selected recording
 }
 
 const appWireWebSocketReadLimit = 128 << 20

@@ -105,7 +105,7 @@ The highest-signal, most easily-missed findings from this pass. Each also appear
 its proper section below — this is a highlight reel, not a separate obligation.
 
 1. **`/doc/file` and `/doc/image` are the only two of these five areas NOT gated behind
-   `SERF_HUB_WEB=new`.** Every other page route (`/`, `/s/{id}` bare, `/thread/{ref}`) already forks
+   `EVENER_HUB_WEB=new`.** Every other page route (`/`, `/s/{id}` bare, `/thread/{ref}`) already forks
    to `serveSPAIndex` when the new SPA is enabled; `doc_serve.go` has no `newWebEnabled()` call at
    all. If M8's dockview doc-viewer pane is meant to be live under the flag today, the routing fork
    still needs to be added. See §1.6.
@@ -152,7 +152,7 @@ its proper section below — this is a highlight reel, not a separate obligation
 
 ## Summary table
 
-| # | Area | Routes | Primary file(s) | Gated by `SERF_HUB_WEB=new`? |
+| # | Area | Routes | Primary file(s) | Gated by `EVENER_HUB_WEB=new`? |
 |---|---|---|---|---|
 | 1 | Doc/image viewer | `GET /doc/file`, `GET /doc/image` | `doc_serve.go` | **No** — always legacy |
 | 2 | Standalone thread doc | `GET /thread/{ref}` | `web_workspace.go`, `templates/thread.html` | Yes (`web_workspace.go:158`) |
@@ -310,7 +310,7 @@ its proper section below — this is a highlight reel, not a separate obligation
       `marked.min.js` — no htmx, no `renderer.js`, no `panes.js` — a doc pane cannot itself request
       further nested panes; "open beside" only ever originates from a `/thread/*` pane or the main
       workspace — `doc_serve.go:207-216`, `doc_serve.go:225-240` (complete script inventory)
-- [ ] `/doc/file` and `/doc/image` are NOT gated behind `SERF_HUB_WEB=new` — neither handler calls
+- [ ] `/doc/file` and `/doc/image` are NOT gated behind `EVENER_HUB_WEB=new` — neither handler calls
       `newWebEnabled()`; both always serve this legacy HTML regardless of the flag, unlike `/`,
       bare `/s/{id}`, and `/thread/{ref}` which all fork to `serveSPAIndex` —
       no `newWebEnabled()` call anywhere in `doc_serve.go`; contrast `web.go:226`,
@@ -330,7 +330,7 @@ single-pane mode needs to replicate through its own layout state.
 
 - [ ] `GET /thread/{ref}` is registered at `/thread/` (prefix match) → `handleThreadDocument` —
       `web.go:182`
-- [ ] When `SERF_HUB_WEB=new`, the route defers entirely to `serveSPAIndex` before any of the logic
+- [ ] When `EVENER_HUB_WEB=new`, the route defers entirely to `serveSPAIndex` before any of the logic
       below runs — `web_workspace.go:158-161`
 - [ ] Requires `GET`; any other method is `405 GET required` — `web_workspace.go:162-165`
 - [ ] `id` must be non-empty AND contain no further `/` — unlike `/s/{id}/{sub}`, this route has no
@@ -697,7 +697,7 @@ with no existing mechanism in this codebase; the only `window.open()` calls in s
 
 - [ ] `GET /manifest.webmanifest` → `handleManifest`, registered directly (not under
       `/_partials/` or gated behind auth-exemption) — `web.go:174`
-- [ ] NOT gated behind `SERF_HUB_WEB=new` — no `newWebEnabled()` call anywhere in `handleManifest`;
+- [ ] NOT gated behind `EVENER_HUB_WEB=new` — no `newWebEnabled()` call anywhere in `handleManifest`;
       served identically regardless of the SPA flag — `web.go:262-289` (complete function body)
 - [ ] Source of truth is `assets/manifest.webmanifest` (17 lines) read through `s.manifestFS`, which
       falls back to `assetsRoot()` when nil — `web.go:263-267`

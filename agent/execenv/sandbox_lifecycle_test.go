@@ -46,7 +46,7 @@ func TestEnableSandboxProvisionsSeatbeltBackend(t *testing.T) {
 // TestEnableSandboxFileToolsReachOwnScratch is the kata g8q6 regression: the
 // model's own file tools (write_file, read_file, …) must be able to use the SAME
 // per-session scratch directory a spawned shell command reaches via
-// $TMPDIR/$SERF_SCRATCH_DIR, in every enforced mode. Before this fix,
+// $TMPDIR/$EVENER_SCRATCH_DIR, in every enforced mode. Before this fix,
 // EnableSandbox provisioned the scratch dir for the kernel-wrapped
 // spawned-process layer only (env_floor.go, bwrap.go, seatbelt.go all thread it
 // through separately) — the in-process file-tool layer's ResolvedPolicy.FileTool

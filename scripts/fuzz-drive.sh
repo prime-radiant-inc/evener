@@ -4,7 +4,7 @@
 #
 # It runs a corpus of varied coding tasks through the real `serf` one-shot CLI
 # against each configured provider, with the fuzz-corpus recorders on
-# (SERF_FUZZ_RECORD=1) and a shared staging state dir, then runs
+# (EVENER_FUZZ_RECORD=1) and a shared staging state dir, then runs
 # serf-fuzz-harvest over that state dir to emit shape-scrubbed, gitleaks-gated
 # seeds. Real inputs reach decoder/tool states that random generation never will.
 #
@@ -38,10 +38,10 @@
 #   -h, --help             this help
 #
 # Binary overrides (advanced use):
-#   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/evener)
-#   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/evener-fuzz-harvest)
-#   SERF_FUZZ_GH           gh binary         (default: gh)
-#   SERF_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
+#   EVENER_FUZZ_EVENER_BIN     serf binary       (default: built from ./cmd/evener)
+#   EVENER_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/evener-fuzz-harvest)
+#   EVENER_FUZZ_GH           gh binary         (default: gh)
+#   EVENER_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
 # No selftest: the old one drove this script with a stubbed toolchain, and
 # fake-toolchain selftests are banned (docs/testing.md). This header is the
@@ -51,7 +51,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 providers_default="kimi-anthropic/kimi-for-coding openai/gpt-5.4-mini"
-providers="${SERF_FUZZ_DRIVE_PROVIDERS:-$providers_default}"
+providers="${EVENER_FUZZ_DRIVE_PROVIDERS:-$providers_default}"
 tasks_dir="$repo_root/fuzz/drive-tasks"
 runs_cap=0
 max_rounds=30
@@ -85,12 +85,12 @@ done
 # Normalize commas to spaces so --providers accepts either separator.
 providers="${providers//,/ }"
 
-serf_bin="${SERF_FUZZ_SERF_BIN:-}"
-harvest_bin="${SERF_FUZZ_HARVEST_BIN:-}"
-gh="${SERF_FUZZ_GH:-gh}"
+serf_bin="${EVENER_FUZZ_EVENER_BIN:-}"
+harvest_bin="${EVENER_FUZZ_HARVEST_BIN:-}"
+gh="${EVENER_FUZZ_GH:-gh}"
 # Backoff sleep is a seam so the self-test can make retries instant.
-sleep_cmd="${SERF_FUZZ_DRIVE_SLEEP:-sleep}"
-timeout_cmd="${SERF_FUZZ_DRIVE_TIMEOUT:-timeout}"
+sleep_cmd="${EVENER_FUZZ_DRIVE_SLEEP:-sleep}"
+timeout_cmd="${EVENER_FUZZ_DRIVE_TIMEOUT:-timeout}"
 
 # --- staging dirs ------------------------------------------------------------
 if [ -z "$state_dir" ]; then
@@ -145,7 +145,7 @@ for pm in $providers; do
 		attempt=0 run_ok=0
 		while :; do
 			err="$work/run.$attempt.err"
-			( cd "$work" && SERF_FUZZ_RECORD=1 SERF_STATE_DIR="$state_dir" \
+			( cd "$work" && EVENER_FUZZ_RECORD=1 EVENER_STATE_DIR="$state_dir" \
 				"$timeout_cmd" "$per_task_timeout" "$serf_bin" \
 					--model "$pm" --max-rounds "$max_rounds" \
 					--reasoning-effort "$effort" --verbose "$task" \

@@ -199,7 +199,7 @@ func TestResolveKeyNameThenTypeEnv(t *testing.T) {
 ```go
 func TestLoadClientMaterializesAndInjects(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
+	t.Setenv("EVENER_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	// no providers.toml, no credentials.toml yet
 	client, cfg, hasConfig, err := LoadClient(llm.WithStateDir(dir))
@@ -218,14 +218,14 @@ func TestLoadClientMaterializesAndInjects(t *testing.T) {
 
 - [ ] **Step 2: Run → FAIL.**
 - [ ] **Step 3: Implement** the new `LoadClient` flow:
-  1. Resolve `path` (unchanged: `SERF_PROVIDERS_CONFIG` else `DefaultStateRoot()/providers.toml`).
+  1. Resolve `path` (unchanged: `EVENER_PROVIDERS_CONFIG` else `DefaultStateRoot()/providers.toml`).
   2. `cfg, exists, err := providerconfig.LoadFile(path)`; corrupt → error (unchanged).
   3. If `!exists`: `cfg, err = materializeProvidersConfig(path, opts...)` (writes the file, returns the descriptor cfg).
   4. Load the credentials store from the same root: `store, _ := credentials.LoadStore(filepath.Join(filepath.Dir(path), "credentials.toml"))` (a missing file is an empty store, not an error).
   5. **Inject:** for each `inst` in `cfg.Instances` where `inst.APIKey == ""`, set `inst.APIKey, _ = store.ResolveKey(inst.Name, string(inst.Type))` on the **in-memory** cfg copy.
   6. `client, err := llm.NewFromProviders(cfg, opts...)`; return `(client, cfg, true, nil)`.
   - Remove the `NewFromEnv` "absent" branch. Update the doc comment.
-  - **Path alignment note:** confirm `filepath.Dir(path)` is the correct credentials root for hub-spawned children (they get `SERF_PROVIDERS_CONFIG` + `SERF_STATE_DIR` from the hub). If the hub's credentials root differs, align via the same state-dir the OAuth records use. Verify against `cmd/evener-hub/main.go` + `internal/launchconfig/env.go`.
+  - **Path alignment note:** confirm `filepath.Dir(path)` is the correct credentials root for hub-spawned children (they get `EVENER_PROVIDERS_CONFIG` + `EVENER_STATE_DIR` from the hub). If the hub's credentials root differs, align via the same state-dir the OAuth records use. Verify against `cmd/evener-hub/main.go` + `internal/launchconfig/env.go`.
 - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: Commit** — `git commit -m "feat(cmdutil): LoadClient always config — materialize + inject credentials"`
 

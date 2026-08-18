@@ -279,10 +279,10 @@ func runSuite(args []string) error {
 }
 
 func defaultModel() string {
-	if v := envvars.SERFFluencyModel.Trimmed(); v != "" {
+	if v := envvars.EVENERFluencyModel.Trimmed(); v != "" {
 		return v
 	}
-	if v := envvars.SERFModel.Trimmed(); v != "" {
+	if v := envvars.EVENERModel.Trimmed(); v != "" {
 		return v
 	}
 	return "openai/gpt-5.4-mini"
@@ -533,7 +533,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.SERFReasoningEffort.Getenv())
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.EVENERReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -663,7 +663,7 @@ func runnerInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef) (*p
 	if err != nil {
 		return nil, err
 	}
-	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(envvars.SERFAllowedDecisions.Getenv())), nil
+	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())), nil
 }
 
 func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {

@@ -161,7 +161,7 @@ Document `make test-web-browser` as a required CI browser gate using headless Ch
 
 - [x] **Step 3: Add live, release, and operational rows.**
 
-Classify provider/live/e2e commands as explicit opt-in only, including `SERF_LIVE_TESTS=1`, `SERF_MCP_E2E=1`, `SERF_OPENAI_CODEX_E2E=1`, `SERF_ANTHROPIC_E2E=1`, `SERF_E2E_LIVE=1`, and `SERF_SEATBELT_LIVE=1` where their existing commands are repository-owned. Classify `make dist` as release/distribution-only, `web-preflight` and `disk-reclaim.sh --check` as setup/operational prerequisites, and launcher/managed-service/SDD/Kata responsibilities as outside Serf.
+Classify provider/live/e2e commands as explicit opt-in only, including `EVENER_LIVE_TESTS=1`, `EVENER_MCP_E2E=1`, `EVENER_OPENAI_CODEX_E2E=1`, `EVENER_ANTHROPIC_E2E=1`, `EVENER_E2E_LIVE=1`, and `EVENER_SEATBELT_LIVE=1` where their existing commands are repository-owned. Classify `make dist` as release/distribution-only, `web-preflight` and `disk-reclaim.sh --check` as setup/operational prerequisites, and launcher/managed-service/SDD/Kata responsibilities as outside Serf.
 
 - [x] **Step 4: Record mismatches and intentional gaps.**
 

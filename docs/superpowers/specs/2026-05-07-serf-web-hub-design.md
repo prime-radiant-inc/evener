@@ -140,7 +140,7 @@ Five subsystems:
 | `hub/roster` | `roster.go` | Live-daemon roster: lazy scan of `~/.serf/run/` on each `/` or `/live` request, plus fsnotify for cheap incremental updates. TCP-probe + `/status` liveness verification. Maps `session_id → {pid, addr, working_dir, model, ...}`. |
 | `hub/proxy` | `proxy.go` | REST reverse-proxy via `httputil.ReverseProxy` (one per request). SSE passthrough that opens an upstream `GET /events` per browser viewer, forwards `Last-Event-ID` request header, sets `FlushInterval = -1`, and streams bytes through unmodified. One upstream connection per browser viewer (the daemon's `Broadcaster` already supports many subscribers — no need for hub-side fanout). |
 | `hub/past` | `past.go` | Loads `agent.SessionMeta` by globbing `$XDG_STATE_HOME/serf/projects/*/sessions/*.meta.json`. In-memory index, rebuilt every 60s. Substring search over `OriginalTask`, `ID`, `EnvInfo.WorkingDir`. Recency-paginated. |
-| `hub/spawn` | `spawn.go` | Forks `serf serve` subprocesses from named templates. Sets `SERF_HUB_SPAWNED=1`. Always passes `--addr 127.0.0.1:0` (does NOT change daemon default). |
+| `hub/spawn` | `spawn.go` | Forks `serf serve` subprocesses from named templates. Sets `EVENER_HUB_SPAWNED=1`. Always passes `--addr 127.0.0.1:0` (does NOT change daemon default). |
 | `hub/security` | `security.go` | Same-origin / Host validation middleware (hub edge only). |
 | `hub/web` | `web.go` | HTTP mux, static-asset embed (htmx, renderer.js, markdown lib, base CSS), HTML templates, route handlers. |
 
@@ -178,7 +178,7 @@ Beyond the prerequisites in D-1..D-5: only the rendezvous-file write and the spa
 
 `session_id` deliberately omitted — fetched from `/status` on every roster refresh, since it can change under `/clear`.
 
-`spawned_by` is `"user"` for manual launches, `"hub"` when env `SERF_HUB_SPAWNED=1` is present.
+`spawned_by` is `"user"` for manual launches, `"hub"` when env `EVENER_HUB_SPAWNED=1` is present.
 
 ## Security
 
@@ -197,7 +197,7 @@ GET routes that return HTML or JSON: the same `Host` check applies, to defend DN
 
 Daemons remain loopback-only and have no browser-facing surface. The hub is the sole client. No CORS work, no Origin validation needed on daemons in v1.
 
-A spawned-by-hub token (random per-hub session, embedded in the rendezvous file as `hub_token`, shared via `SERF_HUB_TOKEN` env to the spawned daemon, enforced by the daemon on every request) is listed in v2 to harden against the case where a different local user runs a daemon the hub then surfaces. v1 trusts every loopback daemon.
+A spawned-by-hub token (random per-hub session, embedded in the rendezvous file as `hub_token`, shared via `EVENER_HUB_TOKEN` env to the spawned daemon, enforced by the daemon on every request) is listed in v2 to harden against the case where a different local user runs a daemon the hub then surfaces. v1 trusts every loopback daemon.
 
 ### Hub flock
 
@@ -233,7 +233,7 @@ When the daemon emits a `SESSION_END` followed by a `SESSION_START` with a new `
 ### Spawn new (browser ↔ hub ↔ subprocess)
 
 1. `GET /live/new` → form: spawn-template picker (from `hub.toml`), working-dir override.
-2. `POST /live/new` → spawner picks the template, applies the override, forks `serf serve --addr 127.0.0.1:0 --provider … --model … --dir … --agent … --state-dir …` with `SERF_HUB_SPAWNED=1`.
+2. `POST /live/new` → spawner picks the template, applies the override, forks `serf serve --addr 127.0.0.1:0 --provider … --model … --dir … --agent … --state-dir …` with `EVENER_HUB_SPAWNED=1`.
 3. Hub waits up to 30 s for the rendezvous file. On success, redirects to `/live/<session_id>`.
 
 The form does **not** expose serf's full ~25-flag CLI surface. Templates are named presets in `hub.toml`:

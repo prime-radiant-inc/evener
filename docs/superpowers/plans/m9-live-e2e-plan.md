@@ -37,15 +37,15 @@ By M9 the artifact contains, all merged to integration:
 ### The flag's fate — verified
 
 `cmd/evener-hub/webnext.go:16` today is `func newWebEnabled() bool { return
-os.Getenv("SERF_HUB_WEB") == "new" }`, gating 5 page-route sites (`web.go:226`, `web_workspace.go:45`
+os.Getenv("EVENER_HUB_WEB") == "new" }`, gating 5 page-route sites (`web.go:226`, `web_workspace.go:45`
 & `:158`, `web_settings.go:46`, `web_launchconfig.go:8`). The M10 flip **deletes** `newWebEnabled()`
 and makes those 5 sites unconditional `serveSPAIndex` (kill-list §3, `webnext.go` KEEP-list). **After
-the flip `SERF_HUB_WEB` is read nowhere — it becomes dead/no-op.** Consequences for M9:
-- M9 hubs are launched with **no** `SERF_HUB_WEB` set — the default now serves the SPA. (The wave-6/7
-  live proofs required `SERF_HUB_WEB=new` because they ran pre-flip; that requirement is gone.)
-- Setting `SERF_HUB_WEB=new`, `=anything`, or leaving it unset must all behave **identically** — S7
+the flip `EVENER_HUB_WEB` is read nowhere — it becomes dead/no-op.** Consequences for M9:
+- M9 hubs are launched with **no** `EVENER_HUB_WEB` set — the default now serves the SPA. (The wave-6/7
+  live proofs required `EVENER_HUB_WEB=new` because they ran pre-flip; that requirement is gone.)
+- Setting `EVENER_HUB_WEB=new`, `=anything`, or leaving it unset must all behave **identically** — S7
   asserts this (the env var no longer branches anything).
-- `cmd/evener-hub/webnext_test.go` currently pins legacy-vs-new parity under `SERF_HUB_WEB=new`; the
+- `cmd/evener-hub/webnext_test.go` currently pins legacy-vs-new parity under `EVENER_HUB_WEB=new`; the
   deletion updates/removes those tests. S7's Go-gate re-run catches any breakage.
 
 ## 2. Mission and the dedup principle
@@ -84,7 +84,7 @@ exactly this against each other). Therefore:
   mistake is testing a stale process).
 - **Per-suite fake `$HOME`.** Each suite exports `HOME=<scratch>/s{N}-home`, giving it its own
   `hub.lock`, `~/.serf/run` rendezvous, and state root — all `HOME`/XDG-derived (`rendezvous.go:40`,
-  `config.go:89`). This is the same isolation the Go suite uses (`t.Setenv(SERF_STATE_DIR,
+  `config.go:89`). This is the same isolation the Go suite uses (`t.Setenv(EVENER_STATE_DIR,
   t.TempDir())`), **not** a flock bypass.
 - **Also isolate `XDG_CONFIG_HOME`** for any suite that touches plugins/marketplaces (S4). The plugin
   root is **global** — `cfg.PluginRoot` unset falls to `~/.config/serf/plugins` honoring
@@ -257,9 +257,9 @@ that catches a mis-scoped excision.
    /api/path/validate` — are **kept, not deleted** per Jesse's safe-default (contract changes aren't
    drive-bys): issue an authenticated request to each post-deletion (falsify: any of the three returns
    404, meaning the safe-default was silently violated).
-4. **Flag no-op** — the hub launched with **no** `SERF_HUB_WEB` serves the SPA at every page route
+4. **Flag no-op** — the hub launched with **no** `EVENER_HUB_WEB` serves the SPA at every page route
    (`/`, `/new`, `/s/{ref}`, `/thread/{ref}`, `/settings`, `/settings/{section}`, `/credentials`);
-   setting `SERF_HUB_WEB=new` or `=garbage` behaves identically (falsify: any page route returns legacy
+   setting `EVENER_HUB_WEB=new` or `=garbage` behaves identically (falsify: any page route returns legacy
    HTML or differs by env).
 5. **Dead legacy routes 404** — `/_partials/*`, `/_api/subagent-preview`, and the `/s/{id}/{action}`
    form-POSTs return **404** (mux default, no redirects, kill-list §3).
@@ -343,7 +343,7 @@ evidence for post-hoc veto** — M9 does not block on them, it *documents* them.
   `.env` sourced.
 - **Internal consistency.** Suite IDs S1–S7 are used identically in §4 (pacing), §5 (definitions), §6
   (report contract), and §7 (ratification homes). The two ratification items map S2→#1, S3→#2 in both
-  §5 and §7. The flag-fate analysis in §1 and S7 card 4 agree (post-flip `SERF_HUB_WEB` is a no-op).
+  §5 and §7. The flag-fate analysis in §1 and S7 card 4 agree (post-flip `EVENER_HUB_WEB` is a no-op).
 - **Dedup is explicit** on every suite, satisfying the "M9 re-proves spines + covers what no close
   could" mandate rather than re-running wave closes.
 - **Isolation recipe is complete** — flock, fake `$HOME`, `XDG_CONFIG_HOME` (plugin-root global

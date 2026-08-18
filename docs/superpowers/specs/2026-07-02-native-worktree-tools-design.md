@@ -825,7 +825,7 @@ consistent casing in practice; documented, not defended against.
 session:
 
 1. If `s.stateDir` is non-empty, use `filepath.Join(s.stateDir, "worktrees")`.
-   This respects `--state-dir`, `SERF_STATE_DIR`, and the normal
+   This respects `--state-dir`, `EVENER_STATE_DIR`, and the normal
    `agent.RuntimeDir(...)` project state directory selected by `serf run` and
    `serf serve` — which, per §1, must key off the resolved main repo root so
    that sessions launched inside a linked worktree land in the same state dir.
@@ -835,7 +835,7 @@ session:
    mainRoot, "")` and then append `worktrees`.
 
 The agent package should not import `cmdutil`. `cmdutil.DefaultStateRoot()`
-currently points at provider/auth state (`$SERF_STATE_DIR` else `~/.serf`) and
+currently points at provider/auth state (`$EVENER_STATE_DIR` else `~/.serf`) and
 would ignore the resolved runtime state directory in common launches.
 
 ### Metadata sidecar
@@ -1387,7 +1387,7 @@ worktree tool is pure plumbing — git operations on temp repos. Tests use real
   outside the user-facing env root.
 - Tool visibility: `manage_worktree` appears in `ToolDefinitions()` as a
   registry-only tool and is non-read-only.
-- State root: worktree placement honors explicit `StateDir`/`SERF_STATE_DIR`
+- State root: worktree placement honors explicit `StateDir`/`EVENER_STATE_DIR`
   test overrides and does not use provider/auth state by accident.
 - projectid: two distinct repos with the same basename produce distinct ids;
   fixed-length regardless of path depth; unsafe basename characters are

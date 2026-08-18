@@ -470,13 +470,13 @@ func TestE2E_LiveModelStopAndSteerNeedNoTurnID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run the live-model turn-control e2e test")
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run the live-model turn-control e2e test")
 	}
-	instance := os.Getenv("SERF_TEST_PROVIDER")
-	model := os.Getenv("SERF_TEST_MODEL")
+	instance := os.Getenv("EVENER_TEST_PROVIDER")
+	model := os.Getenv("EVENER_TEST_MODEL")
 	if instance == "" || model == "" {
-		t.Skip("SERF_TEST_PROVIDER and SERF_TEST_MODEL required")
+		t.Skip("EVENER_TEST_PROVIDER and EVENER_TEST_MODEL required")
 	}
 	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("no LLM API key in env")

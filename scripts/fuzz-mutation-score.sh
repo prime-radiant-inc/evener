@@ -14,7 +14,7 @@
 #
 # serf's tests need a generous per-mutant timeout (gremlins' measured baseline is
 # small; a default coefficient makes legitimate mutants spuriously "time out"),
-# so the coefficient defaults to 20 — tune via SERF_MUTATION_TIMEOUT_COEFF.
+# so the coefficient defaults to 20 — tune via EVENER_MUTATION_TIMEOUT_COEFF.
 #
 # READING THE NUMBERS — two gremlins artifacts make "mutator coverage" understate
 # real test coverage, especially for switch/codec-heavy packages (e.g. appwire):
@@ -36,7 +36,7 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-coeff="${SERF_MUTATION_TIMEOUT_COEFF:-20}"
+coeff="${EVENER_MUTATION_TIMEOUT_COEFF:-20}"
 
 if ! command -v gremlins >/dev/null 2>&1; then
 	echo "fuzz-mutation-score: gremlins not installed —" >&2

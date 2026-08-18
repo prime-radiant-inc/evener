@@ -120,7 +120,7 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
 
 - **Load or seed** — `cmdutil.LoadClient` (`cmdutil/load_client.go:31`):
   - File present → `providerconfig.LoadFile` parses + validates it. A corrupt file
-    fails loudly. The path is `SERF_PROVIDERS_CONFIG`, else
+    fails loudly. The path is `EVENER_PROVIDERS_CONFIG`, else
     `DefaultStateRoot()/providers.toml`.
   - File absent → `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) builds
     a descriptors-only `Config` from a `NewFromEnv` detection pass; **nothing is
@@ -131,7 +131,7 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   (`cmdutil/materialize.go:54`) seeds and **atomically writes** `providers.toml`
   (temp-file + rename, mode `0644`). The hub (`cmd/evener-hub/main.go:120–131`)
   calls this once on startup when the file is absent, then passes the path to
-  spawned children via `SERF_PROVIDERS_CONFIG` so they load the same file instead
+  spawned children via `EVENER_PROVIDERS_CONFIG` so they load the same file instead
   of re-seeding. A failed write is a hard error.
 - **Descriptors-only seeding** — `providerconfig.Seed` builds env-derived
   instances without credentials, and `WriteFile`'s scrub/restore means the
@@ -740,7 +740,7 @@ it is given to `auto` and keeps `max_tokens` above the thinking budget (Anthropi
 rejects both otherwise) — a defensive backstop, since serf's agent layer only
 ever sends `auto` (see [Tool choice: serf never forces it](#tool-choice-serf-never-forces-it)).
 
-**Setting it.** Launch: `--reasoning-effort`, `SERF_REASONING_EFFORT`,
+**Setting it.** Launch: `--reasoning-effort`, `EVENER_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip (per-model
 levels). Runtime: the `/effort` command (TUI) or the web `⌘K` "Set reasoning
 effort" command → the `thread/reasoning-effort/set` appwire method →

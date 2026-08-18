@@ -18,16 +18,16 @@ import (
 // exposure, worktree/secret confinement, git-config protection) plus M1's
 // contract suite re-run against the live host's real facts.
 //
-// They are gated behind SERF_SEATBELT_LIVE=1 so a plain `make test` on macOS
+// They are gated behind EVENER_SEATBELT_LIVE=1 so a plain `make test` on macOS
 // never invokes sandbox-exec (which needs a real policy environment and, for the
 // network cases, internet). Run them with:
 //
-//	SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -v
+//	EVENER_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -v
 
 func requireLiveSeatbelt(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SERF_SEATBELT_LIVE") != "1" {
-		t.Skip("live seatbelt test: set SERF_SEATBELT_LIVE=1 to run on macOS")
+	if os.Getenv("EVENER_SEATBELT_LIVE") != "1" {
+		t.Skip("live seatbelt test: set EVENER_SEATBELT_LIVE=1 to run on macOS")
 	}
 	if st, err := os.Stat(pathToSeatbelt); err != nil || st.IsDir() {
 		t.Skipf("live seatbelt test: %s not available", pathToSeatbelt)

@@ -18,9 +18,9 @@ func TestRecordTruthy(t *testing.T) {
 
 // TestRecorderEnabled covers the master-switch precedence: an explicitly-set
 // per-recorder var (on OR off) always wins; when it is unset, the recorder
-// follows SERF_FUZZ_RECORD; with nothing set, recording is off.
+// follows EVENER_FUZZ_RECORD; with nothing set, recording is off.
 func TestRecorderEnabled(t *testing.T) {
-	specific := SERFRecordAppwire
+	specific := EVENERRecordAppwire
 	cases := []struct {
 		name        string
 		master      *string // nil = unset
@@ -38,10 +38,10 @@ func TestRecorderEnabled(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if c.master != nil {
-				t.Setenv(SERFFuzzRecord.Name, *c.master)
+				t.Setenv(EVENERFuzzRecord.Name, *c.master)
 			} else {
-				t.Setenv(SERFFuzzRecord.Name, "")
-				if err := SERFFuzzRecord.Unsetenv(); err != nil {
+				t.Setenv(EVENERFuzzRecord.Name, "")
+				if err := EVENERFuzzRecord.Unsetenv(); err != nil {
 					t.Fatal(err)
 				}
 			}

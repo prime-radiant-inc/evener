@@ -79,21 +79,21 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"MAKEFLAGS",
 		"MAKELEVEL",
 		"MFLAGS",
-		"SERF_TEST_NPM_FAIL_COMMAND",
-		"SERF_TEST_NPM_HOLD_COMMAND",
-		"SERF_TEST_NPM_PID",
-		"SERF_TEST_NPM_READY",
-		"SERF_TEST_NPM_TRACK_COMMAND",
-		"SERF_TEST_NPM_TRACK_PID",
-		"SERF_TEST_SHELL_KILLED_REAPED",
-		"SERF_TEST_SHELL_WAITED_REAPED",
-		"SERF_TEST_NODE_HOLD_COMMAND",
-		"SERF_TEST_NODE_FAIL_COMMAND",
-		"SERF_TEST_NODE_PID",
-		"SERF_TEST_NODE_READY",
-		"SERF_TEST_NODE_TERM",
-		"SERF_TEST_NODE_RELEASE",
-		"SERF_TEST_NODE_READY_FD",
+		"EVENER_TEST_NPM_FAIL_COMMAND",
+		"EVENER_TEST_NPM_HOLD_COMMAND",
+		"EVENER_TEST_NPM_PID",
+		"EVENER_TEST_NPM_READY",
+		"EVENER_TEST_NPM_TRACK_COMMAND",
+		"EVENER_TEST_NPM_TRACK_PID",
+		"EVENER_TEST_SHELL_KILLED_REAPED",
+		"EVENER_TEST_SHELL_WAITED_REAPED",
+		"EVENER_TEST_NODE_HOLD_COMMAND",
+		"EVENER_TEST_NODE_FAIL_COMMAND",
+		"EVENER_TEST_NODE_PID",
+		"EVENER_TEST_NODE_READY",
+		"EVENER_TEST_NODE_TERM",
+		"EVENER_TEST_NODE_RELEASE",
+		"EVENER_TEST_NODE_READY_FD",
 	}
 	for _, name := range controlNames {
 		t.Setenv(name, "ambient-value")
@@ -402,12 +402,12 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"SERF_TEST_NODE_READY="+readyPath,
-		"SERF_TEST_NODE_PID="+pidPath,
-		"SERF_TEST_NODE_TERM="+termPath,
-		"SERF_TEST_NODE_RELEASE="+releasePath,
-		"SERF_TEST_NODE_READY_FD=3",
+		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"EVENER_TEST_NODE_READY="+readyPath,
+		"EVENER_TEST_NODE_PID="+pidPath,
+		"EVENER_TEST_NODE_TERM="+termPath,
+		"EVENER_TEST_NODE_RELEASE="+releasePath,
+		"EVENER_TEST_NODE_READY_FD=3",
 	)
 	readyReader, readyWriter, err := os.Pipe()
 	if err != nil {
@@ -525,11 +525,11 @@ func TestFrontendToolchainStubHeldNodeHonorsPreexistingRelease(t *testing.T) {
 	command := exec.CommandContext(ctx, filepath.Join(fixture.fakeBin, "node"), heldCommand)
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NODE_HOLD_COMMAND="+heldCommand,
-		"SERF_TEST_NODE_READY="+readyPath,
-		"SERF_TEST_NODE_PID="+pidPath,
-		"SERF_TEST_NODE_TERM="+termPath,
-		"SERF_TEST_NODE_RELEASE="+releasePath,
+		"EVENER_TEST_NODE_HOLD_COMMAND="+heldCommand,
+		"EVENER_TEST_NODE_READY="+readyPath,
+		"EVENER_TEST_NODE_PID="+pidPath,
+		"EVENER_TEST_NODE_TERM="+termPath,
+		"EVENER_TEST_NODE_RELEASE="+releasePath,
 	)
 	output, err := command.CombinedOutput()
 	if ctx.Err() != nil {
@@ -606,7 +606,7 @@ func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "SERF_TEST_NODE_FAIL_COMMAND="+failedCommand)
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NODE_FAIL_COMMAND="+failedCommand)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("make test-web-browser succeeded despite injected guard failure; output = %s", output)
@@ -639,7 +639,7 @@ func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "SERF_TEST_NPM_FAIL_COMMAND=run test")
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
@@ -670,9 +670,9 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	command := exec.Command("make", "test-web")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NPM_HOLD_COMMAND=run test",
-		"SERF_TEST_NPM_READY="+readyPath,
-		"SERF_TEST_NPM_PID="+pidPath,
+		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
+		"EVENER_TEST_NPM_READY="+readyPath,
+		"EVENER_TEST_NPM_PID="+pidPath,
 	)
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -734,14 +734,14 @@ if [ "${1:-}" = "-c" ]; then
     wait() {
       command wait "$@"
       wait_status=$?
-      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
-      [ "${1:-}" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_WAITED_REAPED"
+      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
+      [ "${1:-}" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_WAITED_REAPED"
       return "$wait_status"
     }
     kill() {
-      tracked_pid=$(cat "$SERF_TEST_NPM_TRACK_PID")
+      tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
       for kill_arg in "$@"; do
-        [ "$kill_arg" != "$tracked_pid" ] || : > "$SERF_TEST_SHELL_KILLED_REAPED"
+        [ "$kill_arg" != "$tracked_pid" ] || : > "$EVENER_TEST_SHELL_KILLED_REAPED"
       done
       command kill "$@"
     }
@@ -754,13 +754,13 @@ exec /bin/sh "$@"
 	command := exec.Command("make", "SHELL="+recordingShell, "test-web")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		"SERF_TEST_NPM_HOLD_COMMAND=run test",
-		"SERF_TEST_NPM_READY="+heldReady,
-		"SERF_TEST_NPM_PID="+heldPID,
-		"SERF_TEST_NPM_TRACK_COMMAND=run typecheck",
-		"SERF_TEST_NPM_TRACK_PID="+reapedPID,
-		"SERF_TEST_SHELL_WAITED_REAPED="+waitedReaped,
-		"SERF_TEST_SHELL_KILLED_REAPED="+killedReaped,
+		"EVENER_TEST_NPM_HOLD_COMMAND=run test",
+		"EVENER_TEST_NPM_READY="+heldReady,
+		"EVENER_TEST_NPM_PID="+heldPID,
+		"EVENER_TEST_NPM_TRACK_COMMAND=run typecheck",
+		"EVENER_TEST_NPM_TRACK_PID="+reapedPID,
+		"EVENER_TEST_SHELL_WAITED_REAPED="+waitedReaped,
+		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
 	)
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -898,8 +898,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf 'go-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-  "$package" "$ldflags" "$HOME" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${GOPATH:-}" "${GOCACHE:-}" >> "$SERF_TEST_GO_LOG"
-if [ "${SERF_TEST_GO_FAIL_PACKAGE:-}" = "$package" ]; then
+  "$package" "$ldflags" "$HOME" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${GOPATH:-}" "${GOCACHE:-}" >> "$EVENER_TEST_GO_LOG"
+if [ "${EVENER_TEST_GO_FAIL_PACKAGE:-}" = "$package" ]; then
   exit 17
 fi
 printf '%s\n' "$package" > "$output"
@@ -928,39 +928,39 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	// broken state the preflight exists to catch, so a stub that only mkdir'd
 	// the directory would (correctly) fail the build.
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
-printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
-printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
+printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
+printf 'npm %s\n' "$*" >> "$EVENER_TEST_GO_LOG"
 if [ "$1" = "ci" ]; then
   mkdir -p node_modules/.bin
   printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
   chmod +x node_modules/.bin/tsc
 fi
-[ "${SERF_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
-  printf '%s\n' "$$" > "$SERF_TEST_NPM_PID"
-  : > "$SERF_TEST_NPM_READY"
+[ "${EVENER_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
+  printf '%s\n' "$$" > "$EVENER_TEST_NPM_PID"
+  : > "$EVENER_TEST_NPM_READY"
   exec sleep 1000
 }
-[ "${SERF_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$SERF_TEST_NPM_TRACK_PID"
-[ "${SERF_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
+[ "${EVENER_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$EVENER_TEST_NPM_TRACK_PID"
+[ "${EVENER_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
 exit 0
 `), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
-printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$SERF_TEST_GO_LOG"
+printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
 printf 'browser chatter: %s\n' "$*"
-[ "${SERF_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
+[ "${EVENER_TEST_NODE_HOLD_COMMAND:-}" != "$*" ] || {
   on_term() {
-    : > "$SERF_TEST_NODE_TERM"
-    while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+    : > "$EVENER_TEST_NODE_TERM"
+    while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
     exit 143
   }
   trap on_term TERM
-  printf '%s\n' "$$" > "$SERF_TEST_NODE_PID"
-  : > "$SERF_TEST_NODE_READY"
-  [ "${SERF_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
-  while [ ! -f "$SERF_TEST_NODE_RELEASE" ]; do :; done
+  printf '%s\n' "$$" > "$EVENER_TEST_NODE_PID"
+  : > "$EVENER_TEST_NODE_READY"
+  [ "${EVENER_TEST_NODE_READY_FD:-}" != 3 ] || printf . >&3
+  while [ ! -f "$EVENER_TEST_NODE_RELEASE" ]; do :; done
   exit 143
 }
-[ "${SERF_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
+[ "${EVENER_TEST_NODE_FAIL_COMMAND:-}" = "$*" ] && {
   printf 'browser failure detail: %s\n' "$*" >&2
   exit 23
 }
@@ -1196,10 +1196,10 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		switch name {
 		case "PATH", "TMPDIR", "LDFLAGS", "GOPATH", "GOCACHE", "NODE_DISABLE_COMPILE_CACHE",
 			"GNUMAKEFLAGS", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
-			"SERF_TEST_GO_LOG", "SERF_TEST_GO_FAIL_PACKAGE",
-			"SERF_TEST_NPM_FAIL_COMMAND", "SERF_TEST_NPM_HOLD_COMMAND", "SERF_TEST_NPM_PID", "SERF_TEST_NPM_READY",
-			"SERF_TEST_NPM_TRACK_COMMAND", "SERF_TEST_NPM_TRACK_PID", "SERF_TEST_SHELL_KILLED_REAPED", "SERF_TEST_SHELL_WAITED_REAPED",
-			"SERF_TEST_NODE_HOLD_COMMAND", "SERF_TEST_NODE_FAIL_COMMAND", "SERF_TEST_NODE_PID", "SERF_TEST_NODE_READY", "SERF_TEST_NODE_TERM", "SERF_TEST_NODE_RELEASE", "SERF_TEST_NODE_READY_FD":
+			"EVENER_TEST_GO_LOG", "EVENER_TEST_GO_FAIL_PACKAGE",
+			"EVENER_TEST_NPM_FAIL_COMMAND", "EVENER_TEST_NPM_HOLD_COMMAND", "EVENER_TEST_NPM_PID", "EVENER_TEST_NPM_READY",
+			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
+			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
 			continue
 		}
 		environment = append(environment, assignment)
@@ -1210,8 +1210,8 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		"LDFLAGS=same-checkout-flags",
 		"GOPATH="+filepath.Join(fixture.root, "shared-gopath"),
 		"GOCACHE="+filepath.Join(fixture.root, "shared-gocache"),
-		"SERF_TEST_GO_LOG="+fixture.logPath,
-		"SERF_TEST_GO_FAIL_PACKAGE="+failPackage,
+		"EVENER_TEST_GO_LOG="+fixture.logPath,
+		"EVENER_TEST_GO_FAIL_PACKAGE="+failPackage,
 	)
 }
 
@@ -1315,7 +1315,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 // assertNpmBuildPrecedesHubGoBuild pins the dist/install prerequisite graph:
 // both now depend on build-web, so a `make -n` dry run must print the vite
 // build before the serf-hub go build. make -n also forces the Makefile's
-// parse-time `$(shell go env GOOS)`/GOARCH assignments (SERF_DIST_NAME's
+// parse-time `$(shell go env GOOS)`/GOARCH assignments (EVENER_DIST_NAME's
 // immediate `:=`) against the fake go shim, which doesn't understand the
 // `env` subcommand; the resulting noise log lines and stderr complaints are
 // expected and harmless here — this only checks relative order of the two

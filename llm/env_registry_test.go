@@ -50,7 +50,7 @@ func TestNewFromEnv_PassesStateDirOptionToFactories(t *testing.T) {
 	}
 }
 
-func TestNewFromEnv_UsesSERFStateDirEnvByDefault(t *testing.T) {
+func TestNewFromEnv_UsesEVENERStateDirEnvByDefault(t *testing.T) {
 	// Isolate global registry.
 	envFactoriesMu.Lock()
 	saved := append([]EnvAdapterFactory{}, envFactories...)
@@ -64,7 +64,7 @@ func TestNewFromEnv_UsesSERFStateDirEnvByDefault(t *testing.T) {
 
 	const wantStateDir = "/tmp/serf-state-from-env"
 	var gotStateDir string
-	t.Setenv("SERF_STATE_DIR", wantStateDir)
+	t.Setenv("EVENER_STATE_DIR", wantStateDir)
 
 	RegisterEnvAdapterFactory(func(cfg EnvConfig) (ProviderAdapter, bool, error) {
 		gotStateDir = cfg.StateDir

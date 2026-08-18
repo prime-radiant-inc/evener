@@ -72,7 +72,7 @@ The new design keeps the useful TUI rendering and event-reduction logic, but cha
 
 Running `serf-tui` opens the dashboard. Startup flow:
 
-1. Resolve hub address from `--hub-addr`, `SERF_HUB_ADDR`, hub config, or default `127.0.0.1:9180`.
+1. Resolve hub address from `--hub-addr`, `EVENER_HUB_ADDR`, hub config, or default `127.0.0.1:9180`.
 2. Normalize the address into a base URL and, when local, a bind address. Accepted inputs are `host:port`, `http://host:port`, and `http://host:port/`.
 3. Probe `GET /api/health`.
 4. If the probe succeeds, connect.
@@ -707,9 +707,9 @@ Hub-spawned daemons must receive the same runtime paths and auth-relevant enviro
 
 Rules:
 
-- If hub supports configurable `run_dir`, `serf serve` must also support the same run dir through an explicit `--run-dir` flag or `SERF_RUN_DIR` env var.
+- If hub supports configurable `run_dir`, `serf serve` must also support the same run dir through an explicit `--run-dir` flag or `EVENER_RUN_DIR` env var.
 - Hub passes its resolved run dir to every spawned or resumed daemon.
-- Hub resume passes the resolved past session `state_dir` through `--state-dir`; it must not rely on ambient `SERF_STATE_DIR`.
+- Hub resume passes the resolved past session `state_dir` through `--state-dir`; it must not rely on ambient `EVENER_STATE_DIR`.
 - Hub spawn should pass configured state/auth environment intentionally, not incidentally through the process environment.
 - Provider credentials and auth state used by `llm.NewFromEnv` must behave the same for hub-spawned daemons as for manually launched `serf serve`.
 

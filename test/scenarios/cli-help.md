@@ -29,12 +29,12 @@ plumbs `os.Stderr` into the FlagSet output, supplies a structured
   command) contains the literal `Usage:` line, all flags described,
   and at least one description sentence above the flag block.
 - For `serf-tui`: usage includes `Environment variables:` listing
-  `SERF_HUB_ADDR`, `SERF_HUB_BIN`, `SERF_STATE_DIR`, `SERF_TUI_LOG_FILE`,
-  `SERF_HUB_AUTH_TOKEN`.
+  `EVENER_HUB_ADDR`, `EVENER_HUB_BIN`, `EVENER_STATE_DIR`, `EVENER_TUI_LOG_FILE`,
+  `EVENER_HUB_AUTH_TOKEN`.
 - For `serf openai login`: usage describes both `--device` and
   `--no-device` and includes the auto-detection rules paragraph
   (mentioning `SSH_CONNECTION`, `DISPLAY`, `WAYLAND_DISPLAY`,
-  `SERF_LOGIN_HEADLESS`).
+  `EVENER_LOGIN_HEADLESS`).
 - Negative case: `./serf-tui --bogus` exits 2 and prints
   `flag provided but not defined` plus the usage block.
 - Falsification: any of these prints `flag: help requested` and exits

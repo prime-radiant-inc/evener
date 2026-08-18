@@ -6,7 +6,7 @@ import (
 )
 
 func TestResolveHeaderValue(t *testing.T) {
-	t.Setenv("SERF_TEST_HDR_A", "secret-token")
+	t.Setenv("EVENER_TEST_HDR_A", "secret-token")
 	cases := []struct {
 		name    string
 		key     string
@@ -16,10 +16,10 @@ func TestResolveHeaderValue(t *testing.T) {
 	}{
 		{name: "literal", key: "X-Api-Key", in: "plain", want: "plain"},
 		{name: "empty", key: "X-Api-Key", in: "", want: ""},
-		{name: "bare var", key: "Authorization", in: "$SERF_TEST_HDR_A", want: "secret-token"},
-		{name: "braced var", key: "Authorization", in: "Bearer ${SERF_TEST_HDR_A}", want: "Bearer secret-token"},
+		{name: "bare var", key: "Authorization", in: "$EVENER_TEST_HDR_A", want: "secret-token"},
+		{name: "braced var", key: "Authorization", in: "Bearer ${EVENER_TEST_HDR_A}", want: "Bearer secret-token"},
 		{name: "escaped dollar", key: "X-Cost", in: "pa$$word", want: "pa$word"},
-		{name: "missing var names header and var", key: "X-Portkey-Key", in: "$SERF_TEST_HDR_MISSING", wantErr: []string{"X-Portkey-Key", "SERF_TEST_HDR_MISSING"}},
+		{name: "missing var names header and var", key: "X-Portkey-Key", in: "$EVENER_TEST_HDR_MISSING", wantErr: []string{"X-Portkey-Key", "EVENER_TEST_HDR_MISSING"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,7 +48,7 @@ func TestResolveHeaderValue(t *testing.T) {
 // TestResolveAPIKey_UnchangedBehavior guards that the shared-core refactor keeps
 // ResolveAPIKey's error text keyed on "api_key".
 func TestResolveAPIKey_ErrorNamesApiKey(t *testing.T) {
-	_, err := ResolveAPIKey("$SERF_TEST_HDR_STILL_MISSING")
+	_, err := ResolveAPIKey("$EVENER_TEST_HDR_STILL_MISSING")
 	if err == nil {
 		t.Fatal("expected error for missing var")
 	}

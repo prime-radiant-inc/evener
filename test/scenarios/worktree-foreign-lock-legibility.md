@@ -10,7 +10,7 @@ Live end-to-end, real provider (billed).
 
 ## Pre-state
 
-Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked).
+Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked).
 Pre-seed a lane `held-lane` that is **locked by a different session id**: the
 simplest deterministic way is `git worktree add` the lane under the managed
 `<worktreeRoot>/<projectid>/` dir, write a matching sidecar, then

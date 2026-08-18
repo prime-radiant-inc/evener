@@ -67,7 +67,7 @@ Authorize each browser once with the startup log's `/auth?token=...` URL. For a
 remote TUI, pass the same capability out of band:
 
 ```bash
-SERF_HUB_AUTH_TOKEN='<token>' \
+EVENER_HUB_AUTH_TOKEN='<token>' \
   serf-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
 ```
 
@@ -109,7 +109,7 @@ Current flags verified from source:
 - `serf launch-check --protocol serf-appwire-v1 --model <provider/model> --json`
   validates the binary/protocol/model contract before spawn.
 - `serf-tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
-- `serf-tui --auth-token <token>` overrides `SERF_HUB_AUTH_TOKEN` and the local
+- `serf-tui --auth-token <token>` overrides `EVENER_HUB_AUTH_TOKEN` and the local
   token file.
 - `serf-tui --no-auto-start-hub` prevents local auto-start, which is usually
   what you want when targeting a remote Hub.
@@ -160,9 +160,9 @@ SQLite index cannot be opened or rebuilt, Hub falls back to substring search
 over the loaded metadata.
 
 `serf_launch.env` overrides the environment inherited by spawned `serf serve`
-children. Hub also sets `SERF_HUB_SPAWNED=1`, `SERF_RUN_DIR`,
-`SERF_STATE_DIR`, and a generated `SERF_HUB_TOKEN` for each child. Do not set
-`SERF_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
+children. Hub also sets `EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`,
+`EVENER_STATE_DIR`, and a generated `EVENER_HUB_TOKEN` for each child. Do not set
+`EVENER_HUB_TOKEN` in config; Hub-owned launches replace it with the generated
 per-Hub token.
 Launch model choices come from that same Serf launch harness contract
 (`serf launch-check --models`) rather than a static model roster in
@@ -183,7 +183,7 @@ state_glob = "/var/lib/serf/state/serf/projects/*"
 XDG_STATE_HOME = "/var/lib/serf/state"
 ```
 
-Only set `SERF_STATE_DIR` when you deliberately want every spawned daemon to use
+Only set `EVENER_STATE_DIR` when you deliberately want every spawned daemon to use
 one exact state directory. If you do that, `state_glob` must match that exact
 directory, otherwise Hub can spawn sessions that it cannot later find in the
 past-session index.
@@ -375,7 +375,7 @@ parses (see [Required Binaries](#required-binaries)) — exactly as they were
 passed.
 
 It does **not** recover environment variables the process was started with (a
-`SERF_PROVIDERS_CONFIG` or `XDG_STATE_HOME` override, say). Don't reach for a
+`EVENER_PROVIDERS_CONFIG` or `XDG_STATE_HOME` override, say). Don't reach for a
 Linux-style `ps eww`/`ps -E` to fill that gap: verified on macOS 26.5.1
 (Darwin 25.5.0) that neither flag surfaces another process's environment on
 this platform, even a same-user one. Check the recovered `hub.toml`'s

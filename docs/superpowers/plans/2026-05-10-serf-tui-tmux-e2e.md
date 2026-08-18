@@ -102,12 +102,12 @@
     pre-overhaul `openLiveSession` palette flow, so each one times out
     (~20s) under the current UI. Cumulatively they push `go test ./cmd/evener-tui/...`
     well past the 90s test-binary timeout.
-  - These tests are gated behind the `SERF_TMUX_E2E_FULL=1` env var (and
+  - These tests are gated behind the `EVENER_TMUX_E2E_FULL=1` env var (and
     skipped under `-short`) via `requireFullTmuxE2E` in
     `cmd/evener-tui/tmux_e2e_test.go`. To run them locally while rewriting:
 
     ```bash
-    SERF_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1
+    EVENER_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1
     ```
 
   - Affected cases (alphabetical): `APIErrorsRenderInPlace`,
@@ -132,7 +132,7 @@
 
 ```bash
 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1                      # default: skips pre-overhaul cases
-SERF_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1 # opt-in: runs everything
+EVENER_TMUX_E2E_FULL=1 go test ./cmd/evener-tui -run TestTUITmuxE2E -count=1 # opt-in: runs everything
 go test -short ./cmd/evener-tui/...                                        # CI-style: skips pre-overhaul cases
 go test ./cmd/evener-tui -count=1
 go test ./...

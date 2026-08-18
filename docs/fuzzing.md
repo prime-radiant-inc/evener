@@ -58,14 +58,14 @@ So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 vi
 `scripts/run-fuzz.sh` itself, so even a **direct** `scripts/run-fuzz.sh` is
 protected. There are two ceilings:
 
-- **per run** (`SERF_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
-- **shared total** (`SERF_MEM_TOTAL`, default 32G) — all concurrent serf runs
+- **per run** (`EVENER_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
+- **shared total** (`EVENER_MEM_TOTAL`, default 32G) — all concurrent serf runs
   join one slice, so launching several at once still can't exhaust the host.
 
 A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
 `global_oom`, and `tailscale`/SSH stay up throughout. Tune the ceilings for a
-bigger box (`SERF_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
-`SERF_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
+bigger box (`EVENER_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
+`EVENER_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
 containers) the wrapper prints a warning and runs uncapped — CI runners impose
 their own cgroup limit.
 
@@ -165,7 +165,7 @@ comment, so the finding stays visible.
 For an on-demand campaign that triages for you, `make fuzz-triage` runs the search,
 applies a flake-guard (a failure must reproduce K times to count), dedups against
 prior findings, and opens a PR by default carrying the generated regression test.
-See [`fuzz/README.md`](../fuzz/README.md) for its flags and `SERF_FUZZ_PERSIST`.
+See [`fuzz/README.md`](../fuzz/README.md) for its flags and `EVENER_FUZZ_PERSIST`.
 
 ## Continuous fuzzing (local, on-demand)
 

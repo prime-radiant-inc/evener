@@ -26,8 +26,8 @@ EOF
 chmod +x "$binary"
 printf 'ISO=%s\nHOMEISO=%s\n' "$source_state" "$source_home" >"$env_file"
 
-SERF_LIVE_ENV="$env_file"
-SERF_LIVE_BINARY="$binary"
+EVENER_LIVE_ENV="$env_file"
+EVENER_LIVE_BINARY="$binary"
 live_eval_begin
 run_root="$LIVE_EVAL_ROOT"
 

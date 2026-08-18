@@ -64,7 +64,7 @@ case "$1" in
 esac
 `, osName, archName))
 		writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
-printf '%s\n' "$2" > "$SERF_FUZZ_URL_FILE"
+printf '%s\n' "$2" > "$EVENER_FUZZ_URL_FILE"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then : > "$2"; exit 0; fi
   shift
@@ -78,11 +78,11 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$dest" ] || exit 2
-[ "$SERF_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
-mkdir -p "$dest/$SERF_FUZZ_ARCHIVE_ROOT"
+[ "$EVENER_FUZZ_ARCHIVE_MODE" != 1 ] || exit 0
+mkdir -p "$dest/$EVENER_FUZZ_ARCHIVE_ROOT"
 for bin in serf serf-hub serf-tui serf-doctor; do
-  [ "$SERF_FUZZ_ARCHIVE_MODE:$bin" = 2:serf-doctor ] && continue
-  printf '#!/bin/sh\nexit 0\n' > "$dest/$SERF_FUZZ_ARCHIVE_ROOT/$bin"
+  [ "$EVENER_FUZZ_ARCHIVE_MODE:$bin" = 2:serf-doctor ] && continue
+  printf '#!/bin/sh\nexit 0\n' > "$dest/$EVENER_FUZZ_ARCHIVE_ROOT/$bin"
 done
 `)
 
@@ -94,14 +94,14 @@ done
 			"HOME":                   home,
 			"PREFIX":                 "",
 			"BINDIR":                 "",
-			"SERF_SHARE_BINDIR":      "",
-			"SERF_INSTALL_VERSION":   "",
-			"SERF_FUZZ_URL_FILE":     urlFile,
-			"SERF_FUZZ_ARCHIVE_MODE": fmt.Sprint(archiveMode),
-			"SERF_FUZZ_ARCHIVE_ROOT": installArchiveRoot(osName, archName),
+			"EVENER_SHARE_BINDIR":      "",
+			"EVENER_INSTALL_VERSION":   "",
+			"EVENER_FUZZ_URL_FILE":     urlFile,
+			"EVENER_FUZZ_ARCHIVE_MODE": fmt.Sprint(archiveMode),
+			"EVENER_FUZZ_ARCHIVE_ROOT": installArchiveRoot(osName, archName),
 		})
 		if versioned {
-			env = overlayEnv(env, map[string]string{"SERF_INSTALL_VERSION": "v1.2.3"})
+			env = overlayEnv(env, map[string]string{"EVENER_INSTALL_VERSION": "v1.2.3"})
 		}
 		switch envMode {
 		case 1:
@@ -111,7 +111,7 @@ done
 		case 3:
 			env = overlayEnv(env, map[string]string{
 				"BINDIR":            filepath.Join(root, "commands"),
-				"SERF_SHARE_BINDIR": filepath.Join(root, "payload"),
+				"EVENER_SHARE_BINDIR": filepath.Join(root, "payload"),
 			})
 		}
 

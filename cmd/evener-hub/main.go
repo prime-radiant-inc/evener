@@ -213,7 +213,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
-	providersConfigPath := envvars.SERFProvidersConfig.Getenv()
+	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
 	if providersConfigPath == "" {
 		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
 	}
@@ -226,7 +226,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	} else {
 		// File absent — materialize a descriptors-only providers.toml from the
 		// environment so the hub has a single source of truth and spawned
-		// children load the same file via SERF_PROVIDERS_CONFIG.
+		// children load the same file via EVENER_PROVIDERS_CONFIG.
 		materialized, matErr := deps.materializeConfig(providersConfigPath)
 		if matErr != nil {
 			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
@@ -560,8 +560,8 @@ func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) e
 func printHubEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, v := range []envvars.Var{
-		envvars.SERFProvidersConfig,
-		envvars.SERFStateDir,
+		envvars.EVENERProvidersConfig,
+		envvars.EVENERStateDir,
 		envvars.OpenAIAPIKey,
 		envvars.AnthropicAPIKey,
 		envvars.GeminiAPIKey,

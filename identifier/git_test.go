@@ -272,7 +272,7 @@ func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
 		"gIt_oBjEcT_dIrEcToRy=/hostile/objects",
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/hostile/alternates",
 		"git_ceiling_directories=/hostile/ceiling",
-		"GIT_DISCOVERY_ACROSS_FILESYSTEM=1", "SERF_UNRELATED=value",
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM=1", "EVENER_UNRELATED=value",
 	}
 	got := filteredGitEnvironment(input)
 	joined := strings.Join(got, "\n")
@@ -285,7 +285,7 @@ func TestFilteredGitEnvironmentCaseInsensitive(t *testing.T) {
 			t.Fatalf("filtered environment retained %s: %v", key, got)
 		}
 	}
-	for _, entry := range []string{"PATH=/bin", "SERF_UNRELATED=value"} {
+	for _, entry := range []string{"PATH=/bin", "EVENER_UNRELATED=value"} {
 		if !strings.Contains(joined, entry) {
 			t.Fatalf("filtered environment removed %s: %v", entry, got)
 		}

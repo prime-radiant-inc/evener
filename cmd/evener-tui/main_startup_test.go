@@ -30,26 +30,26 @@ func TestParseTUIStartupOptionsDefaults(t *testing.T) {
 
 func TestParseTUIStartupOptionsUsesEnvironmentDefaults(t *testing.T) {
 	env := map[string]string{
-		"SERF_HUB_ADDR":     "http://env-hub:9180",
-		"SERF_HUB_BIN":      "/env/serf-hub",
-		"SERF_STATE_DIR":    "/env/state/serf",
-		"SERF_TUI_LOG_FILE": "/env/serf-tui.log",
+		"EVENER_HUB_ADDR":     "http://env-hub:9180",
+		"EVENER_HUB_BIN":      "/env/serf-hub",
+		"EVENER_STATE_DIR":    "/env/state/serf",
+		"EVENER_TUI_LOG_FILE": "/env/serf-tui.log",
 	}
 	opts, err := hubstart.ParseTUIStartupOptions(nil, func(key string) string { return env[key] })
 	if err != nil {
 		t.Fatalf("hubstart.ParseTUIStartupOptions: %v", err)
 	}
-	if opts.HubAddr != env["SERF_HUB_ADDR"] || opts.HubBin != env["SERF_HUB_BIN"] || opts.StateDir != env["SERF_STATE_DIR"] || opts.LogFile != env["SERF_TUI_LOG_FILE"] {
+	if opts.HubAddr != env["EVENER_HUB_ADDR"] || opts.HubBin != env["EVENER_HUB_BIN"] || opts.StateDir != env["EVENER_STATE_DIR"] || opts.LogFile != env["EVENER_TUI_LOG_FILE"] {
 		t.Fatalf("options=%+v", opts)
 	}
 }
 
 func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 	env := map[string]string{
-		"SERF_HUB_ADDR":     "http://env-hub:9180",
-		"SERF_HUB_BIN":      "/env/serf-hub",
-		"SERF_STATE_DIR":    "/env/state/serf",
-		"SERF_TUI_LOG_FILE": "/env/serf-tui.log",
+		"EVENER_HUB_ADDR":     "http://env-hub:9180",
+		"EVENER_HUB_BIN":      "/env/serf-hub",
+		"EVENER_STATE_DIR":    "/env/state/serf",
+		"EVENER_TUI_LOG_FILE": "/env/serf-tui.log",
 	}
 	opts, err := hubstart.ParseTUIStartupOptions([]string{
 		"--hub-addr", "http://flag-hub:9180",
@@ -90,7 +90,7 @@ func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
 	t.Cleanup(func() { os.Stderr = origStderr })
 
 	_, parseErr := hubstart.ParseTUIStartupOptions([]string{"--help"}, func(key string) string {
-		if key == "SERF_HUB_ADDR" {
+		if key == "EVENER_HUB_ADDR" {
 			return "http://env-hub:9180"
 		}
 		return ""

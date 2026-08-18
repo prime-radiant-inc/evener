@@ -72,26 +72,26 @@ func TestWebServesSPAForPageRoutes(t *testing.T) {
 	}
 }
 
-// TestSerfHubWebEnvIsDead pins that SERF_HUB_WEB no longer gates anything: with
+// TestSerfHubWebEnvIsDead pins that EVENER_HUB_WEB no longer gates anything: with
 // newWebEnabled() removed, every page route serves the SPA shell regardless of
 // the env var's value (unset/empty, "new", or garbage).
 func TestSerfHubWebEnvIsDead(t *testing.T) {
 	s := newTestWebServerWithDist(t, spaDist())
 	var bodies []string
 	for _, v := range []string{"", "new", "garbage"} {
-		t.Setenv("SERF_HUB_WEB", v)
+		t.Setenv("EVENER_HUB_WEB", v)
 		rr := authedGet(t, s, "/")
 		if rr.Code != http.StatusOK {
-			t.Fatalf("SERF_HUB_WEB=%q: code=%d, want 200", v, rr.Code)
+			t.Fatalf("EVENER_HUB_WEB=%q: code=%d, want 200", v, rr.Code)
 		}
 		if !strings.Contains(rr.Body.String(), `id="root"`) {
-			t.Fatalf("SERF_HUB_WEB=%q: not the SPA shell: %q", v, rr.Body.String())
+			t.Fatalf("EVENER_HUB_WEB=%q: not the SPA shell: %q", v, rr.Body.String())
 		}
 		bodies = append(bodies, rr.Body.String())
 	}
 	for i := 1; i < len(bodies); i++ {
 		if bodies[i] != bodies[0] {
-			t.Fatalf("SERF_HUB_WEB value changed the response: %q vs %q", bodies[i], bodies[0])
+			t.Fatalf("EVENER_HUB_WEB value changed the response: %q vs %q", bodies[i], bodies[0])
 		}
 	}
 }

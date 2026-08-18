@@ -34,7 +34,7 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-floors_file="${SERF_COVUNION_FLOORS:-$repo_root/scripts/covunion-floors.txt}"
+floors_file="${EVENER_COVUNION_FLOORS:-$repo_root/scripts/covunion-floors.txt}"
 modules=". agent llm auth envvars invariant identifier fuzz"
 tolerance="0.5"
 check=false

@@ -11,7 +11,7 @@ Live end-to-end, real provider (billed).
 ## Pre-state
 
 Same harness as `worktree-create-and-orient`: fresh serf binary, hermetic repo
-with a committed `main.go`, isolated `SERF_STATE_DIR` with config symlinked.
+with a committed `main.go`, isolated `EVENER_STATE_DIR` with config symlinked.
 
 ## Steps
 

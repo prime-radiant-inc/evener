@@ -19,7 +19,7 @@ that creates them, or (deterministic) drive the tool via a scripted prompt:
 2. `create work-lane`, add a line to README.md and commit inside it, then
    `exit`.
 
-Both now exist under `$SERF_STATE_DIR/worktrees/<projectid>/`, unlocked (the
+Both now exist under `$EVENER_STATE_DIR/worktrees/<projectid>/`, unlocked (the
 session exited both).
 
 ## Steps

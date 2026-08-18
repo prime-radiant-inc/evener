@@ -39,13 +39,13 @@ The release installer downloads the matching GitHub release archive, installs
 Install a specific tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=v1.2.3 sh
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env EVENER_INSTALL_VERSION=v1.2.3 sh
 ```
 
 Install the latest successful build from `main`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=snapshot sh
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env EVENER_INSTALL_VERSION=snapshot sh
 ```
 
 Override the install prefix, using `sudo` for system-owned paths:
@@ -172,14 +172,14 @@ echo 'Return JSON: {"ok": true}' | ./llmcall --provider openai --model gpt-5-min
 
 `llmcall` resolves provider/model from env if omitted:
 
-- `LLM_PROVIDER` or `SERF_PROVIDER`
-- `LLM_MODEL` or `SERF_MODEL`
+- `LLM_PROVIDER` or `EVENER_PROVIDER`
+- `LLM_MODEL` or `EVENER_MODEL`
 
 ### Provider and model
 
 Serf takes a provider-qualified model in one value: `--model <provider/model>`. Providers: `openai`, `anthropic`, `google`, `minimax`, `openrouter`, `openrouter-anthropic`, `kimi`, `glm`, `ollama`.
 
-Use `--model` or set `SERF_MODEL` to the same `provider/model` format.
+Use `--model` or set `EVENER_MODEL` to the same `provider/model` format.
 
 For local models via Ollama, see [docs/ollama.md](docs/ollama.md).
 
@@ -190,9 +190,9 @@ variables:
 
 | Variable | Description |
 |---|---|
-| `SERF_MODEL` | Default model as `provider/model` (used when `--model` is omitted) |
-| `SERF_REASONING_EFFORT` | Default reasoning effort |
-| `SERF_PROVIDERS_CONFIG` | Path to `providers.toml` |
+| `EVENER_MODEL` | Default model as `provider/model` (used when `--model` is omitted) |
+| `EVENER_REASONING_EFFORT` | Default reasoning effort |
+| `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml` |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GEMINI_API_KEY` | Google Gemini API key |

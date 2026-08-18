@@ -311,8 +311,8 @@ func TestAdapter_CountInputTokens_HTTPErrorMapping(t *testing.T) {
 }
 
 func TestAdapter_Integration_CountInputTokens(t *testing.T) {
-	if os.Getenv("SERF_KIMI_E2E") != "1" {
-		t.Skip("set SERF_KIMI_E2E=1 to run live Kimi e2e tests")
+	if os.Getenv("EVENER_KIMI_E2E") != "1" {
+		t.Skip("set EVENER_KIMI_E2E=1 to run live Kimi e2e tests")
 	}
 	if testing.Short() {
 		t.Skip("skipping live Kimi e2e test in short mode")
@@ -321,7 +321,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 	if key == "" {
 		t.Skip("KIMI_API_KEY not set")
 	}
-	model := strings.TrimSpace(os.Getenv("SERF_KIMI_E2E_MODEL"))
+	model := strings.TrimSpace(os.Getenv("EVENER_KIMI_E2E_MODEL"))
 	if model == "" {
 		model = "kimi-k2.6"
 	}

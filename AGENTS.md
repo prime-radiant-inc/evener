@@ -15,7 +15,7 @@ Use this boundary:
   loops, tool execution, transcript writes, event emission, goal continuation
   routing, hook dispatch, and prompt composition.
 - Model behavior or provider API behavior: keep it live, but require explicit
-  opt-in such as `SERF_LIVE_TESTS=1` or `SERF_*_E2E=1` in addition to the
+  opt-in such as `EVENER_LIVE_TESTS=1` or `EVENER_*_E2E=1` in addition to the
   provider credential.
 
 A provider API key by itself must never cause default tests to issue live

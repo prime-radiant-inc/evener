@@ -81,7 +81,7 @@ func TestMCPStdioServerConfined(t *testing.T) {
 // (its provider API key et al.) from the parent environment, but a secret the
 // server config sets explicitly is deliberate configuration and must survive.
 func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
-	t.Setenv("SERF_AMBIENT_API_KEY", "sk-ambient-leak")
+	t.Setenv("EVENER_AMBIENT_API_KEY", "sk-ambient-leak")
 	cfg := mcpconfig.ServerConfig{
 		Name:    "s",
 		Type:    "stdio",
@@ -96,7 +96,7 @@ func TestMCPStdioServerScrubsAmbientSecrets(t *testing.T) {
 	ct := tr.(*mcpsdk.CommandTransport)
 	joined := strings.Join(ct.Command.Env, "\n")
 
-	if strings.Contains(joined, "SERF_AMBIENT_API_KEY=") {
+	if strings.Contains(joined, "EVENER_AMBIENT_API_KEY=") {
 		t.Errorf("an ambient API key must be scrubbed from a confined MCP server: %v", ct.Command.Env)
 	}
 	// A cfg.Env var whose NAME looks secret is explicit configuration, not an

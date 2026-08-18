@@ -8,7 +8,7 @@ import (
 // FuzzCmdutilParsers drives cmdutil's two real string parsers. The selector bit
 // picks between ParseModelRef ("provider/model", with a Qualified() round-trip
 // oracle) and ParseAllowedDecisions (JSON-array-or-CSV decode of the
-// SERF_ALLOWED_DECISIONS value). Oracle: no-panic floor plus, for a successful
+// EVENER_ALLOWED_DECISIONS value). Oracle: no-panic floor plus, for a successful
 // ParseModelRef, Qualified()→ParseModelRef must be a fixed point.
 func FuzzCmdutilParsers(f *testing.F) {
 	seeds := []struct {

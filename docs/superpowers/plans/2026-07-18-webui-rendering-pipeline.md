@@ -1659,5 +1659,5 @@ git commit -m "renderer: rAF-throttled scroll handler + cached error anchors"
 ## Final verification (after Task 15)
 
 - [ ] Full gate: `make build-hub && cmd/evener-hub/jstest/run-all.sh && go test ./cmd/evener-hub`
-- [ ] Manual smoke with live assets: `SERF_HUB_ASSETS_DIR=$PWD/cmd/evener-hub ./serf-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
+- [ ] Manual smoke with live assets: `EVENER_HUB_ASSETS_DIR=$PWD/cmd/evener-hub ./serf-hub` (dev loop per design-system §10), open a streaming session at 1440px and 390px: streaming is smooth, long messages flip to raw tail and finalize formatted, interrupted turns finalize, scroll-up during streaming doesn't jump, session open doesn't stall.
 - [ ] Playwright before/after screenshots (390/768/1100/1440/2560 × dark) archived to `/tmp/webui-study/after/` for the visual review with the product owner.

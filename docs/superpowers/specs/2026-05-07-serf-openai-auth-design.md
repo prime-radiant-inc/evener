@@ -210,7 +210,7 @@ Notes:
 The auth subsystem must use the same state-dir resolution rules Serf already uses:
 
 - `--state-dir`
-- `SERF_STATE_DIR`
+- `EVENER_STATE_DIR`
 - XDG-derived default
 
 This keeps auth portable across local machines, containers, and servers.

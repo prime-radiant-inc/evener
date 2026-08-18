@@ -41,7 +41,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
   Pre-state first. The handoff is its run directory, not a port
   (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
-  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
   export HOME="$run/home"
   unset XDG_STATE_HOME
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)

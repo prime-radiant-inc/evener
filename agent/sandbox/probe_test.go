@@ -102,13 +102,13 @@ func TestSeatbeltRequiresDarwin(t *testing.T) {
 }
 
 // TestRealProberOptIn exercises the real host prober, but only when explicitly
-// opted in (SERF_SANDBOX_PROBE_HOST=1). CI unit runs skip it so they never shell
+// opted in (EVENER_SANDBOX_PROBE_HOST=1). CI unit runs skip it so they never shell
 // out to bwrap — probing is off the hermetic unit
 // path. When it does run, it asserts only invariants that hold on any host: the
 // probe returns the true GOOS and never panics.
 func TestRealProberOptIn(t *testing.T) {
-	if os.Getenv("SERF_SANDBOX_PROBE_HOST") != "1" {
-		t.Skip("set SERF_SANDBOX_PROBE_HOST=1 to probe the real host")
+	if os.Getenv("EVENER_SANDBOX_PROBE_HOST") != "1" {
+		t.Skip("set EVENER_SANDBOX_PROBE_HOST=1 to probe the real host")
 	}
 	facts := RealProber{}.Probe()
 	if facts.OS == "" {

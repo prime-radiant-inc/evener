@@ -16,7 +16,7 @@ import (
 // The existing statedir_test covers flag/SERF/XDG precedence; this covers the
 // default ~/.local/state fallback when both env knobs are unset.
 func TestResolveStateBase_DefaultFallback(t *testing.T) {
-	t.Setenv("SERF_STATE_DIR", "")
+	t.Setenv("EVENER_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	got := ResolveStateBase("")
 	if !strings.HasSuffix(got, filepath.Join(".local", "state")) {

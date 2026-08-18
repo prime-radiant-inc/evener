@@ -8,10 +8,10 @@ import (
 )
 
 // TestMain isolates the entire cmd/evener test package from the developer's real
-// environment. SERF_STATE_DIR is pointed at a throwaway directory so anything
+// environment. EVENER_STATE_DIR is pointed at a throwaway directory so anything
 // resolving the serf state root (cmdutil.DefaultStateRoot — the
 // providers.toml + credentials.toml location) sees an empty fixture rather than
-// the user's real ~/.serf. SERF_PROVIDERS_CONFIG is cleared so a stray value in
+// the user's real ~/.serf. EVENER_PROVIDERS_CONFIG is cleared so a stray value in
 // the dev shell cannot leak in; tests that need specific provider config set it
 // (and OPENAI_BASE_URL / provider key envs) explicitly.
 func TestMain(m *testing.M) {
@@ -35,12 +35,12 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
-	os.Setenv("SERF_STATE_DIR", stateDir)
+	os.Setenv("EVENER_STATE_DIR", stateDir)
 	os.Setenv("HOME", envRoot)
 	os.Setenv("XDG_CONFIG_HOME", envRoot+"/config")
 	os.Setenv("XDG_STATE_HOME", envRoot+"/state")
 	os.Setenv("XDG_CACHE_HOME", envRoot+"/cache")
-	os.Unsetenv("SERF_PROVIDERS_CONFIG")
+	os.Unsetenv("EVENER_PROVIDERS_CONFIG")
 	code := m.Run()
 	os.RemoveAll(stateDir)
 	os.RemoveAll(envRoot)

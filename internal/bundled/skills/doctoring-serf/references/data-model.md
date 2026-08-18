@@ -34,7 +34,7 @@ durable state only; it is not a live monitor.
 
 ## State-dir layout
 
-The base resolves with serf's precedence: `--state-dir` flag › `SERF_STATE_DIR`
+The base resolves with serf's precedence: `--state-dir` flag › `EVENER_STATE_DIR`
 env › `$XDG_STATE_HOME` › `~/.local/state` (there is **no** `SERF_STATE_HOME` —
 it was never read). Under an XDG home the layout is:
 
@@ -64,7 +64,7 @@ it was never read). Under an XDG home the layout is:
 - **the client-mutation store is a third shape again**: a flat `<SID>.json` in a
   bucket-level `mutations/` dir that is a **sibling** of `sessions/`, not a file
   under it (`clientMutationFilePath`).
-- When `SERF_STATE_DIR` / `--state-dir` is set, that path **is** the bucket
+- When `EVENER_STATE_DIR` / `--state-dir` is set, that path **is** the bucket
   (sessions sit directly under it — no `serf/projects/<hash>` layer). This is the
   E2E / scratch-root shape.
 

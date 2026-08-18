@@ -15,7 +15,7 @@ Two stacked branches off `main` (tip `d3114c9` at session start; advanced to `d3
   - D-3: `POST /shutdown` endpoint on `server.Server` wired to the daemon's signal-cancel.
   - D-4: New top-level `rendezvous` package; daemon writes `~/.serf/run/<pid>.json` on bind, removes on graceful shutdown. SIGTERM now triggers the cleanup path.
   - D-5: `working_dir` exposed on `/status`.
-  - All D items have unit tests; an integration test under `cmd/evener/serve_test.go` (skip-by-default, requires `SERF_TEST_PROVIDER`/`SERF_TEST_MODEL` + API key) walks the rendezvous lifecycle end-to-end.
+  - All D items have unit tests; an integration test under `cmd/evener/serve_test.go` (skip-by-default, requires `EVENER_TEST_PROVIDER`/`EVENER_TEST_MODEL` + API key) walks the rendezvous lifecycle end-to-end.
 
 - **`serf-hub`** (30 commits, branched off Phase A) — Phase B: the `cmd/evener-hub` sibling binary.
   - 22 implementation commits per the plan in `docs/superpowers/plans/2026-05-07-serf-hub.md`, plus 1 review-fix commit (C1/C2/C3) and 7 follow-up review-fix commits (C4, I1, I2, I3, I5, two minor refactors).

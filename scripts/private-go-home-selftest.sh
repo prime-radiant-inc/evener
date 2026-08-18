@@ -14,7 +14,7 @@ ambient_config="$work/ambient-config"
 ambient_cache="$work/ambient-cache"
 ambient_goenv="$ambient_config/go/env"
 mkdir -p "$ambient_home" "$(dirname "$ambient_goenv")" "$ambient_cache"
-printf 'SERF_MARKER=ambient\n' >"$ambient_goenv"
+printf 'EVENER_MARKER=ambient\n' >"$ambient_goenv"
 
 owner="$work/default-owner"
 (
@@ -26,7 +26,7 @@ owner="$work/default-owner"
 	export HOME XDG_CONFIG_HOME XDG_CACHE_HOME GOENV
 	serf_prepare_private_go_home "$owner"
 	printf '%s\n' "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$GOENV" "$GOPATH" "$GOCACHE" >"$work/default.env"
-	printf 'SERF_MARKER=private\n' >>"$GOENV"
+	printf 'EVENER_MARKER=private\n' >>"$GOENV"
 )
 assert_eq "$(sed -n '1p' "$work/default.env")" "$owner/home" "default HOME belongs to the caller's lifecycle root"
 assert_eq "$(sed -n '2p' "$work/default.env")" "$owner/xdg-config" "default XDG config belongs to the lifecycle root"
@@ -39,8 +39,8 @@ case "$(uname -s)" in
 	*) want_gocache="$ambient_cache/go-build" ;;
 esac
 assert_eq "$(sed -n '7p' "$work/default.env")" "$want_gocache" "default GOCACHE keeps the ambient reusable build cache"
-assert_eq "$(cat "$ambient_goenv")" "SERF_MARKER=ambient" "writes through copied GOENV cannot mutate ambient Go settings"
-assert_has "$owner/go-env" "SERF_MARKER=private" "the owned GOENV copy remains writable to the child"
+assert_eq "$(cat "$ambient_goenv")" "EVENER_MARKER=ambient" "writes through copied GOENV cannot mutate ambient Go settings"
+assert_has "$owner/go-env" "EVENER_MARKER=private" "the owned GOENV copy remains writable to the child"
 
 configured_goenv="$work/configured-go-env"
 printf 'GOPATH=/obsolete\nGOPATH=\nGOPATH=/configured/gopath\nGOCACHE=/configured/gocache\n' >"$configured_goenv"
@@ -101,7 +101,7 @@ linux_cache="$work/linux-cache"
 mkdir -p "$linux_bin" "$linux_config/go" "$linux_cache"
 printf '#!/bin/sh\nprintf "Linux\\n"\n' >"$linux_bin/uname"
 chmod +x "$linux_bin/uname"
-printf 'SERF_LINUX_XDG=preserved\n' >"$linux_config/go/env"
+printf 'EVENER_LINUX_XDG=preserved\n' >"$linux_config/go/env"
 owner="$work/linux-owner"
 (
 	unset HOME GOENV GOPATH GOCACHE
@@ -113,7 +113,7 @@ owner="$work/linux-owner"
 assert_eq "$(sed -n '1p' "$work/linux.env")" "$owner/home" "Linux without ambient HOME still receives an owned HOME"
 assert_eq "$(sed -n '2p' "$work/linux.env")" "$owner/go-env" "Linux without HOME copies GOENV from XDG config"
 assert_eq "$(sed -n '3p' "$work/linux.env")" "$linux_cache/go-build" "Linux without HOME preserves the XDG Go build cache"
-assert_has "$owner/go-env" "SERF_LINUX_XDG=preserved" "Linux XDG Go settings reach the owned copy"
+assert_has "$owner/go-env" "EVENER_LINUX_XDG=preserved" "Linux XDG Go settings reach the owned copy"
 
 blocker="$work/not-a-directory"
 printf 'blocker\n' >"$blocker"

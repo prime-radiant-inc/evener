@@ -8,7 +8,7 @@ Ran the five worktree scenario cards against real models to judge how the tool
 gateway returned `status=500 An internal error occurred` on every call — a
 provider outage, unrelated to the tool; GLM contributed no data.
 
-**Method:** each run is a hermetic temp git repo + isolated `SERF_STATE_DIR`
+**Method:** each run is a hermetic temp git repo + isolated `EVENER_STATE_DIR`
 (config symlinked from `~/.serf`, mutable state separate), driven
 non-interactively. Assertions cross-checked against on-disk truth (sidecars,
 `git worktree list`, leftover branches), not just the agent's claims.

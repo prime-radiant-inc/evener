@@ -8,7 +8,7 @@ canceled by Jesse on 2026-07-17, so steps that consume
 
 **Goal:** Give every live root and child session one private temporary directory with truthful lifecycle exposure, and add concise Serf-owned guidance for shared-workspace isolation, verification, compaction, and repeated review loops.
 
-**Architecture:** Promote the existing sandbox `SessionTmp` primitive into a universal `SessionScratch` owned by each local session execution environment. A session-preserving `WithWorkingDirectory` view shares the path and process tracker without gaining cleanup ownership, while a new child-session constructor gets a distinct scratch and process tracker; sandbox wrappers, shells, hooks, and stdio MCP servers all receive the same `TMPDIR` and `SERF_SCRATCH_DIR`. Expose the live path through a non-serialized `EnvironmentInfo` field and one focused prompt component, keep orchestration posture in focused prompt sections, and return a non-blocking warning on a second concurrently running shared-workspace delegate.
+**Architecture:** Promote the existing sandbox `SessionTmp` primitive into a universal `SessionScratch` owned by each local session execution environment. A session-preserving `WithWorkingDirectory` view shares the path and process tracker without gaining cleanup ownership, while a new child-session constructor gets a distinct scratch and process tracker; sandbox wrappers, shells, hooks, and stdio MCP servers all receive the same `TMPDIR` and `EVENER_SCRATCH_DIR`. Expose the live path through a non-serialized `EnvironmentInfo` field and one focused prompt component, keep orchestration posture in focused prompt sections, and return a non-blocking warning on a second concurrently running shared-workspace delegate.
 
 **Tech Stack:** Go 1.x, local execution environments, Serf sandbox wrappers, embedded Go templates, JSON tool results, deterministic scripted-provider tests.
 
@@ -61,11 +61,11 @@ projects.
 - Create `agent/sandbox/session_scratch_lock_windows.go`: acquire/release the same lease with `golang.org/x/sys/windows`.
 - Modify `agent/sandbox/fuzz_contract_structural_test.go`: mechanically follow the allocator's renamed test seams and sweep helper.
 - Modify `agent/sandbox/fuzz_policy_assembly_test.go`: mechanically follow the renamed allocator/type/sweep helper.
-- Modify `agent/sandbox/env_floor.go`: add the shared environment override that sets `TMPDIR` and `SERF_SCRATCH_DIR` to one path without changing cache policy.
+- Modify `agent/sandbox/env_floor.go`: add the shared environment override that sets `TMPDIR` and `EVENER_SCRATCH_DIR` to one path without changing cache policy.
 - Modify `agent/sandbox/env_floor_test.go`: prove both scratch variables agree, all current security filters remain enforced, and `HOME`/durable caches remain unchanged except under the pre-existing session-private sandbox cache strategy.
-- Modify `envvars/envvars.go`: register `SERF_SCRATCH_DIR` and use its `envvars.Var` at call sites.
+- Modify `envvars/envvars.go`: register `EVENER_SCRATCH_DIR` and use its `envvars.Var` at call sites.
 - Modify `envvars/envvars_test.go`: keep the supported-variable registry and ordering audit green.
-- Modify `docs/environment.md`: document `SERF_SCRATCH_DIR` as Serf-provided, session-scoped, private, and non-durable.
+- Modify `docs/environment.md`: document `EVENER_SCRATCH_DIR` as Serf-provided, session-scoped, private, and non-durable.
 - Modify `agent/execenv/execenv.go`: define the optional scratch capability and its nil-safe path helper.
 - Modify `agent/execenv/local.go`: provision scratch at environment initialization, expose it, preserve it across worktree re-rooting, create distinct child-session environments, inject both variables into commands, and remove scratch only after tracked processes stop.
 - Modify `agent/execenv/local_test.go`: cover universal unsandboxed provisioning, workspace-aware allocation, environment values, unchanged `HOME`/caches, and close cleanup.
@@ -165,7 +165,7 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string
 
 // envvars/envvars.go
 var SERFScratchDir = Var{
-    Name:       "SERF_SCRATCH_DIR",
+    Name:       "EVENER_SCRATCH_DIR",
     Summary:    "Session-scoped private scratch directory provided to agent subprocesses.",
     Visibility: Internal,
 }
@@ -215,14 +215,14 @@ func TestSessionScratchCleanupRefusesUnownedPath(t *testing.T) {
 func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
     in := []string{
         "TMPDIR=/ambient/tmp",
-        "SERF_SCRATCH_DIR=/ambient/serf",
+        "EVENER_SCRATCH_DIR=/ambient/serf",
         "HOME=/home/jesse",
         "GOCACHE=/cache/go",
         "npm_config_cache=/cache/npm",
         "CARGO_HOME=/cache/cargo",
     }
     out := ApplySessionScratchEnv(in, "/tmp/serf-sandbox-owned")
-    for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+    for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
         if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
             t.Fatalf("%s = %q, want session scratch", name, got)
         }
@@ -381,12 +381,12 @@ In `sweepCrashedSessionScratch`, keep the age/prefix/directory checks, then call
 
 Preserve `ApplyEnvFloor`'s current `floorDrops`, external-`KUBECONFIG`, and cache-strategy filtering exactly. After that existing filtering loop, call `ApplySessionScratchEnv(out, sessionScratch)` so both reserved scratch variables are replaced together; then append the same pre-existing cache redirects only for `CacheSessionPrivate`. Do not redirect `HOME`, `GOCACHE`, npm, or Cargo merely because scratch exists. Make the previously written `TestEnvFloorScratchPreservesSecurityFilters` pass without weakening or duplicating any current filter.
 
-- [ ] **Step 4: Register and document `SERF_SCRATCH_DIR`**
+- [ ] **Step 4: Register and document `EVENER_SCRATCH_DIR`**
 
 Add `SERFScratchDir` to `allVars` beside the other internal Serf variables. Add this row to the internal/provided-variable table in `docs/environment.md`:
 
 ```markdown
-| `SERF_SCRATCH_DIR` | Serf-provided private scratch directory for one live session. It may be deleted when the session closes or Serf restarts; move durable artifacts into the workspace or another durable location. |
+| `EVENER_SCRATCH_DIR` | Serf-provided private scratch directory for one live session. It may be deleted when the session closes or Serf restarts; move durable artifacts into the workspace or another durable location. |
 ```
 
 Do not describe it as a user configuration input, persistence location, handoff store, `HOME`, or build-cache override.
@@ -413,7 +413,7 @@ git add agent/sandbox/session_tmp.go agent/sandbox/session_scratch.go \
 git commit -m "feat(execenv): promote session scratch primitive
 
 Rename the existing sandbox-owned temporary directory into the universal
-session scratch lifecycle. Set TMPDIR and SERF_SCRATCH_DIR together while
+session scratch lifecycle. Set TMPDIR and EVENER_SCRATCH_DIR together while
 leaving HOME and durable build-cache policy unchanged, and retain the
 prefix-limited 24-hour crash sweep."
 ```
@@ -491,7 +491,7 @@ func TestLocalExecutionEnvironmentInitializesUniversalScratch(t *testing.T) {
         t.Fatal("Initialize did not provision scratch")
     }
     res, err := env.ExecCommand(context.Background(),
-        `printf '%s\n%s\n%s\n%s\n' "$TMPDIR" "$SERF_SCRATCH_DIR" "$HOME" "$GOCACHE"`,
+        `printf '%s\n%s\n%s\n%s\n' "$TMPDIR" "$EVENER_SCRATCH_DIR" "$HOME" "$GOCACHE"`,
         5000, "", nil)
     if err != nil {
         t.Fatalf("ExecCommand: %v", err)
@@ -524,7 +524,7 @@ func TestSessionEnvironmentScratchOwnership(t *testing.T) {
 }
 ```
 
-Update the existing teardown-order test so a tracked process writes a sentinel in `SERF_SCRATCH_DIR` from its TERM handler. Assert the sentinel exists when TERM runs and the directory is gone only after `Cleanup` returns.
+Update the existing teardown-order test so a tracked process writes a sentinel in `EVENER_SCRATCH_DIR` from its TERM handler. Assert the sentinel exists when TERM runs and the directory is gone only after `Cleanup` returns.
 
 - [ ] **Step 2: Write failing real-session uniqueness/restore tests**
 
@@ -538,11 +538,11 @@ func TestSessionScratchSpawnFailureAndParentTeardownCleanOwnedDirectories(t *tes
 func TestSessionCloseKeepsScratchThroughHooksAndMCPShutdown(t *testing.T)
 ```
 
-The first test creates a root plus two blocked background delegates. Read each retained child environment through its transcript ref and assert three facts: root/child/sibling paths are non-empty and pairwise distinct, each path is outside the Git worktree, and each child shell sees its own `TMPDIR` and `SERF_SCRATCH_DIR`. In a separate deterministic sandbox-wrapper test, construct two enforced child environments with the existing policy fixture and assert each wrapper exposes its own scratch path and has no bind or writable-path entry for its sibling's scratch. Do not require a platform sandbox backend in the default test suite.
+The first test creates a root plus two blocked background delegates. Read each retained child environment through its transcript ref and assert three facts: root/child/sibling paths are non-empty and pairwise distinct, each path is outside the Git worktree, and each child shell sees its own `TMPDIR` and `EVENER_SCRATCH_DIR`. In a separate deterministic sandbox-wrapper test, construct two enforced child environments with the existing policy fixture and assert each wrapper exposes its own scratch path and has no bind or writable-path entry for its sibling's scratch. Do not require a platform sandbox backend in the default test suite.
 
 The fork test uses the existing `ForkSession` fixture path to create fork metadata, writes a marker in the parent scratch, restores the fork into a fresh local environment, and asserts the fork path differs and contains no marker. The ordinary restore test closes a session after writing a marker, restores its metadata into a fresh local environment, and makes the same new-empty-path assertion.
 
-Write `TestSandboxInvocationGrantPreservesSessionScratch` in `agent/execenv/sandbox_reroot_test.go`: initialize a sandboxed owner, create a one-invocation grant, and assert its `SessionScratchDir`, `TMPDIR`, and `SERF_SCRATCH_DIR` equal the owner; cleaning/discarding the grant must leave the owner directory present.
+Write `TestSandboxInvocationGrantPreservesSessionScratch` in `agent/execenv/sandbox_reroot_test.go`: initialize a sandboxed owner, create a one-invocation grant, and assert its `SessionScratchDir`, `TMPDIR`, and `EVENER_SCRATCH_DIR` equal the owner; cleaning/discarding the grant must leave the owner directory present.
 
 For `TestSessionCloseKeepsScratchThroughHooksAndMCPShutdown`, use a real scratch-owning local environment, a deterministic recording command-hook runtime, and a fake stdio MCP transport. The hook and transport `Close` each `os.Stat` the exact scratch path and append to a channel-backed order log; the environment cleanup wrapper appends after process cleanup. Require `hook < mcp-close < env-cleanup`, both stat checks to succeed, and the directory to be absent only after `Session.Close` returns. Do not use sleeps.
 
@@ -803,7 +803,7 @@ func commandEnvValue(env []string, name string) string {
     return ""
 }
 
-for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+for _, name := range []string{"TMPDIR", "EVENER_SCRATCH_DIR"} {
     if got := commandEnvValue(cmd.Env, name); got != scratch {
         t.Fatalf("%s = %q, want %q", name, got, scratch)
     }
@@ -938,7 +938,7 @@ git add agent/internal/hooks/hooks.go agent/internal/hooks/command_runtime.go \
   agent/internal/mcp/sandbox_test.go agent/session_init.go
 git commit -m "feat(agent): propagate session scratch to subprocesses
 
-Apply the same TMPDIR and SERF_SCRATCH_DIR to shell-adjacent command hooks and
+Apply the same TMPDIR and EVENER_SCRATCH_DIR to shell-adjacent command hooks and
 stdio MCP servers, before optional sandbox confinement, so every subprocess
 uses its owning live session's scratch path."
 ```
@@ -1017,7 +1017,7 @@ func TestSessionScratchPromptSectionsExposeLifecycle(t *testing.T) {
 }
 ```
 
-In the real lifecycle test, assert `sess.envInfo.ScratchDir`, `execenv.SessionScratchDir(sess.currentEnv())`, the `TMPDIR`/`SERF_SCRATCH_DIR` values returned by a shell command, and the path in the focused prompt data are byte-for-byte equal.
+In the real lifecycle test, assert `sess.envInfo.ScratchDir`, `execenv.SessionScratchDir(sess.currentEnv())`, the `TMPDIR`/`EVENER_SCRATCH_DIR` values returned by a shell command, and the path in the focused prompt data are byte-for-byte equal.
 
 - [ ] **Step 2: Run focused tests and record the expected red failure**
 
@@ -1423,7 +1423,7 @@ IMPLEMENTATION_BASE="$(git rev-parse "$base_ref")"
 git diff --unified=0 "$IMPLEMENTATION_BASE"..HEAD -- agent envvars docs/environment.md | \
   rg -n 'protected_paths|automatic.*worktree|auto.*compact|cycle detector|HOME=' || true
 git diff --unified=0 "$IMPLEMENTATION_BASE"..HEAD -- agent envvars docs/environment.md | \
-  rg -n 'SERF_SCRATCH_DIR|SessionScratch|NewSessionEnvironment|shared workspace'
+  rg -n 'EVENER_SCRATCH_DIR|SessionScratch|NewSessionEnvironment|shared workspace'
 git diff --stat "$IMPLEMENTATION_BASE"..HEAD
 git status --short
 ```
@@ -1432,7 +1432,7 @@ Expected:
 
 - `protected_paths` appears only in approved explanatory prompt/test text stating that no parameter is added.
 - No production path automatically requests worktree isolation, blocks a shared delegate, persists scratch, redirects `HOME`, terminates cycles, or calls compaction at task boundaries.
-- `SERF_SCRATCH_DIR` is sourced from `envvars.SERFScratchDir`, not duplicated raw throughout production Go code.
+- `EVENER_SCRATCH_DIR` is sourced from `envvars.SERFScratchDir`, not duplicated raw throughout production Go code.
 - The scratch sweep requires both age and an acquirable OS lease; no old live directory can be removed merely because its mtime crossed 24 hours.
 - Base selection rejects lexical and canonical paths inside the active workspace and uses only an outside OS temp/cache candidate.
 - Candidate OS temp/cache and caller-provided base directories retain their original modes; only the `MkdirTemp`-created Serf scratch child is chmodded to `0700`.
@@ -1484,7 +1484,7 @@ If the gate passes without corrections, make no empty commit.
 - [ ] An ambient/explicit scratch base inside the workspace is rejected in favor of a canonical OS cache/temp base outside it; if no safe candidate exists, provisioning fails without creating scratch in the workspace.
 - [ ] Allocation never chmods `os.TempDir()`, the OS cache directory, or a caller-provided base; it creates and chmods only the Serf-owned child directory.
 - [ ] Parent, child, sibling, and restored fork sessions have distinct scratch paths.
-- [ ] `TMPDIR`, `SERF_SCRATCH_DIR`, runtime-only `EnvironmentInfo.ScratchDir`, sandbox wrapper, subprocesses, and prompt data agree on the exact owning path.
+- [ ] `TMPDIR`, `EVENER_SCRATCH_DIR`, runtime-only `EnvironmentInfo.ScratchDir`, sandbox wrapper, subprocesses, and prompt data agree on the exact owning path.
 - [ ] Worktree re-rooting and `WithSandboxInvocationGrant` within one live session preserve scratch and prompt-cache/environment stability without transferring cleanup ownership.
 - [ ] SessionEnd hooks and stdio MCP shutdown complete while scratch still exists; tracked-process cleanup and scratch disposal happen afterward.
 - [ ] Normal close, parent teardown, child dispose, spawn/construction failure, every unadopted restored-delegate exit, and `discardRestoredCandidate` remove owned scratch after process shutdown.

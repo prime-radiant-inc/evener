@@ -67,16 +67,16 @@ var scenarioHomeApprovedFiles = map[string]string{
 		"the real ~/.serf.",
 	"test/scenarios/model-switch-providers-live.md": "every ~/.serf mention is " +
 		"either the standard \"so the live ~/.serf/providers.toml is untouched\" " +
-		"warning (this card isolates via SERF_PROVIDERS_CONFIG) or retrospective " +
+		"warning (this card isolates via EVENER_PROVIDERS_CONFIG) or retrospective " +
 		"prose in a dated Results section reporting what a past run found on " +
 		"that host — neither is an instruction to touch the real path now.",
 	"test/scenarios/reasoning-effort-providers.md": "the remaining mention " +
 		"(after kata 93f5 removed the KIMI_KEY-from-real-credentials.toml read) " +
 		"is the standard \"so the live ~/.serf/providers.toml is untouched\" " +
-		"warning — this card isolates via SERF_PROVIDERS_CONFIG.",
+		"warning — this card isolates via EVENER_PROVIDERS_CONFIG.",
 	"test/scenarios/worktree-create-and-orient.md": "the isolation recipe here " +
 		"is READ-ONLY config symlinked from ~/.serf (providers.toml/" +
-		"credentials.toml/auth-token) into an isolated SERF_STATE_DIR, mutable " +
+		"credentials.toml/auth-token) into an isolated EVENER_STATE_DIR, mutable " +
 		"state kept separate — never writes to the real ~/.serf. Doesn't say " +
 		"\"isolated\" verbatim, which is why the marker below misses it.",
 	"test/scenarios/worktree-ergonomics-findings.md": "same read-only " +
@@ -101,17 +101,17 @@ var scenarioHomeOwnIsolationMarker = regexp.MustCompile(
 // scenarioStateRootIsolationMarker matches the other established way to keep a
 // card off the real XDG state root: relocating the state root itself and
 // leaving $HOME alone. This counts only for `~/.local/state/serf` mentions —
-// the `~/.serf` root does NOT move with XDG_STATE_HOME or SERF_STATE_DIR, so a
+// the `~/.serf` root does NOT move with XDG_STATE_HOME or EVENER_STATE_DIR, so a
 // card naming that one still needs a real $HOME isolation marker.
 //
 // It has to match an assignment (`export XDG_STATE_HOME="$run/state"`, an
-// inline `XDG_STATE_HOME="$TH/…"` prefix, `env:{SERF_STATE_DIR:$state}`) or
+// inline `XDG_STATE_HOME="$TH/…"` prefix, `env:{EVENER_STATE_DIR:$state}`) or
 // the flag, never a bare mention of the name: cli-help.md quotes
-// `SERF_STATE_DIR` as one line of `serf-tui --help` output, which established
+// `EVENER_STATE_DIR` as one line of `serf-tui --help` output, which established
 // nothing, and the first version of this pattern handed that card a free pass
 // on the whole state root.
 var scenarioStateRootIsolationMarker = regexp.MustCompile(
-	`(?:XDG_STATE_HOME|SERF_STATE_DIR)\s*[:=]|--state-dir[ =]`,
+	`(?:XDG_STATE_HOME|EVENER_STATE_DIR)\s*[:=]|--state-dir[ =]`,
 )
 
 // scenarioHomeAnchor matches every way a card can name Jesse's real home

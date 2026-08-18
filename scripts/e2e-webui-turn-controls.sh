@@ -245,14 +245,14 @@ mkdir -p "$HOME/.serf"
 # Everything that can redirect serf away from the throwaway $HOME, not just
 # the state dir: an operator with any of these exported would otherwise have
 # this hub read or write their real config, cache, run dir or hub token while
-# the header above promises isolation. SERF_PROVIDERS_CONFIG belongs in this
+# the header above promises isolation. EVENER_PROVIDERS_CONFIG belongs in this
 # list above all: it outranks $HOME/.serf/providers.toml (cmd/evener-hub/main.go,
 # cmd/evener-hub/internal/launchconfig/env.go), so leaving it set would load the
 # operator's real providers instead of fakellm — a network call and a paid
 # request out of a fixture whose whole point is that neither happens.
 unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
-unset SERF_STATE_DIR SERF_RUN_DIR SERF_HUB_TOKEN SERF_HUB_ADDR SERF_HUB_SPAWNED
-unset SERF_PROVIDERS_CONFIG
+unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
+unset EVENER_PROVIDERS_CONFIG
 
 workspace="$run/workspace"
 mkdir -p "$workspace"

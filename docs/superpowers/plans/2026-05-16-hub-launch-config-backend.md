@@ -1945,10 +1945,10 @@ func TestToEnv_BaselineSetsRunStateAndProvider(t *testing.T) {
 	want := map[string]string{
 		"PATH":              "/usr/bin",
 		"FOO":               "bar",
-		"SERF_HUB_SPAWNED":  "1",
-		"SERF_RUN_DIR":      "/run",
-		"SERF_STATE_DIR":    "/state",
-		"SERF_HUB_TOKEN":    "tok",
+		"EVENER_HUB_SPAWNED":  "1",
+		"EVENER_RUN_DIR":      "/run",
+		"EVENER_STATE_DIR":    "/state",
+		"EVENER_HUB_TOKEN":    "tok",
 		"ANTHROPIC_API_KEY": "sk-ant-FROM-FILE",
 	}
 	gotMap := envSliceToMap(got)
@@ -2060,15 +2060,15 @@ var providerEnvVar = map[string]string{
 // overwrite earlier writes.
 func ToEnv(in EnvInputs) []string {
 	out := append([]string{}, in.ParentEnv...)
-	out = setEnv(out, "SERF_HUB_SPAWNED", "1")
+	out = setEnv(out, "EVENER_HUB_SPAWNED", "1")
 	if in.RunDir != "" {
-		out = setEnv(out, "SERF_RUN_DIR", in.RunDir)
+		out = setEnv(out, "EVENER_RUN_DIR", in.RunDir)
 	}
 	if in.StateDir != "" {
-		out = setEnv(out, "SERF_STATE_DIR", in.StateDir)
+		out = setEnv(out, "EVENER_STATE_DIR", in.StateDir)
 	}
 	if in.HubToken != "" {
-		out = setEnv(out, "SERF_HUB_TOKEN", in.HubToken)
+		out = setEnv(out, "EVENER_HUB_TOKEN", in.HubToken)
 	}
 
 	// 2. Credentials store value.

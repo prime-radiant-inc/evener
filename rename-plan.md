@@ -4,7 +4,7 @@
 - Module: `primeradiant.com/evener` → `primeradiant.com/evener` (7 sub-modules: agent, auth, envvars, fuzz, identifier, invariant, llm)
 - Binaries: all 14 mirrored to `evener-*`
 - User data: all paths → evener (`~/.serf`, `~/.config/serf`, `~/.local/state/serf`, `<gitroot>/.serf`, `<prefix>/share/serf/bin`, `$XDG_CACHE_HOME/serf`)
-- Env vars: all `SERF_*` → `EVENER_*`
+- Env vars: all `EVENER_*` → `EVENER_*`
 - AppWire protocol: version bump + wire JSON keys renamed (hard flag day, no wire compat)
 - Generated files: regenerated via `make generate`
 - Prose: all docs, comments, strings rewritten
@@ -17,8 +17,8 @@
 |---|---|---|
 | Go module path | 1653 go files | 4793 |
 | Go symbols (Serf/serf) | ~785 files | 219 cap + 2492 lower |
-| SERF_ env vars (Go) | ~100 files | 551 |
-| SERF_ env vars (non-Go) | ~60 files | 684 |
+| EVENER_ env vars (Go) | ~100 files | 551 |
+| EVENER_ env vars (non-Go) | ~60 files | 684 |
 | User data paths (Go) | ~20 key files | ~50 |
 | Markdown | 800 files | 17,422 |
 | Frontend (ts/tsx/html/css) | 277 files | 2,160 |
@@ -41,7 +41,7 @@
 - Verify: `go build ./...`
 
 **Commit 3: Binary names in Makefile**
-- SERF_INSTALL_BINS, build targets, dist targets, install targets, clean, temp dir names
+- EVENER_INSTALL_BINS, build targets, dist targets, install targets, clean, temp dir names
 - Verify: `make build`
 
 **Commit 4: Self-update & install paths**
@@ -51,11 +51,11 @@
 ### Phase 2: Go Code (sequential, depends on Phase 1)
 
 **Commit 5: Env var registry definitions**
-- envvars.go: rename 23 registered SERF_* Var identifiers + Name strings → EVENER_*
+- envvars.go: rename 23 registered EVENER_* Var identifiers + Name strings → EVENER_*
 - Verify: `go build ./...`
 
 **Commit 6: Env var usage in Go**
-- All SERF_ references in Go → EVENER_ (2 non-registry consts: SERF_LIVE_TESTS, SERF_FUZZ_PERSIST + test/build vars)
+- All EVENER_ references in Go → EVENER_ (2 non-registry consts: EVENER_LIVE_TESTS, EVENER_FUZZ_PERSIST + test/build vars)
 - Verify: `go test ./...`
 
 **Commit 7: Go package clause**
@@ -88,7 +88,7 @@
 ### Phase 3: Scripts & Config (can parallelize after Phase 1)
 
 **Commit 13: Shell scripts**
-- 55 .sh files: SERF_* → EVENER_*, serf → evener
+- 55 .sh files: EVENER_* → EVENER_*, serf → evener
 - Verify: `make test-short`
 
 **Commit 14: Config files (yaml/toml/json/sbpl/tmpl)**
@@ -141,7 +141,7 @@
 ### Phase 7: Final Verification
 
 **Commit 25: Final cleanup & verification**
-- Full grep for remaining `serf`/`Serf`/`SERF_` references
+- Full grep for remaining `serf`/`Serf`/`EVENER_` references
 - Run: `make test`, `make lint`, `make fuzz-seeds`
 - Any stragglers fixed
 - Verify: all gates green

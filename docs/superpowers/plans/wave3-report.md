@@ -147,7 +147,7 @@ go test ./cmd/evener-hub/...  → EXIT=0  (all packages ok; re-run with -count=1
                                         build cache for a genuine second execution, identical)
 ```
 
-Live proof (chrome skill, CDP-driven, against a built `serf-hub` with `SERF_HUB_WEB=new` on a
+Live proof (chrome skill, CDP-driven, against a built `serf-hub` with `EVENER_HUB_WEB=new` on a
 non-default port): merge-restore (a saved 4-tab layout survives a fresh deep-linked page load,
 the new tab appended and focused) and the gesture-back fix (a real back gesture followed by the
 in-app Back button now lands on welcome, not back on the page just left) both confirmed against

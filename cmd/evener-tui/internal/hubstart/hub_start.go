@@ -72,11 +72,11 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 		getenv = os.Getenv
 	}
 	opts := TUIStartupOptions{
-		HubAddr:      EnvDefault(getenv, envvars.SERFHubAddr.Name, DefaultHubAddr),
-		HubBin:       envvars.SERFHubBin.From(getenv),
-		StateDir:     envvars.SERFStateDir.From(getenv),
-		LogFile:      envvars.SERFTUILogFile.From(getenv),
-		AuthToken:    envvars.SERFHubAuthToken.From(getenv),
+		HubAddr:      EnvDefault(getenv, envvars.EVENERHubAddr.Name, DefaultHubAddr),
+		HubBin:       envvars.EVENERHubBin.From(getenv),
+		StateDir:     envvars.EVENERStateDir.From(getenv),
+		LogFile:      envvars.EVENERTUILogFile.From(getenv),
+		AuthToken:    envvars.EVENERHubAuthToken.From(getenv),
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("serf-tui", flag.ContinueOnError)
@@ -87,7 +87,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs.BoolVar(&noAutoStartHub, "no-auto-start-hub", false, "do not start a local hub when unreachable")
 	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Serf state directory")
 	fs.StringVar(&opts.LogFile, "log-file", opts.LogFile, "write startup diagnostics to this file")
-	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, fmt.Sprintf("hub capability token (overrides %s and token file)", envvars.SERFHubAuthToken.Name))
+	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, fmt.Sprintf("hub capability token (overrides %s and token file)", envvars.EVENERHubAuthToken.Name))
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	fs.Usage = func() {
 		// Write failures to the flag usage writer are unactionable.
@@ -106,7 +106,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 			"  %s             default value for --hub-bin\n"+
 			"  %s           default value for --state-dir\n"+
 			"  %s        default value for --log-file\n"+
-			"  %s      default value for --auth-token\n", opts.HubAddr, envvars.SERFHubAuthToken.Name, envvars.SERFHubAddr.Name, envvars.SERFHubBin.Name, envvars.SERFStateDir.Name, envvars.SERFTUILogFile.Name, envvars.SERFHubAuthToken.Name)
+			"  %s      default value for --auth-token\n", opts.HubAddr, envvars.EVENERHubAuthToken.Name, envvars.EVENERHubAddr.Name, envvars.EVENERHubBin.Name, envvars.EVENERStateDir.Name, envvars.EVENERTUILogFile.Name, envvars.EVENERHubAuthToken.Name)
 	}
 	if err := fs.Parse(args); err != nil {
 		return TUIStartupOptions{}, err
@@ -445,7 +445,7 @@ func StartLocalHub(req HubStartRequest) error {
 	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
-			envvars.SERFStateDir.Assignment(req.StateDir),
+			envvars.EVENERStateDir.Assignment(req.StateDir),
 			envvars.XDGStateHome.Assignment(StateHomeForSerfStateDir(req.StateDir)),
 		)
 	}

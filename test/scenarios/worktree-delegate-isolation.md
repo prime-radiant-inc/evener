@@ -13,7 +13,7 @@ Live end-to-end, real provider (billed). Needs delegate capability (default
 
 ## Pre-state
 
-Fresh binary + hermetic repo + isolated `SERF_STATE_DIR` (config symlinked), as
+Fresh binary + hermetic repo + isolated `EVENER_STATE_DIR` (config symlinked), as
 in the other worktree cards.
 
 ## Steps — two runs

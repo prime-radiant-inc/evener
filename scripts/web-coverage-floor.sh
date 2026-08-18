@@ -27,13 +27,13 @@
 # floor files. --bless always rewrites EVERY area, so unlike the Go scripts there
 # is no partial-bless footgun to undo afterward.
 #
-# SERF_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
+# EVENER_WEB_FRONTEND_DIR points this at a throwaway frontend instead of the real
 # one, which is how scripts/web-coverage-floor-selftest.sh exercises it.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-floors_file="${SERF_WEBCOV_FLOORS:-$repo_root/scripts/webcov-floors.txt}"
-frontend="${SERF_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}"
+floors_file="${EVENER_WEBCOV_FLOORS:-$repo_root/scripts/webcov-floors.txt}"
+frontend="${EVENER_WEB_FRONTEND_DIR:-$repo_root/cmd/evener-hub/frontend}"
 tolerance="0.5"
 check=false
 bless=false

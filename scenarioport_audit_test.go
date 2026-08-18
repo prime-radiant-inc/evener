@@ -196,7 +196,7 @@ var scenarioLiteralHostPortAllowedMentions = map[string][]string{
 // checklist) is that nobody picks a port at all — the hub binds
 // 127.0.0.1:0, logs what the kernel gave it, and every consumer reads that
 // back. A sibling card that wants the same hub takes the run directory
-// (`$SERF_E2E_RUN`) and re-derives the port from `$run/hub.log`. So a literal
+// (`$EVENER_E2E_RUN`) and re-derives the port from `$run/hub.log`. So a literal
 // port in a card is, by construction, either a stale pre-68fm recipe or a
 // private rendezvous convention — both of which this test rejects.
 func TestScenarioCardsNeverNameALiteralHostPort(t *testing.T) {
@@ -226,7 +226,7 @@ func TestScenarioCardsNeverNameALiteralHostPort(t *testing.T) {
 		t.Fatalf("scenario cards must never name a host:port with the port already "+
 			"decided — bind `127.0.0.1:0` and read the port back from the hub's own "+
 			"`listening on` line instead (docs/agentic-testing.md \"Setup checklist\"), "+
-			"and hand it to a sibling card through `$SERF_E2E_RUN`/`$run/hub.log` "+
+			"and hand it to a sibling card through `$EVENER_E2E_RUN`/`$run/hub.log` "+
 			"rather than by agreeing on a number. A hand-picked port is a collision "+
 			"domain: two agents running these cards at once contend for one listener. "+
 			"If a line genuinely needs to name a port because a documented ruling "+

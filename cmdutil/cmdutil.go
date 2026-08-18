@@ -180,7 +180,7 @@ func ParseModelRef(raw string) (ModelRef, error) {
 }
 
 // ResolveModelRef resolves a provider-qualified model from CLI, env, or resume
-// metadata. New invocations require --model/SERF_MODEL to be provider/model;
+// metadata. New invocations require --model/EVENER_MODEL to be provider/model;
 // resumed sessions keep their persisted provider and bare model.
 func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (ModelRef, error) {
 	if strings.TrimSpace(modelValue) != "" {
@@ -194,11 +194,11 @@ func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (
 	if resumeProvider != "" && resumeModel != "" {
 		return ModelRef{Provider: resumeProvider, Model: resumeModel}, nil
 	}
-	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.SERFModel.Name)
+	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.EVENERModel.Name)
 }
 
 // ResolveResumeModelRef resolves the model for an explicit session resume.
-// Unlike fresh startup, persisted resume metadata wins over SERF_MODEL so an
+// Unlike fresh startup, persisted resume metadata wins over EVENER_MODEL so an
 // inherited environment variable cannot silently change the resumed session's
 // model. An explicit CLI --model still overrides the persisted model.
 func ResolveResumeModelRef(modelValue, envModel, resumeProvider, resumeModel string) (ModelRef, error) {
@@ -213,7 +213,7 @@ func ResolveResumeModelRef(modelValue, envModel, resumeProvider, resumeModel str
 	if strings.TrimSpace(envModel) != "" {
 		return ParseModelRef(envModel)
 	}
-	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.SERFModel.Name)
+	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.EVENERModel.Name)
 }
 
 // StringSliceFlag implements flag.Value for a repeatable string flag.
@@ -317,7 +317,7 @@ func ListModelsFunc(client *llm.Client, providerID string) func(context.Context)
 	}
 }
 
-// ParseAllowedDecisions parses the SERF_ALLOWED_DECISIONS value into a slice
+// ParseAllowedDecisions parses the EVENER_ALLOWED_DECISIONS value into a slice
 // of decision keys. It accepts JSON arrays and comma-separated values.
 func ParseAllowedDecisions(raw string) []string { return parseAllowedDecisions(raw) }
 

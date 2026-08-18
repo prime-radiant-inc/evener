@@ -45,7 +45,7 @@ building a parallel cleanup system.
 Serf sets both:
 
 - `TMPDIR=<scratch-path>`;
-- `SERF_SCRATCH_DIR=<scratch-path>`.
+- `EVENER_SCRATCH_DIR=<scratch-path>`.
 
 The exact path appears in the session's dynamic environment/system-prompt
 section. `HOME` is not redirected. This feature does not newly redirect
@@ -153,7 +153,7 @@ snapshot or regex-match a large rendered system prompt.
 Cover:
 
 - unique scratch for root, child, sibling, and fork;
-- `TMPDIR`, `SERF_SCRATCH_DIR`, environment info, and prompt use the same path;
+- `TMPDIR`, `EVENER_SCRATCH_DIR`, environment info, and prompt use the same path;
 - sandboxed tools/processes can use only their own scratch;
 - worktree re-root keeps the same live-session scratch;
 - close, spawn failure, and parent teardown clean scratch after process shutdown;

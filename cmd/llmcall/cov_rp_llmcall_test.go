@@ -337,7 +337,7 @@ func TestLLMCallMain_NoPromptWithBadTimeout(t *testing.T) {
 }
 
 func TestLLMCallMain_MissingProviderAndModel(t *testing.T) {
-	for _, ev := range []envvars.Var{envvars.LLMProvider, envvars.SERFProvider, envvars.LLMModel, envvars.SERFModel} {
+	for _, ev := range []envvars.Var{envvars.LLMProvider, envvars.EVENERProvider, envvars.LLMModel, envvars.EVENERModel} {
 		t.Setenv(ev.Name, "")
 	}
 	var stdout, stderr bytes.Buffer

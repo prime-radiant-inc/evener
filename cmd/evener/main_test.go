@@ -125,7 +125,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 }
 
 func TestOpenAIDispatchesFromTopLevel(t *testing.T) {
-	t.Setenv("SERF_STATE_DIR", t.TempDir())
+	t.Setenv("EVENER_STATE_DIR", t.TempDir())
 
 	origStatus := openAIStatusAction
 	t.Cleanup(func() { openAIStatusAction = origStatus })
@@ -171,7 +171,7 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 
 func TestResolveOpenAIResponsesContinuation(t *testing.T) {
 	getenv := func(name string) string {
-		if name == envvars.SERFOpenAIResponsesContinuation.Name {
+		if name == envvars.EVENEROpenAIResponsesContinuation.Name {
 			return " auto "
 		}
 		return ""
@@ -190,8 +190,8 @@ func TestResolveOpenAIResponsesContinuation(t *testing.T) {
 func TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation(t *testing.T) {
 	var b strings.Builder
 	printRunEnvVars(&b)
-	if !strings.Contains(b.String(), envvars.SERFOpenAIResponsesContinuation.Name) {
-		t.Fatalf("run env help missing %s: %s", envvars.SERFOpenAIResponsesContinuation.Name, b.String())
+	if !strings.Contains(b.String(), envvars.EVENEROpenAIResponsesContinuation.Name) {
+		t.Fatalf("run env help missing %s: %s", envvars.EVENEROpenAIResponsesContinuation.Name, b.String())
 	}
 }
 
@@ -266,7 +266,7 @@ func TestOpenAIStateDirDefaultIsUserScoped(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	projectStateDir := filepath.Join(t.TempDir(), "project-state")
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	t.Setenv("SERF_STATE_DIR", projectStateDir)
+	t.Setenv("EVENER_STATE_DIR", projectStateDir)
 
 	workDirA := filepath.Join(t.TempDir(), "repo-a")
 	workDirB := filepath.Join(t.TempDir(), "repo-b")
@@ -295,7 +295,7 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 	// Force browser mode so this test is deterministic regardless of the
 	// host's $DISPLAY / SSH env. The auto-detection path is covered by
 	// dedicated tests below.
-	t.Setenv("SERF_LOGIN_HEADLESS", "0")
+	t.Setenv("EVENER_LOGIN_HEADLESS", "0")
 
 	stateDir := t.TempDir()
 	redirectURL := "http://127.0.0.1:1455/auth/callback?code=manual-code&state=expected-state"
@@ -408,27 +408,27 @@ func TestIsHeadlessLoginForDecisionTable(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "SERF_LOGIN_HEADLESS=1 forces headless",
+			name: "EVENER_LOGIN_HEADLESS=1 forces headless",
 			goos: "darwin",
-			env:  map[string]string{"SERF_LOGIN_HEADLESS": "1"},
+			env:  map[string]string{"EVENER_LOGIN_HEADLESS": "1"},
 			want: true,
 		},
 		{
-			name: "SERF_LOGIN_HEADLESS=true forces headless",
+			name: "EVENER_LOGIN_HEADLESS=true forces headless",
 			goos: "linux",
-			env:  map[string]string{"SERF_LOGIN_HEADLESS": "true", "DISPLAY": ":0"},
+			env:  map[string]string{"EVENER_LOGIN_HEADLESS": "true", "DISPLAY": ":0"},
 			want: true,
 		},
 		{
-			name: "SERF_LOGIN_HEADLESS=0 forces not headless even without DISPLAY",
+			name: "EVENER_LOGIN_HEADLESS=0 forces not headless even without DISPLAY",
 			goos: "linux",
-			env:  map[string]string{"SERF_LOGIN_HEADLESS": "0"},
+			env:  map[string]string{"EVENER_LOGIN_HEADLESS": "0"},
 			want: false,
 		},
 		{
-			name: "SERF_LOGIN_HEADLESS=false beats SSH_CONNECTION",
+			name: "EVENER_LOGIN_HEADLESS=false beats SSH_CONNECTION",
 			goos: "linux",
-			env:  map[string]string{"SERF_LOGIN_HEADLESS": "false", "SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"},
+			env:  map[string]string{"EVENER_LOGIN_HEADLESS": "false", "SSH_CONNECTION": "1.2.3.4 22 5.6.7.8 22"},
 			want: false,
 		},
 		{
@@ -495,7 +495,7 @@ func TestIsHeadlessLoginForDecisionTable(t *testing.T) {
 func TestChooseLoginModeRespectsExplicitFlags(t *testing.T) {
 	// Force the auto-detection result to "device" so we can verify that
 	// explicit flags win over auto-detection.
-	t.Setenv("SERF_LOGIN_HEADLESS", "1")
+	t.Setenv("EVENER_LOGIN_HEADLESS", "1")
 
 	mode, _ := chooseLoginMode(true, false)
 	if mode != "device" {
@@ -513,7 +513,7 @@ func TestChooseLoginModeRespectsExplicitFlags(t *testing.T) {
 		t.Fatalf("auto reason = %q, want it to mention auto", reason)
 	}
 
-	t.Setenv("SERF_LOGIN_HEADLESS", "0")
+	t.Setenv("EVENER_LOGIN_HEADLESS", "0")
 	mode, reason = chooseLoginMode(false, false)
 	if mode != "browser" {
 		t.Fatalf("auto + not-headless env: mode = %q, want browser", mode)
@@ -539,7 +539,7 @@ func TestOpenAILoginRejectsConflictingFlags(t *testing.T) {
 // explicit --device flag, an environment that looks headless routes us
 // through the device-code action.
 func TestOpenAILoginAutoSelectsDeviceWhenHeadless(t *testing.T) {
-	t.Setenv("SERF_LOGIN_HEADLESS", "1")
+	t.Setenv("EVENER_LOGIN_HEADLESS", "1")
 	stateDir := t.TempDir()
 
 	origDevice := openAIDeviceLoginAction

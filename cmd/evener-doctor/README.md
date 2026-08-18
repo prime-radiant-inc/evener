@@ -25,7 +25,7 @@ and `…/2026-06-20-serf-doctor-apilog-design.md`.
 Every session-scoped subcommand takes a session selector first: `local:<id>`,
 `proj:<project-id>:<id>`, or a bare `<id>` (searched across buckets). The
 state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path>`
-(state root; default `SERF_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
+(state root; default `EVENER_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
 `--json`. Run `serf-doctor <subcommand> -h` for the full flag list.
 
 | Tool | What it does | Key flags |

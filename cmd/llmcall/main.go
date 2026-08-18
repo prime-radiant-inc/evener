@@ -96,8 +96,8 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		maxTokens:   -1,
 	}
 
-	fs.StringVar(&cfg.provider, "provider", "", "LLM provider (or set "+envvars.LLMProvider.Name+" / "+envvars.SERFProvider.Name+")")
-	fs.StringVar(&cfg.model, "model", "", "LLM model identifier (or set "+envvars.LLMModel.Name+" / "+envvars.SERFModel.Name+")")
+	fs.StringVar(&cfg.provider, "provider", "", "LLM provider (or set "+envvars.LLMProvider.Name+" / "+envvars.EVENERProvider.Name+")")
+	fs.StringVar(&cfg.model, "model", "", "LLM model identifier (or set "+envvars.LLMModel.Name+" / "+envvars.EVENERModel.Name+")")
 
 	fs.StringVar(&cfg.systemText, "system", "", "system prompt text (optional)")
 	fs.StringVar(&cfg.systemFile, "system-file", "", "path to a system prompt file (optional)")
@@ -136,8 +136,8 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stderr, "  - Tool calls are forbidden (tool_choice=none).\n")
 		_, _ = fmt.Fprintf(stderr, "  - No system prompt by default.\n\n")
 		_, _ = fmt.Fprintf(stderr, "Required:\n")
-		_, _ = fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or %s/%s)\n", envvars.LLMProvider.Name, envvars.SERFProvider.Name)
-		_, _ = fmt.Fprintf(stderr, "  --model <id>             model identifier (or %s/%s)\n", envvars.LLMModel.Name, envvars.SERFModel.Name)
+		_, _ = fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or %s/%s)\n", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
+		_, _ = fmt.Fprintf(stderr, "  --model <id>             model identifier (or %s/%s)\n", envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -191,19 +191,19 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		cfg.provider = envvars.LLMProvider.Getenv()
 	}
 	if cfg.provider == "" {
-		cfg.provider = envvars.SERFProvider.Getenv()
+		cfg.provider = envvars.EVENERProvider.Getenv()
 	}
 	if cfg.model == "" {
 		cfg.model = envvars.LLMModel.Getenv()
 	}
 	if cfg.model == "" {
-		cfg.model = envvars.SERFModel.Getenv()
+		cfg.model = envvars.EVENERModel.Getenv()
 	}
 	if cfg.provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.SERFProvider.Name)
+		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
 	}
 	if cfg.model == "" {
-		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.SERFModel.Name)
+		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
 
 	cfg.systemAppend = []string(systemAppend)

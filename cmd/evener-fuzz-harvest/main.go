@@ -74,8 +74,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *keepValues && envvars.SERFFuzzCaptureEnv.Getenv() == "" {
-		fmt.Fprintf(stderr, "refusing --keep-values: %s is not set (run only on a designated capture box)\n", envvars.SERFFuzzCaptureEnv.Name) //nolint:errcheck
+	if *keepValues && envvars.EVENERFuzzCaptureEnv.Getenv() == "" {
+		fmt.Fprintf(stderr, "refusing --keep-values: %s is not set (run only on a designated capture box)\n", envvars.EVENERFuzzCaptureEnv.Name) //nolint:errcheck
 		return 2
 	}
 

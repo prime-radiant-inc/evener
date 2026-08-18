@@ -32,9 +32,9 @@ func TestLLMCallMainParserBranches(t *testing.T) {
 		t.Fatal("timeout")
 	}
 	t.Setenv(envvars.LLMProvider.Name, "")
-	t.Setenv(envvars.SERFProvider.Name, "")
+	t.Setenv(envvars.EVENERProvider.Name, "")
 	t.Setenv(envvars.LLMModel.Name, "")
-	t.Setenv(envvars.SERFModel.Name, "")
+	t.Setenv(envvars.EVENERModel.Name, "")
 	if err := llmcallMain([]string{"p"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "provider") {
 		t.Fatalf("provider=%v", err)
 	}

@@ -16,7 +16,7 @@
 - Any test touching user-global discovery MUST isolate XDG: `t.Setenv("XDG_CONFIG_HOME", t.TempDir())` so the real `~/.config/serf/commands` is never read.
 - Frontend: run `npx biome check --write` on touched files before gates; `make test-web` is the canonical gate; avoid `noNonNullAssertion` and array-index-key violations.
 - `make generate` after changing `appwire/types.go`; `make lint-generated` must pass.
-- Local `make` invocations may need `SERF_DISK_MIN_FREE_GB=4` while the disk is at ~98% (the go build cache lives on another volume).
+- Local `make` invocations may need `EVENER_DISK_MIN_FREE_GB=4` while the disk is at ~98% (the go build cache lives on another volume).
 - Plugin command behavior is unchanged: `command.Expand` semantics, `plugin:name` namespacing, fail-hard plugin file reads.
 
 ---
@@ -906,7 +906,7 @@ In `docs/appwire-protocol.md`, update the `serf/command/list` row to mention the
 - [ ] **Step 2: Regenerate**
 
 Run: `make generate && make lint-generated`
-Expected: `types.gen.ts` gains `source?: string` on `CommandDescriptor`; lint passes. (Prefix `SERF_DISK_MIN_FREE_GB=4` if the preflight trips.)
+Expected: `types.gen.ts` gains `source?: string` on `CommandDescriptor`; lint passes. (Prefix `EVENER_DISK_MIN_FREE_GB=4` if the preflight trips.)
 
 - [ ] **Step 3: Run AppWire tests**
 

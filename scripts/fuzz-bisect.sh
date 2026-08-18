@@ -20,16 +20,16 @@
 # working tree is restored (git bisect reset) on exit.
 #
 # Env seams (defaults are production; used by the self-test):
-#   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   SERF_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
-#   SERF_FUZZ_GO         the go toolchain     (default: go)
-#   SERF_FUZZ_TAGS       build tags for replay (default: serffuzz)
+#   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
+#   EVENER_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_GO         the go toolchain     (default: go)
+#   EVENER_FUZZ_TAGS       build tags for replay (default: serffuzz)
 set -uo pipefail
 
-repo_root="${SERF_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
-go_bin="${SERF_FUZZ_GO:-go}"
-tags="${SERF_FUZZ_TAGS:-serffuzz}"
+repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+runner="${EVENER_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
+go_bin="${EVENER_FUZZ_GO:-go}"
+tags="${EVENER_FUZZ_TAGS:-serffuzz}"
 
 target=""
 crasher=""

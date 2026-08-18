@@ -52,7 +52,7 @@ lines *will* have drifted):
   `:235` `printLongFlagDefaults` — **auto-lists every registered flag via
   `fs.VisitAll`, so the flags already render in `serf --help`; M5 finalizes their
   usage strings, it does not add them to a curated list**; `:248`
-  `printRunEnvVars` (add any `SERF_SANDBOX*` env var here if one exists).
+  `printRunEnvVars` (add any `EVENER_SANDBOX*` env var here if one exists).
 - `cmd/evener/serve.go:64-103` serve flag registrations; `:105-110` `fs.Usage` →
   `fs.PrintDefaults()` (same auto-list); `:528` `printServeEnvVars`.
 - `cmd/evener/run.go:177` `env := execenv.NewLocalExecutionEnvironment(cfg.workDir)`
@@ -138,7 +138,7 @@ the last thing to move.)
   mode set purely via the CLI now *engages* enforcement on the live run/serve
   path (a write outside the worktree is denied) where before the flip it was
   inert — this is the observable difference the flip creates.
-- [ ] Finalize the two usage strings; add any `SERF_SANDBOX*` env var to the two
+- [ ] Finalize the two usage strings; add any `EVENER_SANDBOX*` env var to the two
   env-var help sections; remove any "experimental / not-enforced" marker M1–M4
   left. Perform the single live-flip at the env-construction seam so a CLI-set
   mode attaches the enforced `ResolvedPolicy` (and rides to subagents via M4's

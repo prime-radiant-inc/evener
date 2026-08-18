@@ -5,7 +5,7 @@
 # `git update-ref` compare-and-swap.
 #
 # Case 7 (race lost) is the kata's actual requirement: it reproduces the
-# incident by using SERF_MERGE_INTO_BRANCH_PRECAS_HOOK to move
+# incident by using EVENER_MERGE_INTO_BRANCH_PRECAS_HOOK to move
 # refs/heads/target, deterministically, in the window the tool itself leaves
 # open between reading the branch's tip and writing it back — no sleep, no
 # poll, same discipline as the rest of this repo's selftests.
@@ -228,7 +228,7 @@ HOOK
 chmod +x "$hook"
 
 out="$work/race.out"
-SERF_MERGE_INTO_BRANCH_PRECAS_HOOK="$hook" "$tool" --repo "$r" target feature >"$out" 2>&1
+EVENER_MERGE_INTO_BRANCH_PRECAS_HOOK="$hook" "$tool" --repo "$r" target feature >"$out" 2>&1
 rc=$?
 assert_eq "$rc" "3" "race: exits with the dedicated CAS-refused code"
 assert_eq "$(git -C "$r" rev-parse refs/heads/target)" "$concurrent_sha" "race: target ref is exactly the concurrent session's commit, nothing more"

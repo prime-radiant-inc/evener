@@ -134,7 +134,7 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 
 func TestRunServeResidualCoverage(t *testing.T) {
 	t.Run("resume success", func(t *testing.T) {
-		t.Setenv("SERF_REASONING_EFFORT", "low")
+		t.Setenv("EVENER_REASONING_EFFORT", "low")
 		TestServeAsk_RestoreReportsAwaitingImmediately(t)
 	})
 	t.Run("resume reporting and sandbox line", func(t *testing.T) {
@@ -180,7 +180,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
 		}},
 		{"computed state dir", func(t *testing.T, d *serveDeps, a *[]string) {
-			t.Setenv("SERF_STATE_DIR", "")
+			t.Setenv("EVENER_STATE_DIR", "")
 			*a = []string{"--model", "openai/test", "--dir", t.TempDir()}
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
 		}},
@@ -336,9 +336,9 @@ func TestRunServeResidualCoverage(t *testing.T) {
 	}
 
 	t.Run("http error and environment fallbacks", func(t *testing.T) {
-		t.Setenv("SERF_STATE_DIR", t.TempDir())
-		t.Setenv("SERF_RUN_DIR", "")
-		t.Setenv("SERF_HUB_SPAWNED", "1")
+		t.Setenv("EVENER_STATE_DIR", t.TempDir())
+		t.Setenv("EVENER_RUN_DIR", "")
+		t.Setenv("EVENER_HUB_SPAWNED", "1")
 		d, args := base(t)
 		args = []string{"--model", "openai/test", "--dir", t.TempDir()}
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }

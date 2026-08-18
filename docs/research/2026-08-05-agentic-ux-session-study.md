@@ -75,7 +75,7 @@ cases lose the whole task.
   primer is silently dropped and raw shell noise is injected as the session's
   first STEERING instead. Correlated with read-only-sandbox subagent sessions.
   100% reproducible where it occurs; one packaging/permission fix.
-- **Assorted sandbox surprises** (~15 sessions): `$SERF_SCRATCH_DIR` unset in
+- **Assorted sandbox surprises** (~15 sessions): `$EVENER_SCRATCH_DIR` unset in
   the shell (a `tee` wrote to filesystem root — 0341ren5OUl9mp1vhWQykR);
   `/tmp` blocked; benign-but-scary `packed-refs.lock: Operation not permitted`
   on successful commits (agents re-verify with extra calls); TCP listen blocked
@@ -296,7 +296,7 @@ not break these loops.
    restores forensic ground truth for half the fleet and everything below
    becomes cheaper to verify.
 2. **Environment provisioning batch** (§1): PATH (kata 31gh), xcrun/CLT git,
-   GOCACHE/GOTELEMETRY isolation, hook exec permission, SERF_SCRATCH_DIR
+   GOCACHE/GOTELEMETRY isolation, hook exec permission, EVENER_SCRATCH_DIR
    export, packed-refs allowance — plus the capability preamble so the rest
    are at least *known* constraints.
 3. **Job ergonomics** (§2): partial-output preservation on watchdog kill +

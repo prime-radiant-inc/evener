@@ -24,22 +24,22 @@
 # the ledger/bucket formats are the living contract until the tool's
 # port-on-touch moment. The following env vars exist for advanced use;
 # defaults are the production values:
-#   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
-#   SERF_FUZZ_RUNNER     the search engine    (default: scripts/run-fuzz.sh)
-#   SERF_FUZZ_GH         the gh binary        (default: gh)
-#   SERF_FUZZ_K          flake-guard replays  (default: 5)
-#   SERF_FUZZ_MAX_SEEDS  corpus diversity cap (default: 8 per target per run)
+#   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
+#   EVENER_FUZZ_RUNNER     the search engine    (default: scripts/run-fuzz.sh)
+#   EVENER_FUZZ_GH         the gh binary        (default: gh)
+#   EVENER_FUZZ_K          flake-guard replays  (default: 5)
+#   EVENER_FUZZ_MAX_SEEDS  corpus diversity cap (default: 8 per target per run)
 set -uo pipefail
 
-repo_root="${SERF_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+repo_root="${EVENER_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 state_dir="$repo_root/fuzz/state"
 ledger="$state_dir/ledger.json"
 buckets="$state_dir/buckets.json"
-runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
-gh="${SERF_FUZZ_GH:-gh}"
-K="${SERF_FUZZ_K:-5}"            # flake-guard: a crasher must fail all K replays
-max_seeds="${SERF_FUZZ_MAX_SEEDS:-8}"           # promoted-corpus diversity cap
-max_seed_bytes="${SERF_FUZZ_MAX_SEED_BYTES:-32768}" # drop promoted seeds larger than this
+runner="${EVENER_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
+gh="${EVENER_FUZZ_GH:-gh}"
+K="${EVENER_FUZZ_K:-5}"            # flake-guard: a crasher must fail all K replays
+max_seeds="${EVENER_FUZZ_MAX_SEEDS:-8}"           # promoted-corpus diversity cap
+max_seed_bytes="${EVENER_FUZZ_MAX_SEED_BYTES:-32768}" # drop promoted seeds larger than this
 
 duration=""
 dry_run=false
@@ -171,14 +171,14 @@ want_target() { # entry "module:FuzzName" -> 0 if selected
 }
 
 run_search() {
-	log "=== searching (SERF_FUZZ_PERSIST=1${duration:+, --time $duration}) ==="
+	log "=== searching (EVENER_FUZZ_PERSIST=1${duration:+, --time $duration}) ==="
 	local -a runner_args=()
 	[ -n "$duration" ] && runner_args+=(--time "$duration")
 	[ ${#targets[@]} -gt 0 ] && runner_args+=("${targets[@]}")
 	# run-fuzz.sh drives both the native (go test -fuzz) and rapid (go test -run)
-	# surfaces from the unified registry; SERF_FUZZ_PERSIST=1 is inherited by the
+	# surfaces from the unified registry; EVENER_FUZZ_PERSIST=1 is inherited by the
 	# rapid promoter targets so a live-found failure persists durably.
-	SERF_FUZZ_PERSIST=1 bash "$runner" "${runner_args[@]}" || true
+	EVENER_FUZZ_PERSIST=1 bash "$runner" "${runner_args[@]}" || true
 }
 
 # --- step 3: discover new crashers (snapshot diff over git status) ------------

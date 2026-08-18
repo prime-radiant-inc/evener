@@ -15,8 +15,8 @@ else
 fi
 
 bindir=${BINDIR:-$prefix/bin}
-share_bindir=${SERF_SHARE_BINDIR:-$prefix/share/serf/bin}
-version=${SERF_INSTALL_VERSION:-latest}
+share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/serf/bin}
+version=${EVENER_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in
 	Linux) os=linux ;;

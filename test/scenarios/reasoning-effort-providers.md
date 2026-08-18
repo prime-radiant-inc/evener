@@ -49,7 +49,7 @@ credentials and makes billed calls.
 
 - Export the Kimi key (the raw curl in step 1 needs it) and write the isolated
   credentials file **beside** `providers.toml` — the credential store is read
-  from the directory of `SERF_PROVIDERS_CONFIG` (`cmdutil/load_client.go`
+  from the directory of `EVENER_PROVIDERS_CONFIG` (`cmdutil/load_client.go`
   `LoadProviderConfigAt`). serf's credential store **rejects** a
   credentials.toml unless it is mode `0600`, so create it restrictively:
 
@@ -70,12 +70,12 @@ credentials and makes billed calls.
   chmod 600 "$run/credentials.toml"
   ```
 
-  Run serf with `SERF_PROVIDERS_CONFIG="$run/providers.toml"`.
+  Run serf with `EVENER_PROVIDERS_CONFIG="$run/providers.toml"`.
 
 A one-shot invocation looks like:
 
 ```
-SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
+EVENER_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
   --model <provider>/<model> --reasoning-effort <level> \
   --max-rounds 1 --no-project-prompts "reply with the single word OK"
 ```

@@ -214,8 +214,8 @@ func LaunchOptionSchema() []LaunchOption {
 	serfOnly := map[string]bool{"serf": true}
 	return []LaunchOption{
 		{Field: "agent", WireField: "agent", Label: "Agent", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "model", WireField: "model", Label: "Model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_MODEL"}, DriverSupport: serfOnly},
-		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_REASONING_EFFORT"}, Choices: reasoningChoices(), DriverSupport: serfOnly},
+		{Field: "model", WireField: "model", Label: "Model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "EVENER_MODEL"}, DriverSupport: serfOnly},
+		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "EVENER_REASONING_EFFORT"}, Choices: reasoningChoices(), DriverSupport: serfOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: serfOnly},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
@@ -1140,8 +1140,8 @@ function renderEnvFallbacks(form, schema) {
   const box = document.createElement("div");
   box.className = "spawn-env-fallbacks";
   fallbacks.forEach(opt => {
-    const value = window.SERF_ENV && Object.prototype.hasOwnProperty.call(window.SERF_ENV, opt.envFallback.name)
-      ? window.SERF_ENV[opt.envFallback.name]
+    const value = window.EVENER_ENV && Object.prototype.hasOwnProperty.call(window.EVENER_ENV, opt.envFallback.name)
+      ? window.EVENER_ENV[opt.envFallback.name]
       : "";
     const row = document.createElement("div");
     row.className = "settings-help";
@@ -1152,13 +1152,13 @@ function renderEnvFallbacks(form, schema) {
 }
 ```
 
-Add a safe non-secret environment map to spawn page data before this renderer is enabled. The map must include only the environment variables named by non-secret schema fallbacks, currently `SERF_MODEL` and `SERF_REASONING_EFFORT`. Render it before `spawn.js` runs:
+Add a safe non-secret environment map to spawn page data before this renderer is enabled. The map must include only the environment variables named by non-secret schema fallbacks, currently `EVENER_MODEL` and `EVENER_REASONING_EFFORT`. Render it before `spawn.js` runs:
 
 ```html
 <script>
-  window.SERF_ENV = {
-    SERF_MODEL: {{printf "%q" (index .SafeEnv "SERF_MODEL")}},
-    SERF_REASONING_EFFORT: {{printf "%q" (index .SafeEnv "SERF_REASONING_EFFORT")}}
+  window.EVENER_ENV = {
+    EVENER_MODEL: {{printf "%q" (index .SafeEnv "EVENER_MODEL")}},
+    EVENER_REASONING_EFFORT: {{printf "%q" (index .SafeEnv "EVENER_REASONING_EFFORT")}}
   };
 </script>
 ```
@@ -1168,7 +1168,7 @@ Add `SafeEnv map[string]string` to the spawn template data and populate it from 
 ```go
 func safeLaunchEnvForTemplate() map[string]string {
 	out := map[string]string{}
-	for _, key := range []string{"SERF_MODEL", "SERF_REASONING_EFFORT"} {
+	for _, key := range []string{"EVENER_MODEL", "EVENER_REASONING_EFFORT"} {
 		if value, ok := os.LookupEnv(key); ok {
 			out[key] = value
 		}

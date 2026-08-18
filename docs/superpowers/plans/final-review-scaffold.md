@@ -301,7 +301,7 @@ pre-approved by Jesse (§9, authority #2). The final review confirms the conditi
   Confirm the deletion **kept** all five, and kept the three still-orphaned endpoints
   (`/api/upgrade`, reasoning-effort, `/api/path/validate`) per the safe-default — the kill-list
   Appendix-C re-validation and the dry-run agent both check this.
-- **Flag flip is a true no-op** — `newWebEnabled()` deleted; `SERF_HUB_WEB` read nowhere; the default
+- **Flag flip is a true no-op** — `newWebEnabled()` deleted; `EVENER_HUB_WEB` read nowhere; the default
   serves the SPA at every page route (M9 S7 card 4).
 - **No legacy residue** — `git grep htmx` empty; no live reference to a deleted `assets/*.js` /
   `templates/**`; `/doc/*` reshaped (MW-B) so no dead legacy-asset links; PWA icons + manifest + the 4
