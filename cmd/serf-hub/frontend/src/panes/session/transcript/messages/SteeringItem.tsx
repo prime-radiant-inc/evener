@@ -61,6 +61,7 @@ const KIND_LABELS: Record<LabelledKind, string> = {
   "image-description": "Image description",
   "no-tool-calls": "No tool calls",
   "loop-detected": "Loop detection",
+  "stream-loop": "Stream loop guard",
   "tasks-done": "Tasks done",
   "task-nudge": "Task nudge",
   "task-inactive": "Task list idle",
