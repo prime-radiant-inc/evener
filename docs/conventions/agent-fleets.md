@@ -247,6 +247,24 @@ force-update tags.
 Create them from the **local** branch under test. `isolation: "worktree"`
 branches from `origin`, which silently discards stacked unpushed work.
 
+**A worktree-isolated session's guard extends to its subagents, and the
+controller's own worktree hops re-pin it for every live child.** Measured
+2026-08-17, two failure modes in one evening. First: a subagent dispatched
+from a worktree-isolated session inherits the parent's pin, so its git
+commands targeting a *sibling* worktree are refused even though its edits
+there succeed — the agent finishes with verified work it cannot commit.
+Second, and worse: the controller entering another worktree mid-flight
+(to commit the first agent's work) re-pinned a *different, still-running*
+implementer's guard to the visited worktree, locking it out of its own
+tree mid-edit with a test mutation still live. Both agents did the right
+thing — stopped, named the exact restore line, and left ready-to-run
+commit commands in their reports rather than writing around the guard.
+The conventions that fall out: an agent working a sibling worktree should
+plan to end with prepared `git add <paths> && git commit` commands in its
+report, not commits; the controller runs them verbatim and never hops
+worktrees while any implementer is mid-task — batch the integration hops
+between tasks.
+
 Never run two write-capable review agents in the same worktree; they
 collide on revert-and-restore experiments. Verify a worktree is at the
 approved commit before merging it.

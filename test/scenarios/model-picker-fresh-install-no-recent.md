@@ -21,7 +21,7 @@ it worth an e2e card at all:
   (`widgets/modelCatalog/pickerRows.ts:88-97`).
 - **TUI**: `modelPickerItemsFromResponse` early-returns before building
   any Recent items when `len(resp.Recent) == 0`
-  (`cmd/serf-tui/hub_commands.go:493-495`).
+  (`cmd/serf-tui/hub_commands.go:510-512`).
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
@@ -72,7 +72,7 @@ there is one markup to assert against, not two.
 
 2. Open `/new`, click the Model field's trigger (the `<button>` whose
    accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:380-398`), and read the group heads:
+   `widgets/modelCatalog/index.tsx:388-406`), and read the group heads:
    ```javascript
    ({
      port: location.port,

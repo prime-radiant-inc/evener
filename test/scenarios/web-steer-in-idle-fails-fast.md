@@ -58,6 +58,19 @@ HUB=http://127.0.0.1:$PORT
 
 ### Part A — the daemon's refusal (no browser)
 
+> **KNOWN-STALE — Part A asserts the pre-v3 contract; do not trust it as
+> written.** It is built on `expectedTurnId`, which **serf-appwire-v3
+> removed** from `turn/steer`, `turn/queue`, `turn/interrupt`,
+> `turn/drainAsSteer` and `turn/promoteQueuedAsSteer` — control is
+> session-scoped and names no turn (`appwire/types.go`, the
+> `ProtocolVersion` comment). Both messages Step 2 pins are gone with it:
+> `expectedTurnId is required` appears in no production source, and
+> `turn is not active` appears in no production Go file at all. The "Verified
+> live 2026-07-31" note below predates that change. Re-deriving what a v3
+> daemon actually refuses, against a live stack, is kata `pt6k`; until it
+> lands, run **Part B only** and treat Part A as a record of what the card
+> used to prove.
+
 2. Dial `ws://127.0.0.1:$PORT/rpc` with `Authorization: Bearer $TOKEN`,
    `initialize`, then send two `turn/steer` requests against the idle
    session and record the JSON-RPC error of each:
@@ -83,8 +96,8 @@ HUB=http://127.0.0.1:$PORT
 4. Type text into the composer, then press **Shift+Enter** — the Steer
    chord. This is deliberate: the Steer *button* does not render at all in an
    idle session (`showSteer = busy && capabilities.steer`,
-   `panes/session/composer/Composer.tsx:382`), but the chord reaches
-   `handleSteerClick` regardless (`:685-689`), which is exactly the stale
+   `panes/session/composer/Composer.tsx:611`), but the chord reaches
+   `handleSteerClick` regardless (`:1029-1034`), which is exactly the stale
    caller this card cares about.
    ```javascript
    ```javascript
@@ -127,7 +140,9 @@ HUB=http://127.0.0.1:$PORT
   same gate (`:1055`). Falsify: an idle session reports `steer:true` — the
   capability gate regressed, and the refusals below become the only thing
   standing between a stale click and a bogus steer.
-- **Step 2 (daemon, exact)**: the omitted-`expectedTurnId` request is
+- **Step 2 (daemon, exact) — KNOWN-STALE, see the Part A note; these two
+  messages no longer exist and kata `pt6k` owns re-deriving them**: the
+  omitted-`expectedTurnId` request is
   rejected with `InvalidParams` (code `-32602`) and the exact message
   `expectedTurnId is required` — refused twice on the way down, once by the
   hub (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
@@ -145,8 +160,9 @@ HUB=http://127.0.0.1:$PORT
   provider: both codes and both messages are exactly as above.
 - **Steps 3-4 (composer)**: no `[data-testid="composer-steer"]` button
   exists; the toast region contains `Steer failed: no active turn`
-  (`Composer.tsx:641-643`); the composer text is **unchanged** (nothing was
-  consumed); `pending-chips` is empty — the composer refuses *before*
+  (`Composer.tsx:947-949`, where `handleSteerClick` composes it from the
+  route); the composer text is **unchanged** (nothing was consumed);
+  `pending-chips` is empty — the composer refuses *before*
   enqueuing anything, so there is no optimistic chip to reconcile; and the
   steer count is identical before and after. Falsify: the text vanishes from
   the composer (silently eaten), a pending chip appears and stays (a request
@@ -164,9 +180,13 @@ rm -rf "$tmpdir"
 
 ## Sharp edges
 
-- **Part A is the exact half and needs no browser.** Run it alone if Chrome
-  is unavailable; it pins both refusal messages verbatim. Part B pins the
-  human-visible half, which no unit test can speak for.
+- **Part A WAS the exact half; it is KNOWN-STALE now, so Part B is the
+  runnable one.** Part A needed no browser and pinned both refusal messages
+  verbatim — but serf-appwire-v3 removed the `expectedTurnId` those refusals
+  answered, and neither message exists any more (see the Part A note; kata
+  `pt6k` owns re-deriving what a v3 daemon refuses). Until that lands, Chrome
+  is required rather than optional: Part B pins the human-visible half, which
+  no unit test can speak for.
 - **AppWire frames carry no `jsonrpc` field.** Sending the JSON-RPC 2.0
   envelope every other tool defaults to gets the frame rejected outright
   (`"jsonrpc field is not part of AppWire"`,
@@ -176,7 +196,7 @@ rm -rf "$tmpdir"
 - **Shift+Enter is only the Steer chord while `enterToSend` is off** — with
   the `serf.prefs.enterToSend` preference on, Shift+Enter inserts a literal
   newline instead, to avoid doubling up on that preference's own
-  Enter-submits meaning (`Composer.tsx:685-687`). Leave the preference at its
+  Enter-submits meaning (`Composer.tsx:1028-1030`). Leave the preference at its
   default, or seed it to `"0"` before the first page load.
 - The composer's refusal is a **client-side pre-check**, not a round trip:
   `handleSteerClick` returns before `submitAction`, so nothing reaches the

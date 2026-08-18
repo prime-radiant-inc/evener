@@ -56,7 +56,7 @@ list.
 
 3. Open `/settings/launch-serf`, click the model field's trigger (the
    `<button>` whose accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:380-398`), and read the listbox in
+   `widgets/modelCatalog/index.tsx:388-406`), and read the listbox in
    DOM order:
    ```javascript
    ({

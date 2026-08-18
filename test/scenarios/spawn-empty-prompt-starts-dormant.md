@@ -2,7 +2,7 @@
 
 **What this covers**: kata `ytpa`. The spawn pane's prompt placeholder
 reads `What should the agent work on? Leave blank to start it dormant.`
-(`panes/spawn/Spawn.tsx:528`). Submitting with the prompt empty must
+(`panes/spawn/Spawn.tsx:716`). Submitting with the prompt empty must
 honour that promise: create the session, start no turn, open it, and
 say so on the rail row.
 
@@ -132,11 +132,13 @@ and the session pane's empty state; anything else, grep `data-testid` in
   `/new`. Falsify: a toast, or the pane staying put.
 - **Step 8 (pane + rail)**: `path` decodes to `/s/local:<SID>`;
   `emptyTitle` and `emptyHint` are both true (`EmptyTranscript`'s
-  zero-turn, not-active branch, `panes/session/Session.tsx:79-84`);
+  zero-turn, not-active branch, `panes/session/Session.tsx:96-101`);
   `turns` is 0; the composer is present and focusable below it
   (placeholder `Message the agent…`), and typing there and sending
   starts the first turn normally. `notStarted` is exactly `Not started`
-  (`shell/rail/RailRow.tsx:563-565`). Falsify: the pane shows
+  (`shell/rail/RailRow.tsx:577-579`, the `rail-row-not-started` span the
+  row renders — not the accessible-name parts or the age slot).
+  Falsify: the pane shows
   `Waiting for the first reply` (the active branch — a turn started), or
   the rail row shows a relative age where `Not started` belongs.
 
@@ -162,13 +164,13 @@ and the session pane's empty state; anything else, grep `data-testid` in
 - **`Not started` is suppressed on a signal row, by design.** It renders
   only when the row is otherwise quiet — `saysNotStarted` is
   `session.dormant === true && !showsGloss`
-  (`RailRow.tsx:473-475`), and `showsGloss` is true for the signal
-  states (`RailRow.tsx:487`). A dormant session handed a prompt a second
+  (`RailRow.tsx:436-438`), and `showsGloss` is true for the signal
+  states (`RailRow.tsx:493`). A dormant session handed a prompt a second
   ago is genuinely `active`, and a row still calling it "Not started"
   would be flatly wrong. So assert this on an untouched dormant session,
   not one you have already messaged. The dropped age moves into the
   row's `title` tooltip alongside the words `not started`
-  (`rowTooltip`, `RailRow.tsx:447-463`).
+  (`rowTooltip`, `RailRow.tsx:410-426`).
 - **The post-spawn URL percent-escapes the colon.** `paneToURL` builds
   `/s/${encodeURIComponent(ref)}` (`shell/routing.ts:93-96`), so
   `location.pathname` reads `/s/local%3A<SID>` after a spawn navigation

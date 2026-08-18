@@ -104,9 +104,9 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   set, or the control is missing entirely on a reasoning-capable model.
 - Step 7: `supportsReasoning === false` is a KNOWN-empty answer — no picker
   opens; the TUI prints `This model does not support reasoning effort.`
-  (`hub_command_registry.go:366`). A reasoning model with a genuinely empty
+  (`hub_command_registry.go:368`). A reasoning model with a genuinely empty
   ladder prints `No reasoning effort levels available for this model.`
-  (`:370`) instead. Falsification: an empty picker opens rather than either
+  (`:372`) instead. Falsification: an empty picker opens rather than either
   message being printed.
 
 ## Cleanup

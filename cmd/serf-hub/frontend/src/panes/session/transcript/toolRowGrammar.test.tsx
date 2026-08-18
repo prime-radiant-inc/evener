@@ -914,6 +914,27 @@ test("the SAME purpose-bearing row, expanded, drops the clamp and shows the real
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
 });
 
+// The trailing-affordance anchor had to become a positional prefix because a
+// searched one could place the CONTROL at a coincidental occurrence - a
+// different spot in the line, a different meaning (kata ledger #97, the three
+// collision tests above). summaryLink's anchor is not that shape: it is the
+// complete href, so every occurrence is the same characters denoting the same
+// target and there is no wrong one to land on. What the search does owe is
+// that it marks up ONE of them and leaves the visible text byte-identical.
+test("a summaryLink that recurs in the summary links the first occurrence only, leaving the text intact", () => {
+  const url = "https://example.com/page";
+  const summary = `Fetched ${url} · redirected from ${url}`;
+  render(<ToolRow summary={summary} summaryLink={url} failed={false} expandable expanded onToggle={() => {}} />);
+  const links = screen.getAllByRole("link");
+  expect(links).toHaveLength(1);
+  expect(links[0]?.getAttribute("href")).toBe(url);
+  // Positional pin: the anchor sits after the lead-in word, with the SECOND
+  // occurrence still in the plain text that follows it.
+  expect(links[0]?.previousSibling?.textContent).toBe("Fetched ");
+  expect(links[0]?.nextSibling?.textContent).toBe(` · redirected from ${url}`);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
+});
+
 // The collapsed row IS a native <summary> (ToolRow's expandable branch), and
 // its own onClick unconditionally preventDefaults + toggles on every click
 // that reaches it. Without stopping propagation on the link's own click, the
@@ -983,6 +1004,33 @@ test("a status-bearing summary-less, purpose-less row's disclosure does not stam
   );
   const row = screen.getByTestId("tool-row");
   expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+});
+
+// Failure and status are independent suppressors that one row can carry AT
+// ONCE (ToolCallItem passes `status` for every delegate call and `failed`
+// when that call failed). Each is proven alone above; neither alone
+// distinguishes the conjunction the gate actually is from a rule that fires
+// on whichever flag it happens to see first. With both present the row must
+// still stamp no aria-label, so BOTH descendant names survive.
+test("a failed AND status-bearing summary-less, purpose-less row keeps both descendant accessible names", () => {
+  render(
+    <ToolRow
+      summary=""
+      failed
+      status={
+        <span role="img" aria-label="Working">
+          ●
+        </span>
+      }
+      expandable
+      expanded
+      onToggle={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 

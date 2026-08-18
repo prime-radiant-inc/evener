@@ -114,7 +114,6 @@ type jobManager struct {
 	closing                bool
 	appendEvent            func(jobstore.Event) error
 	appendEvents           func([]jobstore.Event) error
-	openOutput             outputStoreOpener
 	createOutput           outputStoreOpener
 	newJobID               func(string) (string, error)
 	appendObservedBy       func(string, string, string) error
@@ -526,19 +525,19 @@ type jobStoreOpener func(string) (*jobstore.Store, error)
 type outputStoreOpener func(string, int64) (*jobstore.OutputStore, error)
 
 func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open, jobstore.OpenOutput, jobstore.CreateOutput)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open, jobstore.CreateOutput)
 }
 
 func newJobManagerNoSync(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, jobstore.CreateOutputNoSync)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync, jobstore.CreateOutputNoSync)
 }
 
-func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput, createOutput outputStoreOpener) (*jobManager, error) {
-	return newJobManagerWithRestore(stateDir, sessionID, enqueue, openStore, openOutput, createOutput,
+func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, createOutput outputStoreOpener) (*jobManager, error) {
+	return newJobManagerWithRestore(stateDir, sessionID, enqueue, openStore, createOutput,
 		(*jobManager).restoreWatchSendPending, (*jobManager).clearUnrestoredActiveWatches)
 }
 
-func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput, createOutput outputStoreOpener, restorePending, clearWatches func(*jobManager) error) (*jobManager, error) {
+func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, createOutput outputStoreOpener, restorePending, clearWatches func(*jobManager) error) (*jobManager, error) {
 	dir := jobsDir(stateDir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -563,7 +562,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		watchLineage:          make(map[watchKey][]string),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
-		openOutput:            openOutput,
 		createOutput:          createOutput,
 		newJobID:              identifier.NewJobID,
 		appendObservedBy:      schema.AppendSessionObservedBy,

@@ -49,7 +49,7 @@ func seed100JobsRangeA(t *testing.T) {
 
 	abandon := newTestJM(t)
 	done := make(chan struct{})
-	output, err := abandon.openOutput(filepath.Join(abandon.dir, "jobs", "abandon.log"), 64)
+	output, err := jobstore.OpenOutputNoSync(filepath.Join(abandon.dir, "jobs", "abandon.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}

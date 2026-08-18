@@ -76,13 +76,13 @@ HUB=http://127.0.0.1:$PORT
   `hubCapabilitiesFromAppwire` (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and
   every browser assertion below is moot.
 - **Step 4 (queue submit)**: the strip appears with heading
-  `Queued messages (1)` (`composer/queue/QueueStrip.tsx:278`) and one row
+  `Queued messages (1)` (`composer/queue/QueueStrip.tsx:302`) and one row
   carrying the message text; the composer is cleared; `pending-chips` is
   **empty** — queue mutations are deliberately excluded from that strip
   because `QueueStrip` already chips them
   (`panes/session/pending/PendingChips.tsx:22-28`); and the row offers
   `Steer now`, `Edit message` and `Remove from queue`
-  (`QueueStrip.tsx:305-333`). Falsify: the message starts a new turn instead
+  (`QueueStrip.tsx:328-360`). Falsify: the message starts a new turn instead
   of queueing (the routing table regressed —
   `decideSubmitRoute` puts queue ahead of send whenever it is available,
   `submitRouting.ts:19-23`), the strip never appears, or the daemon rejects

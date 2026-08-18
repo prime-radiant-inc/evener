@@ -35,8 +35,11 @@ import (
 // (ToolResult.Content, ToolCall.Arguments, WebSearch.Raw, Usage.Raw) carry weird
 // but well-typed values. The envelope (kind, valid RFC3339 timestamps, object
 // shapes for map-typed fields, base64-able byte fields) is always structurally
-// valid so each line decodes; that keeps the entry-yield rate near 100% — see
-// TestStructuredTranscriptReachesDeeper for the gap it opens over raw bytes.
+// valid so each line decodes: every input yields a decodable header, and 88.4%
+// of them yield at least one entry. The shortfall is not a line failing to
+// decode, it is the num_lines draw below coming up zero — see
+// TestStructuredTranscriptReachesDeeper for both rates and for the gap they
+// open over raw bytes.
 //
 // Determinism: the only entropy is the byte Source, drawn through schemagen's
 // deterministic primitives. Output ORDER never depends on map iteration — every
@@ -57,7 +60,17 @@ func generateTranscript(s schemagen.Source) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return bytes.Join(g.lines, []byte("\n")), nil
+	// Terminate every record, exactly as transcript.Writer frames them. The
+	// readers drain and discard an unterminated final line as a torn write
+	// (transcript.ReadLine), so joining without a trailing terminator would make
+	// every generated transcript look crash-truncated and cost the last record on
+	// every input.
+	var out []byte
+	for _, line := range g.lines {
+		out = append(out, line...)
+		out = append(out, '\n')
+	}
+	return out, nil
 }
 
 // transcriptGen accumulates JSONL lines and the cross-line state (sequence

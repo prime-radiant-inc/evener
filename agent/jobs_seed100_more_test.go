@@ -30,7 +30,7 @@ func seed100JobsMore(t *testing.T) {
 			}
 			return nil
 		}
-		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, jobstore.CreateOutputNoSync, restore, restore)
+		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.CreateOutputNoSync, restore, restore)
 	}
 
 	jm := newTestJM(t)
@@ -148,7 +148,7 @@ func seed100JobsMore(t *testing.T) {
 	_, _ = badMetaJM.grepOutput("bad-meta", nil)
 
 	listJM := newTestJM(t)
-	listOut, err := listJM.openOutput(filepath.Join(listJM.dir, "jobs", "list.log"), 64)
+	listOut, err := jobstore.OpenOutputNoSync(filepath.Join(listJM.dir, "jobs", "list.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func seed100JobsMore(t *testing.T) {
 	// Existing terminals cover the kept-sync terminal path and both mismatch guards.
 	jm3 := newTestJM(t)
 	freezeClock(jm3)
-	out, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "kept.log"), 64)
+	out, err := jobstore.OpenOutputNoSync(filepath.Join(jm3.dir, "jobs", "kept.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func seed100JobsMore(t *testing.T) {
 	}
 
 	// Removing the runtime during pending forwarding covers the stale-arm guard.
-	out2, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "stale.log"), 64)
+	out2, err := jobstore.OpenOutputNoSync(filepath.Join(jm3.dir, "jobs", "stale.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func seed100JobsMore(t *testing.T) {
 	_ = jm3.forwardFinishedJob(forwardRun, forwardRun.terminal)
 	_ = jm3.forwardPendingJobNotification(forwardRun, forwardRun.terminal)
 	delete(jm3.running, forwardRun.rec.JobID)
-	writeOut, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "write-forward.log"), 64)
+	writeOut, err := jobstore.OpenOutputNoSync(filepath.Join(jm3.dir, "jobs", "write-forward.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func seed100JobsMore(t *testing.T) {
 	jm3.forward = func(jobstore.Event) error { return want }
 	_, _ = jm3.writeFinishJob(writeRun, jobstore.StatusCompleted, "done", nil)
 	delete(jm3.running, writeRun.rec.JobID)
-	successOut, err := jm3.openOutput(filepath.Join(jm3.dir, "jobs", "success-terminal.log"), 64)
+	successOut, err := jobstore.OpenOutputNoSync(filepath.Join(jm3.dir, "jobs", "success-terminal.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}

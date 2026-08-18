@@ -127,10 +127,6 @@ func assertJobManagerConstructionFailures(t *testing.T) {
 		func(string) (*jobstore.Store, error) { return nil, want },
 		func(string, int64) (*jobstore.OutputStore, error) {
 			outputOpened = true
-			return nil, errors.New("unexpected output open")
-		},
-		func(string, int64) (*jobstore.OutputStore, error) {
-			outputOpened = true
 			return nil, errors.New("unexpected output create")
 		})
 	if jm != nil || !errors.Is(err, want) || outputOpened {

@@ -109,8 +109,11 @@ test("classifyJobStatus: running, and anything undetermined (including undefined
 test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
   expect(resolveRowKey("dlg_1", "job_1", "call_1")).toBe(resolveRowKey("dlg_1", "job_2", "call_2"));
   expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey(undefined, "job_2", "call_1"));
-  expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"));
+  expect(resolveRowKey(undefined, undefined, "call_1")).toBe("call:call_1");
   expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey("dlg_1", "job_1", "call_1"));
+  // The per-kind prefix is what stops a delegate id colliding with an unrelated
+  // job id that happens to be the same raw string.
+  expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"));
 });
 
 test("rowFromDelegateItem uses stable delegate_id and rejects activation-only job_id", () => {
