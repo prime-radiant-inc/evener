@@ -186,7 +186,7 @@ func TestSettlement_StallStreakPersistsSteeringOnly(t *testing.T) {
 // point the next round at a response the provider never finalized.
 func TestSettlement_SalvagedDraftPersistsBeforeSteering(t *testing.T) {
 	t.Parallel()
-	draft := strings.Repeat("plan step. ", 1000) // ~11KB
+	draft := nonChantingFiller("plan step.", 1000) // ~11KB
 	var attempts int
 	a := &scriptedStreamAdapter{
 		provider: "openai",
@@ -369,7 +369,7 @@ func TestSettlement_InterruptWithNoSalvagePersistsNothing(t *testing.T) {
 // no failure marker.
 func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
 	t.Parallel()
-	draft := strings.Repeat("plan step. ", 500) // ~5.5KB
+	draft := nonChantingFiller("plan step.", 500) // ~5.5KB
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var attempts int
@@ -485,7 +485,7 @@ func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
 // while the salvage belongs to the filter-killed group.
 func TestSettlement_InterruptNeverPersistsFilterTrippingSalvage(t *testing.T) {
 	t.Parallel()
-	draft := strings.Repeat("blocked step. ", 500)
+	draft := nonChantingFiller("blocked step.", 500)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a := &scriptedStreamAdapter{
@@ -535,7 +535,7 @@ func TestSettlement_InterruptNeverPersistsFilterTrippingSalvage(t *testing.T) {
 // context-length rejection must still persist the primary group's partial.
 func TestSettlement_ContextLengthTerminalKeepsPrimarySalvage(t *testing.T) {
 	t.Parallel()
-	draft := strings.Repeat("plan step. ", 1000)
+	draft := nonChantingFiller("plan step.", 1000)
 	contextLenErr := llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
 	if llm.Kind(contextLenErr) != llm.KindContextLength {
 		t.Fatalf("fixture kind = %v, want KindContextLength", llm.Kind(contextLenErr))

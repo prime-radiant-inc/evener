@@ -247,8 +247,8 @@ func TestProviderFailureE2E_CapShapePersistsDraftForTheResumedTurn(t *testing.T)
 	t.Parallel()
 	const contentStep = 45 * time.Second
 	const deltasPerAttempt = 3 // window = 2 * contentStep = 90s, over the cap bound
-	draft := strings.Repeat("plan step. ", 400)
-	trickle := strings.Repeat("plan step. ", 40)
+	draft := nonChantingFiller("plan step.", 400)
+	trickle := nonChantingFiller("plan step.", 40)
 	p := &recoveringProvider{
 		answer: "splitting the plan into smaller writes",
 		fail: func(attempt int) func(*llm.ChanStream) {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,4 +144,23 @@ func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
 		return orig(e)
 	}
 	return &attempts
+}
+
+// --- streamed-content filler ---
+
+// nonChantingFiller returns text of the same shape as strings.Repeat(unit+"
+// ", n) -- same word, same repeat count, comparable byte volume -- but with a
+// running index folded into each repetition, so no chantChunkRunes-wide
+// window stays byte-identical across chantThreshold occurrences the way pure
+// repetition would (session_stream_loop_guard_chant.go, kata d74b). Several
+// tests stream a large "draft" purely as cheap bulk filler for a cap/salvage
+// scenario, not to model a chanting response; without this, the stream loop
+// guard forces an early, error-free stop mid-content and the scripted
+// mid-stream failure those tests are built around never arrives.
+func nonChantingFiller(unit string, n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "%s%d ", unit, i)
+	}
+	return b.String()
 }

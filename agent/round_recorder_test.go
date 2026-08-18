@@ -170,7 +170,7 @@ func TestRoundRecorder_HasConsumePhaseFailure(t *testing.T) {
 // draft, and the steering group must be the primary — not whichever group
 // happened to fail last.
 func TestRoundRecorder_FallbackTrickleNeverShadowsPrimaryPartial(t *testing.T) {
-	primaryDraft := strings.Repeat("draft ", 200)
+	primaryDraft := nonChantingFiller("draft", 200)
 	const trickle = "he"
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "cut off", nil, nil)
 	a := &scriptedStreamAdapter{
