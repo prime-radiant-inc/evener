@@ -124,9 +124,16 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 # TestE2E_*-named tests of its own - unioning the pattern into every module
 # would silently skip those too. See gate-surface-lib.sh's
 # gate_capability_skip_pattern for the evidenced mapping.
+#
+# A run that skips root tests says so on its own output. The preflight prints
+# its BLOCKED summary before this script starts, but this script is also run
+# directly (ROOT_FULL=1 make test), where an inherited or hand-set value would
+# otherwise narrow root's surface and still report PASS with no trace of it.
 root_skip="$fuzz_test_skip"
 if [ -n "${SERF_GATE_CAPABILITY_SKIP:-}" ]; then
 	root_skip="(${fuzz_test_skip}|${SERF_GATE_CAPABILITY_SKIP})"
+	printf 'run-module-tests.sh: SERF_GATE_CAPABILITY_SKIP is set; root runs with -skip %s (capability-blocked tests are NOT proven by this run)\n' \
+		"$SERF_GATE_CAPABILITY_SKIP" >&2
 fi
 
 flags="$*"

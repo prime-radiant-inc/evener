@@ -487,6 +487,11 @@ case "$agent_args" in
 	*"TestE2E_"*) bad "agent's -skip pattern was wrongly widened by the root-only capability skip (got: $agent_args)" ;;
 	*) ok "agent's -skip pattern is untouched by the root-only capability skip" ;;
 esac
+# A run that narrows root's surface says so in its own output, not only in the
+# preflight summary that ran before it. This script is also invoked directly
+# (ROOT_FULL=1 make test), where an inherited or hand-set value would otherwise
+# narrow the surface and still report PASS with no trace of it.
+assert_has "$out" "SERF_GATE_CAPABILITY_SKIP is set" "a capability-narrowed run names the narrowing in its own output"
 
 # The absence case: no SERF_GATE_CAPABILITY_SKIP set (the ordinary path, and
 # what an unrestricted host's preflight exports) leaves -skip exactly as
@@ -497,6 +502,7 @@ if run_tests "." "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
 root_args="$(arguments_for .)"
 assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
+assert_not_has "$out" "SERF_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
 
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
