@@ -982,33 +982,15 @@ func chatFallbackRequest(req llm.Request) llm.Request {
 	return fallbackReq
 }
 
-// chatCompletionsURL returns the /v1/chat/completions URL for this adapter,
-// derived from the same BaseURL used for the Responses API.
-func (a *Adapter) chatCompletionsURL() string {
-	base := strings.TrimRight(a.BaseURL, "/")
-	// If this adapter is pointed at an API-key-based OpenAI endpoint, the base
-	// is https://api.openai.com and completions lives at /v1/chat/completions.
-	// For custom base URLs we keep the same path convention.
-	if strings.HasSuffix(base, "/v1") {
-		return base + "/chat/completions"
-	}
-	return base + "/v1/chat/completions"
-}
-
-// responsesURL returns the Responses API URL for this adapter, derived from
-// BaseURL and ResponsesPath. Like chatCompletionsURL, it normalizes a
-// trailing /v1 on BaseURL so a base of either "https://host" or
-// "https://host/v1" resolves to the same "https://host/v1/..." URL instead
-// of doubling the /v1 segment. Custom ResponsesPath values that don't start
-// with /v1 (e.g. the ChatGPT/Codex backend path) are left untouched — only
-// the conventional /v1 prefix is deduplicated, never silently stripped from
-// an explicit custom path.
-func (a *Adapter) responsesURL() string {
-	base := strings.TrimRight(a.BaseURL, "/")
-	path := a.ResponsesPath
-	if path == "" {
-		path = defaultResponsesPath
-	}
+// joinBaseURLDedupV1 joins base and path, normalizing a trailing /v1 on base
+// so a BaseURL of either "https://host" or "https://host/v1" resolves to the
+// same "https://host/v1/..." URL instead of doubling the /v1 segment. This
+// lets OpenAI-compatible gateways be configured with either form. path values
+// that don't start with /v1 (e.g. the ChatGPT/Codex backend path) are left
+// untouched — only the conventional /v1 prefix is deduplicated, never
+// silently stripped from an explicit custom path.
+func joinBaseURLDedupV1(base, path string) string {
+	base = strings.TrimRight(base, "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -1016,6 +998,22 @@ func (a *Adapter) responsesURL() string {
 		base = strings.TrimSuffix(base, "/v1")
 	}
 	return base + path
+}
+
+// chatCompletionsURL returns the /v1/chat/completions URL for this adapter,
+// derived from the same BaseURL used for the Responses API.
+func (a *Adapter) chatCompletionsURL() string {
+	return joinBaseURLDedupV1(a.BaseURL, "/v1/chat/completions")
+}
+
+// responsesURL returns the Responses API URL for this adapter, derived from
+// BaseURL and ResponsesPath.
+func (a *Adapter) responsesURL() string {
+	path := a.ResponsesPath
+	if path == "" {
+		path = defaultResponsesPath
+	}
+	return joinBaseURLDedupV1(a.BaseURL, path)
 }
 
 func (a *Adapter) requiresStreamingComplete() bool {
@@ -1048,7 +1046,7 @@ func (a *Adapter) modelsURL() string {
 		}
 		return u + sep + url.Values{"client_version": []string{codexClientVersion}}.Encode()
 	}
-	return strings.TrimRight(a.BaseURL, "/") + "/v1/models"
+	return joinBaseURLDedupV1(a.BaseURL, "/v1/models")
 }
 
 func (a *Adapter) usesCodexBackend() bool {

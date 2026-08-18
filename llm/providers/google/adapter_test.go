@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1132,7 +1133,7 @@ func TestAdapter_Complete_ReplaysFunctionCallThoughtSignature(t *testing.T) {
 }
 
 func TestToGeminiContents_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
-	_, contents, err := toGeminiContents([]llm.Message{{
+	_, contents, err := toGeminiContents("gemini-3-pro-preview", []llm.Message{{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -2892,94 +2893,28 @@ func TestAdapter_Complete_NoMaxTokens_OmitsMaxOutputTokens(t *testing.T) {
 	}
 }
 
-func TestComplete_ToolResultWithImageData(t *testing.T) {
-	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47} // fake PNG header bytes
-	wantBase64 := base64.StdEncoding.EncodeToString(imgBytes)
+// geminiRequestCapture is a stub generateContent endpoint that records the
+// request body the adapter actually put on the wire, so the tool-result tests
+// can assert against the structured request instead of rendered JSON.
+type geminiRequestCapture struct {
+	adapter *Adapter
 
-	var sentBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &sentBody)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"candidates": []any{map[string]any{
-				"content": map[string]any{
-					"role":  "model",
-					"parts": []any{map[string]any{"text": "I see the image"}},
-				},
-			}},
-			"usageMetadata": map[string]any{
-				"promptTokenCount":     10,
-				"candidatesTokenCount": 5,
-				"totalTokenCount":      15,
-			},
-		})
-	}))
-	t.Cleanup(srv.Close)
-
-	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	toolResultMsg := llm.ToolResultNamed("call_1", "read_file", "file contents", false)
-	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
-	toolResultMsg.Content[0].ToolResult.ImageMediaType = "image/png"
-
-	_, err := a.Complete(ctx, llm.Request{
-		Model: "gemini-test",
-		Messages: []llm.Message{
-			llm.User("read the image"),
-			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
-				Kind:     llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{"path":"test.png"}`)},
-			}}},
-			toolResultMsg,
-		},
-	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-
-	// Find the tool result content entry (last content in the array).
-	contents, ok := sentBody["contents"].([]any)
-	if !ok || len(contents) == 0 {
-		t.Fatalf("expected contents in sent body, got %v", sentBody["contents"])
-	}
-	lastContent, _ := contents[len(contents)-1].(map[string]any)
-	parts, _ := lastContent["parts"].([]any)
-
-	// Should have exactly 2 parts: functionResponse + inlineData.
-	if len(parts) != 2 {
-		t.Fatalf("expected 2 parts (functionResponse + inlineData), got %d: %v", len(parts), parts)
-	}
-
-	// First part: functionResponse.
-	part0, _ := parts[0].(map[string]any)
-	if _, ok := part0["functionResponse"]; !ok {
-		t.Fatalf("first part should be functionResponse, got %v", part0)
-	}
-
-	// Second part: inlineData.
-	part1, _ := parts[1].(map[string]any)
-	inlineData, ok := part1["inlineData"].(map[string]any)
-	if !ok {
-		t.Fatalf("second part should have inlineData, got %v", part1)
-	}
-	if gotMime, _ := inlineData["mimeType"].(string); gotMime != "image/png" {
-		t.Errorf("inlineData.mimeType = %q, want %q", gotMime, "image/png")
-	}
-	if gotData, _ := inlineData["data"].(string); gotData != wantBase64 {
-		t.Errorf("inlineData.data = %q, want %q", gotData, wantBase64)
-	}
+	mu    sync.Mutex
+	body  map[string]any
+	calls int
 }
 
-func TestComplete_ToolResultWithImageData_DefaultMediaType(t *testing.T) {
-	imgBytes := []byte{0xFF, 0xD8, 0xFF} // fake JPEG header bytes
-
-	var sentBody map[string]any
+func newGeminiRequestCapture(t *testing.T) *geminiRequestCapture {
+	t.Helper()
+	c := &geminiRequestCapture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &sentBody)
+		var body map[string]any
+		_ = json.Unmarshal(b, &body)
+		c.mu.Lock()
+		c.body = body
+		c.calls++
+		c.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []any{map[string]any{
@@ -2996,98 +2931,371 @@ func TestComplete_ToolResultWithImageData_DefaultMediaType(t *testing.T) {
 		})
 	}))
 	t.Cleanup(srv.Close)
+	c.adapter = &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	return c
+}
 
-	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+func (c *geminiRequestCapture) sentBody(t *testing.T) map[string]any {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.body == nil {
+		t.Fatalf("no request body captured")
+	}
+	return c.body
+}
+
+func (c *geminiRequestCapture) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func assistantToolCall(id, name, args string) llm.Message {
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind:     llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(args)},
+	}}}
+}
+
+func toolResultWithImage(callID, name, content string, img []byte, mediaType string) llm.Message {
+	m := llm.ToolResultNamed(callID, name, content, false)
+	m.Content[0].ToolResult.ImageData = img
+	m.Content[0].ToolResult.ImageMediaType = mediaType
+	return m
+}
+
+// lastContentParts returns the parts of the final entry in the request's
+// contents array — the turn carrying the tool results.
+func lastContentParts(t *testing.T, body map[string]any) []any {
+	t.Helper()
+	contents, ok := body["contents"].([]any)
+	if !ok || len(contents) == 0 {
+		t.Fatalf("expected contents in sent body, got %v", body["contents"])
+	}
+	last, _ := contents[len(contents)-1].(map[string]any)
+	parts, _ := last["parts"].([]any)
+	return parts
+}
+
+// functionResponsePart unwraps a functionResponse part, failing if the part is
+// instead an unassociated sibling media part.
+func functionResponsePart(t *testing.T, part any) map[string]any {
+	t.Helper()
+	p, ok := part.(map[string]any)
+	if !ok {
+		t.Fatalf("part is not an object: %v", part)
+	}
+	if _, hasInline := p["inlineData"]; hasInline {
+		t.Fatalf("tool-result turn carries a sibling inlineData part: %v", p)
+	}
+	fr, ok := p["functionResponse"].(map[string]any)
+	if !ok {
+		t.Fatalf("part is not a functionResponse: %v", p)
+	}
+	return fr
+}
+
+// functionResponseInlineImage returns the single nested media part's mime type
+// and base64 payload from functionResponse.parts.
+func functionResponseInlineImage(t *testing.T, fr map[string]any) (mimeType, data string) {
+	t.Helper()
+	parts, ok := fr["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("functionResponse.parts = %v, want exactly one media part", fr["parts"])
+	}
+	p, _ := parts[0].(map[string]any)
+	inline, ok := p["inlineData"].(map[string]any)
+	if !ok {
+		t.Fatalf("functionResponse.parts[0] has no inlineData: %v", p)
+	}
+	mimeType, _ = inline["mimeType"].(string)
+	data, _ = inline["data"].(string)
+	return mimeType, data
+}
+
+func TestComplete_ToolResultImage_NestsUnderFunctionResponse(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47} // fake PNG header bytes
+	wantBase64 := base64.StdEncoding.EncodeToString(imgBytes)
+
+	c := newGeminiRequestCapture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := c.adapter.Complete(ctx, llm.Request{
+		Model: "gemini-3-pro-preview",
+		Messages: []llm.Message{
+			llm.User("read the image"),
+			assistantToolCall("call_1", "read_file", `{"path":"test.png"}`),
+			toolResultWithImage("call_1", "read_file", "file contents", imgBytes, "image/png"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	parts := lastContentParts(t, c.sentBody(t))
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part (functionResponse only), got %d: %v", len(parts), parts)
+	}
+	fr := functionResponsePart(t, parts[0])
+	if got, _ := fr["name"].(string); got != "read_file" {
+		t.Errorf("functionResponse.name = %q, want %q", got, "read_file")
+	}
+	resp, ok := fr["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("functionResponse.response = %v, want an object", fr["response"])
+	}
+	if got, _ := resp["result"].(string); got != "file contents" {
+		t.Errorf("functionResponse.response.result = %q, want %q", got, "file contents")
+	}
+	gotMime, gotData := functionResponseInlineImage(t, fr)
+	if gotMime != "image/png" {
+		t.Errorf("nested inlineData.mimeType = %q, want %q", gotMime, "image/png")
+	}
+	if gotData != wantBase64 {
+		t.Errorf("nested inlineData.data = %q, want %q", gotData, wantBase64)
+	}
+}
+
+func TestComplete_ToolResultImage_DefaultMediaType(t *testing.T) {
+	imgBytes := []byte{0xFF, 0xD8, 0xFF} // fake JPEG header bytes
+
+	c := newGeminiRequestCapture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	// Image data with NO media type set — should default to "image/png".
-	toolResultMsg := llm.ToolResultNamed("call_1", "read_file", "file contents", false)
-	toolResultMsg.Content[0].ToolResult.ImageData = imgBytes
-	// ImageMediaType deliberately left empty.
-
-	_, err := a.Complete(ctx, llm.Request{
-		Model: "gemini-test",
+	_, err := c.adapter.Complete(ctx, llm.Request{
+		Model: "gemini-3-pro-preview",
 		Messages: []llm.Message{
 			llm.User("read the image"),
-			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
-				Kind:     llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "read_file", Arguments: json.RawMessage(`{}`)},
-			}}},
-			toolResultMsg,
+			assistantToolCall("call_1", "read_file", `{}`),
+			toolResultWithImage("call_1", "read_file", "file contents", imgBytes, ""),
 		},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	contents, _ := sentBody["contents"].([]any)
-	lastContent, _ := contents[len(contents)-1].(map[string]any)
-	parts, _ := lastContent["parts"].([]any)
-	if len(parts) != 2 {
-		t.Fatalf("expected 2 parts, got %d", len(parts))
+	parts := lastContentParts(t, c.sentBody(t))
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d: %v", len(parts), parts)
 	}
-
-	part1, _ := parts[1].(map[string]any)
-	inlineData, _ := part1["inlineData"].(map[string]any)
-	if gotMime, _ := inlineData["mimeType"].(string); gotMime != "image/png" {
+	gotMime, gotData := functionResponseInlineImage(t, functionResponsePart(t, parts[0]))
+	if gotMime != "image/png" {
 		t.Errorf("default mimeType = %q, want %q", gotMime, "image/png")
+	}
+	if want := base64.StdEncoding.EncodeToString(imgBytes); gotData != want {
+		t.Errorf("nested inlineData.data = %q, want %q", gotData, want)
 	}
 }
 
-func TestComplete_ToolResultWithoutImageData_NoInlinePart(t *testing.T) {
-	var sentBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &sentBody)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"candidates": []any{map[string]any{
-				"content": map[string]any{
-					"role":  "model",
-					"parts": []any{map[string]any{"text": "ok"}},
-				},
-			}},
-			"usageMetadata": map[string]any{
-				"promptTokenCount":     10,
-				"candidatesTokenCount": 5,
-				"totalTokenCount":      15,
-			},
-		})
-	}))
-	t.Cleanup(srv.Close)
+func TestComplete_ToolResultWithoutImageData_OmitsFunctionResponseParts(t *testing.T) {
+	// Text-only tool results serialize identically on every Gemini model:
+	// a lone functionResponse with just name and response.
+	for _, model := range []string{"gemini-3-pro-preview", "gemini-2.5-pro"} {
+		t.Run(model, func(t *testing.T) {
+			c := newGeminiRequestCapture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
 
-	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+			_, err := c.adapter.Complete(ctx, llm.Request{
+				Model: model,
+				Messages: []llm.Message{
+					llm.User("call tool"),
+					assistantToolCall("call_1", "some_tool", `{}`),
+					llm.ToolResultNamed("call_1", "some_tool", "result text", false),
+				},
+			})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+
+			parts := lastContentParts(t, c.sentBody(t))
+			if len(parts) != 1 {
+				t.Fatalf("expected 1 part (functionResponse only), got %d: %v", len(parts), parts)
+			}
+			fr := functionResponsePart(t, parts[0])
+			if len(fr) != 2 {
+				t.Fatalf("functionResponse fields = %v, want only name and response", fr)
+			}
+			if got, _ := fr["name"].(string); got != "some_tool" {
+				t.Errorf("functionResponse.name = %q, want %q", got, "some_tool")
+			}
+			resp, _ := fr["response"].(map[string]any)
+			if len(resp) != 1 {
+				t.Fatalf("functionResponse.response = %v, want only result", resp)
+			}
+			if got, _ := resp["result"].(string); got != "result text" {
+				t.Errorf("functionResponse.response.result = %q, want %q", got, "result text")
+			}
+		})
+	}
+}
+
+func TestComplete_MultipleToolResultImages_StayAssociated(t *testing.T) {
+	imgA := []byte{0x89, 0x50, 0x4E, 0x47}
+	imgB := []byte{0xFF, 0xD8, 0xFF}
+
+	c := newGeminiRequestCapture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Normal tool result with NO image data — should have only 1 part.
-	_, err := a.Complete(ctx, llm.Request{
-		Model: "gemini-test",
+	toolTurn := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", Content: "first", ImageData: imgA, ImageMediaType: "image/png"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_2", Name: "screenshot", Content: "second", ImageData: imgB, ImageMediaType: "image/jpeg"}},
+	}}
+
+	_, err := c.adapter.Complete(ctx, llm.Request{
+		Model: "gemini-3-pro-preview",
 		Messages: []llm.Message{
-			llm.User("call tool"),
-			{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
-				Kind:     llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{ID: "call_1", Name: "some_tool", Arguments: json.RawMessage(`{}`)},
-			}}},
-			llm.ToolResultNamed("call_1", "some_tool", "result text", false),
+			llm.User("read both"),
+			assistantToolCall("call_1", "read_file", `{}`),
+			assistantToolCall("call_2", "screenshot", `{}`),
+			toolTurn,
 		},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	contents, _ := sentBody["contents"].([]any)
-	lastContent, _ := contents[len(contents)-1].(map[string]any)
-	parts, _ := lastContent["parts"].([]any)
-
-	// Should be exactly 1 part: just functionResponse.
-	if len(parts) != 1 {
-		t.Fatalf("expected 1 part (functionResponse only), got %d: %v", len(parts), parts)
+	parts := lastContentParts(t, c.sentBody(t))
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 functionResponse parts, got %d: %v", len(parts), parts)
 	}
-	part0, _ := parts[0].(map[string]any)
-	if _, ok := part0["functionResponse"]; !ok {
-		t.Fatalf("only part should be functionResponse, got %v", part0)
+	for i, want := range []struct {
+		name     string
+		mimeType string
+		img      []byte
+		result   string
+	}{
+		{"read_file", "image/png", imgA, "first"},
+		{"screenshot", "image/jpeg", imgB, "second"},
+	} {
+		fr := functionResponsePart(t, parts[i])
+		if got, _ := fr["name"].(string); got != want.name {
+			t.Errorf("part %d: functionResponse.name = %q, want %q", i, got, want.name)
+		}
+		resp, _ := fr["response"].(map[string]any)
+		if got, _ := resp["result"].(string); got != want.result {
+			t.Errorf("part %d: functionResponse.response.result = %q, want %q", i, got, want.result)
+		}
+		gotMime, gotData := functionResponseInlineImage(t, fr)
+		if gotMime != want.mimeType {
+			t.Errorf("part %d: nested inlineData.mimeType = %q, want %q", i, gotMime, want.mimeType)
+		}
+		if wantData := base64.StdEncoding.EncodeToString(want.img); gotData != wantData {
+			t.Errorf("part %d: nested inlineData.data = %q, want %q", i, gotData, wantData)
+		}
+	}
+}
+
+func TestComplete_ToolResultImage_ModelSupport(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47}
+
+	for _, tc := range []struct {
+		model     string
+		supported bool
+	}{
+		{"gemini-3-pro-preview", true},
+		{"gemini-3.1-pro-preview", true},
+		{"gemini-3.5-flash-lite", true},
+		{"gemini-2.5-pro", false},
+		{"gemini-1.5-flash", false},
+		{"gemini-test", false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			c := newGeminiRequestCapture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			_, err := c.adapter.Complete(ctx, llm.Request{
+				Model: tc.model,
+				Messages: []llm.Message{
+					llm.User("read the image"),
+					assistantToolCall("call_1", "read_file", `{}`),
+					toolResultWithImage("call_1", "read_file", "file contents", imgBytes, "image/png"),
+				},
+			})
+
+			if tc.supported {
+				if err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+				parts := lastContentParts(t, c.sentBody(t))
+				if len(parts) != 1 {
+					t.Fatalf("expected 1 part, got %d: %v", len(parts), parts)
+				}
+				gotMime, _ := functionResponseInlineImage(t, functionResponsePart(t, parts[0]))
+				if gotMime != "image/png" {
+					t.Errorf("nested inlineData.mimeType = %q, want %q", gotMime, "image/png")
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected an error for model %q", tc.model)
+			}
+			var ce *llm.ConfigurationError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
+			}
+			if !strings.Contains(err.Error(), "tool-result images") {
+				t.Errorf("error %q should name the unsupported capability", err.Error())
+			}
+			if c.callCount() != 0 {
+				t.Fatalf("rejected request reached the transport (%d calls)", c.callCount())
+			}
+		})
+	}
+}
+
+func TestToolResultImage_UnsupportedModel_RejectedOnEveryDispatchPath(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4E, 0x47}
+	req := llm.Request{
+		Model: "gemini-2.5-pro",
+		Messages: []llm.Message{
+			llm.User("read the image"),
+			assistantToolCall("call_1", "read_file", `{}`),
+			toolResultWithImage("call_1", "read_file", "file contents", imgBytes, "image/png"),
+		},
+	}
+
+	for _, tc := range []struct {
+		name string
+		call func(ctx context.Context, a *Adapter) error
+	}{
+		{"Complete", func(ctx context.Context, a *Adapter) error {
+			_, err := a.Complete(ctx, req)
+			return err
+		}},
+		{"Stream", func(ctx context.Context, a *Adapter) error {
+			_, err := a.Stream(ctx, req)
+			return err
+		}},
+		{"CountInputTokens", func(ctx context.Context, a *Adapter) error {
+			_, err := a.CountInputTokens(ctx, req)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newGeminiRequestCapture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			err := tc.call(ctx, c.adapter)
+			if err == nil {
+				t.Fatalf("expected an error")
+			}
+			var ce *llm.ConfigurationError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
+			}
+			if c.callCount() != 0 {
+				t.Fatalf("rejected request reached the transport (%d calls)", c.callCount())
+			}
+		})
 	}
 }
 

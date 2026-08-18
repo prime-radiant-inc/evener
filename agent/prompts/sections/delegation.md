@@ -54,3 +54,12 @@ never `git add -A` or `git add .` — so an unrelated dirty worktree can't end u
 in the commit. The subagent must report the commands run, test results, staged
 files, commit hash, pushed remote/branch, and final status. The parent must
 still verify the resulting repository state before reporting success.
+
+By default a delegate shares your working directory. That is right for
+read-only work: scouting, research, review, verification that only reads. Give
+a delegate `isolation="worktree"` (its own branch-and-checkout lane) whenever
+its edits could collide with anyone else's: two or more delegates writing in
+parallel, or a writing delegate while you keep editing yourself. One writer at
+a time in a shared directory is fine. Worktree lanes need a local git checkout;
+retire a lane with `manage_worktree` dispose when the delegate's work is merged
+or abandoned.

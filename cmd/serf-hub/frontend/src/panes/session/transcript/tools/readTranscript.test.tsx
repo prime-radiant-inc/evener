@@ -184,3 +184,35 @@ test("body renders nothing when there is no output at all", () => {
   const { container } = render(<Body item={item({ toolName: "read_transcript" })} live={false} />);
   expect(container.textContent).toBe("");
 });
+
+// --- body: the request arguments, so "what range/scope was asked for" is answerable ---
+
+test("body shows the pretty-printed request arguments, above the transcript content", () => {
+  const d = toolRendererFor("read_transcript");
+  const Body = d.body!;
+  const { container } = render(
+    <Body item={call({ transcript_ref: "local:01KABC", range: "last:40" }, MARKDOWN_ENVELOPE)} live={false} />,
+  );
+  const section = screen.getByRole("region", { name: "Tool call arguments" });
+  expect(section.textContent).toContain('"range": "last:40"');
+  const argsIndex = container.textContent!.indexOf('"range"');
+  const outputIndex = container.textContent!.indexOf("## Turn 1");
+  expect(argsIndex).toBeGreaterThanOrEqual(0);
+  expect(argsIndex).toBeLessThan(outputIndex);
+});
+
+test("body shows the request arguments above the raw output when the envelope isn't parseable JSON", () => {
+  const d = toolRendererFor("read_transcript");
+  const Body = d.body!;
+  const bad = item({
+    toolName: "read_transcript",
+    argumentsJSON: JSON.stringify({ transcript_ref: "local:01KABC", range: "last:5" }),
+    output: "plain text fallback",
+  });
+  const { container } = render(<Body item={bad} live={false} />);
+  const section = screen.getByRole("region", { name: "Tool call arguments" });
+  expect(section.textContent).toContain('"range": "last:5"');
+  const argsIndex = container.textContent!.indexOf('"range"');
+  const outputIndex = container.textContent!.indexOf("plain text fallback");
+  expect(argsIndex).toBeLessThan(outputIndex);
+});

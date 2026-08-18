@@ -16,8 +16,8 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/test-coverage-floor.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work serf-testcov-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work serf-testcov-selftest
+trap 'scratch_rm' EXIT
 
 # The script derives repo_root and the floors path from its OWN location, so the
 # copy lives in the throwaway repo's scripts/ and both land inside it naturally —

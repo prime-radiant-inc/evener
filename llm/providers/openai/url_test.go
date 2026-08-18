@@ -82,3 +82,44 @@ func TestChatCompletionsURL_NormalizesTrailingV1(t *testing.T) {
 		})
 	}
 }
+
+// TestModelsURL_NormalizesTrailingV1 covers issue #13's validation finding: a
+// BaseURL that already ends in /v1 (the form gateway docs hand out, e.g.
+// OPENAI_BASE_URL=https://gateway/v1) must not double the /v1 segment on the
+// models list URL, matching the normalization responsesURL and
+// chatCompletionsURL already perform.
+func TestModelsURL_NormalizesTrailingV1(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "base without trailing /v1 gets /v1/models appended",
+			baseURL: "https://host.example",
+			want:    "https://host.example/v1/models",
+		},
+		{
+			name:    "base with trailing /v1 is not doubled",
+			baseURL: "https://host.example/v1",
+			want:    "https://host.example/v1/models",
+		},
+		{
+			name:    "base with trailing /v1/ (slash) is not doubled",
+			baseURL: "https://host.example/v1/",
+			want:    "https://host.example/v1/models",
+		},
+		{
+			name:    "default OpenAI base URL is unaffected",
+			baseURL: defaultAPIBaseURL,
+			want:    defaultAPIBaseURL + "/v1/models",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{BaseURL: tc.baseURL}
+			if got := a.modelsURL(); got != tc.want {
+				t.Fatalf("modelsURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -61,9 +61,10 @@ resolves every cited source path, and
 renamed heading, a moved package, or a renamed function fails loudly
 instead of leaving a citation that points at nothing.
 
-`scripts/scenario-cite-migrate.sh` moves surviving `:line` citations
-onto symbol anchors where the card's own prose and the line number
-agree on which symbol is meant.
+Cite Go code with a symbol anchor (`#Symbol` after the path), never with
+a line number — a line number is invalidated silently by any edit above
+it. (The one-shot migration tool that swept the corpus onto symbol
+anchors is retired; see git history for `scenario-cite-migrate.sh`.)
 
 ## How to run
 

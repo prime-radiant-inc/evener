@@ -920,6 +920,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err := s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		return delegateStartFailed(err)
 	}
+	// Read the overlap before this delegate is prepared or tracked, while the
+	// siblings it would join are still the only running children.
+	sharedWorkspaceAdvisory := s.sharedWorkspaceDelegateWarning(isolationName)
 	reservation, err := s.delegateController.ReserveCreate(actor, descriptor)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -978,7 +981,12 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
-	return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
+	result := createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
+	// The advisory rides the launched delegate's own result only: it is
+	// metadata for the caller's next isolation choice, not delegate output, not
+	// an EventWarning, and not durable job state a later delegate_send replays.
+	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory)
+	return result
 }
 
 func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {

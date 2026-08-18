@@ -2206,12 +2206,30 @@ export function resetThreadsStoreForTests(): void {
   clientReadyOrRewired = Promise.resolve();
   wiredClient = null;
   readyEpoch = 0;
-  threadsStore.setState({
-    threads: new Map(),
-    frameTimes: new Map(),
-    hydrations: new Map(),
-    watchedThreads: new Map(),
-    watchedFrameTimes: new Map(),
-    deletedRefs: new Set(),
-  });
+  // replace:true, rebuilt from getInitialState() rather than a partial merge
+  // onto whatever threadsStore currently holds: Zustand's default setState
+  // does Object.assign({}, state, partial), which copies every OTHER
+  // current property - including any action method a test has vi.spyOn'd,
+  // like send/queue/steer - forward into the new state object unchanged. A
+  // spy installed before any later setState call (e.g. this file's own
+  // focusSession helper, called after vi.spyOn(threadsStore.getState(),
+  // "send") in CommandPalette.test.tsx) therefore survives vi.restoreAllMocks()
+  // forever: restoreAllMocks() only restores the ORIGINAL object it patched,
+  // not the merged object that has since superseded it as threadsStore's
+  // current state. getInitialState() returns Zustand's own pristine,
+  // closure-captured-once state object, untouched by any setState call ever
+  // made, so rebuilding from it guarantees no stale spy on any action method
+  // can outlive this reset (kata ycet).
+  threadsStore.setState(
+    {
+      ...threadsStore.getInitialState(),
+      threads: new Map(),
+      frameTimes: new Map(),
+      hydrations: new Map(),
+      watchedThreads: new Map(),
+      watchedFrameTimes: new Map(),
+      deletedRefs: new Set(),
+    },
+    true,
+  );
 }

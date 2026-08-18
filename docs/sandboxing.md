@@ -370,10 +370,13 @@ tools that default to deny.)
 `--sandbox-net off` governs the **tool plane**:
 
 - **Model-authored** spawned processes (the shell, `rg`, hook commands) get
-  `--unshare-net` — no network interfaces at all, so no TCP, UDP, or DNS. MCP server
-  subprocesses are the one exception: see "Hooks and MCP under a sandbox" below —
-  they are trusted infrastructure, not model-directed egress, and net=off does not
-  sever them (ruled by Jesse 2026-08-07, kata 83pm).
+  `--unshare-net` — no network interfaces at all, so no TCP, UDP, DNS, **or
+  loopback**. Loopback is the sharp edge: `net=off` may break tests that start or
+  connect to a local network server, which is why the `delegate` tool's
+  `sandbox_net` description says so up front. MCP server subprocesses are the one
+  exception: see "Hooks and MCP under a sandbox" below — they are trusted
+  infrastructure, not model-directed egress, and net=off does not sever them
+  (ruled by Jesse 2026-08-07, kata 83pm).
 - Serf-process tool egress — `web_fetch` and `web_search` — is disabled with a
   legible error. These are model-directed egress and stay refused under net=off
   regardless of the kata 83pm MCP carve-out.

@@ -140,6 +140,44 @@ func TestTUIStableDelegateShellRemainsJobAddressed(t *testing.T) {
 	}
 }
 
+// TestTUISteeringInjectedTiesEveryJobNotificationBlock is the end-to-end
+// repro for issue #49: the daemon joins every job's <job-notification> block
+// from one poll tick into a single steering event with "\n"
+// (agent/session_lifecycle.go), so a steering payload naming two jobs must
+// tie both rail rows to their own rich headline, not just the first (whose
+// body would otherwise swallow the rest under a greedy match).
+func TestTUISteeringInjectedTiesEveryJobNotificationBlock(t *testing.T) {
+	m := newTUIStableDelegateModel()
+	sendTUINotification(t, &m, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		Ref: "local:root",
+		Job: appwire.SerfJobInfo{JobID: "job_A", JobType: "shell", Status: "running", Background: true},
+	})
+	sendTUINotification(t, &m, appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		Ref: "local:root",
+		Job: appwire.SerfJobInfo{JobID: "job_B", JobType: "shell", Status: "running", Background: true},
+	})
+
+	blockA := `<job-notification job_id="job_A" job_type="delegate" status="completed" exit_code="0">` +
+		`excerpt: {"data":{"test_summary":"all green","commit_hashes":["abcdef1234567890"],"concerns":["c1"]}}` +
+		`</job-notification>`
+	blockB := `<job-notification job_id="job_B" job_type="delegate" status="completed" exit_code="0">` +
+		`excerpt: {"data":{"test_summary":"3 passed","commit_hashes":["1234567890abcdef"]}}` +
+		`</job-notification>`
+	sendTUINotification(t, &m, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+		Ref:  "local:root",
+		Text: blockA + "\n" + blockB,
+	})
+
+	runA := requireTUIJobRun(t, &m, "job_A")
+	if want := "all green · abcdef12 · 1 concern"; runA.Headline != want {
+		t.Fatalf("job_A headline = %q, want %q (must not degrade to the bare status)", runA.Headline, want)
+	}
+	runB := requireTUIJobRun(t, &m, "job_B")
+	if want := "3 passed · 12345678"; runB.Headline != want {
+		t.Fatalf("job_B headline = %q, want %q (must still get a rail tie)", runB.Headline, want)
+	}
+}
+
 func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T) {
 	m := newTUIStableDelegateModel()
 	sendTUIStableDelegateNotification(t, &m, appwire.SerfDelegateInfo{
