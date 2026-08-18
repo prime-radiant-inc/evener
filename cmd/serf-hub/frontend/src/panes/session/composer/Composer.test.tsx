@@ -1006,18 +1006,24 @@ function routedCalls(fake: FakeClient): string[] {
   return fake.calls.filter((c) => c.method === "turn/start" || c.method === "turn/queue").map((c) => c.method);
 }
 
-// The same race, in its WIDEST form. A cold "notLoaded" thread is one the hub
+// The same race, in its WIDEST form. A finished thread is one the hub
 // auto-resumes on the first turn/start, and resuming means spawning a daemon -
 // so the gap before any status frame arrives is seconds, not one frame.
+//
+// Both finished shapes reach it. "notLoaded" is a cold thread with no daemon
+// behind it (app_threadread.go's pastEntryThread) and "closed" is a session
+// that shut down in front of us; the hub hands the same resumable capability
+// set to both (app_threadread.go's pastThreadCapabilities, pushed at close by
+// stampClosedThreadCapabilities), so the fixture only varies the status.
 //
 // The daemon exists by the time the queue goes out: MutationDispatcher
 // serializes per targetRef, so the second mutation is not dispatched until the
 // first turn/start has returned a receipt, and that receipt is what the
 // auto-resume produced. turn/queue has no resume loop of its own
 // (app_rpc.go gives one to turn/start alone), and it does not need one here.
-async function mountColdResumedThread(): Promise<FakeClient> {
+async function mountColdResumedThread(statusType = "notLoaded"): Promise<FakeClient> {
   const fake = await mountComposer("ref_a", {
-    status: { type: "notLoaded" },
+    status: { type: statusType },
     serf: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
   // The real daemon reserves a turn id on the first turn/start, so every later
@@ -1057,6 +1063,25 @@ async function mountColdResumedThread(): Promise<FakeClient> {
 test("a cold auto-resumed session queues the second message rather than bouncing it too", async () => {
   const user = userEvent.setup();
   const fake = await mountColdResumedThread();
+
+  await user.click(textarea());
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  await user.type(textarea(), "second message");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
+  expect(routedCalls(fake)).toEqual(["turn/start", "turn/queue"]);
+});
+
+// A session that closed in front of us resumes on the same first turn/start,
+// through the same seconds-wide window - the status is the only difference, and
+// the daemon it wakes refuses a second turn/start exactly as readily.
+test("a closed session that a first message resumed queues the second message too", async () => {
+  const user = userEvent.setup();
+  const fake = await mountColdResumedThread("closed");
 
   await user.click(textarea());
   await user.type(textarea(), "first message");

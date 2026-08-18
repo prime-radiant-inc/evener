@@ -568,16 +568,14 @@ export function Composer({ ref }: ComposerProps) {
   // advertises Send for an exited serf thread and auto-resumes it on the first
   // message (turn/start alone carries that resume loop - app_rpc.go). The
   // CAPABILITY is the authority for THAT question, not the availability table,
-  // which reports both-false for ended/closed because no turn is in flight to
-  // send to or queue behind.
+  // which reports both-false for a finished session with nothing pending,
+  // because no turn is in flight to send to or queue behind.
   //
-  // It only substitutes when the table has nothing to offer. Overriding
-  // unconditionally also clobbered "notLoaded", which is an ENDED_STATUSES
-  // member the table does NOT report both-false for: tier 6 resolves a cold
-  // thread's second message to queue-mode, and a blanket override turned it
-  // back into the turn/start that bounces. That is the widest instance of the
-  // race tier 6 exists for, not a corner - resuming a cold thread means
-  // spawning a daemon, so the window before any status frame is seconds.
+  // It only substitutes when the table has nothing to offer, which is what
+  // keeps it clear of tier 6. Overriding unconditionally turned every finished
+  // status' SECOND message back into the turn/start that bounces - the table
+  // answers queue-mode there, for the whole time the resume takes to produce a
+  // status frame, which for a session that has to spawn a daemon is seconds.
   const availability =
     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
@@ -1222,9 +1220,11 @@ export function Composer({ ref }: ComposerProps) {
                           aria-label="Send"
                           icon={<SendIcon />}
                           // canCompose comes from the availability table, which
-                          // reports both-false for ended/closed: it answers "can
-                          // this turn be sent to right now", and a follow-up to a
-                          // finished session resumes it first. The capability is
+                          // reports both-false for an idle finished session: it
+                          // answers "can this turn be sent to right now", and a
+                          // follow-up to a finished session resumes it first
+                          // (only once that resume is in flight does the table
+                          // have an answer of its own). The capability is
                           // the authority there, the same way it is for whether
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
