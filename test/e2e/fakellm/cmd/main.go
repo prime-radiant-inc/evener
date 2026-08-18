@@ -240,7 +240,12 @@ func (s *sessions) begin(call *fakellm.Call) (state *sessionState, name string, 
 	state = s.byID[previous] // a session's first round has no previous id
 	switch {
 	case state == nil:
-		state = &sessionState{name: call.ToolCallID()}
+		// Name the session by the affinity header if present, otherwise by tool-call ID.
+		sessionName := call.AffinityHeader()
+		if sessionName == "" {
+			sessionName = call.ToolCallID()
+		}
+		state = &sessionState{name: sessionName}
 	case previous != state.lastAnswered:
 		state.turnRound = 0 // the round after `previous` was abandoned
 	}

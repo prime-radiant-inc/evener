@@ -55,10 +55,11 @@ type Call struct {
 	// Body is the decoded chat-completions request.
 	Body map[string]any
 
-	toolCallID string
-	cancelled  <-chan struct{}
-	once       sync.Once
-	reply      chan reply
+	toolCallID      string
+	affinityHeader  string
+	cancelled       <-chan struct{}
+	once            sync.Once
+	reply           chan reply
 }
 
 // Cancelled is closed when the requester has given up on this round -- a Stop
@@ -66,6 +67,11 @@ type Call struct {
 // discarded, so a driver holding the round should stop holding, and must not
 // commit per-session side effects for a round the session will never record.
 func (c *Call) Cancelled() <-chan struct{} { return c.cancelled }
+
+// AffinityHeader is the session-affinity header value from the request, if present.
+// It may be one of session_id, x-client-request-id, or x-session-affinity headers
+// sent by serf when send_session_affinity_headers is configured. Empty if absent.
+func (c *Call) AffinityHeader() string { return c.affinityHeader }
 
 type reply struct {
 	text     string
@@ -279,7 +285,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := &Call{Body: body, toolCallID: mintToolCallID(), cancelled: r.Context().Done(), reply: make(chan reply, 1)}
+	// Extract affinity header if present. Prefer session_id, then x-client-request-id, then x-session-affinity.
+	// All three should have the same value when present, but we prioritize in this order.
+	affinityHeader := r.Header.Get("session_id")
+	if affinityHeader == "" {
+		affinityHeader = r.Header.Get("x-client-request-id")
+	}
+	if affinityHeader == "" {
+		affinityHeader = r.Header.Get("x-session-affinity")
+	}
+
+	call := &Call{Body: body, toolCallID: mintToolCallID(), affinityHeader: affinityHeader, cancelled: r.Context().Done(), reply: make(chan reply, 1)}
 	select {
 	case s.calls <- call:
 	case <-r.Context().Done():
