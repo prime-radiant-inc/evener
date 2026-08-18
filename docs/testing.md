@@ -322,12 +322,18 @@ mirror has never heard of makes the doctor refuse the store and name it.
 Verified by adding a synthetic field to `clientMutationSnapshot` and
 watching the test name it unprompted, with no test edit.
 
-The gotchas in a fixture builder are all in the leaves: `json.RawMessage`
-must contain valid JSON, any other `[]byte` marshals as base64,
-`time.Time` needs whole seconds wherever the encoding is RFC 3339, floats
-must be integral to survive widening through `any`, and an unhandled
-`reflect.Kind` must fail loudly rather than skip — a builder that
-silently skips a kind is a test that silently stops covering it.
+The gotchas in a fixture builder are all in the leaves. This example
+demonstrates two: `json.RawMessage` must contain valid JSON, and any
+other `[]byte` marshals as base64. Two more are general technique that
+this particular type never exercises, because `clientMutationSnapshot`
+carries no `time.Time`, no float and no `any` — a `time.Time` needs whole
+seconds wherever the encoding is RFC 3339, and floats must be integral to
+survive widening through `any`. The last gotcha is the structural one: an
+unhandled `reflect.Kind` must fail loudly rather than skip, because a
+builder that silently skips a kind is a test that silently stops covering
+it. `fillEveryField` has no `reflect.Interface` case, so an `any` field
+added to the snapshot tomorrow stops the test rather than going quietly
+untested.
 
 Two corollaries:
 
