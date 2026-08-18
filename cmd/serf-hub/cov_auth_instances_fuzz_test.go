@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -40,7 +41,12 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		c.now = func() time.Time { return now }
 
-		// Constructor/default configuration and pure status helpers.
+		// Constructors stay panic-net: *hubAuthController carries function-valued
+		// fields (c.now, c.generateState, ...) that cannot be compared for
+		// equality, and building one is a side-effecting factory (it loads the
+		// credentials store from disk), not a pure projection of its arguments.
+		// Their correctness is exercised indirectly, through every asserted call
+		// below that runs against the controller they build.
 		_ = newHubAuthController(map[string]string{"HOME": root})
 		_ = newHubAuthController()
 		_ = newHubAuthControllerWithStore(root, nil)
@@ -48,35 +54,102 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		hubAuthControllerSetup = func(*hubAuthController) {}
 		_ = newHubAuthControllerWithStore(root, store)
 		hubAuthControllerSetup = oldSetup
-		_ = effectiveHubAuthEnv(map[string]string{"COV_AUTH": "1"})
-		_ = openAIStateDirFromEnv(map[string]string{"HOME": root})
-		for _, expiry := range []time.Time{{}, now.Add(-time.Second), now.Add(time.Minute), now.Add(time.Hour)} {
-			r := authopenai.AuthRecord{Expiry: expiry, Source: authopenai.AuthSourceOAuth}
-			_ = openAIStatusFromRecord(now, r)
-			_ = openAIRecordNeedsRefresh(now, r)
+
+		// Pure status/projection helpers: assert against independently written
+		// expected values instead of discarding the result (docs/testing.md's
+		// executed-vs-tested note on the serffuzz cov_* driver family).
+		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "1"}); got["COV_AUTH"] != "1" {
+			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want \"1\"", got["COV_AUTH"])
 		}
-		_ = c.authRecordFromTokens(authopenai.TokenSet{AccessToken: "a"})
-		_ = c.authRecordFromTokens(authopenai.TokenSet{AccessToken: "a", TokenType: "Custom"})
+		wantStateDir := filepath.Join(root, ".local", "state", "serf")
+		if runtime.GOOS == "windows" {
+			// The Windows branch looks for USERPROFILE/HOMEDRIVE+HOMEPATH, neither of
+			// which this env map sets, so it falls back to os.TempDir() instead.
+			wantStateDir = filepath.Join(os.TempDir(), ".local", "state", "serf")
+		}
+		if got := openAIStateDirFromEnv(map[string]string{"HOME": root}); got != wantStateDir {
+			t.Fatalf("openAIStateDirFromEnv(HOME=%s) = %q, want %q", root, got, wantStateDir)
+		}
+
+		type authStatusCase struct {
+			expiry       time.Time
+			wantStatus   authopenai.AuthStatus
+			wantNeedsRef bool
+		}
+		for _, tc := range []authStatusCase{
+			// Zero expiry: never logged out, never due for refresh.
+			{time.Time{}, authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth}, false},
+			// Already expired: signed out, refresh moot once login is required.
+			{now.Add(-time.Second), authopenai.AuthStatus{Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsLogin: true}, true},
+			// Expires inside the 5-minute refresh window but not yet: signed in, needs refresh.
+			{now.Add(time.Minute), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Minute), NeedsRefresh: true}, true},
+			// Comfortably valid: signed in, no refresh due.
+			{now.Add(time.Hour), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Hour)}, false},
+		} {
+			r := authopenai.AuthRecord{Expiry: tc.expiry, Source: authopenai.AuthSourceOAuth}
+			if got := openAIStatusFromRecord(now, r); got != tc.wantStatus {
+				t.Fatalf("openAIStatusFromRecord(expiry=%v) = %+v, want %+v", tc.expiry, got, tc.wantStatus)
+			}
+			if got := openAIRecordNeedsRefresh(now, r); got != tc.wantNeedsRef {
+				t.Fatalf("openAIRecordNeedsRefresh(expiry=%v) = %v, want %v", tc.expiry, got, tc.wantNeedsRef)
+			}
+		}
+
+		wantTokenRecord := authopenai.AuthRecord{
+			Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
+			ObtainedAt: now, TokenType: "Bearer", AccessToken: "a",
+		}
+		if got := c.authRecordFromTokens(authopenai.TokenSet{AccessToken: "a"}); got != wantTokenRecord {
+			t.Fatalf("authRecordFromTokens(no token type) = %+v, want %+v", got, wantTokenRecord)
+		}
+		wantTokenRecord.TokenType = "Custom"
+		if got := c.authRecordFromTokens(authopenai.TokenSet{AccessToken: "a", TokenType: "Custom"}); got != wantTokenRecord {
+			t.Fatalf("authRecordFromTokens(explicit token type) = %+v, want %+v", got, wantTokenRecord)
+		}
+
 		c.cfg = authopenai.Config{}
-		_ = c.config()
+		if got := c.config(); got.IssuerBaseURL != "https://auth.openai.com" {
+			t.Fatalf("config() with zero c.cfg: IssuerBaseURL = %q, want the compiled-in default", got.IssuerBaseURL)
+		}
 		c.cfg = authopenai.DefaultConfig()
-		_ = c.config()
+		c.cfg.ClientID = "cov-sentinel-client-id" // proves config() passes c.cfg through unchanged rather than recomputing it
+		if got := c.config(); got.ClientID != "cov-sentinel-client-id" {
+			t.Fatalf("config() with non-empty c.cfg: ClientID = %q, want the sentinel unchanged", got.ClientID)
+		}
+		c.cfg = authopenai.DefaultConfig()
 
 		// Resolution, legacy status, key status, list, and API-key validation.
-		_, _ = c.resolveInstanceBehaviorTag("x")
+		if _, err := c.resolveInstanceBehaviorTag("x"); err == nil {
+			t.Fatal("resolveInstanceBehaviorTag(x) before providers.toml exists: want error, got nil")
+		}
 		if err := os.WriteFile(providers, []byte("bad = ["), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = c.resolveInstanceBehaviorTag("x")
+		if _, err := c.resolveInstanceBehaviorTag("x"); err == nil {
+			t.Fatal("resolveInstanceBehaviorTag(x) against malformed providers.toml: want error, got nil")
+		}
 		if err := os.WriteFile(providers, []byte("schema=1\ndefault=\"work\"\n[instances.work]\ntype=\"openai\"\n[instances.ant]\ntype=\"anthropic\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = c.resolveInstanceBehaviorTag("work")
-		_, _ = c.resolveInstanceBehaviorTag("missing")
-		_ = c.instanceIsOpenAI("work")
-		_ = c.instanceIsOpenAI("openai")
-		_ = c.instanceIsOpenAI("ant")
-		_ = c.requiresOpenAI("ant")
+		if tag, err := c.resolveInstanceBehaviorTag("work"); err != nil || tag != "openai" {
+			t.Fatalf("resolveInstanceBehaviorTag(work) = %q, %v, want \"openai\", nil", tag, err)
+		}
+		if _, err := c.resolveInstanceBehaviorTag("missing"); err == nil {
+			t.Fatal("resolveInstanceBehaviorTag(missing): want error, got nil")
+		}
+		if got := c.instanceIsOpenAI("work"); !got {
+			t.Fatal("instanceIsOpenAI(work) = false, want true (declared type \"openai\")")
+		}
+		if got := c.instanceIsOpenAI("openai"); !got {
+			t.Fatal("instanceIsOpenAI(openai) = false, want true (no such instance; falls back to name==\"openai\")")
+		}
+		if got := c.instanceIsOpenAI("ant"); got {
+			t.Fatal("instanceIsOpenAI(ant) = true, want false (declared type \"anthropic\")")
+		}
+		wantRequiresOpenAIErr := `OAuth is not supported for instance "ant"`
+		if err := c.requiresOpenAI("ant"); err == nil || err.Error() != wantRequiresOpenAIErr {
+			t.Fatalf("requiresOpenAI(ant) = %v, want error %q", err, wantRequiresOpenAIErr)
+		}
 		_, _ = c.Status(appwire.AuthStatusParams{Provider: "work"})
 		_, _ = c.Status(appwire.AuthStatusParams{Provider: "unknown"})
 		c.providersConfigPath = ""
