@@ -25,19 +25,19 @@
 //
 // Because sessions overlap, every round line names its session, so a log with
 // several of them running is still readable one session at a time: grep it for
-// the name. The name is the tool-call id of the session's first round — a
-// token that session replays on every later request and that appears nowhere
-// else, so it also cross-references to the session's own api.jsonl.
+// the name. The name is the daemon's own session id, read off the
+// session-affinity headers (session_id, then x-client-request-id, then
+// x-session-affinity), which is why the fixture's providers.toml sets
+// send_session_affinity_headers — see scripts/e2e-webui-turn-controls.sh.
+// That name is the id the daemon uses everywhere else, so a round line points
+// straight at the session's own sessions/<id>.api.jsonl.
 //
-// Nothing in the request BODY supplies a session identity to use instead:
-// there is no user field, and the script hands the operator ONE spawn call to
-// paste repeatedly, so prompt, model and working directory are routinely
-// identical. The daemon does know its session id and sends it as the
-// session-affinity headers (session_id, x-client-request-id,
-// x-session-affinity), but only on an instance that sets
-// send_session_affinity_headers — a per-instance quirk the fixture's
-// providers.toml does not set. The tool-call id needs no provider
-// configuration to be true.
+// Without those headers the name falls back to the tool-call id the fake
+// minted for the session's first round: a token that session replays on every
+// later request, appears nowhere else, and needs no provider configuration to
+// be true. Nothing in the request BODY would serve — there is no user field,
+// and the script hands the operator ONE spawn call to paste repeatedly, so
+// prompt, model and working directory are routinely identical.
 //
 // Usage:
 //
@@ -151,12 +151,13 @@ func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds 
 // --background-job-until gives each session one background job, on its first
 // turn, rather than one per turn or one per process.
 type sessionState struct {
-	// name is what the log calls this session: the tool-call id of the first
-	// round this driver saw from it, which is also the first key it was filed
-	// under. The session replays that id on its very next request, and every
-	// id the fake mints is unique, so the name is a token that appears in this
-	// session's transcript and no other's — an operator can grep it in
-	// fakellm.log and cross-check it against the session's api.jsonl.
+	// name is what the log calls this session: its session-affinity header when
+	// the instance sends one, which is the daemon's own session id, and
+	// otherwise the tool-call id of the first round this driver saw from it —
+	// the first key it was filed under, replayed by the session on its very
+	// next request. Either way the name is unique to this session and appears
+	// in no other's transcript, so an operator can grep it in fakellm.log and
+	// cross-check it against sessions/<id>.api.jsonl.
 	//
 	// Fixed when the state is built and never written again. It is still read
 	// back out of begin under the lock rather than off the state afterwards:
