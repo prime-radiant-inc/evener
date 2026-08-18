@@ -1524,7 +1524,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 		schema.SessionMeta{ID: rootSessionID, ProfileID: "openai", Model: "gpt-5.2", CreatedAt: time.Unix(100, 0).UTC()},
 		RestoreSessionConfig{
 			StateDir: stateDir,
-			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: afero.NewMemMapFs()},
 		},
 	)
 	if err != nil {
@@ -1767,7 +1767,7 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}),
 		withSteps(func(llm.Request) llm.Response {
 			return communicateResponse(true, "retried exact attention")
 		}),
@@ -2005,9 +2005,9 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 			MaxConcurrentDelegateTurns: 2,
 		}).toSnapshot(),
 	}
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer restored.Close()
 	start, ok := resumeTurnSeedFindSessionStart(t, restored)
@@ -2420,7 +2420,7 @@ func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}),
 	)
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
@@ -2456,7 +2456,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
@@ -2491,7 +2491,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
@@ -2550,6 +2550,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 
 func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *testing.T) {
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	rootID := identifier.MustNewSessionID()
 	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
@@ -2570,13 +2571,13 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 		t.Fatalf("close root transcript: %v", err)
 	}
 	meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
-	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+	if err := schema.SaveSessionMetaWithFS(metaFS, stateDir, meta); err != nil {
 		t.Fatalf("save root metadata: %v", err)
 	}
 	client := llm.NewClient()
 	adapter := &delegateAttentionListModelsAdapter{}
 	client.Register(adapter)
-	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}

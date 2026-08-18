@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -15,6 +17,7 @@ import (
 func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -32,7 +35,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := NewOpenAIProfile("gpt-5.2")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -53,7 +56,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 		t.Fatal("NameUpdatedAt is zero")
 	}
 
-	persisted, err := schema.LoadSessionMeta(dir, sess.ID())
+	persisted, err := schema.LoadSessionMetaWithFS(metaFS, dir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -78,13 +81,14 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(`{"name":"!!!"}`)} },
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -114,10 +118,11 @@ func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testi
 func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -149,10 +154,11 @@ func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -196,6 +202,7 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -203,7 +210,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 		},
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -234,10 +241,11 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -281,10 +289,11 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -322,10 +331,11 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -357,6 +367,7 @@ func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	meta := schema.SessionMeta{
@@ -368,9 +379,9 @@ func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.
 		NameSource:    "manual",
 		NameUpdatedAt: time.Now().UTC(),
 	}
-	sess, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	sess, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer sess.Close()
 

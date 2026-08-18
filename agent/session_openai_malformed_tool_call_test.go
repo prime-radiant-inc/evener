@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -20,6 +22,7 @@ import (
 
 func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	const malformedArgs = `{"value": broken`
 
 	var mu sync.Mutex
@@ -90,6 +93,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -195,6 +199,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
 				noSyncJobStore:      true,
+				metaFS:              metaFS,
 			},
 		},
 	)

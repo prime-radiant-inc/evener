@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
@@ -73,6 +75,7 @@ func TestNewSessionReleasesOwnershipWhenInitializationFails(t *testing.T) {
 			return logger.ReserveSession(id)
 		},
 	}
+	cfg.testOnly.metaFS = afero.NewMemMapFs()
 	cfg.testOnly.sessionInitFault = func(point string) error {
 		if point == "new_job_manager" {
 			return errors.New("injected initialization failure")
@@ -98,8 +101,9 @@ func TestNewSessionReleasesOwnershipWhenInitializationFails(t *testing.T) {
 
 func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB"}
-	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+	if err := schema.SaveSessionMetaWithFS(metaFS, stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
 	metaPath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".meta.json")
@@ -116,8 +120,9 @@ func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 				if id != meta.ID {
 					t.Fatalf("ownership ID = %q, want %q", id, meta.ID)
 				}
-				return os.Remove(metaPath)
+				return metaFS.Remove(metaPath)
 			},
+			testOnly: testConfig{metaFS: metaFS},
 		},
 	)
 	if err == nil {

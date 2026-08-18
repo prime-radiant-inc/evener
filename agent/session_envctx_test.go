@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/envctx"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
@@ -49,6 +51,7 @@ func newTestSessionForEnvctx(t *testing.T, opts ...sessionOpt) *Session {
 				minimalSystemPrompt: true,
 				noSyncJobStore:      true,
 				envProbes:           &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
+				metaFS:              afero.NewMemMapFs(),
 			},
 		}),
 	}
@@ -66,7 +69,13 @@ func sendOneUserInput(t *testing.T, s *Session, text string) {
 // loadMetaForTest reloads the session's persisted meta.json from its state dir.
 func loadMetaForTest(t *testing.T, s *Session) schema.SessionMeta {
 	t.Helper()
-	meta, err := schema.LoadSessionMeta(s.stateDir, s.id)
+	var meta schema.SessionMeta
+	var err error
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		meta, err = schema.LoadSessionMetaWithFS(fs, s.stateDir, s.id)
+	} else {
+		meta, err = schema.LoadSessionMeta(s.stateDir, s.id)
+	}
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -225,7 +234,7 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
-	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes, metaFS: afero.NewMemMapFs()}
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
@@ -280,7 +289,7 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
-	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes, metaFS: afero.NewMemMapFs()}
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
