@@ -83,8 +83,8 @@ HUB=http://127.0.0.1:$PORT
 4. Type text into the composer, then press **Shift+Enter** — the Steer
    chord. This is deliberate: the Steer *button* does not render at all in an
    idle session (`showSteer = busy && capabilities.steer`,
-   `panes/session/composer/Composer.tsx:382`), but the chord reaches
-   `handleSteerClick` regardless (`:685-689`), which is exactly the stale
+   `panes/session/composer/Composer.tsx:611`), but the chord reaches
+   `handleSteerClick` regardless (`:1029-1034`), which is exactly the stale
    caller this card cares about.
    ```javascript
    ```javascript
@@ -145,8 +145,9 @@ HUB=http://127.0.0.1:$PORT
   provider: both codes and both messages are exactly as above.
 - **Steps 3-4 (composer)**: no `[data-testid="composer-steer"]` button
   exists; the toast region contains `Steer failed: no active turn`
-  (`Composer.tsx:641-643`); the composer text is **unchanged** (nothing was
-  consumed); `pending-chips` is empty — the composer refuses *before*
+  (`Composer.tsx:947-949`, where `handleSteerClick` composes it from the
+  route); the composer text is **unchanged** (nothing was consumed);
+  `pending-chips` is empty — the composer refuses *before*
   enqueuing anything, so there is no optimistic chip to reconcile; and the
   steer count is identical before and after. Falsify: the text vanishes from
   the composer (silently eaten), a pending chip appears and stays (a request
@@ -176,7 +177,7 @@ rm -rf "$tmpdir"
 - **Shift+Enter is only the Steer chord while `enterToSend` is off** — with
   the `serf.prefs.enterToSend` preference on, Shift+Enter inserts a literal
   newline instead, to avoid doubling up on that preference's own
-  Enter-submits meaning (`Composer.tsx:685-687`). Leave the preference at its
+  Enter-submits meaning (`Composer.tsx:1028-1030`). Leave the preference at its
   default, or seed it to `"0"` before the first page load.
 - The composer's refusal is a **client-side pre-check**, not a round trip:
   `handleSteerClick` returns before `submitAction`, so nothing reaches the
