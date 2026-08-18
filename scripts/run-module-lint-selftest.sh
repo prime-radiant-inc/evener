@@ -7,8 +7,8 @@ runner="$script_dir/run-module-lint.sh"
 makefile="$(cd "$script_dir/.." && pwd)/Makefile"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work serf-module-lint-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work serf-module-lint-selftest
+trap 'scratch_rm' EXIT
 
 assert_count() {
 	actual="$(grep -cF -- "$2" "$1" || :)"

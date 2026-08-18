@@ -29,12 +29,14 @@ echo "== stage 1: raw sandbox-exec deny-default enforcement =="
 
 # A minimal deny-default policy that allows exec/fork + reading a param root but
 # NOT writing it. Proves the kernel honors (deny default) and (param ...).
-ROOT="$(mktemp -d)"
-# macOS mktemp returns /var/folders/... but /var is a symlink to /private/var, so
-# canonicalize: the -D W=$ROOT/allowed param must carry the kernel's real path or
-# the writable-param write below is denied and the smoke test false-FAILs.
-ROOT="$(cd "$ROOT" && pwd -P)"
-trap 'rm -rf "$ROOT"' EXIT
+. "$(dirname "$0")/scratch-lib.sh"
+# scratch_dir canonicalizes, which matters here beyond hygiene: the -D
+# W=$ROOT/allowed param must carry the kernel's real path (/private/var, not
+# the /var symlink) or the writable-param write below is denied and the smoke
+# test false-FAILs. The trap is armed first; scratch_rm with nothing
+# registered is a no-op.
+trap 'scratch_rm' EXIT
+scratch_dir ROOT seatbelt-smoke
 echo hello >"$ROOT/readme"
 
 # A self-contained deny-default policy that exercises read-allow / write-deny.

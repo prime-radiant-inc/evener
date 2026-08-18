@@ -63,6 +63,63 @@ here (vite-cache digest, tmux palette capture, auth stopwatch, composer
 projection refresh) turned out to be an awaitable completion nobody was
 awaiting, and zero were fixed by widening a timeout.
 
+## Destructive Operations and the Tooling Test Estate
+
+Four standing rules (Jesse, 2026-08-17), set after a selftest's cleanup
+deleted a home directory (kata 5hs2). The test that did it was the deepest
+meta-layer in the repo — a selftest of the selftest library, proving a
+delete-guard by handing it live targets.
+
+**No recursive delete takes an argument a caller could clobber.** Scratch
+is minted by `scratch_dir <var> <prefix>` and reclaimed by the no-argument
+`scratch_rm` (scripts/scratch-lib.sh); a delete that cannot be handed a
+path cannot be handed the wrong one. A second sanctioned pattern serves
+the runners that keep scratch on failure or reclaim it across runs: the
+directory is named `<prefix>.$$`, the trap is armed before `mkdir` so a
+signal in the window abandons nothing, and the next run reclaims
+leftovers whose pid suffix no longer answers `kill -0`
+(scripts/covscratch-lib.sh). Every remaining variable-fed recursive
+delete in scripts/ lives on
+`TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned list with the
+reason it is allowed to exist, and the list only shrinks.
+
+Two parts of the rule the audit cannot hold, which is why it is written
+here for people. Its scan is textual and per-line, so four equally banned
+spellings are invisible to it: `find -exec rm`, `xargs rm`, a tab between
+`rm` and its flags, and a backslash-newline continuation that puts the
+flags or the path on the next line. And the count pin is narrower than it
+sounds — it stops a file gaining an *extra* variable-fed delete and it
+fails a listed file whose lines went away, but it cannot see one blessed
+delete being swapped for a different one inside an already-listed file.
+Read the deletes in any diff that touches a listed file.
+
+**Hazards are banned by construction and enforced statically, never
+proven by firing live weapons.** A test never contains a live destructive
+command, even one asserted to be unreachable — an unreachable weapon is a
+weapon plus a claim, and one typo or one mutation run collects on it. To
+prove a guard stops before a delete, put a marker line where the delete
+would be and assert the marker is never reached. Fixtures aim at seeded
+decoy directories, never at `/`, `$HOME`, or anything a person would
+miss. Where deletion itself is the behaviour under test, the delete
+targets fixture-owned paths and sits on the audit's count-pinned list
+with that reason — run-module-lint-selftest's vanishing-scratch fakes
+are the only two such lines.
+
+**Test depth caps at one meta-level.** Tools get selftests; the shared
+libraries under them get one direct test file each; nothing tests the
+tests. A library property is proven once, directly — that every consumer
+actually goes through the library is a static audit's job, not a reason
+to re-run consumers under sabotage.
+
+**A selftest earns its gate slot by pinning outcomes of a tool the gate
+or CI depends on.** Outcomes are exit codes, summaries, refusals, and
+file effects; the argv a script hands a faked binary is an implementation
+restated, and asserting on it is testing the mock. Hand-run conveniences
+fail loudly in front of whoever ran them and get no suite. New tooling
+that accumulates real logic belongs in Go under `go test`, where the type
+system, `-race`, and ordinary unit tests replace an entire shell-fixture
+harness; shell stays for glue.
+
 ## Canonical Gate Matrix
 
 This table is the authoritative answer to which checks run when, what they

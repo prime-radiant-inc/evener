@@ -7,8 +7,8 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 real_make="$(command -v make)"
 . "$(dirname "$0")/selftest-lib.sh"
 
-selftest_scratch work serf-merge-approval-gate-selftest
-trap 'selftest_rm_scratch' EXIT
+scratch_dir work serf-merge-approval-gate-selftest
+trap 'scratch_rm' EXIT
 
 assert_before() {
 	first="$(grep -n -m 1 -F -- "$2" "$1" 2>/dev/null | cut -d: -f1)"

@@ -22,9 +22,9 @@
 #   scripts/report-tmp-debris.sh --paths-only # one path per line, biggest first
 #   scripts/report-tmp-debris.sh --help
 #
-# SERF_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp). It is
-# how report-tmp-debris-selftest.sh points this at a throwaway tree instead of
-# the real /tmp. /tmp is scanned rather than $TMPDIR because that is where the
+# SERF_TMP_DEBRIS_ROOT overrides the directory scanned (default /tmp), so a
+# caller can point this at a throwaway tree instead of the real /tmp.
+# /tmp is scanned rather than $TMPDIR because that is where the
 # debris is: on macOS $TMPDIR is a per-user /var/folders path, and the entries
 # this reports were created against an explicit /tmp path.
 set -uo pipefail
