@@ -115,6 +115,58 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	}
 }
 
+// TestDrainJobTreeRescansWhenAWakeLandsMidPass pins the drain's quiescence
+// verdict against the completion hand-off a single pass can straddle.
+//
+// treeHasOutstandingWork reads eight independent signals in sequence, so it is
+// not a snapshot. A delegate completion hands its work UP the tree in two steps
+// — deliverDelegatePacket arms the coordinator's root attention (raising this
+// wake), then runSubagent clears the subagent's finalizing flag — while a pass
+// reads the attention EARLY and the flag LATE. A pass that straddles the two
+// steps sees both false even though at no instant were they both false, and the
+// drain then returns "" and lets Close() SIGKILL a delegate notification that
+// was already armed and waiting. That is the PRI-2441 B1 flake: a one-shot
+// `serf run` printing "waiting on delegate" instead of the coordinator's real
+// final answer.
+//
+// The wake is the one signal that survives the straddle, because every producer
+// of drain-relevant work raises it. So the pass consumes the wake edge BEFORE it
+// reads any state and re-checks it before concluding quiescence: a wake raised
+// in between means the tree moved under the scan and the verdict is stale. Here
+// the injected kick plays the concurrent completion, raising the wake mid-pass
+// while leaving every signal the pass reads false — exactly the state a
+// straddling pass observes.
+func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	passes := 0
+	kick := func(context.Context) error {
+		passes++
+		if passes == 1 {
+			sess.notify()
+		}
+		return nil
+	}
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Error("drain ran a notification turn with nothing queued")
+		return "", nil
+	}
+
+	// recheck never fires: only the mid-pass wake may cause the second pass, so a
+	// lost wake cannot be masked by the periodic re-check.
+	res, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), kick, process)
+	if err != nil {
+		t.Fatalf("drainJobTreeWith: %v", err)
+	}
+	if res != "" {
+		t.Fatalf("drain result = %q, want empty (no drain turn ran)", res)
+	}
+	if passes != 2 {
+		t.Fatalf("drain passes = %d, want 2: a wake raised while a pass was deciding quiescence must invalidate that pass's verdict and force a re-scan", passes)
+	}
+}
+
 // TestOutstandingDrainJobCountIncludesRunningManagedJobs verifies every owned
 // managed job keeps the drain open while it remains in the running map. Shell
 // execution mode is not part of that durable drain contract.

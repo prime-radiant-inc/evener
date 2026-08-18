@@ -327,6 +327,22 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	lastResult := ""
 	var stallStart time.Time
 	for {
+		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
+		// consults eight independent signals in sequence, so it is not a snapshot, and
+		// a completion that hands work UP the tree moves two of them in turn:
+		// deliverDelegatePacket arms the coordinator's root attention and only THEN
+		// does runSubagent clear the delegating subagent's finalizing flag. The pass
+		// reads the attention early and the flag late, so a pass that straddles the
+		// hand-off sees both false though at no instant were they both false — and
+		// returns "" while an armed delegate notification waits, leaving Close() to
+		// SIGKILL it (the PRI-2441 B1 flake).
+		//
+		// Every producer of drain-relevant work raises this wake, so it is the one
+		// signal that survives the straddle. Consuming the edge here and re-checking
+		// it below turns "I looked and saw nothing" into "I looked and saw nothing,
+		// and nothing moved while I looked" — the only claim that justifies letting
+		// Close() cancel the subtree.
+		takeDrainWake(wake)
 		// Deliver pending watch sends and kick drive-down at EVERY level of the
 		// subtree, not just direct children: outstanding work isolated in a
 		// grandchild (e.g. a restored or lost-wake watch send whose signal never
@@ -361,7 +377,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			return lastResult, err
 		}
 		if !outstanding {
-			// Nothing pending and nothing outstanding anywhere in the subtree.
+			// Nothing pending and nothing outstanding anywhere in the subtree — but the
+			// scan above is not a snapshot. A wake raised since this pass took its edge
+			// means the tree moved while the scan ran, so re-run the pass instead of
+			// trusting a verdict assembled across the change. This terminates: a wake
+			// is only raised by a real state change, and a quiescent subtree raises
+			// none, so the confirming pass finds the edge clear and returns.
+			if takeDrainWake(wake) {
+				continue
+			}
 			return lastResult, nil
 		}
 		// Defense-in-depth stall watchdog. Outstanding work with NO live or
@@ -462,6 +486,18 @@ func newDrainWake() (chan struct{}, func()) {
 		case wake <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// takeDrainWake consumes a pending wake edge without blocking and reports
+// whether one was there. The wake channel holds a single coalesced edge, so this
+// is "has anything signalled since I last asked", never a count.
+func takeDrainWake(wake <-chan struct{}) bool {
+	select {
+	case <-wake:
+		return true
+	default:
+		return false
 	}
 }
 
