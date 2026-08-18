@@ -590,3 +590,24 @@ func TestCompletingAClaimedTurnReportsNoStopWhenNothingStoppedIt(t *testing.T) {
 		t.Fatal("a completion with no interrupt fence reported a Stop, so a bare host cancellation would park the queue instead of draining it")
 	}
 }
+
+func TestQueueHeldIsReadableWithoutCloningTheSnapshot(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	if sess.clientMutations.queueHeld() {
+		t.Fatal("a fresh store reports the queue held")
+	}
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	if !sess.clientMutations.queueHeld() {
+		t.Fatal("queueHeld did not see the durable flag")
+	}
+}

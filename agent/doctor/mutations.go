@@ -26,11 +26,14 @@ type MutationReport struct {
 	MutationsPath string `json:"mutations_path"`
 	// Present is false when the session has no store on disk — it accepted no
 	// client mutations. That is a clean answer, not an error.
-	Present           bool                   `json:"present"`
-	AcceptedTurns     uint64                 `json:"accepted_turns"`
-	QueueRevision     uint64                 `json:"queue_revision"`
-	Journal           []MutationRecordView   `json:"journal"`
-	InputQueue        []QueuedInputView      `json:"input_queue"`
+	Present       bool                 `json:"present"`
+	AcceptedTurns uint64               `json:"accepted_turns"`
+	QueueRevision uint64               `json:"queue_revision"`
+	Journal       []MutationRecordView `json:"journal"`
+	InputQueue    []QueuedInputView    `json:"input_queue"`
+	// QueueHeld reports a queue parked by a Stop: the entries above are real and
+	// nothing will claim them until the user asks (kata wms7).
+	QueueHeld         bool                   `json:"queue_held"`
 	PendingExecutions []PendingExecutionView `json:"pending_executions"`
 }
 
@@ -95,6 +98,7 @@ func Mutations(stateBase, selector string) (MutationReport, error) {
 	report.Present = true
 	report.AcceptedTurns = store.AcceptedTurns
 	report.QueueRevision = store.QueueRevision
+	report.QueueHeld = store.QueueHeld
 	for _, record := range store.Journal {
 		view := MutationRecordView{
 			ClientMutationID: record.ClientMutationID,
@@ -150,6 +154,7 @@ type clientMutationStoreFile struct {
 	AcceptedTurns          uint64                                `json:"accepted_turns"`
 	Journal                map[string]clientMutationStoreRecord  `json:"journal"`
 	InputQueue             []clientMutationStoreQueueEntry       `json:"input_queue"`
+	QueueHeld              bool                                  `json:"queue_held"`
 	QueueRevision          uint64                                `json:"queue_revision"`
 	NextTurnSequence       uint64                                `json:"next_turn_sequence"`
 	NextQueueEntrySequence uint64                                `json:"next_queue_entry_sequence"`
@@ -275,6 +280,9 @@ func RenderMutations(r MutationReport) string {
 	fmt.Fprintf(&b, "input queue: %d %s\n", len(r.InputQueue), plural(len(r.InputQueue), "entry"))
 	for _, q := range r.InputQueue {
 		fmt.Fprintf(&b, "  · %s  mutation=%s  items=%d\n", dash(q.EntryID), dash(q.ClientMutationID), q.Items)
+	}
+	if r.QueueHeld {
+		fmt.Fprintf(&b, "queue: held (parked by a Stop; waiting on the user)\n")
 	}
 
 	fmt.Fprintf(&b, "pending executions: %d\n", len(r.PendingExecutions))

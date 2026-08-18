@@ -170,10 +170,20 @@ type clientMutationSnapshot struct {
 	// value no pending execution owns, because a turn that was running when
 	// the daemon died is not running now, and an id nothing can settle would
 	// reject every later turn/start forever.
-	ActiveTurnID           string                                     `json:"active_turn_id,omitempty"`
-	AcceptedTurns          uint64                                     `json:"accepted_turns"`
-	Journal                map[string]clientMutationRecord            `json:"journal"`
-	InputQueue             []clientMutationQueueEntry                 `json:"input_queue"`
+	ActiveTurnID  string                          `json:"active_turn_id,omitempty"`
+	AcceptedTurns uint64                          `json:"accepted_turns"`
+	Journal       map[string]clientMutationRecord `json:"journal"`
+	InputQueue    []clientMutationQueueEntry      `json:"input_queue"`
+	// QueueHeld parks the input queue after a Stop: the messages stay where they
+	// are and nothing claims them until the user asks for one to run ("Stop
+	// should cancel execution and wait", kata wms7).
+	//
+	// Durable because the queue it parks is durable: a daemon that restarts must
+	// not treat parked messages as work to resume. There is deliberately no
+	// process-local mirror -- the first attempt at this kata had one and the
+	// review found it drifting on three of four writers, across restarts, and on
+	// a rejected promote.
+	QueueHeld              bool                                       `json:"queue_held,omitempty"`
 	QueueRevision          uint64                                     `json:"queue_revision"`
 	NextTurnSequence       uint64                                     `json:"next_turn_sequence"`
 	NextQueueEntrySequence uint64                                     `json:"next_queue_entry_sequence"`
@@ -1168,6 +1178,15 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return cloneClientMutationSnapshot(s.state)
+}
+
+// queueHeld reads the parked-queue flag without cloning the snapshot.
+// sessionWorkPending calls this on every WireState sample, and snapshot()
+// deep-copies the whole journal.
+func (s *clientMutationStore) queueHeld() bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state.QueueHeld
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {
