@@ -65,7 +65,6 @@ var mktempAllowedScripts = map[string]bool{
 	"fuzz-oracle-audit.sh":        true,
 	"fuzz-registry-check.sh":      true,
 	"fuzz-triage.sh":              true,
-	"test-cost.sh":                true,
 }
 
 // TestNoScriptCreatesScratchOutsideTMPDIR keeps the swept scripts swept: the
@@ -351,6 +350,10 @@ var recursiveDeleteAllowedLines = map[string]int{
 	"coverage-union.sh":       1,
 	"fuzz-coverage.sh":        1,
 	"fuzz-coverage-global.sh": 1,
+	// test-cost adopts the same pid-suffixed pattern as the runners above,
+	// for the same reasons; before this it minted with `mktemp -t` (outside
+	// any TMPDIR a caller set) and never deleted its scratch at all.
+	"test-cost.sh": 1,
 	// Owner-side reclamation of the coverage runners' own abandoned scratch:
 	// the delete IS the job. Targets come from a prefix glob walked with
 	// existence and symlink guards, scoped to basenames whose pid suffix no

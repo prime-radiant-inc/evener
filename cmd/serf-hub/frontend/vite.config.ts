@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import { searchForWorkspaceRoot } from "vite";
 import { defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running serf-hub.
@@ -39,6 +40,22 @@ export default defineConfig({
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   server: {
     host: "127.0.0.1",
+    fs: {
+      // Agent worktrees keep cmd/serf-hub/frontend/node_modules as a symlink
+      // to one shared install (see docs/conventions/agent-fleets.md), whose
+      // realpath sits outside the worktree entirely. global.css's @font-face
+      // src ("../../node_modules/...") gets rewritten to that realpath as a
+      // /@fs/ request when Vite transforms the CSS, and Vite's fs.allow
+      // denies any /@fs/ path outside its allow list - so every font 404s
+      // and every browser-guard case fails with "a web font this page
+      // requested failed to load" (kata 4s8g). server.fs.allow replaces
+      // Vite's computed default rather than extending it, so
+      // searchForWorkspaceRoot reproduces that default explicitly; the
+      // second entry is the one addition, the shared install's real path.
+      // In a normal (non-symlinked) checkout this resolves to the same
+      // directory already covered by the first entry, so it's a no-op there.
+      allow: [searchForWorkspaceRoot(__dirname), fs.realpathSync(path.join(__dirname, "node_modules"))],
+    },
     proxy: {
       // changeOrigin + an explicit Origin header: the hub's same-origin
       // guard (internal/httpguard) only admits its own host as Origin, so

@@ -1011,6 +1011,41 @@ func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorSuppressesCommunicateEchoOfAssistantText pins the live
+// side of the shared duplicate rule (apptranscript.EchoesAssistantText): a
+// communicate repeating the assistant text already projected in this turn adds
+// no second agentMessage, while a communicate that says something new does.
+func TestAppEventProjectorSuppressesCommunicateEchoOfAssistantText(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
+		SessionID: "th_1",
+		Data:      events.AssistantTextEndData{Text: "done"},
+	})
+
+	echo := projector.Project(events.SessionEvent{
+		Kind:      events.EventCommunicate,
+		SessionID: "th_1",
+		Data:      events.CommunicateData{Message: "done"},
+	})
+	for _, note := range echo {
+		if note.Method == appwire.NotifyItemCompleted {
+			t.Fatalf("communicate echo projected a second agentMessage: %+v", note)
+		}
+	}
+
+	fresh := projector.Project(events.SessionEvent{
+		Kind:      events.EventCommunicate,
+		SessionID: "th_1",
+		Data:      events.CommunicateData{Message: "and one more thing"},
+	})
+	item := notificationThreadItem(t, fresh, appwire.NotifyItemCompleted)
+	if item.Type != "agentMessage" || item.Text != "and one more thing" {
+		t.Fatalf("distinct communicate item=%+v", item)
+	}
+}
+
 func TestAppEventProjectorSuppressesCommunicateToolEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

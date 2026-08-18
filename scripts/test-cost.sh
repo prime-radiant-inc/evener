@@ -57,8 +57,23 @@ done
 [ -d "$dir" ] || die "no such directory: $dir"
 [ -n "$jsonOut" ] && jsonOut="$(cd "$(dirname "$jsonOut")" && pwd)/$(basename "$jsonOut")"
 
+# An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
+# for -t and uses the Darwin per-user temp directory instead — and this script
+# never deleted what it minted there, so every run leaked its compiled test
+# binary and logs. Same discipline as the coverage runners: reclaim what
+# earlier runs abandoned, then take a pid-suffixed name with the trap armed
+# BEFORE the directory exists, so a signal in the window abandons nothing.
+# SIGKILL leftovers wait for the next run's reclaim. A failed mkdir means a
+# stale same-pid leftover this run does not own, so the trap is disarmed
+# before exiting rather than deleting it.
+. "$(dirname "${BASH_SOURCE[0]}")/covscratch-lib.sh"
+tmpbase=${TMPDIR:-/tmp}
+reclaim_own_scratch "$tmpbase" test-cost
+work="${tmpbase%/}/test-cost.$$"
+trap 'rm -rf "$work"' EXIT
+mkdir "$work" || { trap - EXIT; die "scratch $work already exists or cannot be created"; }
+
 cd "$dir" || die "cannot enter $dir"
-work="$(mktemp -d -t test-cost.XXXXXX)"
 bin="$work/pkg.test"
 
 printf 'test-cost: building %s\n' "$dir" >&2

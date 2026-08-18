@@ -1,0 +1,103 @@
+# kata nbcf: opt-in agentic eval scaffold — seeded configuration-path failure.
+#
+# This probe is deliberately kept OUT of tools/tool-fluency/probes/ so it is
+# never swept into an ordinary `--probe all` run of the core tool-fluency
+# suite: it is much heavier (up to 40 shell rounds vs. 1-2 for a tool-use
+# probe) and its purpose is comparing PROMPTING variants against a
+# diagnose-then-fix workflow, not measuring single-tool-call fluency. Select
+# it explicitly:
+#
+#   go run ./tools/tool-fluency/cmd/serf-fluency run \
+#     --build \
+#     --model <provider/model> \
+#     --probes-dir tools/tool-fluency/probes-nbcf \
+#     --probe diagnostic_fix.seeded_config_path \
+#     --max-rounds 40 \
+#     --out /tmp/serf-nbcf-eval-<model-slug>
+#
+# See tools/tool-fluency/probes-nbcf/README.md for the full comparison
+# recipe (baseline vs. candidate prompting, the three required models, and
+# what metrics still need wiring into the runner).
+#
+# Seeded bug (do not repeat this line in the prompt — the model must find it
+# itself): ResolveProvidersConfig takes a homeDir parameter but the no-overrides
+# branch reads os.Getenv("HOME") instead of using it, so two calls with
+# different homeDir values silently collide on the real process HOME.
+schema: 1
+id: diagnostic_fix.seeded_config_path
+tool: shell
+prompt: |
+  The configpath package resolves the on-disk path to a provider config
+  file, following the same explicit-override / state-dir / home-dir
+  precedence Serf itself uses elsewhere. A caller reports a bug:
+
+    Calling ResolveProvidersConfig("", "", homeA) and then
+    ResolveProvidersConfig("", "", homeB) in the same process, with homeA
+    and homeB set to two different directories, returns the SAME path
+    both times — even though homeA != homeB. This breaks test isolation:
+    two isolated callers using different home directories end up pointed
+    at the same providers.toml and corrupt each other's state.
+
+  Diagnose the root cause in configpath/resolve.go. Add exactly one
+  regression test in configpath/resolve_test.go that fails before your fix
+  and passes after it — that file does not exist yet. Make the smallest
+  scoped fix; do not change ResolveProvidersConfig's signature or the
+  explicit/stateDir precedence, and do not touch anything outside the
+  configpath package. Run `go test ./configpath/...` to verify before you
+  report.
+
+  When done, report a message that starts with the exact token
+  DIAGNOSIS_COMPLETE followed by one sentence naming the root cause and one
+  sentence describing the fix.
+fixture:
+  files:
+    go.mod: |
+      module configpath
+
+      go 1.21
+    configpath/resolve.go: |
+      // Package configpath resolves the on-disk path to Serf's provider
+      // configuration file, mirroring the explicit-override / state-dir /
+      // home-dir precedence used elsewhere in the codebase.
+      package configpath
+
+      import (
+      	"os"
+      	"path/filepath"
+      )
+
+      // ResolveProvidersConfig returns the providers.toml path to use, given
+      // an explicit override, a configured state directory, and the caller's
+      // home directory. explicit wins outright; otherwise
+      // stateDir/providers.toml is used when stateDir is set; otherwise
+      // homeDir/.serf/providers.toml.
+      func ResolveProvidersConfig(explicit, stateDir, homeDir string) string {
+      	if explicit != "" {
+      		return explicit
+      	}
+      	if stateDir != "" {
+      		return filepath.Join(stateDir, "providers.toml")
+      	}
+      	return filepath.Join(os.Getenv("HOME"), ".serf", "providers.toml")
+      }
+expect:
+  calls:
+    - tool: shell
+      min: 2
+  artifacts:
+    - path: configpath/resolve_test.go
+      exists: true
+    - path: configpath/resolve.go
+      contains: homeDir string) string {
+  final_contains: ["DIAGNOSIS_COMPLETE"]
+metrics:
+  # Informational only today — tools/tool-fluency's Metrics field is parsed
+  # but not yet evaluated by the runner (grep `\.Metrics\b` in main.go: no
+  # hits). These name the kata nbcf acceptance metrics that still need a
+  # runner-side implementation; see probes-nbcf/README.md "What remains".
+  max_tool_calls: 40
+  wants_investigative_call_count: true
+  wants_repeated_read_or_grep_count: true
+  wants_tool_round_of_first_test_run: true
+  wants_tool_round_of_first_source_edit: true
+  wants_premature_fix_before_red_test_flag: true

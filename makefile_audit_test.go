@@ -3,168 +3,253 @@ package serf_test
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// This audit is the Makefile half of the rule scriptmktemp_audit_test.go
-// enforces over scripts/: no recursive delete may take an argument a caller
-// can clobber. It shares that file's recursiveDeleteTakingVariable rather than
-// carrying its own matcher — a second, weaker copy of a security predicate is
-// how a banned shape ends up blessed by the audit that was supposed to find
-// it. (Measured against the copy this file used to hold: `rm -fr`, `rm -Rf`,
-// `rm --recursive`, and any second delete after a `;` all read as clean.)
+// recipeLine trims one physical Makefile line to the shell text it contributes,
+// dropping make's trailing line-continuation backslash.
 //
-// What differs here is the REPORTING, not the matching: a Makefile offender is
-// named by its recipe and the variable it feeds, because that is what a reader
-// has to go and look at, and because a recipe is the unit a human blesses.
-
-// makefileRecipeAllowedSites are the Makefile recipes carrying variable-fed
-// recursive deletes that have been audited and blessed.
-//
-// These are the sites this audit documents as safe. Each entry must include:
-// - The exact file (Makefile)
-// - The recipe name
-// - The variable(s) involved
-// - Brief justification
-//
-// The list is pinned per entry, not by total: a new site fails as an offender,
-// and a blessed site the Makefile no longer contains fails as a stale entry.
-// Comparing totals instead would let one site that grew a second delete cancel
-// out another that disappeared. Removing an entry after converting the recipe
-// to a safe shape is the intended lifecycle.
-var makefileRecipeAllowedSites = []string{
-	"Makefile:test-web:$$dir",         // Line 77: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
-	"Makefile:test-web-browser:$$dir", // Line 121: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
-	"Makefile:dist:SERF_DIST_BIN_DIR", // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
-	"Makefile:dist:SERF_DIST_ARCHIVE", // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
+// The backslash has to go before anything counts words: left in place it is a
+// bare `\` field, which would read as the path operand of a `rm -rf \` whose
+// real target sits on the next line — exactly the shape the audit must refuse.
+func recipeLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	return strings.TrimSpace(strings.TrimSuffix(trimmed, `\`))
 }
 
-// TestNoMakefileRecipeFeedsVariableToRecursiveDelete audits Makefile recipe
-// lines for variable-fed recursive deletes and keeps the audited set pinned.
+// recipeCommands splits one Makefile line into the shell commands it holds, so
+// a delete hiding behind `||` or `;` is examined on its own rather than as a
+// tail of whatever ran before it.
 //
-// The rule: a recursive delete that feeds a variable is dangerous because:
-//  1. The variable could be empty, causing rm -rf "" to delete from cwd
-//  2. The variable could be wrong or misconfigured
-//  3. The variable could be set by user input or an earlier failure
+// The two spellings that open a nested command are separators too: a backtick,
+// and the `$$(` that is how a recipe writes shell command substitution (make
+// eats the first dollar, so `$(...)` alone is make's own expansion, never a
+// shell command). Without them a delete wrapped in one reads as an operand of
+// whatever encloses it and is never examined -- `trap` is caught only because
+// it leaves rm as a bare word.
 //
-// Safe alternatives:
-//  1. rm -rf literal/hardcoded/path only
-//  2. mkdir -p $TMPDIR/owned-by-us && rm -rf $TMPDIR/owned-by-us/$subdir (mkdir-owned)
-//  3. Guard through a script that uses scratch-lib or covscratch-lib patterns
+// Bare braces and parentheses are deliberately NOT separators. `${TMPDIR:-/tmp}`
+// and `$(SERF_DIST_BIN_DIR)` carry them, and splitting there would tear the
+// variable reference out of the very operand this audit exists to look at.
+func recipeCommands(line string) []string {
+	const sep = "\x00"
+	// `||` is listed before `|`, and `$$(` before either dollar-bearing form, so
+	// the longer operator wins when both match at the same index:
+	// strings.NewReplacer prefers the pattern given first on a tie.
+	return strings.Split(strings.NewReplacer(
+		"&&", sep, "||", sep, "|", sep, ";", sep, "$$(", sep, "`", sep,
+	).Replace(line), sep)
+}
+
+// namesRM reports whether a command word invokes rm.
 //
-// The audit is pinned per site: a new one requires explicit review, and after
-// converting a recipe to a safe shape, deleting the entry is what proves the
-// conversion took.
+// A prefixed or quoted spelling still names the same weapon: make's `@rm` and
+// `-rm`, the `'rm` that opens `trap 'rm -rf …'`, and a fully quoted `"rm"`. The
+// trap spelling matters most — an EXIT trap holding a recursive delete is what
+// deleted a checkout in kata 5hs2 — so it must not read as an ordinary word.
+//
+// Two indirect spellings reach rm without naming it directly. `$(RM)` is
+// defined by GNU make itself (as `rm -f`) and needs no declaration here to
+// work, and any absolute path ends in `/rm`. Both are ordinary things to write,
+// so both have to count.
+func namesRM(field string) bool {
+	word := strings.Trim(field, `@-+'"`)
+	return word == "rm" || word == "$(RM)" || word == "${RM}" || strings.HasSuffix(word, "/rm")
+}
+
+// rmArguments returns the words following an `rm` command word, and reports
+// whether the command invokes rm at all.
+//
+// Finding rm is deliberately separate from deciding the delete is recursive.
+// A recipe may put the command on one physical line and its flags on the next,
+// and a scan that only recognized an already-recursive delete would not see
+// `rm \` as anything at all — so the caller could not refuse it.
+func rmArguments(command string) ([]string, bool) {
+	fields := strings.Fields(command)
+	for i, f := range fields {
+		if namesRM(f) {
+			return fields[i+1:], true
+		}
+	}
+	return nil, false
+}
+
+// recursiveDelete classifies rm's arguments into the paths it would delete and
+// whether any flag among them makes the delete recursive.
+func recursiveDelete(args []string) (operands []string, recursive bool) {
+	for _, f := range args {
+		switch {
+		case f == "--recursive":
+			recursive = true
+		case strings.HasPrefix(f, "--"):
+			// Any other long option, including the bare `--` terminator.
+		case len(f) > 1 && strings.HasPrefix(f, "-"):
+			// A short-flag bundle: -r, -R, -rf, -fr all delete recursively.
+			if strings.ContainsAny(f, "rR") {
+				recursive = true
+			}
+		default:
+			operands = append(operands, strings.Trim(f, `'"`))
+		}
+	}
+	return operands, recursive
+}
+
+// operandComesFromVariable reports whether a recursive delete's target is
+// decided at run time rather than written out by the recipe's author.
+//
+// A recipe reaches the shell after make has expanded it, so three spellings put
+// a run-time value in an operand: `$(VAR)` and `${VAR}` are make's own, and
+// `$$name` is a shell variable make passes through. Every one of them can
+// expand to the empty string, or to a path nobody reviewed. Any `$` therefore
+// counts — make spells a literal dollar `$$` as well, so there is no
+// unambiguous literal dollar to exempt.
+func operandComesFromVariable(operand string) bool {
+	return strings.Contains(operand, "$")
+}
+
+// makefileVariableFedDeletes are the recipe lines that hand a variable to a
+// recursive delete today, each mapped to the reason it survives review.
+//
+// The list is the finding, not an exemption: it should only ever get shorter,
+// and removing an entry after converting its recipe to a path the recipe owns
+// outright is the intended lifecycle. Keying on the whole line is deliberate.
+// It makes each site unique, and it means any edit to a listed line — even a
+// reworded message beside the delete — fails the audit and forces someone to
+// re-read the delete in that diff. Keys are the line as recipeLine normalizes
+// it, so they carry no trailing continuation backslash.
+var makefileVariableFedDeletes = map[string]string{
+	`rm -rf "$$dir" || finish_status=1;`: "test-web's log directory: minted on the same recipe by a checked " +
+		`mktemp -d "${TMPDIR:-/tmp}/serf-test-web.XXXXXX" || exit 1, ` +
+		"so $$dir is either a fresh temp directory or the recipe already exited",
+	`rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; };`: "test-web-browser's log directory: " +
+		`minted on the same recipe by a checked mktemp -d "${TMPDIR:-/tmp}/serf-test-web-browser.XXXXXX" || exit 1`,
+	`rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
+		"(default `dist`) and named for the build's GOOS/GOARCH. This is the weakest entry of the three: " +
+		"`make dist DIST_DIR=` roots both operands at `/` instead, and nothing in the recipe refuses that",
+}
+
+// TestNoMakefileRecipeFeedsVariableToRecursiveDelete holds the delete-safety
+// rule over the Makefile, which is where the repository's remaining
+// variable-fed recursive deletes live.
+//
+// The hazard is the one from kata 5hs2: a recursive delete whose path arrives
+// in a variable deletes whatever that variable happens to hold, and an empty
+// expansion turns a scratch cleanup into a delete of something a person would
+// miss. Makefile:232 records the same lesson from the other side — the
+// selftest-lib suite exists to prove no selftest can be made to delete the
+// checkout.
+//
+// Two limits are worth stating, because a passing run does not cover them. The
+// scan is textual, so `find … -exec rm -rf {} +` reads as a delete of the
+// literal `{}` and slips through. And the pin cannot see one blessed delete
+// swapped for a different one on a line whose text is unchanged. Read the
+// deletes in any diff that touches this file's Makefile lines.
+//
+// The scan is also per physical line, but that is handled rather than merely
+// admitted: a delete running past the end of its line is refused outright, so a
+// continuation hides nothing.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
-
-	// Read Makefile
 	body, err := os.ReadFile("Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
 
-	var offenders []string
-	seenSites := make(map[string]bool)
-
-	inRecipe := ""
+	var unswept, unreadable []string
+	matched := map[string]int{}
 	for i, line := range strings.Split(string(body), "\n") {
-		lineNum := i + 1
-
-		// Detect recipe start (target: prerequisite)
-		// A recipe line starts with a tab after the target line
-		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, " ") {
-			// Not a recipe line, could be a target
-			if strings.Contains(line, ":") && !strings.HasPrefix(line, "#") {
-				parts := strings.Split(line, ":")
-				if len(parts) > 0 {
-					inRecipe = strings.TrimSpace(parts[0])
-				}
-			}
+		trimmed := recipeLine(line)
+		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-
-		if inRecipe == "" {
-			continue
-		}
-
-		// Extract the actual recipe content (strip leading whitespace)
-		recipeContent := strings.TrimPrefix(line, "\t")
-		recipeContent = strings.TrimPrefix(recipeContent, " ")
-
-		// Skip comments and empty lines
-		trimmed := strings.TrimSpace(recipeContent)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		if recursiveDeleteTakingVariable(trimmed) {
-			// Extract variable references as they appear, normalizing Make variables
-			// Shell: $$var stays as $$var (Makefile escaping)
-			// Make: $(VAR) becomes VAR, ${VAR} becomes VAR
-			varPattern := regexp.MustCompile(`\$\$(\w+)|\$\{(\w+)\}|\$\((\w+)\)`)
-			matches := varPattern.FindAllStringSubmatch(trimmed, -1)
-			var vars []string
-			seen := make(map[string]bool)
-			for _, match := range matches {
-				var varRef string
-				if match[1] != "" {
-					// $$var -> $$var (keep as-is for shell escaping)
-					varRef = "$$" + match[1]
-				} else if match[2] != "" {
-					// ${VAR} -> VAR (Make variable)
-					varRef = match[2]
-				} else if match[3] != "" {
-					// $(VAR) -> VAR (Make variable)
-					varRef = match[3]
-				}
-				if varRef != "" && !seen[varRef] {
-					vars = append(vars, varRef)
-					seen[varRef] = true
+		// Whether make joins the NEXT physical line onto this one. It is read
+		// before recipeLine strips the marker, and it is what makes a delete at
+		// the end of this line unreviewable.
+		continues := strings.HasSuffix(strings.TrimSpace(line), `\`)
+		where := fmt.Sprintf("Makefile:%d: %s", i+1, trimmed)
+		commands := recipeCommands(trimmed)
+		for c, command := range commands {
+			args, isRM := rmArguments(command)
+			if !isRM {
+				continue
+			}
+			// An rm that is the LAST command on a continued line runs on into
+			// the next physical line, which may carry its recursion flag, its
+			// path, or both. Neither this line nor the next says what gets
+			// deleted, so the shape is refused outright rather than
+			// allowlisted: a delete that cannot be read cannot be reviewed.
+			//
+			// A delete followed by more commands on the same line is safe from
+			// this: `||` and `;` end the rm before the continuation does, which
+			// is why the blessed sites at Makefile:77 and :121 stay green.
+			if continues && c == len(commands)-1 {
+				unreadable = append(unreadable, where)
+				continue
+			}
+			operands, recursive := recursiveDelete(args)
+			if !recursive {
+				continue
+			}
+			// A recursive delete with no path at all takes its target from a
+			// pipe (`xargs rm -rf`), which is equally unreadable.
+			if len(operands) == 0 {
+				unreadable = append(unreadable, where)
+				continue
+			}
+			fromVariable := false
+			for _, operand := range operands {
+				if operandComesFromVariable(operand) {
+					fromVariable = true
 				}
 			}
-
-			for _, varName := range vars {
-				entry := fmt.Sprintf("Makefile:%s:%s", inRecipe, varName)
-				if slices.Contains(makefileRecipeAllowedSites, entry) {
-					seenSites[entry] = true
-				} else {
-					offenders = append(offenders,
-						fmt.Sprintf("Makefile:%d:%s: %s (variable: %s)",
-							lineNum, inRecipe, trimmed, varName))
-				}
+			if !fromVariable {
+				continue
 			}
+			if _, allowed := makefileVariableFedDeletes[trimmed]; allowed {
+				matched[trimmed]++
+				continue
+			}
+			unswept = append(unswept, where)
 		}
 	}
 
-	sort.Strings(offenders)
-	for _, o := range offenders {
-		t.Errorf("This Makefile recipe feeds a variable to a recursive delete. "+
-			"Convert to a safe shape (hardcoded path, mkdir-owned directory, "+
-			"or guard through a script using scratch-lib), then remove from the "+
-			"audit allowlist:\n  %s", o)
+	sort.Strings(unswept)
+	for _, o := range unswept {
+		t.Errorf("this recipe hands a variable to a recursive delete, so an empty or "+
+			"unexpected expansion deletes whatever the expansion names (kata 5hs2 lost a "+
+			"checkout that way). Give the delete a path the recipe owns outright, or add "+
+			"the line to makefileVariableFedDeletes with the reason it is safe. If this is "+
+			"a listed line that was only reworded, update its entry — the audit keys on the "+
+			"whole line so that the delete gets re-read:\n  %s", o)
 	}
 
-	// Every blessed site must still exist, checked one entry at a time. A
-	// comparison of totals would be satisfied by any set of the right size, so
-	// one recipe growing a second variable-fed delete would cover for another
-	// site disappearing, and the stale entry left behind is then a standing
-	// blessing for whatever reoccupies that recipe name later.
-	var stale []string
-	for _, entry := range makefileRecipeAllowedSites {
-		if !seenSites[entry] {
-			stale = append(stale, entry)
-		}
+	sort.Strings(unreadable)
+	for _, o := range unreadable {
+		t.Errorf("this delete either runs on past the end of its line or names no path on "+
+			"it, so its flags or its target arrive somewhere nothing here can tie them back "+
+			"to the rm and no review can say what it deletes; keep the whole delete — rm, "+
+			"flags and path — on one line:\n  %s", o)
+	}
+
+	stale := make([]string, 0, len(makefileVariableFedDeletes))
+	for line := range makefileVariableFedDeletes {
+		stale = append(stale, line)
 	}
 	sort.Strings(stale)
-	for _, entry := range stale {
-		t.Errorf("makefileRecipeAllowedSites blesses %s, but the Makefile no longer feeds that "+
-			"variable to a recursive delete there. If the recipe was converted to a safe shape, "+
-			"delete the entry; if the recipe was renamed, the entry has to follow it, or it goes "+
-			"on blessing a recipe nobody reviewed.", entry)
+	for _, line := range stale {
+		switch matched[line] {
+		case 1:
+		case 0:
+			t.Errorf("makefileVariableFedDeletes lists a line that no longer feeds a variable "+
+				"to a recursive delete — delete the entry, whose stated reason was %q:\n  %s",
+				makefileVariableFedDeletes[line], line)
+		default:
+			t.Errorf("one makefileVariableFedDeletes entry now blesses %d deletes, so a copy of "+
+				"a reviewed line entered the Makefile without review of its own; give each site "+
+				"its own entry:\n  %s", matched[line], line)
+		}
 	}
 }

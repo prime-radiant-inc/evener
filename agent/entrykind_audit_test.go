@@ -126,6 +126,7 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 	EntryContinuation:      opensOnItsContentEvent,
 	EntryNotification:      opensOnTurnStarted,
 	EntryDelegateAttention: unservedSoUnaddressable,
+	EntrySteeringCarrier:   opensOnTurnStarted,
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
@@ -182,6 +183,16 @@ type turnOpeningObservation struct {
 	// announcedTurnID is the TurnID EventTurnStarted carried, or "" when the
 	// turn announced no boundary.
 	announcedTurnID string
+}
+
+// openingTurnID is the id the turn actually opened under: its content event's
+// where it had one, otherwise the boundary it announced. "" means the turn
+// opened under nothing a client could address.
+func (o turnOpeningObservation) openingTurnID() string {
+	if o.contentEventTurnID != "" {
+		return o.contentEventTurnID
+	}
+	return o.announcedTurnID
 }
 
 // turnOpeningRecorder collects the identity-bearing opening events a session
@@ -251,10 +262,10 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 		// reserves the identity durably and the drain loop claims it.
 		//
 		// This is the shape that carries an identity, not the only shape of the
-		// kind: ProcessPendingUserInput also runs an EMPTY EntryUserInput turn
-		// to carry pending steering, and that one is named by nothing, because
-		// it is a turn the session starts for itself rather than one a client
-		// asked for.
+		// kind: ProcessPendingUserInput runs a claimed QUEUE entry as
+		// EntryUserInput too, under that entry's own reserved StableTurnID.
+		// Both shapes are named, so either would do here; turn/start is the one
+		// a client drives directly.
 		accepted, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
 			ClientMutationID: "entrykind-audit-probe",
 			Input:            []appwire.InputItem{{Type: "text", Text: "probe"}},
@@ -270,6 +281,32 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 			t.Fatalf("ProcessClientMutationStart: %v", err)
 		} else if !claimed {
 			t.Fatal("ProcessClientMutationStart claimed no durable start; the probe drove no turn")
+		}
+	case EntrySteeringCarrier:
+		// The carrier exists only to deliver steering the client has already had
+		// accepted, so with nothing pending the wake stands down and opens no
+		// turn at all: accepting a steer first is what gives it something to
+		// carry.
+		//
+		// The id it runs under is that steer's OWN reserved id --
+		// claimSteeringCarrierTurn reuses it rather than minting a fresh one --
+		// so the receipt the client is already holding is the promise the
+		// announcement below has to keep.
+		accepted, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "entrykind-audit-probe-steer",
+			Input:            []appwire.InputItem{{Type: "text", Text: "probe"}},
+		})
+		if err != nil {
+			t.Fatalf("AcceptClientMutationSteer: %v", err)
+		}
+		if accepted.Receipt.TurnID == "" {
+			t.Fatal("turn/steer handed the client no turn id; the comparison below would hold vacuously")
+		}
+		promisedTurnID = accepted.Receipt.TurnID
+		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
+			t.Fatalf("ProcessPendingUserInput: %v", err)
+		} else if !ran {
+			t.Fatal("ProcessPendingUserInput ran no carrier turn; the probe drove no turn")
 		}
 	default:
 		if kind == EntryNotification {
@@ -298,9 +335,12 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 	// Where an identity was promised, the one on the wire has to BE it. An id
 	// the session minted for itself would be just as well-formed and just as
 	// unaddressable, so non-emptiness alone is not the property claimed.
-	if promisedTurnID != "" && obs.contentEventTurnID != promisedTurnID {
+	// Read through openingTurnID rather than one named field: which event opens
+	// the turn is exactly what this audit classifies, so pinning the promise to
+	// the content event would exempt every kind that announces instead.
+	if promisedTurnID != "" && obs.openingTurnID() != promisedTurnID {
 		t.Fatalf("EntryKind %d opened its turn under %q; the client was promised %q",
-			kind, obs.contentEventTurnID, promisedTurnID)
+			kind, obs.openingTurnID(), promisedTurnID)
 	}
 	return obs
 }

@@ -134,3 +134,60 @@ func TestCumulativeUsageSnapshot_MatchesContextManagerTotal(t *testing.T) {
 		t.Fatalf("CumulativeUsageSnapshot() = %+v, want %+v", got, want)
 	}
 }
+
+// TestResumedSubagentMetaSurvivesAutosave pins that a bare `serve --resume
+// <delegate-id>` keeps the whole persisted lineage pair — is_subagent AND
+// parent_session_id. That restore leaves the spawn carrier empty (spawn is
+// json:"-", never persisted), so a Meta() deriving either field from cfg.spawn
+// alone rewrites the delegate as a parentless root on the next autosave. The
+// pair has to hold together: the hub's tree hides is_subagent rows from the
+// top level and nests them under their parent, so a delegate saved with the
+// flag but no parent id disappears from both views.
+func TestResumedSubagentMetaSurvivesAutosave(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	const parentID = "spawning-root"
+	meta := schema.SessionMeta{
+		ID:              "resumed-delegate",
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		IsSubagent:      true,
+		ParentSessionID: parentID,
+		Config:          (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+	}
+	// restoreCfg.spawn intentionally left zero: the bare-resume case.
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.cfg.spawn.parentSessionID != "" {
+		t.Fatalf("test setup: spawn carrier not empty (%q) — the case under test requires it empty", sess.cfg.spawn.parentSessionID)
+	}
+	live := sess.Meta()
+	if !live.IsSubagent {
+		t.Error("Meta().IsSubagent = false right after resuming a delegate, want true")
+	}
+	if live.ParentSessionID != parentID {
+		t.Errorf("Meta().ParentSessionID = %q right after resuming a delegate, want %q", live.ParentSessionID, parentID)
+	}
+
+	sess.maybeAutoSave()
+	saved, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if !saved.IsSubagent {
+		t.Error("autosave rewrote is_subagent to false for a resumed delegate")
+	}
+	if saved.ParentSessionID != parentID {
+		t.Errorf("autosave rewrote parent_session_id to %q for a resumed delegate, want %q", saved.ParentSessionID, parentID)
+	}
+	if saved.DivergenceTurn != 0 {
+		t.Errorf("autosave invented a divergence turn (%d) for a spawned delegate, want 0", saved.DivergenceTurn)
+	}
+}

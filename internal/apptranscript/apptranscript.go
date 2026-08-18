@@ -133,6 +133,23 @@ func CommunicateMessageFromArguments(raw json.RawMessage) string {
 	return ""
 }
 
+// EchoesAssistantText reports whether a communicate message repeats assistant
+// text the reader has already been shown, ignoring surrounding whitespace. A
+// model that streams its answer and then communicates the same content said
+// one thing, so the echo is not rendered a second time. Text nobody was shown
+// (empty or whitespace-only) can never be echoed.
+//
+// This is the single definition of "counts as a duplicate" for all three
+// surfaces that display bare assistant text: the live projector
+// (matchesLastAssistantMessage in internal/appprojector), the reload path
+// below in ProjectTurn, and the non-interactive CLI printer (drainEventsHuman
+// in cmd/serf). Turn scoping is the projector's own state, not part of this
+// comparison.
+func EchoesAssistantText(shown, message string) bool {
+	shown = strings.TrimSpace(shown)
+	return shown != "" && shown == strings.TrimSpace(message)
+}
+
 // ToolIntentFromArguments extracts a compact tool-call description from common
 // intent fields.
 func ToolIntentFromArguments(raw json.RawMessage) string {
@@ -407,10 +424,10 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
-		// lastAssistantText mirrors the live projector's dedup: a communicate
-		// tool call whose message echoes the assistant text already shown in this
-		// turn is rendered once, not twice (see matchesLastAssistantMessage in
-		// internal/appprojector). Reload must collapse the echo the same way.
+		// lastAssistantText feeds EchoesAssistantText: a communicate tool call
+		// whose message echoes the assistant text already shown in this turn is
+		// rendered once, not twice. Reload must collapse the echo the same way
+		// the live projector does.
 		var lastAssistantText string
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
@@ -469,7 +486,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				}
 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
-					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText {
+					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && !EchoesAssistantText(lastAssistantText, text) {
 						items = append(items, appwire.ThreadItem{
 							Type:   "agentMessage",
 							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),

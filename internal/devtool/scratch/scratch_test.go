@@ -362,6 +362,36 @@ func TestReclaimAfterSIGKILL(t *testing.T) {
 	}
 }
 
+// ReclaimOwn must refuse the prefixes Acquire refuses: an empty prefix would
+// otherwise match every hidden dot-directory under TMPDIR and remove any
+// with a dead-pid suffix — another tool's ".cache.12345", say.
+func TestReclaimOwnRefusesInvalidPrefixesAndTouchesNothing(t *testing.T) {
+	for _, prefix := range []string{"", ".", "/", "a/b", "dot.ted"} {
+		t.Run(fmt.Sprintf("prefix=%q", prefix), func(t *testing.T) {
+			tmp := fixtureTMPDIR(t)
+			dead := deadPid(t)
+			decoys := []string{
+				filepath.Join(tmp, fmt.Sprintf(".cache.%d", dead)),
+				filepath.Join(tmp, fmt.Sprintf("..%d", dead)),
+				filepath.Join(tmp, fmt.Sprintf("dot.ted.%d", dead)),
+			}
+			for _, decoy := range decoys {
+				seedDir(t, decoy)
+			}
+			var warn bytes.Buffer
+			ReclaimOwn(prefix, &warn)
+			if !strings.Contains(warn.String(), fmt.Sprintf("invalid prefix %q", prefix)) {
+				t.Fatalf("refusal not reported for prefix %q; warnings: %q", prefix, warn.String())
+			}
+			for _, decoy := range decoys {
+				if _, err := os.Stat(filepath.Join(decoy, "marker")); err != nil {
+					t.Fatalf("ReclaimOwn(%q) touched decoy %s: %v", prefix, decoy, err)
+				}
+			}
+		})
+	}
+}
+
 // Guard against pid parsing quirks: strconv.Atoi accepts "+1" and "-1",
 // which "${leftover##*.}"-style suffixes never legitimately carry.
 func TestReclaimOwnRejectsSignedPidSuffixes(t *testing.T) {

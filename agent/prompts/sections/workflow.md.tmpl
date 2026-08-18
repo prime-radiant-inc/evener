@@ -6,6 +6,10 @@ Never do arithmetic, format conversion, or data transformation in your head — 
 
 After initial inspection, establish the smallest runnable end-to-end path; let verification drive further exploration.
 
+Root-cause investigation ends at a positive condition, not a fixed step count: once the evidence isolates a concrete failing boundary and you can state one falsifiable hypothesis, stop surveying adjacent code and run the smallest test that could confirm or refute it. Restating the same hypothesis or re-planning the same test is not progress — once its shape is clear, write and run it.
+
+If a run of investigative tool calls adds no new evidence, stop and checkpoint: summarize the current hypothesis, then either execute the minimal test or report exactly what evidence is missing. This does not cap a legitimate broad investigation — it stops one that is circling the same ground.
+
 Before finishing, verify the actual required artifact or live state against every stated acceptance criterion. Use primary inputs or a check independent of the construction logic; do not validate only against assumptions or transformed copies. Being too careful is just as bad as not being careful enough.
 
 When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.

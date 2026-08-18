@@ -406,6 +406,17 @@ type Session struct {
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaIsSubagent bool
 
+	// restoredMetaParentSessionID is the spawn parent read from the persisted
+	// meta.ParentSessionID during RestoreSessionFromMetaWithConfig, alongside
+	// restoredMetaIsSubagent and for the same reason: the empty spawn carrier of
+	// a bare `serve --resume <delegate-id>` would otherwise make Meta() rewrite
+	// the delegate as parentless, and the hub's tree needs the pair (a session
+	// flagged is_subagent with no parent id is hidden from the top level and has
+	// no row to nest under). Fork lineage does NOT flow through here — it lives
+	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
+	// it is set once before the session goes live and never mutated after.
+	restoredMetaParentSessionID string
+
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
 	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a
@@ -592,7 +603,19 @@ type Session struct {
 	turnNameRetry notificationRetry
 	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
 	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
-	turnNameStoreUnhealthy    bool
+	turnNameStoreUnhealthy bool
+	// releaseRetryMu guards runningTurnReleaseRetry alone, for the same reason
+	// turnNameRetryMu guards turnNameRetry: the re-attempt it schedules runs on
+	// the clock's goroutine and can reach notify(), which takes s.mu.
+	//
+	// It is deliberately not turnNameRetryMu's state. Minting and releasing the
+	// name fail independently -- a release can be losing writes while nothing
+	// is trying to mint, and the reverse -- and one backoff cannot pace both.
+	releaseRetryMu sync.Mutex
+	// runningTurnReleaseRetry paces re-attempts of a release write the client
+	// mutation store refused. See scheduleRunningTurnReleaseRetry
+	// (session_active_turn.go).
+	runningTurnReleaseRetry   runningTurnReleaseRetryState
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
@@ -621,6 +644,19 @@ type notificationRetry struct {
 	generation int
 }
 
+// runningTurnReleaseRetryState paces the re-attempts of a release write the
+// client mutation store refused. It counts attempts where notificationRetry
+// does not, because this loop is finite: see runningTurnReleaseRetryLimit. It
+// needs no `active` flag for the same reason -- every re-attempt is armed by
+// the failure of the one before it, so there is never a second arrival to
+// coalesce, and the generation alone strands a timer whose write has since
+// landed.
+type runningTurnReleaseRetryState struct {
+	attempts   int
+	delay      time.Duration
+	generation int
+}
+
 const (
 	jobNotificationRetryInitialDelay = 250 * time.Millisecond
 	jobNotificationRetryMaxDelay     = 5 * time.Second
@@ -634,6 +670,16 @@ const (
 	// is not coming. Backing off further bounds that cost without reintroducing
 	// the stranded wake that giving up entirely would (kata ajg5).
 	turnNameStoreRetryMaxDelay = 5 * time.Minute
+	// runningTurnReleaseRetryLimit bounds the re-attempts of a release write
+	// the client mutation store refused. The stand-down's re-wake can poll a
+	// broken mount forever because each poll costs only a wake; this loop holds
+	// the session's turn name, which no later turn can take until the write
+	// lands, so it ends -- and it ends in a diagnostic rather than in silence.
+	// Eight attempts against the jobNotificationRetryMaxDelay ceiling is a
+	// little over twenty seconds of trying: long enough to ride out a transient
+	// write error, short enough not to sit on a state dir that will never be
+	// writable (kata fbmy).
+	runningTurnReleaseRetryLimit = 8
 )
 
 func (s *Session) enqueueJobNotification(n jobNotification) {

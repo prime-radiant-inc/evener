@@ -1862,10 +1862,12 @@ func (p *AppEventProjector) recordAssistantMessage(turnID, text string) {
 	p.lastAssistantText = text
 }
 
+// matchesLastAssistantMessage scopes the shared duplicate comparison to the
+// turn that showed the text: an echo only counts within the turn it repeats.
 func (p *AppEventProjector) matchesLastAssistantMessage(turnID, text string) bool {
 	return turnID != "" &&
 		turnID == p.lastAssistantTurnID &&
-		strings.TrimSpace(text) == p.lastAssistantText
+		apptranscript.EchoesAssistantText(p.lastAssistantText, text)
 }
 
 // projectErrorCause maps the agent-side structured cause attached to

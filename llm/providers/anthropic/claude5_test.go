@@ -19,7 +19,13 @@ func TestIsClaude5OrNewer(t *testing.T) {
 	}{
 		{"claude-sonnet-5", true},
 		{"claude-fable-5", true},
+		{"claude-opus-5", true},
 		{"claude-sonnet-5-20260901", true},
+		// Provider-qualified ref from an openrouter-anthropic instance: only
+		// the catalog entry it resolves to identifies the generation.
+		{"anthropic/claude-sonnet-5", true},
+		// No catalog entry at all — the generation parse keeps an unreleased
+		// 5+ family on the safe request shape.
 		{"claude-fable-6", true},
 		{"claude-opus-4-6", false},
 		{"claude-sonnet-4-5", false},
@@ -173,6 +179,43 @@ func TestBuildRequestBody_Claude5_1MSuffixStripped(t *testing.T) {
 	thinking, _ := body["thinking"].(map[string]any)
 	if thinking == nil || thinking["display"] != "summarized" {
 		t.Fatalf("expected claude 5 adaptive+summarized thinking, got %v", thinking)
+	}
+}
+
+func TestBuildRequestBody_ProviderQualifiedClaude5_UsesCatalogFlag(t *testing.T) {
+	// An openrouter-anthropic instance sends provider-qualified refs
+	// ("anthropic/claude-sonnet-5"). Reading the generation out of the ID
+	// misses those, so the request shape comes from the catalog entry the ref
+	// resolves to — otherwise the request carries sampling params Sonnet 5
+	// rejects and never asks for visible thinking.
+	a := &Adapter{APIKey: "test", BaseURL: "https://api.anthropic.com"}
+	temp := 0.7
+	topP := 0.9
+	req := llm.Request{
+		Model:       "anthropic/claude-sonnet-5",
+		Messages:    []llm.Message{llm.User("hi")},
+		Temperature: &temp,
+		TopP:        &topP,
+	}
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if _, has := body["temperature"]; has {
+		t.Error("provider-qualified claude 5 request must omit temperature")
+	}
+	if _, has := body["top_p"]; has {
+		t.Error("provider-qualified claude 5 request must omit top_p")
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatal("expected thinking block")
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %v, want adaptive", thinking["type"])
+	}
+	if thinking["display"] != "summarized" {
+		t.Errorf("thinking.display = %v, want summarized", thinking["display"])
 	}
 }
 
