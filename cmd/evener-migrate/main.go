@@ -1,7 +1,7 @@
-// Command evener-migrate migrates user data from legacy evener paths to evener
+// Command evener-migrate migrates user data from legacy serf paths to evener
 // paths. It moves the legacy state root (~/.evener), the XDG config root
-// (~/.config/evener), the XDG state root (~/.local/state/evener), and per-project
-// .evener directories to their evener counterparts.
+// (~/.config/serf), the XDG state root (~/.local/state/evener), and per-project
+// .serf directories to their evener counterparts.
 package main
 
 import (
@@ -101,9 +101,9 @@ func execute(opts options, stdout, stderr io.Writer) int {
 	var rep report
 
 	migrations := []migration{
-		{src: filepath.Join(opts.home, ".evener"), dst: filepath.Join(opts.home, ".evener"), kind: "legacy state root"},
-		{src: filepath.Join(opts.configBase, "evener"), dst: filepath.Join(opts.configBase, "evener"), kind: "config root"},
-		{src: filepath.Join(opts.stateBase, "evener"), dst: filepath.Join(opts.stateBase, "evener"), kind: "XDG state root"},
+		{src: filepath.Join(opts.home, ".serf"), dst: filepath.Join(opts.home, ".evener"), kind: "legacy state root"},
+		{src: filepath.Join(opts.configBase, "serf"), dst: filepath.Join(opts.configBase, "evener"), kind: "config root"},
+		{src: filepath.Join(opts.stateBase, "serf"), dst: filepath.Join(opts.stateBase, "evener"), kind: "XDG state root"},
 	}
 	migrations = append(migrations, discoverProjectMigrations(opts.cwd)...)
 
@@ -175,7 +175,7 @@ func migrate(m migration, dryRun, verbose bool, stdout, stderr io.Writer) status
 }
 
 // discoverProjectMigrations scans the current directory and ancestor git roots
-// for .evener directories that should be migrated to .evener.
+// for .serf directories that should be migrated to .evener.
 func discoverProjectMigrations(cwd string) []migration {
 	var migrations []migration
 	seen := map[string]bool{}
@@ -187,7 +187,7 @@ func discoverProjectMigrations(cwd string) []migration {
 		}
 		seen[dst] = true
 		migrations = append(migrations, migration{
-			src:  filepath.Join(projectDir, ".evener"),
+			src:  filepath.Join(projectDir, ".serf"),
 			dst:  dst,
 			kind: "project config",
 		})
