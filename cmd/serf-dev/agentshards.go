@@ -12,7 +12,13 @@ package main
 //
 //	AGENT_SHARD_COUNT      number of shards (default 4)
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
-//	AGENT_SHARD_SKIP       regex of tests to skip in every shard
+//	AGENT_SHARD_SKIP       regex handed to the SURVEY's -test.skip, and only
+//	                       to it: a skipped test draws no cost line, so it
+//	                       lands in no shard. The shards themselves never
+//	                       receive the flag, so on a cache hit or under
+//	                       AGENT_SHARD_NO_SURVEY the variable does nothing at
+//	                       all. The script behaved the same way; pinned by
+//	                       TestAgentShardsSkipOnlyReachesTheSurvey.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/serf-agent-shards)
@@ -76,7 +82,9 @@ func runAgentShards(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
 		return 1
 	}
-	signals := make(chan os.Signal, 1)
+	// Two deep, because a second signal must be waiting when the first is
+	// still being handled.
+	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	return runShards(shardsConfig{
@@ -115,6 +123,13 @@ func envFlag(name string) bool {
 
 // interrupter tracks live shard process groups and, on the first signal,
 // explains the interruption and TERMs every group so in-flight waits return.
+//
+// The Setpgid-here, TERM-the-negated-pgid-there pair is the same two lines
+// cmd/serf-test-dev-tooling/wave_unix.go uses on its suites, spelled twice on
+// purpose: each tool is a port of a different script and is checked for
+// parity against that script, not against its sibling. Two lines of overlap
+// buy less than a shared home would cost right now; the third caller is the
+// one to build it for.
 type interrupter struct {
 	mu     sync.Mutex
 	pgids  []int
@@ -184,16 +199,36 @@ func runShards(cfg shardsConfig) int {
 	in := &interrupter{}
 	if cfg.signals != nil {
 		go func() {
-			sig, ok := <-cfg.signals
-			if !ok {
-				return
+			first := true
+			for sig := range cfg.signals {
+				s, isSyscall := sig.(syscall.Signal)
+				if !isSyscall {
+					s = syscall.SIGTERM
+				}
+				if first {
+					first = false
+					_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: interrupted by %s\n", signalNames[s])
+					in.interrupt(s)
+					continue
+				}
+				// A shard that ignores TERM would otherwise hold the run
+				// hostage forever: the wait for it never returns, and while
+				// signals are relayed to this channel none of them takes its
+				// default action. So the second one leaves immediately, with
+				// the same 128+signal code the first would have exited on,
+				// and says where the logs it is abandoning are — os.Exit
+				// runs no deferred cleanup, so the scratch directory stays
+				// on disk as the record.
+				//
+				// The script got here by clearing its traps in the first
+				// handler and letting the next signal kill the shell.
+				// signal.Stop plus a re-raise is the direct translation and
+				// was tried; the re-raised signal does not reliably take the
+				// default action before the process continues, so this exits
+				// under its own power instead.
+				_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %s again — abandoning the running shards; logs: %s\n", signalNames[s], logdir)
+				os.Exit(128 + int(s))
 			}
-			s, isSyscall := sig.(syscall.Signal)
-			if !isSyscall {
-				s = syscall.SIGTERM
-			}
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: interrupted by %s\n", signalNames[s])
-			in.interrupt(s)
 		}()
 	}
 
@@ -321,7 +356,7 @@ func runShards(cfg shardsConfig) int {
 		}()
 	}
 
-	fail := launchFailed
+	var failed []int
 	for i, result := range results {
 		if result == nil {
 			continue
@@ -331,21 +366,31 @@ func runShards(cfg shardsConfig) int {
 			_, _ = fmt.Fprintf(cfg.stdout, "PASS  agent:%-2d %8s (%d tests)\n", i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
 			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  agent:%-2d\n", i)
-			fail = true
+			failed = append(failed, i)
 		}
 	}
+	fail := launchFailed || len(failed) > 0
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
 
 	if fail {
-		_, _ = fmt.Fprintln(cfg.stdout)
-		_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
-		for i := range bins {
-			log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
-			if fileMatches(log, shardRedLine) {
+		// Replay by verdict, never by matching failure markers in the log. A
+		// shard can fail with no `go test` marker anywhere in its output — a
+		// build error, an os.Exit, a killed process — and marker matching
+		// dropped exactly those, leaving the verdicts with the most to
+		// explain with nothing behind them (kata mjzx; run-module-tests.sh
+		// carries the same fix for the same reason). A shard that never
+		// started has no verdict and no log; its error is already on stderr.
+		if len(failed) > 0 {
+			_, _ = fmt.Fprintln(cfg.stdout)
+			_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
+			for _, i := range failed {
+				log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
 				_, _ = fmt.Fprintf(cfg.stdout, "----- agent:%d -----\n", i)
-				copyFileTo(cfg.stdout, log)
+				if !copyFileTo(cfg.stdout, log) {
+					_, _ = fmt.Fprintf(cfg.stdout, "(no output captured: %s is empty or missing)\n", log)
+				}
 			}
 		}
 		_, _ = fmt.Fprintln(cfg.stdout)
@@ -356,13 +401,11 @@ func runShards(cfg shardsConfig) int {
 	return 0
 }
 
-// The two red-line shapes the script grepped for, kept separate the way it
-// kept them: the survey excerpt never matched a bare FAIL summary line, the
-// failing-shard replay did.
-var (
-	surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
-	shardRedLine  = regexp.MustCompile(`^(FAIL|--- FAIL|panic:)`)
-)
+// surveyRedLine is the excerpt grep the script used when the survey pass came
+// back red. The survey has no per-shard verdict to sort by — it is one pass
+// over the whole suite whose log is pointed at in full — so the excerpt stays
+// a grep here.
+var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
@@ -425,14 +468,6 @@ func fileHasContent(path string) bool {
 	return err == nil && info.Size() > 0
 }
 
-func fileMatches(path string, re *regexp.Regexp) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return slices.ContainsFunc(strings.Split(string(data), "\n"), re.MatchString)
-}
-
 // replayMatching writes up to limit matching lines from a log, the script's
 // `grep | head` diagnostic excerpt.
 func replayMatching(w io.Writer, path string, re *regexp.Regexp, limit int) {
@@ -452,10 +487,13 @@ func replayMatching(w io.Writer, path string, re *regexp.Regexp, limit int) {
 	}
 }
 
-func copyFileTo(w io.Writer, path string) {
+// copyFileTo writes a whole log to w and reports whether there was anything
+// to write: a verdict with an empty log behind it is worth saying out loud.
+func copyFileTo(w io.Writer, path string) bool {
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return
+	if err != nil || len(data) == 0 {
+		return false
 	}
 	_, _ = w.Write(data)
+	return true
 }
