@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -288,6 +290,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -297,7 +300,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

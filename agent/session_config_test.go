@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/hooks"
@@ -29,11 +31,13 @@ import (
 func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -47,7 +51,7 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetReasoningEffort("high")
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -62,11 +66,13 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -80,7 +86,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetModel("gpt-5.3")
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -95,11 +101,13 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -113,7 +121,7 @@ func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetTimeout(45_000)
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -125,11 +133,13 @@ func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                dir,
+		testOnly:                testConfig{metaFS: metaFS},
 		DefaultCommandTimeoutMS: 10_000,
 	})
 	if err != nil {
@@ -142,7 +152,7 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	before, err := schema.LoadSessionMeta(dir, sessID)
+	before, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta before setters: %v", err)
 	}
@@ -150,7 +160,7 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	sess.SetModel("gpt-5.3")
 	sess.SetTimeout(45_000)
 
-	after, err := schema.LoadSessionMeta(dir, sessID)
+	after, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after setters: %v", err)
 	}
@@ -780,12 +790,13 @@ func setCompactionTestHistory(sess *Session) {
 func TestSession_CompactQueuesOneExactTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
 	}})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -825,9 +836,10 @@ func TestSession_CompactNoArtifactQueuesNoTranscriptReminder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			metaFS := afero.NewMemMapFs()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: "openai"})
-			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
@@ -848,12 +860,13 @@ func TestSession_CompactNoArtifactQueuesNoTranscriptReminder(t *testing.T) {
 func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("first summary") },
 		func(req llm.Request) llm.Response { return finalResponse("second summary") },
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -879,13 +892,14 @@ func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T)
 func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeErrAdapter{name: "openai", steps: []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "summary rejected", nil, nil)
 		},
 	}})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -904,9 +918,10 @@ func TestSession_SummaryFailureAfterCheckpointQueuesOneTranscriptReminder(t *tes
 func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, ContextStrategy: "obs-mask", testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -948,10 +963,11 @@ func TestSession_NonPersistentCompactionQueuesNoTranscriptReminder(t *testing.T)
 func TestSession_CompactionReminderUsesTranscriptTool(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
