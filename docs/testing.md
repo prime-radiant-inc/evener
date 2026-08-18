@@ -362,6 +362,20 @@ test to raise its number — read `make coverage-union`, which unions the two
 tracks. The test you were about to write may already exist under the other build
 tag.
 
+`cmd/serf-hub/cov_*_test.go` and its counterparts across the tree pull the
+union number in the other direction. Each is a `//go:build serffuzz` `FuzzXxx`
+target with one seed whose byte input is ignored (`f.Add(byte(0))`) — a
+deterministic replay matrix that calls production functions and discards most
+results (`_ = f(x)`). Their oracle is real — a panic or a `-race` failure
+still fails the build — but thin: a call site with no assertion cannot fail
+on a wrong answer, only a crash. So statements these files reach count as
+EXECUTED toward coverage-union, not TESTED — read the number that way for any
+package where they are a large share of the fuzz track. Upgrading a call
+site's target from panic-net to an assertion against an independently-written
+literal (see `cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for
+that call site; it is not required for the rest of the file to keep earning
+its lines.
+
 ## Proving a Type Survives a Round Trip
 
 When two code paths must agree about a struct — a decoder and a
