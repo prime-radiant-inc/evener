@@ -313,13 +313,18 @@ Build the fixture by walking the **type** with reflection instead. Fill
 every field with a distinguishable value, decode the same bytes through
 both paths, and report divergent fields by name.
 
-`cmd/serf-hub/app_threadread_decode_fidelity_test.go` is the worked
-example. It catches a field added tomorrow with no test edit and no new
-fuzz seed — verified by adding a synthetic field and watching the test
-name it unprompted.
+`agent/session_client_mutation_doctor_drift_test.go` is the worked
+example. `clientMutationSnapshot` is unexported, so serf-doctor's
+mutations reader mirrors the persisted shape and decodes it with
+`DisallowUnknownFields`; the test walks the snapshot type with
+reflection and marshals it the way the save path does, so a field the
+mirror has never heard of makes the doctor refuse the store and name it.
+Verified by adding a synthetic field to `clientMutationSnapshot` and
+watching the test name it unprompted, with no test edit.
 
-The gotchas in the fixture builder are all in the leaves: `time.Time`
-needs whole seconds, `json.RawMessage` must contain valid JSON, floats
+The gotchas in a fixture builder are all in the leaves: `json.RawMessage`
+must contain valid JSON, any other `[]byte` marshals as base64,
+`time.Time` needs whole seconds wherever the encoding is RFC 3339, floats
 must be integral to survive widening through `any`, and an unhandled
 `reflect.Kind` must fail loudly rather than skip — a builder that
 silently skips a kind is a test that silently stops covering it.
