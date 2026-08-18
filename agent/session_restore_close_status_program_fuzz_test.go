@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -287,6 +289,7 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,
 			environmentInfo: srspEnvironmentInfo,
+			metaFS:          afero.NewMemMapFs(),
 		},
 	})
 	if err != nil {
