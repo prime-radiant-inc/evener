@@ -53,6 +53,8 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 	defer sess.Close()
 
 	// Deadlock watchdog: a genuine wedge dumps every goroutine's stack and fails.
+	// TRIPWIRE: 200 concurrent turns/ops settle in well under a second; only a
+	// genuine deadlock leaves the stress run stuck for 60s.
 	watchdog := time.AfterFunc(60*time.Second, func() {
 		panic("concurrency stress wedged: no progress in 60s (deadlock)")
 	})
