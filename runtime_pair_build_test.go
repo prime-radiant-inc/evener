@@ -1063,7 +1063,7 @@ func waitForPathOrExit(path string, run *childRun, tripwire time.Duration) error
 		case <-found:
 			return nil
 		case <-time.After(exitGrace):
-			return fmt.Errorf("child exited (%v) and %s never appeared within %s of its exit",
+			return fmt.Errorf("child exited (%w) and %s never appeared within %s of its exit",
 				run.err, filepath.Base(path), exitGrace)
 		}
 	case <-time.After(tripwire):
@@ -1081,7 +1081,7 @@ func waitForPathOrExit(path string, run *childRun, tripwire time.Duration) error
 func TestWaitForPathOrExitReportsChildExit(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "never-created")
-	dead := &childRun{done: make(chan struct{}), err: fmt.Errorf("exit status 2")}
+	dead := &childRun{done: make(chan struct{}), err: errors.New("exit status 2")}
 	close(dead.done)
 
 	start := time.Now()

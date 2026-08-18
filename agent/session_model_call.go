@@ -748,10 +748,10 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	}
 
 	req := llm.Request{
-		Model:      profile.Model(),
-		Provider:   profile.ID(),
-		Messages:   messages,
-		Tools:      toolDefs,
+		Model:    profile.Model(),
+		Provider: profile.ID(),
+		Messages: messages,
+		Tools:    toolDefs,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
 		// model that cannot honor it with no legal way to stop, and serf targets
 		// arbitrary gateways and models where that capability is unknowable in
