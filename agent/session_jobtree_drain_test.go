@@ -115,6 +115,244 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	}
 }
 
+// TestDrainJobTreeRescansWhenAWakeLandsMidPass pins the drain's quiescence
+// verdict against the completion hand-off a single pass can straddle.
+//
+// treeHasOutstandingWork reads eight independent signals in sequence, so it is
+// not a snapshot. A delegate completion hands its work UP the tree in two steps
+// — deliverDelegatePacket arms the coordinator's root attention (raising this
+// wake), then runSubagent clears the subagent's finalizing flag — while a pass
+// reads the attention EARLY and the flag LATE. A pass that straddles the two
+// steps sees both false even though at no instant were they both false, and the
+// drain then returns "" and lets Close() SIGKILL a delegate notification that
+// was already armed and waiting. That is the PRI-2441 B1 flake: a one-shot
+// `serf run` printing "waiting on delegate" instead of the coordinator's real
+// final answer.
+//
+// The wake is the one signal that survives the straddle, because every producer
+// of drain-relevant work raises it. So the pass consumes the wake edge BEFORE it
+// reads any state and re-checks it before concluding quiescence: a wake raised
+// in between means the tree moved under the scan and the verdict is stale. Here
+// the injected kick plays the concurrent completion, raising the wake mid-pass
+// while leaving every signal the pass reads false — exactly the state a
+// straddling pass observes.
+func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	passes := 0
+	kick := func(context.Context) error {
+		passes++
+		if passes == 1 {
+			sess.notify()
+		}
+		return nil
+	}
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Error("drain ran a notification turn with nothing queued")
+		return "", nil
+	}
+
+	// recheck never fires: only the mid-pass wake may cause the second pass, so a
+	// lost wake cannot be masked by the periodic re-check.
+	res, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), kick, process)
+	if err != nil {
+		t.Fatalf("drainJobTreeWith: %v", err)
+	}
+	if res != "" {
+		t.Fatalf("drain result = %q, want empty (no drain turn ran)", res)
+	}
+	if passes != 2 {
+		t.Fatalf("drain passes = %d, want 2: a wake raised while a pass was deciding quiescence must invalidate that pass's verdict and force a re-scan", passes)
+	}
+}
+
+// TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries pins a sibling gap
+// to the straddle above, through a different channel entirely:
+// pendingDelegateDeliveries.
+//
+// acceptDelegateDeliveryPlan defers a delivery into that queue instead of
+// delivering it immediately whenever the receiving session is
+// SessionProcessing at that instant -- e.g. a second, unrelated delegate's
+// completion targeting this session while the drain loop's own notification
+// turn is already running one delivery. The deferral calls notify() exactly
+// once, but treeHasOutstandingWork never reads pendingDelegateDeliveries at
+// all (unlike outstandingDrainJobCount, peekNotifications, and every attention
+// signal it does read). So once that one-shot wake is consumed, nothing about
+// this session's state says a completion is still owed, and the drain
+// concludes quiescence with a real delivery sitting undelivered -- letting
+// Close() SIGKILL it. Same PRI-2441 symptom, different signal the original fix
+// didn't touch.
+//
+// This test seeds the queue exactly the way acceptDelegateDeliveryPlan does
+// (append under delegateDeliveryMu) and asks the read function the drain loop
+// actually calls, so it is independent of how the entry got there.
+func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	outstanding, err := sess.treeHasOutstandingWork()
+	if err != nil {
+		t.Fatalf("treeHasOutstandingWork: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("treeHasOutstandingWork = false with a delegate delivery still pending; a deferred completion must keep the drain open")
+	}
+
+	live, err := sess.subtreeHasLiveComponent()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveComponent: %v", err)
+	}
+	if !live {
+		t.Fatal("subtreeHasLiveComponent = false with a delegate delivery still pending; the stall watchdog must not treat this as a genuine wedge, since kickDriveTree flushes it every pass")
+	}
+}
+
+// TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed proves the drain
+// loop itself, not just the read function, respects a pending delegate
+// delivery: with a kick that deliberately never flushes anything (isolating
+// treeHasOutstandingWork's verdict from kickDriveTree's own behavior, which
+// TestKickDriveTreeFlushesPendingDelegateDeliveries covers separately),
+// drainJobTreeWith must block rather than ever declaring quiescence, exactly
+// as TestDrainJobTreeReturnsOnContextCancel already pins for a stuck managed
+// job. recheck is left permanently unfired, so the only way this run ends is
+// wrongly quiescing (an immediate nil-error return, independent of ctx) or
+// correctly blocking in waitDrainWake until cancel() reaches it.
+func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	kick := func(context.Context) error { return nil } // deliberately never flushes
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Error("drain ran a notification turn with nothing queued")
+		return "", nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), kick, process)
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("drainJobTreeWith error = %v, want context.Canceled: a pending delegate delivery must keep the drain open, not let it quiesce", err)
+		}
+	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal, after
+	// cancel(); a correctly blocked drain observes ctx.Err() and returns as
+	// soon as it reaches waitDrainWake. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("drainJobTreeWith did not return after context cancellation")
+	}
+}
+
+// TestKickDriveTreeFlushesPendingDelegateDeliveries pins the other half of the
+// fix: counting a pending delivery as outstanding work only stops the drain
+// from a FALSE quiescence. Something still has to resolve it, or the drain
+// just waits out its stall timeout instead of making progress. kickDriveTree
+// runs at the top of every pass (before the outstanding check), alongside
+// drivePendingStableDelegateAttention and rematerializeDurablePendings -- the
+// same "drive whatever is waiting" role -- so it is where the flush belongs.
+//
+// The seeded entry is a placeholder with no live controller, not a delegate
+// produced by the real accept/defer path, so its OWN delivery attempt reports
+// errDelegateStaleLease (the same "something else already resolved this"
+// outcome a genuinely superseded delivery would produce) -- deliverDelegatePacket
+// checks plan.controller before anything else. flushPendingDelegateDeliveries
+// pops the queue entry before attempting delivery, so that pop -- not the
+// placeholder's delivery outcome -- is the fact this test pins: did
+// kickDriveTree reach into the queue at all.
+func TestKickDriveTreeFlushesPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	err := sess.kickDriveTree(context.Background())
+	if err != nil && !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if sess.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree did not flush the pending delegate delivery")
+	}
+}
+
+// TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries pins a
+// hazard in TestKickDriveTreeFlushesPendingDelegateDeliveries's own fix:
+// kickDriveTreeWith recurses into every live child (liveDirectSubagents
+// filters only on sub.closed) and, before this test, called
+// flushPendingDelegateDeliveries there unconditionally. flushPendingDelegateDeliveries
+// has no s.state check -- it was safe at its four pre-existing call sites only
+// because every one of them runs ON the owning session's own turn goroutine.
+// The drain's recursive call runs on the ANCESTOR's drain goroutine instead, so
+// flushing a child that is actively running/driving/finalizing can splice a
+// delivered notification into that child's history at a point its own round
+// loop did not choose -- e.g. between an in-flight assistant tool call and its
+// tool result, breaking message alternation. -race cannot catch this: every
+// lock is held correctly, the hazard is purely about WHEN the mutation lands,
+// not whether it races.
+//
+// driveSubagentNotificationTurn (subagents.go) already refuses to touch a
+// child where sub.running || sub.driving || sub.finalizing; this test holds
+// kickDriveTree to the same gate for the flush specifically. The child's own
+// delivery queue must still count as outstanding work (so the ancestor's drain
+// correctly keeps waiting on it) even though the ancestor must not be the one
+// to flush it — the child's own turn machinery flushes at its next natural
+// boundary instead.
+func TestKickDriveTreeDoesNotFlushBusyChildsPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	root := newSession(t)
+	child := newSession(t)
+	sub := &subagent{id: child.ID(), sess: child, running: true}
+	root.subagents.mu.Lock()
+	root.subagents.subs[child.ID()] = sub
+	root.subagents.mu.Unlock()
+
+	child.delegateDeliveryMu.Lock()
+	child.pendingDelegateDeliveries = append(child.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	child.delegateDeliveryMu.Unlock()
+
+	if err := root.kickDriveTree(context.Background()); err != nil {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if !child.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree flushed a running child's pending delegate delivery; a busy child's own turn owns that mutation, not the ancestor's drain")
+	}
+
+	outstanding, err := root.treeHasOutstandingWork()
+	if err != nil {
+		t.Fatalf("treeHasOutstandingWork: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("treeHasOutstandingWork = false with the running child's delegate delivery still pending; skipping the flush must not also drop it from the outstanding count")
+	}
+
+	// Once the child is no longer busy, its own turn boundary has passed and
+	// the ancestor's kick may flush it like any other idle child.
+	sub.mu.Lock()
+	sub.running = false
+	sub.mu.Unlock()
+	if err := root.kickDriveTree(context.Background()); err != nil && !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if child.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree did not flush the child's pending delegate delivery once it stopped running")
+	}
+}
+
 // TestOutstandingDrainJobCountIncludesRunningManagedJobs verifies every owned
 // managed job keeps the drain open while it remains in the running map. Shell
 // execution mode is not part of that durable drain contract.
