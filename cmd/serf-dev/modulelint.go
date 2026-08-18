@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/devtool/procgroup"
 	"primeradiant.com/serf/internal/devtool/report"
 )
@@ -254,7 +255,9 @@ func (l *lintRun) runWave(logdir string, first, last int, statuses []int) waveEn
 // one bare diagnostic per dependent step.
 func (l *lintRun) vanishedExit(rep *report.Reporter, logdir string) int {
 	_, _ = fmt.Fprintf(l.stderr, "lint: the temporary log directory disappeared mid-run: %s\n", logdir)
-	_, _ = fmt.Fprintf(l.stderr, "lint: nothing in this run removes it before cleanup, so something outside did; a TMPDIR reaper under disk pressure is the usual suspect on macOS\n")
+	// The env name comes from the registry row (envvars_audit_test.go's
+	// rule), spliced so the diagnostic keeps the shell runner's exact bytes.
+	_, _ = fmt.Fprintf(l.stderr, "lint: nothing in this run removes it before cleanup, so something outside did; a %s reaper under disk pressure is the usual suspect on macOS\n", envvars.TmpDir.Name)
 	rep.Fail(report.ResultsLost, fmt.Sprintf("%d modules: %s", len(l.modules), strings.Join(l.modules, " ")))
 	return 1
 }
