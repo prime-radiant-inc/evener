@@ -60,6 +60,13 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		// point is that the string contains a `/`, and nothing creates it.
 		"a literal `/tmp/foo/AGENTS.md` containing",
 	},
+	"scripts/gate-surface-lib.sh": {
+		// A comment recording that a repo-wide grep for this fixed path found
+		// NOTHING — a mention of absence explaining why the git-cache skip
+		// pattern is empty (kata 5gvk's capability preflight). No run names
+		// or creates the path.
+		"non-gate target; a repo-wide grep for a fixed /tmp/git-cache path found",
+	},
 	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
 	// script has no prose to warn in: this is a script ABOUT the debris in
 	// /tmp rather than a script that puts any there.
