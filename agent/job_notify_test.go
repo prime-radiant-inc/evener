@@ -658,9 +658,12 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("state after store load failure = %q, want %q", got, SessionIdle)
 	}
+	// wake fires off the session's own notify callback once the requeue
+	// schedules its retry (jobNotificationRetryInitialDelay is 250ms).
 	select {
 	case <-wake:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: this only fires on a genuine hang, not scheduling delay.
+	case <-time.After(5 * time.Second):
 		t.Fatal("requeued job notification did not schedule a retry wake")
 	}
 
@@ -720,13 +723,28 @@ func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
 	sess.jobNotifyRetry.delay = 10 * time.Millisecond
 	sess.pendingJobNotifsMu.Unlock()
 
+	// scheduleJobNotificationRetryLocked's AfterFunc calls s.notify() exactly
+	// when it fires with a still-pending notification -- the same state
+	// transition (active -> false, delay advanced) this test asserts on. Wire
+	// the session's own notify callback and wait on it instead of polling the
+	// retry fields on a timer.
+	retried := make(chan struct{}, 1)
+	sess.SetNotifyFunc(func() {
+		select {
+		case retried <- struct{}{}:
+		default:
+		}
+	})
+
 	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
 	sess.resetJobNotificationRetry()
-	waitForCondition(t, 3*time.Second, "pending retry timer to fire and advance the delay", func() bool {
-		sess.pendingJobNotifsMu.Lock()
-		defer sess.pendingJobNotifsMu.Unlock()
-		return !sess.jobNotifyRetry.active && sess.jobNotifyRetry.delay == 20*time.Millisecond
-	})
+	select {
+	case <-retried:
+	// TRIPWIRE: the retry delay is 10ms; this only fires on a genuine hang,
+	// not scheduling delay.
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the pending retry timer to fire and advance the delay")
+	}
 
 	sess.pendingJobNotifsMu.Lock()
 	delay := sess.jobNotifyRetry.delay

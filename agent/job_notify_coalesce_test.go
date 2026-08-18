@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -65,7 +64,7 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 	_ = watchRes
 
 	log := &notificationWakeLog{}
-	s.SetNotifyFunc(func() { log.observe(s) })
+	watcher := newJobNotifyWatcher(s, func() { log.observe(s) })
 
 	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 		t.Fatalf("release the job: %v", err)
@@ -73,8 +72,11 @@ func TestWatchedJobCompletionWakesTheSessionOnce(t *testing.T) {
 	waitForShellDone(t, s.jobManager, jobID)
 
 	// Both notices must be queued before the assertion; the terminal notice is
-	// the last thing armFinalizedJob enqueues.
-	waitForCondition(t, 30*time.Second, "watch settlement and terminal notice queued", func() bool {
+	// the last thing armFinalizedJob enqueues. armFinalizedJob queues them
+	// under one notification hold (see holdJobNotificationWake) so the
+	// session's own notify wake -- fired once the hold releases -- tells us
+	// when to look, rather than polling on a timer.
+	watcher.await(t, "watch settlement and terminal notice queued", func() bool {
 		s.pendingJobNotifsMu.Lock()
 		defer s.pendingJobNotifsMu.Unlock()
 		var watch, terminal bool

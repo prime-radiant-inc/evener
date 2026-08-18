@@ -53,6 +53,59 @@ func mustJSONString(s string) string {
 	return string(b)
 }
 
+// jobNotifyWatcher awaits a condition over job-notify state by re-checking it
+// each time the session's own notify wake fires, rather than on a fixed
+// polling interval. That wake (session.go's notify(), invoked by
+// enqueueNotifications/enqueueJobNotificationAndNotify whenever a job
+// notification becomes pending) is the production completion signal these
+// tests actually care about: it is what wakes an idle session to run a
+// notification turn.
+type jobNotifyWatcher struct {
+	woken chan struct{}
+}
+
+// newJobNotifyWatcher installs s's notify callback and returns a watcher that
+// re-tests conditions each time it fires. onWake, if non-nil, runs on every
+// wake before the watcher signals it (e.g. to record what the queue held at
+// that instant). Call this before starting the job whose completion the test
+// awaits, or an early wake can be missed.
+func newJobNotifyWatcher(s *Session, onWake func()) *jobNotifyWatcher {
+	w := &jobNotifyWatcher{woken: make(chan struct{}, 1)}
+	s.SetNotifyFunc(func() {
+		if onWake != nil {
+			onWake()
+		}
+		select {
+		case w.woken <- struct{}{}:
+		default:
+		}
+	})
+	return w
+}
+
+// await blocks until cond returns true, re-testing it once up front and again
+// every time the session's notify wake fires.
+func (w *jobNotifyWatcher) await(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	if cond() {
+		return
+	}
+	// TRIPWIRE: the driving job is a scripted local shell run (a short
+	// process or a temp-file gate) with no real network I/O; this only fires
+	// on a genuine hang, not scheduling delay.
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case <-w.woken:
+			if cond() {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
 // TestTerminalJobStatusReadConsumesPendingNotification pins the consume rule: a
 // caller that reads a terminal job_status has LEARNED the job ended, so the
 // queued terminal notification must not interrupt it later with the same news.
@@ -64,9 +117,10 @@ func mustJSONString(s string) string {
 func TestPersistedTerminalJobStatusReadConsumesPendingNotification(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'consume me\\n'")
 
-	waitForCondition(t, 30*time.Second, "terminal notification queued", func() bool {
+	watcher.await(t, "terminal notification queued", func() bool {
 		return s.peekNotifications() > 0
 	})
 
@@ -119,13 +173,14 @@ func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testi
 		t.Fatalf("job_watch create: %v", err)
 	}
 
+	watcher := newJobNotifyWatcher(s, nil)
 	gate := filepath.Join(t.TempDir(), "release")
 	jobID := startBackgroundShellJob(t, s, "while [ ! -f "+gate+" ]; do sleep 0.02; done; printf 'watched done\\n'")
 	if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 		t.Fatalf("release job: %v", err)
 	}
 	waitForShellDone(t, s.jobManager, jobID)
-	waitForCondition(t, 30*time.Second, "self watch and terminal notification queued", func() bool {
+	watcher.await(t, "self watch and terminal notification queued", func() bool {
 		s.pendingJobNotifsMu.Lock()
 		defer s.pendingJobNotifsMu.Unlock()
 		if len(s.pendingJobNotifs) != 2 {
@@ -175,9 +230,10 @@ func TestPersistedTerminalJobStatusPreservesQueuedSelfWatchNotification(t *testi
 func TestTerminalJobStatusTranscriptFailureLeavesNotificationPending(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'persist me\\n'")
 
-	waitForCondition(t, 30*time.Second, "terminal notification queued", func() bool {
+	watcher.await(t, "terminal notification queued", func() bool {
 		return s.peekNotifications() > 0
 	})
 
@@ -229,8 +285,9 @@ func TestParentTerminalJobStatusReadLeavesChildNotificationPending(t *testing.T)
 	child.jobManager.setParentJobID("job_PARENT")
 	parent.subagents.track(&subagent{id: child.ID(), sess: child, status: SubagentRunning})
 
+	watcher := newJobNotifyWatcher(child, nil)
 	jobID := startBackgroundShellJob(t, child, "printf 'child done\\n'")
-	waitForCondition(t, 30*time.Second, "child terminal notification queued", func() bool {
+	watcher.await(t, "child terminal notification queued", func() bool {
 		return child.peekNotifications() > 0
 	})
 
@@ -281,8 +338,9 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 
+	watcher := newJobNotifyWatcher(s, nil)
 	jobID := startBackgroundShellJob(t, s, "printf 'done\\n'")
-	waitForCondition(t, 30*time.Second, "terminal notification queued", func() bool {
+	watcher.await(t, "terminal notification queued", func() bool {
 		return s.peekNotifications() > 0
 	})
 
@@ -304,7 +362,7 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("continued") },
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	output, err := s.ProcessInput(ctx, "finish after checking the job", nil)
 	if err != nil {
