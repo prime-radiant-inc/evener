@@ -98,6 +98,8 @@ func driveWithWatchdog(t *testing.T, sess *Session) {
 	}()
 	select {
 	case <-done:
+	// TRIPWIRE: a healthy turn completes well under a second; 30s only fires
+	// on a genuine hang (the watch-send deadlock this helper guards against).
 	case <-time.After(30 * time.Second):
 		buf := make([]byte, 1<<20)
 		t.Fatalf("session wedged (watch-send deadlock):\n%s", buf[:runtime.Stack(buf, true)])

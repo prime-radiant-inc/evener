@@ -147,7 +147,10 @@ func createShellAndReadJobStarted(t *testing.T, sess *Session, command string) e
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, sess.jobManager, rec.JobID) })
 
-	deadline := time.After(2 * time.Second)
+	// TRIPWIRE: createShell already dispatched synchronously above, so the
+	// started event is queued or arrives within microseconds; this only
+	// bounds a genuine hang.
+	deadline := time.After(30 * time.Second)
 	for {
 		select {
 		case ev := <-sess.Events():

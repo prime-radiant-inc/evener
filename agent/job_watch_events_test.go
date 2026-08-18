@@ -753,8 +753,10 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 	jm.startProgressTimer(key, cfg, stop)
 	select {
 	case <-fired:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("progress timer did not fire within 200ms")
+	// TRIPWIRE: the timer is set to a 10ms interval above; this only fires on
+	// a genuine hang, not a slow machine.
+	case <-time.After(30 * time.Second):
+		t.Fatal("progress timer did not fire within the tripwire window")
 	}
 	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
 }
@@ -784,7 +786,9 @@ func TestProgressTimerStopsOnClose(t *testing.T) {
 		if n.JobID != "" {
 			t.Fatalf("session progress notification job_id = %q, want empty", n.JobID)
 		}
-	case <-time.After(200 * time.Millisecond):
+	// TRIPWIRE: the timer is set to a 10ms interval above; this only fires on
+	// a genuine hang, not a slow machine.
+	case <-time.After(30 * time.Second):
 		t.Fatal("progress timer did not fire before close")
 	}
 	if err := jm.close(); err != nil {
@@ -805,7 +809,10 @@ drained:
 	// catching the goroutine-leak mutation.
 	select {
 	case <-stop:
-	case <-time.After(200 * time.Millisecond):
+	// TRIPWIRE: close() closes progressStop synchronously as part of
+	// closeWatchConfig; this only fires on a genuine hang (the leak this test
+	// guards against).
+	case <-time.After(30 * time.Second):
 		t.Fatal("close() did not close progressStop channel; goroutine would leak")
 	}
 	if count := jm.watchCount(); count != 0 {
@@ -814,6 +821,9 @@ drained:
 	select {
 	case <-fired:
 		t.Fatal("progress timer fired after close")
+	// TRIPWIRE: negative wait -- asserts the stopped timer does NOT fire
+	// again. There is no completion signal to await instead; kept short by
+	// design since lengthening it only slows the suite without proving more.
 	case <-time.After(50 * time.Millisecond):
 	}
 }

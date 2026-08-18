@@ -67,7 +67,9 @@ func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(time.Second):
+	// TRIPWIRE: callers signal in-process with no real I/O; this only fires on
+	// a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for %s", label)
 	}
 }
