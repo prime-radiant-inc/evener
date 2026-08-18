@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
@@ -33,6 +35,7 @@ func TestTranscriptCreateFailedWarningRidesAfterSessionStart(t *testing.T) {
 
 	cfg := SessionConfig{}
 	cfg.StateDir = t.TempDir()
+	cfg.testOnly.metaFS = afero.NewMemMapFs()
 	cfg.testOnly.sessionInitFault = func(point string) error {
 		if point == "new_transcript" {
 			return errTranscriptCreateFaultForTest

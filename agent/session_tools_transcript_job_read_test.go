@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/identifier"
@@ -116,7 +118,8 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
-	caller := newSession(t, withConfig(SessionConfig{StateDir: current, MaxSubagentDepth: 1}))
+	metaFS := afero.NewMemMapFs()
+	caller := newSession(t, withConfig(SessionConfig{StateDir: current, MaxSubagentDepth: 1, testOnly: testConfig{metaFS: metaFS}}))
 	foreignOwner := identifier.MustNewSessionID()
 	foreignJobID := identifier.MustNewJobID(foreignOwner)
 	seedLocalJobRecord(t, foreign, foreignOwner, foreignJobID, "/untrusted/decoy.log", "FOREIGN_MARKER\n", maxJobOutputRetentionBytes, false, 0, nil)

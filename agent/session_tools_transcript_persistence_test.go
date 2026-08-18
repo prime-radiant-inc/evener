@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -18,6 +20,7 @@ import (
 func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
 	const bodySentinel = "PRIVATE_CANCELED_API_BODY_SENTINEL"
 	stateDir := newBucket(t)
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
@@ -28,6 +31,7 @@ func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			metaFS:              metaFS,
 		},
 	})
 	if err != nil {

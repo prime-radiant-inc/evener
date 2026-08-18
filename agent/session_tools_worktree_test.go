@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/worktree"
@@ -42,7 +44,8 @@ func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) 
 func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
 	root := t.TempDir()
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
+	metaFS := afero.NewMemMapFs()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}}))
 	project := identifier.Project{ID: "carried-project", CanonicalPath: root}
 	lanePath := filepath.Join(t.TempDir(), "alternate-project", "delegate")
 

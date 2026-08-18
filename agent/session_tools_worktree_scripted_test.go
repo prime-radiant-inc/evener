@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -235,6 +237,7 @@ func newScriptedWorktreeSession(t *testing.T) *scriptedWorktreeSession {
 			minimalSystemPrompt:         true,
 			minimalWorktreeToolRegistry: true,
 			noSyncJobStore:              true,
+			metaFS:                      afero.NewMemMapFs(),
 			worktreeGitRunner: func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
 				return git.run
 			},

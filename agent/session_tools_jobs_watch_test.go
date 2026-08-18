@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
@@ -454,6 +456,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
 		StateDir:         packageFixtureTempDir(t, "watch-state-*"),
+		testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
 	}))
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
