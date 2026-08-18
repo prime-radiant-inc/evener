@@ -163,6 +163,201 @@ export interface EmptyParams {
 export interface EmptyResponse {
 }
 
+export interface EvenerAuthUpdatedParams {
+  provider?: string;
+  activeSource?: string;
+}
+
+export interface EvenerDelegateInfo {
+  delegateId: string;
+  ownerSessionId: string;
+  rootSessionId: string;
+  childSessionId: string;
+  transcriptRef: string;
+  parentDelegateId?: string;
+  type: string;
+  lifecycle: string;
+  phase: string;
+  status: string;
+  outcome?: string;
+  reason?: string;
+  terminal?: boolean;
+  resumable: boolean;
+  notResumableReason?: string;
+  projectionRevision: number;
+  task?: string;
+  description?: string;
+  agentType?: string;
+  requestedModel?: string;
+  resolvedProfileId?: string;
+  resolvedModel?: string;
+  model?: string;
+  reasoningEffort?: string;
+  originTurnId?: string;
+  originToolCallId?: string;
+  originItemId?: string;
+  runStartedAt?: string;
+  runEndedAt?: string;
+  latestActivityAt?: string;
+  runningForMs?: number;
+  quietForMs?: number;
+  durationMs?: number;
+  packetKind?: string;
+  message?: unknown;
+  structuredResult?: unknown;
+  structuredResultValid?: boolean;
+  structuredResultReason?: string;
+  warnings?: string[];
+  diagnostics?: string[];
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
+  exhaustionResumable?: boolean;
+  delegationAllowance?: number;
+  parentWatchGranted?: boolean;
+  usage?: EvenerUsage;
+  worktree?: JobActivityWorktree;
+}
+
+export interface EvenerDelegateParams {
+  threadId: string;
+  ref: string;
+  delegate: EvenerDelegateInfo;
+}
+
+export interface EvenerDiagnostics {
+  tools?: EvenerToolInfo[];
+  mcp?: EvenerMCPServerInfo[];
+  skills?: EvenerSkillInfo[];
+  plugins?: EvenerPluginInfo[];
+  hooks?: Record<string, number>;
+  jobs?: EvenerJobInfo[];
+  delegates?: EvenerDelegateInfo[];
+  turnSlots?: EvenerTurnSlots;
+  agents?: string[];
+}
+
+export interface EvenerJobInfo {
+  jobId: string;
+  jobType: string;
+  status: string;
+  reason?: string;
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
+  resumable?: boolean;
+  exitCode?: number;
+  outputBytes: number;
+  transcriptRef?: string;
+  fromWatch?: boolean;
+  background?: boolean;
+  command?: string;
+  parentDelegateId?: string;
+  delegateId?: string;
+  task?: string;
+  originTurnId?: string;
+  originToolCallId?: string;
+  originItemId?: string;
+}
+
+export interface EvenerJobParams {
+  threadId: string;
+  ref: string;
+  job: EvenerJobInfo;
+}
+
+export interface EvenerLaunchUpdatedParams {
+  cwd: string;
+  layer: string;
+}
+
+export interface EvenerMCPServerInfo {
+  name: string;
+  tools: string[];
+  status?: string;
+  error?: string;
+}
+
+export interface EvenerPluginInfo {
+  name: string;
+  version?: string;
+  skillCount: number;
+  agentCount: number;
+  hookCount: number;
+  mcpCount: number;
+}
+
+export interface EvenerSkillInfo {
+  name: string;
+  description?: string;
+}
+
+export interface EvenerSteeringInjectedParams {
+  threadId: string;
+  ref: string;
+  text?: string;
+  images?: InputItem[];
+  source?: string;
+  kind?: string;
+  clientMutationId?: string;
+}
+
+export interface EvenerSubagentPreviewParams {
+  ref: string;
+  limit?: number;
+}
+
+export interface EvenerSubagentPreviewResponse {
+  ref: string;
+  items: ThreadItem[];
+  truncated: boolean;
+}
+
+export interface EvenerThread {
+  ref: string;
+  parentRef?: string;
+  kind?: string;
+  profile?: string;
+  activeTurnId?: string;
+  contextPressure?: number;
+  contextUsed?: number;
+  contextWindow?: number;
+  contextRemaining?: number;
+  capabilities: ThreadCapabilities;
+  diagnostics?: EvenerDiagnostics;
+  queue: QueueState;
+  pendingMutations?: PendingMutation[];
+  tasks?: TaskAggregate;
+  goal?: GoalState;
+  usage?: EvenerUsage;
+  workMillis?: number;
+  activeTurnStartedAt?: number;
+  cost?: string;
+  failedToolCalls?: number;
+  askPending?: boolean;
+  pendingEscalations?: SandboxEscalationRequested[];
+  reasoningEffort?: string;
+  reasoningEffortLevels?: string[];
+  supportsReasoning?: boolean;
+}
+
+export interface EvenerToolInfo {
+  name: string;
+  source: string;
+}
+
+export interface EvenerTurnSlots {
+  inUse: number;
+  cap: number;
+  jobs: number;
+  driveTurns: number;
+}
+
+export interface EvenerUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  totalTokens?: number;
+}
+
 export interface FeatureSet {
   threadList: boolean;
   threadTurnsList: boolean;
@@ -350,7 +545,7 @@ export interface JobActivityDelegate {
   turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
-  usage?: SerfUsage;
+  usage?: EvenerUsage;
 }
 
 export interface JobActivityEntry {
@@ -756,201 +951,6 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
-export interface SerfAuthUpdatedParams {
-  provider?: string;
-  activeSource?: string;
-}
-
-export interface SerfDelegateInfo {
-  delegateId: string;
-  ownerSessionId: string;
-  rootSessionId: string;
-  childSessionId: string;
-  transcriptRef: string;
-  parentDelegateId?: string;
-  type: string;
-  lifecycle: string;
-  phase: string;
-  status: string;
-  outcome?: string;
-  reason?: string;
-  terminal?: boolean;
-  resumable: boolean;
-  notResumableReason?: string;
-  projectionRevision: number;
-  task?: string;
-  description?: string;
-  agentType?: string;
-  requestedModel?: string;
-  resolvedProfileId?: string;
-  resolvedModel?: string;
-  model?: string;
-  reasoningEffort?: string;
-  originTurnId?: string;
-  originToolCallId?: string;
-  originItemId?: string;
-  runStartedAt?: string;
-  runEndedAt?: string;
-  latestActivityAt?: string;
-  runningForMs?: number;
-  quietForMs?: number;
-  durationMs?: number;
-  packetKind?: string;
-  message?: unknown;
-  structuredResult?: unknown;
-  structuredResultValid?: boolean;
-  structuredResultReason?: string;
-  warnings?: string[];
-  diagnostics?: string[];
-  exhaustionBudget?: string;
-  exhaustionLimit?: number;
-  exhaustionResumable?: boolean;
-  delegationAllowance?: number;
-  parentWatchGranted?: boolean;
-  usage?: SerfUsage;
-  worktree?: JobActivityWorktree;
-}
-
-export interface SerfDelegateParams {
-  threadId: string;
-  ref: string;
-  delegate: SerfDelegateInfo;
-}
-
-export interface SerfDiagnostics {
-  tools?: SerfToolInfo[];
-  mcp?: SerfMCPServerInfo[];
-  skills?: SerfSkillInfo[];
-  plugins?: SerfPluginInfo[];
-  hooks?: Record<string, number>;
-  jobs?: SerfJobInfo[];
-  delegates?: SerfDelegateInfo[];
-  turnSlots?: SerfTurnSlots;
-  agents?: string[];
-}
-
-export interface SerfJobInfo {
-  jobId: string;
-  jobType: string;
-  status: string;
-  reason?: string;
-  exhaustionBudget?: string;
-  exhaustionLimit?: number;
-  resumable?: boolean;
-  exitCode?: number;
-  outputBytes: number;
-  transcriptRef?: string;
-  fromWatch?: boolean;
-  background?: boolean;
-  command?: string;
-  parentDelegateId?: string;
-  delegateId?: string;
-  task?: string;
-  originTurnId?: string;
-  originToolCallId?: string;
-  originItemId?: string;
-}
-
-export interface SerfJobParams {
-  threadId: string;
-  ref: string;
-  job: SerfJobInfo;
-}
-
-export interface SerfLaunchUpdatedParams {
-  cwd: string;
-  layer: string;
-}
-
-export interface SerfMCPServerInfo {
-  name: string;
-  tools: string[];
-  status?: string;
-  error?: string;
-}
-
-export interface SerfPluginInfo {
-  name: string;
-  version?: string;
-  skillCount: number;
-  agentCount: number;
-  hookCount: number;
-  mcpCount: number;
-}
-
-export interface SerfSkillInfo {
-  name: string;
-  description?: string;
-}
-
-export interface SerfSteeringInjectedParams {
-  threadId: string;
-  ref: string;
-  text?: string;
-  images?: InputItem[];
-  source?: string;
-  kind?: string;
-  clientMutationId?: string;
-}
-
-export interface SerfSubagentPreviewParams {
-  ref: string;
-  limit?: number;
-}
-
-export interface SerfSubagentPreviewResponse {
-  ref: string;
-  items: ThreadItem[];
-  truncated: boolean;
-}
-
-export interface SerfThread {
-  ref: string;
-  parentRef?: string;
-  kind?: string;
-  profile?: string;
-  activeTurnId?: string;
-  contextPressure?: number;
-  contextUsed?: number;
-  contextWindow?: number;
-  contextRemaining?: number;
-  capabilities: ThreadCapabilities;
-  diagnostics?: SerfDiagnostics;
-  queue: QueueState;
-  pendingMutations?: PendingMutation[];
-  tasks?: TaskAggregate;
-  goal?: GoalState;
-  usage?: SerfUsage;
-  workMillis?: number;
-  activeTurnStartedAt?: number;
-  cost?: string;
-  failedToolCalls?: number;
-  askPending?: boolean;
-  pendingEscalations?: SandboxEscalationRequested[];
-  reasoningEffort?: string;
-  reasoningEffortLevels?: string[];
-  supportsReasoning?: boolean;
-}
-
-export interface SerfToolInfo {
-  name: string;
-  source: string;
-}
-
-export interface SerfTurnSlots {
-  inUse: number;
-  cap: number;
-  jobs: number;
-  driveTurns: number;
-}
-
-export interface SerfUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  totalTokens?: number;
-}
-
 export interface ServerInfo {
   name: string;
   version: string;
@@ -1053,7 +1053,7 @@ export interface Thread {
   gitInfo?: GitInfo;
   name?: string;
   turns?: Turn[];
-  serf: SerfThread;
+  evener: EvenerThread;
 }
 
 export interface ThreadCapabilities {
@@ -1340,7 +1340,7 @@ export interface Turn {
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
-  usage?: SerfUsage;
+  usage?: EvenerUsage;
   cost?: string;
 }
 
@@ -1484,7 +1484,7 @@ export const METHOD_NAMES = [
   "thread/fork",
   "thread/clear",
   "thread/model/set",
-  "serf/thread/name/set",
+  "evener/thread/name/set",
   "thread/reasoning-effort/set",
   "thread/compact/start",
   "thread/shutdown",
@@ -1496,52 +1496,52 @@ export const METHOD_NAMES = [
   "turn/promoteQueuedAsSteer",
   "turn/cancelQueued",
   "goal/set",
-  "serf/tasks/list",
-  "serf/jobs/list",
-  "serf/jobs/output",
-  "serf/thread/transcripts/list",
-  "serf/subagentPreview",
-  "serf/paths/complete",
-  "serf/projects/recent",
-  "serf/path/validate",
-  "serf/harnesses/list",
-  "serf/upgrade",
-  "serf/auth/status",
-  "serf/auth/test",
-  "serf/auth/login/start",
-  "serf/auth/login/complete",
-  "serf/auth/logout",
-  "serf/auth/list",
-  "serf/auth/apiKey/set",
-  "serf/auth/device/start",
-  "serf/auth/device/poll",
-  "serf/launch/resolve",
-  "serf/launch/schema",
-  "serf/launch/getLayer",
-  "serf/launch/setLayer",
-  "serf/launch/trustRepo",
+  "evener/tasks/list",
+  "evener/jobs/list",
+  "evener/jobs/output",
+  "evener/thread/transcripts/list",
+  "evener/subagentPreview",
+  "evener/paths/complete",
+  "evener/projects/recent",
+  "evener/path/validate",
+  "evener/harnesses/list",
+  "evener/upgrade",
+  "evener/auth/status",
+  "evener/auth/test",
+  "evener/auth/login/start",
+  "evener/auth/login/complete",
+  "evener/auth/logout",
+  "evener/auth/list",
+  "evener/auth/apiKey/set",
+  "evener/auth/device/start",
+  "evener/auth/device/poll",
+  "evener/launch/resolve",
+  "evener/launch/schema",
+  "evener/launch/getLayer",
+  "evener/launch/setLayer",
+  "evener/launch/trustRepo",
   "model/list",
-  "serf/instance/list",
-  "serf/instance/create",
-  "serf/instance/edit",
-  "serf/instance/remove",
-  "serf/instance/setDefault",
-  "serf/plugin/checkNow",
-  "serf/marketplace/list",
-  "serf/marketplace/add",
-  "serf/marketplace/remove",
-  "serf/marketplace/refresh",
-  "serf/marketplace/browse",
-  "serf/plugin/list",
-  "serf/plugin/install",
-  "serf/plugin/upgrade",
-  "serf/plugin/remove",
-  "serf/plugin/enable",
-  "serf/plugin/disable",
-  "serf/plugin/setAutoUpgrade",
-  "serf/command/list",
-  "serf/settings/overview",
-  "serf/sandbox/escalation/resolve",
+  "evener/instance/list",
+  "evener/instance/create",
+  "evener/instance/edit",
+  "evener/instance/remove",
+  "evener/instance/setDefault",
+  "evener/plugin/checkNow",
+  "evener/marketplace/list",
+  "evener/marketplace/add",
+  "evener/marketplace/remove",
+  "evener/marketplace/refresh",
+  "evener/marketplace/browse",
+  "evener/plugin/list",
+  "evener/plugin/install",
+  "evener/plugin/upgrade",
+  "evener/plugin/remove",
+  "evener/plugin/enable",
+  "evener/plugin/disable",
+  "evener/plugin/setAutoUpgrade",
+  "evener/command/list",
+  "evener/settings/overview",
+  "evener/sandbox/escalation/resolve",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -1551,7 +1551,7 @@ export const NOTIFICATION_NAMES = [
   "thread/closed",
   "thread/status/changed",
   "thread/queueChanged",
-  "serf/thread/name/changed",
+  "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
   "turn/started",
@@ -1563,22 +1563,22 @@ export const NOTIFICATION_NAMES = [
   "item/reasoning/summaryTextDelta",
   "item/toolOutput/delta",
   "warning",
-  "serf/thread/modelRetry",
-  "serf/steering/injected",
-  "serf/job/started",
-  "serf/job/finished",
-  "serf/delegate/updated",
-  "serf/jobs/treeUpdated",
-  "serf/auth/updated",
-  "serf/launch/updated",
-  "serf/attention/changed",
-  "serf/marketplace/updated",
-  "serf/plugin/updated",
-  "serf/thread/resync",
-  "serf/task/updated",
-  "serf/sandbox/escalation/requested",
-  "serf/sandbox/escalation/resolved",
-  "serf/tree/changed",
+  "evener/thread/modelRetry",
+  "evener/steering/injected",
+  "evener/job/started",
+  "evener/job/finished",
+  "evener/delegate/updated",
+  "evener/jobs/treeUpdated",
+  "evener/auth/updated",
+  "evener/launch/updated",
+  "evener/attention/changed",
+  "evener/marketplace/updated",
+  "evener/plugin/updated",
+  "evener/thread/resync",
+  "evener/task/updated",
+  "evener/sandbox/escalation/requested",
+  "evener/sandbox/escalation/resolved",
+  "evener/tree/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -1639,7 +1639,7 @@ export interface MethodTypes {
   "thread/fork": { params: ThreadForkParams; result: ThreadForkResponse };
   "thread/clear": { params: ThreadClearParams; result: ThreadClearResponse };
   "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
-  "serf/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
+  "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };
   "thread/shutdown": { params: ThreadShutdownParams; result: EmptyResponse };
@@ -1651,52 +1651,52 @@ export interface MethodTypes {
   "turn/promoteQueuedAsSteer": { params: TurnPromoteQueuedAsSteerParams; result: TurnPromoteQueuedAsSteerResponse };
   "turn/cancelQueued": { params: TurnCancelQueuedParams; result: TurnCancelQueuedResponse };
   "goal/set": { params: GoalSetParams; result: GoalSetResponse };
-  "serf/tasks/list": { params: TaskListParams; result: TaskListResponse };
-  "serf/jobs/list": { params: JobsListParams; result: JobsListResponse };
-  "serf/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
-  "serf/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
-  "serf/subagentPreview": { params: SerfSubagentPreviewParams; result: SerfSubagentPreviewResponse };
-  "serf/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
-  "serf/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
-  "serf/path/validate": { params: PathValidateParams; result: PathValidateResponse };
-  "serf/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
-  "serf/upgrade": { params: UpgradeParams; result: UpgradeResponse };
-  "serf/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
-  "serf/auth/test": { params: AuthTestParams; result: AuthTestResponse };
-  "serf/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
-  "serf/auth/login/complete": { params: AuthLoginCompleteParams; result: AuthLoginCompleteResponse };
-  "serf/auth/logout": { params: AuthLogoutParams; result: AuthLogoutResponse };
-  "serf/auth/list": { params: EmptyParams; result: AuthListResponse };
-  "serf/auth/apiKey/set": { params: AuthApiKeySetParams; result: AuthStatusResponse };
-  "serf/auth/device/start": { params: AuthDeviceStartParams; result: AuthDeviceStartResponse };
-  "serf/auth/device/poll": { params: AuthDevicePollParams; result: AuthDevicePollResponse };
-  "serf/launch/resolve": { params: LaunchConfigResolveParams; result: LaunchConfigResolved };
-  "serf/launch/schema": { params: EmptyParams; result: LaunchOptionSchemaResponse };
-  "serf/launch/getLayer": { params: LaunchConfigGetLayerParams; result: LaunchConfigLayer };
-  "serf/launch/setLayer": { params: LaunchConfigSetLayerParams; result: LaunchConfigResolved };
-  "serf/launch/trustRepo": { params: LaunchConfigTrustRepoParams; result: LaunchConfigResolved };
+  "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
+  "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
+  "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
+  "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
+  "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
+  "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
+  "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
+  "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
+  "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
+  "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
+  "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
+  "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
+  "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
+  "evener/auth/login/complete": { params: AuthLoginCompleteParams; result: AuthLoginCompleteResponse };
+  "evener/auth/logout": { params: AuthLogoutParams; result: AuthLogoutResponse };
+  "evener/auth/list": { params: EmptyParams; result: AuthListResponse };
+  "evener/auth/apiKey/set": { params: AuthApiKeySetParams; result: AuthStatusResponse };
+  "evener/auth/device/start": { params: AuthDeviceStartParams; result: AuthDeviceStartResponse };
+  "evener/auth/device/poll": { params: AuthDevicePollParams; result: AuthDevicePollResponse };
+  "evener/launch/resolve": { params: LaunchConfigResolveParams; result: LaunchConfigResolved };
+  "evener/launch/schema": { params: EmptyParams; result: LaunchOptionSchemaResponse };
+  "evener/launch/getLayer": { params: LaunchConfigGetLayerParams; result: LaunchConfigLayer };
+  "evener/launch/setLayer": { params: LaunchConfigSetLayerParams; result: LaunchConfigResolved };
+  "evener/launch/trustRepo": { params: LaunchConfigTrustRepoParams; result: LaunchConfigResolved };
   "model/list": { params: ModelListParams; result: ModelListResponse };
-  "serf/instance/list": { params: EmptyParams; result: InstanceListResponse };
-  "serf/instance/create": { params: InstanceCreateParams; result: InstanceListResponse };
-  "serf/instance/edit": { params: InstanceEditParams; result: InstanceListResponse };
-  "serf/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
-  "serf/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
-  "serf/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
-  "serf/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };
-  "serf/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
-  "serf/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
-  "serf/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
-  "serf/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
-  "serf/plugin/list": { params: EmptyParams; result: PluginListResponse };
-  "serf/plugin/install": { params: PluginRefParams; result: PluginListResponse };
-  "serf/plugin/upgrade": { params: PluginRefParams; result: PluginListResponse };
-  "serf/plugin/remove": { params: PluginRefParams; result: PluginListResponse };
-  "serf/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
-  "serf/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
-  "serf/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
-  "serf/command/list": { params: EmptyParams; result: CommandListResponse };
-  "serf/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
-  "serf/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/instance/list": { params: EmptyParams; result: InstanceListResponse };
+  "evener/instance/create": { params: InstanceCreateParams; result: InstanceListResponse };
+  "evener/instance/edit": { params: InstanceEditParams; result: InstanceListResponse };
+  "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
+  "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
+  "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
+  "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };
+  "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
+  "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
+  "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
+  "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
+  "evener/plugin/upgrade": { params: PluginRefParams; result: PluginListResponse };
+  "evener/plugin/remove": { params: PluginRefParams; result: PluginListResponse };
+  "evener/plugin/enable": { params: PluginRefParams; result: PluginListResponse };
+  "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
+  "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
+  "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
+  "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
 export interface NotificationTypes {
@@ -1704,7 +1704,7 @@ export interface NotificationTypes {
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
   "thread/queueChanged": ThreadQueueChangedParams;
-  "serf/thread/name/changed": ThreadNameChangedParams;
+  "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
   "turn/started": TurnStartedParams;
@@ -1716,22 +1716,22 @@ export interface NotificationTypes {
   "item/reasoning/summaryTextDelta": ReasoningSummaryDeltaParams;
   "item/toolOutput/delta": ToolOutputDeltaParams;
   "warning": WarningParams;
-  "serf/thread/modelRetry": ThreadModelRetryParams;
-  "serf/steering/injected": SerfSteeringInjectedParams;
-  "serf/job/started": SerfJobParams;
-  "serf/job/finished": SerfJobParams;
-  "serf/delegate/updated": SerfDelegateParams;
-  "serf/jobs/treeUpdated": JobsTreeUpdatedParams;
-  "serf/auth/updated": SerfAuthUpdatedParams;
-  "serf/launch/updated": SerfLaunchUpdatedParams;
-  "serf/attention/changed": AttentionChangedPayload;
-  "serf/marketplace/updated": EmptyParams;
-  "serf/plugin/updated": EmptyParams;
-  "serf/thread/resync": ThreadResyncParams;
-  "serf/task/updated": TaskUpdatedParams;
-  "serf/sandbox/escalation/requested": SandboxEscalationRequested;
-  "serf/sandbox/escalation/resolved": SandboxEscalationResolved;
-  "serf/tree/changed": EmptyParams;
+  "evener/thread/modelRetry": ThreadModelRetryParams;
+  "evener/steering/injected": EvenerSteeringInjectedParams;
+  "evener/job/started": EvenerJobParams;
+  "evener/job/finished": EvenerJobParams;
+  "evener/delegate/updated": EvenerDelegateParams;
+  "evener/jobs/treeUpdated": JobsTreeUpdatedParams;
+  "evener/auth/updated": EvenerAuthUpdatedParams;
+  "evener/launch/updated": EvenerLaunchUpdatedParams;
+  "evener/attention/changed": AttentionChangedPayload;
+  "evener/marketplace/updated": EmptyParams;
+  "evener/plugin/updated": EmptyParams;
+  "evener/thread/resync": ThreadResyncParams;
+  "evener/task/updated": TaskUpdatedParams;
+  "evener/sandbox/escalation/requested": SandboxEscalationRequested;
+  "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
+  "evener/tree/changed": EmptyParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

@@ -3,13 +3,13 @@
 
 # AppWire protocol reference
 
-AppWire is the JSON-RPC wire protocol that connects the three serf binaries:
-the browser and `serf-tui` talk to `serf-hub`, and `serf-hub` talks to each
-`serf serve` daemon (and to Codex app-server sources). The same message shapes
+AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
+the browser and `evener-tui` talk to `evener-hub`, and `evener-hub` talks to each
+`evener serve` daemon (and to Codex app-server sources). The same message shapes
 and method catalog ride every hop.
 
 ```
-browser / serf-tui  ──WS /rpc──▶  serf-hub  ──WS──▶  serf serve daemon
+browser / evener-tui  ──WS /rpc──▶  evener-hub  ──WS──▶  evener serve daemon
 ```
 
 This document is **generated** from the declarative catalog in
@@ -70,15 +70,15 @@ change it, edit the catalog and/or the prose template
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
-`error.data.serfErrorInfo` carries a structured serf-specific detail string
+`error.data.evenerErrorInfo` carries a structured evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**
-(serf-hub only — auth, launch config, provider instances, model listing), or
-**daemon** (the `serf serve` engine only). **connection** methods (`initialize`,
+(evener-hub only — auth, launch config, provider instances, model listing), or
+**daemon** (the `evener serve` engine only). **connection** methods (`initialize`,
 `ping`) are handled by the connection itself on every server, outside the
 router. **unimplemented** methods are defined with a client stub but served by
 no router (reserved).
@@ -90,13 +90,13 @@ no router (reserved).
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
 | `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit). |
-| `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no serf router. |
+| `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
-| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local serf threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
+| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation (rejected while a turn is processing). |
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
-| `serf/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
+| `evener/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
@@ -108,52 +108,52 @@ no router (reserved).
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
-| `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
-| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
-| `serf/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
-| `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
-| `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
-| `serf/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
-| `serf/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
-| `serf/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
-| `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
-| `serf/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a serf binary upgrade. |
-| `serf/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
-| `serf/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
-| `serf/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
-| `serf/auth/login/complete` | hub | `AuthLoginCompleteParams` | `AuthLoginCompleteResponse` | Completes OAuth login; broadcasts serf/auth/updated. |
-| `serf/auth/logout` | hub | `AuthLogoutParams` | `AuthLogoutResponse` | Logs out a provider; broadcasts serf/auth/updated. |
-| `serf/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
-| `serf/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts serf/auth/updated. |
-| `serf/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
-| `serf/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts serf/auth/updated when authorized. |
-| `serf/launch/resolve` | hub | `LaunchConfigResolveParams` | `LaunchConfigResolved` | Resolves the effective launch config for a cwd. |
-| `serf/launch/schema` | hub | `EmptyParams` | `LaunchOptionSchemaResponse` | Returns the launch-option schema. |
-| `serf/launch/getLayer` | hub | `LaunchConfigGetLayerParams` | `LaunchConfigLayer` | Reads one launch-config layer (global/project). |
-| `serf/launch/setLayer` | hub | `LaunchConfigSetLayerParams` | `LaunchConfigResolved` | Writes a launch-config layer; broadcasts serf/launch/updated. |
-| `serf/launch/trustRepo` | hub | `LaunchConfigTrustRepoParams` | `LaunchConfigResolved` | Trusts a repo's launch config by hash; broadcasts serf/launch/updated. |
+| `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
+| `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
+| `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
+| `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
+| `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
+| `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
+| `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
+| `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
+| `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
+| `evener/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
+| `evener/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
+| `evener/auth/login/complete` | hub | `AuthLoginCompleteParams` | `AuthLoginCompleteResponse` | Completes OAuth login; broadcasts evener/auth/updated. |
+| `evener/auth/logout` | hub | `AuthLogoutParams` | `AuthLogoutResponse` | Logs out a provider; broadcasts evener/auth/updated. |
+| `evener/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
+| `evener/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts evener/auth/updated. |
+| `evener/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
+| `evener/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts evener/auth/updated when authorized. |
+| `evener/launch/resolve` | hub | `LaunchConfigResolveParams` | `LaunchConfigResolved` | Resolves the effective launch config for a cwd. |
+| `evener/launch/schema` | hub | `EmptyParams` | `LaunchOptionSchemaResponse` | Returns the launch-option schema. |
+| `evener/launch/getLayer` | hub | `LaunchConfigGetLayerParams` | `LaunchConfigLayer` | Reads one launch-config layer (global/project). |
+| `evener/launch/setLayer` | hub | `LaunchConfigSetLayerParams` | `LaunchConfigResolved` | Writes a launch-config layer; broadcasts evener/launch/updated. |
+| `evener/launch/trustRepo` | hub | `LaunchConfigTrustRepoParams` | `LaunchConfigResolved` | Trusts a repo's launch config by hash; broadcasts evener/launch/updated. |
 | `model/list` | both | `ModelListParams` | `ModelListResponse` | Lists available models with launch diagnostics. |
-| `serf/instance/list` | hub | `EmptyParams` | `InstanceListResponse` | Lists configured provider instances. |
-| `serf/instance/create` | hub | `InstanceCreateParams` | `InstanceListResponse` | Creates a provider instance; returns the updated list. |
-| `serf/instance/edit` | hub | `InstanceEditParams` | `InstanceListResponse` | Edits a provider instance; returns the updated list. |
-| `serf/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
-| `serf/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
-| `serf/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts serf/plugin/updated per plugin actually upgraded. |
-| `serf/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
-| `serf/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
-| `serf/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
-| `serf/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
-| `serf/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
-| `serf/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
-| `serf/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
-| `serf/plugin/upgrade` | hub | `PluginRefParams` | `PluginListResponse` | Upgrades an installed plugin to its marketplace's latest; returns the updated list. |
-| `serf/plugin/remove` | hub | `PluginRefParams` | `PluginListResponse` | Removes an installed plugin; returns the updated list. |
-| `serf/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
-| `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
-| `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
-| `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
-| `serf/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
-| `serf/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
+| `evener/instance/list` | hub | `EmptyParams` | `InstanceListResponse` | Lists configured provider instances. |
+| `evener/instance/create` | hub | `InstanceCreateParams` | `InstanceListResponse` | Creates a provider instance; returns the updated list. |
+| `evener/instance/edit` | hub | `InstanceEditParams` | `InstanceListResponse` | Edits a provider instance; returns the updated list. |
+| `evener/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
+| `evener/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
+| `evener/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
+| `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
+| `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
+| `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
+| `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
+| `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
+| `evener/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
+| `evener/plugin/upgrade` | hub | `PluginRefParams` | `PluginListResponse` | Upgrades an installed plugin to its marketplace's latest; returns the updated list. |
+| `evener/plugin/remove` | hub | `PluginRefParams` | `PluginListResponse` | Removes an installed plugin; returns the updated list. |
+| `evener/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
+| `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
+| `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
+| `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
+| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
+| `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
 
@@ -166,7 +166,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/closed` | `ThreadClosedParams` | Session ended. |
 | `thread/status/changed` | `ThreadStatusChangedParams` | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | `ThreadQueueChangedParams` | The per-session input queue depth/preview changed. |
-| `serf/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
+| `evener/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
 | `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
 | `turn/started` | `TurnStartedParams` | A new turn began (inProgress). |
@@ -178,22 +178,22 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
 | `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
 | `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
-| `serf/thread/modelRetry` | `ThreadModelRetryParams` | A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item. |
-| `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
-| `serf/job/started` | `SerfJobParams` | A background job started. |
-| `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
-| `serf/delegate/updated` | `SerfDelegateParams` | A stable delegate projection changed. |
-| `serf/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
-| `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
-| `serf/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
-| `serf/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
-| `serf/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
-| `serf/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
-| `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
-| `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
-| `serf/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
-| `serf/tree/changed` | `EmptyParams` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
+| `evener/thread/modelRetry` | `ThreadModelRetryParams` | A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item. |
+| `evener/steering/injected` | `EvenerSteeringInjectedParams` | A steering message was injected into the active turn. |
+| `evener/job/started` | `EvenerJobParams` | A background job started. |
+| `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
+| `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
+| `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
+| `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
+| `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
+| `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
+| `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
+| `evener/tree/changed` | `EmptyParams` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
 
 ## Type reference
 
@@ -388,6 +388,123 @@ _(no fields)_
 _(no fields)_
 
 
+### `EvenerAuthUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` | yes |  |
+| `activeSource` | `string` | yes |  |
+
+
+### `EvenerDelegateInfo`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `delegateId` | `string` |  |  |
+| `ownerSessionId` | `string` |  |  |
+| `rootSessionId` | `string` |  |  |
+| `childSessionId` | `string` |  |  |
+| `transcriptRef` | `string` |  |  |
+| `parentDelegateId` | `string` | yes |  |
+| `type` | `string` |  |  |
+| `lifecycle` | `string` |  |  |
+| `phase` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `terminal` | `bool` | yes |  |
+| `resumable` | `bool` |  |  |
+| `notResumableReason` | `string` | yes |  |
+| `projectionRevision` | `uint64` |  |  |
+| `task` | `string` | yes |  |
+| `description` | `string` | yes |  |
+| `agentType` | `string` | yes |  |
+| `requestedModel` | `string` | yes |  |
+| `resolvedProfileId` | `string` | yes |  |
+| `resolvedModel` | `string` | yes |  |
+| `model` | `string` | yes |  |
+| `reasoningEffort` | `string` | yes |  |
+| `originTurnId` | `string` | yes |  |
+| `originToolCallId` | `string` | yes |  |
+| `originItemId` | `string` | yes |  |
+| `runStartedAt` | `string` | yes |  |
+| `runEndedAt` | `string` | yes |  |
+| `latestActivityAt` | `string` | yes |  |
+| `runningForMs` | `*int64` | yes |  |
+| `quietForMs` | `*int64` | yes |  |
+| `durationMs` | `*int64` | yes |  |
+| `packetKind` | `string` | yes |  |
+| `message` | `json.RawMessage` | yes |  |
+| `structuredResult` | `json.RawMessage` | yes |  |
+| `structuredResultValid` | `*bool` | yes |  |
+| `structuredResultReason` | `string` | yes |  |
+| `warnings` | `[]string` | yes |  |
+| `diagnostics` | `[]string` | yes |  |
+| `exhaustionBudget` | `string` | yes |  |
+| `exhaustionLimit` | `int` | yes |  |
+| `exhaustionResumable` | `*bool` | yes |  |
+| `delegationAllowance` | `int` | yes |  |
+| `parentWatchGranted` | `bool` | yes |  |
+| `usage` | `*appwire.EvenerUsage` | yes |  |
+| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
+
+
+### `EvenerDelegateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `delegate` | `appwire.EvenerDelegateInfo` |  |  |
+
+
+### `EvenerJobParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `job` | `appwire.EvenerJobInfo` |  |  |
+
+
+### `EvenerLaunchUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `layer` | `string` |  |  |
+
+
+### `EvenerSteeringInjectedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `text` | `string` | yes |  |
+| `images` | `[]appwire.InputItem` | yes |  |
+| `source` | `string` | yes |  |
+| `kind` | `string` | yes |  |
+| `clientMutationId` | `string` | yes |  |
+
+
+### `EvenerSubagentPreviewParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `limit` | `int` | yes |  |
+
+
+### `EvenerSubagentPreviewResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `items` | `[]appwire.ThreadItem` |  |  |
+| `truncated` | `bool` |  |  |
+
+
 ### `GoalSetParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -559,7 +676,7 @@ _(no fields)_
 | `turns` | `[]appwire.JobActivityJob` |  |  |
 | `child` | `*appwire.JobActivitySession` | yes |  |
 | `branch` | `appwire.JobActivityBranchState` |  |  |
-| `usage` | `*appwire.SerfUsage` | yes |  |
+| `usage` | `*appwire.EvenerUsage` | yes |  |
 
 
 ### `JobActivityEntry`
@@ -941,123 +1058,6 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `escalationId` | `string` |  |  |
-
-
-### `SerfAuthUpdatedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` | yes |  |
-| `activeSource` | `string` | yes |  |
-
-
-### `SerfDelegateInfo`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `delegateId` | `string` |  |  |
-| `ownerSessionId` | `string` |  |  |
-| `rootSessionId` | `string` |  |  |
-| `childSessionId` | `string` |  |  |
-| `transcriptRef` | `string` |  |  |
-| `parentDelegateId` | `string` | yes |  |
-| `type` | `string` |  |  |
-| `lifecycle` | `string` |  |  |
-| `phase` | `string` |  |  |
-| `status` | `string` |  |  |
-| `outcome` | `string` | yes |  |
-| `reason` | `string` | yes |  |
-| `terminal` | `bool` | yes |  |
-| `resumable` | `bool` |  |  |
-| `notResumableReason` | `string` | yes |  |
-| `projectionRevision` | `uint64` |  |  |
-| `task` | `string` | yes |  |
-| `description` | `string` | yes |  |
-| `agentType` | `string` | yes |  |
-| `requestedModel` | `string` | yes |  |
-| `resolvedProfileId` | `string` | yes |  |
-| `resolvedModel` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `reasoningEffort` | `string` | yes |  |
-| `originTurnId` | `string` | yes |  |
-| `originToolCallId` | `string` | yes |  |
-| `originItemId` | `string` | yes |  |
-| `runStartedAt` | `string` | yes |  |
-| `runEndedAt` | `string` | yes |  |
-| `latestActivityAt` | `string` | yes |  |
-| `runningForMs` | `*int64` | yes |  |
-| `quietForMs` | `*int64` | yes |  |
-| `durationMs` | `*int64` | yes |  |
-| `packetKind` | `string` | yes |  |
-| `message` | `json.RawMessage` | yes |  |
-| `structuredResult` | `json.RawMessage` | yes |  |
-| `structuredResultValid` | `*bool` | yes |  |
-| `structuredResultReason` | `string` | yes |  |
-| `warnings` | `[]string` | yes |  |
-| `diagnostics` | `[]string` | yes |  |
-| `exhaustionBudget` | `string` | yes |  |
-| `exhaustionLimit` | `int` | yes |  |
-| `exhaustionResumable` | `*bool` | yes |  |
-| `delegationAllowance` | `int` | yes |  |
-| `parentWatchGranted` | `bool` | yes |  |
-| `usage` | `*appwire.SerfUsage` | yes |  |
-| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
-
-
-### `SerfDelegateParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `delegate` | `appwire.SerfDelegateInfo` |  |  |
-
-
-### `SerfJobParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `job` | `appwire.SerfJobInfo` |  |  |
-
-
-### `SerfLaunchUpdatedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `layer` | `string` |  |  |
-
-
-### `SerfSteeringInjectedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `text` | `string` | yes |  |
-| `images` | `[]appwire.InputItem` | yes |  |
-| `source` | `string` | yes |  |
-| `kind` | `string` | yes |  |
-| `clientMutationId` | `string` | yes |  |
-
-
-### `SerfSubagentPreviewParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `limit` | `int` | yes |  |
-
-
-### `SerfSubagentPreviewResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `items` | `[]appwire.ThreadItem` |  |  |
-| `truncated` | `bool` |  |  |
 
 
 ### `SettingsOverviewResponse`
