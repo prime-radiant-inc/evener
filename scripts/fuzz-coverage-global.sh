@@ -29,6 +29,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+# How this run reclaims the leftovers of its own earlier runs; no janitor does.
+. "$(dirname "$0")/covscratch-lib.sh"
 go_work="$repo_root/go.work"
 go_bin="${SERF_FUZZ_GO:-go}"
 capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
@@ -273,6 +275,11 @@ esac
 # scratch outside the dev-tooling wave's per-suite isolation — and so outside
 # the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
+# Reclaim what earlier runs of THIS script abandoned here, before taking a name
+# of our own. The trap below covers every exit a shell can observe; SIGKILL, an
+# OOM kill and a power cut are not among them, and no janitor sweeps what they
+# leave. See covscratch-lib.sh for the pid rules.
+reclaim_own_scratch "$tmpbase" serf-fuzzcov-global
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a

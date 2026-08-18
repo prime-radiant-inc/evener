@@ -52,6 +52,8 @@ done
 
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/covstmt-lib.sh"
+# How this run reclaims the leftovers of its own earlier runs; no janitor does.
+. "$(dirname "${BASH_SOURCE[0]}")/covscratch-lib.sh"
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
@@ -76,6 +78,10 @@ check_measurable() {
 # run's scratch outside the dev-tooling wave's per-suite isolation — and so
 # outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
+# Reclaim what earlier runs of THIS script abandoned here, before taking a name
+# of our own: a SIGKILLed run never reached its trap, and a failed run kept its
+# scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
+reclaim_own_scratch "$tmpbase" serf-covunion
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a

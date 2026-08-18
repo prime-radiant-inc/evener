@@ -29,6 +29,7 @@ cp "$real_script" "$repo/scripts/test-coverage-floor.sh"
 # throwaway repo needs the real one beside it.
 cp "$(dirname "$0")/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
 cp "$(dirname "$0")/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
+cp "$(dirname "$0")/covscratch-lib.sh" "$repo/scripts/covscratch-lib.sh"
 script="$repo/scripts/test-coverage-floor.sh"
 floors="$repo/scripts/testcov-global-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
@@ -146,6 +147,15 @@ assert_scratch_inside_tmpdir
 assert_killed_run_cleans_up TERM
 assert_killed_run_cleans_up INT
 assert_killed_run_cleans_up HUP
+
+# The exits a trap cannot see, and the failed run that keeps its scratch on
+# purpose, are this script's own to reclaim: no janitor sweeps them.
+scratch_prefix=serf-testcov
+assert_reclaims_abandoned_scratch
+assert_keeps_concurrent_scratch
+printf '. 90.0\nagent 75.0\n' >"$floors"
+assert_failed_run_keeps_scratch_until_next_run run --check
+: >"$floors"
 
 # --bless must carry the MEASURED percentages through; the associative-array bug
 # silently wrote back stale floors here even when the rows above looked right.
