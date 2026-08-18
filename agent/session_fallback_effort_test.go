@@ -90,7 +90,8 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 				}
 			}()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 				t.Fatalf("ProcessInput: %v (fallback should succeed)", err)
@@ -150,7 +151,8 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

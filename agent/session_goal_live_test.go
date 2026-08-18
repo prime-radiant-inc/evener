@@ -72,6 +72,9 @@ func TestGoalLive_MultiTurnCompletion(t *testing.T) {
 	sess.getOrCreateGoalStore().Set(objective, time.Now())
 
 	collectEvents := drainEvents(sess)
+	// TRIPWIRE: live multi-turn call against a real provider (skipWithoutAPIKey);
+	// ProcessInput is synchronous, so this bounds genuine network/model latency
+	// across the driven turns, not a fast mocked path. Only fires on a real hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
@@ -132,6 +135,9 @@ func TestGoalLive_ImpossibleAutoBlocks(t *testing.T) {
 	sess.getOrCreateGoalStore().Set(objective, time.Now())
 
 	collectEvents := drainEvents(sess)
+	// TRIPWIRE: live multi-turn call against a real provider (skipWithoutAPIKey);
+	// ProcessInput is synchronous, so this bounds genuine network/model latency
+	// across the driven turns, not a fast mocked path. Only fires on a real hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
