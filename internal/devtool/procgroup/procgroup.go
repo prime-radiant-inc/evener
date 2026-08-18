@@ -37,7 +37,21 @@ func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 // pause every stop pays: a cooperative child releases Stop the moment it is
 // reaped. Stop returns once the child is reaped or the KILL is sent; the
 // caller's Wait still owns the final reap.
+//
+// A child already reaped gets nothing: its pid may belong to a recycled,
+// unrelated process group by now, which is exactly the wrong target for a
+// group TERM. The window between this check and the Terminate below is
+// microseconds wide and requires an immediate pid wraparound — the same
+// residue cmd/serf-test-dev-tooling's wave documents; closing it fully
+// would need waitid(WNOWAIT), which pure Go doesn't expose. The shell
+// runner's window was zero only because a single-threaded shell cannot
+// reap concurrently with its own stop loop.
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+	select {
+	case <-reaped:
+		return
+	default:
+	}
 	Terminate(pgid)
 	select {
 	case <-reaped:

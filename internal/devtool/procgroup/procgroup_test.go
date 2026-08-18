@@ -142,6 +142,45 @@ func TestStopReturnsWithoutKillWhenChildHonorsTerm(t *testing.T) {
 	}
 }
 
+func TestStopNeverSignalsAnAlreadyReapedChild(t *testing.T) {
+	// After a child is reaped its pid can be recycled by an unrelated
+	// process group; a Stop that signals first and checks later aims TERM
+	// at whoever owns the number now. The decoy here is a live group WE
+	// own, standing in for that stranger: with the reaped channel already
+	// closed, Stop must send it nothing. (The shell runner was immune by
+	// construction — single-threaded blank-after-wait; the Go guard's
+	// remaining check-vs-reap window is microseconds and needs an
+	// immediate pid wraparound, the same residue wave.go documents.)
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	marker := filepath.Join(dir, "signalled")
+	decoy := exec.Command("sh", "-c", `trap ": >`+marker+`; exit 143" TERM; echo ready >`+readyFile+`; while :; do sleep 1; done`) //nolint:noctx // stopped explicitly at the end of the test
+	if err := Start(decoy); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	decoyReaped := make(chan struct{})
+	go func() {
+		_ = decoy.Wait()
+		close(decoyReaped)
+	}()
+	waitForFile(t, readyFile)
+	alreadyReaped := make(chan struct{})
+	close(alreadyReaped)
+	Stop(decoy.Process.Pid, alreadyReaped, 50*time.Millisecond)
+	// A signal in flight would hit the trap well within this window; the
+	// sleep bounds how long a wrongly-sent TERM has to land, not a
+	// mechanism the pass depends on.
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("Stop signalled a child it was told is already reaped (marker stat err %v)", err)
+	}
+	if !pidAlive(decoy.Process.Pid) {
+		t.Error("decoy died during a Stop that should have sent nothing")
+	}
+	Stop(decoy.Process.Pid, decoyReaped, 5*time.Second)
+	<-decoyReaped
+}
+
 func TestExitCodeMapsSignalDeathsLikeAShell(t *testing.T) {
 	cmd := exec.Command("sleep", "30") //nolint:noctx // the test kills it directly
 	if err := Start(cmd); err != nil {

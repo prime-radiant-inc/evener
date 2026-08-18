@@ -228,6 +228,15 @@ func (l *lintRun) runWave(logdir string, first, last int, statuses []int) waveEn
 	}
 	stopAll := func() {
 		for _, c := range started {
+			// A reaped child's pid may already be recycled; skip it here
+			// (and procgroup.Stop re-checks) so a group TERM never aims at
+			// a stale identifier. See procgroup.Stop for the residual
+			// microsecond check-vs-reap window this leaves.
+			select {
+			case <-c.reaped:
+				continue
+			default:
+			}
 			go procgroup.Stop(c.pgid, c.reaped, l.grace)
 		}
 	}
