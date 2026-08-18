@@ -2,7 +2,7 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
@@ -25,7 +25,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
-import { useWorkspaceStore, workspaceStore } from "./workspace";
+import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -355,7 +355,6 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const route = urlToPane(pathname);
   const tree = useTreeStore((state) => state.tree);
   const treeError = useTreeStore((state) => state.error);
-  const workspacePanes = useWorkspaceStore((state) => state.panes);
   const isMobile = useIsMobile();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
@@ -366,6 +365,34 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // pane itself is the session pane (routing.ts), composer live.
   const singlePane = isSinglePaneRoute(pathname);
 
+  // Re-render trigger for workspaceStore.panes changes, WITHOUT a
+  // useSyncExternalStore subscription (which useWorkspaceStore uses). The
+  // render-phase openRouteAsPane call below mutates workspaceStore during
+  // AppShell's own render; if AppShell subscribed to that store via
+  // useSyncExternalStore (zustand's useStore), that mutation would trip
+  // React's "Cannot update a component while rendering a different
+  // component" warning — exactly the warning kata 9r5y is about. An
+  // imperative subscribe() + useReducer dispatch avoids useSyncExternalStore
+  // entirely: a useReducer dispatch during render of the SAME component is
+  // the documented "adjusting state during render" pattern (React re-renders
+  // immediately, no warning). The subscriber only fires when the panes array
+  // reference changes (mirroring the selector's Object.is equality that
+  // useWorkspaceStore applied), so the re-render trigger is identical to what
+  // workspacePanes provided — it's a trigger-only dep for the route-placement
+  // effect below, never read inside the effect body (which reads
+  // workspaceStore.getState() directly).
+  const [workspacePanesVersion, bumpWorkspacePanesVersion] = useReducer((n: number) => n + 1, 0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: useReducer's dispatch is stable, listed for completeness only
+  useEffect(() => {
+    let lastPanes = workspaceStore.getState().panes;
+    return workspaceStore.subscribe((state) => {
+      if (state.panes !== lastPanes) {
+        lastPanes = state.panes;
+        bumpWorkspacePanesVersion();
+      }
+    });
+  }, [bumpWorkspacePanesVersion]);
+
   // Opens a pathname's pane during render, not a useEffect, for as long as
   // DockHost hasn't mounted for the very first time yet - a regular effect
   // would run AFTER DockHost/dockview's own onReady (child effects fire
@@ -373,21 +400,25 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // restore-or-fallback-to-welcome boot sequence and landing a deep-linked
   // pane ALONGSIDE a spurious extra welcome tab instead of in its place
   // (see DockHost.tsx's own comment on this for the full reasoning). This
-  // is safe as a render-phase call ONLY because nothing is yet
-  // mounted/subscribed to workspaceStore for openPane()'s update to
-  // conflict with - true not just on AppShell's very first render, but on
-  // EVERY render up through whichever one first has route !== null (e.g.
-  // loading directly on an unresolved path, where DockHost never mounts at
-  // all until the user navigates to a real one - dockHostHasMountedRef
-  // tracks this rather than assuming "first AppShell render" and
-  // "DockHost's first mount" always coincide, which they don't). Once
-  // DockHost has mounted at all, every later pathname change goes through
-  // the plain effect below instead - calling openPane() from render with
-  // DockHost already mounted and subscribed is exactly what trips React's
-  // "Cannot update a component while rendering a different component"
-  // warning (caught by this task's own test suite, not by inspection, in
-  // both the "already mounted at the start" and "just mounted for the
-  // first time on a later render" shapes of this race).
+  // is safe as a render-phase call because AppShell no longer subscribes to
+  // workspaceStore via useSyncExternalStore (see the imperative subscription
+  // above) — the mutation fires the useReducer dispatch on the same
+  // component, which is React's supported "adjusting state during render"
+  // pattern (re-render, no warning) rather than a useSyncExternalStore
+  // snapshot-change-during-render that trips the warning. It is safe not
+  // just on AppShell's very first render, but on EVERY render up through
+  // whichever one first has route !== null (e.g. loading directly on an
+  // unresolved path, where DockHost never mounts at all until the user
+  // navigates to a real one - dockHostHasMountedRef tracks this rather than
+  // assuming "first AppShell render" and "DockHost's first mount" always
+  // coincide, which they don't). Once DockHost has mounted at all, every
+  // later pathname change goes through the plain effect below instead -
+  // calling openPane() from render with DockHost already mounted and
+  // subscribed is exactly what would trip React's "Cannot update a
+  // component while rendering a different component" warning if AppShell
+  // itself were also subscribed (caught by this task's own test suite, not
+  // by inspection, in both the "already mounted at the start" and "just
+  // mounted for the first time on a later render" shapes of this race).
   const dockHostHasMountedRef = useRef(false);
   const openedForPathnameRef = useRef<string | null>(null);
   const routePlacementInProgressRef = useRef(false);
@@ -414,7 +445,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // address bar, so a deferred route simply sits there until it can be placed.
   const routeDeferred = route?.type === "session" && pendingSessionRef.current !== null;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanes is a deliberate trigger-only dep for route-owned primary replacement ordering
+  // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
@@ -452,7 +483,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
-  }, [pathname, route?.type, tree, treeError, workspacePanes]);
+  }, [pathname, route?.type, tree, treeError, workspacePanesVersion]);
 
   return (
     <ClientProvider client={client}>
