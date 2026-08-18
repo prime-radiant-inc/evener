@@ -37,6 +37,10 @@ var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-
 var scenarioSourceCitation = regexp.MustCompile(
 	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#[A-Za-z0-9_.]+|:[0-9][0-9,-]*)`")
 
+// scenarioSourceCitationGroups is the length FindStringSubmatch returns for a
+// scenarioSourceCitation match: the whole span plus its one captured path.
+const scenarioSourceCitationGroups = 2
+
 // TestScenarioSourceCitationsResolve keeps a card's pointer into source code
 // attached to a file that still exists. Kata 2mzk's audit deliberately exempts
 // source paths from the no-line-numbers rule, because code has no headings to
@@ -185,8 +189,10 @@ func scenarioSourceExtensionAlternation() string {
 func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
 	for extension := range scenarioNeedleSourceExtensions {
 		cited := "panes/session/composer/Composer" + extension
+		// scenarioSourceCitation captures one group, the path, so a match is
+		// [whole, path]. Any other length means the needle lost its group.
 		m := scenarioSourceCitation.FindStringSubmatch("(`" + cited + ":641-643`)")
-		if m == nil || m[1] != cited {
+		if len(m) != scenarioSourceCitationGroups || m[1] != cited {
 			t.Fatalf("the source-citation needle does not read a %s citation: %v", extension, m)
 		}
 		if m := scenarioSourceCitation.FindStringSubmatch("`Composer" + extension + "#handleSteerClick`"); m == nil {
@@ -223,6 +229,11 @@ const scenarioLiteralCitationSeparators = " \t\r\n(,;"
 // can be asserted about where a sketch lives.
 var scenarioApproximationMarkers = []string{"…", "...", "<", ">", "{", "}"}
 
+// scenarioCodeSpanIndexes is the length FindAllStringSubmatchIndex returns per
+// scenarioNeedleCodeSpan match: start/end of the whole span, then of its one
+// captured body. scenarioQuotedLineCitations reads all four.
+const scenarioCodeSpanIndexes = 4
+
 // scenarioQuotedLineCitation is one literal a card quotes and the `path:lines`
 // it cites for it.
 type scenarioQuotedLineCitation struct {
@@ -255,7 +266,8 @@ func scenarioQuotedLineCitations(text string) []scenarioQuotedLineCitation {
 			preceding = spans[next]
 			next++
 		}
-		if preceding == nil || !scenarioOnlyCitationSeparators(text[preceding[1]:citation[0]]) {
+		if len(preceding) < scenarioCodeSpanIndexes ||
+			!scenarioOnlyCitationSeparators(text[preceding[1]:citation[0]]) {
 			continue
 		}
 		literal := text[preceding[2]:preceding[3]]
