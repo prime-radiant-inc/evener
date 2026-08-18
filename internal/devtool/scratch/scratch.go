@@ -11,6 +11,7 @@
 package scratch
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,11 +40,11 @@ func tmpBase() (string, error) {
 		return "", fmt.Errorf("scratch: TMPDIR %s is not a directory", base)
 	}
 	if base == "/" {
-		return "", fmt.Errorf("scratch: refusing TMPDIR resolving to /")
+		return "", errors.New("scratch: refusing TMPDIR resolving to /")
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if resolvedHome, err := filepath.EvalSymlinks(home); err == nil && base == resolvedHome {
-			return "", fmt.Errorf("scratch: refusing TMPDIR resolving to the home directory")
+			return "", errors.New("scratch: refusing TMPDIR resolving to the home directory")
 		}
 	}
 	return base, nil

@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -22,9 +24,9 @@ var surveyLine = regexp.MustCompile(`^--- (?:PASS|SKIP): (\S+) \(([0-9.]+)s\)`)
 func parseSurvey(output string) []testCost {
 	var costs []testCost
 	index := map[string]int{}
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		m := surveyLine.FindStringSubmatch(strings.TrimSpace(line))
-		if m == nil || strings.Contains(m[1], "/") {
+		if len(m) < 3 || strings.Contains(m[1], "/") {
 			continue
 		}
 		var cost float64
@@ -46,7 +48,7 @@ func parseSurvey(output string) []testCost {
 func equalWeights(listOutput string) []testCost {
 	var costs []testCost
 	seen := map[string]bool{}
-	for _, line := range strings.Split(listOutput, "\n") {
+	for line := range strings.SplitSeq(listOutput, "\n") {
 		name := strings.TrimSpace(line)
 		if !strings.HasPrefix(name, "Test") && !strings.HasPrefix(name, "Example") {
 			continue
@@ -66,7 +68,7 @@ func equalWeights(listOutput string) []testCost {
 // present as a faster, still-green suite.
 func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err error) {
 	if len(costs) == 0 {
-		return nil, nil, fmt.Errorf("found no tests to shard")
+		return nil, nil, errors.New("found no tests to shard")
 	}
 	byCost := make([]testCost, len(costs))
 	copy(byCost, costs)
@@ -94,14 +96,14 @@ func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err 
 	for _, bin := range bins {
 		for _, name := range bin {
 			if seen[name] || !want[name] {
-				return nil, nil, fmt.Errorf("partition is not a bijection over the test set")
+				return nil, nil, errors.New("partition is not a bijection over the test set")
 			}
 			seen[name] = true
 			placed++
 		}
 	}
 	if placed != len(want) {
-		return nil, nil, fmt.Errorf("partition is not a bijection over the test set")
+		return nil, nil, errors.New("partition is not a bijection over the test set")
 	}
 	nonEmpty := 0
 	for _, bin := range bins {
@@ -148,5 +150,5 @@ func testSetKey(listOutput string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n") + "\n"))
-	return fmt.Sprintf("%x", sum)[:16]
+	return hex.EncodeToString(sum[:])[:16]
 }
