@@ -97,6 +97,22 @@ func NewStreamError(provider, message string, cause error) error {
 	}}
 }
 
+// NewPermanentStreamError reports a streaming failure the caller has already
+// decided must not be retried: retrying would re-run exactly the request
+// that produced the condition being reported. Unlike NewStreamError
+// (always retryable), Retryable() is false here, so Classify returns
+// ErrorClassPermanent and the retry chain gives up immediately instead of
+// spending its budget reproducing the same outcome. cause is optional,
+// exposed via Unwrap.
+func NewPermanentStreamError(provider, message string, cause error) error {
+	return &StreamError{nonHTTPBaseError{
+		provider:  provider,
+		message:   message,
+		retryable: false,
+		cause:     cause,
+	}}
+}
+
 // NewNoObjectGeneratedError reports that no valid object could be produced from
 // the model output. cause is the underlying parse/validation error, exposed via
 // Unwrap; pass nil when none applies.
