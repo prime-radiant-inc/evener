@@ -518,6 +518,11 @@ func (s *Session) InterruptClientMutation(
 			ClientMutationID: params.ClientMutationID,
 			ExpectedTurnID:   target,
 		}
+		// Park the queue from the moment the Stop is ACCEPTED, not when the fence
+		// finalizes. The claim this Stop cancels is returned to the queue by the
+		// runner on its way out and the drain loop is right behind it, so holding
+		// only at finalize leaves exactly the window the restart used (wms7).
+		snapshot.QueueHeld = true
 		return nil
 	})
 	if err != nil {
@@ -581,11 +586,10 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, err
 	}
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
-	// The fence is cleared now, so popQueueHead will claim again -- but nothing
-	// has asked the session to run. A Stop cancelled the runner; anything still
-	// queued behind it would sit there while the session reports itself as
-	// working, which is the strand the fence guard would otherwise create.
-	s.wakeForPendingQueuedInput()
+	// No queued-input wake here, deliberately: the hold above parks the queue
+	// until the user asks for something to run, so a kick would find nothing
+	// claimable. The steering wake stays; a Stop with pending steering still
+	// restarts, and that is kata 1k3m, not this one.
 	s.wakeForPendingSteering()
 	return interruptResponseFromRecord(
 		s.clientMutations.snapshot().Journal[params.ClientMutationID],

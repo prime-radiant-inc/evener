@@ -570,6 +570,13 @@ func (s *Session) popQueueHead() queuedInput {
 		if snapshot.InterruptFence != nil {
 			return nil
 		}
+		// The same refusal as the fence above, held past the fence's finalize. A
+		// Stop parks the queue until the user asks for something to run, and this
+		// is the single gate both restart rails claim through -- the drain loop
+		// and ProcessPendingUserInput behind the wake (kata wms7).
+		if snapshot.QueueHeld {
+			return nil
+		}
 		entry := snapshot.InputQueue[0]
 		if clientMutationQueueEntryReserved(snapshot, entry.ID) {
 			return nil

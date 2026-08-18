@@ -99,41 +99,6 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 	}
 }
 
-// TestStopWakesTheSessionForWorkItLeftQueued closes the strand the fence guard
-// would otherwise create. popQueueHead declines while an interrupt is pending,
-// and finalize then clears the fence without scheduling anything -- so a Stop
-// with a message queued behind it would leave the session reporting itself as
-// working with a queue nobody drains.
-func TestStopWakesTheSessionForWorkItLeftQueued(t *testing.T) {
-	sess := newQueuePersistTestSession(t, t.TempDir())
-	defer sess.Close()
-
-	queueOneMutation(t, sess, "queued-through-stop", "run me after the stop")
-
-	var mu sync.Mutex
-	notifies := 0
-	sess.SetNotifyFunc(func() {
-		mu.Lock()
-		notifies++
-		mu.Unlock()
-	})
-	mu.Lock()
-	before := notifies
-	mu.Unlock()
-
-	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-		ClientMutationID: "stop-over-queued-work",
-	}, func() {}); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if notifies == before {
-		t.Fatal("the stop left work queued and woke nothing; the session reports itself active with a queue nobody drains")
-	}
-}
-
 // TestStopIsHonestAboutAQueuedMessage covers the state the user is actually
 // looking at: no turn is running, but a queued message keeps WireState
 // reporting processing, so Stop is on screen. Accepting the Stop is right --
@@ -408,25 +373,18 @@ func TestQueueClaimRespectsAPendingInterruptFence(t *testing.T) {
 	}
 }
 
-// TestStopCancelsTheTurnAndKeepsUserWorkDurable pins the INTERIM contract for
-// Stop, which is Jesse's ruling of 2026-08-17 after two attempts at "cancel and
-// wait" were reviewed and rejected:
+// TestStopCancelsTheTurnAndKeepsUserWorkDurable pins the two halves of a Stop
+// that must not regress: it actually cancels the running turn, and work the
+// user already gave the session survives it durably.
 //
-//	Stop reliably cancels the turn that is running. Work the user has already
-//	given the session -- queued messages, and steering not yet injected --
-//	stays durable, is delivered, and starts the next turn. Nothing is lost.
-//
-// Delivering that work means a Stop can be followed by another turn. That is
-// KNOWN and INTENDED here, not a defect: the alternative designs both moved the
-// user's words out of durable server storage and then failed to keep them safe.
-// A restart the user can stop again beats text they cannot get back. The
-// deferred "wait" behaviour, and why it is deferred, is recorded on kata wms7.
-//
-// What this test exists to catch is the half that must NOT regress: that Stop
-// actually cancels, and that the user's pending words are still there
-// afterwards. The steering case is the one no other test covers, and it is the
-// one where "reliably" was never measured -- a Stop with a steer in flight is an
-// ordinary sequence (steer, change your mind, Stop).
+// The steering case is the one no other test covers. A steer not yet injected
+// stays durable and is still DELIVERED -- a Stop with pending steering
+// restarts, and that stays true until kata 1k3m gives a parked steer somewhere
+// to surface. A restart the user can stop again beats text they cannot get
+// back: the rejected designs moved the user's words out of durable server
+// storage and then failed to keep them safe. Queued messages, the other
+// user-authored rail, park instead (kata wms7,
+// TestStopParksTheQueueAgainstBothRestartRails).
 func TestStopCancelsTheTurnAndKeepsUserWorkDurable(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
@@ -478,10 +436,10 @@ func TestStopCancelsTheTurnAndKeepsUserWorkDurable(t *testing.T) {
 	}
 }
 
-// TestStopKeepsAQueuedMessageDurable is the same interim contract for the other
-// user-authored rail. A queued message is not a steer -- it is its own turn --
-// but the promise is identical: Stop cancels, the message stays, and the session
-// delivers it rather than dropping it.
+// TestStopKeepsAQueuedMessageDurable covers the queued-message rail of the
+// same promise: Stop cancels, and the message stays durably on the queue --
+// parked, visible in the queue strip, payload intact -- until the user asks
+// for it to run (kata wms7).
 func TestStopKeepsAQueuedMessageDurable(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
@@ -588,6 +546,36 @@ func TestCompletingAClaimedTurnReportsNoStopWhenNothingStoppedIt(t *testing.T) {
 	}
 	if stopFinalized {
 		t.Fatal("a completion with no interrupt fence reported a Stop, so a bare host cancellation would park the queue instead of draining it")
+	}
+}
+
+func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	runningStartTurn(t, sess, "running-turn", "do the thing")
+	queueOneMutation(t, sess, "queued-behind", "and then this")
+
+	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-queued",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// popQueueHead is the single claim gate for BOTH rails that restart a
+	// session: the drain loop in processOneInput, and ProcessPendingUserInput
+	// behind the queued-input wake. Refusing here closes both.
+	if claimed := sess.popQueueHead(); claimed.ClientMutationID != "" {
+		t.Fatalf("the queue head was claimed after a Stop (%q): the message the user stopped will run", claimed.ClientMutationID)
+	}
+	// The SECOND return is "did a turn run"; the first is that turn's output
+	// text, which an adapter may legitimately leave empty.
+	if _, ranTurn, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ranTurn {
+		t.Fatalf("ProcessPendingUserInput ran work after a Stop: ranTurn=%v err=%v", ranTurn, err)
+	}
+	// And the message is still the user's.
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the Stop = %d, want 1: parking must not cost the message", got)
 	}
 }
 

@@ -712,13 +712,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				}
 				// A turn ended by a Stop parks the queue head instead of running
 				// it (wms7's ruling): the user stopped this session's work, so
-				// nothing auto-starts, and the message waits for one of the
-				// ordinary wake paths. interruptDrainConfig cannot make that
-				// call -- it is a pure function of this turn's context and
-				// error, and a Stop's cancellation is indistinguishable there
-				// from a bare host cancellation -- and the fence that would
-				// mark the Stop was already finalized by the completion above,
-				// which is why the completion reports it here.
+				// nothing auto-starts, and the message waits, parked, until a
+				// user-initiated run releases the hold. interruptDrainConfig
+				// cannot make that call -- it is a pure function of this turn's
+				// context and error, and a Stop's cancellation is
+				// indistinguishable there from a bare host cancellation -- and
+				// the fence that would mark the Stop was already finalized by
+				// the completion above, which is why the completion reports it
+				// here.
 				if !closed && !stopSettledThisTurn {
 					// Decide, then claim. popQueueHead is a durable commit, and
 					// whether this interrupt may drain depends only on the turn's
