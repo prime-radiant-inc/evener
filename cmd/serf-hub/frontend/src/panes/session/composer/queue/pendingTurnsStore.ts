@@ -26,12 +26,32 @@ interface PendingTurnsStoreState {
   outbox: Map<string, MutationOutboxRecord>;
   optimistic: Map<string, MutationOptimisticRecord>;
   recovery: Map<string, MutationRecoveryRecord>;
+  // Every client mutation id this client's own durable projection has held, for
+  // as long as this page lives. The durable records themselves are the primary
+  // evidence of "this client submitted it", and they are deliberately short
+  // lived: publishing an authoritative read settles every identity the daemon
+  // reports back out of storage (threads.ts's reconcileIdentities), including
+  // the still-unreflected sends it lists in pendingMutations. Provenance has to
+  // outlive the record, because routing asks about it after the hydrate too -
+  // see reconcilePendingEntries.
+  //
+  // Recorded from the projection read rather than the submit call because the
+  // clientMutationId is minted inside the durable enqueue, and the read that
+  // publishes that write always precedes any hydrate that could settle it: the
+  // daemon cannot report an id it has not been sent yet, and the send happens
+  // after the local commit this read follows.
+  //
+  // Ids only, one per mutation this page submits, never pruned - a page that
+  // submits enough sends for that to matter has far larger records than these
+  // in the durable stores it is reading from.
+  submittedHere: ReadonlySet<string>;
 }
 
 const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
   outbox: new Map(),
   optimistic: new Map(),
   recovery: new Map(),
+  submittedHere: new Set(),
 }));
 
 const refreshGenerations = new Map<string, number>();
@@ -128,6 +148,18 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
 }
 
+function recordSubmittedHere(snapshot: {
+  outbox: MutationOutboxRecord[];
+  optimistic: MutationOptimisticRecord[];
+}): void {
+  const known = pendingTurnsStore.getState().submittedHere;
+  const discovered = [...snapshot.outbox, ...snapshot.optimistic]
+    .map((record) => record.clientMutationId)
+    .filter((id) => !known.has(id));
+  if (discovered.length === 0) return;
+  pendingTurnsStore.setState((state) => ({ submittedHere: new Set([...state.submittedHere, ...discovered]) }));
+}
+
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
   const key = ref ?? "*";
@@ -136,6 +168,13 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   try {
     const snapshot = await readMutationPersistence(ref);
     if (refreshEpoch !== epoch) return false;
+    // Provenance is monotonic knowledge about ids rather than a view of the
+    // records currently in storage, so it is published from every read of this
+    // epoch and in its own setState: a read a newer generation has already
+    // superseded still saw a record of this client's, and the newer read - taken
+    // later - may be looking at storage that record has since been settled out
+    // of. Skipping it there would leave the id known to nobody.
+    recordSubmittedHere(snapshot);
     if (generation < (appliedRefreshGenerations.get(key) ?? 0)) return true;
     appliedRefreshGenerations.set(key, generation);
     pendingTurnsStore.setState((state) => ({
@@ -201,16 +240,20 @@ const NO_BLOCKED: MutationOutboxRecord[] = [];
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
   const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
+  const submittedHere = useStore(pendingTurnsStore, (state) => state.submittedHere);
   const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const matches = reconcilePendingEntries(ref, [...outbox.values(), ...optimistic.values()], model).filter(
-      (entry) => method === undefined || entry.method === method,
-    );
+    const matches = reconcilePendingEntries(
+      ref,
+      [...outbox.values(), ...optimistic.values()],
+      model,
+      submittedHere,
+    ).filter((entry) => method === undefined || entry.method === method);
     return matches.length > 0 ? matches : NO_ENTRIES;
-  }, [outbox, optimistic, model, ref, method]);
+  }, [outbox, optimistic, submittedHere, model, ref, method]);
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {
@@ -305,7 +348,12 @@ export function resetPendingTurnsStoreForTests(): void {
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   inFlightProjectionWork.clear();
-  pendingTurnsStore.setState({ outbox: new Map(), optimistic: new Map(), recovery: new Map() });
+  pendingTurnsStore.setState({
+    outbox: new Map(),
+    optimistic: new Map(),
+    recovery: new Map(),
+    submittedHere: new Set(),
+  });
 }
 
 // Keep the singleton projection warm when an authoritative pendingMutations

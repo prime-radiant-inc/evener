@@ -3,7 +3,7 @@
 // send-vs-queue capability precedence (parity-m5-composer.md §A, lines
 // 64-71, citing cmd/serf-hub/assets/renderer.js:479-513):
 //
-//   1. ended/closed              -> send=false, queue=false
+//   1. ended/closed              -> send=false, queue=false (tier 6 first)
 //   2. [DROPPED - see below]
 //   3. active && capabilities.queue === false explicitly -> both false
 //   4. active                    -> send=false, queue=true (queue-mode default)
@@ -12,7 +12,9 @@
 //
 // Tier 6 is this codebase's own addition and sits BETWEEN 4 and 5 rather than
 // at the end of the list, which is why it is numbered out of order: the legacy
-// table it extends is quoted verbatim above.
+// table it extends is quoted verbatim above. It also decides tier 1's row
+// before that row's own answer applies - a finished session resumes on the
+// first message, so it holds this client's in-flight sends like any other.
 //
 // The legacy tier 2 ("the source already advertised live send/queue
 // capabilities for the CURRENT state, `liveCapabilitiesStatus === state`")
@@ -80,7 +82,22 @@ export function deriveSendQueueAvailability({
   capabilities,
   hasPendingSend,
 }: SendQueueAvailabilityInput): SendQueueAvailability {
-  if (statusType === "ended" || statusType === "closed") return BOTH_UNAVAILABLE;
+  // Tier 6 (below) reaches inside this tier rather than being shadowed by it. A
+  // finished session is resumable - turn/start alone carries the hub's
+  // auto-resume (app_rpc.go's resumeTurnStartThread) - so a first message wakes
+  // a daemon and the seconds that takes are all window: the status still reads
+  // terminal while a turn this client submitted is already in flight, and a
+  // second message routed by the status alone is another turn/start into the
+  // daemon that just started. It bounces the same way, with the same
+  // Conflict("turn is already active").
+  //
+  // With nothing of this client's pending, the answer is unchanged: no turn to
+  // send to and none to queue behind. Whether such a session can be written to
+  // at all is the SEND CAPABILITY's question, not this table's - the composer
+  // reads that separately for its follow-up card.
+  if (statusType === "ended" || statusType === "closed") {
+    return hasPendingSend ? QUEUE_MODE : BOTH_UNAVAILABLE;
+  }
 
   if (statusType === "active") {
     if (capabilities.queue === false) return BOTH_UNAVAILABLE;
@@ -119,6 +136,10 @@ export function deriveSendQueueAvailability({
   // Pinned live by cmd/serf-hub/e2e_control_without_turn_ids_test.go's
   // TestE2E_ASendThatRacedAStopStillRuns, which proves a queue accepted
   // against a session with nothing running reaches a real model request.
+  //
+  // The terminal branch at the top answers with this same rule, for the same
+  // reason - see its own comment for how a session the status calls finished
+  // comes to be holding one of this client's sends.
   if (hasPendingSend) return QUEUE_MODE;
 
   return PLAIN_SEND_MODE;

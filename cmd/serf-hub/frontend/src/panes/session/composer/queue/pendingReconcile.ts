@@ -14,6 +14,14 @@ export interface PendingTurnEntry {
   createdAt?: number;
   state: PendingTurnState;
   source: "outbox" | "optimistic" | "authoritative";
+  // Whether THIS client submitted the mutation. Separate from `source`, which
+  // names the projection currently DESCRIBING the row and flips to
+  // "authoritative" the moment a hydrate reports the same clientMutationId:
+  // one submission, two describers. Send/queue routing asks whose submission it
+  // is (deriveSendQueueAvailability's tier 6 counts strictly this client's own
+  // sends, never the daemon's session-wide projection of every client's), and
+  // that answer cannot change when a hydrate lands.
+  fromThisClient: boolean;
 }
 
 function pendingMethod(method: string): PendingMethod | undefined {
@@ -66,10 +74,16 @@ function outboxEntry(record: BrowserPendingRecord): PendingTurnEntry | undefined
     createdAt: record.createdAt,
     state: record.state,
     source: record.state === "accepted" ? "optimistic" : "outbox",
+    // A durable browser record IS this client's own submission.
+    fromThisClient: true,
   };
 }
 
-function authoritativeEntry(ref: string, mutation: PendingMutation): PendingTurnEntry | undefined {
+function authoritativeEntry(
+  ref: string,
+  mutation: PendingMutation,
+  fromThisClient: boolean,
+): PendingTurnEntry | undefined {
   const method = pendingMethod(mutation.method);
   if (!method) return undefined;
   return {
@@ -79,6 +93,7 @@ function authoritativeEntry(ref: string, mutation: PendingMutation): PendingTurn
     ...inputPreview(mutation.input),
     state: mutation.executionState === "claimed" ? "claimed" : "accepted",
     source: "authoritative",
+    fromThisClient,
   };
 }
 
@@ -86,10 +101,18 @@ function authoritativeEntry(ref: string, mutation: PendingMutation): PendingTurn
 // transport ambiguity; a separate durable optimistic record owns accepted but
 // not-yet-reflected input until pendingMutations, queue, or transcript state
 // replaces it.
+//
+// submittedHere is the set of client mutation ids this client itself submitted
+// (pendingTurnsStore owns it). The durable records answer that for as long as
+// they exist, and they do not outlast the hydrate that reports the same id:
+// publishing a read settles every authoritative identity out of durable storage
+// (threads.ts's reconcileIdentities). This set is what carries provenance past
+// that settlement.
 export function reconcilePendingEntries(
   ref: string,
   outbox: BrowserPendingRecord[],
   model: ThreadModel | undefined,
+  submittedHere: ReadonlySet<string>,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();
@@ -102,7 +125,11 @@ export function reconcilePendingEntries(
 
   for (const mutation of model?.pendingMutations ?? []) {
     if (reflected.has(mutation.clientMutationId)) continue;
-    const entry = authoritativeEntry(ref, mutation);
+    // Every entry placed so far came from a durable record of this client's, so
+    // an id already present is one this client submitted - whatever the daemon's
+    // projection is about to say about the same submission.
+    const fromThisClient = entries.has(mutation.clientMutationId) || submittedHere.has(mutation.clientMutationId);
+    const entry = authoritativeEntry(ref, mutation, fromThisClient);
     if (entry) entries.set(entry.id, entry);
   }
 
