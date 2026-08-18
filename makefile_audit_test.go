@@ -10,53 +10,17 @@ import (
 	"testing"
 )
 
-// variableFedRecursiveDelete reports whether a Makefile recipe line contains
-// an rm -rf / rm -r / rm -fr command whose argument expands a variable.
+// This audit is the Makefile half of the rule scriptmktemp_audit_test.go
+// enforces over scripts/: no recursive delete may take an argument a caller
+// can clobber. It shares that file's recursiveDeleteTakingVariable rather than
+// carrying its own matcher — a second, weaker copy of a security predicate is
+// how a banned shape ends up blessed by the audit that was supposed to find
+// it. (Measured against the copy this file used to hold: `rm -fr`, `rm -Rf`,
+// `rm --recursive`, and any second delete after a `;` all read as clean.)
 //
-// Safe patterns:
-//   - rm -rf literal/path
-//   - rm -rf -- "$(VAR)" with "$(VAR)" verified set beforehand
-//   - rm -rf inside scripts/ guarded by scratch-lib
-//
-// Unsafe patterns:
-//   - rm -rf $$var (shell variable, could be empty or wrong)
-//   - rm -rf "$(VAR)" without verification (Make variable, could be empty)
-//   - rm -rf with variable in glob or glob expansion
-func variableFedRecursiveDelete(line string) bool {
-	// Stop at comment boundary
-	if idx := strings.Index(line, "#"); idx >= 0 {
-		line = line[:idx]
-	}
-	line = strings.TrimSpace(line)
-
-	// Look for rm -r variants
-	rmIdx := strings.Index(line, "rm -r")
-	if rmIdx < 0 {
-		return false
-	}
-
-	// Extract the rm -r... command up to end or pipe/semicolon/and/or/redirect
-	rmCmd := line[rmIdx:]
-	for _, term := range []string{"|", ";", "&&", "||", ">", "<", "&"} {
-		if idx := strings.Index(rmCmd, term); idx >= 0 {
-			rmCmd = rmCmd[:idx]
-		}
-	}
-	rmCmd = strings.TrimSpace(rmCmd)
-
-	// Check if the arguments to rm contain variable expansion
-	// Shell: $$var or $var
-	// Make: $(VAR) or ${VAR}
-	// Patterns to catch:
-	//   - "$$dir" or $$dir
-	//   - "$(VAR)" or $(VAR)
-	//   - "${VAR}" or ${VAR}
-	//   - "$1" $@ etc (positional or special params)
-
-	// Very simple check: does it contain $ followed by { or ( or $ or a letter/digit/underscore?
-	varPattern := regexp.MustCompile(`\$[\$({]|[$][a-zA-Z_][a-zA-Z0-9_]*|\$[@*?#\-]`)
-	return varPattern.MatchString(rmCmd)
-}
+// What differs here is the REPORTING, not the matching: a Makefile offender is
+// named by its recipe and the variable it feeds, because that is what a reader
+// has to go and look at, and because a recipe is the unit a human blesses.
 
 // makefileRecipeAllowedSites are the Makefile recipes carrying variable-fed
 // recursive deletes that have been audited and blessed.
@@ -67,9 +31,11 @@ func variableFedRecursiveDelete(line string) bool {
 // - The variable(s) involved
 // - Brief justification
 //
-// The list is count-pinned: if a new site appears, the audit fails with a count
-// mismatch. This forces explicit review of each site. Removing an entry after
-// converting the recipe to a safe shape is the intended lifecycle.
+// The list is pinned per entry, not by total: a new site fails as an offender,
+// and a blessed site the Makefile no longer contains fails as a stale entry.
+// Comparing totals instead would let one site that grew a second delete cancel
+// out another that disappeared. Removing an entry after converting the recipe
+// to a safe shape is the intended lifecycle.
 var makefileRecipeAllowedSites = []string{
 	"Makefile:test-web:$$dir",         // Line 77: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
 	"Makefile:test-web-browser:$$dir", // Line 121: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
@@ -90,9 +56,9 @@ var makefileRecipeAllowedSites = []string{
 //  2. mkdir -p $TMPDIR/owned-by-us && rm -rf $TMPDIR/owned-by-us/$subdir (mkdir-owned)
 //  3. Guard through a script that uses scratch-lib or covscratch-lib patterns
 //
-// The audit is count-pinned: new entries require explicit review. After
-// converting a recipe to a safe shape, delete the entry and the count will
-// validate the conversion.
+// The audit is pinned per site: a new one requires explicit review, and after
+// converting a recipe to a safe shape, deleting the entry is what proves the
+// conversion took.
 func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
 
@@ -103,8 +69,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 	}
 
 	var offenders []string
-	var seenSites []string
-	seenSiteMap := make(map[string]bool)
+	seenSites := make(map[string]bool)
 
 	inRecipe := ""
 	for i, line := range strings.Split(string(body), "\n") {
@@ -137,7 +102,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 			continue
 		}
 
-		if variableFedRecursiveDelete(trimmed) {
+		if recursiveDeleteTakingVariable(trimmed) {
 			// Extract variable references as they appear, normalizing Make variables
 			// Shell: $$var stays as $$var (Makefile escaping)
 			// Make: $(VAR) becomes VAR, ${VAR} becomes VAR
@@ -166,8 +131,7 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 			for _, varName := range vars {
 				entry := fmt.Sprintf("Makefile:%s:%s", inRecipe, varName)
 				if slices.Contains(makefileRecipeAllowedSites, entry) {
-					seenSiteMap[entry] = true
-					seenSites = append(seenSites, entry)
+					seenSites[entry] = true
 				} else {
 					offenders = append(offenders,
 						fmt.Sprintf("Makefile:%d:%s: %s (variable: %s)",
@@ -185,26 +149,22 @@ func TestNoMakefileRecipeFeedsVariableToRecursiveDelete(t *testing.T) {
 			"audit allowlist:\n  %s", o)
 	}
 
-	// Check that all blessed sites were found
-	sort.Strings(makefileRecipeAllowedSites)
-	sort.Strings(seenSites)
-	if len(seenSites) != len(makefileRecipeAllowedSites) {
-		t.Errorf("Makefile audit saw %d blessed sites, but allowlist has %d. "+
-			"The Makefile may have changed, or blessed sites were removed. "+
-			"Current count: %d, expected: %d\n"+
-			"Blessed sites:\n%s\n"+
-			"Found sites:\n%s",
-			len(seenSites), len(makefileRecipeAllowedSites),
-			len(seenSites), len(makefileRecipeAllowedSites),
-			formatList(makefileRecipeAllowedSites),
-			formatList(seenSites))
+	// Every blessed site must still exist, checked one entry at a time. A
+	// comparison of totals would be satisfied by any set of the right size, so
+	// one recipe growing a second variable-fed delete would cover for another
+	// site disappearing, and the stale entry left behind is then a standing
+	// blessing for whatever reoccupies that recipe name later.
+	var stale []string
+	for _, entry := range makefileRecipeAllowedSites {
+		if !seenSites[entry] {
+			stale = append(stale, entry)
+		}
 	}
-}
-
-func formatList(items []string) string {
-	var b strings.Builder
-	for _, item := range items {
-		fmt.Fprintf(&b, "  %s\n", item)
+	sort.Strings(stale)
+	for _, entry := range stale {
+		t.Errorf("makefileRecipeAllowedSites blesses %s, but the Makefile no longer feeds that "+
+			"variable to a recursive delete there. If the recipe was converted to a safe shape, "+
+			"delete the entry; if the recipe was renamed, the entry has to follow it, or it goes "+
+			"on blessing a recipe nobody reviewed.", entry)
 	}
-	return b.String()
 }
