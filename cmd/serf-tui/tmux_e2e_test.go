@@ -77,7 +77,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	// Ended sessions fold by default: awaited as an absence so the check
@@ -160,7 +160,7 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	screen := app.WaitFor("SERF LIVE", "live task", "dashboard")
@@ -195,7 +195,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
 	defer hub.Close()
 
-	wide := startTUITmuxSized(t, bin, hub.URL(), 140, 40)
+	wide := startTUITmuxSized(t, bin, hub, 140, 40)
 	defer wide.Close()
 	wideScreen := wide.WaitFor("SERF LIVE", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
 	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
@@ -205,7 +205,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	wide.SendKeys("q")
 	wide.WaitForExit()
 
-	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
+	narrow := startTUITmuxSized(t, bin, hub, 60, 30)
 	defer narrow.Close()
 	// The narrow dashboard collapses to a single column: the session list
 	// still renders (with the long title hard-truncated to the pane width)
@@ -231,7 +231,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
+	app := startTUITmuxSized(t, bin, hub, 124, 18)
 	defer app.Close()
 
 	app.WaitFor("SERF LIVE", "select")
@@ -258,7 +258,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.EndDashboardSessions()
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	screen := app.WaitFor("SERF LIVE", "0 live", "2 recent", "1 recent", "filter")
@@ -282,7 +282,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	app.WaitFor("SERF LIVE", "live task")
@@ -315,7 +315,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 	})
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	app.WaitFor("SERF LIVE", "live task")
@@ -354,7 +354,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	// Give this pane extra rows so the whole help block — header through the
 	// final key line — fits on screen at once, which is what the WaitFor below
 	// asserts (all three substrings visible simultaneously).
-	app := startTUITmuxSized(t, bin, hub.URL(), 140, 52)
+	app := startTUITmuxSized(t, bin, hub, 140, 52)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -490,7 +490,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -537,7 +537,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -568,7 +568,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -637,7 +637,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -660,7 +660,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -674,7 +674,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	// Use a session with no in-flight turn so the first ctrl+c exercises the
@@ -694,7 +694,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmuxAltScreen(t, bin, hub.URL(), 120, 28)
+	app := startTUITmuxAltScreen(t, bin, hub, 120, 28)
 	defer app.Close()
 
 	openEndedSession(t, app)
@@ -718,7 +718,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.SetAuthRequiredModels(true)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -748,7 +748,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
 	hub.SetSessionContextPressure("01LIVE", 0.66)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -820,7 +820,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -844,7 +844,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -868,7 +868,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmux(t, bin, hub.URL())
+	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -910,7 +910,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
-	app := startTUITmuxSized(t, bin, hub.URL(), 200, 50)
+	app := startTUITmuxSized(t, bin, hub, 200, 50)
 	defer app.Close()
 
 	openLiveSession(t, app)
@@ -1105,9 +1105,9 @@ func (a *tmuxTUI) runTmux(args ...string) {
 	runTmux(a.t, a.socket, args...)
 }
 
-func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
+func startTUITmux(t *testing.T, bin string, hub *tuiE2EHub) *tmuxTUI {
 	t.Helper()
-	return startTUITmuxSized(t, bin, hubURL, 140, 40)
+	return startTUITmuxSized(t, bin, hub, 140, 40)
 }
 
 // tuiCoverEnvPrefix returns a "GOCOVERDIR=<dir> " shell prefix when
@@ -1121,7 +1121,7 @@ func tuiCoverEnvPrefix() string {
 	return ""
 }
 
-func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height int) *tmuxTUI {
 	t.Helper()
 	acquireTmuxSlot(t)
 	// A session name and a socket name are different tmux namespaces, so the
@@ -1131,7 +1131,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	session := uniqueTmuxSessionName()
 	socket := session
 	stateDir := t.TempDir()
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir)
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// Register cleanup the instant the session (and its dedicated server)
 	// exist, before any later setup step below that can itself t.Fatalf: a
@@ -1145,10 +1145,11 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	pinTmuxWindowSize(t, socket, session, width, height)
 	app := &tmuxTUI{t: t, session: session, socket: socket}
 	app.WaitFor("SERF LIVE")
+	app.waitForInputReady(hub)
 	return app
 }
 
-func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
+func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, height int) *tmuxTUI {
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
@@ -1162,7 +1163,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + " -state-dir " + shellQuote(stateDir) + "; read _"
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// See the matching comment in startTUITmuxSized: register cleanup as
 	// soon as the session/server exist, not only once the tmuxTUI value
@@ -1172,7 +1173,62 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	pinTmuxWindowSize(t, socket, session, width, height)
 	app := &tmuxTUI{t: t, session: session, socket: socket}
 	app.WaitFor("SERF LIVE")
+	app.waitForInputReady(hub)
 	return app
+}
+
+// waitForInputReady blocks until serf-tui is provably consuming pty input,
+// closing the startup race between bubbletea's first paint and it attaching
+// its stdin reader.
+//
+// In bubbletea v1.3.10's Program.Run (tea.go:681-707 in
+// github.com/charmbracelet/bubbletea@v1.3.10), the renderer is started
+// (tea.go:681, spinning up its own ticker goroutine at
+// standard_renderer.go:99) and the first frame is queued for it to paint
+// (tea.go:700, p.renderer.write(model.View())) BEFORE the input reader is
+// attached (tea.go:703-706, p.initCancelReader). initCancelReader itself
+// only launches the read-loop goroutine (tty.go:91, "go p.readLoop()") and
+// returns immediately without waiting for that goroutine to actually start
+// running — the read loop's first blocking read (via the kqueue/select
+// cancelreader on macOS/Linux) executes whenever the Go scheduler next gets
+// around to it. On an oversubscribed host (this fleet's shared worktree
+// machine, 8 concurrent agents' worth of Go builds/tests) the independent
+// ticker goroutine can flush the queued first frame to the pty — making
+// "SERF LIVE" appear in a tmux capture-pane — a good while before the
+// read-loop goroutine is ever scheduled onto an OS thread. Any keys tmux
+// sends to the pty in that window are not observed by the running program.
+//
+// A screen-based readiness probe can't close this gap: checking the SCREEN
+// for a probe key's effect races the exact same window that loses the real
+// keys. So this instead confirms an effect that only happens once a
+// keystroke has been read and dispatched through the app's own Update
+// loop: "r" (hub_keys.go's dashboard refresh binding) triggers a real
+// fetchHubTree round trip to the test hub, observable via
+// tuiE2EHub.treeGets — a signal entirely outside the tmux
+// render/capture path. The probe is resent every poll tick (not sent once
+// and merely awaited) because a single send can land in the same lost
+// window as any other key; only a successful round trip proves the reader
+// is live.
+func (a *tmuxTUI) waitForInputReady(hub *tuiE2EHub) {
+	a.t.Helper()
+	baseline := hub.TreeRequests()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	nextDeadCheck := time.Now()
+	for time.Now().Before(deadline) {
+		now := time.Now()
+		if !now.Before(nextDeadCheck) {
+			if status, dead := a.PaneDeadStatus(); dead {
+				a.t.Fatalf("serf-tui readiness probe: process exited before input reader became ready (status %s)\nvisible pane:\n%s\nrecent history:\n%s", status, a.Capture(), a.CaptureHistory())
+			}
+			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
+		}
+		a.SendKeys("r")
+		if hub.TreeRequests() > baseline {
+			return
+		}
+		time.Sleep(tuiE2EPollInterval)
+	}
+	a.t.Fatalf("serf-tui readiness probe: input reader never observed to consume a keystroke within %s (sent %q repeatedly; hub tree requests stayed at %d)\nvisible pane:\n%s", tuiE2EWaitTimeout, "r", baseline, a.Capture())
 }
 
 // pinTmuxWindowSize forces the detached session's window to the exact
@@ -2265,6 +2321,15 @@ func (h *tuiE2EHub) ActionCount(action string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.actions[action]
+}
+
+// TreeRequests returns the current ThreadList round-trip count without
+// waiting, so a caller can capture a baseline and later check for an
+// increase (see waitForInputReady).
+func (h *tuiE2EHub) TreeRequests() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.treeGets
 }
 
 func (h *tuiE2EHub) WaitForTreeRequests(t *testing.T, count int) int {
