@@ -19,6 +19,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -28,10 +30,16 @@ import (
 // working directory and its state dir, so meta.json/transcript/the new queue
 // file all land under the same tree a real daemon would use.
 func newQueuePersistTestSession(t *testing.T, dir string) *Session {
+	return newQueuePersistTestSessionWithFS(t, dir, nil)
+}
+
+// newQueuePersistTestSessionWithFS is newQueuePersistTestSession with the
+// session's meta.json IO rerouted to metaFS (nil = real OS filesystem).
+func newQueuePersistTestSessionWithFS(t *testing.T, dir string, metaFS afero.Fs) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -43,14 +51,21 @@ func newQueuePersistTestSession(t *testing.T, dir string) *Session {
 // RestoreSessionFromMetaWithConfig (agent/session_init.go), the exact function
 // `serf serve --resume` uses.
 func restoreQueuePersistTestSession(t *testing.T, dir, id string) *Session {
+	return restoreQueuePersistTestSessionWithFS(t, dir, id, nil)
+}
+
+// restoreQueuePersistTestSessionWithFS is restoreQueuePersistTestSession with
+// the meta load (and the restored session's meta IO) rerouted to metaFS. It
+// must be the same fs the writing session used.
+func restoreQueuePersistTestSessionWithFS(t *testing.T, dir, id string, metaFS afero.Fs) *Session {
 	t.Helper()
-	meta, err := schema.LoadSessionMeta(dir, id)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, id)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
@@ -70,7 +85,8 @@ func queuePersistFilePath(dir, id string) string {
 func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 
@@ -99,7 +115,7 @@ func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	if got := restored.QueuePreview(); !reflect.DeepEqual(got, wantPreview) {
@@ -119,7 +135,8 @@ func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 func TestQueuePersist_DaemonAndClientSteeringUseDistinctAuthorities(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 
 	sess.Steer("<SYSTEM-REMINDER>daemon nudge</SYSTEM-REMINDER>") // Source == "" (system-authored)
@@ -129,7 +146,7 @@ func TestQueuePersist_DaemonAndClientSteeringUseDistinctAuthorities(t *testing.T
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	got := restored.SteeringQueueSnapshot()
@@ -145,7 +162,8 @@ func TestQueuePersist_DaemonAndClientSteeringUseDistinctAuthorities(t *testing.T
 func TestQueuePersist_ClientSteeringDoesNotTouchLegacyFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	path := queuePersistFilePath(dir, id)
 	defer sess.Close()
@@ -182,7 +200,8 @@ func TestQueuePersist_ClientSteeringDoesNotTouchLegacyFile(t *testing.T) {
 func TestQueuePersist_DrainAsSteer_SurvivesRestart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 
@@ -205,7 +224,7 @@ func TestQueuePersist_DrainAsSteer_SurvivesRestart(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	if depth := restored.QueueDepth(); depth != 0 {
@@ -219,7 +238,8 @@ func TestQueuePersist_DrainAsSteer_SurvivesRestart(t *testing.T) {
 func TestQueuePersist_PromoteQueuedAsSteer_SurvivesRestart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 
@@ -243,7 +263,7 @@ func TestQueuePersist_PromoteQueuedAsSteer_SurvivesRestart(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	if got := restored.QueuePreview(); !reflect.DeepEqual(got, wantPreview) {
@@ -260,7 +280,8 @@ func TestQueuePersist_PromoteQueuedAsSteer_SurvivesRestart(t *testing.T) {
 func TestQueuePersist_CancelQueued_SurvivesRestart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 
@@ -282,7 +303,7 @@ func TestQueuePersist_CancelQueued_SurvivesRestart(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	if got := restored.QueuePreview(); !reflect.DeepEqual(got, wantPreview) {
@@ -299,7 +320,8 @@ func TestQueuePersist_CancelQueued_SurvivesRestart(t *testing.T) {
 func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 	path := queuePersistFilePath(dir, id)
@@ -324,7 +346,7 @@ func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 	if depth := restored.QueueDepth(); depth != 1 {
 		t.Fatalf("restored QueueDepth = %d, want 1 (claimed input returns runnable)", depth)
@@ -334,7 +356,8 @@ func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 func TestQueuePersist_CrashBetweenClaimAndConsume_ReturnsRunnable(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 	ctx := context.Background()
 
@@ -356,7 +379,7 @@ func TestQueuePersist_CrashBetweenClaimAndConsume_ReturnsRunnable(t *testing.T) 
 	}
 	claimedRevision := sess.clientMutations.snapshot().QueueRevision
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	gotTexts := restored.QueueTexts()
@@ -382,7 +405,8 @@ func TestQueuePersist_CrashBetweenClaimAndConsume_ReturnsRunnable(t *testing.T) 
 func TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
+	metaFS := afero.NewMemMapFs()
+	sess := newQueuePersistTestSessionWithFS(t, dir, metaFS)
 	id := sess.ID()
 
 	sess.SteerFromUser("alpha")
@@ -414,7 +438,7 @@ func TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem(t *testing.T) {
 		t.Fatalf("second pop = %q ok=%v, want bravo", second.Text, ok)
 	}
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
+	restored := restoreQueuePersistTestSessionWithFS(t, dir, id, metaFS)
 	defer restored.Close()
 
 	// Claimed but unincorporated bravo returns to runnable state; charlie was

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -118,13 +120,14 @@ func TestSetModel_CrossProvider_ReturnsNilAndSwapsProfileID(t *testing.T) {
 func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		StateDir:         dir,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		testOnly:         testConfig{skipGitSnapshot: true, metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -136,7 +139,7 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -148,6 +151,7 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	// (mirrors production: cmd/serf reconstructs the profile from meta.Model).
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)

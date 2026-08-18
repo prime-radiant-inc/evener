@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -94,13 +96,14 @@ func TestRestoredRootAllowanceFromConfig(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			metaFS := afero.NewMemMapFs()
 			meta := schema.SessionMeta{
 				ID:        "01TESTRESTOREROOT",
 				ProfileID: "openai",
 				Model:     "gpt-5.2",
 				Config:    (SessionConfig{MaxSubagentDepth: tc.maxSubagentDepth, NoProjectPrompts: true}).toSnapshot(),
 			}
-			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: t.TempDir()})
+			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}})
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 			}

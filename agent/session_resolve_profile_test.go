@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -136,6 +138,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "anthropic"})
@@ -158,6 +161,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir:       dir,
 		ResolveProfile: resolver,
+		testOnly:       testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -180,6 +184,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -195,6 +200,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir:       dir,
 		ModelFallbacks: []string{"openai/runtime-fallback"},
+		testOnly:       testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -223,6 +229,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *t
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
+			metaFS := afero.NewMemMapFs()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: "openai"})
 			meta := schema.SessionMeta{
@@ -236,6 +243,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *t
 			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 				StateDir:                    dir,
 				OpenAIResponsesContinuation: tc.override,
+				testOnly:                    testConfig{metaFS: metaFS},
 			})
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)

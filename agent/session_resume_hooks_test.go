@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
@@ -53,6 +55,7 @@ func newResumeHookPluginDir(t *testing.T) string {
 func restoredSessionWithResumeHook(t *testing.T, adapter *fakeAdapter) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	meta := schema.SessionMeta{
 		ID:        "01KRESUMEHOOKTEST0000000000",
 		ProfileID: "test",
@@ -71,6 +74,7 @@ func restoredSessionWithResumeHook(t *testing.T, adapter *fakeAdapter) *Session 
 		meta,
 		RestoreSessionConfig{
 			StateDir: stateDir,
+			testOnly: testConfig{metaFS: metaFS},
 			resumeHistory: []schema.Turn{
 				schema.NewTurn(schema.TurnUserInput, llm.User("prior user task")),
 				schema.NewTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer")),

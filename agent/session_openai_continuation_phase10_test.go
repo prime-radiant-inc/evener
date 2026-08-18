@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -13,6 +15,7 @@ import (
 
 func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
 		CanFallbackToChat: true,
@@ -47,6 +50,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -79,6 +83,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 
 func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
 		CanFallbackToChat: true,
@@ -110,6 +115,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -136,6 +142,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 
 func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
 		CanFallbackToChat: true,
@@ -156,6 +163,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},

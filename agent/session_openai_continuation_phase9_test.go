@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
@@ -18,6 +20,7 @@ import (
 
 func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
 		CanFallbackToChat: true,
@@ -37,6 +40,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarries
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -87,6 +91,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarries
 
 func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelection(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
 			"code":    "previous_response_not_found",
@@ -113,6 +118,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -154,6 +160,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 
 func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	const malformedArgs = `{"value": broken`
 
 	var mu sync.Mutex
@@ -214,6 +221,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -288,6 +296,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 
 func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAfterRejection(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
 			"code":    "previous_response_not_found",
@@ -314,6 +323,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -388,6 +398,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 
 func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewSession(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
 			"code":    "previous_response_not_found",
@@ -409,7 +420,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 	}
 	firstClient := llm.NewClient()
 	firstClient.Register(firstAdapter)
-	firstSess := newPhase9ContinuationSession(t, dir, firstClient)
+	firstSess := newPhase9ContinuationSession(t, dir, firstClient, metaFS)
 	defer firstSess.Close()
 	drainSessionEvents(firstSess)
 	setPhase9ContinuationHistory(firstSess, phase9MatchingAnchor("resp_phase9_disabled_original"))
@@ -431,7 +442,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 	}
 	nextClient := llm.NewClient()
 	nextClient.Register(nextAdapter)
-	nextSess := newPhase9ContinuationSession(t, dir, nextClient)
+	nextSess := newPhase9ContinuationSession(t, dir, nextClient, metaFS)
 	defer nextSess.Close()
 	drainSessionEvents(nextSess)
 	setPhase9ContinuationHistory(nextSess, phase9MatchingAnchor("resp_phase9_disabled_new_session"))
@@ -570,6 +581,7 @@ func TestSession_OpenAIResponsesContinuationPhase9InterveningAssistantGateUsesFu
 func runPhase9GateSession(t *testing.T, history []schema.Turn) llm.Request {
 	t.Helper()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
 		CanFallbackToChat: true,
@@ -589,6 +601,7 @@ func runPhase9GateSession(t *testing.T, history []schema.Turn) llm.Request {
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
@@ -628,12 +641,13 @@ func setPhase9ContinuationHistory(sess *Session, anchor schema.Turn) {
 	}
 }
 
-func newPhase9ContinuationSession(t *testing.T, dir string, client *llm.Client) *Session {
+func newPhase9ContinuationSession(t *testing.T, dir string, client *llm.Client, metaFS afero.Fs) *Session {
 	t.Helper()
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
+			metaFS: metaFS,
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
 				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
 			},
