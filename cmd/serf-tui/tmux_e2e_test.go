@@ -154,6 +154,31 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitForExit()
 }
 
+// A pty delivers rapid keystrokes as one read burst under CPU contention:
+// tmux coalesces separate send-keys writes when the pane's reader lags, and
+// bubbletea reports every printable rune of one read as a single KeyMsg.
+// That is how a loaded CI runner turned SendKeys("/")+TypeText("ops") into
+// one batched message the dashboard dropped on the floor, and k/k/f into
+// "kk" typed at the composer (kata fazd). One literal send-keys call IS that
+// burst, deterministically — no load required — so this pins that a
+// coalesced "/ops" behaves exactly like "/", "o", "p", "s" typed one at a
+// time.
+func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
+	t.Parallel()
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmux(t, bin, hub)
+	defer app.Close()
+
+	app.WaitForWithout([]string{"ended maintenance"}, "SERF LIVE", "live task", "ops task")
+	app.TypeText("/ops")
+	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
+	app.SendKeys("Escape")
+	app.WaitFor("SERF LIVE", "live task", "ops task")
+}
+
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
