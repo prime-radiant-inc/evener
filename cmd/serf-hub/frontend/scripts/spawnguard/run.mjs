@@ -210,11 +210,13 @@ async function main() {
       }
     }
   } finally {
-    // A rejecting teardown (escaped Chrome helper) must not turn a run with
-    // zero failing cases into a red exit — warn and let the verdict stand.
-    await cleanup().catch((cleanupError) => {
-      console.error(`warning: browser cleanup error: ${cleanupError.message}`);
-    });
+    // A rejecting teardown is a FAILING RUN, not a warning: cleanup only
+    // rejects when it has given up on an escaped Chrome helper, which means
+    // this run left a live process and its private profile directory behind on
+    // the machine. That leak (roughly 1 run in 3) is issue #119; until it is
+    // fixed, going red is the signal that keeps it visible, and downgrading it
+    // to a warning would only make the guard quietly lossy.
+    await cleanup();
   }
   return failed > 0 ? 1 : 0;
 }

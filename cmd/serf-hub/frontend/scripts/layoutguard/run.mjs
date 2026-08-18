@@ -277,11 +277,14 @@ async function main() {
   } finally {
     try {
       await guard.cleanup();
-    } catch (cleanupError) {
-      // Cleanup rejection should not prevent removing the generated dir.
-      // Report the error but continue to cleanup.
-      console.error(`warning: browser cleanup error: ${cleanupError.message}`);
     } finally {
+      // The generated fixtures come out on every path, including the one where
+      // cleanup rejects. The rejection itself still propagates and fails the
+      // run: cleanup only rejects when it has given up on an escaped Chrome
+      // helper, so this run left a live process and its private profile
+      // directory behind on the machine. That leak (roughly 1 run in 3) is
+      // issue #119; until it is fixed, going red is the signal that keeps it
+      // visible, and swallowing it would only make the guard quietly lossy.
       rmSync(GENERATED_ROOT, { recursive: true, force: true });
     }
   }
