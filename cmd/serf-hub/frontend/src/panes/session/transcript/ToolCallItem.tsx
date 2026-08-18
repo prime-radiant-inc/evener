@@ -64,20 +64,23 @@ function delegatePurposeOf(item: ItemModel): string | undefined {
   return task === undefined || task === "" ? undefined : clipDelegatePurpose(task, DELEGATE_PURPOSE_PREVIEW_MAX);
 }
 
-function delegateStatusFromItem(item: ItemModel): DelegateStatusKey {
-  const parsed = parseJSONObject(item.output);
-  return classifyJobStatus(parsed === undefined ? undefined : str(parsed, "status"));
+// Both status readers take the delegate call's ALREADY-PARSED output envelope
+// rather than the item: three separate reads (delegate_id, transcript_ref,
+// status) want the same JSON string, and taking the item made each one parse
+// it again - the status read worst of all, since it ran on every tool row,
+// delegate or not, for a value only a delegate row ever displays.
+function delegateStatusFromOutput(parsedOutput: Record<string, unknown> | undefined): DelegateStatusKey {
+  return classifyJobStatus(parsedOutput === undefined ? undefined : str(parsedOutput, "status"));
 }
 
-function delegateStatusForItem(
-  item: ItemModel,
+function delegateStatusForOutput(
+  parsedOutput: Record<string, unknown> | undefined,
   delegateRow: SubagentRow | undefined,
   live: boolean,
 ): DelegateStatusKey {
-  const parsedOutput = parseJSONObject(item.output);
   const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
   if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromItem(item);
+  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -95,7 +98,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const delegateRows = useSubagentRows(isDelegate ? turnScopeKey(sessionRef, item.turnId) : "");
   const delegateRow = isDelegate ? delegateRows.find((row) => row.rowKey === rowKeyForDelegateItem(item)) : undefined;
   const delegateTranscriptRef = stableDelegateId ? str(delegateOutput ?? {}, "transcript_ref") : undefined;
-  const delegateKind = delegateStatusForItem(item, delegateRow, live);
+  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
@@ -119,11 +122,19 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // for, or it builds a dead anchor-split wrapper for every out-of-cwd row
   // (kata ledger #96).
   const openBesidePath = descriptor.openBesidePath?.(item);
-  const openBesideCwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
-  const canOpenBeside = fileDocParams(openBesidePath, sessionRef, openBesideCwd) !== undefined;
+  // cwd is snapshot-only ThreadModel state (fileOpenBeside.tsx's DECISION B),
+  // stable for the pane's life. ONE by-ref subscription serves both readers:
+  // the open-beside presence check just below, and summary()'s
+  // ToolSummaryContext further down, which shell's own descriptor uses to
+  // strip a redundant "cd <cwd> && " prefix from its summary.
+  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const canOpenBeside = fileDocParams(openBesidePath, sessionRef, cwd) !== undefined;
+  // The openBesidePath re-check is what fileDocParams already required to
+  // return a value; stating it here narrows the type instead of asserting it,
+  // so the button's absPath needs no cast.
   const openBesideButton =
-    canOpenBeside && sessionRef !== undefined ? (
-      <FileOpenBesideButton absPath={openBesidePath as string} sessionRef={sessionRef} />
+    canOpenBeside && openBesidePath !== undefined && sessionRef !== undefined ? (
+      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
@@ -173,12 +184,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const summarySuffix = useThreadsStore((s) =>
     descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
-  // cwd is snapshot-only ThreadModel state (fileOpenBeside.tsx's DECISION B),
-  // stable for the pane's life - the same by-ref selector openBesideCwd above
-  // uses. Threaded into summary() as ToolSummaryContext so shell's own
-  // descriptor can strip a redundant "cd <cwd> && " prefix from its summary.
-  const summaryCwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
-  const summary = descriptor.summary(item, { cwd: summaryCwd }) + (summarySuffix ?? "");
+  // cwd (subscribed once above) is threaded into summary() as
+  // ToolSummaryContext so shell's own descriptor can strip a redundant
+  // "cd <cwd> && " prefix from its summary.
+  const summary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
   const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
