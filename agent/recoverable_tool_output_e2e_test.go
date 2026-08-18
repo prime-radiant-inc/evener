@@ -193,11 +193,19 @@ func task7RunningOutput(t *testing.T, s *Session, jobID string) *jobstore.Output
 	return run.output
 }
 
+// task7AwaitOutputBytes polls OutputStore.Len rather than awaiting a signal
+// because jobstore.OutputStore emits no "bytes appended" event of its own: the
+// only production notification path for new job output is the output_match
+// watch matcher (job_watch.go feedJobOutputWithProvenance), which fires on a
+// regex match against content, not on reaching an exact lifetime byte count.
+// Rigging a watch here to stand in for a byte-count wait would test the watch
+// subsystem instead of the output store, so this stays a bounded poll per
+// docs/testing.md's condition-watching fallback.
 func task7AwaitOutputBytes(t *testing.T, output *jobstore.OutputStore, want int64) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(30 * time.Second) // TRIPWIRE: real subprocess writes retained output asynchronously; only fires on a genuine hang.
 	defer deadline.Stop()
-	tick := time.NewTicker(time.Millisecond)
+	tick := time.NewTicker(time.Millisecond) // TRIPWIRE: poll interval, not a hang bound; the 30s timer above is what stops a genuine hang.
 	defer tick.Stop()
 	for {
 		if got := output.Len(); got >= want {

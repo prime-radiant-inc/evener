@@ -280,7 +280,7 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	}
 
 	// Connect to the MCP server via stdio transport.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // TRIPWIRE: real stdio subprocess handshake; only fires on a genuine hang.
 	defer cancel()
 
 	mgr, outcomes := mcp.NewManager(ctx, lp.MCPConfigs, nil)
@@ -484,7 +484,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 		runner.Add(event, hooks...)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: real LLM API round trip; only fires on a genuine hang.
 	defer cancel()
 
 	result := runner.RunPreToolUse(ctx, hooks.Input{
@@ -599,7 +599,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	}
 
 	// Process a simple input through the session.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: real LLM session turn over MCP+hooks; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.ProcessInput(ctx, "What is 2+2? Reply with just the number.", nil)
@@ -667,7 +667,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: real LLM tool-call round trip over MCP; only fires on a genuine hang.
 	defer cancel()
 
 	// Ask the LLM to use the MCP echo tool.
@@ -754,7 +754,7 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // TRIPWIRE: real LLM session turn; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.ProcessInput(ctx, "hello", nil)
@@ -891,7 +891,7 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 		t.Fatalf("TDD skill not loaded into session")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // TRIPWIRE: real LLM session turn with a real skill loaded; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.ProcessInput(ctx, "hi", nil)
