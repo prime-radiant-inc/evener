@@ -297,7 +297,7 @@ func TestConcurrentRoundLinesNameTheirSession(t *testing.T) {
 	// And nothing the driver says about a round may be anonymous. With two
 	// sessions in flight an unnamed line is unattributable by construction, so
 	// one line missed is the whole defect back again.
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if strings.Contains(line, " round ") && !strings.Contains(line, "session ") {
 			t.Errorf("round line names no session: %q", line)
 		}
