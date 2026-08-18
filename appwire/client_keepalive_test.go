@@ -3,6 +3,7 @@ package appwire
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,7 +23,15 @@ func newPingingTransport() *pingingTransport {
 	return &pingingTransport{reads: make(chan Message, 8), closeCh: make(chan struct{})}
 }
 
-func (p *pingingTransport) Send(context.Context, Message) error { return nil }
+func (p *pingingTransport) Send(context.Context, Message) error {
+	// A real WS transport fails every write after Close with exactly this
+	// text (github.com/coder/websocket); post-close sends must model it so
+	// the keepalive tests exercise the same failure shape kata 18p0 traced.
+	if p.closed.Load() {
+		return errors.New("failed to write msg: use of closed network connection")
+	}
+	return nil
+}
 
 func (p *pingingTransport) Recv(ctx context.Context) (Message, error) {
 	select {
@@ -104,6 +113,41 @@ func TestClientKeepaliveTearsDownOnPongTimeout(t *testing.T) {
 	}
 	if !transport.closed.Load() {
 		t.Fatal("keepalive did not close the transport after pong timeout")
+	}
+}
+
+// TestClientKeepaliveCloseNamesItself pins the kata 18p0 ruling: when the
+// keepalive tears the transport down, every failure a caller sees afterwards
+// must say so. The bare "use of closed network connection" this replaces cost
+// a full investigation to trace back to this mechanism.
+func TestClientKeepaliveCloseNamesItself(t *testing.T) {
+	base := newPingingTransport()
+	transport := &blockingPingerTransport{base}
+	client := NewClient(transport)
+
+	ctx := t.Context()
+	client.startWithKeepalive(ctx, time.Millisecond, 5*time.Millisecond)
+
+	select {
+	case _, ok := <-client.Notifications():
+		if ok {
+			t.Fatal("expected notifications channel to close, got a value")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not tear down the client after pong timeout")
+	}
+
+	// The post-close request fails at Send with the transport's own error;
+	// the caller-visible text must carry the keepalive's reason too, or the
+	// failure reads as an unexplained dead connection.
+	err := client.request(ctx, "test/afterClose", nil, nil)
+	if err == nil {
+		t.Fatal("request on a keepalive-closed client returned nil")
+	}
+	for _, want := range []string{"keepalive", "5ms", "use of closed network connection"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("post-close request error %q does not mention %q", err, want)
+		}
 	}
 }
 

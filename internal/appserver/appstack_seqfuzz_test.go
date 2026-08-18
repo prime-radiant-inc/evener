@@ -185,17 +185,17 @@ func (p stackPinger) Ping(context.Context) error {
 func exerciseKeepalive(_ rapidTB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	runWebSocketKeepalive(ctx, stackPinger{called: make(chan struct{}, 1)}, func() {}, time.Hour, time.Hour)
+	runWebSocketKeepalive(ctx, stackPinger{called: make(chan struct{}, 1)}, func(error) {}, time.Hour, time.Hour)
 
 	failed := make(chan struct{})
-	runWebSocketKeepalive(context.Background(), stackPinger{called: make(chan struct{}, 1), err: errors.New("ping")}, func() { close(failed) }, time.Nanosecond, time.Second)
+	runWebSocketKeepalive(context.Background(), stackPinger{called: make(chan struct{}, 1), err: errors.New("ping")}, func(error) { close(failed) }, time.Nanosecond, time.Second)
 	<-failed
 
 	ctx, cancel = context.WithCancel(context.Background())
 	called := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		runWebSocketKeepalive(ctx, stackPinger{called: called}, cancel, time.Nanosecond, time.Second)
+		runWebSocketKeepalive(ctx, stackPinger{called: called}, func(error) { cancel() }, time.Nanosecond, time.Second)
 		close(done)
 	}()
 	<-called

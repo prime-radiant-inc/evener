@@ -82,7 +82,17 @@ func (c *Client) Start(ctx context.Context) {
 
 func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeout time.Duration) {
 	if pinger, ok := c.transport.(Pinger); ok {
-		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout)
+		// Latch the reason before closing: the transport's own errors after
+		// this point say only "use of closed network connection", which cost
+		// a full investigation to trace back here once (kata 18p0). Every
+		// caller-visible failure after a keepalive close must name it.
+		closeNamingKeepalive := func() error {
+			c.markClosed(fmt.Errorf(
+				"appwire: keepalive ping went unanswered for %v; closing the transport (peer or host stalled)",
+				pongTimeout))
+			return c.transport.Close()
+		}
+		go runClientKeepalive(ctx, pinger, closeNamingKeepalive, pingInterval, pongTimeout)
 	}
 	go func() {
 		for {
@@ -218,6 +228,14 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	if err := c.transport.Send(ctx, RequestMessage(id, method, params)); err != nil {
 		c.sendMu.Unlock()
 		c.removePending(id)
+		// A send on a torn-down client fails with the transport's own close
+		// error, which does not say WHY the transport closed. When a reason
+		// was latched (the keepalive names itself this way), attach it.
+		select {
+		case <-c.closed:
+			return fmt.Errorf("%w (%v)", err, c.closedError())
+		default:
+		}
 		return err
 	}
 	c.sendMu.Unlock()
