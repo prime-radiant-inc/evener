@@ -108,10 +108,15 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// reader lags, and bubbletea reports every rune of one read as one
 	// KeyMsg. Replay such a batch one rune at a time or the switch below sees
 	// one unmatchable "/ops" instead of the keys the sender typed and drops
-	// it silently (kata fazd). Only here: everywhere a text surface has
-	// focus — the composer, the palette and dashboard filters, the panels —
-	// a batch IS the typed text and must stay whole (a split "/interrupt"
-	// in the composer would open the palette instead).
+	// it silently (kata fazd). Only here: where a text surface has focus —
+	// the composer, the palette and dashboard filters, the panels — a batch
+	// is the typed text and must stay whole (a split "/interrupt" in the
+	// composer would open the palette instead). Browse/transcript view is
+	// neither: a command mode whose coalesced runes still fall through to
+	// the composer as text, so the same word means different things at
+	// different delivery timings. That ambiguity is unresolved by design
+	// record (kata 7hh0); TestHubModelBrowseKeepsComposerVisibleAndTyping
+	// pins the coalesced behavior until it is decided.
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
 		return m.replayKeyBurst(msg)
 	}
