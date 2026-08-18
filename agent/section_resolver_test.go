@@ -801,7 +801,7 @@ func TestWorkflowSectionDefinesRootCauseToActionTransition(t *testing.T) {
 	if exploration < 0 || transition < 0 || preFinish < 0 {
 		t.Fatalf("expected anchor lines not found: exploration=%d transition=%d preFinish=%d", exploration, transition, preFinish)
 	}
-	if !(exploration < transition && transition < preFinish) {
+	if exploration >= transition || transition >= preFinish {
 		t.Fatalf("transition rule out of place: want exploration(%d) < transition(%d) < preFinish(%d)", exploration, transition, preFinish)
 	}
 }
@@ -1017,7 +1017,7 @@ func TestCommunicateSectionReportsPhaseChangeCheckpoint(t *testing.T) {
 
 	milestones := strings.Index(section, "Report real milestones")
 	checkpoint := strings.Index(section, "changes phase")
-	if milestones < 0 || checkpoint < 0 || !(milestones < checkpoint) {
+	if milestones < 0 || checkpoint < 0 || milestones >= checkpoint {
 		t.Fatalf("checkpoint guidance out of place: want milestones(%d) < checkpoint(%d)", milestones, checkpoint)
 	}
 }
