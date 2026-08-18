@@ -148,9 +148,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	hubStateRoot := cfg.HubStateRoot
 	if hubStateRoot == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			hubStateRoot = filepath.Join(home, ".serf")
+			hubStateRoot = filepath.Join(home, ".evener")
 		} else {
-			hubStateRoot = ".serf"
+			hubStateRoot = ".evener"
 		}
 	}
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)

@@ -127,8 +127,8 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
-	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -155,14 +155,14 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		}
 	}
 
-	if exists(filepath.Join(configHome, "serf")) {
-		t.Fatalf("install created %s; Serf should create config dirs on first run", filepath.Join(configHome, "serf"))
+	if exists(filepath.Join(configHome, "evener")) {
+		t.Fatalf("install created %s; Serf should create config dirs on first run", filepath.Join(configHome, "evener"))
 	}
-	if exists(filepath.Join(home, ".serf")) {
-		t.Fatalf("install created %s; Serf should create runtime dirs on first run", filepath.Join(home, ".serf"))
+	if exists(filepath.Join(home, ".evener")) {
+		t.Fatalf("install created %s; Serf should create runtime dirs on first run", filepath.Join(home, ".evener"))
 	}
 
-	serfBin := filepath.Join(binDir, "serf")
+	serfBin := filepath.Join(binDir, "evener")
 	runCommand(t, fixtureRoot, env, serfBin, "--version")
 	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-hub"), "--help")
 	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-tui"), "--help")
@@ -170,8 +170,8 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	runCommand(t, fixtureRoot, env, serfBin, "--list-sessions")
 
 	for _, dir := range []string{
-		filepath.Join(configHome, "serf", "skills"),
-		filepath.Join(configHome, "serf", "plugins"),
+		filepath.Join(configHome, "evener", "skills"),
+		filepath.Join(configHome, "evener", "plugins"),
 	} {
 		info, err := os.Stat(dir)
 		if err != nil {
@@ -181,8 +181,8 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 			t.Fatalf("%s is not a directory", dir)
 		}
 	}
-	if exists(filepath.Join(home, ".serf")) {
-		t.Fatalf("serf --list-sessions created %s; no hub runtime state should be needed", filepath.Join(home, ".serf"))
+	if exists(filepath.Join(home, ".evener")) {
+		t.Fatalf("serf --list-sessions created %s; no hub runtime state should be needed", filepath.Join(home, ".evener"))
 	}
 
 	expectedAgents := expectedBundledAgents(t, repoRoot)
@@ -331,8 +331,8 @@ cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
 			}
 
 			binDir := filepath.Join(home, ".local", "bin")
-			shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
-			for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+			shareBinDir := filepath.Join(home, ".local", "share", "evener", "bin")
+			for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 				installed := filepath.Join(shareBinDir, bin)
 				info, err := os.Stat(installed)
 				if err != nil {
@@ -795,7 +795,7 @@ func writeInstallReleaseArchive(t *testing.T, path, root string) {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),

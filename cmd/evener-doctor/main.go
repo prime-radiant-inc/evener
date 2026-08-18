@@ -553,7 +553,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 func cmdPlugins(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plugins", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	storeRoot := fs.String("store-root", "", fmt.Sprintf("plugin store root (default: ~/.config/serf/plugins, honoring %s)", envvars.XDGConfigHome.Name))
+	storeRoot := fs.String("store-root", "", fmt.Sprintf("plugin store root (default: ~/.config/evener/plugins, honoring %s)", envvars.XDGConfigHome.Name))
 	asJSON := fs.Bool("json", false, "emit JSON instead of the human summary")
 	if err := fs.Parse(args); err != nil {
 		return 2

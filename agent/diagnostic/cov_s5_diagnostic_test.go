@@ -42,7 +42,7 @@ func TestCov_FromError(t *testing.T) {
 }
 
 func TestCov_NormalizeSource(t *testing.T) {
-	for _, s := range []string{"provider", "serf", "hub", "ui", "hook"} {
+	for _, s := range []string{"provider", "evener", "hub", "ui", "hook"} {
 		if normalizeSource(s) == "" {
 			t.Errorf("normalizeSource(%q) should be recognized", s)
 		}

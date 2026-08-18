@@ -123,7 +123,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				t.Fatalf("fallback=%q", got)
 			}
 		case 10:
-			for _, tc := range []struct{ harness, want string }{{"", ""}, {"serf", "local"}, {" codex ", "codex"}} {
+			for _, tc := range []struct{ harness, want string }{{"", ""}, {"evener", "local"}, {" codex ", "codex"}} {
 				if got := launchSourceID(appwire.ThreadStartParams{Harness: tc.harness}); got != tc.want {
 					t.Fatalf("launchSourceID=%q want %q", got, tc.want)
 				}

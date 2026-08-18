@@ -30,7 +30,7 @@ import (
 const studyProjectID = "project-test-0123456789"
 
 func studySessionBucket(base, _ string) string {
-	return filepath.Join(base, "serf", "projects", studyProjectID)
+	return filepath.Join(base, "evener", "projects", studyProjectID)
 }
 
 // writeStudySession writes a session's semantic transcript + meta through

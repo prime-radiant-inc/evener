@@ -28,7 +28,7 @@ func checkResolve_LayersMerge(t *testing.T) {
 skills_dirs = ["/g"]
 `)
 	// Trusted in-repo file.
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["sub"]`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `skills_dirs = ["sub"]`)
 	repoHash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["sub"]`))
 	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
@@ -41,7 +41,7 @@ cwd = "`+cwd+`"
 hash = "`+repoHash+`"
 decision = "trusted"
 `)
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.local.toml"), `skills_dirs = ["/p"]`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), `skills_dirs = ["/p"]`)
 
 	overrides := Layer{Model: "l", SkillsDirs: []string{"/l"}}
 	got, err := Resolve(stateRoot, cwd, overrides)
@@ -109,7 +109,7 @@ func checkResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
 func checkResolve_UntrustedRepoSkipped(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `model = "from-repo"`)
 	got, err := Resolve(stateRoot, cwd, Layer{})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -128,7 +128,7 @@ func checkResolve_UntrustedRepoSkipped(t *testing.T) {
 func checkResolve_RejectedRepoSkippedSilently(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `model = "from-repo"`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `model = "from-repo"`)
 	hash, _ := CanonicalHashTOML([]byte(`model = "from-repo"`))
 	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
@@ -153,7 +153,7 @@ decision = "rejected"
 func checkResolve_RepoPathsExpandedAndValidated(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
-	writeFile(t, filepath.Join(cwd, ".serf", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `skills_dirs = ["../outside", "good/dir"]`)
 	// Pre-trust whatever the file currently is.
 	hash, _ := CanonicalHashTOML([]byte(`skills_dirs = ["../outside", "good/dir"]`))
 	project, err := identifier.ResolveProject(cwd)
@@ -242,7 +242,7 @@ func checkLoadProjectLayer_StatError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Make the parent component of paths.ProjectFile (<cwd>/.serf) a regular file
+	// Make the parent component of paths.ProjectFile (<cwd>/.evener) a regular file
 	// so os.Stat on paths.ProjectFile fails with ENOTDIR. This is root-proof:
 	// ENOTDIR is returned regardless of uid, unlike chmod-based permission
 	// bits, which root bypasses (and which would not make Stat itself fail).
@@ -283,8 +283,8 @@ func checkLoadProjectLayer_LegacyLoadError(t *testing.T) {
 
 func checkLoadRepoLayer_ReadFileError(t *testing.T) {
 	cwd := t.TempDir()
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
-	// Make the parent component (<cwd>/.serf) a regular file so os.ReadFile on
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
+	// Make the parent component (<cwd>/.evener) a regular file so os.ReadFile on
 	// repoPath fails with ENOTDIR. This is root-proof: ENOTDIR is returned
 	// regardless of uid, unlike chmod 0o000, which root bypasses.
 	if err := os.WriteFile(filepath.Dir(repoPath), []byte("x"), 0o600); err != nil {
@@ -293,12 +293,12 @@ func checkLoadRepoLayer_ReadFileError(t *testing.T) {
 	_, _, diags := loadRepoLayer(cwd, "")
 	var seen bool
 	for _, d := range diags {
-		if d.Field == ".serf/launch.toml" {
+		if d.Field == ".evener/launch.toml" {
 			seen = true
 		}
 	}
 	if !seen {
-		t.Fatalf("expected diagnostic for .serf/launch.toml read error, got %v", diags)
+		t.Fatalf("expected diagnostic for .evener/launch.toml read error, got %v", diags)
 	}
 }
 

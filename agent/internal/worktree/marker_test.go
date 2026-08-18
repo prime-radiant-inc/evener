@@ -64,7 +64,7 @@ func TestParseMarker_Foreign(t *testing.T) {
 	cases := []string{
 		"",                                 // reasonless lock (git's bare `locked`)
 		"serf:",                            // trailing colon, no session id
-		"serf",                             // no colon at all
+		"evener",                             // no colon at all
 		"serf:dlg:x",                       // missing the parent-session segment
 		"serf:dlg::",                       // both dlg and parent segments empty
 		"serf:dlg:x:",                      // parent segment present but empty

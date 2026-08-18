@@ -25,7 +25,7 @@ type recordedSources struct {
 
 // discoverSources walks a state directory and buckets the recorded files by
 // surface. A recursive walk handles every on-disk layout (the XDG
-// serf/projects/<project-id> buckets and the override/scratch root alike) without
+// evener/projects/<project-id> buckets and the override/scratch root alike) without
 // re-deriving bucket paths.
 func discoverSources(stateDir string) (recordedSources, error) {
 	var s recordedSources
@@ -62,7 +62,7 @@ func discoverSources(stateDir string) (recordedSources, error) {
 }
 
 // isPersonalStateDir reports whether dir is the developer's own default state
-// root (~/.serf with no EVENER_STATE_DIR override). Such a source must always be
+// root (~/.evener with no EVENER_STATE_DIR override). Such a source must always be
 // shape-scrubbed — --keep-values is ignored for it (decision 6).
 func isPersonalStateDir(dir string) bool {
 	if envvars.EVENERStateDir.Getenv() != "" {

@@ -137,7 +137,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 			dir = resolved
 		}
-		serfPath := filepath.Join(dir, "serf")
+		serfPath := filepath.Join(dir, "evener")
 		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +178,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 	t.Run("nil lookPath uses exec.LookPath", func(t *testing.T) {
 		// Create a temp directory with a "serf" binary and put it on PATH.
 		bindir := t.TempDir()
-		serfPath := filepath.Join(bindir, "serf")
+		serfPath := filepath.Join(bindir, "evener")
 		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

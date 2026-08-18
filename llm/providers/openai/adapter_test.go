@@ -2032,7 +2032,7 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := os.Getenv("XDG_STATE_HOME")
 	userStateDir := authopenai.DefaultStateDir()
-	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
+	projectStateDir := filepath.Join(xdgStateHome, "evener", "projects", "repo")
 	t.Setenv("EVENER_STATE_DIR", projectStateDir)
 	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,

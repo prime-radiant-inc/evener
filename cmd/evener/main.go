@@ -106,7 +106,7 @@ func mainWithDeps(deps mainDeps) {
 
 	// Quick flags that don't need full flag.Parse().
 	if len(deps.args) > 0 && deps.args[0] == "--version" {
-		_, _ = fmt.Fprintln(deps.stdout, "serf", buildinfo.VersionLong())
+		_, _ = fmt.Fprintln(deps.stdout, "evener", buildinfo.VersionLong())
 		return
 	}
 
@@ -221,7 +221,7 @@ func mainWithDeps(deps mainDeps) {
 }
 
 func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
-	fs := flag.NewFlagSet("serf", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	flags := &runCLIFlags{}
 
@@ -246,7 +246,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
-	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")
+	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading (match container behavior)")
 	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")
 	fs.Var(&flags.skillsDirs, "skills-dir", "extra skill `directory` (repeatable)")
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")

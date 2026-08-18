@@ -14,10 +14,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// writeSerfwideCommandFile creates <workDir>/.serf/commands/<name>.md.
+// writeSerfwideCommandFile creates <workDir>/.evener/commands/<name>.md.
 func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
 	t.Helper()
-	dir := filepath.Join(workDir, ".serf", "commands")
+	dir := filepath.Join(workDir, ".evener", "commands")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}

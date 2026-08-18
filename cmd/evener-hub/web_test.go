@@ -136,7 +136,7 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 			Release:        "snapshot",
 			Channel:        "snapshot",
 			Archive:        "serf_linux_amd64.tar.gz",
-			ShareBinDir:    "/tmp/share/serf/bin",
+			ShareBinDir:    "/tmp/share/evener/bin",
 			BinDir:         "/tmp/bin",
 			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
 		}, nil
@@ -1275,7 +1275,7 @@ func TestWeb_ApiSpawn_AccessModeSetsSandboxOverride(t *testing.T) {
 				Spawner: spawner,
 			})
 			body := strings.NewReader(fmt.Sprintf(
-				`{"harness":"serf","model":"openai/gpt-5","working_dir":%q,"access_mode":%q}`,
+				`{"harness":"evener","model":"openai/gpt-5","working_dir":%q,"access_mode":%q}`,
 				workDir,
 				tc.accessMode,
 			))
@@ -1690,7 +1690,7 @@ func TestFormatCompactContextNumbersShowsOnlyUsedAndWindow(t *testing.T) {
 }
 
 func TestWorktreeLabelUsesLeafAndIgnoresEmpty(t *testing.T) {
-	if got := worktreeLabel("/state/worktrees/serf/dlg_01H"); got != "dlg_01H" {
+	if got := worktreeLabel("/state/worktrees/evener/dlg_01H"); got != "dlg_01H" {
 		t.Fatalf("worktreeLabel() = %q, want dlg_01H", got)
 	}
 	if got := worktreeLabel(""); got != "" {
@@ -1707,9 +1707,9 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	const sessionID = "02wMz5TxvEMoJEDTDGOTil"
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:           sessionID,
-		WorktreePath: "/state/worktrees/serf/dlg_01H",
+		WorktreePath: "/state/worktrees/evener/dlg_01H",
 		EnvInfo: schema.EnvironmentInfo{
-			WorkingDir: "/state/worktrees/serf/dlg_01H",
+			WorkingDir: "/state/worktrees/evener/dlg_01H",
 			GitBranch:  "feature/compact-rail",
 		},
 	}); err != nil {
@@ -1725,7 +1725,7 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 	if data.Worktree != "dlg_01H" {
 		t.Errorf("Worktree = %q, want dlg_01H", data.Worktree)
 	}
-	if data.WorkingDir != "/state/worktrees/serf/dlg_01H" {
+	if data.WorkingDir != "/state/worktrees/evener/dlg_01H" {
 		t.Errorf("WorkingDir = %q, want full worktree path", data.WorkingDir)
 	}
 	if data.Branch != "feature/compact-rail" {
@@ -3710,7 +3710,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 }
 
 func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "serf")
+	workingDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3757,7 +3757,7 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 }
 
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "serf")
+	workingDir := filepath.Join(t.TempDir(), "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

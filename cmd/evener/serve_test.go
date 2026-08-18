@@ -261,7 +261,7 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 		done <- runServe(args)
 	}()
 
-	runDir := filepath.Join(tmpHome, ".serf", "run")
+	runDir := filepath.Join(tmpHome, ".evener", "run")
 	pid := os.Getpid()
 	target := filepath.Join(runDir, strconv.Itoa(pid)+".json")
 

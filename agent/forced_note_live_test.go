@@ -50,8 +50,8 @@ func TestForcedNoteLive(t *testing.T) {
 		t.Skipf("live eval requires a resolvable user home: %v", err)
 	}
 	stateHome, providersConfig := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
-	if _, err := os.Stat(filepath.Join(stateHome, "serf", "auth", "openai.json")); err != nil {
-		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", stateHome, err)
+	if _, err := os.Stat(filepath.Join(stateHome, "evener", "auth", "openai.json")); err != nil {
+		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", stateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 

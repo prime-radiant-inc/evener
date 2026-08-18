@@ -1110,7 +1110,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
-	// Serf-wide commands (project .serf/commands + user-global config dir)
+	// Serf-wide commands (project .evener/commands + user-global config dir)
 	// merge with plugin commands in one place. This runs for every session,
 	// including PluginDirs == nil, so it must not live inside initPlugins
 	// (which early-returns on empty PluginDirs). Discovery is fail-soft;

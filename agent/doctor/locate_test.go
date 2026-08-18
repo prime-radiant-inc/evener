@@ -28,7 +28,7 @@ func writeSession(t *testing.T, bucketDir, sid string) {
 
 // stateHomeBucket returns the bucket dir for a hash under an XDG state home.
 func stateHomeBucket(base, hash string) string {
-	return filepath.Join(base, "serf", "projects", hash)
+	return filepath.Join(base, "evener", "projects", hash)
 }
 
 func TestLocate_StateHomeLayout_BareID(t *testing.T) {
@@ -102,7 +102,7 @@ func TestLocate_JobsPathIsSubdirNotSuffix(t *testing.T) {
 }
 
 func TestLocate_OverrideLayout_BareID(t *testing.T) {
-	base := t.TempDir() // base IS the bucket (no serf/projects under it)
+	base := t.TempDir() // base IS the bucket (no evener/projects under it)
 	writeSession(t, base, sidA)
 
 	got, err := Locate(base, sidA)

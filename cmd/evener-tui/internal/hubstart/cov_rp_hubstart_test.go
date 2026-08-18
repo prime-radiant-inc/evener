@@ -18,10 +18,10 @@ func TestResolveAuthToken(t *testing.T) {
 		t.Fatalf("explicit token = %q, want explicit-tok", got)
 	}
 
-	// A token file under $HOME/.serf is read when no explicit value is given.
+	// A token file under $HOME/.evener is read when no explicit value is given.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	serfDir := filepath.Join(home, ".serf")
+	serfDir := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(serfDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestResolveAuthToken(t *testing.T) {
 	if tok != "file-tok" {
 		t.Fatalf("resolveAuthToken file = %q, want file-tok", tok)
 	}
-	if !strings.HasSuffix(tokenFile, filepath.Join(".serf", "auth-token")) {
+	if !strings.HasSuffix(tokenFile, filepath.Join(".evener", "auth-token")) {
 		t.Fatalf("token file path = %q", tokenFile)
 	}
 	if got := ResolveAuthToken("", ""); got != "file-tok" {
@@ -41,7 +41,7 @@ func TestResolveAuthToken(t *testing.T) {
 }
 
 func TestResolveAuthTokenMissingWarns(t *testing.T) {
-	home := t.TempDir() // no .serf/auth-token created
+	home := t.TempDir() // no .evener/auth-token created
 	t.Setenv("HOME", home)
 
 	warn := captureStderr(t, func() {
@@ -57,7 +57,7 @@ func TestResolveAuthTokenMissingWarns(t *testing.T) {
 func TestAuthTokenFilePathWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	// With no resolvable home dir, the path falls back to a relative location.
-	if got := AuthTokenFilePath(""); got != filepath.Join(".serf", "auth-token") {
+	if got := AuthTokenFilePath(""); got != filepath.Join(".evener", "auth-token") {
 		t.Fatalf("AuthTokenFilePath without HOME = %q", got)
 	}
 }

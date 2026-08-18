@@ -145,7 +145,7 @@ func TestStartHubClientHonorsNoAutoStartForLocalHub(t *testing.T) {
 }
 
 func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "state", "serf")
+	stateDir := filepath.Join(t.TempDir(), "state", "evener")
 	logFile := filepath.Join(t.TempDir(), "serf-tui.log")
 	hubBin := filepath.Join(t.TempDir(), "serf-hub")
 	writeExecutable(t, hubBin)
@@ -301,7 +301,7 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 		{
 			name: "stale environment",
 			cfg: HubStartConfig{
-				StateDir: filepath.Join(t.TempDir(), "state", "serf"),
+				StateDir: filepath.Join(t.TempDir(), "state", "evener"),
 				DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 					return appwire.NewClient(noopAppWireTransport{}), nil
 				},

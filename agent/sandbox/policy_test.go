@@ -210,7 +210,7 @@ func TestPolicyDenylistAddRemove(t *testing.T) {
 		t.Errorf("user-added home-relative path missing from effective denylist: %v", eff)
 	}
 	// Removed entry is gone even though it is in the default set.
-	removed := filepath.Join(home, ".config", "serf")
+	removed := filepath.Join(home, ".config", "evener")
 	if slices.Contains(eff, removed) {
 		t.Errorf("user-removed path %q still present in effective denylist: %v", removed, eff)
 	}

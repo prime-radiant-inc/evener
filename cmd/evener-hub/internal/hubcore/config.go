@@ -34,7 +34,7 @@ type RelayLifecycleHooks struct {
 type WebConfig struct {
 	HubAddr             string
 	AuthToken           string // capability token gating every non-exempt route
-	HubStateRoot        string // root of hub-level state; defaults to $HOME/.serf
+	HubStateRoot        string // root of hub-level state; defaults to $HOME/.evener
 	RunDir              string // run directory where rendezvous files live
 	PastIndexPath       string // path to the SQLite past-index DB, for display in settings
 	Roster              *Roster
@@ -46,9 +46,9 @@ type WebConfig struct {
 	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
 	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
 	CredsStore          *credentials.Store  // credentials store; passed to auth controller
-	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
-	PluginRoot          string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/serf/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
+	PluginRoot          string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
+	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/evener/mcp.json
 	ProviderConfig      *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
 	ProvidersConfigPath string              // path to providers.toml; forwarded to the auth controller
 	CodexSources        []appsource.CodexSourceConfig

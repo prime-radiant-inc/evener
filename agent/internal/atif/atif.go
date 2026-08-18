@@ -123,7 +123,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		SchemaVersion: "ATIF-v1.7",
 		SessionID:     header.SessionID,
 		Agent: Agent{
-			Name:      "serf",
+			Name:      "evener",
 			Version:   version,
 			ModelName: header.Model,
 			Extra:     map[string]any{"profile_id": header.ProfileID},

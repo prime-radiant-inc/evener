@@ -126,7 +126,7 @@ type hubSpawnOptionsMsg struct {
 	models                      []tuipick.ModelPickerItem
 	// recentDirs carries the hub's most recently used project dirs (the Dir
 	// field's prepopulated dropdown options, issue #35). Best-effort: a hub
-	// too old for serf/projects/recent leaves it nil.
+	// too old for evener/projects/recent leaves it nil.
 	recentDirs []string
 	err        error
 	modelErr   error
@@ -319,7 +319,7 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 			}
 		}
 		// Recent project dirs are best-effort: a failure (e.g. an older hub
-		// without serf/projects/recent) must not break spawning.
+		// without evener/projects/recent) must not break spawning.
 		var recentDirs []string
 		if recentResp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{}); err == nil {
 			recentDirs = recentResp.Data

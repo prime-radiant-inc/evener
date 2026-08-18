@@ -22,7 +22,7 @@ type ProviderConfig struct {
 	Models []string `toml:"models"`
 }
 
-// Config is the hub's runtime configuration loaded from ~/.serf/hub.toml.
+// Config is the hub's runtime configuration loaded from ~/.evener/hub.toml.
 type Config struct {
 	Addr               string                          `toml:"addr"`
 	HubStateRoot       string                          `toml:"hub_state_root"`
@@ -67,22 +67,22 @@ func DefaultConfig() Config {
 	}
 }
 
-// DefaultHubStateRoot returns ~/.serf.
+// DefaultHubStateRoot returns ~/.evener.
 func DefaultHubStateRoot() string {
 	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".serf")
+	return filepath.Join(home, ".evener")
 }
 
-// DefaultConfigPath returns ~/.serf/hub.toml.
+// DefaultConfigPath returns ~/.evener/hub.toml.
 func DefaultConfigPath() string {
 	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".serf", "hub.toml")
+	return filepath.Join(home, ".evener", "hub.toml")
 }
 
 // DefaultStateGlob returns the project state roots indexed by the hub.
@@ -95,16 +95,16 @@ func DefaultStateGlob() string {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "serf", "projects", "*")
+	return filepath.Join(base, "evener", "projects", "*")
 }
 
-// DefaultPastIndexDBPath returns ~/.serf/index.db.
+// DefaultPastIndexDBPath returns ~/.evener/index.db.
 func DefaultPastIndexDBPath() string {
 	home, err := configUserHomeDir()
 	if err != nil || home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".serf", "index.db")
+	return filepath.Join(home, ".evener", "index.db")
 }
 
 // LoadConfig reads path. A missing file returns DefaultConfig() and nil error.

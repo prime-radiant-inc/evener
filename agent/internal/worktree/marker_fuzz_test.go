@@ -15,7 +15,7 @@ func FuzzParseMarker(f *testing.F) {
 		"serf:dlg:dlg_01JXYZABCD0123456789ABCDEF:01HXYZABCD0123456789ABCDEF",
 		"",
 		"serf:",
-		"serf",
+		"evener",
 		"serf:dlg:x",
 		"serf:dlg::",
 		"serf:dlg:a:b:c",

@@ -123,7 +123,7 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 	}
 
 	binDir := filepath.Join(prefix, "bin")
-	shareBinDir := filepath.Join(prefix, "share", "serf", "bin")
+	shareBinDir := filepath.Join(prefix, "share", "evener", "bin")
 	for _, bin := range installBinaries {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)

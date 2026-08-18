@@ -302,7 +302,7 @@ func TestFormatSessionFindings(t *testing.T) {
 				Title:         "Investigate parser test",
 				UpdatedAt:     time.Date(2026, 6, 14, 15, 4, 0, 0, time.UTC),
 				ApproxTurns:   12,
-				Project:       "serf",
+				Project:       "evener",
 				Snippets:      []snippet{{Seq: 9, Role: "assistant", Snippet: "the lexer drops trailing newlines"}},
 			},
 		},

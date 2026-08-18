@@ -12,7 +12,7 @@ var doctorUserHomeDir = os.UserHomeDir
 // ResolveStateBase resolves the doctor's state base with serf's session-state
 // precedence: the --state-dir flag › EVENER_STATE_DIR env › $XDG_STATE_HOME ›
 // ~/.local/state. Locate (and the subcommands built on it) then auto-detect
-// whether the base is an XDG state home (it holds serf/projects/* buckets) or is
+// whether the base is an XDG state home (it holds evener/projects/* buckets) or is
 // itself a single override / scratch bucket (sessions/ directly under it).
 //
 // Note SERF_STATE_HOME does not exist — it was never read by serf; the real env

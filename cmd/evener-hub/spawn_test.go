@@ -55,8 +55,8 @@ func TestBuildSpawnArgs(t *testing.T) {
 			AppReplaySize:   &ssering,
 		}},
 		WorkingDir: "/Users/jesse/git/foo",
-		StateDir:   "/Users/jesse/.local/state/serf/projects/foo",
-		RunDir:     "/Users/jesse/.cache/serf/run",
+		StateDir:   "/Users/jesse/.local/state/evener/projects/foo",
+		RunDir:     "/Users/jesse/.cache/evener/run",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
@@ -66,8 +66,8 @@ func TestBuildSpawnArgs(t *testing.T) {
 		"--reasoning-effort": "medium",
 		"--app-replay-size":  "4096",
 		"--dir":              "/Users/jesse/git/foo",
-		"--state-dir":        "/Users/jesse/.local/state/serf/projects/foo",
-		"--run-dir":          "/Users/jesse/.cache/serf/run",
+		"--state-dir":        "/Users/jesse/.local/state/evener/projects/foo",
+		"--run-dir":          "/Users/jesse/.cache/evener/run",
 		"--addr":             "127.0.0.1:0",
 	}
 	got := pairsToMap(args)
@@ -735,7 +735,7 @@ exit 2
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
-	cfg.StateGlob = filepath.Join(stateHome, "serf", "projects", "*")
+	cfg.StateGlob = filepath.Join(stateHome, "evener", "projects", "*")
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
 	if _, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
@@ -753,7 +753,7 @@ exit 2
 		t.Fatalf("read args: %v", err)
 	}
 	stateDir := argValue(strings.Fields(string(argsData)), "--state-dir")
-	wantPrefix := filepath.Join(stateHome, "serf", "projects") + string(os.PathSeparator)
+	wantPrefix := filepath.Join(stateHome, "evener", "projects") + string(os.PathSeparator)
 	if !strings.HasPrefix(stateDir, wantPrefix) {
 		t.Fatalf("--state-dir=%q, want under %q\nargs:\n%s", stateDir, wantPrefix, argsData)
 	}
@@ -883,7 +883,7 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	home := t.TempDir()
-	stateDir := filepath.Join(home, ".local", "state", "serf")
+	stateDir := filepath.Join(home, ".local", "state", "evener")
 	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
@@ -1123,7 +1123,7 @@ func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "serf", "projects")
+	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "evener", "projects")
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("state dir=%q, want prefix %q", got, wantPrefix)
 	}
@@ -1208,7 +1208,7 @@ func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	if project.ID == "" {
 		t.Fatalf("resolveSerfStateDir(%q) resolved no project id for a non-repo dir", workDir)
 	}
-	if want := filepath.Join(stateHome, "serf", "projects", project.ID); got != want {
+	if want := filepath.Join(stateHome, "evener", "projects", project.ID); got != want {
 		t.Errorf("state dir = %q, want %q", got, want)
 	}
 	otherDir, err := resolveSerfStateDirWithStateHome(other, "", stateHome)

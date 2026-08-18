@@ -191,7 +191,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = openOverrides()
 		m.spawnHarnesses = nil
 		m.cycleSpawnHarness()
-		m.spawnHarnesses = []string{"serf", "codex"}
+		m.spawnHarnesses = []string{"evener", "codex"}
 		m.spawnHarness = "missing"
 		m.cycleSpawnHarness()
 		m.spawnHarnessKinds = map[string]string{"codex": "codex"}

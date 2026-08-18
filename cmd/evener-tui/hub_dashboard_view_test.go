@@ -40,13 +40,13 @@ func TestNeedsYouCount(t *testing.T) {
 	rows := []hubRow{
 		// Project rollup row carries the same attention state as its child
 		// sessions; it must not be double-counted alongside them.
-		{kind: hubRowProject, project: "serf", state: "errored"},
-		{kind: hubRowSession, project: "serf", state: "awaiting", live: true},
-		{kind: hubRowSession, project: "serf", state: "systemError", live: true},
-		{kind: hubRowSession, project: "serf", state: "warning", live: true},
-		{kind: hubRowSession, project: "serf", state: "active", live: true},
-		{kind: hubRowSession, project: "serf", state: "idle", live: true},
-		{kind: hubRowSession, project: "serf", state: "ended", live: false},
+		{kind: hubRowProject, project: "evener", state: "errored"},
+		{kind: hubRowSession, project: "evener", state: "awaiting", live: true},
+		{kind: hubRowSession, project: "evener", state: "systemError", live: true},
+		{kind: hubRowSession, project: "evener", state: "warning", live: true},
+		{kind: hubRowSession, project: "evener", state: "active", live: true},
+		{kind: hubRowSession, project: "evener", state: "idle", live: true},
+		{kind: hubRowSession, project: "evener", state: "ended", live: false},
 	}
 	if got := needsYouCount(rows); got != 3 {
 		t.Fatalf("needsYouCount = %d, want 3 (awaiting + raw systemError + warning)", got)

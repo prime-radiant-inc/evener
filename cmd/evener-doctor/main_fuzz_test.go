@@ -26,7 +26,7 @@ func FuzzRun(f *testing.F) {
 	f.Add("unknown", true)
 	// "plugins" is the one seeded subcommand that needs no selector, so it runs
 	// its health check for real against the DEFAULT store root: the developer's
-	// own ~/.config/serf/plugins. Pinning the config home lands that read in a
+	// own ~/.config/evener/plugins. Pinning the config home lands that read in a
 	// fixture instead, which keeps the target off the machine's live state and
 	// makes its result reproducible. The assertion in the body fails the run if
 	// the pin is ever lost.

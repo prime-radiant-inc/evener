@@ -10,7 +10,7 @@ import (
 )
 
 // Command represents a slash command. Plugin commands come from a plugin's
-// commands/ directory; serf-wide commands come from .serf/commands/ project
+// commands/ directory; serf-wide commands come from .evener/commands/ project
 // directories or the user-global config dir (see serfwide.go). Invoking a
 // plugin command expands Body with command.Expand (shell execution);
 // serf-wide commands expand inert with command.ExpandArgs.

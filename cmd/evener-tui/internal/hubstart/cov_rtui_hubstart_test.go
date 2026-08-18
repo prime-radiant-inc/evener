@@ -33,7 +33,7 @@ func TestStateHomeForSerfStateDir(t *testing.T) {
 		t.Fatalf("StateHomeForSerfStateDir = %q, want %q", got, want)
 	}
 	// Trailing slash + whitespace are cleaned before taking the parent.
-	if got := StateHomeForSerfStateDir("  /a/b/serf/  "); got != "/a/b" {
+	if got := StateHomeForSerfStateDir("  /a/b/evener/  "); got != "/a/b" {
 		t.Fatalf("StateHomeForSerfStateDir(padded) = %q, want /a/b", got)
 	}
 }

@@ -184,7 +184,7 @@ func TestList_SkipsCorruptFiles(t *testing.T) {
 func TestDefaultDir_RespectsHome(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
 	got := DefaultDir()
-	want := "/tmp/fakehome/.serf/run"
+	want := "/tmp/fakehome/.evener/run"
 	if got != want {
 		t.Fatalf("DefaultDir: got %q, want %q", got, want)
 	}

@@ -449,7 +449,7 @@ func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 			Status: appwire.TurnStatusFailed,
 			Error: &appwire.TurnError{
 				Message: "configuration error: unknown provider: openrouter",
-				Source:  "serf",
+				Source:  "evener",
 				Title:   "Serf configuration error",
 			},
 		}},

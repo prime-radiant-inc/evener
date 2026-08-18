@@ -9,7 +9,7 @@ import (
 )
 
 // DefaultConfigRoot returns the user config root for serf:
-// $XDG_CONFIG_HOME/serf, or ~/.config/serf when XDG_CONFIG_HOME is unset.
+// $XDG_CONFIG_HOME/evener, or ~/.config/evener when XDG_CONFIG_HOME is unset.
 func DefaultConfigRoot() string {
 	base := envvars.XDGConfigHome.Getenv()
 	if base == "" {
@@ -19,7 +19,7 @@ func DefaultConfigRoot() string {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "serf")
+	return filepath.Join(base, "evener")
 }
 
 func DefaultSkillsDir() string {

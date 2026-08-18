@@ -11,7 +11,7 @@ import (
 )
 
 // Resolve loads and merges every layer for the given cwd, applying the
-// per-launch override on top. stateRoot is typically ~/.serf. The repo
+// per-launch override on top. stateRoot is typically ~/.evener. The repo
 // layer is honored only when its trust state is "trusted".
 func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	return resolveFS(afero.NewOsFs(), stateRoot, cwd, overrides)
@@ -57,7 +57,7 @@ func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, e
 }
 
 // LoadProjectLayer reads the local project layer. The canonical path is
-// <cwd>/.serf/launch.local.toml; the old hub-state path remains a read-only
+// <cwd>/.evener/launch.local.toml; the old hub-state path remains a read-only
 // fallback so existing project defaults continue to apply until the layer is
 // saved again.
 func LoadProjectLayer(paths Paths) (Layer, []Diagnostic, error) {
@@ -92,27 +92,27 @@ func loadProjectLayerFS(fs afero.Fs, paths Paths) (Layer, []Diagnostic, error) {
 func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {
 	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
-		return &RepoStatus{Path: filepath.Join(cwd, ".serf", "launch.toml"), Trust: TrustUntrusted}, Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()}}
+		return &RepoStatus{Path: filepath.Join(cwd, ".evener", "launch.toml"), Trust: TrustUntrusted}, Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
 	}
 	return loadRepoLayerFS(afero.NewOsFs(), cwd, stateRoot, project)
 }
 
 func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Project) (*RepoStatus, Layer, []Diagnostic) {
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	data, err := afero.ReadFile(fs, repoPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, nil
 		}
 		return &RepoStatus{Path: repoPath, Trust: TrustAbsent}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".serf/launch.toml",
+			Layer: LayerRepo, Field: ".evener/launch.toml",
 			Message: fmt.Sprintf("read: %v", err),
 		}}
 	}
 	hash, err := CanonicalHashTOML(data)
 	if err != nil {
 		return &RepoStatus{Path: repoPath, Trust: TrustUntrusted, Preview: string(data)}, Layer{}, []Diagnostic{{
-			Layer: LayerRepo, Field: ".serf/launch.toml",
+			Layer: LayerRepo, Field: ".evener/launch.toml",
 			Message: fmt.Sprintf("hash: %v", err),
 		}}
 	}
@@ -139,7 +139,7 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, any) error) (Layer, []Diagnostic) {
 	var layer Layer
 	if err := decode(data, &layer); err != nil {
-		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()}}
+		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
 	}
 	return validateAndExpandRepoLayer(repoRoot, layer)
 }

@@ -27,7 +27,7 @@ func sessionsFixture(t *testing.T) (base, root, child string) {
 	base = t.TempDir()
 	root = "02wLIRxqmq3AUo6vl2OW37"
 	child = "02wLIRxqmq3AUo6vl2OW38"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	for _, sid := range []string{root, child} {
 		if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
@@ -124,7 +124,7 @@ func TestRun_SessionsJSON(t *testing.T) {
 // alongside every session that did read cleanly.
 func TestRun_SessionsUnreadableSessionListedNotFatal(t *testing.T) {
 	base, root, child := sessionsFixture(t)
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	corrupt := "02wLIRxqmq3AUo6vl2OW39"
 	mustWrite(t, filepath.Join(bucket, "sessions", corrupt+".transcript.jsonl"), "not valid json\n")
 	mustWrite(t, filepath.Join(bucket, "sessions", corrupt+".meta.json"), `{"id":"`+corrupt+`"}`)

@@ -67,7 +67,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	// registry under the XDG default plugins root. Point it at an empty temp
 	// dir so the result is deterministically empty regardless of what the
 	// machine running this test actually has installed under
-	// ~/.config/serf/plugins.
+	// ~/.config/evener/plugins.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	resp, err := hubCommandList(hubcore.WebConfig{})
@@ -82,7 +82,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	commandsDir := filepath.Join(xdg, "serf", "commands")
+	commandsDir := filepath.Join(xdg, "evener", "commands")
 	if err := os.MkdirAll(commandsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	commandsDir := filepath.Join(xdg, "serf", "commands")
+	commandsDir := filepath.Join(xdg, "evener", "commands")
 	if err := os.MkdirAll(commandsDir, 0755); err != nil {
 		t.Fatal(err)
 	}

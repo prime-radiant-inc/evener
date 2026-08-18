@@ -557,7 +557,7 @@ type = %q
 func startLiveThread(ctx context.Context, t *testing.T, client *appwire.Client, stack hubStack, opening string) string {
 	t.Helper()
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: opening}},
 		Model:           stack.model,

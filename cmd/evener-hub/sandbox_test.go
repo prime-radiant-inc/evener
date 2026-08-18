@@ -46,7 +46,7 @@ const sandboxGitBranch = "sandbox-branch"
 //     auto-upgrade checkNow handler inside Root; a git-backed marketplace add
 //     or upgrade still shells out to `git` (not caught by the deny-transport
 //     network oracle), but its clone and registry files land under Root, not
-//     the real ~/.config/serf/plugins.
+//     the real ~/.config/evener/plugins.
 //
 // Workstreams B1 (appwire end-to-end), B2 (HTTP mutating routes) and B3 (tool
 // execution) all stand up on this: B1/B2 drive Web.Handler()/Sources directly
@@ -124,7 +124,7 @@ func newSandbox(tb testing.TB) *sandbox {
 		RunDir:              filepath.Join(root, "run"), // empty rendezvous dir → no live daemons to reach
 		StateDir:            filepath.Join(root, "projects"),
 		ProvidersConfigPath: providersPath,
-		PluginRoot:          filepath.Join(root, "plugins"), // contain the marketplace/plugin store; "" would resolve to the real ~/.config/serf/plugins
+		PluginRoot:          filepath.Join(root, "plugins"), // contain the marketplace/plugin store; "" would resolve to the real ~/.config/evener/plugins
 		Spawner:             spawner,
 		GitHeadBranch: func(context.Context, string) (string, error) {
 			return sandboxGitBranch, nil

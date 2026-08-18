@@ -70,7 +70,7 @@ func checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot(t *testing.T) {
 		t.Errorf("LegacyProject path differs between main root and linked worktree:\n  main = %q\n  wt   = %q", mainPaths.LegacyProject, wtPaths.LegacyProject)
 	}
 	// Active content paths must still track the per-worktree cwd, not the
-	// stable root — a worktree's own .serf/launch.toml must be read, not the
+	// stable root — a worktree's own .evener/launch.toml must be read, not the
 	// main checkout's.
 	if mainPaths.Repo == wtPaths.Repo {
 		t.Errorf("Repo path must differ between main root and worktree (active content), got the same %q for both", mainPaths.Repo)
@@ -111,8 +111,8 @@ func checkResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
 	// the linked worktree (as a real worktree checkout would have, since
 	// they share tracked history) but only record a trust decision once,
 	// via the paths computed from the main root.
-	writeFile(t, filepath.Join(main, ".serf", "launch.toml"), raw)
-	writeFile(t, filepath.Join(wt, ".serf", "launch.toml"), raw)
+	writeFile(t, filepath.Join(main, ".evener", "launch.toml"), raw)
+	writeFile(t, filepath.Join(wt, ".evener", "launch.toml"), raw)
 
 	hash, err := CanonicalHashTOML([]byte(raw))
 	if err != nil {

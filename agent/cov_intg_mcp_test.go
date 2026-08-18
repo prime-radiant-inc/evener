@@ -271,7 +271,7 @@ func TestIntg_InitMCP_DiscoverError(t *testing.T) {
 func TestIntg_InitMCP_GlobalConfigParseErrorSurvives(t *testing.T) {
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
-	serfDir := filepath.Join(globalDir, "serf")
+	serfDir := filepath.Join(globalDir, "evener")
 	if err := os.MkdirAll(serfDir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 	if len(corpus.DashboardTree.Projects) < 2 {
 		t.Fatalf("dashboard projects=%d, want at least serf and external project samples", len(corpus.DashboardTree.Projects))
 	}
-	requireSampleSources(t, corpus.DashboardTree.Live, "serf", "codex-local")
+	requireSampleSources(t, corpus.DashboardTree.Live, "evener", "codex-local")
 
 	project := corpus.ProjectHistory
 	if project.Name == "" || len(project.Sessions) < 2 {

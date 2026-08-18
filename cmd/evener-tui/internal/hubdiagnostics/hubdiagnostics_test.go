@@ -9,7 +9,7 @@ import (
 func TestFormatHubDiagnosticProviderCauseOverridesLegacySource(t *testing.T) {
 	cause := &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 503}
 
-	got := FormatHubDiagnosticWithCause("Serf warning", "serf", "upstream failed", "Session warning", cause)
+	got := FormatHubDiagnosticWithCause("Serf warning", "evener", "upstream failed", "Session warning", cause)
 	if got != "Provider error: upstream failed" {
 		t.Fatalf("FormatHubDiagnosticWithCause = %q, want %q", got, "Provider error: upstream failed")
 	}
@@ -18,7 +18,7 @@ func TestFormatHubDiagnosticProviderCauseOverridesLegacySource(t *testing.T) {
 func TestFormatHubTurnErrorProviderCauseOverridesLegacyFields(t *testing.T) {
 	err := &appwire.TurnError{
 		Message: "rate limited",
-		Source:  "serf",
+		Source:  "evener",
 		Title:   "Serf error",
 		Cause:   &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429},
 	}
@@ -43,7 +43,7 @@ func TestFormatHubTurnErrorProviderCauseOverridesLegacyFields(t *testing.T) {
 func TestFormatHubDiagnosticCustomTitlePreservedWithProviderCause(t *testing.T) {
 	cause := &appwire.DiagnosticCause{Kind: "provider", Provider: "stripe", Status: 503}
 
-	got := FormatHubDiagnosticWithCause("Payment Gateway Overload", "serf", "upstream failed", "Session warning", cause)
+	got := FormatHubDiagnosticWithCause("Payment Gateway Overload", "evener", "upstream failed", "Session warning", cause)
 	if got != "Payment Gateway Overload: upstream failed" {
 		t.Fatalf("FormatHubDiagnosticWithCause = %q, want custom title preserved", got)
 	}

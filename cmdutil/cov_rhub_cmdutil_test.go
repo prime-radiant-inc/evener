@@ -140,7 +140,7 @@ func TestDefaultStateRoot(t *testing.T) {
 	}
 	t.Setenv(envvars.EVENERStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := DefaultStateRoot(); got != "/home/tester/.serf" {
+	if got := DefaultStateRoot(); got != "/home/tester/.evener" {
 		t.Fatalf("DefaultStateRoot home fallback=%q", got)
 	}
 }
@@ -150,10 +150,10 @@ func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 	if got := DefaultConfigRoot(); got != "/xdg/serf" {
 		t.Fatalf("DefaultConfigRoot with XDG=%q", got)
 	}
-	if got := DefaultSkillsDir(); got != "/xdg/serf/skills" {
+	if got := DefaultSkillsDir(); got != "/xdg/evener/skills" {
 		t.Fatalf("DefaultSkillsDir=%q", got)
 	}
-	if got := DefaultPluginsRoot(); got != "/xdg/serf/plugins" {
+	if got := DefaultPluginsRoot(); got != "/xdg/evener/plugins" {
 		t.Fatalf("DefaultPluginsRoot=%q", got)
 	}
 

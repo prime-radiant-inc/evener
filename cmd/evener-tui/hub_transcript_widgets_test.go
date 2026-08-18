@@ -181,7 +181,7 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 	m.detail = hubSessionDetail{
 		Ref:             "local:01SEND",
 		SessionID:       "01SEND",
-		SourceLabel:     "serf",
+		SourceLabel:     "evener",
 		Model:           "gpt-5",
 		Profile:         "openai",
 		WorkingDir:      "/tmp/project",

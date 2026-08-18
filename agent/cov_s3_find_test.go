@@ -15,8 +15,8 @@ import (
 func TestS3Cov_FindBuckets_AllProjects(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	// Construct the <home>/serf/projects/<hash> layout stateHomeFor recognizes.
-	projects := filepath.Join(home, "serf", "projects")
+	// Construct the <home>/evener/projects/<hash> layout stateHomeFor recognizes.
+	projects := filepath.Join(home, "evener", "projects")
 	current := filepath.Join(projects, "project-a-0123456789")
 	sibling := filepath.Join(projects, "project-b-0123456789")
 	for _, d := range []string{current, sibling} {

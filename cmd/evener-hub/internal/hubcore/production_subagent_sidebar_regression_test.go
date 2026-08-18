@@ -89,7 +89,7 @@ func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *tes
 func TestBuildProjectTreeAt_LazyLookupKeepsCrossDirectorySubagent(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
-	projectDir := filepath.Join(root, "projects", "serf")
+	projectDir := filepath.Join(root, "projects", "evener")
 	isolationDir := filepath.Join(root, "worktrees", "isolated-child")
 	for _, dir := range []string{projectDir, isolationDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -36,7 +36,7 @@ type Entry struct {
 	SpawnedBy  string    `json:"spawned_by,omitempty"`
 }
 
-// DefaultDir returns the canonical rendezvous directory ($HOME/.serf/run).
+// DefaultDir returns the canonical rendezvous directory ($HOME/.evener/run).
 func DefaultDir() string {
 	return defaultDir(os.UserHomeDir)
 }
@@ -46,7 +46,7 @@ func defaultDir(userHomeDir func() (string, error)) string {
 	if err != nil || home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".serf", "run")
+	return filepath.Join(home, ".evener", "run")
 }
 
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.

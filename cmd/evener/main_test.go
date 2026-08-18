@@ -285,7 +285,7 @@ func TestOpenAIStateDirDefaultIsUserScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveOpenAIStateDir() error = %v", err)
 	}
-	want := filepath.Join(xdgStateHome, "serf")
+	want := filepath.Join(xdgStateHome, "evener")
 	if gotA != want || gotB != want {
 		t.Fatalf("state dirs = %q, %q; want both %q", gotA, gotB, want)
 	}

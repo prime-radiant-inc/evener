@@ -8,7 +8,7 @@
 // survive), so committed seeds carry no PII or secrets by construction. An
 // always-on abort gate (known-secret regexes + entropy quarantine) drops any
 // seed in which a secret survived and fails the run. --keep-values (gated to a
-// designated capture box, ignored for a personal ~/.serf) preserves real values
+// designated capture box, ignored for a personal ~/.evener) preserves real values
 // for local-only campaigns and is never committed.
 package main
 
@@ -173,7 +173,7 @@ func defaultStateDirs() stringSlice {
 	}
 	add(harvestDefaultStateRoot())
 	base := harvestResolveStateBase("")
-	if sub := filepath.Join(base, "serf"); harvestIsDir(sub) {
+	if sub := filepath.Join(base, "evener"); harvestIsDir(sub) {
 		add(sub)
 	} else {
 		add(base)

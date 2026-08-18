@@ -62,7 +62,7 @@ type PastIndex struct {
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
 //
 // projectGlob is a shell-style glob like
-// "/Users/jesse/.local/state/serf/projects/*"
+// "/Users/jesse/.local/state/evener/projects/*"
 // — each match is treated as a state-dir root containing a `sessions/`
 // subdirectory of meta files.
 func NewPastIndex(projectGlob string) *PastIndex {

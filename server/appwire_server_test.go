@@ -115,7 +115,7 @@ func TestServerAppWireProcessingKeepsAnAlreadyReservedTurnID(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns
-// pins that thread.serf.activeTurnId and the snapshot's turns answer different
+// pins that thread.evener.activeTurnId and the snapshot's turns answer different
 // questions. turn/start RESERVES a turn id before any turn/started exists, so
 // the id it reports is deliberately absent from turns -- which is why nothing
 // downstream may treat it as "the turn to append items to".

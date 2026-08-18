@@ -78,7 +78,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		PastPerPage:   25,
 		Past:          past,
 		// Hermetic: an empty MCPConfigPath would fall back to the ambient
-		// machine's ~/.config/serf/mcp.json, which this test has no business
+		// machine's ~/.config/evener/mcp.json, which this test has no business
 		// touching (this test isn't about MCP at all).
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	}
@@ -145,7 +145,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 // omits PastIndex rather than reporting a fabricated zero-valued one.
 func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
-	// ambient machine's ~/.config/serf/mcp.json.
+	// ambient machine's ~/.config/evener/mcp.json.
 	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	})
@@ -163,7 +163,7 @@ func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 // to open (EditPath empty).
 func TestHubRPCSettingsOverview_Agents(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
-	// ambient machine's ~/.config/serf/mcp.json.
+	// ambient machine's ~/.config/evener/mcp.json.
 	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
 		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
@@ -194,7 +194,7 @@ func TestHubRPCSettingsOverview_CodexLaunches(t *testing.T) {
 	cfg := hubcore.WebConfig{
 		Past: hubcore.NewPastIndex(""),
 		// Hermetic: pin MCPConfigPath so this test never falls back to the
-		// ambient machine's ~/.config/serf/mcp.json (this test isn't about MCP).
+		// ambient machine's ~/.config/evener/mcp.json (this test isn't about MCP).
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{
 			ID:              "codex-managed",

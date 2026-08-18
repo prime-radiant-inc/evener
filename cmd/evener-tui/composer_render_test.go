@@ -13,10 +13,10 @@ import (
 // measurement.
 func realisticChipStripContext(width int) composerContext {
 	return composerContext{
-		Harness:    "serf",
+		Harness:    "evener",
 		Provider:   "openai",
 		Model:      "openai/gpt-5.5",
-		WorkingDir: "/Users/jesse/prime-radiant/toil-suite/serf/webui-workspace-shell",
+		WorkingDir: "/Users/jesse/prime-radiant/toil-suite/evener/webui-workspace-shell",
 		Connected:  true,
 		HubAddr:    "http://127.0.0.1:8420",
 		Mode:       "QUEUE 2",
@@ -86,7 +86,7 @@ func TestComposerChipStripDropsWorkingDirBeforeRightSide(t *testing.T) {
 func TestComposerChipStripShowsChips(t *testing.T) {
 	withTestColorProfile(t)
 	got := renderComposerChipStrip(composerContext{
-		Harness:    "serf",
+		Harness:    "evener",
 		Model:      "openai/gpt-5.5",
 		Branch:     "feat/widget",
 		WorkingDir: "/home/jesse/git/serf",
@@ -103,7 +103,7 @@ func TestComposerChipStripShowsChips(t *testing.T) {
 func TestComposerChipStripIncludesModeChip(t *testing.T) {
 	withTestColorProfile(t)
 	got := renderComposerChipStrip(composerContext{
-		Harness: "serf",
+		Harness: "evener",
 		Mode:    "queue 2",
 		Width:   80,
 	})

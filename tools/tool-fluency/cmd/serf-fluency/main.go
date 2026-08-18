@@ -293,7 +293,7 @@ func buildSerf(outDir string) (string, error) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err
 	}
-	bin := filepath.Join(binDir, "serf")
+	bin := filepath.Join(binDir, "evener")
 	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "./cmd/evener")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

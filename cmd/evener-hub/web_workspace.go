@@ -108,7 +108,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			state := hubcore.NormalizeState(le.Status)
 			data := WorkspaceData{
 				ID:           id,
-				SourceLabel:  "serf",
+				SourceLabel:  "evener",
 				Title:        liveTitle(id, le, s.cfg.Past),
 				State:        state,
 				StateLabel:   stateLabel(state, false),
@@ -179,7 +179,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			}
 			data := WorkspaceData{
 				ID:           id,
-				SourceLabel:  "serf",
+				SourceLabel:  "evener",
 				Title:        pastTitle(pe),
 				State:        state,
 				StateLabel:   stateLabel(state, false),

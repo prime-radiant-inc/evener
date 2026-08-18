@@ -48,7 +48,7 @@ func testMainEntrypoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Args, os.Stdout = []string{"serf", "--version"}, w
+	os.Args, os.Stdout = []string{"evener", "--version"}, w
 	t.Cleanup(func() { os.Args, os.Stdout = oldArgs, oldStdout })
 	main()
 	_ = w.Close()

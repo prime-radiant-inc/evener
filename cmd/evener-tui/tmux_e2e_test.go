@@ -30,7 +30,7 @@ func canonicalTUIE2EProjectDir() string {
 	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
 		tmp = canonical
 	}
-	return filepath.Join(tmp, "serf-tui-e2e", "serf")
+	return filepath.Join(tmp, "serf-tui-e2e", "evener")
 }
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
@@ -83,7 +83,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// Ended sessions fold by default: awaited as an absence so the check
 	// cannot race a partial repaint (see WaitForWithout).
 	app.WaitForWithout([]string{"ended maintenance"},
-		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "serf", "live task", "ops task", "1 recent")
+		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "evener", "live task", "ops task", "1 recent")
 	app.SendKeys("/")
 	app.TypeText("ops")
 	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
@@ -336,7 +336,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetHarnesses([]appwire.HarnessDescriptor{
-		{ID: "serf", Label: "serf", Kind: "serf"},
+		{ID: "evener", Label: "evener", Kind: "serf"},
 		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 	})
 	defer hub.Close()
@@ -988,7 +988,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 // row cursor.
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "serf", "live task")
+	app.WaitFor("SERF LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
 	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down")
@@ -1045,7 +1045,7 @@ func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 // Anchoring to row 0 first keeps the helper robust to prior selection state.
 func openEndedSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("SERF LIVE", "serf", "live task")
+	app.WaitFor("SERF LIVE", "evener", "live task")
 	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
 	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
 	app.SendKeys("Down", "Down", "Down")
@@ -1690,13 +1690,13 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		t:         t,
 		sessions:  map[string]*tuiE2ESession{},
 		actions:   map[string]int{},
-		harnesses: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}},
+		harnesses: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "serf"}},
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
 		Title:        "live task",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -1723,7 +1723,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		ID:         "01SUB",
 		Title:      "subagent inspect",
 		State:      appwire.ThreadStatusNotLoaded,
-		Project:    "serf",
+		Project:    "evener",
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
 		Live:       false,
@@ -1743,7 +1743,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		ID:           "01PAST",
 		Title:        "ended maintenance",
 		State:        appwire.ThreadStatusNotLoaded,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         false,
@@ -2070,7 +2070,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 		ID:           id,
 		Title:        fmt.Sprintf("spawned session %d", h.spawnCount),
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   params.CWD,
 		Model:        model,
 		Live:         true,
@@ -2095,7 +2095,7 @@ func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadR
 		ID:           "02RESUME",
 		Title:        "resumed maintenance",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -2190,7 +2190,7 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 		ID:           id,
 		Title:        "cleared session",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,
@@ -2214,7 +2214,7 @@ func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadFor
 		ID:           id,
 		Title:        "fork child",
 		State:        appwire.ThreadStatusIdle,
-		Project:      "serf",
+		Project:      "evener",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
 		Live:         true,

@@ -84,7 +84,7 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 
 	// 1. Spawn: the request reaches the recording Spawner, never a subprocess.
 	rec := do(http.MethodPost, "/api/spawn", map[string]any{
-		"harness":     "serf",
+		"harness":     "evener",
 		"working_dir": s.CWD,
 		"model":       "openai/gpt-5.5",
 	})
@@ -191,7 +191,7 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 // TestSandboxContainsPluginStore proves the plugin/marketplace store
 // (internal/plugins.Manager, reached via hubPluginsController and the
 // auto-upgrade checkNow handler) is contained inside the sandbox root instead
-// of resolving to plugins.DefaultRoot() (~/.config/serf/plugins). Before the
+// of resolving to plugins.DefaultRoot() (~/.config/evener/plugins). Before the
 // fix, newHubAppServer hardcoded plugins.NewManager("") for both, so a
 // dispatched serf/marketplace/* or serf/plugin/* call mutated the real,
 // developer-machine plugin store — invisible to the fuzz harness's
@@ -201,7 +201,7 @@ func TestSandboxContainsInstanceRemove(t *testing.T) {
 //
 // XDG_CONFIG_HOME is pinned to a throwaway temp dir (never s.Root) so that
 // even a still-broken newHubAppServer can only escape into a harmless stand-in
-// "real" root here, never the developer's actual ~/.config/serf/plugins.
+// "real" root here, never the developer's actual ~/.config/evener/plugins.
 func TestSandboxContainsPluginStore(t *testing.T) {
 	fakeRealHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", fakeRealHome)
@@ -236,7 +236,7 @@ func TestSandboxContainsPluginStore(t *testing.T) {
 	if _, err := os.Stat(wantRegistry); err != nil {
 		t.Fatalf("plugin store escaped the sandbox: %s not written (%v)", wantRegistry, err)
 	}
-	escapedRegistry := filepath.Join(fakeRealHome, "serf", "plugins", "known_marketplaces.json")
+	escapedRegistry := filepath.Join(fakeRealHome, "evener", "plugins", "known_marketplaces.json")
 	if _, err := os.Stat(escapedRegistry); err == nil {
 		t.Fatalf("plugin store escaped the sandbox: wrote to the default root %s instead", escapedRegistry)
 	}

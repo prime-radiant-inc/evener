@@ -293,20 +293,20 @@ func wppRuntimePaths(t *testing.T, token string) {
 	if err != nil {
 		t.Fatalf("runtime dir: %v", err)
 	}
-	if want := filepath.Join(stateHome, "serf", "projects", project.ID); got != want {
+	if want := filepath.Join(stateHome, "evener", "projects", project.ID); got != want {
 		t.Fatalf("runtime dir = %q, want %q", got, want)
 	}
 	explicitProject, got, err := RuntimeDirWithStateHome(root, "", filepath.Join(root, "explicit"))
 	if err != nil {
 		t.Fatalf("explicit state runtime dir: %v", err)
 	}
-	if want := filepath.Join(root, "explicit", "serf", "projects", explicitProject.ID); got != want {
+	if want := filepath.Join(root, "explicit", "evener", "projects", explicitProject.ID); got != want {
 		t.Fatalf("explicit state runtime dir = %q, want %q", got, want)
 	}
 	if overrideProject, got, err := RuntimeDirWithStateHome(filepath.Join(root, "missing"), filepath.Join(root, "override"), stateHome); err != nil || overrideProject.ID != "" || got != filepath.Join(root, "override") {
 		t.Fatalf("runtime override = %q", got)
 	}
-	if got, want := CacheDir(), filepath.Join(cacheHome, "serf"); got != want {
+	if got, want := CacheDir(), filepath.Join(cacheHome, "evener"); got != want {
 		t.Fatalf("cache dir = %q, want %q", got, want)
 	}
 	if got := shortHash([]byte(token)); got != nonProjectHash(token) || len(got) != 16 {

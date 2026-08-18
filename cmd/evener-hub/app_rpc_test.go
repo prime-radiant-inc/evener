@@ -745,7 +745,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 			Release:        "snapshot",
 			Channel:        "snapshot",
 			Archive:        "serf_linux_amd64.tar.gz",
-			ShareBinDir:    "/tmp/share/serf/bin",
+			ShareBinDir:    "/tmp/share/evener/bin",
 			BinDir:         "/tmp/bin",
 			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
 		}, nil
@@ -8812,7 +8812,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 }
 
 // TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
-// flows' recent-project source (issue #35): serf/projects/recent serves the
+// flows' recent-project source (issue #35): evener/projects/recent serves the
 // past index's distinct working dirs, most-recently-used first, defaulting to
 // the 15-option cap when the request carries no limit.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {

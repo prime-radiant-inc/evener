@@ -256,7 +256,7 @@ func TestDiscoverMCPConfigs_GlobalAndProject(t *testing.T) {
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
 
-	serfDir := filepath.Join(globalDir, "serf")
+	serfDir := filepath.Join(globalDir, "evener")
 	if err := os.MkdirAll(serfDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -268,12 +268,12 @@ func TestDiscoverMCPConfigs_GlobalAndProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Set up a project directory with .serf/mcp.json.
+	// Set up a project directory with .evener/mcp.json.
 	projDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projDir, ".serf"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, ".serf", "mcp.json"), []byte(`{
+	if err := os.WriteFile(filepath.Join(projDir, ".evener", "mcp.json"), []byte(`{
 		"mcpServers": {
 			"project-tool": {"command": "ptool"},
 			"global-tool": {"command": "gtool-override"}
@@ -359,7 +359,7 @@ func TestDiscoverWarn_GlobalMalformedJSON(t *testing.T) {
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
 
-	serfDir := filepath.Join(globalDir, "serf")
+	serfDir := filepath.Join(globalDir, "evener")
 	if err := os.MkdirAll(serfDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestDiscoverWarn_GlobalUnsetVar(t *testing.T) {
 	globalDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalDir)
 
-	serfDir := filepath.Join(globalDir, "serf")
+	serfDir := filepath.Join(globalDir, "evener")
 	if err := os.MkdirAll(serfDir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -83,7 +83,7 @@ func DefaultStateDir() string {
 // DefaultStateDirWithStateHome returns the Serf state directory rooted at the
 // given state home. When stateHome is empty it falls back to XDG_STATE_HOME,
 // then to ~/.local/state (or the OS temp dir if the home directory cannot be
-// determined). The result is that base joined with "serf".
+// determined). The result is that base joined with "evener".
 func DefaultStateDirWithStateHome(stateHome string) string {
 	base := strings.TrimSpace(stateHome)
 	if base == "" {
@@ -96,7 +96,7 @@ func DefaultStateDirWithStateHome(stateHome string) string {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "serf")
+	return filepath.Join(base, "evener")
 }
 
 // LoadAuth reads and validates the stored auth record for instanceName under

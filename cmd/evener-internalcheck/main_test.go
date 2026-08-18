@@ -37,7 +37,7 @@ func TestIsSerfInternal(t *testing.T) {
 		{"primeradiant.com/evener/llm", false},
 		{"primeradiant.com/evener", false},
 		// Wrong module entirely.
-		{"other.com/serf/foo/internal/bar", false},
+		{"other.com/evener/foo/internal/bar", false},
 		{"", false},
 	}
 	for _, tc := range cases {

@@ -101,9 +101,9 @@ func sampleDashboardTree() hubTreeResponse {
 	serfLive := hubTreeNode{
 		Ref:         "local:01SERF",
 		SessionID:   "01SERF",
-		SourceLabel: "serf",
+		SourceLabel: "evener",
 		Title:       "Restore hub TUI widgets",
-		Project:     "serf",
+		Project:     "evener",
 		State:       "idle",
 		Model:       "openai/gpt-5.5",
 		Age:         "now",
@@ -112,9 +112,9 @@ func sampleDashboardTree() hubTreeResponse {
 	serfBusy := hubTreeNode{
 		Ref:         "local:01BUSY",
 		SessionID:   "01BUSY",
-		SourceLabel: "serf",
+		SourceLabel: "evener",
 		Title:       "Stream markdown without flicker",
-		Project:     "serf",
+		Project:     "evener",
 		State:       "active",
 		Model:       "openai/gpt-5.5",
 		Age:         "4m",
@@ -123,9 +123,9 @@ func sampleDashboardTree() hubTreeResponse {
 	serfEnded := hubTreeNode{
 		Ref:         "local:01ENDED",
 		SessionID:   "01ENDED",
-		SourceLabel: "serf",
+		SourceLabel: "evener",
 		Title:       "Document protocol adoption",
-		Project:     "serf",
+		Project:     "evener",
 		State:       "ended",
 		Model:       "openai/gpt-5.4",
 		Age:         "1h",
@@ -146,8 +146,8 @@ func sampleDashboardTree() hubTreeResponse {
 		Live: []hubTreeNode{serfLive, serfBusy, codexLive},
 		Projects: []hubTreeProject{
 			{
-				Key:         "serf",
-				Name:        "serf",
+				Key:         "evener",
+				Name:        "evener",
 				WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf",
 				RollupState: "active",
 				Sessions:    []hubTreeNode{serfLive, serfBusy, serfEnded},
@@ -155,7 +155,7 @@ func sampleDashboardTree() hubTreeResponse {
 			{
 				Key:         "codex-src",
 				Name:        "codex-src",
-				WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf/inspo/codex",
+				WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener/inspo/codex",
 				RollupState: "idle",
 				Sessions:    []hubTreeNode{codexLive},
 			},
@@ -168,12 +168,12 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 		"serf-idle": {
 			Ref:         "local:01SERF",
 			SessionID:   "01SERF",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Title:       "Restore hub TUI widgets",
 			State:       "idle",
 			Model:       "openai/gpt-5.5",
 			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf",
-			Project:     "serf",
+			Project:     "evener",
 			TurnCount:   3,
 			Live:        true,
 			Capabilities: hubSessionCapabilities{
@@ -187,7 +187,7 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 			Title:       "Codex app-server smoke",
 			State:       "idle",
 			Model:       "gpt-5.3-codex",
-			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf/inspo/codex",
+			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener/inspo/codex",
 			Project:     "codex-src",
 			TurnCount:   1,
 			Live:        true,
@@ -198,12 +198,12 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 		"busy-steer": {
 			Ref:         "local:01BUSY",
 			SessionID:   "01BUSY",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Title:       "Stream markdown without flicker",
 			State:       "active",
 			Model:       "openai/gpt-5.5",
 			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf",
-			Project:     "serf",
+			Project:     "evener",
 			Live:        true,
 			// WorkMillis/Usage exercise WS2's work-time + token chips (kata
 			// ws2-c1) in the design-system corpus's flagship "active" sample.
@@ -234,11 +234,11 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 		"ended": {
 			Ref:         "local:01ENDED",
 			SessionID:   "01ENDED",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Title:       "Document protocol adoption",
 			State:       "ended",
 			Model:       "openai/gpt-5.4",
-			Project:     "serf",
+			Project:     "evener",
 			Live:        false,
 			Capabilities: hubSessionCapabilities{
 				Resume: true,
@@ -341,7 +341,7 @@ func sampleDiagnostics() []tuiNoticeSample {
 			Summary:    "Start failed: model provider is not reported by the Serf launch harness",
 			Cause:      "selected provider openai was not present in harness discovery",
 			NextAction: "refresh launch options or choose a reported harness model",
-			Source:     "serf",
+			Source:     "evener",
 		},
 		{
 			Name:       "action-unavailable",
@@ -377,10 +377,10 @@ func samplePickerStates() []tuiPickerSample {
 
 func sampleSpawnOptions() []tuiSpawnSample {
 	return []tuiSpawnSample{
-		{Name: "serf-openai", Harness: "serf", HarnessKind: "serf", Model: "openai/gpt-5.5", WorkingDir: "/repo/serf"},
-		{Name: "codex-local", Harness: "codex-local", HarnessKind: "codex", Model: "gpt-5.3-codex", WorkingDir: "/repo/serf/inspo/codex"},
-		{Name: "auth-required", Harness: "serf", HarnessKind: "serf", Model: "openai/gpt-4.1", WorkingDir: "/repo/serf", AuthReason: "OpenAI login required"},
-		{Name: "launch-error", Harness: "serf", HarnessKind: "serf", Model: "openai/gpt-5.5", WorkingDir: "/repo/serf", AuthReason: "harness did not report provider openai"},
+		{Name: "serf-openai", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-5.5", WorkingDir: "/repo/serf"},
+		{Name: "codex-local", Harness: "codex-local", HarnessKind: "codex", Model: "gpt-5.3-codex", WorkingDir: "/repo/evener/inspo/codex"},
+		{Name: "auth-required", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-4.1", WorkingDir: "/repo/serf", AuthReason: "OpenAI login required"},
+		{Name: "launch-error", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-5.5", WorkingDir: "/repo/serf", AuthReason: "harness did not report provider openai"},
 	}
 }
 
@@ -547,7 +547,7 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		view := noticePanel{
 			Title:      "OpenAI auth",
 			Summary:    "Signed in with Serf-owned OAuth state.",
-			Source:     "serf",
+			Source:     "evener",
 			NextAction: "Use /logout openai to sign out or paste final redirect URL during login.",
 		}.Text()
 		return renderSample(name, width, view), true
@@ -649,8 +649,8 @@ func sampleSpawnModel(width int, sample tuiSpawnSample) hubModel {
 	m := sampleHubModel(width)
 	m.mode = hubModeSpawn
 	m.spawnHarness = sample.Harness
-	m.spawnHarnesses = []string{"serf", "codex-local"}
-	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
+	m.spawnHarnesses = []string{"evener", "codex-local"}
+	m.spawnHarnessKinds = map[string]string{"serf": "evener", "codex-local": "codex"}
 	m.spawnModel = sample.Model
 	m.spawnDir = sample.WorkingDir
 	m.spawnProject = "serf"

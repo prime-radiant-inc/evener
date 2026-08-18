@@ -145,7 +145,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadStart", MethodThreadStart, `{"harness":"serf","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
+		{"ThreadStart", MethodThreadStart, `{"harness":"evener","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "serf"})
 			if err != nil {
 				return err
@@ -648,7 +648,7 @@ func TestRecorderStateRoot(t *testing.T) {
 
 	t.Setenv(envvars.EVENERStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := recorderStateRoot(); got != "/home/tester/.serf" {
+	if got := recorderStateRoot(); got != "/home/tester/.evener" {
 		t.Fatalf("recorderStateRoot home fallback=%q", got)
 	}
 }

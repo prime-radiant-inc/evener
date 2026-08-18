@@ -17,7 +17,7 @@ func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T
 	withTestColorProfile(t)
 	detail := hubSessionDetail{
 		SessionID:       "01ABC",
-		SourceLabel:     "serf",
+		SourceLabel:     "evener",
 		Model:           "openai/gpt-5",
 		Profile:         "openai",
 		WorkingDir:      "/tmp/proj",
@@ -338,7 +338,7 @@ func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
 	withMetrics := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Metrics session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   3,
 			WorkMillis:  185000, // "3m"
@@ -364,7 +364,7 @@ func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
 	noMetrics := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Plain session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   1,
 		},
@@ -385,7 +385,7 @@ func TestSessionHeaderShowsFailedChip(t *testing.T) {
 	withFailures := hubModel{
 		detail: hubSessionDetail{
 			Title:           "Failing session",
-			SourceLabel:     "serf",
+			SourceLabel:     "evener",
 			FailedToolCalls: &three,
 		},
 		width: 200,
@@ -397,7 +397,7 @@ func TestSessionHeaderShowsFailedChip(t *testing.T) {
 
 	zero := 0
 	for _, detail := range []hubSessionDetail{
-		{Title: "Clean session", SourceLabel: "serf", FailedToolCalls: &zero},
+		{Title: "Clean session", SourceLabel: "evener", FailedToolCalls: &zero},
 		{Title: "Uncounted session", SourceLabel: "serf"},
 	} {
 		got = strings.Join((hubModel{detail: detail, width: 200}).sessionHeaderLines(), "\n")
@@ -435,7 +435,7 @@ func TestRenderHubSessionStatusBandsContextPressure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := hubSessionDetail{
 				SessionID:       "01ABC",
-				SourceLabel:     "serf",
+				SourceLabel:     "evener",
 				ContextUsed:     tc.used,
 				ContextWindow:   tc.window,
 				ContextPressure: tc.pressure,

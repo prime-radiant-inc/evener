@@ -126,7 +126,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness: "serf",
+		Harness: "evener",
 		CWD:     stack.workDir,
 		// The opening prompt IS the slash command, so the session parks in
 		// pre-turn work before it has ever been processing.
@@ -203,7 +203,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, openingSentinel)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: "/park"}},
 		Model:           stack.model,
@@ -296,7 +296,7 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -464,7 +464,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	pluginDir := parkInPreTurnWork(t, queuedText)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness: "serf",
+		Harness: "evener",
 		CWD:     stack.workDir,
 		Input:   []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:   stack.model,

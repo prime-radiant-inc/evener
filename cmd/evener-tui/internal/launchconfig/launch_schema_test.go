@@ -11,7 +11,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
 
 	// Layer "project": app_replay_size is excluded because it is only defaultable in "global".
-	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "evener", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
 	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {

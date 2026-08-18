@@ -19,7 +19,7 @@ import (
 // validateAbsolutePaths, and mergeLayers — none of which the decode-only
 // FuzzLaunchConfigDecode reaches. Two arms, selected by `which`:
 //
-//	even — the fuzzed bytes are the in-repo .serf/launch.toml, marked trusted
+//	even — the fuzzed bytes are the in-repo .evener/launch.toml, marked trusted
 //	       via a matching meta.toml, so a cleanly-hashing layer flows through
 //	       validateAndExpandRepoLayer (repo-relative expansion + escape
 //	       rejection).
@@ -97,7 +97,7 @@ func FuzzLaunchConfigResolve(f *testing.F) {
 // branch into validateAndExpandRepoLayer.
 func plantRepoLayer(t *testing.T, stateRoot, cwd string, raw []byte) {
 	t.Helper()
-	repoDir := filepath.Join(cwd, ".serf")
+	repoDir := filepath.Join(cwd, ".evener")
 	if err := os.MkdirAll(repoDir, 0o700); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}

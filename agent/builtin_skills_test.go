@@ -47,7 +47,7 @@ func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected embedded %q skill, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
 	}
-	if !strings.Contains(meta.Description, "serf") {
+	if !strings.Contains(meta.Description, "evener") {
 		t.Fatalf("embedded %q description = %q, want serf-specific description", embeddedDoctoringSkill, meta.Description)
 	}
 }

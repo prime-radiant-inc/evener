@@ -123,7 +123,7 @@ func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)
-	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
 	}

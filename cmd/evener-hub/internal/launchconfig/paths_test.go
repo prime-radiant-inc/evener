@@ -19,10 +19,10 @@ func checkPathsFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantGlobal := filepath.Join(root, "launch.toml")
-	wantProject := filepath.Join(cwd, ".serf", "launch.local.toml")
+	wantProject := filepath.Join(cwd, ".evener", "launch.local.toml")
 	wantLegacyProject := filepath.Join(root, "projects", project.ID, "launch.toml")
 	wantMeta := filepath.Join(root, "projects", project.ID, "meta.toml")
-	wantRepo := filepath.Join(cwd, ".serf", "launch.toml")
+	wantRepo := filepath.Join(cwd, ".evener", "launch.toml")
 	if p.Global != wantGlobal {
 		t.Errorf("Global = %q, want %q", p.Global, wantGlobal)
 	}

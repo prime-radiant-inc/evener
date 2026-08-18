@@ -28,7 +28,7 @@ func fixtureWithLegacyReservedTurnID(t *testing.T) (base, affected, clean string
 	t.Setenv(envvars.EVENERStateDir.Name, base)
 	affected = "02wLIRxqmq3AUo6vl2OW37"
 	clean = "02wLIRxqmq3AUo6vl2OW38"
-	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")
+	sess := filepath.Join(base, "evener", "projects", "project-test-0123456789", "sessions")
 	if err := os.MkdirAll(sess, 0o755); err != nil {
 		t.Fatal(err)
 	}

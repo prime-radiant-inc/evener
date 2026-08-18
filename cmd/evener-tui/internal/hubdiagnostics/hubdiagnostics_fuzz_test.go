@@ -12,7 +12,7 @@ var fuzzCoverageUnion = func(*testing.T) {}
 func FuzzFormatHubDiagnostic(f *testing.F) {
 	seeds := []struct{ title, source, message, fallback, kind string }{
 		{"", "provider", "boom", "fallback", ""},
-		{"", "serf", "", "fallback", ""},
+		{"", "evener", "", "fallback", ""},
 		{"", "hub", "boom", "fallback", ""},
 		{"", "ui", "boom", "fallback", ""},
 		{"", "other", "boom", "", ""},

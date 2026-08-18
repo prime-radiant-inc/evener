@@ -127,7 +127,7 @@ func TestDetailsDrawerBandsContextPressure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := hubSessionDetail{
 				Title:           "Pressured",
-				SourceLabel:     "serf",
+				SourceLabel:     "evener",
 				ContextUsed:     tc.used,
 				ContextWindow:   tc.window,
 				ContextPressure: tc.pressure,

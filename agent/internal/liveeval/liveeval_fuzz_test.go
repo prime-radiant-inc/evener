@@ -32,7 +32,7 @@ func FuzzLiveEvalPaths(f *testing.F) {
 	f.Add("1", "", "/home/serf", "/config/providers.toml", "")          // EVENER_PROVIDERS_CONFIG wins outright
 	f.Add("1", "", "/home/serf", "/config/providers.toml", "/statedir") //   ...even with EVENER_STATE_DIR also set
 	f.Add("1", "", "/home/serf", "", "/statedir")                       // EVENER_STATE_DIR wins when config env is empty
-	f.Add("1", "", "/home/serf", "", "")                                // falls all the way through to userHome/.serf
+	f.Add("1", "", "/home/serf", "", "")                                // falls all the way through to userHome/.evener
 	f.Add("", "", "", "", "  ")
 
 	f.Fuzz(func(t *testing.T, enabledValue, stateHome, userHome, providersConfigEnv, stateDirEnv string) {
@@ -74,7 +74,7 @@ func FuzzLiveEvalPaths(f *testing.F) {
 
 		// Three-level precedence, per the doc comment: EVENER_PROVIDERS_CONFIG
 		// wins outright; else EVENER_STATE_DIR/providers.toml; else
-		// userHome/.serf/providers.toml.
+		// userHome/.evener/providers.toml.
 		var wantProviders string
 		switch {
 		case trimmedProvidersConfigEnv != "":
@@ -82,7 +82,7 @@ func FuzzLiveEvalPaths(f *testing.F) {
 		case trimmedStateDirEnv != "":
 			wantProviders = filepath.Join(trimmedStateDirEnv, "providers.toml")
 		default:
-			wantProviders = filepath.Join(trimmedUserHome, ".serf", "providers.toml")
+			wantProviders = filepath.Join(trimmedUserHome, ".evener", "providers.toml")
 		}
 		if gotProviders != wantProviders {
 			t.Fatalf("Paths(%q, %q) with EVENER_PROVIDERS_CONFIG=%q EVENER_STATE_DIR=%q providers = %q, want %q",

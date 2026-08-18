@@ -135,7 +135,7 @@ func hubMethodNames() []string {
 // working dir. The launch handlers (serf/launch/setLayer with layer "project",
 // and thread spawn) derive a filesystem write path from a caller-supplied,
 // already-existing cwd; an arbitrary fuzzed cwd pointing at a real external dir
-// (e.g. "/tmp") would let serf/launch/setLayer write <cwd>/.serf/launch.local.toml
+// (e.g. "/tmp") would let serf/launch/setLayer write <cwd>/.evener/launch.local.toml
 // OUTSIDE the sandbox. Pinning cwd into the sandbox keeps every cwd-derived FS
 // write contained while still fuzzing every other field. Non-object params and
 // params without a cwd are passed through untouched.
@@ -215,7 +215,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodThreadList, `{}`},
 		{appwire.MethodThreadRead, `{"ref":"` + ref + `"}`},
 		{appwire.MethodThreadTurnsList, `{"ref":"` + ref + `"}`},
-		{appwire.MethodThreadStart, `{"harness":"serf","cwd":"x","model":"openai/gpt-5.5"}`},
+		{appwire.MethodThreadStart, `{"harness":"evener","cwd":"x","model":"openai/gpt-5.5"}`},
 		{appwire.MethodThreadResume, `{"session":"` + sandboxSessionID + `"}`},
 		{appwire.MethodThreadFork, `{"ref":"` + ref + `","sourceTurnId":"turn_1","editedInput":"hi"}`},
 		{appwire.MethodTurnStart, `{"ref":"` + ref + `","input":[]}`},

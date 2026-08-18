@@ -14,7 +14,7 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 			Title:       "Restore hub TUI widgets",
 			SessionID:   "01SERF",
 			State:       "awaiting",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Branch:      "feat/widget",
 			Model:       "anthropic/claude-haiku-4-5",
 			WorkingDir:  "/home/jesse/git/serf",
@@ -52,7 +52,7 @@ func TestSessionHeaderShowsRichContextWhenWindowKnown(t *testing.T) {
 	rich := hubModel{
 		detail: hubSessionDetail{
 			Title:           "Rich",
-			SourceLabel:     "serf",
+			SourceLabel:     "evener",
 			Model:           "openai/gpt-5",
 			TurnCount:       1,
 			ContextPressure: 0.23,
@@ -69,7 +69,7 @@ func TestSessionHeaderShowsRichContextWhenWindowKnown(t *testing.T) {
 	thin := hubModel{
 		detail: hubSessionDetail{
 			Title:           "Thin",
-			SourceLabel:     "serf",
+			SourceLabel:     "evener",
 			Model:           "openai/gpt-5",
 			TurnCount:       1,
 			ContextPressure: 0.42,
@@ -113,7 +113,7 @@ func TestSessionHeaderBandsContextPressure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			detail := hubSessionDetail{
 				Title:           "Pressured",
-				SourceLabel:     "serf",
+				SourceLabel:     "evener",
 				ContextUsed:     tc.used,
 				ContextWindow:   tc.window,
 				ContextPressure: tc.pressure,

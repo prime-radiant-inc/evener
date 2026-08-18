@@ -97,11 +97,11 @@ func checkToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
 
 func checkToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
-		ProvidersConfigPath: "/hub/.serf/providers.toml",
+		ProvidersConfigPath: "/hub/.evener/providers.toml",
 		ParentEnv:           []string{"PATH=/usr/bin"},
 	}))
-	if got["EVENER_PROVIDERS_CONFIG"] != "/hub/.serf/providers.toml" {
-		t.Errorf("EVENER_PROVIDERS_CONFIG = %q, want /hub/.serf/providers.toml", got["EVENER_PROVIDERS_CONFIG"])
+	if got["EVENER_PROVIDERS_CONFIG"] != "/hub/.evener/providers.toml" {
+		t.Errorf("EVENER_PROVIDERS_CONFIG = %q, want /hub/.evener/providers.toml", got["EVENER_PROVIDERS_CONFIG"])
 	}
 }
 

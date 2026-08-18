@@ -136,11 +136,11 @@ done
 		if envMode == 1 {
 			wantPrefix = prefix
 		}
-		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "serf", "bin")
+		bindir, shareDir := filepath.Join(wantPrefix, "bin"), filepath.Join(wantPrefix, "share", "evener", "bin")
 		if envMode == 3 {
 			bindir, shareDir = filepath.Join(root, "commands"), filepath.Join(root, "payload")
 		}
-		for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+		for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 			installed := filepath.Join(shareDir, bin)
 			info, statErr := os.Stat(installed)
 			if statErr != nil || info.Mode().Perm() != 0o755 {

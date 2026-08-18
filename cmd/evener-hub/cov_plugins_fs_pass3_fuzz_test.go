@@ -74,14 +74,14 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	_, _ = c.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "repo"})
 	_, _ = c.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: filepath.Join(root, "missing"), Layer: "global"})
 	_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "none"})
-	fuzzWriteFile(t, filepath.Join(cwd, ".serf", "launch.toml"), "model = \"openai/gpt\"\n")
+	fuzzWriteFile(t, filepath.Join(cwd, ".evener", "launch.toml"), "model = \"openai/gpt\"\n")
 	resolved, _ := c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 	if resolved.Repo != nil {
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: "wrong"})
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 		_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 	}
-	fuzzWriteFile(t, filepath.Join(cwd, ".serf", "launch.local.toml"), "[")
+	fuzzWriteFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), "[")
 	_, _ = c.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "project"})
 	fuzzWriteFile(t, filepath.Join(state, "launch.toml"), "[")
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})

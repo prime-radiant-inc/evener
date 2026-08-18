@@ -23,7 +23,7 @@ func TestDefaultStateDirWithStateHomeFallsBackToTempDir(t *testing.T) {
 		t.Skip("os.UserHomeDir still resolves with HOME unset on this platform")
 	}
 
-	want := filepath.Join(os.TempDir(), ".local", "state", "serf")
+	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
 	if got := DefaultStateDirWithStateHome(""); got != want {
 		t.Fatalf("DefaultStateDirWithStateHome(\"\") = %q, want %q", got, want)
 	}

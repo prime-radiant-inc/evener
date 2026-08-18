@@ -139,7 +139,7 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	items := hubTranscriptPickerItems([]appwire.ThreadTranscriptTarget{
 		{Ref: "codex:01MAIN", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "codex"},
-		{Ref: "local:01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "serf", TurnsUsed: 2},
+		{Ref: "local:01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "evener", TurnsUsed: 2},
 	})
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)

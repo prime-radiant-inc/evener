@@ -1137,7 +1137,7 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	root := t.TempDir()
-	workingDir := filepath.Join(root, "serf")
+	workingDir := filepath.Join(root, "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1187,7 +1187,7 @@ func TestWeb_APITreeLiveRowsCarryTierPinSectionRename(t *testing.T) {
 func TestWeb_APITreeOrphanLiveRowsCarryTierPinSectionRename(t *testing.T) {
 	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	root := t.TempDir()
-	workingDir := filepath.Join(root, "serf")
+	workingDir := filepath.Join(root, "evener")
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

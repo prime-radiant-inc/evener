@@ -10,7 +10,7 @@ import (
 )
 
 // DefaultStateRoot returns the serf state root: $EVENER_STATE_DIR when set,
-// otherwise ~/.serf (or ./.serf if the home directory can't be resolved).
+// otherwise ~/.evener (or ./.evener if the home directory can't be resolved).
 //
 // It is the single knob that redirects all home-based serf state — the provider
 // config (providers.toml) and credentials. `serf run` / `serf serve`, tests,
@@ -21,9 +21,9 @@ func DefaultStateRoot() string {
 		return dir
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".serf")
+		return filepath.Join(home, ".evener")
 	}
-	return ".serf"
+	return ".evener"
 }
 
 // ResolveStateKeyDir is retained for source compatibility with callers that
@@ -39,7 +39,7 @@ func ResolveStateKeyDir(workDir string) string {
 
 // DefaultProjectStateDir computes the default per-project runtime state
 // directory for workDir, for use when no explicit --state-dir flag or
-// EVENER_STATE_DIR override is set: $XDG_STATE_HOME/serf/projects/<Project.ID>/.
+// EVENER_STATE_DIR override is set: $XDG_STATE_HOME/evener/projects/<Project.ID>/.
 func DefaultProjectStateDir(workDir string) (identifier.Project, string, error) {
 	return agent.RuntimeDir(workDir, "")
 }

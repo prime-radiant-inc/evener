@@ -53,7 +53,7 @@ func TestE2E_StartingASessionThatHasDaemonStartupContext(t *testing.T) {
 
 	const openingPrompt = "SERF-E2E-OPENING-PROMPT"
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,

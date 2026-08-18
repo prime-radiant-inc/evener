@@ -112,7 +112,7 @@ func fuzzScenarioRegistryRejectsMissingSource(t *testing.T) {
 
 func fuzzScenarioRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
 	reg := NewRegistry()
-	// Insert in non-lexicographic order; "local" sorts between "codex" and "serf",
+	// Insert in non-lexicographic order; "local" sorts between "codex" and "evener",
 	// so all three positions must be correct — a random permutation matches in only 1/6 runs.
 	reg.Add(fakeSource{id: "serf"})
 	reg.Add(fakeSource{id: "codex"})

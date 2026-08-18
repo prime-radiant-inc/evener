@@ -1287,7 +1287,7 @@ func TestFormatShellResultRunTimeoutFooter(t *testing.T) {
 		ExitCode: &exitCode,
 		Output:   &output,
 	})
-	for _, want := range []string{"serf", "runtime limit"} {
+	for _, want := range []string{"evener", "runtime limit"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("run_timeout footer = %q, want it to contain %q", got, want)
 		}
@@ -1315,7 +1315,7 @@ func TestFormatShellResultRunTimeoutZeroOutputFooter(t *testing.T) {
 		TimedOut: false,
 		ExitCode: &exitCode,
 	})
-	for _, want := range []string{"serf", "runtime limit", "no output"} {
+	for _, want := range []string{"evener", "runtime limit", "no output"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("zero-output run_timeout footer = %q, want it to contain %q", got, want)
 		}

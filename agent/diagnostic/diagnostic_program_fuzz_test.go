@@ -79,8 +79,8 @@ type diagnosticProgramOverride struct {
 
 var diagnosticProgramOverrides = []diagnosticProgramOverride{
 	{"provider", "ordinary local failure", SourceProvider, "Provider error"},
-	{"serf", "unknown provider", SourceSerf, "Serf configuration error"},
-	{"serf", "ordinary local failure", SourceSerf, "Serf error"},
+	{"evener", "unknown provider", SourceSerf, "Serf configuration error"},
+	{"evener", "ordinary local failure", SourceSerf, "Serf error"},
 	{"hub", "ordinary local failure", SourceHub, "Hub error"},
 	{"ui", "ordinary local failure", SourceUI, "UI error"},
 	{"hook", "ordinary local failure", SourceHook, "Hook message"},

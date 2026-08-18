@@ -129,7 +129,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
 				t.Fatal(got)
 			}
-			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "serf") {
+			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "evener") {
 				t.Fatalf("valid project state dir = %q, %v", got, err)
 			}
 		case 5:

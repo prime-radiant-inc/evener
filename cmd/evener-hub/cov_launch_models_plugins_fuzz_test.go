@@ -67,19 +67,19 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _ = broken.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
 
 		corruptProject := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(corruptProject, ".serf"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(corruptProject, ".evener"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(corruptProject, ".serf", "launch.local.toml"), []byte("="), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(corruptProject, ".evener", "launch.local.toml"), []byte("="), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		_, _ = ctl.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: corruptProject, Layer: "project"})
 
 		trustRoot, trustCWD := t.TempDir(), t.TempDir()
-		if err := os.MkdirAll(filepath.Join(trustCWD, ".serf"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(trustCWD, ".evener"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(trustCWD, ".serf", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(trustCWD, ".evener", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		trustCtl := newHubLaunchController(trustRoot)

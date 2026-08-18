@@ -145,7 +145,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{
-		Name:    "serf",
+		Name:    "evener",
 		Version: "v1",
 	}, nil)
 

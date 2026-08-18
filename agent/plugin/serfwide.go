@@ -20,7 +20,7 @@ var serfwideUserHomeDir = os.UserHomeDir
 var execSpanPattern = regexp.MustCompile("!`[^`]*`")
 
 // globalCommandsDir resolves the user-global commands directory:
-// $XDG_CONFIG_HOME/serf/commands, or ~/.config/serf/commands. Mirrors
+// $XDG_CONFIG_HOME/evener/commands, or ~/.config/evener/commands. Mirrors
 // promptpath.globalPromptsDir. Returns "" when no home is resolvable.
 func globalCommandsDir() string {
 	dir := envvars.XDGConfigHome.Getenv()
@@ -31,11 +31,11 @@ func globalCommandsDir() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "serf", "commands")
+	return filepath.Join(dir, "evener", "commands")
 }
 
 // DiscoverSerfWideCommands scans the user-global commands dir, then walks
-// git-root→cwd scanning <dir>/.serf/commands, returning commands keyed by
+// git-root→cwd scanning <dir>/.evener/commands, returning commands keyed by
 // bare name. Later scans shadow earlier ones, so the deepest project dir wins
 // and every project command shadows the user-global one. A nil env or empty
 // cwd skips the project walk but still scans the user-global dir.
@@ -62,7 +62,7 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 				root = gr
 			}
 			for _, dir := range execenv.DirsFromRootToCwd(root, cwd) {
-				scanSerfwideDir(filepath.Join(dir, ".serf", "commands"), "project", out, &warnings)
+				scanSerfwideDir(filepath.Join(dir, ".evener", "commands"), "project", out, &warnings)
 			}
 		}
 	}

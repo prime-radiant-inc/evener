@@ -23,7 +23,7 @@ const plantedHarvestSecret = "sk-proj-PLANT3Dabcdefghijklmnop0123456789ZZ"
 func writeFixtureState(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	sessDir := filepath.Join(root, "serf", "projects", "abcdef0123456789", "sessions")
+	sessDir := filepath.Join(root, "evener", "projects", "abcdef0123456789", "sessions")
 	if err := os.MkdirAll(filepath.Join(sessDir, "01SID"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func equalSnapshot(a, b map[string]bool) bool {
 // only sessions/<id>.api.jsonl.
 func scenarioDiscoverSourcesFindsCanonicalSessionLogs(t *testing.T) {
 	state := writeFixtureState(t)
-	sessDir := filepath.Join(state, "serf", "projects", "abcdef0123456789", "sessions")
+	sessDir := filepath.Join(state, "evener", "projects", "abcdef0123456789", "sessions")
 
 	src, err := discoverSources(state)
 	if err != nil {

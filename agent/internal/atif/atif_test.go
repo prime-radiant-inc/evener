@@ -60,7 +60,7 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 
 	// --- Agent fields ---
 	if traj.Agent.Name != "serf" {
-		t.Errorf("Agent.Name = %q, want %q", traj.Agent.Name, "serf")
+		t.Errorf("Agent.Name = %q, want %q", traj.Agent.Name, "evener")
 	}
 	if traj.Agent.Version != "v0.1.0-abc1234" {
 		t.Errorf("Agent.Version = %q, want %q", traj.Agent.Version, "v0.1.0-abc1234")

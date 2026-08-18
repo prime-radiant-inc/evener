@@ -33,5 +33,5 @@ func IsolateOpenAIAuth(t *testing.T) string {
 	}
 	stateHome := t.TempDir()
 	t.Setenv(envvars.XDGStateHome.Name, stateHome)
-	return filepath.Join(stateHome, "serf")
+	return filepath.Join(stateHome, "evener")
 }

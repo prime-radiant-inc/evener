@@ -586,7 +586,7 @@ func TestReconnect_CloseVsSwapRace(t *testing.T) {
 func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
 	ctx := context.Background()
 
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf", Version: "v1"}, nil)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "evener", Version: "v1"}, nil)
 	_, ct0 := newReconnectTestServer(t, "s0", "probe", "dial0-reply")
 	sess0, err := client.Connect(ctx, ct0, nil)
 	if err != nil {
@@ -672,7 +672,7 @@ func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
 func TestReconnect_DisplacedSessionClosedByReconnectItself(t *testing.T) {
 	ctx := context.Background()
 
-	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "serf", Version: "v1"}, nil)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "evener", Version: "v1"}, nil)
 
 	_, ctOld := newReconnectTestServer(t, "old", "probe", "old-reply")
 	var oldCloses int32

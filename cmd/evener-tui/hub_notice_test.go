@@ -31,7 +31,7 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 		Title:      "AppWire error",
 		Category:   "appwire",
 		Summary:    "Hub request failed.",
-		Source:     "serf",
+		Source:     "evener",
 		Reason:     "method not found",
 		NextAction: "Restart the matching serf-hub binary.",
 	})
@@ -105,7 +105,7 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 		detail: hubSessionDetail{
 			Ref:         "local:01SERF",
 			SessionID:   "01SERF",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Title:       "Serf replay",
 			State:       "ended",
 		},
@@ -125,7 +125,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	m = updated.(hubModel)
 	got := m.sessionView()
 	// View() format: summary line contains the notice summary/title, source·cause on second line.
-	for _, want := range []string{"auth endpoint unavailable", "serf", "Retry /auth openai or check Hub auth configuration."} {
+	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth openai or check Hub auth configuration."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
@@ -176,7 +176,7 @@ func TestNoticePanel_NoCauseFallsBackToMessageMatch(t *testing.T) {
 func TestNoticePanel_NoCauseNonProviderMessage(t *testing.T) {
 	got := classifyWarningCategory("serf error: configuration", nil)
 	if got != "serf" {
-		t.Fatalf("classifyWarningCategory serf-message fallback: got %q, want %q", got, "serf")
+		t.Fatalf("classifyWarningCategory serf-message fallback: got %q, want %q", got, "evener")
 	}
 }
 

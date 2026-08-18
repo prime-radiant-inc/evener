@@ -26,7 +26,7 @@ func fixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	childSID := "02wLIRxqmq3AUo6vl2OW39"
 	grandchildSID := treeGrandchildSID
 	observerSID := "02wLIRxqmq3AUo6vl2OW3A"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -566,7 +566,7 @@ func fixtureWithCorruptAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW38"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -717,7 +717,7 @@ func fixtureWithJobsData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
@@ -1036,7 +1036,7 @@ func TestRun_PluginsUnwritableStoreRoot(t *testing.T) {
 // turn/start and one rejected turn/steer, plus an input still queued.
 func mutationStore(t *testing.T, base, sid string) {
 	t.Helper()
-	dir := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations")
+	dir := filepath.Join(base, "evener", "projects", "project-test-0123456789", "mutations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1111,7 +1111,7 @@ func TestRun_MutationsMissingStoreExitsClean(t *testing.T) {
 
 func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
 	base, sid := fixture(t)
-	path := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations", sid+".json")
+	path := filepath.Join(base, "evener", "projects", "project-test-0123456789", "mutations", sid+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1136,7 +1136,7 @@ func fixtureWithSalvagedLoop(t *testing.T) (base, sid, turnText string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW37"
-	sess := filepath.Join(base, "serf", "projects", "project-test-0123456789", "sessions")
+	sess := filepath.Join(base, "evener", "projects", "project-test-0123456789", "sessions")
 	if err := os.MkdirAll(sess, 0o755); err != nil {
 		t.Fatal(err)
 	}

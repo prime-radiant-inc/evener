@@ -389,7 +389,7 @@ func TestS4covParentBucketAndID(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
-		want := filepath.Join(sh, "serf", "projects", "project-a-0123456789")
+		want := filepath.Join(sh, "evener", "projects", "project-a-0123456789")
 		if bucket != want {
 			t.Fatalf("bucket = %q, want %q", bucket, want)
 		}

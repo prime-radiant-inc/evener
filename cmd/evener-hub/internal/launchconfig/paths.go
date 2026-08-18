@@ -12,15 +12,15 @@ import (
 // and cwd.
 type Paths struct {
 	Global        string             // <root>/launch.toml
-	Repo          string             // <cwd>/.serf/launch.toml
+	Repo          string             // <cwd>/.evener/launch.toml
 	Project       identifier.Project // resolved canonical project identity
-	ProjectFile   string             // <cwd>/.serf/launch.local.toml
+	ProjectFile   string             // <cwd>/.evener/launch.local.toml
 	LegacyProject string             // <root>/projects/<id>/launch.toml
 	Meta          string             // <root>/projects/<id>/meta.toml
 }
 
 // PathsFor computes layer paths given the hub state root (typically
-// ~/.serf) and the working directory. Repo/ProjectFile point at the active
+// ~/.evener) and the working directory. Repo/ProjectFile point at the active
 // content root (cwd, the checked-out worktree) so config content always
 // reflects the active branch's checkout. LegacyProject/Meta point at the
 // stable identity root so trust metadata and legacy
@@ -35,9 +35,9 @@ func PathsFor(stateRoot, cwd string) (Paths, error) {
 	projectDir := filepath.Join(stateRoot, "projects", project.ID)
 	return Paths{
 		Global:        filepath.Join(stateRoot, "launch.toml"),
-		Repo:          filepath.Join(cwd, ".serf", "launch.toml"),
+		Repo:          filepath.Join(cwd, ".evener", "launch.toml"),
 		Project:       project,
-		ProjectFile:   filepath.Join(cwd, ".serf", "launch.local.toml"),
+		ProjectFile:   filepath.Join(cwd, ".evener", "launch.local.toml"),
 		LegacyProject: filepath.Join(projectDir, "launch.toml"),
 		Meta:          filepath.Join(projectDir, "meta.toml"),
 	}, nil

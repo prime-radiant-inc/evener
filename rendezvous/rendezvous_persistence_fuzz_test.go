@@ -105,11 +105,11 @@ func FuzzRendezvousPersistence(f *testing.F) {
 func exerciseRendezvousBranches(t testing.TB) {
 	t.Helper()
 
-	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".serf", "run") {
+	if got := defaultDir(func() (string, error) { return "", os.ErrNotExist }); got != filepath.Join(".", ".evener", "run") {
 		t.Fatalf("DefaultDir fallback = %q", got)
 	}
 	home := filepath.Join(string(filepath.Separator), "home", "test")
-	if got := defaultDir(func() (string, error) { return home, nil }); got != filepath.Join(home, ".serf", "run") {
+	if got := defaultDir(func() (string, error) { return home, nil }); got != filepath.Join(home, ".evener", "run") {
 		t.Fatalf("DefaultDir home = %q", got)
 	}
 	_ = DefaultDir()

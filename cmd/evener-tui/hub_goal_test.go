@@ -92,7 +92,7 @@ func TestSessionHeaderShowsGoalChip(t *testing.T) {
 	withGoal := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Goal session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   3,
 			Goal:        &appwire.GoalState{Status: "active", Iterations: 2},
@@ -107,7 +107,7 @@ func TestSessionHeaderShowsGoalChip(t *testing.T) {
 	noGoal := hubModel{
 		detail: hubSessionDetail{
 			Title:       "Plain session",
-			SourceLabel: "serf",
+			SourceLabel: "evener",
 			Model:       "openai/gpt-5",
 			TurnCount:   3,
 		},

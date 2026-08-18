@@ -223,7 +223,7 @@ func TestFromFields_SourceOverridesClassify(t *testing.T) {
 		{"provider", SourceProvider},
 		{"hub", SourceHub},
 		{"ui", SourceUI},
-		{"serf", SourceSerf},
+		{"evener", SourceSerf},
 		{"hook", SourceHook},
 		{"mcp", SourceMCP},
 	}

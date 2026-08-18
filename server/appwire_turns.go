@@ -53,7 +53,7 @@ type appTurnSnapshot struct {
 	// remember which turn is in flight.
 	//
 	// This deliberately answers a different question from the daemon's
-	// s.appActiveTurnID, published as thread.serf.activeTurnId. That field
+	// s.appActiveTurnID, published as thread.evener.activeTurnId. That field
 	// answers "is a turn in flight or reserved?" and is set from
 	// AppEventProjector.ReserveTurnID before any turn/started notification
 	// exists, so it can name a RESERVED turn that is absent from turns

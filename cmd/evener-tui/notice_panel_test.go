@@ -9,7 +9,7 @@ func TestNoticePanelHasStateBar(t *testing.T) {
 	withTestColorProfile(t)
 	np := noticePanel{
 		Summary:    "spawn failed: model provider not reported by harness",
-		Source:     "serf",
+		Source:     "evener",
 		Reason:     "selected provider openai not in discovery",
 		NextAction: "refresh spawn options or choose a reported harness model",
 		State:      "awaiting",
@@ -22,8 +22,8 @@ func TestNoticePanelHasStateBar(t *testing.T) {
 	if !strings.Contains(plain, "source") || !strings.Contains(plain, "next") {
 		t.Errorf("notice should include source + next labels: %q", plain)
 	}
-	if !strings.Contains(plain, "serf") {
-		t.Errorf("notice should render Source field value %q: %q", "serf", plain)
+	if !strings.Contains(plain, "evener") {
+		t.Errorf("notice should render Source field value %q: %q", "evener", plain)
 	}
 	if !strings.Contains(plain, "not in discovery") {
 		t.Errorf("notice should render Reason field value substring %q: %q", "not in discovery", plain)

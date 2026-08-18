@@ -22,7 +22,7 @@ func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
 		t.Fatalf("build runtime pair: %v\n%s", err, output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
 	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
 	logData, err := os.ReadFile(fixture.logPath)
 	if err != nil {
@@ -110,14 +110,14 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 
 func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 	fixture := newRuntimeBuildFixture(t)
-	writeTestFile(t, filepath.Join(fixture.root, "serf"), []byte("old-serf\n"), 0o755)
+	writeTestFile(t, filepath.Join(fixture.root, "evener"), []byte("old-serf\n"), 0o755)
 	writeTestFile(t, filepath.Join(fixture.root, "serf-hub"), []byte("old-serf-hub\n"), 0o755)
 
 	if output, err := runRuntimePairBuild(fixture, "./cmd/evener-hub/"); err == nil {
 		t.Fatalf("build runtime pair succeeded, want hub compiler failure; output = %q", output)
 	}
 
-	assertTextFile(t, filepath.Join(fixture.root, "serf"), "old-serf\n")
+	assertTextFile(t, filepath.Join(fixture.root, "evener"), "old-serf\n")
 	assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "old-serf-hub\n")
 }
 
@@ -133,7 +133,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 				t.Fatalf("make %s: %v\n%s", target, err, output)
 			}
 
-			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/evener/\n")
+			assertTextFile(t, filepath.Join(fixture.root, "evener"), "./cmd/evener/\n")
 			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/evener-hub/\n")
 
 			// build must build the web too: build-runtime depends on

@@ -33,7 +33,7 @@ type hubPluginsController struct {
 }
 
 // newHubPluginsController builds a controller rooted at root, or the default
-// (~/.config/serf/plugins, honoring XDG_CONFIG_HOME) when root == "".
+// (~/.config/evener/plugins, honoring XDG_CONFIG_HOME) when root == "".
 func newHubPluginsController(root string) *hubPluginsController {
 	return &hubPluginsController{mgr: plugins.NewManager(root)}
 }

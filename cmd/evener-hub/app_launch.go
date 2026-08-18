@@ -159,7 +159,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 		return appwire.LaunchConfigResolved{}, err
 	}
 	if resolved.Repo == nil || resolved.Repo.Trust == launchconfig.TrustAbsent {
-		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("no .serf/launch.toml in repo")
+		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("no .evener/launch.toml in repo")
 	}
 	if resolved.Repo.Hash != params.Hash {
 		return appwire.LaunchConfigResolved{}, appwire.WireError{Code: -32009, Message: "file changed since review"}
@@ -173,7 +173,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 		meta = launchconfig.Meta{Schema: 1, CWD: cwd, CreatedAt: c.now()}
 	}
 	// Append the new hash to the trusted set rather than overwriting, so
-	// branch-switching with different .serf/launch.toml content does not
+	// branch-switching with different .evener/launch.toml content does not
 	// require re-prompting for previously-approved hashes. Rejected hashes
 	// are not part of the trusted set and must not become trusted by a later
 	// trust decision for a different hash.

@@ -146,9 +146,9 @@ func resolveAuthToken(explicit, stateDir string) (string, string) {
 func AuthTokenFilePath(_ string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".serf", "auth-token")
+		return filepath.Join(".evener", "auth-token")
 	}
-	return filepath.Join(home, ".serf", "auth-token")
+	return filepath.Join(home, ".evener", "auth-token")
 }
 
 // bearerTransport is an http.RoundTripper that injects an Authorization header.

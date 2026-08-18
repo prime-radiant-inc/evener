@@ -53,7 +53,7 @@ func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
 		}
 	}
 
-	installed := filepath.Join(prefix, "share", "serf", "bin", "serf")
+	installed := filepath.Join(prefix, "share", "evener", "bin", "evener")
 	data, err := os.ReadFile(installed)
 	if err != nil {
 		t.Fatalf("read installed serf binary: %v", err)
@@ -62,7 +62,7 @@ func TestUpgradeSubcommandInstallsSnapshot(t *testing.T) {
 		t.Fatalf("installed serf content = %q, want archive serf", string(data))
 	}
 
-	link := filepath.Join(prefix, "bin", "serf")
+	link := filepath.Join(prefix, "bin", "evener")
 	target, err := os.Readlink(link)
 	if err != nil {
 		t.Fatalf("readlink %s: %v", link, err)
@@ -78,7 +78,7 @@ func testReleaseArchive(t *testing.T, root string) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+	for _, bin := range []string{"evener", "evener-hub", "evener-tui", "evener-doctor"} {
 		body := fmt.Sprintf("#!/bin/sh\necho archive %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),

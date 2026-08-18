@@ -162,7 +162,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()
-	lockPath := filepath.Join(home, ".serf", "hub.lock")
+	lockPath := filepath.Join(home, ".evener", "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -477,7 +477,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
-	fs.StringVar(&opts.serfBinary, "serf", "", "path to serf binary (default: 'serf' on PATH)")
+	fs.StringVar(&opts.serfBinary, "evener", "", "path to serf binary (default: 'serf' on PATH)")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -605,7 +605,7 @@ func resolveSerfBinaryPath(explicit, currentExecutable string, lookPath func(str
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
-	path, err := binresolve.Resolve("serf", "", currentExecutable, lookPath)
+	path, err := binresolve.Resolve("evener", "", currentExecutable, lookPath)
 	if err != nil {
 		// Neither a sibling nor a PATH lookup succeeded. Fall back to
 		// the empty default; HubSpawner will invoke "serf" and let

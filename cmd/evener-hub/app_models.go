@@ -229,7 +229,7 @@ func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwi
 }
 
 func launchHarnessDescriptors(cfg hubcore.WebConfig) []appwire.HarnessDescriptor {
-	out := []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}
+	out := []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "serf"}}
 	seen := map[string]bool{"serf": true}
 	for _, source := range cfg.CodexSources {
 		id := strings.TrimSpace(source.ID)

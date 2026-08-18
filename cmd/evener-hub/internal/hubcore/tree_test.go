@@ -683,7 +683,7 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 		{Kind: "session", ID: "fresh"}: true,
 		{Kind: "session", ID: "stale"}: false,
 	}
-	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "serf")
+	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "evener")
 	if len(proj.Archived) != 1 || proj.Archived[0].ID != "fresh" {
 		t.Fatalf("manual-archived fresh session should be Archived; archived=%v", proj.Archived)
 	}
@@ -737,7 +737,7 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
 		{Entry: rendezvous.Entry{PID: 5}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	// 2 working (active) sessions. Idle does not count toward either magnitude.
 	if proj.RollupLive != 2 {
 		t.Errorf("RollupLive = %d, want 2", proj.RollupLive)
@@ -889,7 +889,7 @@ func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 9}, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	sessions := allSessions(proj)
 	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
 		t.Fatalf("unexpected shape: %#v", sessions)
@@ -912,7 +912,7 @@ func fuzzScenarioBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, buildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "evener")
 	if got := allSessions(proj)[0].Children[0].State; got != "active" {
 		t.Errorf("live subagent state = %q, want active (parent is live)", got)
 	}

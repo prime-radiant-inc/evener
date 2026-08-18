@@ -17,7 +17,7 @@ import (
 
 func fuzzExecutable(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "serf")
+	p := filepath.Join(t.TempDir(), "evener")
 	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}

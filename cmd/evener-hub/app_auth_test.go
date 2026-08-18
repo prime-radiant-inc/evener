@@ -185,7 +185,7 @@ func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "serf") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
+	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
@@ -201,7 +201,7 @@ func TestOpenAIStateDirFromEnvUsesWindowsHomeDrivePath(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "serf") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
+	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
@@ -215,7 +215,7 @@ func TestOpenAIStateDirFromEnvWindowsIgnoresHomeFallback(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(os.TempDir(), ".local", "state", "serf")
+	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
@@ -226,7 +226,7 @@ func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", processStateHome)
 
 	got := openAIStateDirFromEnv(map[string]string{})
-	want := filepath.Join(os.TempDir(), ".local", "state", "serf")
+	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}

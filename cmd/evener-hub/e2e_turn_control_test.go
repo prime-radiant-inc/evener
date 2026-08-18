@@ -63,7 +63,7 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -205,7 +205,7 @@ func TestE2E_TurnControlReachesAnAgentStartedTurn(t *testing.T) {
 	)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: openingPrompt}},
 		Model:           stack.model,
@@ -327,7 +327,7 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 	releasePath := filepath.Join(stack.workDir, releaseName)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "serf",
+		Harness:         "evener",
 		CWD:             stack.workDir,
 		Input:           []appwire.InputItem{{Type: "text", Text: "SERF-E2E-NOTIFICATION-OPENING"}},
 		Model:           stack.model,
@@ -598,7 +598,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 
 	binDir := liveStackBinaries(t, repoRoot)
 
-	serfDir := filepath.Join(home, ".serf")
+	serfDir := filepath.Join(home, ".evener")
 	if err := os.MkdirAll(serfDir, 0o700); err != nil {
 		t.Fatalf("create hub state root: %v", err)
 	}
@@ -624,7 +624,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(filepath.Join(binDir, "serf-hub"), "--addr", hubAddr, "--serf", filepath.Join(binDir, "serf"))
+	hub := exec.Command(filepath.Join(binDir, "serf-hub"), "--addr", hubAddr, "--serf", filepath.Join(binDir, "evener"))
 	hub.Env = append(os.Environ(), "HOME="+home)
 	hubLog, err := os.Create(filepath.Join(home, "hub.log"))
 	if err != nil {

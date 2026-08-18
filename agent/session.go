@@ -465,7 +465,7 @@ type Session struct {
 	hookRunner                *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands
 	// (namespaced "plugin-name:command-name") and all serf-wide commands
-	// (bare-name keys from .serf/commands and the user-global config dir).
+	// (bare-name keys from .evener/commands and the user-global config dir).
 	// Looked up by expandSlashCommand via plugin.ResolveCommand.
 	pluginCommands map[string]plugin.Command
 	// pendingSessionStartKind defers restore SessionStart hook output until the

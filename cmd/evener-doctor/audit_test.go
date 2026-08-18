@@ -53,7 +53,7 @@ func auditSessionFixture(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "02wLIRxqmq3AUo6vl2OW40"
-	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	bucket := filepath.Join(base, "evener", "projects", "project-test-0123456789")
 	sess := filepath.Join(bucket, "sessions")
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
