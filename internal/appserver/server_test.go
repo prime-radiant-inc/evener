@@ -1545,7 +1545,7 @@ func TestBurstWithinClientBufferBoundDoesNotEvict(t *testing.T) {
 
 	// The send loop never runs in this test: every frame stays queued, which
 	// is exactly a consumer waiting for a scheduling slice.
-	for i := 0; i < appwire.NotificationBufferCap; i++ {
+	for range appwire.NotificationBufferCap {
 		server.Broadcast("thread", "burst", nil)
 	}
 
@@ -1564,5 +1564,44 @@ func TestBurstWithinClientBufferBoundDoesNotEvict(t *testing.T) {
 	server.mu.RUnlock()
 	if !evicted {
 		t.Fatal("a consumer a full buffer past the bound was not evicted; the slow-consumer policy is gone, not retuned")
+	}
+}
+
+// TestSlowConsumerEvictionIsReported: eviction closes the socket with a
+// NORMAL close status, so a log line is the only artifact that distinguishes
+// "the hub evicted a slow consumer" from "the client hung up". The live flake
+// this package's burst test pins burned a day of CI reruns precisely because
+// this line did not exist.
+func TestSlowConsumerEvictionIsReported(t *testing.T) {
+	var logMu sync.Mutex
+	var logged []string
+	server := NewServer(ServerConfig{
+		ServerName: "serf-hub", Version: "test", SourceID: "local",
+		Logf: func(format string, args ...any) {
+			logMu.Lock()
+			logged = append(logged, fmt.Sprintf(format, args...))
+			logMu.Unlock()
+		},
+	})
+	conn := server.NewConnection("stuck")
+	server.registerConnection(conn)
+	conn.Subscribe("thread")
+	for i := 0; i < cap(conn.send); i++ {
+		conn.enqueue(appwire.Message{})
+	}
+
+	server.Broadcast("thread", "one-past-full", nil)
+
+	server.mu.RLock()
+	evicted := server.conns[conn.id] == nil
+	server.mu.RUnlock()
+	if !evicted {
+		t.Fatal("a consumer with a full outbound buffer was not evicted")
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "stuck") || !strings.Contains(joined, "evict") {
+		t.Fatalf("the eviction left no log line naming the connection; logged:\n%s", joined)
 	}
 }

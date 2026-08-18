@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -126,6 +127,9 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		ServerName: "serf-hub",
 		Version:    Version,
 		SourceID:   "local",
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+		},
 		Features: appwire.FeatureSet{
 			ThreadList:        true,
 			ThreadTurnsList:   true,

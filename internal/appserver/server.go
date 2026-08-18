@@ -18,6 +18,10 @@ type ServerConfig struct {
 	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
 	// for adapters whose upstream protocol owns a different initialize shape.
 	AdapterNativeInitialize bool
+	// Logf reports server-initiated events a peer cannot see from its side of
+	// the socket — today, slow-consumer evictions, which close with a NORMAL
+	// status. Nil means silent.
+	Logf func(format string, args ...any)
 }
 
 type Server struct {
@@ -65,12 +69,36 @@ func (s *Server) CommitProjection(commit func() []SequencedNotification) {
 	disconnected := s.deliverNotifications(deliveries)
 	s.deliveryMu.Unlock()
 	for _, conn := range disconnected {
-		s.unregisterConnection(conn)
+		s.evictSlowConsumer(conn, "a projection commit")
 	}
 }
 
 func (s *Server) NewConnection(id string) *Connection {
-	return &Connection{id: id, server: s, send: make(chan appwire.Message, 32)}
+	// The outbound buffer is the hub-side half of the contract
+	// appwire.NotificationBufferCap documents for the client: it must hold any
+	// single legitimate burst even while the send loop waits for a scheduling
+	// slice, because a full buffer is answered with eviction. The two sides
+	// share one constant so neither peer can quietly become the smaller pipe
+	// (at 32 this side evicted live clients whose send loop napped through a
+	// turn-boundary burst on a loaded machine).
+	return &Connection{id: id, server: s, send: make(chan appwire.Message, appwire.NotificationBufferCap)}
+}
+
+func (s *Server) logf(format string, args ...any) {
+	if s.cfg.Logf != nil {
+		s.cfg.Logf(format, args...)
+	}
+}
+
+// evictSlowConsumer unregisters a connection whose outbound buffer is full.
+// The buffer holds appwire.NotificationBufferCap frames — any legitimate
+// burst fits — so a full one means the peer stopped draining, not that its
+// send loop lost a scheduling slice. Say so out loud: the socket closes with
+// a NORMAL status, so this line is the only artifact that tells an eviction
+// apart from the client hanging up.
+func (s *Server) evictSlowConsumer(conn *Connection, during string) {
+	s.logf("appserver: evicting connection %s during %s: outbound buffer full (%d frames), the consumer stopped draining", conn.id, during, cap(conn.send))
+	s.unregisterConnection(conn)
 }
 
 func (s *Server) registerConnection(conn *Connection) {
@@ -129,7 +157,7 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 	disconnected := s.deliverNotifications(deliveries)
 	s.deliveryMu.Unlock()
 	for _, conn := range disconnected {
-		s.unregisterConnection(conn)
+		s.evictSlowConsumer(conn, "a sequenced broadcast")
 	}
 }
 
@@ -188,7 +216,7 @@ func (s *Server) BroadcastAll(method string, params any) {
 	s.mu.RUnlock()
 	for _, conn := range conns {
 		if !conn.enqueue(msg) {
-			s.unregisterConnection(conn)
+			s.evictSlowConsumer(conn, "a hub-wide broadcast")
 		}
 	}
 }
@@ -682,7 +710,7 @@ func (s *Server) releaseHydration(conn *Connection, threadID string, generation 
 	}
 	s.deliveryMu.Unlock()
 	if disconnected {
-		s.unregisterConnection(conn)
+		s.evictSlowConsumer(conn, "a hydration release replay")
 	}
 }
 
