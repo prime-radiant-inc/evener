@@ -7,24 +7,24 @@ LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short 
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
-SERF_SHARE_BINDIR ?= $(PREFIX)/share/serf/bin
+EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
-SERF_INSTALL_BINS := serf serf-hub serf-tui serf-doctor
+EVENER_INSTALL_BINS := evener evener-hub evener-tui evener-doctor
 DIST_DIR ?= dist
 DIST_GOOS ?= $(shell go env GOOS)
 DIST_GOARCH ?= $(shell go env GOARCH)
 BUILD_CHANNEL ?=
-SERF_DIST_NAME = serf_$(DIST_GOOS)_$(DIST_GOARCH)
-SERF_DIST_BIN_DIR = $(DIST_DIR)/$(SERF_DIST_NAME)
-SERF_DIST_ARCHIVE = $(DIST_DIR)/$(SERF_DIST_NAME).tar.gz
+EVENER_DIST_NAME = evener_$(DIST_GOOS)_$(DIST_GOARCH)
+EVENER_DIST_BIN_DIR = $(DIST_DIR)/$(EVENER_DIST_NAME)
+EVENER_DIST_ARCHIVE = $(DIST_DIR)/$(EVENER_DIST_NAME).tar.gz
 
 build: build-runtime
 
 # build-runtime depends on build-web (not the reverse): make guarantees a
 # target's prerequisites COMPLETE before its recipe runs — even under
 # parallel make (-j) — so hanging build-web off build-runtime structurally
-# guarantees every serf/serf-hub pair build embeds the dist build-web just
-# produced. No target may ship a serf-hub binary with a stale or empty
+# guarantees every evener/evener-hub pair build embeds the dist build-web just
+# produced. No target may ship a evener-hub binary with a stale or empty
 # embedded web UI.
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
@@ -33,7 +33,7 @@ build-runtime: build-web
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
 build-linux:
 	go clean -cache 2>/dev/null && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/evener/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
 
 build-hub: build-runtime
 
@@ -63,7 +63,7 @@ build-web: web-preflight
 # check's output.
 test-web: web-preflight
 	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web.XXXXXX")" || exit 1; \
+	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web.XXXXXX")" || exit 1; \
 	pids=""; started=""; fail=0; complete=0; \
 	stop_checks() { \
 		for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; \
@@ -112,7 +112,7 @@ test-web: web-preflight
 # remaining guard's verdict; return the first nonzero status.
 test-web-browser: web-preflight
 	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/serf-test-web-browser.XXXXXX")" || exit 1; \
+	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX")" || exit 1; \
 	guard_pid=""; status=0; complete=0; \
 	stop_guard() { [ -z "$$guard_pid" ] || { kill -TERM "$$guard_pid" 2>/dev/null || :; wait "$$guard_pid" 2>/dev/null || :; guard_pid=""; }; }; \
 	finish_browser() { \
@@ -147,11 +147,11 @@ test-web-browser: web-preflight
 	exit "$$status"
 
 build-tui:
-	go build -o serf-tui ./cmd/evener-tui/
+	go build -o evener-tui ./cmd/evener-tui/
 
-# serf-doctor: the read-only forensic inspector (data plane of the doctoring system).
+# evener-doctor: the read-only forensic inspector (data plane of the doctoring system).
 build-doctor:
-	go build -o serf-doctor ./cmd/evener-doctor/
+	go build -o evener-doctor ./cmd/evener-doctor/
 
 build-all: build-runtime build-tui build-doctor
 
@@ -160,25 +160,25 @@ build-llmcall:
 
 # A shipped dist archive must embed a fresh SPA, not the tracked PLACEHOLDER.
 dist: build-web
-	rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
-	install -d "$(SERF_DIST_BIN_DIR)"
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(SERF_DIST_BIN_DIR)/serf" ./cmd/evener/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-hub" ./cmd/evener-hub/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-tui" ./cmd/evener-tui/
-	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-doctor" ./cmd/evener-doctor/
-	tar -C "$(DIST_DIR)" -czf "$(SERF_DIST_ARCHIVE)" "$(SERF_DIST_NAME)"
+	rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"
+	install -d "$(EVENER_DIST_BIN_DIR)"
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(EVENER_DIST_BIN_DIR)/evener" ./cmd/evener/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-hub" ./cmd/evener-hub/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-tui" ./cmd/evener-tui/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(EVENER_DIST_BIN_DIR)/evener-doctor" ./cmd/evener-doctor/
+	tar -C "$(DIST_DIR)" -czf "$(EVENER_DIST_ARCHIVE)" "$(EVENER_DIST_NAME)"
 
 # An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
-	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/evener/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/evener-hub/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-tui" ./cmd/evener-tui/
-	go build -o "$(INSTALL_BUILD_DIR)/serf-doctor" ./cmd/evener-doctor/
-	install -d "$(SERF_SHARE_BINDIR)" "$(BINDIR)"
-	@for bin in $(SERF_INSTALL_BINS); do \
-		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(SERF_SHARE_BINDIR)/$$bin"; \
-		ln -sfn "$(SERF_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
+	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
+	go build -o "$(INSTALL_BUILD_DIR)/evener-hub" ./cmd/evener-hub/
+	go build -o "$(INSTALL_BUILD_DIR)/evener-tui" ./cmd/evener-tui/
+	go build -o "$(INSTALL_BUILD_DIR)/evener-doctor" ./cmd/evener-doctor/
+	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
+	@for bin in $(EVENER_INSTALL_BINS); do \
+		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
+		ln -sfn "$(EVENER_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
 	done
 
 install-home: PREFIX := $(HOME)/.local
@@ -221,7 +221,7 @@ endif
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
 # DEV_TOOLING_TEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin
-# the behaviour of serf's own tooling. Each is offline, deterministic and works
+# the behaviour of evener's own tooling. Each is offline, deterministic and works
 # only in throwaway fixtures, and each is the ONLY thing that pins its script's
 # contract. A suite earns its slot by pinning outcomes of a tool the gate or CI
 # depends on; hand-run conveniences fail loudly in front of whoever ran them
@@ -297,7 +297,7 @@ merge-approval-gate:
 test-race:
 	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
-# e2e-cover measures END-TO-END coverage of the real serf/serf-tui binaries via
+# e2e-cover measures END-TO-END coverage of the real evener/evener-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
 # structurally can't reach. --merge-unit unions it with the unit profile for a
 # combined whole-repo number; SERF_E2E_LIVE=1 additionally runs the live provider
@@ -342,7 +342,7 @@ fuzz:
 	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE SERF_FUZZ_TESTS=1 RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
-# fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential
+# fuzz-goldens regenerates the decode SNAPSHOT goldens — evener's differential
 # oracle. Each decode target's committed seed corpus is replayed and its decoded
 # output canonically re-encoded into appwire/testdata/golden/. A code change that
 # silently alters a decoder's output (no panic, round-trip still holds) fails the
@@ -374,7 +374,7 @@ fuzz-continuous:
 	@scripts/fuzz-continuous.sh $(FUZZ_ARGS)
 
 # fuzz-drive generates REAL provider traffic (varied coding tasks through the
-# serf one-shot CLI, recorders on) and harvests it into the seed corpus. Makes
+# evener one-shot CLI, recorders on) and harvests it into the seed corpus. Makes
 # live, paid provider calls — run on demand, not in CI. Flags via FUZZ_ARGS, e.g.
 # `make fuzz-drive FUZZ_ARGS="--providers openai/gpt-5.4-mini --runs 5"`.
 fuzz-drive:
@@ -539,8 +539,8 @@ fuzz-registry-check:
 
 # refresh-model-catalog replaces the vendored LiteLLM model-catalog snapshot
 # with the current upstream and runs the catalog sanity tests. The vendored
-# file must never be hand-edited (serf-curated data lives in
-# serf_model_catalog_overrides.json); use `--check` via the script directly
+# file must never be hand-edited (evener-curated data lives in
+# evener_model_catalog_overrides.json); use `--check` via the script directly
 # for a dry-run delta report.
 refresh-model-catalog:
 	@scripts/refresh-model-catalog.sh
@@ -560,7 +560,7 @@ fuzz-corpus-scan:
 # struct tag and TOML file in the repo. Fast (well under a second) and
 # safe to run as a separate `go vet`-style gate.
 define run_quiet_lint
-	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/serf-lint-check.XXXXXX")" || exit 1; \
+	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
 	if ( $(1) ) >"$$log" 2>&1; then \
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
@@ -604,7 +604,7 @@ lint-eval:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
-# libraries names a serf-internal type — keeping them externally importable.
+# libraries names a evener-internal type — keeping them externally importable.
 lint-internal:
 	$(call run_quiet_lint,go run ./cmd/evener-internalcheck)
 
@@ -614,7 +614,7 @@ lint-docs:
 	$(call run_quiet_lint,go run ./cmd/evener-docscheck)
 
 build-namingcheck:
-	go build -o serf-namingcheck ./cmd/evener-namingcheck/
+	go build -o evener-namingcheck ./cmd/evener-namingcheck/
 
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
@@ -637,4 +637,4 @@ LINT_TARGETS := lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lin
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck serf-fuzzcov
+	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-internalcheck evener-fuzzcov
