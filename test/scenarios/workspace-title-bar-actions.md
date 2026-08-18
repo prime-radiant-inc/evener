@@ -229,7 +229,7 @@ head and runs it as a fresh user turn.
   `The user interrupted the previous turn`,
   `agent/session_lifecycle.go:702`). The turn is reported
   `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
-  `canceled` value at all (`appwire/types.go:147-152`), so a controller
+  `canceled` value at all (`appwire/types.go:166-171`), so a controller
   grepping for that literal will never find it. The session remains alive —
   steps 3-5 below still work on the same SID. Send a follow-up `/send`
   immediately and it must complete normally. Falsification: state stays

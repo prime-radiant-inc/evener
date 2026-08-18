@@ -90,7 +90,7 @@ no pane handle on `window`, and the opener is `paneActions.openBeside`
   differing from the thumbnail's; or Escape leaving it open.
 - **Step 3 (open beside)**: `location.pathname` is unchanged — this opens a
   pane, it never navigates. `docImage` and `zoomButton` are true; a pane title
-  equal to the image's filename appears (`DocPane.tsx:133`, `PaneScaffold`'s
+  equal to the image's filename appears (`DocPane.tsx:128`, `PaneScaffold`'s
   `pane-title-desktop`); `dialogs` is 0 (open-beside is not the lightbox); and
   `rowStillOpen` is true — the button calls `stopPropagation` so opening a file
   never also toggles the row it lives in (`fileOpenBeside.tsx:104-108`).

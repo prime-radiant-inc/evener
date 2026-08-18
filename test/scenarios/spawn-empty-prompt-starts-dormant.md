@@ -132,7 +132,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
   `/new`. Falsify: a toast, or the pane staying put.
 - **Step 8 (pane + rail)**: `path` decodes to `/s/local:<SID>`;
   `emptyTitle` and `emptyHint` are both true (`EmptyTranscript`'s
-  zero-turn, not-active branch, `panes/session/Session.tsx:79-84`);
+  zero-turn, not-active branch, `panes/session/Session.tsx:96-101`);
   `turns` is 0; the composer is present and focusable below it
   (placeholder `Message the agent…`), and typing there and sending
   starts the first turn normally. `notStarted` is exactly `Not started`
@@ -170,7 +170,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
   would be flatly wrong. So assert this on an untouched dormant session,
   not one you have already messaged. The dropped age moves into the
   row's `title` tooltip alongside the words `not started`
-  (`rowTooltip`, `RailRow.tsx:447-463`).
+  (`rowTooltip`, `RailRow.tsx:410-426`).
 - **The post-spawn URL percent-escapes the colon.** `paneToURL` builds
   `/s/${encodeURIComponent(ref)}` (`shell/routing.ts:93-96`), so
   `location.pathname` reads `/s/local%3A<SID>` after a spawn navigation

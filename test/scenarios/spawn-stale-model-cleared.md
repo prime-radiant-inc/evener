@@ -20,7 +20,7 @@ selector map and the "Seeding preferences before the first load" recipe.
 Two things this card used to assume are wrong now and are the likely
 cause of a false pass: there is no `[data-chip-value-model]` and no
 `[data-model-prefill-notice]` anywhere in the tree. The notice is a
-`role="status"` region (`panes/spawn/Spawn.tsx:490-501`) and the model
+`role="status"` region (`panes/spawn/Spawn.tsx:678-680`) and the model
 control is the shared ARIA combobox in `widgets/modelCatalog/` — its
 **closed trigger is a `<button>` whose text is the qualified
 `provider/model`, or the empty label when nothing is set**
