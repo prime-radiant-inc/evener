@@ -606,6 +606,99 @@ func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
 	}
 }
 
+func TestSendingAgainReleasesTheParkedQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release func(t *testing.T, sess *Session)
+	}{
+		{"turn/start", func(t *testing.T, sess *Session) {
+			if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+				ClientMutationID: "next-turn",
+				Input:            []appwire.InputItem{{Type: "text", Text: "carry on"}},
+			}); err != nil {
+				t.Fatalf("turn/start: %v", err)
+			}
+		}},
+		// A user who queues another message has re-engaged. Without this the
+		// hold is sticky: a message queued after the Stop inherits it and is
+		// parked forever, with the session reporting idle and nothing saying why.
+		{"turn/queue", func(t *testing.T, sess *Session) {
+			queueOneMutation(t, sess, "one-more", "and this too")
+		}},
+		// Draining and promoting are the queue-strip's own "run this now"
+		// gestures. Each gets its own table entry because each clear is an
+		// independent edit an implementer can forget: without these two cases,
+		// reverting either clear leaves the whole suite green while a promoted
+		// message strands its siblings parked forever.
+		{"turn/drainAsSteer", func(t *testing.T, sess *Session) {
+			revision := sess.clientMutations.snapshot().QueueRevision
+			if _, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+				ClientMutationID:      "drain-after-stop",
+				ExpectedQueueRevision: revision,
+			}); err != nil {
+				t.Fatalf("turn/drainAsSteer: %v", err)
+			}
+		}},
+		{"turn/promoteQueuedAsSteer", func(t *testing.T, sess *Session) {
+			if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
+				ClientMutationID: "promote-after-stop",
+				Index:            0,
+			}); err != nil {
+				t.Fatalf("turn/promoteQueuedAsSteer: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newQueuePersistTestSession(t, t.TempDir())
+			defer sess.Close()
+
+			queueOneMutation(t, sess, "queued-behind", "and then this")
+			if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+				ClientMutationID: "stop-over-queued",
+			}, func() {}); err != nil {
+				t.Fatalf("stop: %v", err)
+			}
+			if !sess.clientMutations.queueHeld() {
+				t.Fatal("the Stop did not park the queue; this test is not in the state it means to be")
+			}
+
+			tc.release(t, sess)
+
+			if sess.clientMutations.queueHeld() {
+				t.Fatalf("%s left the queue parked: the user asked for work to run and it will not", tc.name)
+			}
+		})
+	}
+}
+
+// The clear must sit BELOW every rejection check. executeAtomic commits a
+// rejected record, so a clear above them unparks the queue on a request the
+// daemon refused -- and the next wake then runs the message the user stopped.
+func TestARejectedPromoteLeavesTheQueueParked(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+
+	queueOneMutation(t, sess, "queued-behind", "and then this")
+	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-over-queued",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// A promote naming an entry id the queue no longer has: the ordinary
+	// "the queue changed under you" CAS refusal the token exists for.
+	if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
+		ClientMutationID: "promote-stale",
+		Index:            0,
+		ExpectedEntryID:  "queue_does_not_exist",
+	}); err == nil {
+		t.Fatal("the stale promote was accepted; this test needs a refusal to be meaningful")
+	}
+	if !sess.clientMutations.queueHeld() {
+		t.Fatal("a REJECTED promote unparked the queue, so the next wake runs the message the user stopped")
+	}
+}
+
 func TestQueueHeldIsReadableWithoutCloningTheSnapshot(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()

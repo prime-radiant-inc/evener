@@ -265,6 +265,10 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			}).Error()))
 			return nil
 		}
+		// The user is speaking again, so the wait a Stop started is over. Their
+		// new turn runs first and the drain loop takes the parked messages after
+		// it, which is the ordinary queue behaviour they were promised (wms7).
+		snapshot.QueueHeld = false
 		reserveClientMutationTurnID(snapshot, record)
 		record.ExecutionState = "accepted"
 		snapshot.BudgetReservations[record.ClientMutationID] = clientMutationBudgetReservation{
