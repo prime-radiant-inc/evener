@@ -567,6 +567,17 @@ type Session struct {
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 
+	// stream loop guard (kata d74b): tracks whether the response
+	// consumeModelStream most recently returned was force-stopped mid-stream
+	// by the in-band loop guard (session_stream_loop_guard.go), so a SECOND
+	// consecutive trip escalates to a hard stop instead of nudging forever.
+	// streamLoopTripStreak resets to 0 on any response that completes
+	// without tripping. pendingStreamLoopNudge holds the steering text for
+	// an untripped-but-pending tier-1 trip until injectPostToolSteering
+	// delivers it as a steering turn and clears it.
+	streamLoopTripStreak   int
+	pendingStreamLoopNudge string
+
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
 	// attentionMu serializes transcript-backed attention resolution for this

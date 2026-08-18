@@ -1288,6 +1288,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
+			// Stream loop guard (kata d74b): a chant trip (reasoning-only
+			// runaway) has zero tool calls by construction, so this round
+			// never reaches injectPostToolSteering -- deliver any pending
+			// nudge here instead, before either exit below can skip it.
+			// Safe to insert immediately after this turn: with no tool
+			// calls there are no tool results whose provider-required
+			// adjacency to it this could disturb (see
+			// deliverPendingStreamLoopNudge's doc comment).
+			if abortErr := s.deliverPendingStreamLoopNudge(ctx); abortErr != nil {
+				return "", progressed, abortErr
+			}
 			// A bare-text (non-empty) response to a notification turn
 			// is the agent acknowledging a frame it has nothing to act on (it often
 			// already read the job's output itself). Finish idle instead of scolding it

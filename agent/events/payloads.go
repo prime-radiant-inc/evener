@@ -303,14 +303,20 @@ const SteeringSourceUser = "user"
 // carried to the UI so a label is ground truth rather than a guess at the
 // message's prose. Absent kind means "unknown" and the UI claims nothing.
 const (
-	SteeringKindInterrupted       = "interrupted"
-	SteeringKindAgentMessage      = "agent-message"
-	SteeringKindHookContext       = "hook-context"
-	SteeringKindPrecompactHook    = "precompact-hook"
-	SteeringKindCompactNudge      = "compact-nudge"
-	SteeringKindImageDescription  = "image-description"
-	SteeringKindNoToolCalls       = "no-tool-calls"
-	SteeringKindLoopDetected      = "loop-detected"
+	SteeringKindInterrupted      = "interrupted"
+	SteeringKindAgentMessage     = "agent-message"
+	SteeringKindHookContext      = "hook-context"
+	SteeringKindPrecompactHook   = "precompact-hook"
+	SteeringKindCompactNudge     = "compact-nudge"
+	SteeringKindImageDescription = "image-description"
+	SteeringKindNoToolCalls      = "no-tool-calls"
+	SteeringKindLoopDetected     = "loop-detected"
+	// SteeringKindStreamLoop marks the kata d74b in-stream loop guard's
+	// nudge, distinct from SteeringKindLoopDetected (the older, cross-round
+	// detector on dispatched tool results): this one fires on a repeating
+	// cycle, raw call ceiling, or content chant caught WITHIN a single
+	// streaming response, before any of its calls dispatch.
+	SteeringKindStreamLoop        = "stream-loop"
 	SteeringKindTasksDone         = "tasks-done"
 	SteeringKindTaskNudge         = "task-nudge"
 	SteeringKindTaskInactive      = "task-inactive"
@@ -336,6 +342,7 @@ var AllSteeringKinds = []string{
 	SteeringKindImageDescription,
 	SteeringKindNoToolCalls,
 	SteeringKindLoopDetected,
+	SteeringKindStreamLoop,
 	SteeringKindTasksDone,
 	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,

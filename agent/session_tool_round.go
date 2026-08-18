@@ -406,6 +406,18 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 	}
 
+	// Stream loop guard (kata d74b): consumeModelStream force-stopped the
+	// response just processed above and queued a nudge on pendingStreamLoopNudge
+	// (session_stream_loop_guard.go). Deliver it here, the same after-tool,
+	// before-next-model-call point the cross-round detector above uses, so the
+	// model reads it after seeing its own truncated calls and their results.
+	// (A response with NO tool calls -- a chant trip -- never reaches this
+	// function at all; processOneInput's len(calls)==0 branch delivers it
+	// there instead, via the same helper.)
+	if abortErr := s.deliverPendingStreamLoopNudge(ctx); abortErr != nil {
+		return false, abortErr
+	}
+
 	drained, err := s.drainPostToolWatchSends(ctx)
 	if err != nil {
 		return false, err
