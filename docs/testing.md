@@ -368,8 +368,12 @@ tag.
 `cmd/serf-hub/cov_*_test.go` pulls the union number in the other direction.
 (The `cov_`-prefixed name is not the marker — some, like
 `agent/execenv/cov_s4_local_test.go`, are ordinary untagged `TestXxx`
-suites. The marker is the shape: a `//go:build serffuzz` `FuzzXxx` target
-with one seed whose byte input is ignored, `f.Add(byte(0))`.) Each of
+suites. The marker is the shape below: a `FuzzXxx` target, not a `TestXxx`
+function — the `//go:build serffuzz` tag is not part of it, and most of
+`cmd/serf-hub`'s cov_* files carry no such tag, including
+`cov_auth_instances_fuzz_test.go` below. Its own seed shape isn't universal
+either: it ignores a single seed byte, `f.Add(byte(0))`, but several other
+cov_* files seed multiple bytes that select between behaviors.) Each of
 `cmd/serf-hub`'s cov_* files is a deterministic replay matrix that calls
 production functions and discards most results (`_ = f(x)`). Their oracle is
 real — a panic or a `-race` failure still fails the build — but thin: a call
