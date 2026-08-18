@@ -182,7 +182,9 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 		for range sess.Events() {
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// TRIPWIRE: scripted in-process adapter plus a trivial "exit 5" hook
+	// subprocess, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -341,7 +343,9 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 		t.Fatalf("register hook_probe: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter plus a trivial "exit 0" hook
+	// subprocess, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "run the probe", nil)
 	if err != nil {

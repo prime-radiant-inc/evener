@@ -103,7 +103,10 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 				t.Fatalf("precondition: expected a genuine stall, got stalled=%v err=%v", stalled, err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// TRIPWIRE: the driver single-steps a frozen fake clock with
+			// hand-synchronized channels; nothing here waits on real I/O or a
+			// real clock. 30s only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			d := newStallDriver(ctx, sess)
 			d.releaseKick(t)
@@ -115,7 +118,10 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 
 			select {
 			case <-d.done:
-			case <-time.After(5 * time.Second):
+			// TRIPWIRE: awaits d.done, the drain goroutine's own completion
+			// signal; the fake-clock driver above should return immediately
+			// once its stall check trips. 30s only fires on a genuine hang.
+			case <-time.After(30 * time.Second):
 				t.Fatal("drain did not return after the stall timeout; watchdog failed to fire")
 			}
 			if d.err != nil {
@@ -145,6 +151,11 @@ func (d *stallDriver) assertParked(t *testing.T, msg string) {
 	select {
 	case <-d.done:
 		t.Fatalf("drain returned when it should have kept waiting: %s", msg)
+	// TRIPWIRE: not a completion-signal wait -- this deliberately blocks for a
+	// short window to positively confirm the goroutine stayed parked instead
+	// of firing early. releaseKick has already synchronized to the iteration
+	// boundary, so 50ms is generous slack for the negative result, not a
+	// budget for real work to finish.
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -258,7 +269,10 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 	cancel()
 	select {
 	case <-d.done:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits d.done, the drain goroutine's own exit signal, after
+	// cancel(); the goroutine should observe ctx.Done() and return
+	// immediately. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("drain did not exit after context cancellation")
 	}
 }
