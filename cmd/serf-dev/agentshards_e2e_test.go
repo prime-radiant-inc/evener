@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -176,6 +177,109 @@ func TestAgentShardsFailingShardRetainsEvidence(t *testing.T) {
 	if err != nil || len(logs) != 2 {
 		t.Fatalf("retained dir holds %v, want two shard logs", logs)
 	}
+	if got, want := replayedShards(t, out), verdictShards(t, out, "FAIL"); !slices.Equal(got, want) {
+		t.Fatalf("replay block covered shards %v, want exactly the FAIL verdicts %v:\n%s", got, want, out)
+	}
+}
+
+// verdictShards returns the shard indices reported with a verdict, in the
+// order the run reported them.
+func verdictShards(t *testing.T, out, verdict string) []int {
+	t.Helper()
+	var shards []int
+	for line := range strings.SplitSeq(out, "\n") {
+		var shard int
+		if _, err := fmt.Sscanf(line, verdict+"  agent:%d", &shard); err == nil {
+			shards = append(shards, shard)
+		}
+	}
+	return shards
+}
+
+// replayedShards returns the shard indices whose logs appear under the
+// failing-shard banner, in order.
+func replayedShards(t *testing.T, out string) []int {
+	t.Helper()
+	_, block, found := strings.Cut(out, "=== failing shard output ===")
+	if !found {
+		return nil
+	}
+	var shards []int
+	for line := range strings.SplitSeq(block, "\n") {
+		var shard int
+		if _, err := fmt.Sscanf(line, "----- agent:%d -----", &shard); err == nil {
+			shards = append(shards, shard)
+		}
+	}
+	return shards
+}
+
+// shardHolding reports which shard was assigned a test, read from the names
+// files the run left in its scratch directory.
+func shardHolding(t *testing.T, logdir, test string) int {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(logdir, "shard*.names"))
+	if err != nil || len(names) == 0 {
+		t.Fatalf("no shard names files in %s: %v", logdir, err)
+	}
+	for _, file := range names {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		if !slices.Contains(strings.Fields(string(data)), test) {
+			continue
+		}
+		var shard int
+		if _, err := fmt.Sscanf(filepath.Base(file), "shard%d.names", &shard); err != nil {
+			t.Fatalf("parsing shard index from %s: %v", file, err)
+		}
+		return shard
+	}
+	t.Fatalf("no shard was assigned %s (files: %v)", test, names)
+	return -1
+}
+
+// TestAgentShardsReplayIsByVerdictNotMarker pins both directions of the
+// failing-shard replay. A shard can fail with no `go test` marker anywhere in
+// its log — a build error, an os.Exit, an OOM kill — and selecting logs by
+// marker dropped exactly the verdicts with the most to explain (kata mjzx,
+// fixed in run-module-tests.sh for the same reason). The other direction
+// matters just as much: a green shard whose output happens to start a line
+// with FAIL must stay out of the block.
+func TestAgentShardsReplayIsByVerdictNotMarker(t *testing.T) {
+	cfg, stdout, stderr, tmp := e2eConfig(t)
+	cfg.noSurvey = true
+	t.Setenv("SHARD_FIXTURE_EXIT", "beta")
+	t.Setenv("SHARD_FIXTURE_NOISE", "1")
+
+	rc := runShards(cfg)
+	if rc != 1 {
+		t.Fatalf("markerless failure rc = %d, want 1\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	out := stdout.String()
+	failed := verdictShards(t, out, "FAIL")
+	if len(failed) != 1 {
+		t.Fatalf("expected exactly one FAIL verdict, got %v:\n%s", failed, out)
+	}
+	if got := replayedShards(t, out); !slices.Equal(got, failed) {
+		t.Fatalf("replay block covered shards %v, want exactly the FAIL verdicts %v:\n%s", got, failed, out)
+	}
+	if !strings.Contains(out, "fixture-beta exiting hard") {
+		t.Fatalf("the markerless failure's own output was not replayed:\n%s", out)
+	}
+
+	left := scratchLeftovers(t, tmp)
+	if len(left) != 1 {
+		t.Fatalf("markerless failure retained %v, want exactly one scratch dir", left)
+	}
+	noisy := shardHolding(t, left[0], "TestFixtureGamma")
+	if noisy == failed[0] {
+		t.Fatalf("fixture partition put the noisy test in the failing shard (%d); this run cannot pin green exclusion", noisy)
+	}
+	if strings.Contains(out, "fixture-gamma is green and only looks red") {
+		t.Fatalf("green shard %d was replayed because its output looks like a verdict:\n%s", noisy, out)
+	}
 }
 
 func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
@@ -198,6 +302,32 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	}
 	if len(scratchLeftovers(t, tmp)) != 1 {
 		t.Fatalf("red survey should retain its scratch for diagnosis")
+	}
+}
+
+// TestAgentShardsSkipOnlyReachesTheSurvey pins how far AGENT_SHARD_SKIP
+// actually reaches. The script only ever appended -test.skip to the survey
+// pass, and this port keeps that: skipping works by leaving a test out of the
+// cost table, so a run that does not survey does not skip. Fixing the wart —
+// threading the regex into the shard invocations and into the cache key —
+// means changing this pin with it.
+func TestAgentShardsSkipOnlyReachesTheSurvey(t *testing.T) {
+	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
+
+	surveyed, stdout, stderr, _ := e2eConfig(t)
+	surveyed.skip = "^TestFixtureBeta$"
+	if rc := runShards(surveyed); rc != 0 {
+		t.Fatalf("surveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+
+	unsurveyed, stdout2, stderr2, _ := e2eConfig(t)
+	unsurveyed.skip = "^TestFixtureBeta$"
+	unsurveyed.noSurvey = true
+	if rc := runShards(unsurveyed); rc != 1 {
+		t.Fatalf("unsurveyed run: rc = %d, want 1 — AGENT_SHARD_SKIP reaches the shards now, so the interface comment and this pin are both stale\nstdout:\n%s\nstderr:\n%s", rc, stdout2, stderr2)
+	}
+	if !strings.Contains(stdout2.String(), "--- FAIL: TestFixtureBeta") {
+		t.Fatalf("the unsurveyed run failed for some reason other than the unskipped test:\n%s", stdout2)
 	}
 }
 
@@ -226,8 +356,9 @@ func buildSerfDev(t *testing.T) string {
 
 // startHeldRun starts the serf-dev binary against the fixture with one shard
 // held open, and returns the running command, the held test-binary pid, the
-// scratch TMPDIR, and the hold directory.
-func startHeldRun(t *testing.T) (*exec.Cmd, int, string, string) {
+// scratch TMPDIR, and the hold directory. extraEnv arms fixture behaviour in
+// the shard processes.
+func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, string) {
 	t.Helper()
 	bin := buildSerfDev(t)
 	tmp := t.TempDir()
@@ -255,6 +386,7 @@ func startHeldRun(t *testing.T) (*exec.Cmd, int, string, string) {
 		"AGENT_SHARD_NO_SURVEY=1",
 		"AGENT_SHARD_CACHE_DIR="+filepath.Join(t.TempDir(), "cache"),
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
@@ -282,6 +414,33 @@ func startHeldRun(t *testing.T) (*exec.Cmd, int, string, string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// awaitFile waits for a path to appear, failing with label if it never does.
+func awaitFile(t *testing.T, path, label string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %s never appeared", label, path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// releaseHold unblocks a held shard by opening the write end of its FIFO.
+// Only safe while the shard is still reading: an open with no reader blocks.
+func releaseHold(t *testing.T, holdDir string) {
+	t.Helper()
+	fifo, err := os.OpenFile(filepath.Join(holdDir, "hold.fifo"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("opening hold fifo for release: %v", err)
+	}
+	_, _ = fifo.WriteString("x")
+	_ = fifo.Close()
 }
 
 func awaitPidGone(t *testing.T, pid int, label string) {
@@ -323,6 +482,69 @@ func TestAgentShardsSIGTERMExits143RetainsLogsReapsChildren(t *testing.T) {
 	awaitPidGone(t, heldPid, "held shard child after SIGTERM")
 }
 
+// TestAgentShardsSecondSignalEndsAWedgedRun pins the second Ctrl-C. A shard
+// that ignores TERM leaves the runner waiting on it forever; the script's
+// first handler cleared its traps, so the next signal took its default action
+// and ended the run. Relaying only one signal makes the runner deaf to every
+// signal after the first, and SIGKILL becomes the only way out.
+func TestAgentShardsSecondSignalEndsAWedgedRun(t *testing.T) {
+	cmd, heldPid, tmp, holdDir := startHeldRun(t, "SHARD_FIXTURE_IGNORE_TERM=1")
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("first SIGTERM: %v", err)
+	}
+	// The shard announcing the TERM it swallowed proves the runner handled
+	// the first signal and forwarded it, so the second is never mistaken for
+	// the first.
+	awaitFile(t, filepath.Join(holdDir, fmt.Sprintf("termed.%d", heldPid)),
+		"held shard never saw the runner's forwarded TERM")
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("second SIGTERM: %v", err)
+	}
+	// A deaf runner hangs here; the killer bounds the wait and its firing IS
+	// the failure.
+	killed := make(chan struct{})
+	killer := time.AfterFunc(20*time.Second, func() {
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+		close(killed)
+	})
+	err := cmd.Wait()
+	timely := killer.Stop()
+	if !timely {
+		<-killed
+	}
+	// Whatever happened to the runner, the held shard is orphaned now: it
+	// ignores TERM, so KILL is what ends it.
+	_ = syscall.Kill(heldPid, syscall.SIGKILL)
+	awaitPidGone(t, heldPid, "held shard child after the run ended")
+	if !timely {
+		t.Fatalf("second SIGTERM did not end the runner; it had to be SIGKILLed after 20s (wait: %v)", err)
+	}
+
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("second SIGTERM: runner exit = %v, want death by SIGTERM or exit 143", err)
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	bySignal := ok && status.Signaled() && status.Signal() == syscall.SIGTERM
+	if !bySignal && exit.ExitCode() != 143 {
+		t.Fatalf("second SIGTERM: runner exit = %v, want death by SIGTERM or exit 143", err)
+	}
+	stderr := cmd.Stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "interrupted by SIGTERM") {
+		t.Fatalf("first interruption not explained on stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "SIGTERM again") {
+		t.Fatalf("second signal not explained on stderr:\n%s", stderr)
+	}
+	// The logs the first signal retained are still on disk for diagnosis.
+	want := filepath.Join(tmp, fmt.Sprintf("agent-test-shards.%d", cmd.Process.Pid))
+	if _, statErr := os.Stat(want); statErr != nil {
+		t.Fatalf("second-signal run's scratch %s not retained: %v", want, statErr)
+	}
+}
+
 func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 	cmd, heldPid, tmp, holdDir := startHeldRun(t)
 
@@ -338,12 +560,7 @@ func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 
 	// Release the orphaned held child (nothing reparents it once the runner
 	// is KILLed), and wait for it to be truly gone before reclaiming.
-	fifo, err := os.OpenFile(filepath.Join(holdDir, "hold.fifo"), os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("opening hold fifo for release: %v", err)
-	}
-	_, _ = fifo.WriteString("x")
-	_ = fifo.Close()
+	releaseHold(t, holdDir)
 	awaitPidGone(t, heldPid, "held shard child after release")
 
 	// The next run of the same tool — same TMPDIR, hold disarmed — reclaims
