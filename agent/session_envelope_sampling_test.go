@@ -91,6 +91,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.turnNameRetryMu.Lock()
 		return s.turnNameRetryMu.Unlock
 	}},
+	{owner: "Session", field: "releaseRetryMu", hold: func(s *Session) func() {
+		s.releaseRetryMu.Lock()
+		return s.releaseRetryMu.Unlock
+	}},
 	{owner: "subagent", field: "mu", hold: func(s *Session) func() {
 		sub := &subagent{id: "envelope-sampling-probe", done: make(chan struct{})}
 		s.subagents.track(sub)

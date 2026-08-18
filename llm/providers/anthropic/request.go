@@ -243,14 +243,21 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	return body, nil
 }
 
-// isClaude5OrNewer reports whether a model ID belongs to the Claude 5+
-// generation (claude-sonnet-5, claude-fable-5, and future 5+ families). These
-// models only accept adaptive thinking (budget_tokens 400s), reject sampling
-// params (temperature/top_p/top_k), and need thinking display:"summarized"
-// for visible thinking text. Keyed off the model ID locally for now; once the
-// catalog grows a flag for this generation (e.g. thinking-always-on), this
-// helper can be rewired to it.
+// isClaude5OrNewer reports whether a model belongs to the Claude 5+
+// generation (claude-sonnet-5, claude-opus-5, claude-fable-5, and future 5+
+// families). These models only accept adaptive thinking (budget_tokens 400s),
+// reject sampling params (temperature/top_p/top_k), and need thinking
+// display:"summarized" for visible thinking text.
+//
+// The catalog's Claude5RequestShape flag decides it whenever an entry
+// resolves, which covers the aliased, provider-qualified and dated refs a
+// model ID alone misclassifies. Only a model the catalog has never heard of
+// falls back to reading the generation out of the ID, so an unreleased 5+
+// family still gets the safe request shape.
 func isClaude5OrNewer(model string) bool {
+	if mi := llm.EmbeddedModelCatalog().LookupModelInfo(model); mi != nil {
+		return mi.Claude5RequestShape
+	}
 	if !strings.HasPrefix(model, "claude-") {
 		return false
 	}

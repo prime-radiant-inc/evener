@@ -816,6 +816,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Derive subagent-ness from the persisted meta flag before
 	// initSessionState builds the tool registry.
 	s.restoredMetaIsSubagent = meta.IsSubagent
+	// The spawn parent travels with the flag: Meta() rewrites both on every
+	// autosave, and the hub reads them as a pair.
+	s.restoredMetaParentSessionID = meta.ParentSessionID
 
 	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
 	// the session is rooted in it before the environment snapshot, system

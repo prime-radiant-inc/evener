@@ -110,11 +110,21 @@ func (s *Session) Meta() schema.SessionMeta {
 	now := s.sclock().Now().UTC()
 	parentID := s.cfg.spawn.parentSessionID
 	divergence := 0
-	isSubagent := s.cfg.spawn.parentSessionID != ""
+	// The persisted flag uses the same predicate as the ask_user root-only gate:
+	// a bare `serve --resume <delegate-id>` restores with an empty spawn carrier
+	// (spawn is json:"-", never persisted), so deriving the flag from cfg.spawn
+	// alone erases a resumed delegate's lineage on its next autosave.
+	// isSubagentSession() takes no lock, so calling it under s.mu is safe.
+	isSubagent := s.isSubagentSession()
 	if s.fork.divergence > 0 {
 		parentID = s.fork.parentID
 		divergence = s.fork.divergence
 		isSubagent = false
+	} else if parentID == "" {
+		// A live spawn wins; the persisted parent covers the resume that left the
+		// carrier empty, so the delegate keeps the parent row the hub nests it
+		// under instead of being rewritten as a parentless subagent.
+		parentID = s.restoredMetaParentSessionID
 	}
 	restoreRoot := ""
 	if s.worktreeRestoreEnv != nil {

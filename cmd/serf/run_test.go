@@ -561,6 +561,79 @@ func TestDrainEventsHuman(t *testing.T) {
 	}
 }
 
+// TestDrainEventsHuman_CommunicateEchoesAssistantText pins the non-interactive
+// printer's dedupe (kata sc17): a model that streams assistant text and then
+// calls communicate with the same content produced one answer, so the user
+// sees it once. Different communicate text is a second thing to say and still
+// prints. The comparison is apptranscript.EchoesAssistantText, shared with the
+// live projector so the two surfaces cannot drift.
+func TestDrainEventsHuman_CommunicateEchoesAssistantText(t *testing.T) {
+	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	assistantText := func(text string) events.SessionEvent {
+		return events.SessionEvent{Kind: events.EventAssistantTextEnd, Timestamp: now, SessionID: "sess1", Data: events.AssistantTextEndData{
+			Text:  text,
+			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150},
+		}}
+	}
+	communicate := func(message string, endTurn bool) events.SessionEvent {
+		return events.SessionEvent{Kind: events.EventCommunicate, Timestamp: now, SessionID: "sess1", Data: events.CommunicateData{
+			Message: message,
+			EndTurn: endTurn,
+		}}
+	}
+	drain := func(t *testing.T, evs ...events.SessionEvent) string {
+		t.Helper()
+		var buf bytes.Buffer
+		done := drainEventsHuman(feedEvents(evs), &buf)
+		<-done
+		return buf.String()
+	}
+
+	t.Run("end_turn echo prints the answer once", func(t *testing.T) {
+		out := drain(t, assistantText("the answer"), communicate("the answer", true))
+		if got := strings.Count(out, "the answer"); got != 1 {
+			t.Fatalf("answer printed %d times, want 1:\n%s", got, out)
+		}
+		if !strings.Contains(out, "[assistant] the answer") {
+			t.Fatalf("expected the surviving line to be the [assistant] one:\n%s", out)
+		}
+		// Suppressing the echo must not swallow the rest of the stream.
+		if !strings.Contains(out, "[usage] in=100 out=50 total=150") {
+			t.Fatalf("expected [usage] line in output:\n%s", out)
+		}
+	})
+
+	t.Run("different communicate text still prints", func(t *testing.T) {
+		out := drain(t, assistantText("the answer"), communicate("and one more thing", true))
+		if !strings.Contains(out, "[assistant] the answer") {
+			t.Fatalf("expected [assistant] line in output:\n%s", out)
+		}
+		if !strings.Contains(out, "[communicate:end_turn] and one more thing") {
+			t.Fatalf("expected communicate line in output:\n%s", out)
+		}
+	})
+
+	t.Run("blank communicate does not forget the answer", func(t *testing.T) {
+		out := drain(t, assistantText("the answer"), communicate("", false), communicate("the answer", true))
+		if got := strings.Count(out, "the answer"); got != 1 {
+			t.Fatalf("answer printed %d times, want 1:\n%s", got, out)
+		}
+	})
+
+	// The projector's dedupe ignores EndTurn, and so does this one: a mid-turn
+	// communicate that repeats the streamed text is the same duplicate. Padding
+	// pins the TrimSpace-equality semantics the shared comparison uses.
+	t.Run("mid-turn echo is suppressed too", func(t *testing.T) {
+		out := drain(t, assistantText("the answer"), communicate("  the answer\n", false))
+		if got := strings.Count(out, "the answer"); got != 1 {
+			t.Fatalf("answer printed %d times, want 1:\n%s", got, out)
+		}
+		if strings.Contains(out, "[communicate]") {
+			t.Fatalf("expected no [communicate] line for the echo:\n%s", out)
+		}
+	})
+}
+
 func intPtr(v int) *int { return &v }
 
 // TestRunPluginDirsPassthrough verifies that pluginDirs on runConfig flows

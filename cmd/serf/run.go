@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/plugins"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -350,6 +351,12 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// The most recent answer written to w, so a communicate that merely
+		// echoes it is not printed a second time. Events carry no turn ID here,
+		// so "most recent" is the closest this surface gets to the projector's
+		// turn scoping -- and for the stream this dedupes (assistant text
+		// immediately followed by its communicate echo) it is the same contract.
+		lastAssistantText := ""
 		for ev := range eventCh {
 			switch ev.Kind {
 			case events.EventSessionStart:
@@ -364,6 +371,7 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				if d, ok := ev.Data.(events.AssistantTextEndData); ok {
 					if strings.TrimSpace(d.Text) != "" {
 						fmt.Fprintf(w, "[assistant] %s\n", d.Text) //nolint:errcheck
+						lastAssistantText = d.Text
 					}
 					if d.Reasoning != "" {
 						fmt.Fprintf(w, "[thinking] (%d chars)\n", len(d.Reasoning)) //nolint:errcheck
@@ -400,6 +408,14 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				}
 			case events.EventCommunicate:
 				if d, ok := ev.Data.(events.CommunicateData); ok {
+					if apptranscript.EchoesAssistantText(lastAssistantText, d.Message) {
+						continue
+					}
+					// A blank communicate says nothing, so it must not make the
+					// printer forget the answer an echo would follow.
+					if strings.TrimSpace(d.Message) != "" {
+						lastAssistantText = d.Message
+					}
 					if d.EndTurn {
 						fmt.Fprintf(w, "[communicate:end_turn] %s\n", d.Message) //nolint:errcheck
 					} else {

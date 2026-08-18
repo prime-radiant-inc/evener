@@ -31,6 +31,13 @@ type ModelInfo struct {
 	// claude-fable-5 returns 400). Request builders must never emit a
 	// thinking-off wire shape for these models.
 	ThinkingAlwaysOn bool `json:"thinking_always_on,omitempty"`
+	// Claude5RequestShape marks models on the Claude 5+ generation request
+	// contract: adaptive thinking only (an explicit thinking budget is a 400),
+	// no sampling params (temperature/top_p/top_k), and a thinking display
+	// that defaults to "omitted" so visible reasoning must be requested. It is
+	// broader than ThinkingAlwaysOn — claude-sonnet-5 can still disable
+	// thinking. Serf-authored: LiteLLM has no equivalent field.
+	Claude5RequestShape bool `json:"claude5_request_shape,omitempty"`
 	// SupportsWebSearch is presence-aware: nil means the catalog is silent
 	// on web-search support (caller should use its default), &true / &false
 	// reflect explicit catalog values. The override layer can flip an
