@@ -20,7 +20,7 @@ func seed100JobsRangeB(t *testing.T) {
 
 	// Kept-sync finalization must return a durable finish append failure.
 	finishJM := newTestJM(t)
-	finishOut, err := finishJM.openOutput(filepath.Join(finishJM.dir, "jobs", "finish-fault.log"), 64)
+	finishOut, err := jobstore.OpenOutputNoSync(filepath.Join(finishJM.dir, "jobs", "finish-fault.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}

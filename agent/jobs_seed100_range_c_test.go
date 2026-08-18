@@ -17,7 +17,7 @@ func seed100JobsRangeC(t *testing.T) {
 	jm := newTestJM(t)
 	freezeClock(jm)
 
-	output, err := jm.openOutput(filepath.Join(jm.dir, "jobs", "range-c.log"), 64)
+	output, err := jobstore.OpenOutputNoSync(filepath.Join(jm.dir, "jobs", "range-c.log"), 64)
 	if err != nil {
 		t.Fatal(err)
 	}
