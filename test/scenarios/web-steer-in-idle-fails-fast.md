@@ -58,6 +58,19 @@ HUB=http://127.0.0.1:$PORT
 
 ### Part A — the daemon's refusal (no browser)
 
+> **KNOWN-STALE — Part A asserts the pre-v3 contract; do not trust it as
+> written.** It is built on `expectedTurnId`, which **serf-appwire-v3
+> removed** from `turn/steer`, `turn/queue`, `turn/interrupt`,
+> `turn/drainAsSteer` and `turn/promoteQueuedAsSteer` — control is
+> session-scoped and names no turn (`appwire/types.go`, the
+> `ProtocolVersion` comment). Both messages Step 2 pins are gone with it:
+> `expectedTurnId is required` appears in no production source, and
+> `turn is not active` appears in no production Go file at all. The "Verified
+> live 2026-07-31" note below predates that change. Re-deriving what a v3
+> daemon actually refuses, against a live stack, is kata `pt6k`; until it
+> lands, run **Part B only** and treat Part A as a record of what the card
+> used to prove.
+
 2. Dial `ws://127.0.0.1:$PORT/rpc` with `Authorization: Bearer $TOKEN`,
    `initialize`, then send two `turn/steer` requests against the idle
    session and record the JSON-RPC error of each:
@@ -127,7 +140,9 @@ HUB=http://127.0.0.1:$PORT
   same gate (`:1055`). Falsify: an idle session reports `steer:true` — the
   capability gate regressed, and the refusals below become the only thing
   standing between a stale click and a bogus steer.
-- **Step 2 (daemon, exact)**: the omitted-`expectedTurnId` request is
+- **Step 2 (daemon, exact) — KNOWN-STALE, see the Part A note; these two
+  messages no longer exist and kata `pt6k` owns re-deriving them**: the
+  omitted-`expectedTurnId` request is
   rejected with `InvalidParams` (code `-32602`) and the exact message
   `expectedTurnId is required` — refused twice on the way down, once by the
   hub (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
