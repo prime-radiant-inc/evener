@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -55,6 +56,67 @@ func TestModuleLintPassesACleanModuleWithRealGolangciLint(t *testing.T) {
 	}
 	if left := scratchLeft(t); len(left) != 0 {
 		t.Errorf("clean integration run left scratch: %v", left)
+	}
+}
+
+func TestModuleLintHonorsARealSignalThroughTheBinary(t *testing.T) {
+	// The in-process interrupt test injects into the channel seam, so it
+	// cannot notice a signal dropped from the Notify list. This one sends
+	// a real SIGTERM to the built binary mid-run. Child-reap mechanics are
+	// pinned in-process (TestLintRunInterruptStopsChildrenAndSummarizes);
+	// here the pin is delivery: exit 143, the interrupted summary, and no
+	// scratch left. The TERM lands during golangci-lint's startup — the
+	// scratch dir appears milliseconds into the run and the linter takes
+	// hundreds of milliseconds, so the margin is wide.
+	requireGolangciLint(t)
+	dir := writeFixtureModule(t, "package fixture\n\n// Ok exists to be lint-clean.\nfunc Ok() int { return 1 }\n")
+	tmp := t.TempDir()
+	cmd := exec.Command(buildSerfDev(t), "module-lint") //nolint:noctx // stopped by the SIGTERM under test, reaped by Wait
+	env := os.Environ()
+	kept := env[:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "TMPDIR=") && !strings.HasPrefix(kv, "MODULES=") && !strings.HasPrefix(kv, "LINT_PARALLEL=") {
+			kept = append(kept, kv)
+		}
+	}
+	cmd.Env = append(kept, "TMPDIR="+tmp, "MODULES="+dir)
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		scratch, err := filepath.Glob(filepath.Join(tmp, "serf-module-lint.*"))
+		if err == nil && len(scratch) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run never minted its scratch")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- cmd.Wait() }()
+	select {
+	case <-waitErr:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the binary survived SIGTERM past the escalation window")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 143 {
+		t.Errorf("binary exited %d, want 143 (output: %s)", code, out.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "FAIL lint (interrupted: SIGTERM)" {
+		t.Errorf("final line = %q", last)
+	}
+	left, err := filepath.Glob(filepath.Join(tmp, "serf-module-lint.*"))
+	if err != nil || len(left) != 0 {
+		t.Errorf("interrupted binary left scratch: %v (err %v)", left, err)
 	}
 }
 

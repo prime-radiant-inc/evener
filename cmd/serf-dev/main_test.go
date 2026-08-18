@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -18,11 +17,7 @@ func runSerfDev(t *testing.T, args ...string) (int, string) {
 	if testing.Short() {
 		t.Skip("integration: builds and runs the serf-dev binary")
 	}
-	binary := filepath.Join(t.TempDir(), "serf-dev")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil { //nolint:noctx // one short-lived build, reaped by CombinedOutput
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
-	cmd := exec.Command(binary, args...) //nolint:noctx // one short-lived run, reaped by Run
+	cmd := exec.Command(buildSerfDev(t), args...) //nolint:noctx // one short-lived run, reaped by Run — buildSerfDev is the shard runner's shared helper
 	var errOut strings.Builder
 	cmd.Stderr = &errOut
 	err := cmd.Run()
