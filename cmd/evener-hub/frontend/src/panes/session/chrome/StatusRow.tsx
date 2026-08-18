@@ -75,7 +75,7 @@ const DEFAULT_EFFORT_LABEL = "(default)";
 // agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
 // to [], reducer.ts:263). A model that does not reason at all gets no control.
 //
-// none-vs-(default): an unset effort - and serf's "none", which clears the
+// none-vs-(default): an unset effort - and evener's "none", which clears the
 // effort to the provider default (llm/types.go:670, providercfg/load.go:76) -
 // both mean "no explicit level, the model decides". They read as "(default)",
 // a real leading option (value ""), never the first ladder level (which a

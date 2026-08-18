@@ -48,8 +48,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "active" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -199,7 +199,7 @@ describe("visibility", () => {
   test("renders nothing when the queue is empty and no pending entries exist", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
     renderStrip(defaultProps());
     expect(screen.queryByText(/queued messages/i)).toBeNull();
@@ -208,7 +208,7 @@ describe("visibility", () => {
   test("renders the strip once the queue has entries", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
@@ -418,7 +418,7 @@ describe("dismiss a rejected Stop", () => {
 describe("row rendering", () => {
   async function hydrateWithTwoRows(fake: FakeClient) {
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
@@ -447,7 +447,7 @@ describe("row rendering", () => {
     const fake = connectFakeClient();
     const long = "x".repeat(150);
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: [long], preview: [long] },
@@ -477,7 +477,7 @@ describe("promote", () => {
   test("clicking steer-now calls promoteQueuedAsSteer with the row's index and entry id", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
@@ -509,7 +509,7 @@ describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
@@ -542,7 +542,7 @@ describe("edit", () => {
   test("restores the FULL text to the composer BEFORE calling cancelQueued (loser-safe order)", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
@@ -580,7 +580,7 @@ describe("edit", () => {
   test("a restore that fails unlocks the row, says so, and cancels nothing", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
@@ -606,7 +606,7 @@ describe("edit", () => {
   test("edit is disabled for an image-only queued entry (blank text)", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: [""], preview: ["[image]"] },
@@ -622,7 +622,7 @@ describe("edit", () => {
   test("edit is disabled entirely when the daemon reports no texts array at all", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], preview: ["hello"] },
@@ -648,7 +648,7 @@ describe("re-rendering after the queue shifts", () => {
   test("after the daemon confirms the head entry is consumed, the surviving row promotes with its NEW index", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
@@ -705,7 +705,7 @@ describe("re-rendering after the queue shifts", () => {
   test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
@@ -761,7 +761,7 @@ describe("degraded daemon: no entry ids", () => {
   test("every row action is disabled when the daemon reports no ids array at all", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, texts: ["hello"], preview: ["hello"] },
@@ -780,7 +780,7 @@ describe("in-flight row locking", () => {
   test("while a cancel is in flight, that row's own steer-now/edit/remove are all disabled", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
@@ -822,7 +822,7 @@ describe("in-flight row locking", () => {
   test("an in-flight action on one row does not disable a different row", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
@@ -851,7 +851,7 @@ describe("optimistic pending queue rows", () => {
   test("a pending queue-method entry from another submission renders as an extra, action-less row", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
     fake.on("turn/queue", (params) => ({
       receipt: {
@@ -880,7 +880,7 @@ describe("drain-as-steer affordance", () => {
   test("the drain button is absent when there is nothing queued", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
     renderStrip(defaultProps());
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
@@ -889,7 +889,7 @@ describe("drain-as-steer affordance", () => {
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
@@ -922,7 +922,7 @@ describe("drain-as-steer affordance", () => {
   test("a lost drain response never produces a timeout warning or reload instruction", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
@@ -950,7 +950,7 @@ describe("drain-as-steer affordance", () => {
   test("a mid-encode attachment (hasPending) blocks the drain with a toast, never calling drainAsSteer", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
@@ -977,7 +977,7 @@ describe("drain-as-steer affordance", () => {
   test("the drain button disables itself while its own request is in flight", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
@@ -1016,7 +1016,7 @@ describe("drain-as-steer affordance", () => {
   test("the shared busy prop (a different in-flight action elsewhere) also disables the drain button", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },

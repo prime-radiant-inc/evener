@@ -1,6 +1,6 @@
 // mcp.tsx is the "MCP servers" settings section (#15 - parity-m7-
 // settings.md §15): a read-only "Discovered servers" probed block (T4's
-// serf/settings/overview interface, injected - see McpSectionProps below)
+// evener/settings/overview interface, injected - see McpSectionProps below)
 // above two editable lists on the global launch layer - "MCP config files"
 // (mcpConfigs: string[], reusing dirListSetting.tsx's PathListEditor) and
 // "Inline MCP servers" (mcps: MCPServerSpec[], hand-rolled: a 3-field name/
@@ -185,7 +185,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
   return (
     <section className={CLASS.page}>
       <h2 className={CLASS.title}>MCP servers</h2>
-      <p className={CLASS.help}>MCP servers serf spawns alongside each session. Stored in the global launch layer.</p>
+      <p className={CLASS.help}>MCP servers evener spawns alongside each session. Stored in the global launch layer.</p>
 
       <section className={CLASS.section}>
         <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
@@ -262,7 +262,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
             {/* FormRow (not a hand-rolled error paragraph) for the same
                 reason dirListSetting.tsx's PathListEditor uses it - see
                 that file's own comment. htmlFor targets the command field
-                specifically since that's what serf/path/validate actually
+                specifically since that's what evener/path/validate actually
                 validates; name/args get placeholder-only hints, matching
                 the legacy's own zero-real-labels baseline for this form
                 (not a regression this task introduces). */}

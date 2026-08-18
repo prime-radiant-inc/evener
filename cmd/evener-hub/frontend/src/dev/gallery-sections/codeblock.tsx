@@ -3,7 +3,7 @@ import { ThemeFlip } from "../ThemeFlip";
 import styles from "./codeblock.module.css";
 
 const GO_SAMPLE = `func main() {
-	fmt.Println("hello, serf")
+	fmt.Println("hello, evener")
 }`;
 
 const SHELL_SAMPLE = `$ npm run test

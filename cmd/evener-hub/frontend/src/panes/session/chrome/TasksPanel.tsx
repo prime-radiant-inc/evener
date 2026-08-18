@@ -3,7 +3,7 @@
 // Two independent signals, per the plan's push-driven-plus-fetch-on-open
 // model:
 //   - The TRIGGER's badge is model.tasks (the {total, done} aggregate,
-//     pushed live by serf/task/updated - protocol/reducer.ts's own case) -
+//     pushed live by evener/task/updated - protocol/reducer.ts's own case) -
 //     cheap and already-live without opening anything, so it stays exactly
 //     as before.
 //   - The SHEET's row list is fetched fresh via threadsStore.listTasks(ref)
@@ -12,7 +12,7 @@
 //     automatically if model.tasks changes again while the panel stays
 //     open (a live update while the user is looking at the list - the
 //     aggregate object reference only changes when the reducer's own
-//     serf/task/updated case actually re-assigns it, so this never
+//     evener/task/updated case actually re-assigns it, so this never
 //     refires on an unrelated model update). taskData.ts's
 //     parseTaskListData (pinned wire-true against agent/task/task_store.go's
 //     real Task shape) owns interpreting the raw `unknown` response.
@@ -34,7 +34,7 @@
 // truly has no way to distinguish "never had tasks" from "can't currently
 // ask", so it renders the same "No tasks yet" a real `[]` response would.
 // But once model.tasks is non-null, the trigger beside this panel is
-// ALREADY on screen claiming tasks exist (serf/task/updated only fires when
+// ALREADY on screen claiming tasks exist (evener/task/updated only fires when
 // the agent has actually edited its list - see the re-fetch paragraph
 // below) - "No tasks yet" would contradict it, so that case gets its own
 // terminal copy instead (renderBody's daemonGone branch), and never wipes
@@ -54,7 +54,7 @@
 // neither for a fresh list nor for the "No tasks yet" state.
 //
 // Both forms carry Try again, because there is no schedule to fall back on.
-// The re-fetch trigger is model.tasks changing, i.e. a serf/task/updated
+// The re-fetch trigger is model.tasks changing, i.e. a evener/task/updated
 // push, which the projector emits only when the agent actually edits its
 // task list (internal/appprojector/appwire_projection.go's EventTaskUpdated
 // case) - never on a timer. A session whose agent is still working heals
@@ -143,7 +143,7 @@ const CLASS = {
 // Mirrors the legacy sidebar/inline task-row grammar (cmd/evener-hub/assets/
 // renderer-format.js: planGlyphForStatus/planStateClass) translated onto
 // this app's own widget vocabulary (Chip tones) rather than the legacy's
-// window.SerfIcons SVG fragments, which this client has no equivalent of -
+// window.EvenerIcons SVG fragments, which this client has no equivalent of -
 // same semantic mapping for the GLYPH: done gets a checkmark, in_progress
 // a filled dot, cancelled an X (distinct shape from pending's hollow
 // circle) so "won't happen" reads differently from "hasn't started yet".
@@ -457,7 +457,7 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
   const [reloads, setReloads] = useState(0);
 
   // Fetches on mount, on every Try again, and again whenever model.tasks
-  // changes while the body is mounted (a live serf/task/updated push while
+  // changes while the body is mounted (a live evener/task/updated push while
   // the user is looking) - see this file's own header comment. `toasts` is
   // deliberately not a dependency: useToasts() returns a fresh wrapper object
   // every render (see widgets/toast/index.tsx), so depending on it would

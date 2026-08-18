@@ -8,7 +8,7 @@
 // convention) - deliberately: "no client connected" is a programmer-error
 // condition each store rejects loudly on, not one it silently degrades
 // from. But a settings section can be reached by a direct deep link
-// (/settings/credentials, /settings/launch-serf, ...) that mounts before
+// (/settings/credentials, /settings/launch-evener, ...) that mounts before
 // AppShell's own connect() handshake has finished - panes/session/
 // Session.tsx hit this exact race first and documents it in full; this
 // hook is that same fix, generalized so every section here doesn't

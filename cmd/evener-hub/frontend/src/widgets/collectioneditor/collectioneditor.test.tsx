@@ -10,7 +10,7 @@ interface DirItem {
   path: string;
 }
 
-const ITEMS: DirItem[] = [{ path: "/opt/plugins" }, { path: "/home/user/.serf/plugins" }];
+const ITEMS: DirItem[] = [{ path: "/opt/plugins" }, { path: "/home/user/.evener/plugins" }];
 
 function baseProps(overrides: Partial<Parameters<typeof CollectionEditor<DirItem>>[0]> = {}) {
   return {
@@ -65,7 +65,7 @@ test("renders the list with an accessible name", () => {
 test("renders one row per item via renderItem", () => {
   render(<CollectionEditor<DirItem> {...baseProps()} />);
   expect(screen.getByText("/opt/plugins")).toBeTruthy();
-  expect(screen.getByText("/home/user/.serf/plugins")).toBeTruthy();
+  expect(screen.getByText("/home/user/.evener/plugins")).toBeTruthy();
 });
 
 test("renders the empty message and no rows when items is empty", () => {
@@ -77,7 +77,7 @@ test("renders the empty message and no rows when items is empty", () => {
 test("each row has a remove button with the given accessible name", () => {
   render(<CollectionEditor<DirItem> {...baseProps()} />);
   expect(screen.getByRole("button", { name: "Remove /opt/plugins" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Remove /home/user/.serf/plugins" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove /home/user/.evener/plugins" })).toBeTruthy();
 });
 
 test("clicking a row's remove button calls onRemove with that item immediately, no built-in confirm", async () => {

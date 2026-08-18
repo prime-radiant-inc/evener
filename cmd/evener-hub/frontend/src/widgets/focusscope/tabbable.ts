@@ -1,5 +1,5 @@
-// Ports the tabbable-element semantics of the old serf-hub UI's
-// cmd/evener-hub/assets/focus-trap.js (SerfFocusTrap) - same focusable
+// Ports the tabbable-element semantics of the old evener-hub UI's
+// cmd/evener-hub/assets/focus-trap.js (EvenerFocusTrap) - same focusable
 // selector list, same disabled/tabindex=-1/hidden filtering, same
 // ancestor-walk visibility check. Internal to the focusscope widget: Dialog/
 // Sheet/Menu never call this directly, they go through <FocusScope trap>.

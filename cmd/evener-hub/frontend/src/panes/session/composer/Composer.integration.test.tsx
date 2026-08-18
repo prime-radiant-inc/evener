@@ -121,8 +121,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "active" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    source: "evener",
+    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -254,7 +254,7 @@ function ackAskUserCall(
 
 test("the queue strip renders inside the composer once the queue has entries", async () => {
   await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -269,7 +269,7 @@ test("the queue strip renders inside the composer once the queue has entries", a
 test("the strip's drain-as-steer reads the composer's live text at click time, not a stale snapshot", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -296,7 +296,7 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
 test("a successful strip-triggered drain clears the composer's own text and draft", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -316,7 +316,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
   await user.click(drainButton());
 
   await waitFor(() => expect((textarea() as HTMLTextAreaElement).value).toBe(""));
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
 // Mirrors this file's own "text typed while a send is still in flight
@@ -330,7 +330,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
 test("text changed while a strip-triggered drain is in flight survives the drain's own success (not cleared) - the same unchanged-since-submit asymmetry as the classic drain path", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -360,7 +360,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
   fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original plus more" } });
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
 
   resolveDrain?.();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
@@ -371,13 +371,13 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   expect((textarea() as HTMLTextAreaElement).value).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
 });
 
 test("clicking a queued row's Edit button restores its full text into an empty composer verbatim", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full queued text"], preview: ["the full queued text"] },
@@ -403,7 +403,7 @@ test("clicking a queued row's Edit button restores its full text into an empty c
 test("clicking Edit appends the restored text after a blank line when the composer already has typed text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued copy"], preview: ["queued copy"] },
@@ -429,7 +429,7 @@ test("clicking Edit appends the restored text after a blank line when the compos
 test("clicking a queued row's cancel button fires turn/cancelQueued with that row's expectedEntryId", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -466,7 +466,7 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -495,7 +495,7 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -529,7 +529,7 @@ test("a plain send exposes its durable pending entry while the network remains u
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   fake.on("turn/start", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
@@ -547,7 +547,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   fake.on("turn/queue", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
@@ -578,7 +578,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
     readCount += 1;
     return readResponse("ref_a", {
       status: { type: "active" },
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
         queue: { revision: 0 },
@@ -611,7 +611,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
 
   await act(async () => {
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
   });
@@ -635,7 +635,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
 function idleNoTurnOverrides(): Partial<Thread> {
   return {
     status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     turns: [],
   };
 }
@@ -726,7 +726,7 @@ test("resolving the pending ask announces the composer's restoration via this co
 test("the ask dock renders above the queue strip when both are visible at once", async () => {
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
@@ -750,7 +750,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/queue", (params) => ({
     receipt: {

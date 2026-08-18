@@ -14,7 +14,7 @@ import { parseTaskListData } from "./taskData";
 //   - agent/session_tools.go:957-959 (Session.Tasks -> TaskStore.View,
 //     always a non-nil, possibly-empty []Task).
 //   - server/server.go:625-631 (SetTasksFunc) + cmd/evener/serve.go:596
-//     (wired unconditionally by every real serf daemon session).
+//     (wired unconditionally by every real evener daemon session).
 //   - server/appwire_runtime.go:713-721 (handleAppTasksList: Data is nil
 //     only when no tasksFn is registered at all - an old daemon or a
 //     source with no task support, e.g. cmd/evener-hub/internal/appsource/

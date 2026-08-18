@@ -44,8 +44,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -138,7 +138,7 @@ describe("DevHarness", () => {
                 items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" }],
               },
             ],
-            serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+            evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
           }),
         }) satisfies ThreadReadResponse,
     );

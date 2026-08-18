@@ -47,8 +47,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "active" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }

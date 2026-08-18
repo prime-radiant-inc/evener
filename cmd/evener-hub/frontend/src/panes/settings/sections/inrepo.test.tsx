@@ -41,13 +41,13 @@ function resolvedWithRepo(repo: LaunchConfigResolved["repo"]): LaunchConfigResol
   return { effective: {}, layers: {}, provenance: {}, repo };
 }
 
-// The "No .serf/launch.toml in {cwd}." note is split across text + <code> +
+// The "No .evener/launch.toml in {cwd}." note is split across text + <code> +
 // text + <code> + text nodes (see inrepo.tsx's ResolvedStatus) - a single
 // regex/string getByText can't match text broken across sibling elements,
 // so this matches on the containing <p>'s full textContent instead.
 function findsNoFileMessage(cwd: string) {
   return (_: string, element: Element | null) =>
-    element?.tagName === "P" && element.textContent === `No .serf/launch.toml in ${cwd}.`;
+    element?.tagName === "P" && element.textContent === `No .evener/launch.toml in ${cwd}.`;
 }
 
 beforeEach(() => {
@@ -64,9 +64,9 @@ describe("initial load", () => {
   test("pre-fills the cwd input from localStorage's lastCwd and resolves it immediately", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", (params) => {
+    fake.on("evener/launch/resolve", (params) => {
       expect(params).toEqual({ cwd: "/repo", launchOverrides: undefined });
-      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByLabelText(/working dir/i)).toHaveProperty("value", "/repo");
@@ -82,9 +82,9 @@ describe("initial load", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    fake.on("serf/launch/resolve", async () => {
+    fake.on("evener/launch/resolve", async () => {
       await gate;
-      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
@@ -97,7 +97,7 @@ describe("initial load", () => {
   test("no lastCwd in storage and an empty field: shows 'Enter a working directory.' with no RPC call", () => {
     const fake = connectFakeClient();
     let called = false;
-    fake.on("serf/launch/resolve", () => {
+    fake.on("evener/launch/resolve", () => {
       called = true;
       return resolvedWithRepo(undefined);
     });
@@ -118,9 +118,9 @@ describe("initial load", () => {
     const fake = new FakeClient("idle"); // NOT ready yet - the deferred-fire path
     connectionStore.getState().connect(fake);
     const resolvedCwds: string[] = [];
-    fake.on("serf/launch/resolve", (params) => {
+    fake.on("evener/launch/resolve", (params) => {
       resolvedCwds.push(params.cwd);
-      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByLabelText(/working dir/i)).toHaveProperty("value", "/initial");
@@ -145,9 +145,9 @@ describe("blur/Enter-triggered re-resolve (not per-keystroke)", () => {
   test("typing alone does not refresh; blurring the field does", async () => {
     const fake = connectFakeClient();
     const calls: string[] = [];
-    fake.on("serf/launch/resolve", (params) => {
+    fake.on("evener/launch/resolve", (params) => {
       calls.push(params.cwd);
-      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
     const user = userEvent.setup();
@@ -163,7 +163,7 @@ describe("trust states", () => {
   test("absent: shows the no-file message and nothing else (no preview, no trust button)", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", () => resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" }));
+    fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" }));
     render(<InRepoSection sectionId="inrepo" />);
     await screen.findByText(findsNoFileMessage("/repo"));
     expect(screen.queryByRole("button", { name: /trust this file/i })).toBeNull();
@@ -172,8 +172,8 @@ describe("trust states", () => {
   test("trusted: shows the content hash, the preview, and no trust button", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", () =>
-      resolvedWithRepo({ path: ".serf/launch.toml", trust: "trusted", hash: "abc123", preview: "model = 'x'" }),
+    fake.on("evener/launch/resolve", () =>
+      resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123", preview: "model = 'x'" }),
     );
     render(<InRepoSection sectionId="inrepo" />);
     await screen.findByText(/Trusted/);
@@ -189,7 +189,7 @@ describe("trust states", () => {
   ])("%s: shows the trust button", async (trust, copyPattern) => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", () => resolvedWithRepo({ path: ".serf/launch.toml", trust, hash: "abc123" }));
+    fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust, hash: "abc123" }));
     render(<InRepoSection sectionId="inrepo" />);
     await screen.findByText(copyPattern);
     expect(screen.getByRole("button", { name: /trust this file/i })).toBeTruthy();
@@ -201,15 +201,15 @@ describe("trust action", () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
     let resolveCalls = 0;
-    fake.on("serf/launch/resolve", () => {
+    fake.on("evener/launch/resolve", () => {
       resolveCalls += 1;
       return resolveCalls === 1
-        ? resolvedWithRepo({ path: ".serf/launch.toml", trust: "untrusted", hash: "abc123" })
-        : resolvedWithRepo({ path: ".serf/launch.toml", trust: "trusted", hash: "abc123" });
+        ? resolvedWithRepo({ path: ".evener/launch.toml", trust: "untrusted", hash: "abc123" })
+        : resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123" });
     });
-    fake.on("serf/launch/trustRepo", (params) => {
+    fake.on("evener/launch/trustRepo", (params) => {
       expect(params).toEqual({ cwd: "/repo", hash: "abc123" });
-      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "trusted", hash: "abc123" });
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123" });
     });
     render(<InRepoSection sectionId="inrepo" />);
     const user = userEvent.setup();
@@ -221,10 +221,10 @@ describe("trust action", () => {
   test("a trust failure appends an inline error while keeping the preview/note visible", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", () =>
-      resolvedWithRepo({ path: ".serf/launch.toml", trust: "untrusted", hash: "abc123", preview: "model = 'x'" }),
+    fake.on("evener/launch/resolve", () =>
+      resolvedWithRepo({ path: ".evener/launch.toml", trust: "untrusted", hash: "abc123", preview: "model = 'x'" }),
     );
-    fake.on("serf/launch/trustRepo", () => {
+    fake.on("evener/launch/trustRepo", () => {
       throw new Error("file changed since review");
     });
     render(<InRepoSection sectionId="inrepo" />);
@@ -243,7 +243,7 @@ describe("resolve failure", () => {
   test("shows 'Failed to load: {message}'", async () => {
     localStorage.setItem("lastCwd", "/repo");
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", () => {
+    fake.on("evener/launch/resolve", () => {
       throw new Error("boom");
     });
     render(<InRepoSection sectionId="inrepo" />);

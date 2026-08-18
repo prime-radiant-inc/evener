@@ -74,7 +74,7 @@ export interface ExtensionsStoreState {
   // layer:"global") - matches every one of §§13-15's legacy partials, none
   // of which is layer-parameterized either (Appendix B's schema-driven
   // engine is the one that supports project-layer editing, and it's T2's
-  // Serf-launch/Per-project domain, not this store's).
+  // Evener-launch/Per-project domain, not this store's).
   launchLayer: LaunchConfigLayer | null;
   launchLayerLoading: boolean;
   launchLayerError: string | null;
@@ -110,7 +110,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     set({ marketplacesLoading: true, marketplacesError: null });
     try {
       const client = requireClient();
-      const resp = await client.request("serf/marketplace/list", {});
+      const resp = await client.request("evener/marketplace/list", {});
       set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
     } catch (err) {
       set({ marketplacesLoading: false, marketplacesError: errorText(err) });
@@ -119,13 +119,13 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
 
   async addMarketplace(params) {
     const client = requireClient();
-    const resp = await client.request("serf/marketplace/add", params);
+    const resp = await client.request("evener/marketplace/add", params);
     set({ marketplaces: resp.marketplaces });
   },
 
   async removeMarketplace(name) {
     const client = requireClient();
-    const resp = await client.request("serf/marketplace/remove", { name });
+    const resp = await client.request("evener/marketplace/remove", { name });
     set((s) => {
       const nextCatalogs = new Map(s.browseCatalogs);
       nextCatalogs.delete(name);
@@ -135,7 +135,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
 
   async refreshMarketplace(name) {
     const client = requireClient();
-    const resp = await client.request("serf/marketplace/refresh", { name });
+    const resp = await client.request("evener/marketplace/refresh", { name });
     set((s) => {
       const nextCatalogs = new Map(s.browseCatalogs);
       nextCatalogs.delete(name);
@@ -154,7 +154,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
       return { browseCatalogs: next };
     });
     try {
-      const resp = await client.request("serf/marketplace/browse", { name });
+      const resp = await client.request("evener/marketplace/browse", { name });
       set((s) => {
         const next = new Map(s.browseCatalogs);
         next.set(name, { status: "loaded", description: resp.description, plugins: resp.plugins });
@@ -177,7 +177,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     set({ pluginsLoading: true, pluginsError: null });
     try {
       const client = requireClient();
-      const resp = await client.request("serf/plugin/list", {});
+      const resp = await client.request("evener/plugin/list", {});
       set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
     } catch (err) {
       set({ pluginsLoading: false, pluginsError: errorText(err) });
@@ -186,37 +186,37 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
 
   async installPlugin(plugin, marketplace) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/install", { plugin, marketplace });
+    const resp = await client.request("evener/plugin/install", { plugin, marketplace });
     set({ plugins: resp.plugins });
   },
 
   async upgradePlugin(plugin, marketplace) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/upgrade", { plugin, marketplace });
+    const resp = await client.request("evener/plugin/upgrade", { plugin, marketplace });
     set({ plugins: resp.plugins });
   },
 
   async removePlugin(plugin, marketplace) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/remove", { plugin, marketplace });
+    const resp = await client.request("evener/plugin/remove", { plugin, marketplace });
     set({ plugins: resp.plugins });
   },
 
   async enablePlugin(plugin, marketplace) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/enable", { plugin, marketplace });
+    const resp = await client.request("evener/plugin/enable", { plugin, marketplace });
     set({ plugins: resp.plugins });
   },
 
   async disablePlugin(plugin, marketplace) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/disable", { plugin, marketplace });
+    const resp = await client.request("evener/plugin/disable", { plugin, marketplace });
     set({ plugins: resp.plugins });
   },
 
   async setPluginAutoUpgrade(plugin, marketplace, autoUpgrade) {
     const client = requireClient();
-    const resp = await client.request("serf/plugin/setAutoUpgrade", { plugin, marketplace, autoUpgrade });
+    const resp = await client.request("evener/plugin/setAutoUpgrade", { plugin, marketplace, autoUpgrade });
     set({ plugins: resp.plugins });
   },
 
@@ -228,7 +228,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     set({ launchLayerLoading: true, launchLayerError: null });
     try {
       const client = requireClient();
-      const layer = await client.request("serf/launch/getLayer", GLOBAL_LAYER_PARAMS);
+      const layer = await client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS);
       set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null });
     } catch (err) {
       set({ launchLayerLoading: false, launchLayerError: errorText(err) });
@@ -245,18 +245,18 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     // Trusting our own outgoing payload avoids taking a dependency on the
     // resolved response's internal layer-name keying, which nothing in
     // this store otherwise needs to know.
-    await client.request("serf/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
+    await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
     set({ launchLayer: next });
   },
 
   async validatePath(path, kind) {
     const client = requireClient();
-    return client.request("serf/path/validate", { path, kind });
+    return client.request("evener/path/validate", { path, kind });
   },
 
   async completePaths(prefix, includeFiles) {
     const client = requireClient();
-    const resp = await client.request("serf/paths/complete", { prefix, includeFiles });
+    const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
     // Defence in depth against a null `data`. The hub sends [] and the wire type
     // says string[], but a null here would reach every PathField on the page and
     // a form must not come down over an empty directory listing.
@@ -287,10 +287,10 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 // waiting on each other. All three notifications' generated payload types
 // are empty ({}) in protocol/types.gen.ts, so there is nothing to apply
 // directly and a debounced re-fetch of the affected list is the only
-// option, exactly like serf/tree/changed's own "just refetch" contract.
-// On the wire serf/marketplace/updated and serf/plugin/updated genuinely
+// option, exactly like evener/tree/changed's own "just refetch" contract.
+// On the wire evener/marketplace/updated and evener/plugin/updated genuinely
 // send empty maps (notifyMarketplaceUpdated/notifyPluginUpdated,
-// cmd/evener-hub/app_rpc.go:657,663), while serf/launch/updated carries
+// cmd/evener-hub/app_rpc.go:657,663), while evener/launch/updated carries
 // {cwd, layer} (notifyLaunchUpdated, app_rpc.go:772-775) whose fields the
 // generated type drops because codegen can't see into Go's untyped
 // map[string]string; this refetch is payload-agnostic either way.
@@ -323,9 +323,9 @@ function scheduleLaunchLayerRefetch(): void {
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "serf/marketplace/updated") scheduleMarketplaceRefetch();
-  else if (n.method === "serf/plugin/updated") schedulePluginRefetch();
-  else if (n.method === "serf/launch/updated") scheduleLaunchLayerRefetch();
+  if (n.method === "evener/marketplace/updated") scheduleMarketplaceRefetch();
+  else if (n.method === "evener/plugin/updated") schedulePluginRefetch();
+  else if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
 }
 
 function attachNotifications(client: AppwireClientLike): void {

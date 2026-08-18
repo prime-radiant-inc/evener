@@ -57,16 +57,16 @@ describe("AgentsSection", () => {
   });
 
   test("an agent with no editPath shows a dim 'built-in' label instead of a link", () => {
-    const data: SettingsOverviewResponse = { agents: [{ name: "serf" }] };
+    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
     expect(screen.getByText("built-in")).toBeTruthy();
     expect(screen.queryByRole("link")).toBeNull();
   });
 
   test("renders every agent by name", () => {
-    const data: SettingsOverviewResponse = { agents: [{ name: "serf" }, { name: "codex" }] };
+    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }, { name: "codex" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
-    expect(screen.getByText("serf")).toBeTruthy();
+    expect(screen.getByText("evener")).toBeTruthy();
     expect(screen.getByText("codex")).toBeTruthy();
   });
 });

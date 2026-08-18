@@ -24,22 +24,22 @@ afterEach(() => {
 
 test("renders the Skill directories heading, copy, and the skillsDirs entries", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", (params) => {
+  fake.on("evener/launch/getLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global" });
     return { pluginDirs: ["/opt/plugins"], skillsDirs: ["/opt/skills"] };
   });
   render(<SkillsDirsSection />);
   expect(await screen.findByText("Skill directories")).toBeTruthy();
-  expect(screen.getByText("Directories serf scans for skills at launch. Applied to every spawn.")).toBeTruthy();
+  expect(screen.getByText("Directories evener scans for skills at launch. Applied to every spawn.")).toBeTruthy();
   expect(await screen.findByText("/opt/skills")).toBeTruthy();
   expect(screen.queryByText("/opt/plugins")).toBeNull();
 });
 
 test("saving a new entry writes it to the skillsDirs field, not pluginDirs", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/existing-plugin"], skillsDirs: [] }));
-  fake.on("serf/path/validate", () => ({ path: "/opt/new-skill", valid: true }));
-  fake.on("serf/launch/setLayer", (params) => {
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/existing-plugin"], skillsDirs: [] }));
+  fake.on("evener/path/validate", () => ({ path: "/opt/new-skill", valid: true }));
+  fake.on("evener/launch/setLayer", (params) => {
     expect(params).toEqual({
       cwd: "/",
       layer: "global",
@@ -47,7 +47,7 @@ test("saving a new entry writes it to the skillsDirs field, not pluginDirs", asy
     });
     return { effective: {}, layers: {}, provenance: {} };
   });
-  fake.on("serf/paths/complete", () => ({ data: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
   const user = userEvent.setup();
   render(<SkillsDirsSection />);
   await screen.findByText("No skill directories. Add one below.");

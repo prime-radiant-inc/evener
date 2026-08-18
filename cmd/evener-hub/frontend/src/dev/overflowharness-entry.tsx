@@ -84,14 +84,14 @@ const snapshot: ThreadReadResponse = {
     createdAt: 1000,
     updatedAt: 1000,
     status: { type: "active" },
-    cwd: "/Users/jesse/prime-radiant/toil-suite/serf",
+    cwd: "/Users/jesse/prime-radiant/toil-suite/evener",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: {
+    source: "evener",
+    evener: {
       ref: REF,
       capabilities: CAPABILITIES,
       queue: { revision: 0, depth: 12 },
-      // Deliberately pressured live footer state, using SerfThread's actual
+      // Deliberately pressured live footer state, using EvenerThread's actual
       // wire fields. At the narrowest requested pane this keeps supported
       // effort, measured context, and a nonzero queue in the real React tree;
       // at the full-row threshold it also exercises work and goal sizing.
@@ -148,7 +148,7 @@ const snapshot: ThreadReadResponse = {
               "Merging the transcript redesign into webui-workspace-shell and verifying the merged result is green",
             argumentsJson: JSON.stringify({
               command:
-                "cd ~/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell && git merge --no-ff --no-edit transcript-view-design",
+                "cd ~/prime-radiant/toil-suite/evener/.claude/worktrees/webui-workspace-shell && git merge --no-ff --no-edit transcript-view-design",
             }),
             output: "Merge made by the 'ort' strategy.",
           },
@@ -162,7 +162,7 @@ const snapshot: ThreadReadResponse = {
             type: "systemMessage",
             id: "i5",
             turnId: "turn_1",
-            text: "Directory: /Users/jesse/prime-radiant/toil-suite/serf Three notable entries: README.md, go.mod, agent/",
+            text: "Directory: /Users/jesse/prime-radiant/toil-suite/evener Three notable entries: README.md, go.mod, agent/",
             eventKind: "compaction",
           },
           {
@@ -201,7 +201,7 @@ ${RAW_UNBROKEN_PAYLOAD}
 
 const fake = new FakeClient("ready");
 fake.on("thread/read", () => snapshot);
-fake.on("serf/tasks/list", () => ({ data: [] }));
+fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 threadsStore.setState((s) => ({
   threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),

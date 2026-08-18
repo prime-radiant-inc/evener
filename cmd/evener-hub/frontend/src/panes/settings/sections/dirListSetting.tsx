@@ -71,7 +71,7 @@ export interface PathListEditorProps {
    * the attempt finishes either way, exactly matching those callers'
    * existing toast-on-failure convention. */
   onRemove: (path: string) => Promise<void>;
-  /** The add row's path completion (serf/paths/complete), injected so this
+  /** The add row's path completion (evener/paths/complete), injected so this
    * editor stays wire-free like the picker it renders. */
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   emptyMessage: string;
@@ -181,7 +181,7 @@ export interface DirListSettingProps {
  * "collapse to one parameterized DirListSetting widget" recommendation.
  * Fetches the global launch layer on mount (gated on the shared client
  * actually being ready - see the mount effect's own comment), validates an
- * add via serf/path/validate before saving, and confirms every row removal.
+ * add via evener/path/validate before saving, and confirms every row removal.
  */
 export function DirListSetting({ wireField, label, copy }: DirListSettingProps) {
   const layer = useExtensionsStore((s) => s.launchLayer);

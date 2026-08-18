@@ -42,10 +42,10 @@ describe("schema", () => {
     await expect(launchConfigStore.getState().schema()).rejects.toThrow(/no client connected/);
   });
 
-  test("fetches serf/launch/schema and caches the result", async () => {
+  test("fetches evener/launch/schema and caches the result", async () => {
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/launch/schema", () => {
+    fake.on("evener/launch/schema", () => {
       calls += 1;
       return SCHEMA;
     });
@@ -59,7 +59,7 @@ describe("schema", () => {
   test("a failed schema fetch is not cached - the next call retries", async () => {
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/launch/schema", () => {
+    fake.on("evener/launch/schema", () => {
       calls += 1;
       if (calls === 1) throw new Error("boom");
       return SCHEMA;
@@ -75,7 +75,7 @@ describe("schema", () => {
     let calls = 0;
     let resolveRequest: ((value: LaunchOptionSchemaResponse) => void) | undefined;
     fake.on(
-      "serf/launch/schema",
+      "evener/launch/schema",
       () =>
         new Promise<LaunchOptionSchemaResponse>((resolve) => {
           calls += 1;
@@ -96,10 +96,10 @@ describe("schema", () => {
 });
 
 describe("getLayer", () => {
-  test("calls serf/launch/getLayer with cwd+layer and returns the layer, uncached", async () => {
+  test("calls evener/launch/getLayer with cwd+layer and returns the layer, uncached", async () => {
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/launch/getLayer", (params) => {
+    fake.on("evener/launch/getLayer", (params) => {
       calls += 1;
       expect(params).toEqual({ cwd: "/", layer: "global" });
       return LAYER;
@@ -117,9 +117,9 @@ describe("getLayer", () => {
 });
 
 describe("setLayer", () => {
-  test("calls serf/launch/setLayer with cwd+layer+config and returns the resolved config", async () => {
+  test("calls evener/launch/setLayer with cwd+layer+config and returns the resolved config", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/setLayer", (params) => {
+    fake.on("evener/launch/setLayer", (params) => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: LAYER });
       return RESOLVED;
     });
@@ -129,9 +129,9 @@ describe("setLayer", () => {
 });
 
 describe("resolve", () => {
-  test("calls serf/launch/resolve with cwd and no overrides by default", async () => {
+  test("calls evener/launch/resolve with cwd and no overrides by default", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/resolve", (params) => {
+    fake.on("evener/launch/resolve", (params) => {
       expect(params).toEqual({ cwd: "/repo" });
       return RESOLVED;
     });
@@ -141,9 +141,9 @@ describe("resolve", () => {
 });
 
 describe("trustRepo", () => {
-  test("calls serf/launch/trustRepo with cwd+hash and returns the resolved config", async () => {
+  test("calls evener/launch/trustRepo with cwd+hash and returns the resolved config", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/launch/trustRepo", (params) => {
+    fake.on("evener/launch/trustRepo", (params) => {
       expect(params).toEqual({ cwd: "/repo", hash: "abc123" });
       return RESOLVED;
     });
@@ -153,9 +153,9 @@ describe("trustRepo", () => {
 });
 
 describe("validatePath", () => {
-  test("calls serf/path/validate with path+kind and returns the response", async () => {
+  test("calls evener/path/validate with path+kind and returns the response", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/path/validate", (params) => {
+    fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt/plugins", kind: "dir" });
       return { path: "/opt/plugins", valid: true };
     });
@@ -165,7 +165,7 @@ describe("validatePath", () => {
 
   test("omits kind when not given", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/path/validate", (params) => {
+    fake.on("evener/path/validate", (params) => {
       expect(params).toEqual({ path: "/opt", kind: undefined });
       return { path: "/opt", valid: true };
     });

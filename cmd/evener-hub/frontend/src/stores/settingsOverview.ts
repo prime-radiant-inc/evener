@@ -1,4 +1,4 @@
-// settingsOverview.ts is a fetch-once-cache mirror of serf/settings/
+// settingsOverview.ts is a fetch-once-cache mirror of evener/settings/
 // overview - the field bag behind Settings -> General/Hub/Storage (this
 // stream's own sections) AND Agents/Codex launch/MCP-discovered (T2/T3's
 // sections, in sibling worktrees). Its shape is PINNED across all three
@@ -12,7 +12,7 @@
 // wiring to move to a new client after a reconnect - simpler than
 // threads.ts's own rewireClient machinery by construction, not an
 // oversight. There is also no push-notification-driven invalidation (no
-// serf/settings/* notification exists on the wire) - every section that
+// evener/settings/* notification exists on the wire) - every section that
 // wants fresh data calls fetch() (cached) or refresh() (forced) itself.
 //
 // "Caches" means exactly one thing: once `data` is non-null, fetch() is a
@@ -64,7 +64,7 @@ async function runFetch(): Promise<void> {
   settingsOverviewStore.setState({ loading: true, error: null });
   try {
     const client = requireClient();
-    const data = await client.request("serf/settings/overview", {});
+    const data = await client.request("evener/settings/overview", {});
     settingsOverviewStore.setState({ data, loading: false, error: null });
   } catch (err) {
     // `data` is deliberately left out of this patch - zustand's setState

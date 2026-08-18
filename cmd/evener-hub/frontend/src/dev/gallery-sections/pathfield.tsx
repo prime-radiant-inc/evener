@@ -9,15 +9,15 @@ const CLASS = {
   frame: requireClass(styles.frame, "pathfield.module.css", "frame"),
 };
 
-// A tiny in-memory tree standing in for serf/paths/complete, which this widget
+// A tiny in-memory tree standing in for evener/paths/complete, which this widget
 // deliberately knows nothing about (see PathField's own doc comment: the caller
 // injects `complete`). Keyed by the listing prefix the widget sends - the
 // trailing-slash form that means "this directory's children" - and directory
 // entries carry a trailing slash, the one bit the wire adds in includeFiles
 // mode so the widget can tell a folder from a file.
 const TREE: Record<string, string[]> = {
-  "/opt/": ["/opt/plugins/", "/opt/skills/", "/opt/serf.toml"],
-  "/opt/plugins/": ["/opt/plugins/serf-lint/", "/opt/plugins/serf-format/"],
+  "/opt/": ["/opt/plugins/", "/opt/skills/", "/opt/evener.toml"],
+  "/opt/plugins/": ["/opt/plugins/evener-lint/", "/opt/plugins/evener-format/"],
   "/opt/skills/": [],
   "/tmp/": ["/tmp/traces/", "/tmp/atif.json"],
   "/tmp/traces/": ["/tmp/traces/session.jsonl"],
@@ -33,7 +33,7 @@ async function complete(prefix: string, includeFiles: boolean): Promise<string[]
 }
 
 async function listRecents(): Promise<string[]> {
-  return ["/opt/plugins/serf-lint", "/opt/skills"];
+  return ["/opt/plugins/evener-lint", "/opt/skills"];
 }
 
 function LivePathField({
@@ -71,7 +71,7 @@ export default function PathFieldGallerySection() {
       </p>
       <ThemeFlip>
         <LivePathField kind="dir" initial="/opt" withRecents />
-        <LivePathField kind="file" initial="/opt/serf.toml" />
+        <LivePathField kind="file" initial="/opt/evener.toml" />
         <LivePathField kind="outputFile" initial="/tmp/atif.json" />
         <LivePathField kind="dir" initial="" />
       </ThemeFlip>

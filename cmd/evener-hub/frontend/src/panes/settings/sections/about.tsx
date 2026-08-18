@@ -47,12 +47,12 @@ export { MIT_LICENSE_TEXT };
 
 /**
  * Settings -> About: app identity plus the credits the design language's
- * borrowed terms require. Version/commit ride the same serf/settings/
+ * borrowed terms require. Version/commit ride the same evener/settings/
  * overview fetch General already uses (settingsOverviewStore) rather than a
  * second request - hub.version/hub.commit are the same fields General's own
  * "Hub version" row shows. Unlike General, a failed or not-yet-connected
  * fetch isn't fatal here: the credits below don't depend on the hub at all,
- * so only the identity line degrades (to a bare "serf hub", no raw error
+ * so only the identity line degrades (to a bare "evener hub", no raw error
  * text - friendlyErrorMessage only feeds the dim caption, never the store's
  * raw message).
  */
@@ -69,7 +69,7 @@ export function AboutSection() {
   return (
     <div className={CLASS.root}>
       <p className={CLASS.identity}>
-        serf hub
+        evener hub
         {hub?.version !== undefined && <> {hub.version}</>}
         {hub?.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
       </p>

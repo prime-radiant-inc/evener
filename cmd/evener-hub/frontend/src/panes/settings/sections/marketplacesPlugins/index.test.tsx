@@ -25,30 +25,30 @@ afterEach(() => {
 
 test("shows a loading state before both the marketplace and plugin lists resolve", () => {
   const fake = connectFakeClient();
-  fake.on("serf/marketplace/list", () => new Promise(() => {}));
-  fake.on("serf/plugin/list", () => new Promise(() => {}));
+  fake.on("evener/marketplace/list", () => new Promise(() => {}));
+  fake.on("evener/plugin/list", () => new Promise(() => {}));
   render(<MarketplacesPluginsSection />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
 });
 
 test("fetches both marketplaces and plugins in parallel on mount", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/marketplace/list", () => ({ marketplaces: [] }));
-  fake.on("serf/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
   expect(await screen.findByText("Marketplaces")).toBeTruthy();
   expect(screen.getByText("Browse")).toBeTruthy();
   expect(screen.getByText("Installed")).toBeTruthy();
-  expect(fake.calls.some((c) => c.method === "serf/marketplace/list")).toBe(true);
-  expect(fake.calls.some((c) => c.method === "serf/plugin/list")).toBe(true);
+  expect(fake.calls.some((c) => c.method === "evener/marketplace/list")).toBe(true);
+  expect(fake.calls.some((c) => c.method === "evener/plugin/list")).toBe(true);
 });
 
 test("shows one failed-to-load message replacing everything when the marketplace list fails to load", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/marketplace/list", () => {
+  fake.on("evener/marketplace/list", () => {
     throw new Error("network down");
   });
-  fake.on("serf/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
   expect(await screen.findByText("Failed to load")).toBeTruthy();
   // error is converted via friendlyErrorMessage: raw JS errors become the generic message
@@ -62,8 +62,8 @@ test("shows one failed-to-load message replacing everything when the marketplace
 
 test("shows one failed-to-load message when the plugin list fails to load", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/marketplace/list", () => ({ marketplaces: [] }));
-  fake.on("serf/plugin/list", () => {
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  fake.on("evener/plugin/list", () => {
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);

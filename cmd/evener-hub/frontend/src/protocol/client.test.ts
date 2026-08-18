@@ -12,7 +12,7 @@ import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors"
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
 
-const DEFAULT_CLIENT_INFO = { name: "serf-web", version: "0.1.0" };
+const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
 function sentFrames(fake: FakeSocket): Array<Record<string, unknown>> {
@@ -86,7 +86,7 @@ describe("AppwireClient", () => {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "serf-appwire-v3",
+        protocolVersion: "evener-appwire-v3",
         clientInfo: DEFAULT_CLIENT_INFO,
         capabilities: DEFAULT_CAPABILITIES,
       },
@@ -103,11 +103,11 @@ describe("AppwireClient", () => {
     const frame = lastSentFrame(fake);
     fake.receive({
       id: frame.id,
-      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "serf-appwire-v1" },
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v1" },
     });
 
     await expect(connecting).rejects.toThrow(
-      `AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received serf-appwire-v1`,
+      `AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received evener-appwire-v1`,
     );
     expect(client.state).toBe("closed");
     // ConnectionBanner keys its "reload this page" copy off terminalReason;
@@ -134,7 +134,7 @@ describe("AppwireClient", () => {
       id: frame.id,
       error: {
         code: -32600,
-        message: `protocol version "serf-appwire-v3" is incompatible; want "serf-appwire-v4"`,
+        message: `protocol version "evener-appwire-v3" is incompatible; want "evener-appwire-v4"`,
       },
     });
 
@@ -288,15 +288,15 @@ describe("AppwireClient", () => {
     const frame = lastSentFrame(fake);
     fake.receive({
       id: frame.id,
-      error: { code: 404, message: "thread not found", data: { serfErrorInfo: "boom" } },
+      error: { code: 404, message: "thread not found", data: { evenerErrorInfo: "boom" } },
     });
 
     await expect(reqPromise).rejects.toBeInstanceOf(WireError);
     await expect(reqPromise).rejects.toMatchObject({
       code: 404,
       message: "thread not found",
-      data: { serfErrorInfo: "boom" },
-      serfErrorInfo: "boom",
+      data: { evenerErrorInfo: "boom" },
+      evenerErrorInfo: "boom",
     });
   });
 
@@ -450,7 +450,7 @@ describe("AppwireClient", () => {
     const initialize = lastSentFrame(sockets[1]!);
     sockets[1]?.receive({
       id: initialize.id,
-      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "serf-appwire-v1" },
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v1" },
     });
     await flushUntil(() => client.state === "closed");
 
@@ -488,7 +488,7 @@ describe("AppwireClient", () => {
       id: initialize.id,
       error: {
         code: -32600,
-        message: `protocol version "serf-appwire-v3" is incompatible; want "serf-appwire-v4"`,
+        message: `protocol version "evener-appwire-v3" is incompatible; want "evener-appwire-v4"`,
       },
     });
     await flushUntil(() => client.state === "closed");

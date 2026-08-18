@@ -196,7 +196,7 @@
    * declares a border for the same edge. Two elevations shipped: card
    * (panes/cards) and overlay (menus/popovers/toasts/dialogs/sheets);
    * inset-field sinks form controls into --field. Beautiful UI's btn/
-   * raised/hairline rungs were not adopted — serf's Button has no
+   * raised/hairline rungs were not adopted — evener's Button has no
    * bordered-neutral variant and nothing needed a mid float, so the
    * tokens would be dead weight until a consumer exists. The soft-layer
    * alphas are per-theme (declared in each block); --shadow-color feeds

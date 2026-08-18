@@ -4,7 +4,7 @@
 // Conflict-typed), navigation through shell/routing, /theme through
 // prefsStore.setTheme (the hazard-#1 FIX: visible immediately, unlike the
 // legacy's dead body-class toggle), /project through the rail's imperative
-// reveal seam, /upgrade through the serf/upgrade wire method. Failures surface
+// reveal seam, /upgrade through the evener/upgrade wire method. Failures surface
 // either as a blocked sentinel (inline .palette-error strip, palette stays
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
@@ -195,9 +195,9 @@ function execCopyFallback(text: string): Promise<void> {
 function upgrade(ctx: PaletteRunContext): CommandResult {
   const client = connectionStore.getState().client;
   if (!client) return blocked("upgrade failed: not connected");
-  return client.request("serf/upgrade", { requested: "" }).then(
+  return client.request("evener/upgrade", { requested: "" }).then(
     (resp) => {
-      ctx.toasts.push("success", `Serf upgraded to ${resp.channel || "current channel"}`);
+      ctx.toasts.push("success", `Evener upgraded to ${resp.channel || "current channel"}`);
       if (resp.restartMessage) ctx.toasts.push("info", resp.restartMessage);
     },
     (err) => {
@@ -307,7 +307,7 @@ export function buildCommands(): Command[] {
     },
     {
       id: "upgrade",
-      title: "Upgrade Serf",
+      title: "Upgrade Evener",
       hint: "current channel",
       keywords: ["update", "snapshot", "release"],
       scope: "global",
@@ -380,7 +380,7 @@ export function buildCommands(): Command[] {
           .getState()
           .forkFromTurn(ctx.sessionRef, { aside: true })
           .then((resp) => {
-            workspaceStore.getState().openPane("session", { ref: resp.thread.serf.ref });
+            workspaceStore.getState().openPane("session", { ref: resp.thread.evener.ref });
           });
       },
     },

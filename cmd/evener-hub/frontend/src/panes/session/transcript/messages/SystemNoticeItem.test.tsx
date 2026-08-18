@@ -334,7 +334,7 @@ test("a failure adjacent to a group that does collapse is left outside it, and u
 // heterogeneous-version relay still collapses it correctly.
 test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
   showSystemPrompt();
-  render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Serf." })])} />);
+  render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Evener." })])} />);
   expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
   expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toBe(
     "System prompt · 13 chars",

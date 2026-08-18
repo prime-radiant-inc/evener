@@ -229,8 +229,8 @@ export function hydrateFloodModel(ref: string): ThreadModel {
     status: { type: "active" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
   };
   const resp: ThreadReadResponse = { thread };
   return hydrateThread(resp, ref, 1000);

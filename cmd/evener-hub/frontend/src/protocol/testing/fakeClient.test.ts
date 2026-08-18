@@ -13,15 +13,15 @@ import { FakeClient } from "./fakeClient";
 // A name the hub has never served. Cast because MethodName correctly refuses
 // it at compile time — this suite exercises the runtime guard that catches
 // the same mistake when the type check has been bypassed (a cast, an `any`,
-// a string built at runtime), which is exactly how the serf/dirs/complete
+// a string built at runtime), which is exactly how the evener/dirs/complete
 // rename slipped through.
-const UNKNOWN = "serf/dirs/complete" as MethodName;
+const UNKNOWN = "evener/dirs/complete" as MethodName;
 
 describe("FakeClient method-name validation", () => {
   test("on() rejects a method the hub does not serve", () => {
     const fake = new FakeClient();
     expect(() => fake.on(UNKNOWN, () => undefined as never)).toThrow(
-      /FakeClient: unknown method "serf\/dirs\/complete"/,
+      /FakeClient: unknown method "evener\/dirs\/complete"/,
     );
   });
 
@@ -32,14 +32,14 @@ describe("FakeClient method-name validation", () => {
 
   test("on() accepts every method in the generated catalog", () => {
     const fake = new FakeClient();
-    expect(() => fake.on("serf/paths/complete", () => ({ data: [] }))).not.toThrow();
+    expect(() => fake.on("evener/paths/complete", () => ({ data: [] }))).not.toThrow();
     expect(() => fake.on("thread/read", () => undefined as never)).not.toThrow();
   });
 
   test("request() rejects a method the hub does not serve, without recording the call", async () => {
     const fake = new FakeClient();
     await expect(fake.request(UNKNOWN, {} as never)).rejects.toThrow(
-      /FakeClient: unknown method "serf\/dirs\/complete"/,
+      /FakeClient: unknown method "evener\/dirs\/complete"/,
     );
     expect(fake.calls).toHaveLength(0);
   });

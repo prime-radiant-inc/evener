@@ -5,7 +5,7 @@ import styles from "./markdown.module.css";
 const SAMPLE = `# Session summary
 
 The agent read \`config.yaml\`, ran the build, and opened a **pull request**.
-See the [diff on GitHub](https://github.com/example/serf/pull/42) for the
+See the [diff on GitHub](https://github.com/example/evener/pull/42) for the
 full change.
 
 ## What changed
@@ -18,7 +18,7 @@ full change.
 
 \`\`\`go
 func main() {
-	fmt.Println("hello, serf")
+	fmt.Println("hello, evener")
 }
 \`\`\`
 

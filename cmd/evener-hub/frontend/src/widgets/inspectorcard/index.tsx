@@ -1,7 +1,7 @@
 // Structure adapted from Beautiful UI's Fine-tune inspector
 // (https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane
 // Levine — see LICENSES/beautiful-ui.txt. Values and markup translated
-// into serf's CSS-module + token system; nothing is copy-pasted.
+// into evener's CSS-module + token system; nothing is copy-pasted.
 import { requireClass } from "../internal/requireClass";
 import { Select } from "../select";
 import styles from "./inspectorcard.module.css";

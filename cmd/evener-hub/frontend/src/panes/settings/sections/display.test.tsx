@@ -57,18 +57,18 @@ test("Enter sends and Show estimated cost both default OFF", () => {
   expect(screen.getByRole("switch", { name: "Show estimated cost" }).getAttribute("aria-checked")).toBe("false");
 });
 
-test("toggling Enter sends persists to the PINNED serf.prefs.enterToSend key ('1'/'0' encoding, matching W5's shipped reader) and toasts Settings saved", async () => {
+test("toggling Enter sends persists to the PINNED evener.prefs.enterToSend key ('1'/'0' encoding, matching W5's shipped reader) and toasts Settings saved", async () => {
   const user = userEvent.setup();
   renderWithToasts();
 
   await user.click(screen.getByRole("switch", { name: "Enter sends" }));
 
   expect(prefsStore.getState().enterToSend).toBe(true);
-  expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("1");
+  expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("1");
   expect(await screen.findByText("Settings saved")).toBeTruthy();
 });
 
-test("toggling Show estimated cost persists to the PINNED serf.prefs.showCost key independently of Enter sends", async () => {
+test("toggling Show estimated cost persists to the PINNED evener.prefs.showCost key independently of Enter sends", async () => {
   const user = userEvent.setup();
   renderWithToasts();
 
@@ -76,7 +76,7 @@ test("toggling Show estimated cost persists to the PINNED serf.prefs.showCost ke
 
   expect(prefsStore.getState().showCost).toBe(true);
   expect(prefsStore.getState().enterToSend).toBe(false); // unaffected
-  expect(localStorage.getItem("serf.prefs.showCost")).toBe("1");
+  expect(localStorage.getItem("evener.prefs.showCost")).toBe("1");
 });
 
 test("Show estimated cost help text says the session total stays in the footer", () => {

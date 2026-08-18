@@ -7,7 +7,7 @@
 // directory widest, since it is the only field that changes often, then model
 // and effort), with the branch riding the directory row as a read-only HEAD
 // readout rather than a peer field. Harness lives in Advanced options: most
-// installs have exactly one, and a field whose answer is always "serf" should
+// installs have exactly one, and a field whose answer is always "evener" should
 // not lead the page.
 //
 // Behind that: sticky-default layering + stale-model cleanup, the schema-driven
@@ -50,11 +50,11 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { harnessUsesSerfModels } from "./harnessModels";
+import { harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
 import { createDir, preflightDir } from "./preflight";
-import { perLaunchSerfOptions, resolveScalars } from "./schema";
+import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -151,7 +151,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // as long as busy stays true, and stops the instant it doesn't.
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  // kata xgk8: true only once serf/launch/resolve has CONFIRMED the hub has
+  // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
   // unconfirmable state never blocks Start (same fail-open shape as
@@ -186,7 +186,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const busyRef = useRef(false);
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
-  // re-running (and re-issuing serf/launch/resolve + model/list) every time
+  // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
   const modelRef = useRef(model);
@@ -216,7 +216,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   };
   const attachments = useAttachments(textEditor);
 
-  const usesSerfModels = harnessUsesSerfModels(harness, harnesses);
+  const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set.
@@ -246,13 +246,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
   // help here; these coalesce so a consumer counting entries never sees null.
-  const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data ?? []), [client]);
+  const listRecents = useCallback(() => client.request("evener/projects/recent", {}).then((r) => r.data ?? []), [client]);
   // Injected into every PathField on this pane (the working directory here and
   // the advanced panel's path/pathList fields): the widget derives includeFiles
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      client.request("serf/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
+      client.request("evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
     [client],
   );
   const validatePath = useCallback(
@@ -260,12 +260,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
       client
-        .request("serf/path/validate", { path, kind })
+        .request("evener/path/validate", { path, kind })
         .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
     [client],
   );
   const resolveConfig = useCallback(
-    (overrides: LaunchConfigLayer) => client.request("serf/launch/resolve", { cwd, launchOverrides: overrides }),
+    (overrides: LaunchConfigLayer) => client.request("evener/launch/resolve", { cwd, launchOverrides: overrides }),
     [client, cwd],
   );
 
@@ -292,15 +292,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     textareaRef.current?.focus();
 
     let active = true;
-    client.request("serf/harnesses/list", {}).then(
+    client.request("evener/harnesses/list", {}).then(
       (r) => {
         if (active) setHarnesses(r.data);
       },
       () => {},
     );
-    client.request("serf/launch/schema", {}).then(
+    client.request("evener/launch/schema", {}).then(
       (r) => {
-        if (active) setSchemaOptions(perLaunchSerfOptions(r));
+        if (active) setSchemaOptions(perLaunchEvenerOptions(r));
       },
       () => {},
     );
@@ -480,7 +480,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       : modelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel),
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
-  const effortDisabled = !usesSerfModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
+  const effortDisabled = !usesEvenerModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
   // An effort the ladder doesn't name but state still holds. Only the FALLBACK
   // ladder produces one: the reset effect below deliberately skips when the
   // catalog knows nothing about the model, because clobbering a sticky default
@@ -515,10 +515,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   function handleHarnessChange(next: string): void {
     setHarness(next);
-    // Switching to a non-serf harness always blanks the model; switching to a
-    // serf-model harness only blanks a value that isn't already provider/model
+    // Switching to a non-evener harness always blanks the model; switching to a
+    // evener-model harness only blanks a value that isn't already provider/model
     // shaped (floor §1.10, spawn.js:395-402).
-    if (!harnessUsesSerfModels(next, harnesses)) setModel("");
+    if (!harnessUsesEvenerModels(next, harnesses)) setModel("");
     else if (model !== "" && !model.includes("/")) setModel("");
   }
 
@@ -568,7 +568,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
-    saveDefaults({ cwd, harness, model, branch, accessMode, reasoningEffort, harnessUsesSerfModels: usesSerfModels });
+    saveDefaults({ cwd, harness, model, branch, accessMode, reasoningEffort, harnessUsesEvenerModels: usesEvenerModels });
     // Reset transient form state on success, before navigating away (floor
     // §1.14 L186: the pending-attachment bag is cleared and the paste
     // marker-counter reset). The spawn pane is a dockview singleton that can
@@ -670,7 +670,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }
 
   const harnessOptions =
-    harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "serf", label: "serf" }];
+    harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "evener", label: "evener" }];
 
   return (
     <PaneScaffold title="Start an agent" mobileTitle="new">
@@ -778,7 +778,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         {/* ONE compact row of configuration beneath the card, widest field
             first: the working directory is the only one that changes often.
             Harness moved into Advanced options - most installs have exactly one,
-            and a field whose answer is always "serf" should not lead the page. */}
+            and a field whose answer is always "evener" should not lead the page. */}
         <div className={CLASS.cfg}>
           <div className={CLASS.cfgDir}>
             <FormRow label="Working directory" htmlFor="spawn-cwd">
@@ -802,7 +802,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               />
             </FormRow>
             {/* Branch is a read-only HEAD readout, not a peer field: it rides
-                the directory row as a mono suffix ("~/code/serf · main") because
+                the directory row as a mono suffix ("~/code/evener · main") because
                 it is a PROPERTY of that directory, and the wire has nowhere to
                 send it anyway (startThread.ts's own branch comment). */}
             {branch !== "" && (
@@ -847,7 +847,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows
-            harness={harness || "serf"}
+            harness={harness || "evener"}
             harnessOptions={harnessOptions}
             onHarnessChange={handleHarnessChange}
             model={model}
@@ -883,7 +883,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           <FormRow label="Harness" htmlFor="spawn-harness">
             <Select
               id="spawn-harness"
-              value={harness || "serf"}
+              value={harness || "evener"}
               onChange={(e) => handleHarnessChange(e.target.value)}
               options={harnessOptions}
             />

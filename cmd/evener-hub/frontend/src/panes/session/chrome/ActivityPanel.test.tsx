@@ -358,15 +358,15 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     const gate = deferred<{ data: unknown }>();
-    fake.on("serf/jobs/list", () => gate.promise);
+    fake.on("evener/jobs/list", () => gate.promise);
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "Activity" }));
     expect(await screen.findByText("Loading activity…")).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
 
     act(() => gate.resolve({ data: activityTree() }));
     const dialog = await screen.findByRole("dialog");
@@ -378,7 +378,7 @@ describe("ActivityPanel", () => {
   test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => {
+    fake.on("evener/jobs/list", () => {
       throw new Error("first activity failure");
     });
 
@@ -390,10 +390,10 @@ describe("ActivityPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: "Activity" }));
     expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
 
     await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
   });
 
   test("keeps the badge bare when the root counts are incomplete", async () => {
@@ -401,7 +401,7 @@ describe("ActivityPanel", () => {
     const fake = connectFakeClient();
     const incomplete = activityTree();
     incomplete.root.counts.complete = false;
-    fake.on("serf/jobs/list", () => ({ data: incomplete }));
+    fake.on("evener/jobs/list", () => ({ data: incomplete }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -414,7 +414,7 @@ describe("ActivityPanel", () => {
   test("renders empty, unsupported, and exited states", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: emptyTree() }));
+    fake.on("evener/jobs/list", () => ({ data: emptyTree() }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
@@ -423,7 +423,7 @@ describe("ActivityPanel", () => {
     cleanup();
     resetThreadsStoreForTests();
     const unsupported = connectFakeClient();
-    unsupported.on("serf/jobs/list", () => ({ data: null }));
+    unsupported.on("evener/jobs/list", () => ({ data: null }));
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
     expect(await screen.findByText(/activity isn't available/i)).toBeTruthy();
@@ -431,8 +431,8 @@ describe("ActivityPanel", () => {
     cleanup();
     resetThreadsStoreForTests();
     const ended = connectFakeClient();
-    ended.on("serf/jobs/list", () => {
-      throw new WireError("thread not found: thr_root", -32014, { serfErrorInfo: "sessionUnavailable" });
+    ended.on("evener/jobs/list", () => {
+      throw new WireError("thread not found: thr_root", -32014, { evenerErrorInfo: "sessionUnavailable" });
     });
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
@@ -442,7 +442,7 @@ describe("ActivityPanel", () => {
   test("renders live rows plus a fold row for inactive entries, and an expanded fold survives refresh", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", ({ continuation }) => ({
+    fake.on("evener/jobs/list", ({ continuation }) => ({
       data: continuation ? continuedPartialTree() : activityTree(1),
     }));
 
@@ -469,7 +469,7 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("treeitem", { name: /done session/i })).toBeTruthy();
 
     rerender(panel(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
 
     expect(activityPanelStore.getState().entries.get("ref_root")?.expandedFoldIDs).toEqual([
       "session:sess_root:inactive-fold",
@@ -485,7 +485,7 @@ describe("ActivityPanel", () => {
   test("a stale refresh failure keeps the last good tree and shows a stale notice", async () => {
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/jobs/list", () => {
+    fake.on("evener/jobs/list", () => {
       calls += 1;
       if (calls === 1) return { data: activityTree() };
       throw new Error("broken pipe");
@@ -515,7 +515,7 @@ describe("ActivityPanel", () => {
   test("refreshes while closed once established, but suppresses hidden-trigger refresh", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     const visible = (bump: number | null) => (
       <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
@@ -525,7 +525,7 @@ describe("ActivityPanel", () => {
     await screen.findByRole("tree");
     await user.click(screen.getByRole("button", { name: "Close" }));
     rerender(visible(2));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
 
     const handle = createRef<ActivityPanelHandle>();
     const hidden = (bump: number | null) => (
@@ -539,13 +539,13 @@ describe("ActivityPanel", () => {
     );
     cleanup();
     const hiddenRender = render(hidden(3));
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
     act(() => handle.current?.open());
     await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
     await user.click(screen.getByRole("button", { name: "Close" }));
     hiddenRender.rerender(hidden(4));
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3);
   });
 
   test("refreshes the visible badge when an open panel body is backgrounded", async () => {
@@ -553,7 +553,7 @@ describe("ActivityPanel", () => {
     let calls = 0;
     const refreshed = cloneFixture(activityTree(2));
     refreshed.root.counts.active = 8;
-    fake.on("serf/jobs/list", () => ({ data: calls++ === 0 ? activityTree() : refreshed }));
+    fake.on("evener/jobs/list", () => ({ data: calls++ === 0 ? activityTree() : refreshed }));
 
     const model = testModel({ jobsUpdatedAt: 1 });
     const { rerender } = render(
@@ -563,10 +563,10 @@ describe("ActivityPanel", () => {
       </>,
     );
     await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
 
     rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} now={0} />);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
     expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
   });
 
@@ -577,15 +577,15 @@ describe("ActivityPanel", () => {
   // instead of trusting null === null.
   test("remounting the body re-fetches when the model cannot prove freshness (null jobs bump)", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     const first = render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
     await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
     first.unmount();
 
     render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
   });
 
   // A MOUNTED body has the same blind spot across a wholesale model
@@ -595,16 +595,16 @@ describe("ActivityPanel", () => {
   // is the signal that the model was replaced underneath.
   test("a mounted body re-fetches when its model rehydrates without a provable bump", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     render(<ActivityPanelBody sessionRef="ref_rehydrated" model={testModel()} />);
     await screen.findByRole("tree");
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
 
     act(() => {
       threadsStore.setState({ hydrations: new Map([["ref_rehydrated", 2]]) });
     });
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
   });
 
   // The closed Sheet's trigger owns background badge refresh; it has the same
@@ -612,7 +612,7 @@ describe("ActivityPanel", () => {
   // hydration generation.
   test("a closed panel's badge refresh notices rehydration when the bump stays null", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
     activitySummaryStore.setState({
       entries: new Map([
         [
@@ -631,18 +631,18 @@ describe("ActivityPanel", () => {
 
     render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} now={0} />);
     await act(async () => Promise.resolve());
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 
     act(() => {
       threadsStore.setState({ hydrations: new Map([["ref_gen", 1]]) });
     });
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   });
 
   test("does not let a continuation patch change the root badge summary", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", ({ continuation }) => {
+    fake.on("evener/jobs/list", ({ continuation }) => {
       if (!continuation) return { data: activityTree() };
       const patch = cloneFixture(continuedPartialTree());
       patch.root.counts.active = 99;
@@ -665,7 +665,7 @@ describe("ActivityPanel", () => {
   test("continuation grafts only the targeted branch", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", ({ continuation }) => ({ data: continuation ? continuedPartialTree() : activityTree() }));
+    fake.on("evener/jobs/list", ({ continuation }) => ({ data: continuation ? continuedPartialTree() : activityTree() }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -676,7 +676,7 @@ describe("ActivityPanel", () => {
 
     expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "serf/jobs/list").at(-1)?.params).toEqual({
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
       ref: "ref_root",
       continuation: "partial-page-2",
     });
@@ -685,7 +685,7 @@ describe("ActivityPanel", () => {
   test("a malformed continuation response stays local to the targeted branch and preserves retry affordance", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", ({ continuation }) => ({ data: continuation ? null : activityTree() }));
+    fake.on("evener/jobs/list", ({ continuation }) => ({ data: continuation ? null : activityTree() }));
 
     render(
       <>
@@ -710,7 +710,7 @@ describe("ActivityPanel", () => {
   test("a rejected continuation request stays local to the targeted branch without root stale or toast UI", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", ({ continuation }) => {
+    fake.on("evener/jobs/list", ({ continuation }) => {
       if (continuation) throw new Error("branch boom");
       return { data: activityTree() };
     });
@@ -737,7 +737,7 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     let calls = 0;
-    fake.on("serf/jobs/list", () => {
+    fake.on("evener/jobs/list", () => {
       calls += 1;
       if (calls === 1) return { data: activityTree() };
       const next = activityTree(2);
@@ -764,7 +764,7 @@ describe("ActivityPanel", () => {
   test("renders dense tree rows with no inspector element", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -780,7 +780,7 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     installMatchMediaStub(true);
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -796,7 +796,7 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     const first = deferred<{ data: unknown }>();
-    fake.on("serf/jobs/list", ({ ref }) => {
+    fake.on("evener/jobs/list", ({ ref }) => {
       if (ref === "ref_root") return first.promise;
       return Promise.resolve({ data: emptyTree() });
     });
@@ -815,7 +815,7 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     const gate = deferred<{ data: unknown }>();
-    fake.on("serf/jobs/list", () => gate.promise);
+    fake.on("evener/jobs/list", () => gate.promise);
 
     const { rerender } = render(
       <>
@@ -839,7 +839,7 @@ describe("ActivityPanel", () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
     const gate = deferred<{ data: unknown }>();
-    fake.on("serf/jobs/list", () => gate.promise);
+    fake.on("evener/jobs/list", () => gate.promise);
 
     const { rerender } = render(
       <>

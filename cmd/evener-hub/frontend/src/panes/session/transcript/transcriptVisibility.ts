@@ -25,7 +25,7 @@ import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../protocol/model"
 // component so importing it never triggers a renderer registration.
 export const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
 
-// model.turns is never actually empty for a real serf session:
+// model.turns is never actually empty for a real evener session:
 // apptranscript.go's PreludeTurn (and, live, appprojector's bundled
 // SESSION_START announcements) always synthesize one turn - the prelude
 // above - from the session's system prompt, which agent/session_config

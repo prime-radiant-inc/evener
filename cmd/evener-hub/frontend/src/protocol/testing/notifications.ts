@@ -37,8 +37,8 @@ export function wireThread(ref = "ref_test", overrides: Partial<Thread> = {}): T
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -52,7 +52,7 @@ export function threadClosedNotification(ref = "ref_test", reason = "shutdown"):
   return { method: "thread/closed", params: { threadId: `thr_${ref}`, ref, reason } };
 }
 
-// serf/attention/changed carried an undeclared payload until kata 4j2t moved
+// evener/attention/changed carried an undeclared payload until kata 4j2t moved
 // its params type across the import cycle that was keeping it nil. Callers had
 // been passing `params: {}`, which typechecked against the old empty stub and
 // described a message the daemon never sends. tree.ts only keys off the method
@@ -61,7 +61,7 @@ export function threadClosedNotification(ref = "ref_test", reason = "shutdown"):
 // every existing test feeding it a message with no summary at all.
 export function attentionChangedNotification(ref = "ref_test"): AnyNotification {
   return {
-    method: "serf/attention/changed",
+    method: "evener/attention/changed",
     params: {
       changed: [
         { threadId: `thr_${ref}`, title: "test", project: "/tmp/project", level: "needsYou", prevLevel: "working" },

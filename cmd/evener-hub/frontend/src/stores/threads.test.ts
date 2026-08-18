@@ -103,12 +103,12 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-type TestThreadOverrides = Omit<Partial<Thread>, "serf"> & {
-  serf?: Omit<Thread["serf"], "queue"> & { queue: Partial<QueueState> };
+type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
+  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
 };
 
 function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
-  const { serf, ...threadOverrides } = overrides;
+  const { evener, ...threadOverrides } = overrides;
   return {
     id: `thr_${ref}`,
     sessionId: `sess_${ref}`,
@@ -120,8 +120,8 @@ function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, ...serf, queue: { revision: 0, ...serf?.queue } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, ...evener, queue: { revision: 0, ...evener?.queue } },
     ...threadOverrides,
   };
 }
@@ -183,7 +183,7 @@ function sameEpochReconnectFixture() {
         items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
       },
     ],
-    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
   });
   const completion = {
     method: "item/completed" as const,
@@ -235,7 +235,7 @@ async function ensureActiveMutationTarget(fake: FakeClient, ref: string): Promis
   fake.on("thread/read", (params) =>
     readResponse(params.ref ?? ref, {
       turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-      serf: {
+      evener: {
         ref: params.ref ?? ref,
         capabilities: CAPABILITIES,
         queue: { revision: 7 },
@@ -248,7 +248,7 @@ async function ensureActiveMutationTarget(fake: FakeClient, ref: string): Promis
 
 async function deleteMutationDatabase(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase("serf-mutation-outbox");
+    const request = indexedDB.deleteDatabase("evener-mutation-outbox");
     request.addEventListener("success", () => resolve(), { once: true });
     request.addEventListener("error", () => reject(request.error), { once: true });
     request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
@@ -325,7 +325,7 @@ afterEach(async () => {
   // re-triggers rewireClient, which re-issues a stray thread/read against
   // whatever client that later file just connected.
   resetThreadsStoreForTests();
-  // The beforeEach above only clears the GLOBAL "serf-mutation-outbox"
+  // The beforeEach above only clears the GLOBAL "evener-mutation-outbox"
   // IndexedDB database (installed once, for the worker's life, by this
   // file's own `import "fake-indexeddb/auto"") before EACH of THIS file's
   // own tests - it never runs again after the LAST test. A test here that
@@ -532,7 +532,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
     });
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
@@ -629,7 +629,7 @@ describe("useThreadsStore.ensureThread", () => {
     finishRead(
       readResponse("ref_a", {
         turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -667,7 +667,7 @@ describe("useThreadsStore.ensureThread", () => {
         readResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         }),
         cut,
       ),
@@ -726,7 +726,7 @@ describe("useThreadsStore.ensureThread", () => {
         readResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         }),
         cut,
       ),
@@ -788,7 +788,7 @@ describe("useThreadsStore.ensureThread", () => {
       markResponseCut(
         readResponse("ref_a", {
           status: { type: "active" },
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
         }),
         cut,
       ),
@@ -838,7 +838,7 @@ describe("useThreadsStore.ensureThread", () => {
       if (readCount === 1) {
         return readResponse("ref_a", {
           status: { type: "active" },
-          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
+          evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
         });
       }
       return new Promise<ThreadReadResponse>((resolve) => {
@@ -849,7 +849,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.capabilities.queue).toBe(false);
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -870,7 +870,7 @@ describe("useThreadsStore.ensureThread", () => {
     replacementRead.resolve?.(
       readResponse("ref_a", {
         status: { type: "active", activeFlags: ["streaming"] },
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.capabilities.queue === true);
@@ -893,7 +893,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(initial).toBeGreaterThanOrEqual(1);
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => (threadsStore.getState().hydrations.get("ref_a") ?? 0) > (initial ?? 0));
@@ -913,7 +913,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
@@ -927,7 +927,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -959,7 +959,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const replacement = readResponse("ref_a", {
       status: { type: "active", activeFlags: ["streaming"] },
@@ -971,7 +971,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "included", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     let resolveReplacement: ((response: ThreadReadResponse) => void) | undefined;
     let readCount = 0;
@@ -985,7 +985,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => resolveReplacement !== undefined);
@@ -1016,7 +1016,7 @@ describe("useThreadsStore.ensureThread", () => {
       if (readCount === 1) {
         return readResponse("ref_a", {
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         });
       }
       return new Promise<ThreadReadResponse>((resolve) => {
@@ -1026,7 +1026,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -1058,7 +1058,7 @@ describe("useThreadsStore.ensureThread", () => {
             ],
           },
         ],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.name === "replacement");
@@ -1082,7 +1082,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -1098,7 +1098,7 @@ describe("useThreadsStore.ensureThread", () => {
       readResponse("ref_a", {
         name: "replacement",
         turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.name === "replacement");
@@ -1123,7 +1123,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -1138,7 +1138,7 @@ describe("useThreadsStore.ensureThread", () => {
     replacementRead.resolve?.(
       readResponse("ref_a", {
         name: "replacement",
-        serf: {
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 2, preview: ["snapshot"] },
@@ -1161,7 +1161,7 @@ describe("useThreadsStore.ensureThread", () => {
     const ensuring = threadsStore.getState().ensureThread("ref_a");
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
@@ -1170,14 +1170,14 @@ describe("useThreadsStore.ensureThread", () => {
     reads[1]?.(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
     reads[0]?.(
       readResponse("ref_a", {
         turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -1204,7 +1204,7 @@ describe("useThreadsStore.ensureThread", () => {
     const ensuring = threadsStore.getState().ensureThread("ref_a");
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
@@ -1222,7 +1222,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[1]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -1249,7 +1249,7 @@ describe("useThreadsStore.ensureThread", () => {
     const ensuring = threadsStore.getState().ensureThread("ref_a");
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
@@ -1257,7 +1257,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[1]!.reject(new Error("failed replacement B"));
     await flushUntil(() => false);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 3);
@@ -1275,7 +1275,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -1302,12 +1302,12 @@ describe("useThreadsStore.ensureThread", () => {
     const ensuring = threadsStore.getState().ensureThread("ref_a");
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 3);
@@ -1315,7 +1315,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
@@ -1345,7 +1345,7 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementReads.length === 1);
@@ -1358,7 +1358,7 @@ describe("useThreadsStore.ensureThread", () => {
       },
     });
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementReads.length === 2);
@@ -1389,7 +1389,7 @@ describe("useThreadsStore.ensureThread", () => {
     fake.on("thread/read", () => readResponse("ref_untracked"));
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_untracked", ref: "ref_untracked" },
     });
     await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
@@ -1448,7 +1448,7 @@ describe("useThreadsStore.ensureThread", () => {
             ],
           },
         ],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_live" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_live" },
       }),
     );
     await ensuring;
@@ -1511,7 +1511,7 @@ describe("useThreadsStore.ensureThread", () => {
             ],
           },
         ],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
     );
     await ensuring;
@@ -1548,17 +1548,17 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 
-  test("routes serf/jobs/treeUpdated by root ref while a child thread is open, ignoring stale revisions", async () => {
+  test("routes evener/jobs/treeUpdated by root ref while a child thread is open, ignoring stale revisions", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
       const ref = params.ref ?? "";
       if (ref === "local:root") {
-        return readResponse(ref, { id: "thr_root", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+        return readResponse(ref, { id: "thr_root", evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
       }
       if (ref === "local:child") {
         return readResponse(ref, {
           id: "thr_child",
-          serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+          evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
         });
       }
       throw new Error(`unexpected ref ${ref}`);
@@ -1573,7 +1573,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(childBefore).toBeDefined();
 
     fake.emitNotification({
-      method: "serf/jobs/treeUpdated",
+      method: "evener/jobs/treeUpdated",
       params: { threadId: "thr_root", ref: "local:root", revision: 7 },
     });
 
@@ -1586,11 +1586,11 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("local:root")).toHaveLength(1);
 
     fake.emitNotification({
-      method: "serf/jobs/treeUpdated",
+      method: "evener/jobs/treeUpdated",
       params: { threadId: "thr_root", ref: "local:root", revision: 7 },
     });
     fake.emitNotification({
-      method: "serf/jobs/treeUpdated",
+      method: "evener/jobs/treeUpdated",
       params: { threadId: "thr_root", ref: "local:root", revision: 6 },
     });
 
@@ -1699,13 +1699,13 @@ describe("useThreadsStore.ensureThread", () => {
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
 
-    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
     await flushUntil(() => resyncReads.length === 1);
 
     await threadsStore.getState().clearThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_cleared");
 
-    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_cleared", ref: "ref_a" } });
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_cleared", ref: "ref_a" } });
     await flushUntil(() => resyncReads.length === 2);
 
     const snapshotTurn = (): boolean =>
@@ -2434,7 +2434,7 @@ describe("useThreadsStore.ensureThread", () => {
     await flushUntil(() => scheduledHydrationRetries.length === 1);
     await settleCallerContinuations();
 
-    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
     await flushUntil(() => resyncRead.resolve !== null);
     expect(readAttempts).toBe(2);
 
@@ -2570,12 +2570,12 @@ describe("notification routing", () => {
       if (ref === "ref_a") {
         return readResponse("ref_a", {
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         });
       }
       return readResponse("ref_b", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
-        serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        evener: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       });
     });
 
@@ -2645,7 +2645,7 @@ describe("notification routing", () => {
     fake.on("thread/read", () =>
       readResponse("ref_a", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
     );
     await threadsStore.getState().ensureThread("ref_a");
@@ -2698,7 +2698,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const authoritativeSnapshot = readResponse("ref_a", {
       status: { type: "active" },
@@ -2710,7 +2710,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
     });
     const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
@@ -2874,7 +2874,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const authoritativeSnapshot = readResponse("ref_a", {
       status: { type: "active" },
@@ -2886,7 +2886,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
     });
     let aReadCount = 0;
     let resolveA: ((response: ThreadReadResponse) => void) | null = null;
@@ -3250,7 +3250,7 @@ test("recovery resend rebuilds queue CAS values from the current thread", async 
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       status: { type: "active" },
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         activeTurnId: "turn-current",
@@ -3275,7 +3275,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     fake.on("thread/read", (params) =>
       readResponse((params as { ref: string }).ref, {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-        serf: {
+        evener: {
           ref: (params as { ref: string }).ref,
           capabilities: CAPABILITIES,
           queue: { revision: 7 },
@@ -3530,13 +3530,13 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(result).toEqual({ started: true });
   });
 
-  test("rename sends serf/thread/name/set with {ref, name}", async () => {
+  test("rename sends evener/thread/name/set with {ref, name}", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/thread/name/set", () => ({}));
+    fake.on("evener/thread/name/set", () => ({}));
 
     await threadsStore.getState().rename("ref_a", "New title");
 
-    const call = fake.calls.find((c) => c.method === "serf/thread/name/set");
+    const call = fake.calls.find((c) => c.method === "evener/thread/name/set");
     expect(call?.params).toEqual({ ref: "ref_a", name: "New title" });
   });
 
@@ -3570,7 +3570,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
     expect(call?.params).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "edited text" });
-    expect(result.thread.serf.ref).toBe("ref_child");
+    expect(result.thread.evener.ref).toBe("ref_child");
   });
 
   test("forkFromTurn supports the aside mode's mutually-exclusive param set", async () => {
@@ -3644,7 +3644,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
   test("session actions also map a Conflict rejection to ConflictError (setModel as the representative case)", async () => {
     const fake = connectFakeClient();
     fake.on("thread/model/set", () => {
-      throw new WireError("model unavailable", -32013, { serfErrorInfo: "conflict" });
+      throw new WireError("model unavailable", -32013, { evenerErrorInfo: "conflict" });
     });
 
     await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(ConflictError);
@@ -3740,7 +3740,7 @@ describe("useThreadsStore.listModels", () => {
   test("propagates a rejection unchanged - not mapped to ConflictError even when it is Conflict-shaped (model/list can never actually return one)", async () => {
     const fake = connectFakeClient();
     fake.on("model/list", () => {
-      throw new WireError("shouldn't happen", -32013, { serfErrorInfo: "conflict" });
+      throw new WireError("shouldn't happen", -32013, { evenerErrorInfo: "conflict" });
     });
 
     const rejection = threadsStore.getState().listModels();
@@ -3948,13 +3948,13 @@ describe("useThreadsStore.listTasks", () => {
     },
   ];
 
-  test("sends serf/tasks/list with {ref} and returns the raw data field, not the response wrapper", async () => {
+  test("sends evener/tasks/list with {ref} and returns the raw data field, not the response wrapper", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+    fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
     const result = await threadsStore.getState().listTasks("ref_a");
 
-    const call = fake.calls.find((c) => c.method === "serf/tasks/list");
+    const call = fake.calls.find((c) => c.method === "evener/tasks/list");
     expect(call?.params).toEqual({ ref: "ref_a" });
     expect(result).toEqual(TASKS_DATA);
   });
@@ -3963,17 +3963,17 @@ describe("useThreadsStore.listTasks", () => {
     const fake = connectFakeClient();
     // Mirrors CodexSource.ListTasks verbatim (cmd/evener-hub/internal/
     // appsource/codex_source.go:405-407): appwire.Unavailable(...), code
-    // -32014, serfErrorInfo "actionUnavailable" - never a Conflict.
-    fake.on("serf/tasks/list", () => {
-      throw new WireError("codex source does not expose serf tasks", -32014, {
-        serfErrorInfo: "actionUnavailable",
+    // -32014, evenerErrorInfo "actionUnavailable" - never a Conflict.
+    fake.on("evener/tasks/list", () => {
+      throw new WireError("codex source does not expose evener tasks", -32014, {
+        evenerErrorInfo: "actionUnavailable",
       });
     });
 
     const rejection = threadsStore.getState().listTasks("ref_codex");
     await expect(rejection).rejects.toBeInstanceOf(WireError);
     await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
-    await expect(rejection).rejects.toMatchObject({ serfErrorInfo: "actionUnavailable" });
+    await expect(rejection).rejects.toMatchObject({ evenerErrorInfo: "actionUnavailable" });
   });
 
   test("throws when no client has been connected yet", async () => {
@@ -4044,49 +4044,49 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
   };
   const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
 
-  test("listJobs sends serf/jobs/list with {ref} and returns the raw data field", async () => {
+  test("listJobs sends evener/jobs/list with {ref} and returns the raw data field", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+    fake.on("evener/jobs/list", () => ({ data: JOBS_DATA }));
 
     const result = await threadsStore.getState().listJobs("ref_a");
 
-    const call = fake.calls.find((c) => c.method === "serf/jobs/list");
+    const call = fake.calls.find((c) => c.method === "evener/jobs/list");
     expect(call?.params).toEqual({ ref: "ref_a" });
     expect(result).toEqual(JOBS_DATA);
   });
 
   test("listJobs includes continuation only when non-empty and keeps the AppWire method name", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+    fake.on("evener/jobs/list", () => ({ data: JOBS_DATA }));
 
     await threadsStore.getState().listJobs("ref_a", "page-2");
     await threadsStore.getState().listJobs("ref_a", "");
 
-    const calls = fake.calls.filter((c) => c.method === "serf/jobs/list");
+    const calls = fake.calls.filter((c) => c.method === "evener/jobs/list");
     expect(calls).toHaveLength(2);
     expect(calls[0]?.params).toEqual({ ref: "ref_a", continuation: "page-2" });
     expect(calls[1]?.params).toEqual({ ref: "ref_a" });
   });
 
-  test("jobOutput sends serf/jobs/output with {ref, jobId} and returns the raw data field", async () => {
+  test("jobOutput sends evener/jobs/output with {ref, jobId} and returns the raw data field", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/output", () => ({ data: OUTPUT_DATA }));
+    fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
 
     const result = await threadsStore.getState().jobOutput("ref_a", "job_1");
 
-    const call = fake.calls.find((c) => c.method === "serf/jobs/output");
+    const call = fake.calls.find((c) => c.method === "evener/jobs/output");
     expect(call?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
     expect(result).toEqual(OUTPUT_DATA);
   });
 
   test("jobOutput passes beforeBytes and maxBytes through only when positive", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/jobs/output", () => ({ data: OUTPUT_DATA }));
+    fake.on("evener/jobs/output", () => ({ data: OUTPUT_DATA }));
 
     await threadsStore.getState().jobOutput("ref_a", "job_1", 64, 256);
     await threadsStore.getState().jobOutput("ref_a", "job_1", 0, 0);
 
-    const calls = fake.calls.filter((c) => c.method === "serf/jobs/output");
+    const calls = fake.calls.filter((c) => c.method === "evener/jobs/output");
     expect(calls).toHaveLength(2);
     expect(calls[0]?.params).toEqual({ ref: "ref_a", jobId: "job_1", beforeBytes: 64, maxBytes: 256 });
     expect(calls[1]?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
@@ -4101,7 +4101,7 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
 describe("useThreadsStore.resolveEscalation", () => {
   function threadWithEscalation(ref: string, escalationId: string): ThreadReadResponse {
     return readResponse(ref, {
-      serf: {
+      evener: {
         ref,
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
@@ -4120,15 +4120,15 @@ describe("useThreadsStore.resolveEscalation", () => {
     });
   }
 
-  test("calls serf/sandbox/escalation/resolve with exact params", async () => {
+  test("calls evener/sandbox/escalation/resolve with exact params", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
-    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
 
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
 
-    const call = fake.calls.find((c) => c.method === "serf/sandbox/escalation/resolve");
+    const call = fake.calls.find((c) => c.method === "evener/sandbox/escalation/resolve");
     expect(call?.params).toEqual({ ref: "ref_a", escalationId: "esc_1", approve: true });
   });
 
@@ -4136,7 +4136,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
-    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
 
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", false);
@@ -4147,7 +4147,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
-    fake.on("serf/sandbox/escalation/resolve", () => {
+    fake.on("evener/sandbox/escalation/resolve", () => {
       throw new Error("sandbox offline");
     });
 
@@ -4156,7 +4156,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")).toBe(before); // same reference: untouched
   });
 
-  test("maps a Conflict wire rejection (serfErrorInfo === conflict) to ConflictError", async () => {
+  test("maps a Conflict wire rejection (evenerErrorInfo === conflict) to ConflictError", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4165,9 +4165,9 @@ describe("useThreadsStore.resolveEscalation", () => {
     // "Surface it as a conflict so the client can drop the card rather than
     // retry"). resolve must map it to ConflictError like every other mutating
     // action, so the escalation rail treats it as terminal, not retryable.
-    fake.on("serf/sandbox/escalation/resolve", () => {
+    fake.on("evener/sandbox/escalation/resolve", () => {
       throw new WireError("escalation is not pending (unknown or already resolved)", -32013, {
-        serfErrorInfo: "conflict",
+        evenerErrorInfo: "conflict",
       });
     });
 
@@ -4176,14 +4176,14 @@ describe("useThreadsStore.resolveEscalation", () => {
     await expect(rejection).rejects.toThrow("already resolved");
   });
 
-  test("does not map a same-code, different-serfErrorInfo WireError to ConflictError", async () => {
+  test("does not map a same-code, different-evenerErrorInfo WireError to ConflictError", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
-    // Same wire code (-32013) but a non-conflict serfErrorInfo — the
-    // discriminator is the serfErrorInfo string, not the code alone.
-    fake.on("serf/sandbox/escalation/resolve", () => {
-      throw new WireError("something else", -32013, { serfErrorInfo: "queuedDrainPartial" });
+    // Same wire code (-32013) but a non-conflict evenerErrorInfo — the
+    // discriminator is the evenerErrorInfo string, not the code alone.
+    fake.on("evener/sandbox/escalation/resolve", () => {
+      throw new WireError("something else", -32013, { evenerErrorInfo: "queuedDrainPartial" });
     });
 
     const rejection = threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
@@ -4195,7 +4195,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
-    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
 
     const before = threadsStore.getState().threads;
     await threadsStore.getState().resolveEscalation("ref_a", "esc_never_pending", true);
@@ -4205,7 +4205,7 @@ describe("useThreadsStore.resolveEscalation", () => {
   test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
-    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+    fake.on("evener/sandbox/escalation/resolve", () => ({}));
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().watchThread("ref_a");
 
@@ -4215,7 +4215,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
 
-  test("a serf/sandbox/escalation/resolved notification clears the matching card from both tracked and watched models", async () => {
+  test("a evener/sandbox/escalation/resolved notification clears the matching card from both tracked and watched models", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4229,7 +4229,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     // resolve some OTHER client made, so a client that only watches the session
     // still drops its now-stale card.
     fake.emitNotification({
-      method: "serf/sandbox/escalation/resolved",
+      method: "evener/sandbox/escalation/resolved",
       params: { threadId: "thr_ref_a", ref: "ref_a", escalationId: "esc_1" },
     });
 
@@ -4400,11 +4400,11 @@ describe("frameTimes tracking (threads store)", () => {
 });
 
 // Shell-job notifications are activation state only. Stable delegate rows are
-// owned by serf/delegate/updated and must never be rewritten from a job event.
-describe("serf/job/started|finished stay out of stable delegate rows", () => {
+// owned by evener/delegate/updated and must never be rewritten from a job event.
+describe("evener/job/started|finished stay out of stable delegate rows", () => {
   afterEach(resetSubagentModuleStoreForTests);
 
-  test("serf/job/finished does not patch a stable delegate row", async () => {
+  test("evener/job/finished does not patch a stable delegate row", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4412,7 +4412,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
     upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
 
     fake.emitNotification({
-      method: "serf/job/finished",
+      method: "evener/job/finished",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
@@ -4436,7 +4436,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
     expect(result.current[0]?.liveKind).toBeUndefined();
   });
 
-  test("serf/job/started does not reset a stable delegate row", async () => {
+  test("evener/job/started does not reset a stable delegate row", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4445,7 +4445,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
     updateSubagentRowIfExists(scope, "dlg:dlg_1", { liveKind: "failed", liveReason: "boom" });
 
     fake.emitNotification({
-      method: "serf/job/started",
+      method: "evener/job/started",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
@@ -4472,7 +4472,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
     upsertSubagentRow(scope, { rowKey: "job:job_3", kind: "running", task: "t", resultPreview: "" });
 
     fake.emitNotification({
-      method: "serf/job/finished",
+      method: "evener/job/finished",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
@@ -4487,7 +4487,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
   // kata 8525: a notification for a DIFFERENT session must never patch a row
   // planted under the same bare turnId in another session - this is exactly
   // the collision the fix closes (turn ids restart at 0 per session).
-  test("a serf/job/finished notification for a different session's ref never touches this session's row", async () => {
+  test("a evener/job/finished notification for a different session's ref never touches this session's row", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
@@ -4495,7 +4495,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
     upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
 
     fake.emitNotification({
-      method: "serf/job/finished",
+      method: "evener/job/finished",
       params: {
         threadId: "thr_ref_b",
         ref: "ref_b",
@@ -4518,7 +4518,7 @@ describe("serf/job/started|finished stay out of stable delegate rows", () => {
 function responseWithStableDelegate(ref: string, revision: number, status: string, latestActivityAt: string) {
   const response = readResponse(ref);
   const running = status === "running";
-  (response.thread.serf as unknown as Record<string, unknown>).diagnostics = {
+  (response.thread.evener as unknown as Record<string, unknown>).diagnostics = {
     delegates: [
       {
         delegateId: "dlg_1",
@@ -4564,7 +4564,7 @@ describe("stable delegate projection routing", () => {
     await threadsStore.getState().ensureThread("ref_root");
 
     fake.emitNotification({
-      method: "serf/delegate/updated",
+      method: "evener/delegate/updated",
       params: {
         threadId: "thr_ref_root",
         ref: "ref_root",
@@ -5012,7 +5012,7 @@ describe("useThreadsStore.watchThread", () => {
         return readResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_before", status: "completed", itemsView: "full", items: [] }],
-          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
+          evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
         });
       }
       return new Promise<ThreadReadResponse>((resolve) => {
@@ -5022,7 +5022,7 @@ describe("useThreadsStore.watchThread", () => {
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
 
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => replacementRead.resolve !== null);
@@ -5044,7 +5044,7 @@ describe("useThreadsStore.watchThread", () => {
       readResponse("ref_a", {
         status: { type: "active", activeFlags: ["streaming"] },
         turns: [{ id: "turn_after", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.capabilities.queue === true);
@@ -5073,12 +5073,12 @@ describe("useThreadsStore.watchThread", () => {
     const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 3);
@@ -5087,20 +5087,20 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_newest", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_newest");
     reads[1]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_superseded", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     reads[0]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_initial", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -5128,7 +5128,7 @@ describe("useThreadsStore.watchThread", () => {
     const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
@@ -5147,7 +5147,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[1]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -5175,7 +5175,7 @@ describe("useThreadsStore.watchThread", () => {
     const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
@@ -5183,7 +5183,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[1]!.reject(new Error("failed rich replacement B"));
     await flushUntil(() => false);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 3);
@@ -5202,7 +5202,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -5230,12 +5230,12 @@ describe("useThreadsStore.watchThread", () => {
     const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     await flushUntil(() => reads.length === 1);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 2);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushUntil(() => reads.length === 3);
@@ -5244,7 +5244,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
+        evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
@@ -5884,7 +5884,7 @@ describe("retry-safe mutation outbox integration", () => {
     // A resync puts one more read on the wire, and its pending entry is the
     // current one - so nothing but ownership stands between its failure and a
     // scheduled retry.
-    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
     await flushIndexedDBUntil(() => reads.length === 2);
     expect(reads).toHaveLength(2);
 
@@ -6059,7 +6059,7 @@ describe("retry-safe mutation outbox integration", () => {
     // applied. Nothing owns ref_a, so the snapshot carries no authority at all.
     reads.get("ref_a")?.resolve(
       readResponse("ref_a", {
-        serf: {
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 1, clientMutationIds: ["mutation-b"] },
@@ -6091,7 +6091,7 @@ describe("retry-safe mutation outbox integration", () => {
     const resyncRead = deferred<ThreadReadResponse>();
     fake.on("thread/read", () => resyncRead.promise);
     fake.emitNotification({
-      method: "serf/thread/resync",
+      method: "evener/thread/resync",
       params: { threadId: "thr_ref_a", ref: "ref_a" },
     });
     await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "thread/read").length >= 1);
@@ -6103,7 +6103,7 @@ describe("retry-safe mutation outbox integration", () => {
 
     resyncRead.resolve(
       readResponse("ref_a", {
-        serf: {
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 1, clientMutationIds: [record!.clientMutationId] },
@@ -6133,7 +6133,7 @@ describe("retry-safe mutation outbox integration", () => {
     const fake = connectFakeClient("connecting");
     fake.on("thread/read", () =>
       readResponse("ref_a", {
-        serf: {
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 4 },
@@ -6186,7 +6186,7 @@ describe("retry-safe mutation outbox integration", () => {
 
     staleRead.resolve(
       readResponse("ref_a", {
-        serf: {
+        evener: {
           ref: "ref_a",
           capabilities: CAPABILITIES,
           queue: { revision: 1, clientMutationIds: ["mutation-a"] },

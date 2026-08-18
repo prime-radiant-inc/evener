@@ -4,8 +4,8 @@
 // writes the field as you go: a directory click both descends and becomes the
 // value, so there is nothing to commit and no Cancel to undo.
 //
-// Wire-free by design: the caller injects `complete` (serf/paths/complete)
-// and, where recents mean something, `listRecents` (serf/projects/recent).
+// Wire-free by design: the caller injects `complete` (evener/paths/complete)
+// and, where recents mean something, `listRecents` (evener/projects/recent).
 // includeFiles is derived from `kind` here, never passed in.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../protocol/errors";

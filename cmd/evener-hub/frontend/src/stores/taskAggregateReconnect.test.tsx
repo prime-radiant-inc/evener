@@ -32,8 +32,8 @@ function readResponse(ref: string, tasks: { total: number; done: number }): Thre
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, tasks },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, tasks },
   };
   return { thread };
 }
@@ -81,7 +81,7 @@ test("store reconnect preserves task aggregate and Tasks badge across notificati
 
   act(() => {
     fake.emitNotification({
-      method: "serf/task/updated",
+      method: "evener/task/updated",
       params: { threadId: "thr_ref_tasks", ref: "ref_tasks", total: 2, done: 2 },
     });
   });

@@ -180,14 +180,14 @@ describe("buildPathRows", () => {
       currentDir: "/home/jesse",
       entries: ["/home/jesse/src"],
       value: "",
-      recents: ["/home/jesse/serf", "/home/jesse/toil"],
+      recents: ["/home/jesse/evener", "/home/jesse/toil"],
       showRecents: true,
     };
     const rows = buildPathRows(input);
 
     expect(shape(rows)).toEqual([
       "group:Recent projects",
-      "recent:/home/jesse/serf",
+      "recent:/home/jesse/evener",
       "recent:/home/jesse/toil",
       "group:/home/jesse",
       "parent:/home",
@@ -195,7 +195,7 @@ describe("buildPathRows", () => {
     ]);
     const recent = rows.find((r) => r.kind === "recent");
     if (recent?.kind !== "recent") throw new Error("expected a recent row");
-    expect(recent.name).toBe("serf");
+    expect(recent.name).toBe("evener");
 
     expect(buildPathRows({ ...input, showRecents: false }).some((r) => r.kind === "recent")).toBe(false);
     expect(buildPathRows({ ...input, recents: [] }).some((r) => r.kind === "recent")).toBe(false);
@@ -268,7 +268,7 @@ describe("buildPathRows", () => {
       currentDir: "/home/jesse",
       entries: ["/home/jesse/src", "/home/jesse/tmp"],
       value: "",
-      recents: ["/home/jesse/serf"],
+      recents: ["/home/jesse/evener"],
       showRecents: false,
     };
     const keysOf = (rows: ReturnType<typeof buildPathRows>) =>
@@ -281,9 +281,9 @@ describe("buildPathRows", () => {
     const rows = buildPathRows({
       kind: "dir",
       currentDir: "/home/jesse",
-      entries: ["/home/jesse/serf"],
+      entries: ["/home/jesse/evener"],
       value: "",
-      recents: ["/home/jesse/serf"],
+      recents: ["/home/jesse/evener"],
       showRecents: true,
     });
     const keys = rows.map((r) => r.key);
@@ -299,11 +299,11 @@ describe("pickableRows", () => {
       currentDir: "/etc",
       entries: ["/etc/ssl/", "/etc/hosts"],
       value: "",
-      recents: ["/home/jesse/serf"],
+      recents: ["/home/jesse/evener"],
       showRecents: true,
     });
 
-    expect(pickableRows(rows).map((r) => r.path)).toEqual(["/home/jesse/serf", "/", "/etc/ssl", "/etc/hosts"]);
+    expect(pickableRows(rows).map((r) => r.path)).toEqual(["/home/jesse/evener", "/", "/etc/ssl", "/etc/hosts"]);
     expect(
       pickableRows(
         buildPathRows({ kind: "dir", currentDir: "/", entries: null, value: "", recents: [], showRecents: false }),

@@ -51,7 +51,7 @@ export default function ConfirmDialogGallerySection() {
       </ThemeFlip>
       <ThemeFlip>
         <ConfirmDialogDemo
-          title="Install serf-lint?"
+          title="Install evener-lint?"
           confirmLabel="Install"
           destructive={false}
           body="Plugins can run arbitrary code on the hub. Only install ones you trust."

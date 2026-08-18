@@ -1,8 +1,8 @@
-// extractSerfErrorInfo pulls the optional data.serfErrorInfo string out of a
+// extractEvenerErrorInfo pulls the optional data.evenerErrorInfo string out of a
 // wire error's data payload, mirroring appwire.js's errorFromWire().
-function extractSerfErrorInfo(data: unknown): string | undefined {
-  if (data && typeof data === "object" && "serfErrorInfo" in data) {
-    const value = (data as { serfErrorInfo?: unknown }).serfErrorInfo;
+function extractEvenerErrorInfo(data: unknown): string | undefined {
+  if (data && typeof data === "object" && "evenerErrorInfo" in data) {
+    const value = (data as { evenerErrorInfo?: unknown }).evenerErrorInfo;
     if (typeof value === "string") return value;
   }
   return undefined;
@@ -13,15 +13,15 @@ function extractSerfErrorInfo(data: unknown): string | undefined {
 export class WireError extends Error {
   readonly code: number;
   readonly data?: unknown;
-  readonly serfErrorInfo?: string;
+  readonly evenerErrorInfo?: string;
 
   constructor(message: string, code: number, data?: unknown) {
     super(message);
     this.name = "WireError";
     this.code = code;
     this.data = data;
-    const serfErrorInfo = extractSerfErrorInfo(data);
-    if (serfErrorInfo !== undefined) this.serfErrorInfo = serfErrorInfo;
+    const evenerErrorInfo = extractEvenerErrorInfo(data);
+    if (evenerErrorInfo !== undefined) this.evenerErrorInfo = evenerErrorInfo;
   }
 }
 
@@ -33,11 +33,11 @@ export function errorText(err: unknown): string {
 }
 
 // isHubLaunchError reports whether a rejection is the hub failing to start a
-// session's daemon: appwire.HubLaunchError, which stamps data.serfErrorInfo
+// session's daemon: appwire.HubLaunchError, which stamps data.evenerErrorInfo
 // "hubLaunch" (appwire/errors.go). The discriminator is that string, never
 // the code - siblings share the code.
 export function isHubLaunchError(err: unknown): boolean {
-  return err instanceof WireError && err.serfErrorInfo === "hubLaunch";
+  return err instanceof WireError && err.evenerErrorInfo === "hubLaunch";
 }
 
 // sessionActionHeadline names the step that actually died.
@@ -148,7 +148,7 @@ export function friendlyErrorMessage(error: unknown): string {
 // which is the CLIENT's own connection being down: this is the hub saying
 // "I'm here, the daemon isn't", so the fix is different - start one.
 const DAEMON_MISSING_MESSAGE =
-  "No agent daemon responded for this project. Start one by running serf in the repo, then retry.";
+  "No agent daemon responded for this project. Start one by running evener in the repo, then retry.";
 
 // errorKind classifies a rejection into the families a caller with launch
 // context (spawn, a model picker) needs to tell apart. Driven by real
@@ -158,7 +158,7 @@ const DAEMON_MISSING_MESSAGE =
 //    recognizes (a closed, or not-yet-open, socket).
 //  - "daemon-missing": the hub answered, but the AGENT DAEMON for the
 //    target project is what failed - isHubLaunchError's own discriminator
-//    (data.serfErrorInfo === "hubLaunch", stamped by every launch-check,
+//    (data.evenerErrorInfo === "hubLaunch", stamped by every launch-check,
 //    credential, and daemon-spawn/resume failure - appwire.HubLaunchError,
 //    called from cmd/evener-hub/spawn.go, app_threadlifecycle.go, and
 //    app_models.go). A WireError only ever exists once the hub is there to
@@ -181,16 +181,16 @@ export function errorKind(error: unknown): ErrorKind {
 // internal/codexlaunch), almost every message carries its own diagnosis —
 // config failures ("provider credentials missing for ..."), resume advice
 // (resumeFailureError's kill-the-old-daemon instructions), and crucially
-// the daemon's own redacted stderr ("serf launch-check failed: <stderr>",
+// the daemon's own redacted stderr ("evener launch-check failed: <stderr>",
 // which cmd/evener-hub/app_rpc_test.go's stderr-propagation test exists to
 // keep intact end to end). Masking those with generic guidance sends the
 // user to fix the wrong thing, so the DEFAULT is pass-through, and only
 // the messages that genuinely contain no diagnosis — the daemon never got
 // far enough to produce one — take the guidance copy: launch-check
-// canceled/timed out (no output existed) and fork/exec (the serf binary
+// canceled/timed out (no output existed) and fork/exec (the evener binary
 // itself is absent). A new Go message therefore defaults to being shown,
 // not swallowed.
-const LAUNCH_NO_DIAGNOSIS_PATTERN = /^serf launch-check (?:canceled|timed out)$|^fork\/exec /;
+const LAUNCH_NO_DIAGNOSIS_PATTERN = /^evener launch-check (?:canceled|timed out)$|^fork\/exec /;
 
 // friendlyLaunchErrorMessage is friendlyErrorMessage for the surfaces that
 // can hit the hubLaunch family against a cold project (spawn, a model

@@ -67,7 +67,7 @@ export function recordStoplessComposer(sighting: StoplessSighting): void {
   // console line is for the person who is looking at the broken pane right now
   // and would otherwise reload and destroy the evidence.
   console.warn(
-    "[serf 5gdv] composer is showing a working session with no Stop. Please attach this to kata 5gdv:",
+    "[evener 5gdv] composer is showing a working session with no Stop. Please attach this to kata 5gdv:",
     sighting,
   );
 }

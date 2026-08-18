@@ -116,7 +116,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
   test("a file-kind field browses the value's own directory with files included", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", (params) => {
+    fake.on("evener/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/etc/", includeFiles: true });
       return { data: ["/etc/ssl/", "/etc/prompt.md"] };
     });
@@ -147,7 +147,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     const user = userEvent.setup();
     const calls: Array<{ prefix: string; includeFiles?: boolean }> = [];
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", (params) => {
+    fake.on("evener/paths/complete", (params) => {
       calls.push(params);
       return { data: ["/tmp/traces/", "/tmp/trace.jsonl"] };
     });
@@ -162,7 +162,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", () => ({ data: ["/tmp/atif.json"] }));
+    fake.on("evener/paths/complete", () => ({ data: ["/tmp/atif.json"] }));
     render(<ScalarField option={pathOption()} layer="global" value="/tmp/old.json" onChange={onChange} />);
 
     await user.click(screen.getByLabelText("Trace file"));
@@ -405,10 +405,10 @@ describe("ScalarField: global default hint (project layer only)", () => {
         layer="project"
         value=""
         onChange={() => {}}
-        globalDefaultHint="default: serf"
+        globalDefaultHint="default: evener"
       />,
     );
-    expect(screen.getByText("default: serf")).toBeTruthy();
+    expect(screen.getByText("default: evener")).toBeTruthy();
   });
 
   test("renders nothing extra when no hint is given", () => {
@@ -424,7 +424,7 @@ describe("PromptCompositeField", () => {
     label: "System prompt",
     kind: "radio",
     choices: [
-      { value: "", label: "Serf default" },
+      { value: "", label: "Evener default" },
       { value: "file", label: "Pick a file" },
       { value: "inline", label: "Fill in text" },
     ],
@@ -470,7 +470,7 @@ describe("PromptCompositeField", () => {
     const user = userEvent.setup();
     const onFileChange = vi.fn();
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", () => ({ data: ["/etc/prompt.md"] }));
+    fake.on("evener/paths/complete", () => ({ data: ["/etc/prompt.md"] }));
     render(
       <PromptCompositeField
         option={modeOption}

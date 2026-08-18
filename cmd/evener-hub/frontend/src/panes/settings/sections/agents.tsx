@@ -1,5 +1,5 @@
 // Settings -> Agents (#8): server-rendered, read-only agent roster, overview-
-// fed (serf/settings/overview -> data.agents). No add/remove/edit affordance
+// fed (evener/settings/overview -> data.agents). No add/remove/edit affordance
 // in this view - editing happens externally in the linked editor
 // (parity-m7-settings.md §8). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts

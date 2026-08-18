@@ -181,13 +181,13 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
   const user = userEvent.setup();
   const fake = connectFakeClient();
   const box: { resolve: ((r: { data: unknown }) => void) | null } = { resolve: null };
-  fake.on("serf/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
+  fake.on("evener/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   expect(await screen.findByText(/loading tasks/i)).toBeTruthy();
-  const call = fake.calls.find((c) => c.method === "serf/tasks/list");
+  const call = fake.calls.find((c) => c.method === "evener/tasks/list");
   expect(call?.params).toEqual({ ref: "ref_a" });
 
   await act(async () => {
@@ -199,7 +199,7 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
 test("rows group by status: in progress, then open, then the collapsed settled group; wire order holds within a group", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -215,7 +215,7 @@ test("rows group by status: in progress, then open, then the collapsed settled g
 
 test("empty groups render nothing, so Open leads when there are no in-progress tasks", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[2]] }));
+  fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[2]] }));
 
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
@@ -228,7 +228,7 @@ test("empty groups render nothing, so Open leads when there are no in-progress t
 
 test("an all-settled list shows only the collapsed settled disclosure line", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [DATED_TASKS[0], DATED_TASKS[2]] }));
+  fake.on("evener/tasks/list", () => ({ data: [DATED_TASKS[0], DATED_TASKS[2]] }));
 
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
@@ -241,7 +241,7 @@ test("an all-settled list shows only the collapsed settled disclosure line", asy
 test("a live row shows its latest note inline; a settled row does not", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -259,7 +259,7 @@ test("a live row shows its latest note inline; a settled row does not", async ()
 test("a cancelled row renders struck-through inside the settled group", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -273,7 +273,7 @@ test("a cancelled row renders struck-through inside the settled group", async ()
 test("a live row shows a relative updated time", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -285,7 +285,7 @@ test("a live row shows a relative updated time", async () => {
 test("the settled group defaults to collapsed and remembers being opened per session", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   const first = render(<TasksPanelBody sessionRef="ref_remember" model={testModel({ ref: "ref_remember" })} />);
   await screen.findByTestId("task-settled-group");
@@ -300,7 +300,7 @@ test("the settled group defaults to collapsed and remembers being opened per ses
 
 test("the body header shows the meter and count when the aggregate is known", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+  fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
 
   render(
     <>
@@ -315,7 +315,7 @@ test("the body header shows the meter and count when the aggregate is known", as
 
 test("the body header is absent while no aggregate has arrived", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
+  fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
 
   render(
     <>
@@ -343,7 +343,7 @@ const RICH_TASK = {
 test("a task row starts collapsed; clicking its summary expands its meta and updates", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+  fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -364,7 +364,7 @@ test("a task row starts collapsed; clicking its summary expands its meta and upd
 test("notes render as a timeline with the latest note marked", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+  fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -395,7 +395,7 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({
+  fake.on("evener/tasks/list", () => ({
     data: [
       {
         ...RICH_TASK,
@@ -421,7 +421,7 @@ test("the prompt disclosure shows a one-line markdown preview collapsed and the 
 test("a task with a blank prompt renders no prompt disclosure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
+  fake.on("evener/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -433,7 +433,7 @@ test("a task with a blank prompt renders no prompt disclosure", async () => {
 test("clicking an expanded row's summary again collapses it", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+  fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -449,7 +449,7 @@ test("clicking an expanded row's summary again collapses it", async () => {
 test("an expanded bare task shows only the type meta and 'No updates yet.'", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -469,7 +469,7 @@ test("an expanded bare task shows only the type meta and 'No updates yet.'", asy
 test("an expanded task shows the meta strip and timestamps line", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: DATED_TASKS }));
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -489,7 +489,7 @@ test("an expanded task shows the meta strip and timestamps line", async () => {
 test("the timestamps line omits updated when it equals created", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({
+  fake.on("evener/tasks/list", () => ({
     data: [
       {
         id: 6,
@@ -516,7 +516,7 @@ test("the timestamps line omits updated when it equals created", async () => {
 test("the timestamps line omits completed for a non-done task even when completed_at is present", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({
+  fake.on("evener/tasks/list", () => ({
     data: [
       {
         id: 7,
@@ -543,7 +543,7 @@ test("the timestamps line omits completed for a non-done task even when complete
 test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -556,7 +556,7 @@ test("each row's expand state is independent - opening one row leaves its siblin
 test("the expanded row is a real native disclosure (<details open>), not just conditionally-rendered markup", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+  fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -573,7 +573,7 @@ test("the expanded row is a real native disclosure (<details open>), not just co
 test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive legacy empty-state copy", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: [] }));
+  fake.on("evener/tasks/list", () => ({ data: [] }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -585,7 +585,7 @@ test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the defi
 test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a one-time fetch)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
@@ -596,35 +596,35 @@ test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   await screen.findAllByTestId("task-row");
 
-  expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(2);
+  expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(2);
 });
 
 test("re-fetches automatically when the live aggregate changes WHILE the panel stays open", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
   const user = userEvent.setup();
 
   const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
   await user.click(screen.getByRole("button", { name: "Tasks 0/3" }));
   await screen.findAllByTestId("task-row");
-  expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(1);
+  expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1);
 
-  // A live serf/task/updated notification bumped the aggregate - the panel
+  // A live evener/task/updated notification bumped the aggregate - the panel
   // is still open, so this should trigger a fresh fetch automatically
   // rather than leaving stale rows on screen.
   rerender(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
 
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(2));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(2));
 });
 
 test("does not fetch at all while the panel is closed, even if the aggregate changes", () => {
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
   const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
   rerender(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
 
-  expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(0);
+  expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(0);
 });
 
 // --- Codex-source unsupported state (actionUnavailable) -------------------
@@ -632,8 +632,8 @@ test("does not fetch at all while the panel is closed, even if the aggregate cha
 test("a Codex-source actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
-    throw new WireError("codex source does not expose serf tasks", -32014, { serfErrorInfo: "actionUnavailable" });
+  fake.on("evener/tasks/list", () => {
+    throw new WireError("codex source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
 
   render(
@@ -653,7 +653,7 @@ test("a Codex-source actionUnavailable rejection shows the honest unsupported st
 test("a generic fetch failure surfaces an error toast AND an inline error state", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     throw new Error("tasks boom");
   });
 
@@ -680,7 +680,7 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
   const fake = connectFakeClient();
   const calls: Array<{ resolve: (value: { data: unknown }) => void; reject: (err: unknown) => void }> = [];
   fake.on(
-    "serf/tasks/list",
+    "evener/tasks/list",
     () =>
       new Promise<{ data: unknown }>((resolve, reject) => {
         calls.push({ resolve, reject });
@@ -717,8 +717,8 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
 test("a failed auto-resume names the resume in BOTH the toast and the inline state", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
-    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  fake.on("evener/tasks/list", () => {
+    throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
   });
 
   render(
@@ -729,9 +729,9 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await screen.findByText("Couldn't start this session: serf launch-check timed out"); // the toast
+  await screen.findByText("Couldn't start this session: evener launch-check timed out"); // the toast
   expect(screen.getByText("Couldn't start this session")).toBeTruthy(); // the inline heading
-  expect(screen.getByText("serf launch-check timed out")).toBeTruthy(); // the inline detail
+  expect(screen.getByText("evener launch-check timed out")).toBeTruthy(); // the inline detail
   // The action's own name is gone from both, not merely absent from one.
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 });
@@ -744,7 +744,7 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
 test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     throw new Error("");
   });
 
@@ -757,17 +757,17 @@ test("a rejection with no text of its own shows the headline alone, with no empt
 
 // --- a failed LIVE re-fetch keeps the list it already has -------------------
 //
-// The panel re-fetches on every serf/task/updated push while it stays open.
+// The panel re-fetches on every evener/task/updated push while it stays open.
 // A momentary rejection on one of those fetches ("local daemon unavailable:
 // broken pipe") used to replace the list the reader was mid-way through with
 // an error state, though the previous page was still in hand. Nothing the
 // reader did caused it, and nothing they could do brought it back.
 
-// Scripts serf/tasks/list to answer `first` once and to reject every later
+// Scripts evener/tasks/list to answer `first` once and to reject every later
 // call: the exact shape of a live re-fetch blipping under a reader.
 function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): void {
   let calls = 0;
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     calls += 1;
     if (calls === 1) return { data: first };
     throw err;
@@ -775,7 +775,7 @@ function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): vo
 }
 
 // Opens the panel, waits for the first fetch to land, then bumps the live
-// aggregate the way a serf/task/updated push does - which is the only thing
+// aggregate the way a evener/task/updated push does - which is the only thing
 // that re-fetches while the panel stays open.
 async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEvent.setup>> {
   const user = userEvent.setup();
@@ -787,10 +787,10 @@ async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEve
   );
   const { rerender } = render(panel(0));
   await user.click(screen.getByRole("button", { name: "Tasks 0/3" }));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(1));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1));
 
   rerender(panel(1));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(2));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(2));
   return user;
 }
 
@@ -842,25 +842,25 @@ test("the stale notice and the toast report a re-fetch failure in the same words
   failAfterFirstFetch(
     fake,
     TASKS_DATA,
-    new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" }),
+    new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }),
   );
 
   await openThenPush(fake);
 
-  const sentence = "Couldn't start this session: serf launch-check timed out";
+  const sentence = "Couldn't start this session: evener launch-check timed out";
   await waitFor(() => expect(screen.getAllByText(sentence)).toHaveLength(2));
   // The action's own name is gone from both, not merely absent from one.
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 });
 
-// serf/task/updated is event-driven, never scheduled (internal/appprojector/
+// evener/task/updated is event-driven, never scheduled (internal/appprojector/
 // appwire_projection.go's EventTaskUpdated case): a session whose agent has
 // stopped touching its task list emits no further pushes, so a failed fetch
 // is stuck until the reader asks again. Try again is that ask.
 test("Try again re-fetches the list and clears the stale notice once it succeeds", async () => {
   const fake = connectFakeClient();
   let calls = 0;
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     calls += 1;
     if (calls === 2) throw new Error("local daemon unavailable: broken pipe");
     return { data: TASKS_DATA };
@@ -872,7 +872,7 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
   await waitFor(() => expect(screen.queryByTestId("tasks-stale")).toBeNull());
-  expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(3);
+  expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(3);
   expect(screen.getAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
 });
@@ -887,13 +887,13 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
 // hubKnowsRef). So unlike the "local daemon unavailable" blip above, there is
 // no schedule and no possible recovery to wait for here.
 function threadNotFoundError(): WireError {
-  return new WireError("thread not found: thr_a", -32014, { serfErrorInfo: "sessionUnavailable" });
+  return new WireError("thread not found: thr_a", -32014, { evenerErrorInfo: "sessionUnavailable" });
 }
 
 test("thread-not-found on a session that never had a live aggregate still shows the honest 'No tasks yet' (unchanged)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
 
@@ -908,7 +908,7 @@ test("closing then re-opening after the daemon exits keeps the rows already show
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let calls = 0;
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     calls += 1;
     if (calls === 1) return { data: TASKS_DATA };
     throw threadNotFoundError();
@@ -941,7 +941,7 @@ test("that terminal notice offers no Try again - the hub never tracked this sess
 test("thread-not-found with a known aggregate but no rows ever fetched shows a terminal message, not 'No tasks yet'", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
 
@@ -955,7 +955,7 @@ test("thread-not-found with a known aggregate but no rows ever fetched shows a t
 test("no toast for a dead-daemon rejection - it's not a bug, it's an expected terminal state", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
 
@@ -977,7 +977,7 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let calls = 0;
-  fake.on("serf/tasks/list", () => {
+  fake.on("evener/tasks/list", () => {
     calls += 1;
     if (calls === 1) throw new Error("tasks boom");
     return { data: TASKS_DATA };

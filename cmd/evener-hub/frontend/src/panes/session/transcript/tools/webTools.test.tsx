@@ -87,10 +87,10 @@ test("web_fetch: renders nothing when output is blank", () => {
 
 test("web_search: summary shows the clipped query and a result count", () => {
   const d = toolRendererFor("web_search");
-  const args = JSON.stringify({ query: "serf webui rewrite" });
+  const args = JSON.stringify({ query: "evener webui rewrite" });
   const output = "result one\nresult two\n";
   expect(d.summary(item({ toolName: "web_search", argumentsJSON: args, output }))).toBe(
-    'Searched the web for "serf webui rewrite" · 2 results',
+    'Searched the web for "evener webui rewrite" · 2 results',
   );
 });
 

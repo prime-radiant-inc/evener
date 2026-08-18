@@ -89,7 +89,7 @@ test("an expanded row has the same stacked grammar - open vs collapsed differs o
 // pressure; the tail never shrinks. Expanded rows show the WHOLE call,
 // wrapping in full with no clamp at all.
 test("a collapsed row splits the summary into a clampable head and an always-full tail", () => {
-  const summary = "Ran cd ~/prime-radiant/toil-suite/serf && git merge --no-ff transcript-view-design";
+  const summary = "Ran cd ~/prime-radiant/toil-suite/evener && git merge --no-ff transcript-view-design";
   render(
     <ToolRow
       summary={summary}
@@ -113,7 +113,7 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
 });
 
 test("an expanded row drops the clamp entirely - the full call wraps, no head/tail split", () => {
-  const summary = "Ran cd ~/prime-radiant/toil-suite/serf && git merge --no-ff transcript-view-design";
+  const summary = "Ran cd ~/prime-radiant/toil-suite/evener && git merge --no-ff transcript-view-design";
   render(
     <ToolRow summary={summary} purpose="Merging the redesign" failed={false} expandable expanded onToggle={() => {}} />,
   );

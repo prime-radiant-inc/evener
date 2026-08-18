@@ -31,7 +31,7 @@
  * instead, so only the one truly-focused tab lifts at a time.
  */
 
-.dockview-theme-serf {
+.dockview-theme-evener {
   /* Content area behind a panel's own PaneScaffold card - rarely visible
    * (PaneScaffold fills its panel edge to edge) but matches the pane
    * surface rather than leaving dockview's own default gray peeking

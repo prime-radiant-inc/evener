@@ -41,8 +41,8 @@ async function seedThread(ref: string, overrides: Record<string, unknown> = {}):
       status: { type: "idle" },
       cwd: "/tmp/p",
       cliVersion: "1.0.0",
-      source: "serf",
-      serf: { ref, capabilities: CAPS, queue: { revision: 0 } },
+      source: "evener",
+      evener: { ref, capabilities: CAPS, queue: { revision: 0 } },
       ...overrides,
     },
   }));
@@ -178,7 +178,7 @@ test("a blocked sentinel (no active turn) surfaces its own message as a toast an
 
 test("an unavailableReason command is refused WITHOUT attempting the RPC", async () => {
   await seedThread("ref_a", {
-    serf: { ref: "ref_a", capabilities: { ...CAPS, compact: false }, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: { ...CAPS, compact: false }, queue: { revision: 0 } },
   });
   const builtins = sessionBuiltinCommands({ sessionRef: "ref_a", onPage: "session" });
   const match = matchBuiltinInvocation("/compact", builtins)!;

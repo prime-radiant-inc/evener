@@ -1,5 +1,5 @@
 // ?dir=/?prompt= URL prefill (spec §5). Read once from window.location.search
-// at pane mount so a deep link (e.g. from an external "open in serf" button)
+// at pane mount so a deep link (e.g. from an external "open in evener" button)
 // can seed the working directory and/or the prompt. An absent or empty-valued
 // param yields no entry - the caller layers whatever is present over the sticky
 // defaults. Values are URLSearchParams-decoded verbatim (whitespace/newlines in

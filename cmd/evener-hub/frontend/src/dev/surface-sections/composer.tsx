@@ -46,8 +46,8 @@ function fixtureThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/home/dev/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }

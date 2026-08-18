@@ -63,7 +63,7 @@ function threadWithRef(ref: string): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "local",
-    serf: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
   };
 }
 
@@ -75,22 +75,22 @@ function startResponse(ref: string): ThreadStartResponse {
 // hydrates; individual tests override specific methods as needed.
 function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   const fake = new FakeClient("ready");
-  fake.on("serf/harnesses/list", () => ({
+  fake.on("evener/harnesses/list", () => ({
     data: [
-      { id: "serf", label: "serf", kind: "serf" },
+      { id: "evener", label: "evener", kind: "evener" },
       { id: "codex-cli", label: "codex-cli", kind: "codex" },
     ],
   }));
-  fake.on("serf/launch/schema", () => ({ options: [] }));
+  fake.on("evener/launch/schema", () => ({ options: [] }));
   fake.on("model/list", () => ({
     data: [
       { provider: "anthropic", model: "claude-sonnet-4-5" },
       { provider: "openai", model: "gpt-5" },
     ],
   }));
-  fake.on("serf/projects/recent", () => ({ data: [] }));
-  fake.on("serf/paths/complete", () => ({ data: [] }));
-  fake.on("serf/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/projects/recent", () => ({ data: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  fake.on("evener/path/validate", () => ({ path: "", valid: true }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -108,7 +108,7 @@ function renderSpawn(client: FakeClient) {
 // The working directory is a PathField: the closed field is a trigger holding
 // the path as text, and the value is entered inside its browse panel (which is
 // portaled to document.body, so it is queried from `screen`, not the form).
-const LAST_WORKING_DIR_KEY = "serf-hub.spawn-defaults.global.last-working-dir";
+const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
 function workingDir(): HTMLElement {
   return screen.getByLabelText("Working directory");
@@ -244,8 +244,8 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
 });
 
 // Harness moves into Advanced options: most installs have exactly one, so a
-// field whose answer is always "serf" shouldn't lead the page. It stays fully
-// functional there - the switch still blanks a non-serf model (see the harness
+// field whose answer is always "evener" shouldn't lead the page. It stays fully
+// functional there - the switch still blanks a non-evener model (see the harness
 // tests in harnessModels.test.ts for that rule's own coverage).
 test("harness moved into Advanced options, and still works there", async () => {
   const user = userEvent.setup();
@@ -360,7 +360,7 @@ test("the branch readout is absent when the working directory has no resolvable 
     "fetch",
     vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response)),
   );
-  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/plain");
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/plain");
   renderSpawn(readyClient());
   await settled();
 
@@ -410,7 +410,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
     launchOverrides: { sandbox: "read-only" },
   });
   // Sticky defaults persist the working dir globally on submit (floor §1.9).
-  expect(localStorage.getItem("serf-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
 });
 
 // A blank prompt starts a DORMANT session, exactly as the placeholder
@@ -453,8 +453,8 @@ test("a whitespace-only prompt starts a dormant session too", async () => {
 
 test("loads sticky defaults from localStorage on mount", async () => {
   const user = userEvent.setup();
-  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/saved/project");
-  localStorage.setItem("serf-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/saved/project");
+  localStorage.setItem("evener-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
   renderSpawn(readyClient());
 
   await waitFor(() => expectWorkingDir("/saved/project"));
@@ -544,7 +544,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
 // on every browse step.
 test("stamps the last-working-directory global when the browse panel closes", async () => {
   const user = userEvent.setup();
-  renderSpawn(readyClient((f) => f.on("serf/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
+  renderSpawn(readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
   await settled();
 
   await user.click(workingDir());
@@ -569,7 +569,7 @@ test("stamps the last-working-directory global when the browse panel closes", as
 // working directory all survive Escape, and no navigation occurs.
 test("kata cp3m: Escape after selecting a working directory closes only the popover - the draft survives", async () => {
   const user = userEvent.setup();
-  const fake = readyClient((f) => f.on("serf/paths/complete", () => ({ data: ["/tmp/project/src"] })));
+  const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
   await settled();
 
@@ -601,7 +601,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
   const user = userEvent.setup();
   localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
   const complete = vi.fn((_params: { prefix: string }) => ({ data: ["/home/me/lastone/src"] }));
-  renderSpawn(readyClient((f) => f.on("serf/paths/complete", complete)));
+  renderSpawn(readyClient((f) => f.on("evener/paths/complete", complete)));
   await settled();
   // Nothing else may have seeded the field: the fallback is only consulted
   // when the value is empty, and an empty field shows its placeholder.
@@ -622,8 +622,8 @@ test("survives a null data payload from either list RPC", async () => {
   const nulled = { data: null as unknown as string[] };
   renderSpawn(
     readyClient((f) => {
-      f.on("serf/projects/recent", () => nulled);
-      f.on("serf/paths/complete", () => nulled);
+      f.on("evener/projects/recent", () => nulled);
+      f.on("evener/paths/complete", () => nulled);
     }),
   );
   await settled();
@@ -638,7 +638,7 @@ test("survives a null data payload from either list RPC", async () => {
 test("offers to create a missing directory, then creates it and spawns", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("serf/path/validate", () => ({
+    f.on("evener/path/validate", () => ({
       path: "/tmp/new",
       valid: false,
       error: "stat /tmp/new: no such file or directory",
@@ -669,7 +669,7 @@ test("aborts with the validator message for a non-fixable working dir, then a co
   const user = userEvent.setup();
   let dirIsValid = false;
   const fake = readyClient((f) => {
-    f.on("serf/path/validate", () =>
+    f.on("evener/path/validate", () =>
       dirIsValid
         ? { path: "/tmp/project", valid: true }
         : { path: "/etc/hosts", valid: false, error: "path is not a directory" },
@@ -700,7 +700,7 @@ test("aborts with the validator message for a non-fixable working dir, then a co
 // kata xkp2: filed as "the Spawn button is enabled but a click with the
 // working directory left at its placeholder does nothing - no session, no
 // toast, no dialog, no request reaches the daemon". Investigated with a
-// serf/path/validate response that mirrors the real daemon EXACTLY for an
+// evener/path/validate response that mirrors the real daemon EXACTLY for an
 // empty path: fspaths.ValidateLaunchPath rejects an empty (or all-
 // whitespace) path unconditionally, before it even looks at `kind`
 // (cmd/evener-hub/internal/fspaths/app_paths.go:150-154), with the literal
@@ -717,7 +717,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
   const fake = readyClient((f) => {
     // path: "" is the real wire shape too - ValidateLaunchPath's early
     // return leaves the Go struct's Path field at its zero value.
-    f.on("serf/path/validate", () => ({ path: "", valid: false, error: "path is required" }));
+    f.on("evener/path/validate", () => ({ path: "", valid: false, error: "path is required" }));
   });
   renderSpawn(fake);
   await settled();
@@ -743,7 +743,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
 // --- will refuse -----------------------------------------------------------
 //
 // The daemon's thread/start resolves Model from the SAME layered launch
-// config serf/launch/resolve previews (app_threadlifecycle.go: overrides.Model
+// config evener/launch/resolve previews (app_threadlifecycle.go: overrides.Model
 // wins when set, otherwise the resolved Effective.Model - empty is refused
 // with "model is required"). Leaving Model untouched sends no model
 // override, so an empty resolve preview means the daemon WILL refuse the
@@ -754,7 +754,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
 test("Model keeps reading '(default)' and Spawn stays untouched when the hub resolves a real default (kata xgk8, happy path)", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("serf/launch/resolve", () => ({
+    f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
       layers: {},
       provenance: {},
@@ -764,7 +764,7 @@ test("Model keeps reading '(default)' and Spawn stays untouched when the hub res
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   expect(modelTrigger().textContent).toContain("(default)");
   expect(screen.queryByRole("alert")).toBeNull();
@@ -779,13 +779,13 @@ test("Model keeps reading '(default)' and Spawn stays untouched when the hub res
 test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled when the hub has no default model", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("serf/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+    f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
   renderSpawn(fake);
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   await waitFor(() => expect(modelTrigger().textContent).not.toContain("(default)"));
   expect(screen.getByRole("alert").textContent).toMatch(/no default model/i);
@@ -801,13 +801,13 @@ test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled
 test("kata xgk8: choosing a model clears the required state and lets Start proceed", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("serf/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+    f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
   renderSpawn(fake);
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
 
   await user.click(modelTrigger());
@@ -827,7 +827,7 @@ test("kata xgk8: choosing a model clears the required state and lets Start proce
 });
 
 // The daemon's own launch-config schema exposes a SECOND "model" wireField
-// inside Advanced options (perLaunchSerfOptions - schema.go's real "model"
+// inside Advanced options (perLaunchEvenerOptions - schema.go's real "model"
 // LaunchOption, kind modelPicker) alongside the top-level Model chip; floor
 // §1.11 has the Advanced field's override win at submit time. The preview
 // here must agree - an override set ONLY through Advanced options satisfies
@@ -835,7 +835,7 @@ test("kata xgk8: choosing a model clears the required state and lets Start proce
 test("kata xgk8: an Advanced-options model override satisfies the requirement without touching the top-level Model field", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
-    f.on("serf/launch/schema", () => ({
+    f.on("evener/launch/schema", () => ({
       options: [
         {
           field: "model",
@@ -847,7 +847,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
         },
       ],
     }));
-    f.on("serf/launch/resolve", (params) => ({
+    f.on("evener/launch/resolve", (params) => ({
       effective: { model: params.launchOverrides?.model ?? "" },
       layers: {},
       provenance: {},
@@ -857,7 +857,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
@@ -893,7 +893,7 @@ test("preselects the first launchable model when the resolved default's provider
         { provider: "anthropic", model: "claude-opus-4" },
       ],
     }));
-    f.on("serf/launch/resolve", () => ({
+    f.on("evener/launch/resolve", () => ({
       effective: { model: "openai/gpt-5.5" }, // launch.toml's default; openai has no credentials here
       layers: {},
       provenance: {},
@@ -903,7 +903,7 @@ test("preselects the first launchable model when the resolved default's provider
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // Falls back to the FIRST launchable model, not merely "some" model -
   // model/list's own order, which scopedCatalog.ts preserves into the picker.
@@ -924,7 +924,7 @@ test("keeps the form usable and leaves Model at '(default)' when no provider is 
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("model/list", () => ({ data: [] })); // nothing launchable to fall back to
-    f.on("serf/launch/resolve", () => ({
+    f.on("evener/launch/resolve", () => ({
       effective: { model: "openai/gpt-5.5" },
       layers: {},
       provenance: {},
@@ -934,7 +934,7 @@ test("keeps the form usable and leaves Model at '(default)' when no provider is 
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // No new dead-end UI: the server's own "provider credentials missing"
   // message on submit is what speaks here, not a form the picker can't
@@ -948,8 +948,8 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   // The sticky pref names a provider that IS launchable, but not the list's
   // first entry - if the fallback logic ignored modelRef and ran anyway, it
   // would silently overwrite this with models[0] ("anthropic/claude-opus-4").
-  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/p");
-  localStorage.setItem("serf-hub.spawn-defaults./p", JSON.stringify({ model: "anthropic/claude-sonnet-4-5" }));
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/p");
+  localStorage.setItem("evener-hub.spawn-defaults./p", JSON.stringify({ model: "anthropic/claude-sonnet-4-5" }));
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
@@ -957,7 +957,7 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
         { provider: "anthropic", model: "claude-sonnet-4-5" },
       ],
     }));
-    f.on("serf/launch/resolve", () => ({
+    f.on("evener/launch/resolve", () => ({
       effective: { model: "openai/gpt-5.5" }, // openai uncredentialed
       layers: {},
       provenance: {},
@@ -966,20 +966,20 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   renderSpawn(fake);
   await settled();
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5");
   expect(modelTrigger().textContent).not.toContain("claude-opus-4");
 });
 
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {
-  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/p");
-  localStorage.setItem("serf-hub.spawn-defaults./p", JSON.stringify({ model: "openai/gpt-4o" }));
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/p");
+  localStorage.setItem("evener-hub.spawn-defaults./p", JSON.stringify({ model: "openai/gpt-4o" }));
   renderSpawn(readyClient());
 
   expect(await screen.findByText(/discarded last-used model openai\/gpt-4o/i)).toBeTruthy();
   // The stale blob was pruned by the sweep.
-  await waitFor(() => expect(localStorage.getItem("serf-hub.spawn-defaults./p")).toBeNull());
+  await waitFor(() => expect(localStorage.getItem("evener-hub.spawn-defaults./p")).toBeNull());
 });
 
 // --- Effort: the ladder belongs to the selected model -----------------------
@@ -1097,7 +1097,7 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
     { provider: "openai", model: "gpt-5", supports_reasoning: true, reasoning_effort_levels: ["low", "high"] },
   ]);
   const fake = readyClient((f) => {
-    f.on("serf/launch/resolve", () => ({
+    f.on("evener/launch/resolve", () => ({
       effective: { model: "openai/gpt-5" },
       layers: {},
       provenance: {},
@@ -1107,7 +1107,7 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
   await settled();
 
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // gpt-5's provider IS in readyClient's model/list, so the uncredentialed
   // fallback doesn't preselect it - Model stays "(default)" and the ladder
@@ -1238,7 +1238,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("thread/start", () => {
-      throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+      throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
     });
   });
   renderSpawn(fake);
@@ -1248,7 +1248,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
   await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(
-    "Start failed: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
+    "Start failed: No agent daemon responded for this project. Start one by running evener in the repo, then retry.",
   );
   expect(screen.queryByText(/launch-check timed out/i)).toBeNull();
 });

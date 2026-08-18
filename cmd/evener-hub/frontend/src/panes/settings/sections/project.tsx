@@ -3,13 +3,13 @@
 // sections.ts's own comment; this "project" section id is deliberately
 // absent from SETTINGS_SECTIONS). Shares launchServer.tsx's engine
 // (LaunchConfigForm) but with the 3-state loaded contract (loading/error/
-// ready, vs. launch-serf's 2-state) and no diagnostics panel at all
+// ready, vs. launch-evener's 2-state) and no diagnostics panel at all
 // (parity-m7-settings.md §18).
 //
 // Deliberate scope decision (this task's own report): when no `cwd` is
 // present, this renders a plain instructional message rather than the
 // legacy's project-picker list. That picker needs a {name, cwd} pair per
-// known project; the only available RPC, serf/projects/recent, returns bare
+// known project; the only available RPC, evener/projects/recent, returns bare
 // cwd strings with no name field, and isn't part of this task's assigned
 // wire ground truth - reproducing the legacy list faithfully isn't possible
 // with what's in scope here.
@@ -64,7 +64,7 @@ export interface ProjectSectionProps {
 }
 
 /**
- * Per-project launch overrides: layered on top of the global Serf launch
+ * Per-project launch overrides: layered on top of the global Evener launch
  * defaults. Only fields set here override the global ones. The global layer
  * is fetched read-only, purely to drive the "default: {value}" inline hints
  * - this page never writes it.
@@ -113,7 +113,7 @@ export function ProjectSection(_props: ProjectSectionProps) {
       <h2>Project launch settings</h2>
       <p className={CLASS.help}>{cwd}</p>
       <p className={CLASS.help}>
-        Layered on top of the global Serf and Codex launch settings. Only fields set here override the global defaults.
+        Layered on top of the global Evener and Codex launch settings. Only fields set here override the global defaults.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
       {load.phase === "error" && <p className={CLASS.error}>Failed to load project launch settings. {load.message}</p>}

@@ -10,7 +10,7 @@ export function PluginsDirsSection() {
     <DirListSetting
       wireField="pluginDirs"
       label="Plugin directories"
-      copy="Directories serf scans for plugins at launch. Applied to every spawn."
+      copy="Directories evener scans for plugins at launch. Applied to every spawn."
     />
   );
 }

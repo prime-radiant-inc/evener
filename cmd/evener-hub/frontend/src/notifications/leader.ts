@@ -6,7 +6,7 @@
 // self-identifies as a follower. An environment with no Web Locks API — or a
 // request that throws or rejects — falls back to treating EVERY tab as
 // leader: a duplicate alert is a smaller problem than a silent one.
-const LOCK_NAME = "serf-hub-os-leader";
+const LOCK_NAME = "evener-hub-os-leader";
 
 let leader = false;
 

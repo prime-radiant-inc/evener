@@ -73,7 +73,7 @@ const shellItem = item({
   status: "completed",
   callId: "call_shell_1",
   argumentsJSON: JSON.stringify({ command: "go test ./internal/jobstore/... -run TestPrune -race -count=5" }),
-  output: "ok  \tprime-radiant-inc/serf/internal/jobstore\t2.104s\n",
+  output: "ok  \tprime-radiant-inc/evener/internal/jobstore\t2.104s\n",
 });
 
 const shellExpandedItem = item({
@@ -83,7 +83,7 @@ const shellExpandedItem = item({
   callId: "call_shell_expanded_1",
   argumentsJSON: JSON.stringify({ command: "go test ./internal/jobstore/... -run TestPrune -race -count=5 -v" }),
   output:
-    "=== RUN   TestPruneConcurrentSnapshotRead\n--- PASS: TestPruneConcurrentSnapshotRead (0.42s)\nPASS\nok  \tprime-radiant-inc/serf/internal/jobstore\t2.31s\n",
+    "=== RUN   TestPruneConcurrentSnapshotRead\n--- PASS: TestPruneConcurrentSnapshotRead (0.42s)\nPASS\nok  \tprime-radiant-inc/evener/internal/jobstore\t2.31s\n",
 });
 
 // exitCode (not a parsed output footer) is the primary failure signal
@@ -97,7 +97,7 @@ const shellFailedItem = item({
   exitCode: 1,
   argumentsJSON: JSON.stringify({ command: "go test ./internal/jobstore/... -run TestPrune -race -count=5" }),
   output:
-    "--- FAIL: TestPruneConcurrentSnapshotRead (0.11s)\n    prune_test.go:88: read a half-written tail file\nFAIL\nexit status 1\nFAIL\tprime-radiant-inc/serf/internal/jobstore\t0.14s\n",
+    "--- FAIL: TestPruneConcurrentSnapshotRead (0.11s)\n    prune_test.go:88: read a half-written tail file\nFAIL\nexit status 1\nFAIL\tprime-radiant-inc/evener/internal/jobstore\t0.14s\n",
 });
 
 // The edit diff row (edit_file): editTools.tsx synthesizes its diff from the

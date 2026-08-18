@@ -33,7 +33,7 @@ test('the "Agents & models" cluster has exactly these 5 sections, in order, righ
   expect(cluster.map((s) => s.label)).toEqual([
     "Providers & credentials",
     "Agents",
-    "Serf launch",
+    "Evener launch",
     "Codex launch",
     "In-repo config",
   ]);

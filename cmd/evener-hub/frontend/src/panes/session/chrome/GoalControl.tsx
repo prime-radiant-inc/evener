@@ -61,7 +61,7 @@ const CLASS = {
   status: requireClass(styles.status, "goalcontrol.module.css", "status"),
 };
 
-// The compact trigger's glyph: serf has no dedicated goal icon (widgets/
+// The compact trigger's glyph: evener has no dedicated goal icon (widgets/
 // toolicon is a closed enum of tool-row kinds, not extended here per the
 // approved design). A small flag on a pole reads as "goal"/milestone at
 // 16px and follows widgets/toolicon's own grammar exactly (see that

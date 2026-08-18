@@ -289,7 +289,7 @@ export function useTranscriptScroll({
   // comment for why itemCount/firstTurnId alone can't reach a bare-stamp
   // turn failure).
   const failedTurns = failedTurnCount(model);
-  // NOT turnsLength > 0 (kata cmjb): a real serf session's transcript
+  // NOT turnsLength > 0 (kata cmjb): a real evener session's transcript
   // always carries at least the synthetic prelude turn (isDormantTranscript's
   // own comment), so turnsLength is already 1 - and this would already be
   // true - before the VirtualList this hook depends on has ever mounted;

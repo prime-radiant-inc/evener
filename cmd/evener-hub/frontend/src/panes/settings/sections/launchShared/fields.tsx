@@ -11,7 +11,7 @@
 // with, so the schema/collect path is untouched.
 //
 // A browsable path kind (pathKind dir/file/outputFile) renders the PathField
-// picker, which lists a directory's real contents over serf/paths/complete.
+// picker, which lists a directory's real contents over evener/paths/complete.
 // A "command" pathKind is not a browsable path (it names an executable
 // resolved off PATH, not a filesystem location the user points at), so it
 // stays a plain input.
@@ -139,7 +139,7 @@ export interface ScalarFieldProps {
   /** Precomputed "default: {value}" text (project layer only, truncated by
    * the caller) - undefined everywhere else. */
   globalDefaultHint?: string;
-  /** Submit-time serf/path/validate failure message for a `path`-kind
+  /** Submit-time evener/path/validate failure message for a `path`-kind
    * field (LaunchConfigForm's own validate step) - shown in place of
    * `option.description`, matching FormRow's own error-takes-over-help
    * contract. Never set for any other kind. */
@@ -249,7 +249,7 @@ export interface PromptCompositeFieldProps {
   onTextChange: (value: string) => void;
   fileGlobalDefaultHint?: string;
   textGlobalDefaultHint?: string;
-  /** Submit-time serf/path/validate failure for the file sub-field, same
+  /** Submit-time evener/path/validate failure for the file sub-field, same
    * contract as ScalarField's own `error` prop. */
   fileError?: string;
 }

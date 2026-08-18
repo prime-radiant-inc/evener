@@ -52,8 +52,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: {
+    source: "evener",
+    evener: {
       ref,
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -66,7 +66,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 const REF = "k7harness";
 const fake = new FakeClient("ready");
 fake.on("thread/read", () => ({ thread: testThread(REF) }) satisfies ThreadReadResponse);
-fake.on("serf/tasks/list", () => ({ data: [] }));
+fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 
 const root = document.getElementById("root");

@@ -10,7 +10,7 @@ import type {
   InputItem,
   OutputImage,
   SandboxEscalationRequested,
-  SerfDelegateInfo,
+  EvenerDelegateInfo,
   Thread,
   ThreadItem,
   ThreadReadResponse,
@@ -18,11 +18,11 @@ import type {
   Turn,
 } from "./types.gen";
 
-function cloneStableDelegate(delegate: SerfDelegateInfo): SerfDelegateInfo {
+function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
   // JSON objects are open at runtime. Explicitly discard the delegate_send
   // result's call-scoped wait field if an older/mixed producer accidentally
   // places it beside a stable snapshot; every durable stable field remains.
-  const { waitIgnoredReason: _callScoped, ...stable } = delegate as SerfDelegateInfo & {
+  const { waitIgnoredReason: _callScoped, ...stable } = delegate as EvenerDelegateInfo & {
     waitIgnoredReason?: unknown;
   };
   return {
@@ -44,20 +44,20 @@ function laterActivity(current: string | undefined, incoming: string | undefined
   return current;
 }
 
-function mergeStableDelegate(current: SerfDelegateInfo, incoming: SerfDelegateInfo): SerfDelegateInfo {
+function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelegateInfo): EvenerDelegateInfo {
   const activity = laterActivity(current.latestActivityAt, incoming.latestActivityAt);
   const state = incoming.projectionRevision > current.projectionRevision ? cloneStableDelegate(incoming) : current;
   if (activity === state.latestActivityAt) return state;
   return { ...state, latestActivityAt: activity };
 }
 
-function upsertStableDelegate(delegates: readonly SerfDelegateInfo[], incoming: SerfDelegateInfo): SerfDelegateInfo[] {
+function upsertStableDelegate(delegates: readonly EvenerDelegateInfo[], incoming: EvenerDelegateInfo): EvenerDelegateInfo[] {
   const index = delegates.findIndex((delegate) => delegate.delegateId === incoming.delegateId);
   if (index === -1) return [...delegates, cloneStableDelegate(incoming)];
   const current = delegates[index];
   if (!current) return [...delegates, cloneStableDelegate(incoming)];
   const merged = mergeStableDelegate(current, incoming);
-  if (merged === current) return delegates as SerfDelegateInfo[];
+  if (merged === current) return delegates as EvenerDelegateInfo[];
   return delegates.map((delegate, delegateIndex) => (delegateIndex === index ? merged : delegate));
 }
 
@@ -254,11 +254,11 @@ function wireToTurnModel(turn: Turn): TurnModel {
   return { ...wireToTurnScalars(turn), items: (turn.items ?? []).map(wireItemToModel) };
 }
 
-// serf.activeTurnId is the primary signal; a turn already marked inProgress
+// evener.activeTurnId is the primary signal; a turn already marked inProgress
 // in the snapshot is the fallback for daemons/sources that don't populate it
 // (mirrors activeTurnIDFromThread in cmd/evener-hub/assets/appwire.js).
 function activeTurnIdFromThread(thread: Thread): string | undefined {
-  if (thread.serf.activeTurnId) return thread.serf.activeTurnId;
+  if (thread.evener.activeTurnId) return thread.evener.activeTurnId;
   return thread.turns?.find((t) => t.status === "inProgress")?.id;
 }
 
@@ -321,38 +321,38 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // "stay[ing] the model field" for this exact reason. thread/model/changed
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
-    reasoningEffort: thread.serf.reasoningEffort,
-    askPending: thread.serf.askPending ?? false,
+    reasoningEffort: thread.evener.reasoningEffort,
+    askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
-    pendingEscalations: thread.serf.pendingEscalations ?? [],
+    pendingEscalations: thread.evener.pendingEscalations ?? [],
     turns: mergeToolCallsByCallId((thread.turns ?? []).map(wireToTurnModel)),
     activeTurnId: activeTurnIdFromThread(thread),
-    queue: thread.serf.queue,
-    pendingMutations: thread.serf.pendingMutations ?? [],
+    queue: thread.evener.queue,
+    pendingMutations: thread.evener.pendingMutations ?? [],
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
-    tasks: thread.serf.tasks ?? null,
-    delegates: (thread.serf.diagnostics?.delegates ?? []).map(cloneStableDelegate),
-    turnSlots: thread.serf.diagnostics?.turnSlots ? { ...thread.serf.diagnostics.turnSlots } : null,
+    tasks: thread.evener.tasks ?? null,
+    delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
+    turnSlots: thread.evener.diagnostics?.turnSlots ? { ...thread.evener.diagnostics.turnSlots } : null,
     jobsUpdatedAt: null,
     jobsTreeRevision: null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
-    capabilities: thread.serf.capabilities,
+    capabilities: thread.evener.capabilities,
     capabilitySource: "read",
-    goal: thread.serf.goal ?? null,
-    contextUsed: thread.serf.contextUsed ?? 0,
-    contextWindow: thread.serf.contextWindow ?? 0,
-    contextPressure: thread.serf.contextPressure ?? 0,
-    usage: thread.serf.usage ?? null,
-    cost: thread.serf.cost ?? null,
+    goal: thread.evener.goal ?? null,
+    contextUsed: thread.evener.contextUsed ?? 0,
+    contextWindow: thread.evener.contextWindow ?? 0,
+    contextPressure: thread.evener.contextPressure ?? 0,
+    usage: thread.evener.usage ?? null,
+    cost: thread.evener.cost ?? null,
     // Passed straight through, undefined and all: absent is "nobody counted"
     // and must not become a 0 that reads as "nothing failed".
-    failedToolCalls: thread.serf.failedToolCalls,
-    workMillis: thread.serf.workMillis ?? 0,
-    activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
-    reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],
-    supportsReasoning: thread.serf.supportsReasoning ?? false,
+    failedToolCalls: thread.evener.failedToolCalls,
+    workMillis: thread.evener.workMillis ?? 0,
+    activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),
+    reasoningEffortLevels: thread.evener.reasoningEffortLevels ?? [],
+    supportsReasoning: thread.evener.supportsReasoning ?? false,
     cwd: thread.cwd,
     gitBranch: thread.gitInfo?.branch,
     projectPath: thread.projectPath,
@@ -363,8 +363,8 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 
 export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<string> {
   const identities = new Set<string>();
-  for (const pending of resp.thread.serf.pendingMutations ?? []) identities.add(pending.clientMutationId);
-  for (const clientMutationId of resp.thread.serf.queue.clientMutationIds ?? []) identities.add(clientMutationId);
+  for (const pending of resp.thread.evener.pendingMutations ?? []) identities.add(pending.clientMutationId);
+  for (const clientMutationId of resp.thread.evener.queue.clientMutationIds ?? []) identities.add(clientMutationId);
   for (const turn of resp.thread.turns ?? []) {
     for (const item of turn.items ?? []) {
       if (item.clientMutationId) identities.add(item.clientMutationId);
@@ -385,8 +385,8 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
 // Removes one pending escalation by id, returning the same reference when the
 // id is absent (the no-op-same-reference idiom used throughout this file). Two
 // callers reuse it: the threads store's resolveEscalation action, after this
-// client's own successful serf/sandbox/escalation/resolve call, and the
-// serf/sandbox/escalation/resolved notification case in applyNotification,
+// client's own successful evener/sandbox/escalation/resolve call, and the
+// evener/sandbox/escalation/resolved notification case in applyNotification,
 // which fires when another client's resolve — or a turn-interrupt or session
 // close — retires the card. So a client merely watching the session drops its
 // now-stale copy live off the broadcast instead of waiting for its next
@@ -562,7 +562,7 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
 // Appends `incoming` to pendingEscalations, or — if an entry with the same
 // escalationId is already present — replaces it in place rather than
 // growing the list. Dedup exists because hydration's surface-on-entry
-// snapshot (thread.serf.pendingEscalations) and this live notification can
+// snapshot (thread.evener.pendingEscalations) and this live notification can
 // legitimately race and both deliver the same card; last write wins.
 function upsertPendingEscalation(
   escalations: SandboxEscalationRequested[],
@@ -869,25 +869,25 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       return { ...model, reasoningEffort: n.params.reasoningEffort, lastFrameAt: now };
     }
 
-    case "serf/task/updated": {
+    case "evener/task/updated": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, tasks: { total: n.params.total, done: n.params.done }, lastFrameAt: now };
     }
 
-    case "serf/thread/name/changed": {
+    case "evener/thread/name/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, name: n.params.name, lastFrameAt: now };
     }
 
     // PendingEscalations is THREAD-level human-client state, never a
-    // transcript item (appwire/types.go's ThreadSerf.PendingEscalations doc
+    // transcript item (appwire/types.go's ThreadEvener.PendingEscalations doc
     // comment: "a HUMAN-CLIENT field only ... never part of the model's
     // transcript or any model-visible projection"). The catalog entry
     // (appwire/protocol.go:185) declares this notification with its real
     // generated payload type (SandboxEscalationRequested), used verbatim
     // here rather than a local "(inline)" interface. See
     // upsertPendingEscalation for the dedup rationale.
-    case "serf/sandbox/escalation/requested": {
+    case "evener/sandbox/escalation/requested": {
       if (!notificationTargetsThread(n, model)) return model;
       return {
         ...model,
@@ -903,7 +903,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     // id via the same helper the local resolve action reuses. resolvePending-
     // Escalation is a same-reference no-op for an id we never held, but a
     // targeted live frame still stamps lastFrameAt like every other case here.
-    case "serf/sandbox/escalation/resolved": {
+    case "evener/sandbox/escalation/resolved": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...resolvePendingEscalation(model, n.params.escalationId), lastFrameAt: now };
     }
@@ -912,22 +912,22 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     // its liveness signal (lastFrameAt) and a timestamp the jobs panel watches
     // to know its list went stale — the whole reason the panel need not poll.
     // Both ends bump it: starting and finishing both change what
-    // serf/jobs/list returns. Live steering (below) is handled separately:
+    // evener/jobs/list returns. Live steering (below) is handled separately:
     // unlike jobs, it becomes a transcript item.
-    case "serf/job/started":
-    case "serf/job/finished": {
+    case "evener/job/started":
+    case "evener/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
     }
 
-    case "serf/delegate/updated": {
+    case "evener/delegate/updated": {
       if (!notificationTargetsThread(n, model)) return model;
       const delegates = upsertStableDelegate(model.delegates ?? [], n.params.delegate);
       if (delegates === model.delegates) return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
       return { ...model, delegates, jobsUpdatedAt: now, lastFrameAt: now };
     }
 
-    case "serf/jobs/treeUpdated": {
+    case "evener/jobs/treeUpdated": {
       if (!notificationTargetsThread(n, model)) return model;
       if (model.jobsTreeRevision !== null && n.params.revision <= model.jobsTreeRevision) return model;
       return { ...model, jobsTreeRevision: n.params.revision, jobsUpdatedAt: now };
@@ -937,7 +937,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (!notificationTargetsThread(n, model)) return model;
       const activeTurnId = model.activeTurnId;
       // No active turn: there is nowhere wire-true to put it, and — unlike
-      // serf/steering/injected's race window — warnings are not transcript-
+      // evener/steering/injected's race window — warnings are not transcript-
       // persisted at all (internal/apptranscript has no warning-item
       // conversion), so the next snapshot would not carry it either. Drop
       // it client-side; only the liveness signal survives.
@@ -946,7 +946,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
-          // Same collision-proofing as serf/steering/injected: count what's
+          // Same collision-proofing as evener/steering/injected: count what's
           // already there rather than a global counter, so multiple
           // warnings in one turn land with distinct, order-preserving ids.
           const warningCount = turn.items.filter((it) => it.type === "warning").length;
@@ -964,7 +964,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       };
     }
 
-    case "serf/thread/modelRetry": {
+    case "evener/thread/modelRetry": {
       if (!notificationTargetsThread(n, model)) return model;
       const params = n.params;
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
@@ -987,7 +987,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       };
     }
 
-    case "serf/steering/injected": {
+    case "evener/steering/injected": {
       if (!notificationTargetsThread(n, model)) return model;
       const activeTurnId = model.activeTurnId;
       // The server only injects steering into an in-flight turn; if the

@@ -124,8 +124,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -326,7 +326,7 @@ function askUserArgs(questions: Array<Record<string, unknown>> = ONE_ASK_QUESTIO
 }
 
 // pendingAskTurns is a Partial<Thread> overrides fragment - spread it into
-// mountComposer's own `overrides` (alongside a "status"/"serf" override, if
+// mountComposer's own `overrides` (alongside a "status"/"evener" override, if
 // the test also needs the session busy) rather than calling it standalone,
 // since a real ask-pending thread is still just a thread with turns, not a
 // different shape.
@@ -460,7 +460,7 @@ test("renders a textarea with an accessible name", async () => {
 });
 
 test("restores a stored draft into the textarea on mount", async () => {
-  localStorage.setItem("serf.composer.draft.v1.ref_a", "unsent thought");
+  localStorage.setItem("evener.composer.draft.v1.ref_a", "unsent thought");
   await mountComposer("ref_a");
   expect(textarea().value).toBe("unsent thought");
 });
@@ -469,7 +469,7 @@ test("typing persists the draft under this ref's storage key", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a");
   await user.type(textarea(), "hi");
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hi");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("hi");
 });
 
 // --- quote-insert (SelectionQuote's "Quote in reply" seam) -----------------
@@ -514,7 +514,7 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
+  await waitFor(() => expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
 });
 
 // SHOULD-FIX: requestQuoteInsert's own placement param (quoteInsert.ts) -
@@ -597,7 +597,7 @@ test("focusing the message field lights the shared prompt card's own focus affor
 // after the paperclip, so there is exactly one status row in this surface.
 test("the composer's shared PromptCard leads with the attachment and inline session controls", async () => {
   await mountComposer("ref_a", {
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0 },
@@ -622,7 +622,7 @@ test("the composer's shared PromptCard leads with the attachment and inline sess
 test("each control's spoken name is its bare verb - no chord glyphs in the name or the label", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
   expect(screen.getByRole("button", { name: "Send" })).toBe(submitButton());
@@ -637,7 +637,7 @@ test("no button renders a chord hint inside itself; the chord lives in the butto
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
 
@@ -657,7 +657,7 @@ test("the Steer tooltip names the chord that fires it", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   await user.hover(steerButton());
   const tip = await screen.findByRole("tooltip");
@@ -670,7 +670,7 @@ test("the Steer tooltip names the chord that fires it", async () => {
 test("every control in the composer's button row is the xs (24px) size", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
 
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
@@ -687,7 +687,7 @@ test("every control in the composer's button row is the xs (24px) size", async (
 test("Stop renders as the word in the dangerQuiet variant, not as an icon", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(stopButton().textContent).toBe("Stop");
   expect(stopButton().querySelector("svg")).toBeNull();
@@ -712,7 +712,7 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
 test("the cluster order is Stop, Send, Steer left to right", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const card = screen.getByTestId("composer-input-card");
   const order = [...card.querySelectorAll("button")]
@@ -728,7 +728,7 @@ test("the cluster order is Stop, Send, Steer left to right", async () => {
 test("while a turn runs, Steer is primary and Send is quiet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(steerButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(submitButton().className.split(" ")).toContain(buttonStyles.quiet);
@@ -748,7 +748,7 @@ test("Send keeps its label while a turn runs, and its tooltip explains the queue
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(submitButton().textContent).toBe("Send");
   await user.hover(submitButton());
@@ -773,7 +773,7 @@ test("Send's tooltip says it sends now when nothing is running", async () => {
 test("the timing caption is absent when a turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(screen.queryByText(/send queues until the agent stops/i)).toBeNull();
 });
@@ -799,7 +799,7 @@ test("the timing caption is absent when nothing is running", async () => {
 test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
 });
@@ -807,7 +807,7 @@ test("the timing caption is absent while status reads active but no turn has act
 test("the timing caption is absent when busy but the source advertises no queue capability", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, queue: false },
       queue: { revision: 0 },
@@ -823,7 +823,7 @@ test("the timing caption is absent when busy but the source advertises no queue 
 test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     ...pendingAskTurns(),
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
@@ -864,7 +864,7 @@ test("the unchanged submitted payload clears as soon as its local outbox commit 
   await user.click(submitButton());
 
   await waitFor(() => expect(textarea().value).toBe(""));
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
 test("text edited while the local outbox commit is pending survives that commit", async () => {
@@ -879,13 +879,13 @@ test("text edited while the local outbox commit is pending survives that commit"
   await storage.commitStarted;
 
   fireEvent.change(textarea(), { target: { value: "original plus more" } });
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
 
   storage.release();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
 
   expect(textarea().value).toBe("original plus more");
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
 });
 
 test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
@@ -923,7 +923,7 @@ test("active session with queue capability: Send routes to turn/queue", async ()
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   fake.on("turn/queue", (params) => ({
     receipt: {
@@ -957,7 +957,7 @@ test("a second message composed before the first turn's status frame arrives que
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
   });
   // The response's own `turn` never reaches the model - MutationDispatcher
   // reads the receipt and nothing else - and no thread/status/changed is
@@ -1024,7 +1024,7 @@ function routedCalls(fake: FakeClient): string[] {
 async function mountColdResumedThread(statusType = "notLoaded"): Promise<FakeClient> {
   const fake = await mountComposer("ref_a", {
     status: { type: statusType },
-    serf: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
   // The real daemon reserves a turn id on the first turn/start, so every later
   // turn/start is refused (agent's reserveAppTurnIDForStart -> Conflict).
@@ -1034,7 +1034,7 @@ async function mountColdResumedThread(statusType = "notLoaded"): Promise<FakeCli
     if (starts > 1) {
       throw new WireError("turn is already active", -32013, {
         clientMutationId: params.clientMutationId,
-        serfErrorInfo: "conflict",
+        evenerErrorInfo: "conflict",
         mutationOutcome: "notAccepted",
         retryDisposition: "none",
       });
@@ -1136,7 +1136,7 @@ test("a turn/start pending for another client does not reroute this composer", a
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: DAEMON_IDLE_CAPABILITIES,
       queue: { revision: 0 },
@@ -1189,7 +1189,7 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   const user = userEvent.setup();
   let readOverrides: Partial<Thread> = {
     status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
   };
   const fake = await mountComposer("ref_a", readOverrides);
   fake.on("thread/read", () => readResponse("ref_a", readOverrides));
@@ -1224,7 +1224,7 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   // still in flight.
   readOverrides = {
     status: { type: "idle" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: DAEMON_IDLE_CAPABILITIES,
       queue: { revision: 0 },
@@ -1240,7 +1240,7 @@ test("a hydrate that reports this client's own in-flight send still routes the n
     },
   };
   await act(async () => {
-    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
   });
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.pendingMutations).toHaveLength(1));
   // Wait out the settlement the publish drives, so the second message is
@@ -1353,7 +1353,7 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1377,7 +1377,7 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1424,7 +1424,7 @@ test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter awa
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   await user.hover(steerButton());
   const tip = await screen.findByRole("tooltip");
@@ -1438,7 +1438,7 @@ test("clicking steer with an empty textarea and empty queue is a focus-only no-o
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1467,7 +1467,7 @@ test("a successful classic steer also clears the textarea and its draft (contrac
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1482,14 +1482,14 @@ test("a successful classic steer also clears the textarea and its draft (contrac
   await user.click(steerButton());
 
   await waitFor(() => expect(textarea().value).toBe(""));
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
 test("clicking steer with a non-empty queue routes to drain-as-steer, carrying the composer text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 2, preview: ["a", "b"] },
@@ -1527,7 +1527,7 @@ test("stop renders during the window after status flips active but before active
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId yet
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId yet
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1569,7 +1569,7 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId
   });
   fake.on("turn/steer", (params) => ({
     receipt: {
@@ -1603,7 +1603,7 @@ test("Shift+Enter routing to drain with no active turn id toasts rather than min
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 0, depth: 1, preview: ["queued follow-up"] }, // non-empty queue → drain route
@@ -1649,7 +1649,7 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       queue: { revision: 1 },
@@ -1737,7 +1737,7 @@ test("sending recovered text uses current Composer routing and consumes the reco
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       activeTurnId: "turn-current",
@@ -1932,7 +1932,7 @@ test("an idle session renders neither steer nor stop - only attach and submit", 
 test("a busy session renders both steer and stop, enabled", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(steerButton().disabled).toBe(false);
   expect(stopButton().disabled).toBe(false);
@@ -1941,7 +1941,7 @@ test("a busy session renders both steer and stop, enabled", async () => {
 test("a busy session on a harness that can't interrupt renders steer but not stop", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, interrupt: false },
       queue: { revision: 0 },
@@ -1955,7 +1955,7 @@ test("a busy session on a harness that can't interrupt renders steer but not sto
 test("a busy session on a harness that can't steer renders stop but not steer", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, steer: false },
       queue: { revision: 0 },
@@ -1973,7 +1973,7 @@ test("the stop button is absent once the session has ended", async () => {
 
 // --- the ended state: an epitaph, not a cockpit ---------------------------
 //
-// A cold exited serf session arrives as "notLoaded" and STILL advertises Send
+// A cold exited evener session arrives as "notLoaded" and STILL advertises Send
 // (cmd/evener-hub/app_threadread.go's pastEntryThread: the hub auto-resumes it on
 // the first message), so it keeps a card - collapsed to a one-line invitation
 // AT REST, since chrome around an empty invitation is noise. Engaging it
@@ -2107,7 +2107,7 @@ test("an ended session can still be typed into and submitted with the Mod+Enter 
 test("a session whose harness advertises no send at all renders NO card, not a dead one", async () => {
   await mountComposer("ref_a", {
     status: { type: "closed" },
-    serf: { ref: "ref_a", capabilities: { ...FULL_CAPABILITIES, send: false }, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: { ...FULL_CAPABILITIES, send: false }, queue: { revision: 0 } },
   });
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
@@ -2119,7 +2119,7 @@ test("clicking Stop calls turn/interrupt", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   fake.on("turn/interrupt", (params) => ({
     receipt: {
@@ -2471,13 +2471,13 @@ test("typing synchronously after a paste whose decode later fails survives - the
   // decode's rejection settles.
   fireEvent.change(textarea(), { target: { value: "[image 1]hello" } });
   expect(textarea().value).toBe("[image 1]hello");
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("[image 1]hello");
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("[image 1]hello");
 
   // Now let the decode's rejection actually settle.
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
 
   expect(textarea().value).toBe("hello"); // typed text survives; only the failed marker is gone
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hello"); // draft matches, not stale
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("hello"); // draft matches, not stale
 });
 
 // Minor (reviewer-requested): two attachment gestures fired back-to-back
@@ -2811,7 +2811,7 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   await waitFor(() => expect(textarea().value).toBe(""));
   expect(goalCall).toEqual({ ref: "ref_builtin_goal", objective: "fix the login bug" });
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_builtin_goal")).toBeNull();
+  expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
 });
 
 test("a successful /goal shows the goal chip immediately - no rehydrate needed (goal/set has no live push)", async () => {

@@ -175,7 +175,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-test("applies the dockview-theme-serf class dockview-theme.css targets", async () => {
+test("applies the dockview-theme-evener class dockview-theme.css targets", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   const { container } = render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
@@ -188,11 +188,11 @@ test("applies the dockview-theme-serf class dockview-theme.css targets", async (
   // abyss theme independently of the className prop, and applies its
   // className to a DIFFERENT, outer wrapper). Harmless: CSS custom
   // properties resolve from the NEAREST ancestor that defines them, and
-  // dockview-theme-serf sits closer to everything this app actually
+  // dockview-theme-evener sits closer to everything this app actually
   // styles - but worth asserting precisely rather than assuming, since the
   // "wrong" class on the outer .dv-shell would otherwise look like a bug
   // on inspection.
-  expect(container.querySelector(".dockview-theme-serf")).not.toBeNull();
+  expect(container.querySelector(".dockview-theme-evener")).not.toBeNull();
 });
 
 // Pop out is a dockview RIGHT-HEADER action, so it lives inside the same
@@ -917,7 +917,7 @@ test("a session pane's tab shows a live status dot wired to the real dockview ho
 
 // --- layout persistence -----------------------------------------------
 
-const LAYOUT_KEY = "serf.workspace.layout.v2";
+const LAYOUT_KEY = "evener.workspace.layout.v2";
 
 // The debounce timer fires outside any React-tracked event, so advancing
 // it must be wrapped in act() or the resulting state update isn't flushed

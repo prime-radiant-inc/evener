@@ -14,8 +14,8 @@ export interface SpawnRequest {
   prompt: string; // RAW, untrimmed - floor §1.12 (bar the marker translation startThread applies)
   attachments?: InputAttachment[];
   harness?: string;
-  modelProvider?: string; // serf-model harness: "<provider>/<model>" split -> provider half
-  model?: string; // model id (bare id for a non-serf harness - floor §1.4)
+  modelProvider?: string; // evener-model harness: "<provider>/<model>" split -> provider half
+  model?: string; // model id (bare id for a non-evener harness - floor §1.4)
   reasoningEffort?: string; // wire camelCase - floor §1.11
   // branch is DISPLAY-ONLY (floor §1.7): the branch chip shows the resolved
   // HEAD ref, but the wire has nowhere to carry it - appwire ThreadStartParams
@@ -49,7 +49,7 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   return input;
 }
 
-// The ref is thread.serf.ref VERBATIM - the qualified "<source>:<threadId>"
+// The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
 // form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
 // id (floor §1.14 / spawn.js:404-417 describes that legacy routing). The SPA
 // routes and reads every session by this qualified ref: thread/read resolves
@@ -57,7 +57,7 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
 // refs.go; cmd/evener-hub/internal/appsource/registry.go SourceForRef), so a
 // stripped bare id is rejected outright. Every other shipped session-open path
 // uses the same verbatim ref (Rail.tsx:177 node.session.ref;
-// SessionActionsMenu.tsx resp.thread.serf.ref for fork children). Stripping
+// SessionActionsMenu.tsx resp.thread.evener.ref for fork children). Stripping
 // here would open a dead-on-arrival session pane.
 export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
   const prompt = translateAttachmentMarkers(req.prompt, req.attachments);
@@ -69,5 +69,5 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
   if (launchOverrides) params.launchOverrides = launchOverrides;
   const resp = await client.request("thread/start", params);
-  return { ref: resp.thread.serf.ref };
+  return { ref: resp.thread.evener.ref };
 }

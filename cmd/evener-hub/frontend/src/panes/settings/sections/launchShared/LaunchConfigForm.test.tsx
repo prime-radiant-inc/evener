@@ -117,7 +117,7 @@ const OPTIONS: LaunchOption[] = [
     perLaunch: true,
     defaultableLayers: ["global", "project"],
     choices: [
-      { value: "", label: "Serf default" },
+      { value: "", label: "Evener default" },
       { value: "file", label: "Pick a file" },
       { value: "inline", label: "Fill in text" },
     ],
@@ -234,24 +234,24 @@ describe("rendering", () => {
         options={OPTIONS}
         layer="project"
         current={{}}
-        globalDefaults={{ agent: "serf" }}
+        globalDefaults={{ agent: "evener" }}
         successToast="Project launch settings saved"
         validatePath={OK_VALIDATE}
         onSave={async () => RESOLVED}
       />,
     );
-    expect(screen.getByText("default: serf")).toBeTruthy();
+    expect(screen.getByText("default: evener")).toBeTruthy();
   });
 });
 
 describe("validation blocks save", () => {
   // The path row is a picker now, so the value gets there by picking a row -
-  // and serf/path/validate still gates the save exactly as it did when the
+  // and evener/path/validate still gates the save exactly as it did when the
   // same value was typed into a text box.
   test("an invalid path-kind scalar shows an inline error and does not call onSave", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", () => ({ data: ["/tmp/not-real.jsonl"] }));
+    fake.on("evener/paths/complete", () => ({ data: ["/tmp/not-real.jsonl"] }));
     const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid path" });
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
     render(
@@ -276,7 +276,7 @@ describe("validation blocks save", () => {
   test("a picked path-kind value reaches onSave once it validates", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("serf/paths/complete", () => ({ data: ["/tmp/trace.jsonl"] }));
+    fake.on("evener/paths/complete", () => ({ data: ["/tmp/trace.jsonl"] }));
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
     render(
       <LaunchConfigForm
@@ -397,7 +397,7 @@ describe("failed save", () => {
         successToast="Launch defaults saved"
         validatePath={OK_VALIDATE}
         onSave={async () => {
-          throw new Error('env key "FOO" looks like a credential; route through serf/auth/apiKey/set');
+          throw new Error('env key "FOO" looks like a credential; route through evener/auth/apiKey/set');
         }}
       />,
     );

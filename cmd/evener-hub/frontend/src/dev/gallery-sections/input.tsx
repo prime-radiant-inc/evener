@@ -19,7 +19,7 @@ export default function InputGallerySection() {
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>filled</p>
-          <Input value="serf-hub" onChange={() => {}} />
+          <Input value="evener-hub" onChange={() => {}} />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>disabled</p>

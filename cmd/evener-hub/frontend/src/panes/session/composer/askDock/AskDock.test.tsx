@@ -64,8 +64,8 @@ function testThread(ref: string): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
   };
 }
 
@@ -536,7 +536,7 @@ test("the primary button sends once the last unanswered question is answered - t
 
   // Answer Q2 with another non-auto-advancing resolution kind - nothing is
   // left unanswered once this lands, so the button's job reverts to send.
-  await user.click(screen.getByRole("radio", { name: /let serf decide/i }));
+  await user.click(screen.getByRole("radio", { name: /let evener decide/i }));
 
   const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));

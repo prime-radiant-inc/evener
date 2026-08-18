@@ -56,7 +56,7 @@ async function measureAt(cdpPort, url) {
     await navigateTo(page, url);
 
     const host = await evaluate(send, "location.host");
-    if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared serf-hub port");
+    if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
 
     // The delegate module claims its turn's leadership in a layout effect and
     // the virtualizer measures rows post-mount, so the tree settles a frame or

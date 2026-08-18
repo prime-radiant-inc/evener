@@ -28,7 +28,7 @@ export interface MutationOutboxIndexedDBOptions {
   beforeCommit?: (operation: MutationOutboxOperation) => void;
 }
 
-const DATABASE_NAME = "serf-mutation-outbox";
+const DATABASE_NAME = "evener-mutation-outbox";
 const DATABASE_VERSION = 2;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";

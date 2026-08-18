@@ -1,7 +1,7 @@
 // Sticky-defaults + prefill layering (floor §1.9) and stale-model detection
 // and cleanup (floor §1.10) for the spawn pane. All state lives in localStorage
-// under the `serf-hub.spawn-defaults.` namespace, distinct from prefs.ts's
-// `serf.prefs.` flat keys - these are per-project JSON blobs plus a few global
+// under the `evener-hub.spawn-defaults.` namespace, distinct from prefs.ts's
+// `evener.prefs.` flat keys - these are per-project JSON blobs plus a few global
 // scalars, matching the legacy spawn.js key layout.
 //
 // This is a per-device convenience layer (like the legacy), NOT the source of
@@ -10,7 +10,7 @@
 // prunes model values the hub can PROVE are gone (see modelValidityAgainstList).
 import type { ModelDescriptor } from "../../protocol/types.gen";
 
-export const SPAWN_DEFAULTS_PREFIX = "serf-hub.spawn-defaults.";
+export const SPAWN_DEFAULTS_PREFIX = "evener-hub.spawn-defaults.";
 // Global scalar keys (distinct from the `.global` blob defaultsKeyFor("")
 // produces): a last-resort working dir consulted on prefill and rewritten on
 // every submit (spawn.js:84-88,100), a cross-project model default that layers
@@ -122,9 +122,9 @@ export interface SaveDefaultsInput {
   branch?: string;
   accessMode?: string;
   reasoningEffort?: string;
-  // Whether the chosen harness uses serf models (kind === "serf"). Gates
+  // Whether the chosen harness uses evener models (kind === "evener"). Gates
   // whether the model field is persisted at all (floor §1.9, spawn.js:92-98).
-  harnessUsesSerfModels: boolean;
+  harnessUsesEvenerModels: boolean;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -132,8 +132,8 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 // Persists the submitted form as sticky defaults (floor §1.9): a per-project
-// blob (dropping model entirely for a non-serf-model harness), the global model
-// key (only when the harness uses serf models AND a model was chosen), and the
+// blob (dropping model entirely for a non-evener-model harness), the global model
+// key (only when the harness uses evener models AND a model was chosen), and the
 // global working_dir (on every submit that has one).
 export function saveDefaults(input: SaveDefaultsInput): void {
   const blob: SpawnDefaultsBlob = {};
@@ -146,13 +146,13 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (branch) blob.branch = branch;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
-  if (model && input.harnessUsesSerfModels) blob.model = model;
+  if (model && input.harnessUsesEvenerModels) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   else removeRaw(key);
 
-  if (model && input.harnessUsesSerfModels) writeRaw(GLOBAL_MODEL_KEY, model);
+  if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
   if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
 }
 

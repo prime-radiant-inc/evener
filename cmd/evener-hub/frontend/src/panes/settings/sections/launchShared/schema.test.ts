@@ -19,7 +19,7 @@ import {
 
 describe("globalDefaultHint", () => {
   test("undefined on the global layer (no 'default' concept there)", () => {
-    expect(globalDefaultHint("agent", "global", { agent: "serf" })).toBeUndefined();
+    expect(globalDefaultHint("agent", "global", { agent: "evener" })).toBeUndefined();
   });
   test("undefined on project layer when no globalDefaults were supplied", () => {
     expect(globalDefaultHint("agent", "project", undefined)).toBeUndefined();
@@ -28,7 +28,7 @@ describe("globalDefaultHint", () => {
     expect(globalDefaultHint("agent", "project", {})).toBeUndefined();
   });
   test("'default: {value}' when the global layer sets it", () => {
-    expect(globalDefaultHint("agent", "project", { agent: "serf" })).toBe("default: serf");
+    expect(globalDefaultHint("agent", "project", { agent: "evener" })).toBe("default: evener");
   });
   test("truncates at 80 chars with an ellipsis", () => {
     const long = "x".repeat(90);
@@ -39,7 +39,7 @@ describe("globalDefaultHint", () => {
 
 describe("matchesEnvCredentialError", () => {
   test("matches the exact backend message shape, case-insensitively", () => {
-    expect(matchesEnvCredentialError('env key "FOO" looks like a credential; route through serf/auth/apiKey/set')).toBe(
+    expect(matchesEnvCredentialError('env key "FOO" looks like a credential; route through evener/auth/apiKey/set')).toBe(
       true,
     );
     expect(matchesEnvCredentialError('ENV KEY "FOO" LOOKS LIKE A CREDENTIAL')).toBe(true);
@@ -258,7 +258,7 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
       kind: "radio",
       group: "System Prompt",
       choices: [
-        { value: "", label: "Serf default" },
+        { value: "", label: "Evener default" },
         { value: "file", label: "Pick a file" },
         { value: "inline", label: "Fill in text" },
       ],
@@ -283,7 +283,7 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
 
   test("buildFormState seeds scalars/lists/envMaps/mcpLists from a LaunchConfigLayer", () => {
     const current: LaunchConfigLayer = {
-      agent: "serf",
+      agent: "evener",
       maxRounds: 12,
       sandboxNet: false,
       skillsDirs: ["/opt/skills"],
@@ -293,7 +293,7 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
       systemPromptText: "be nice",
     };
     const state = buildFormState(options, current);
-    expect(state.scalars.agent).toBe("serf");
+    expect(state.scalars.agent).toBe("evener");
     expect(state.scalars.maxRounds).toBe("12");
     expect(state.scalars.sandboxNet).toBe("false");
     expect(state.lists.skillsDirs).toEqual(["/opt/skills"]);

@@ -139,7 +139,7 @@ export class MutationOutbox {
   async start(): Promise<void> {
     if (this.#started) return;
     this.#started = true;
-    this.#broadcastChannel = this.#createBroadcastChannel("serf-mutation-outbox-v1");
+    this.#broadcastChannel = this.#createBroadcastChannel("evener-mutation-outbox-v1");
     this.#broadcastChannel.addEventListener("message", this.#handleBroadcast);
     this.#lifecycleWindow?.addEventListener("online", this.#handleOnline);
     this.#lifecycleWindow?.addEventListener("focus", this.#handleFocus);

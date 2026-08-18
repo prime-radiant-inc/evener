@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { LaunchOption } from "../../protocol/types.gen";
-import { collectAdvancedOverrides, perLaunchSerfOptions, resolveScalars } from "./schema";
+import { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./schema";
 
 function option(partial: Partial<LaunchOption> & { wireField: string; kind: string }): LaunchOption {
   return {
@@ -13,16 +13,16 @@ function option(partial: Partial<LaunchOption> & { wireField: string; kind: stri
   };
 }
 
-describe("perLaunchSerfOptions (floor §1.11, spawn.js:618-626)", () => {
-  test("keeps only perLaunch options whose serf driver support is not explicitly false", () => {
+describe("perLaunchEvenerOptions (floor §1.11, spawn.js:618-626)", () => {
+  test("keeps only perLaunch options whose evener driver support is not explicitly false", () => {
     const options: LaunchOption[] = [
       option({ wireField: "keep", kind: "text", perLaunch: true }),
       option({ wireField: "notPerLaunch", kind: "text", perLaunch: false }),
-      option({ wireField: "serfFalse", kind: "text", perLaunch: true, driverSupport: { serf: false } }),
-      option({ wireField: "serfTrue", kind: "text", perLaunch: true, driverSupport: { serf: true } }),
-      option({ wireField: "serfUnset", kind: "text", perLaunch: true, driverSupport: { codex: true } }),
+      option({ wireField: "evenerFalse", kind: "text", perLaunch: true, driverSupport: { evener: false } }),
+      option({ wireField: "evenerTrue", kind: "text", perLaunch: true, driverSupport: { evener: true } }),
+      option({ wireField: "evenerUnset", kind: "text", perLaunch: true, driverSupport: { codex: true } }),
     ];
-    expect(perLaunchSerfOptions({ options }).map((o) => o.wireField)).toEqual(["keep", "serfTrue", "serfUnset"]);
+    expect(perLaunchEvenerOptions({ options }).map((o) => o.wireField)).toEqual(["keep", "evenerTrue", "evenerUnset"]);
   });
 });
 

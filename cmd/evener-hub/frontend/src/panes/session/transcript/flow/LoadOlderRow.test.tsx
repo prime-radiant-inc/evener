@@ -112,9 +112,9 @@ test("a failed fetch surfaces inline, announced, with a Retry - never silently",
 // failed page fetch from the failed session resume behind it. A label re-added
 // here would talk over that.
 test("the row shows the caller's own sentence verbatim, adding no label of its own", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't start this session: fork/exec serf" />);
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't start this session: fork/exec evener" />);
 
-  expect(screen.getByRole("alert").textContent).toBe("Couldn't start this session: fork/exec serf");
+  expect(screen.getByRole("alert").textContent).toBe("Couldn't start this session: fork/exec evener");
 });
 
 test("Retry calls onLoad", () => {

@@ -12,7 +12,7 @@ const CLASS = {
 
 /**
  * Settings -> Display (parity-m7-settings.md §5): 2 composer/cost-display
- * toggles on prefs.ts's SHARED keys (serf.prefs.enterToSend/showCost - the
+ * toggles on prefs.ts's SHARED keys (evener.prefs.enterToSend/showCost - the
  * exact names the composer and transcript read through the same store).
  * Deliberately does NOT reach into the composer/session pane to rewrite its
  * kbd-hint glyphs (applyComposerKeybindHints in the legacy) - the composer

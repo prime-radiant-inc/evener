@@ -50,8 +50,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -201,12 +201,12 @@ test("falls back to the raw ref as the pane title when the thread has no name", 
 });
 
 // --- "Open this shell transcript in a pane": a "job:<id>" ref is a shell
-// job's output log, not a thread. The pane serves it through serf/jobs/output
+// job's output log, not a thread. The pane serves it through evener/jobs/output
 // against the owning session (parentRef), never through thread/read. --------
 
-test("a job: ref renders the shell job's output log via serf/jobs/output, never thread/read", async () => {
+test("a job: ref renders the shell job's output log via evener/jobs/output, never thread/read", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: "hello from the job", totalBytes: 18, retainedStart: 0, truncated: false },
   }));
 
@@ -217,7 +217,7 @@ test("a job: ref renders the shell job's output log via serf/jobs/output, never 
   );
 
   await waitFor(() => expect(screen.getByText("hello from the job")).toBeTruthy());
-  const outputCalls = fake.calls.filter((call) => call.method === "serf/jobs/output");
+  const outputCalls = fake.calls.filter((call) => call.method === "evener/jobs/output");
   expect(outputCalls).toHaveLength(1);
   expect(outputCalls[0]?.params).toEqual({ ref: "ref_parent", jobId: "job_x" });
   expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
@@ -225,7 +225,7 @@ test("a job: ref renders the shell job's output log via serf/jobs/output, never 
 
 test("job output renders ANSI SGR sequences as styled runs, not literal escape text", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: "plain \u001b[32m283 passed\u001b[39m done", totalBytes: 40, retainedStart: 0, truncated: false },
   }));
 
@@ -242,7 +242,7 @@ test("job output renders ANSI SGR sequences as styled runs, not literal escape t
 
 test("a truncated job log says how much of the output is shown", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: "tail end", totalBytes: 70000, retainedStart: 4464, truncated: true },
   }));
 
@@ -261,7 +261,7 @@ test("a truncated job log says how much of the output is shown", async () => {
 
 test("load earlier pages backwards through the job log until the head", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", (params) => {
+  fake.on("evener/jobs/output", (params) => {
     const before = (params as { beforeBytes?: number }).beforeBytes;
     if (before === undefined) {
       return { data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true } };
@@ -293,7 +293,7 @@ test("load earlier pages backwards through the job log until the head", async ()
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
   expect(screen.queryByText(/showing the last/i)).toBeNull();
 
-  const calls = fake.calls.filter((call) => call.method === "serf/jobs/output");
+  const calls = fake.calls.filter((call) => call.method === "evener/jobs/output");
   expect(calls.map((call) => (call.params as { beforeBytes?: number }).beforeBytes)).toEqual([undefined, 6, 2]);
 });
 
@@ -301,7 +301,7 @@ test("a daemon that ignores beforeBytes stops paging instead of duplicating the 
   const fake = connectFakeClient();
   // Every request returns the same tail window, as a daemon that predates
   // beforeBytes would.
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true, hasEarlier: true },
   }));
 
@@ -319,7 +319,7 @@ test("a daemon that ignores beforeBytes stops paging instead of duplicating the 
 
 test("a job with no output yet says so instead of rendering an empty log", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: "", totalBytes: 0, retainedStart: 0, truncated: false },
   }));
 
@@ -342,13 +342,13 @@ test("a job: ref without a parentRef reports the transcript unavailable and issu
   );
 
   await waitFor(() => expect(screen.getByText(/unavailable/i)).toBeTruthy());
-  expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(0);
+  expect(fake.calls.filter((call) => call.method === "evener/jobs/output")).toHaveLength(0);
 });
 
 test("the job log's refresh action refetches the tail", async () => {
   const fake = connectFakeClient();
   let calls = 0;
-  fake.on("serf/jobs/output", () => ({
+  fake.on("evener/jobs/output", () => ({
     data: { tail: `tail ${++calls}`, totalBytes: 6, retainedStart: 0, truncated: false },
   }));
 
@@ -365,7 +365,7 @@ test("the job log's refresh action refetches the tail", async () => {
 
 test("a failed job-output read surfaces the error, not a spinner forever", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/jobs/output", () => Promise.reject(new Error("job not found: job_x")));
+  fake.on("evener/jobs/output", () => Promise.reject(new Error("job not found: job_x")));
 
   render(
     <ClientProvider client={fake}>

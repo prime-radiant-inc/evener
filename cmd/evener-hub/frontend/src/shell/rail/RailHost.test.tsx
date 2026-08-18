@@ -99,7 +99,7 @@ describe("hide / show", () => {
     const user = userEvent.setup();
     render(<RailHost />);
     await user.click(screen.getByRole("button", { name: /hide sidebar/i }));
-    expect(localStorage.getItem("serf.prefs.sidebarHidden")).toBe("1");
+    expect(localStorage.getItem("evener.prefs.sidebarHidden")).toBe("1");
 
     resetPrefsStoreForTests();
     expect(prefsStore.getState().sidebarHidden).toBe(true);
@@ -165,12 +165,12 @@ describe("resizable width", () => {
     expect(separator().getAttribute("aria-valuenow")).toBe("360");
   });
 
-  test("a keyboard resize persists to serf.prefs.sidebarWidth and survives a remount", () => {
+  test("a keyboard resize persists to evener.prefs.sidebarWidth and survives a remount", () => {
     const { unmount } = render(<RailHost />);
     act(() => {
       fireEvent.keyDown(separator(), { key: "End" });
     });
-    expect(localStorage.getItem("serf.prefs.sidebarWidth")).toBe(String(SIDEBAR_WIDTH_MAX));
+    expect(localStorage.getItem("evener.prefs.sidebarWidth")).toBe(String(SIDEBAR_WIDTH_MAX));
 
     unmount();
     resetPrefsStoreForTests(); // exactly what a reload's fresh hydration does

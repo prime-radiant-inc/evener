@@ -102,7 +102,7 @@ test("Disable calls pluginDisable (enabled plugin); no success toast", async () 
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/disable", (params) => {
+  fake.on("evener/plugin/disable", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
     return { plugins: [{ ...LINTER, enabled: false }] };
   });
@@ -116,7 +116,7 @@ test("Enable calls pluginEnable (disabled plugin)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [{ ...LINTER, enabled: false }] });
-  fake.on("serf/plugin/enable", (params) => {
+  fake.on("evener/plugin/enable", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
     return { plugins: [{ ...LINTER, enabled: true }] };
   });
@@ -129,7 +129,7 @@ test("a failed enable/disable toggle toasts 'Toggle enable failed'", async () =>
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/disable", () => {
+  fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
   });
   render(<InstalledSection />);
@@ -143,7 +143,7 @@ test("the auto-upgrade toggle shows on/off and flips the current value; no succe
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/setAutoUpgrade", (params) => {
+  fake.on("evener/plugin/setAutoUpgrade", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins", autoUpgrade: true });
     return { plugins: [{ ...LINTER, autoUpgrade: true }] };
   });
@@ -158,7 +158,7 @@ test("a failed auto-upgrade toggle toasts 'Toggle auto-upgrade failed'", async (
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/setAutoUpgrade", () => {
+  fake.on("evener/plugin/setAutoUpgrade", () => {
     throw new Error("boom");
   });
   render(<InstalledSection />);
@@ -172,7 +172,7 @@ test("Upgrade calls pluginUpgrade and toasts a checked-for-upgrades success", as
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/upgrade", (params) => {
+  fake.on("evener/plugin/upgrade", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
     return { plugins: [{ ...LINTER, version: "1.3.0" }] };
   });
@@ -187,7 +187,7 @@ test("a failed upgrade toasts failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/upgrade", () => {
+  fake.on("evener/plugin/upgrade", () => {
     throw new Error("boom");
   });
   render(<InstalledSection />);
@@ -203,7 +203,7 @@ test("Disable disables its own button while the RPC is in flight, and re-enables
   extensionsStore.setState({ plugins: [LINTER] });
   let resolveDisable: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on(
-    "serf/plugin/disable",
+    "evener/plugin/disable",
     () =>
       new Promise((resolve) => {
         resolveDisable = resolve;
@@ -222,7 +222,7 @@ test("a failed enable/disable toggle re-enables the button too", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/disable", () => {
+  fake.on("evener/plugin/disable", () => {
     throw new Error("boom");
   });
   render(<InstalledSection />);
@@ -235,7 +235,7 @@ test("the auto-upgrade toggle disables its own button while in flight, without d
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/setAutoUpgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  fake.on("evener/plugin/setAutoUpgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
   render(<InstalledSection />);
   const autoUpgradeButton = screen.getByRole("button", { name: "Auto-upgrade: off" });
   await user.click(autoUpgradeButton);
@@ -250,7 +250,7 @@ test("Upgrade disables its own button while in flight, and re-enables after", as
   extensionsStore.setState({ plugins: [LINTER] });
   let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
   fake.on(
-    "serf/plugin/upgrade",
+    "evener/plugin/upgrade",
     () =>
       new Promise((resolve) => {
         resolveUpgrade = resolve;
@@ -270,7 +270,7 @@ test("a busy row action does not disable the same action on a different row", as
   const fake = connectFakeClient();
   const OTHER: PluginEntry = { ...LINTER, plugin: "formatter" };
   extensionsStore.setState({ plugins: [LINTER, OTHER] });
-  fake.on("serf/plugin/upgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  fake.on("evener/plugin/upgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
   render(<InstalledSection />);
   const upgradeButtons = screen.getAllByRole("button", { name: "Upgrade" });
   await user.click(upgradeButtons[0]!);
@@ -282,7 +282,7 @@ test("Remove opens a destructive confirm; confirming removes and toasts success"
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/remove", (params) => {
+  fake.on("evener/plugin/remove", (params) => {
     expect(params).toEqual({ plugin: "linter", marketplace: "acme-plugins" });
     return { plugins: [] };
   });
@@ -299,7 +299,7 @@ test("cancelling the remove confirm does not call pluginRemove", async () => {
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
   const removeSpy = vi.fn();
-  fake.on("serf/plugin/remove", removeSpy);
+  fake.on("evener/plugin/remove", removeSpy);
   render(<InstalledSection />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -310,7 +310,7 @@ test("a failed remove toasts failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/remove", () => {
+  fake.on("evener/plugin/remove", () => {
     throw new Error("boom");
   });
   render(<InstalledSection />);
@@ -326,7 +326,7 @@ test("the remove confirm's buttons disable while the removal is in flight", asyn
   const user = userEvent.setup();
   const fake = connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER] });
-  fake.on("serf/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  fake.on("evener/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
   render(<InstalledSection />);
   await user.click(screen.getByRole("button", { name: "Remove" }));
   const dialog = screen.getByRole("dialog", { name: "Remove plugin" });

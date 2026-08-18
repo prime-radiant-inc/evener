@@ -44,8 +44,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -164,7 +164,7 @@ test("composes the status row, the session menu, and the goal control once the r
   // composed here.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
-      serf: {
+      evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
@@ -191,7 +191,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_composer", {
-      serf: {
+      evener: {
         ref: "ref_composer",
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
@@ -308,7 +308,7 @@ test("menu Shut down is gated on capabilities.shutdown", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
-      serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, shutdown: false }, queue: { revision: 0 } },
+      evener: { ref: "ref_a", capabilities: { ...CAPABILITIES, shutdown: false }, queue: { revision: 0 } },
     }),
   );
   await threadsStore.getState().ensureThread("ref_a");
@@ -325,7 +325,7 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_d", {
-      serf: { ref: "ref_d", capabilities: CAPABILITIES, queue: { revision: 0 }, workMillis: 125_000 },
+      evener: { ref: "ref_d", capabilities: CAPABILITIES, queue: { revision: 0 }, workMillis: 125_000 },
     }),
   );
   await threadsStore.getState().ensureThread("ref_d");
@@ -344,7 +344,7 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
   fake.on("thread/read", () => readResponse("ref_b", { name: "Session B" }));
   await threadsStore.getState().ensureThread("ref_b");
   let renamedTo: unknown;
-  fake.on("serf/thread/name/set", (params) => {
+  fake.on("evener/thread/name/set", (params) => {
     renamedTo = params;
     return {};
   });
@@ -370,7 +370,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   fake.on("thread/read", () => readResponse("ref_c"));
   await threadsStore.getState().ensureThread("ref_c");
   let calledRef: unknown;
-  fake.on("serf/tasks/list", (params) => {
+  fake.on("evener/tasks/list", (params) => {
     calledRef = params.ref;
     return { data: [] };
   });
@@ -396,7 +396,7 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
   fake.on("thread/read", () => readResponse("ref_e"));
   await threadsStore.getState().ensureThread("ref_e");
   let calledRef: unknown;
-  fake.on("serf/jobs/list", (params) => {
+  fake.on("evener/jobs/list", (params) => {
     calledRef = params.ref;
     return { data: [] };
   });
@@ -423,7 +423,7 @@ test.each([
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_inline"));
-  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
   await threadsStore.getState().ensureThread("ref_inline");
 
   render(<SessionChrome ref="ref_inline" />);
@@ -444,7 +444,7 @@ test("the menu marks every pre-opened session pane as checked", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_checked"));
-  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
   await threadsStore.getState().ensureThread("ref_checked");
   workspaceStore.getState().openPane("sessionDetails", { ref: "ref_checked" });
   workspaceStore.getState().openPane("sessionTasks", { ref: "ref_checked" });
@@ -487,7 +487,7 @@ test("triggerless chrome refreshes an established Activity summary in the backgr
   const fake = connectFakeClient();
   let fetches = 0;
   fake.on("thread/read", () => readResponse("ref_activity_bg"));
-  fake.on("serf/jobs/list", () => {
+  fake.on("evener/jobs/list", () => {
     fetches += 1;
     return { data: emptyActivityTree() };
   });
@@ -517,7 +517,7 @@ test("desktop Activity waits for the body's first root attempt before owning lat
   const fake = connectFakeClient();
   let fetches = 0;
   fake.on("thread/read", () => readResponse("ref_activity_fresh"));
-  fake.on("serf/jobs/list", () => {
+  fake.on("evener/jobs/list", () => {
     fetches += 1;
     const tree = emptyActivityTree();
     tree.root.counts.active = fetches;

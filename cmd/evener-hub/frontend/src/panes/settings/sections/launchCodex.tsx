@@ -1,6 +1,6 @@
 // Settings -> Codex launch config (#10): server-rendered, read-only
 // projection of hub.toml's [[codex_launches]] entries, overview-fed
-// (serf/settings/overview -> data.codexLaunches). No in-UI create/edit/
+// (evener/settings/overview -> data.codexLaunches). No in-UI create/edit/
 // delete - edits require an external hub.toml edit + hub restart
 // (parity-m7-settings.md §10). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts

@@ -7,18 +7,18 @@ import { createDir, preflightDir } from "./preflight";
 describe("preflightDir", () => {
   test("a valid directory preflights ok", async () => {
     const fake = new FakeClient("ready");
-    fake.on("serf/path/validate", () => ({ path: "/tmp/p", valid: true }));
+    fake.on("evener/path/validate", () => ({ path: "/tmp/p", valid: true }));
 
     expect(await preflightDir(fake, "/tmp/p")).toEqual({ kind: "ok" });
   });
 
-  test("validates via serf/path/validate with kind:dir", async () => {
+  test("validates via evener/path/validate with kind:dir", async () => {
     const fake = new FakeClient("ready");
-    fake.on("serf/path/validate", () => ({ path: "/tmp/p", valid: true }));
+    fake.on("evener/path/validate", () => ({ path: "/tmp/p", valid: true }));
 
     await preflightDir(fake, "/tmp/p");
 
-    expect(fake.calls[0]?.method).toBe("serf/path/validate");
+    expect(fake.calls[0]?.method).toBe("evener/path/validate");
     expect(fake.calls[0]?.params).toEqual({ path: "/tmp/p", kind: "dir" });
   });
 
@@ -26,7 +26,7 @@ describe("preflightDir", () => {
     "a deterministic non-fixable reason (%s) aborts rather than offering to create (floor §1.13)",
     async (reason) => {
       const fake = new FakeClient("ready");
-      fake.on("serf/path/validate", () => ({ path: "/x", valid: false, error: reason }));
+      fake.on("evener/path/validate", () => ({ path: "/x", valid: false, error: reason }));
 
       expect(await preflightDir(fake, "/x")).toEqual({ kind: "abort", message: reason });
     },
@@ -36,7 +36,7 @@ describe("preflightDir", () => {
     const fake = new FakeClient("ready");
     // The dir kind's stat failure surfaces the raw os error verbatim
     // (fspaths ValidateLaunchPath returns err.Error() when os.Stat fails).
-    fake.on("serf/path/validate", () => ({
+    fake.on("evener/path/validate", () => ({
       path: "/tmp/new",
       valid: false,
       error: "stat /tmp/new: no such file or directory",
@@ -47,14 +47,14 @@ describe("preflightDir", () => {
 
   test("an invalid result with no error message still offers to create (not a known abort string)", async () => {
     const fake = new FakeClient("ready");
-    fake.on("serf/path/validate", () => ({ path: "/tmp/new", valid: false }));
+    fake.on("evener/path/validate", () => ({ path: "/tmp/new", valid: false }));
 
     expect(await preflightDir(fake, "/tmp/new")).toEqual({ kind: "offer-create", path: "/tmp/new" });
   });
 
   test("fails OPEN when the validate check itself throws (spawn.js:573-580)", async () => {
     const fake = new FakeClient("ready");
-    fake.on("serf/path/validate", () => {
+    fake.on("evener/path/validate", () => {
       throw new Error("rpc down");
     });
 

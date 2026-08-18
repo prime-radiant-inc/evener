@@ -15,19 +15,19 @@ import "../styles/tokens.css";
 import "../styles/global.css";
 
 const fake = new FakeClient("ready");
-fake.on("serf/harnesses/list", () => ({
-  data: [{ id: "serf", label: "serf", kind: "serf" }],
+fake.on("evener/harnesses/list", () => ({
+  data: [{ id: "evener", label: "evener", kind: "evener" }],
 }));
-fake.on("serf/launch/schema", () => ({ options: [] }));
+fake.on("evener/launch/schema", () => ({ options: [] }));
 fake.on("model/list", () => ({
   data: [
     { provider: "anthropic", model: "claude-sonnet-4-5" },
     { provider: "openai", model: "gpt-5" },
   ],
 }));
-fake.on("serf/projects/recent", () => ({ data: [] }));
-fake.on("serf/paths/complete", () => ({ data: [] }));
-fake.on("serf/path/validate", () => ({ path: "", valid: true }));
+fake.on("evener/projects/recent", () => ({ data: [] }));
+fake.on("evener/paths/complete", () => ({ data: [] }));
+fake.on("evener/path/validate", () => ({ path: "", valid: true }));
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("spawnguard.html is missing #root");

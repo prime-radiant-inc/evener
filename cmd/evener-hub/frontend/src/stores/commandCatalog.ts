@@ -17,7 +17,7 @@ export const useCommandCatalog = create<CommandCatalogState>((set) => ({
     const client = connectionStore.getState().client;
     if (!client) return;
     try {
-      const response = (await client.request("serf/command/list", {})) as CommandListResponse;
+      const response = (await client.request("evener/command/list", {})) as CommandListResponse;
       set({ commands: response.commands ?? [], loaded: true });
     } catch {
       set({ commands: [], loaded: true });

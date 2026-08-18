@@ -18,7 +18,7 @@ function node(overrides: Partial<TreeNode>): TreeNode {
     host_id: "host_1",
     session_id: "sess_1",
     title: "session",
-    project: "serf",
+    project: "evener",
     state: "idle",
     kind: "session",
     live: true,
@@ -75,9 +75,9 @@ const FIXTURE_TREE: TreeResponse = {
   ],
   projects: [
     {
-      key: "proj_serf",
-      name: "serf",
-      working_dir: "/home/dev/serf",
+      key: "proj_evener",
+      name: "evener",
+      working_dir: "/home/dev/evener",
       sessions: [
         node({
           row_id: "row_proj_1",

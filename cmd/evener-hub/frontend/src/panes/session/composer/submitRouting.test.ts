@@ -61,7 +61,7 @@ test("empty text, no attachments, empty queue is a no-op (focus-only, no request
 // Deliberately DIFFERENT from deriveSendQueueAvailability's own gate (which
 // checks statusType alone) - this one requires BOTH statusType==="active"
 // AND a non-empty activeTurnId, matching thread-state.js's legacy
-// SerfThreadState.isBusy (the predicate interrupt/steer/model-switch share,
+// EvenerThreadState.isBusy (the predicate interrupt/steer/model-switch share,
 // never the composer's send/queue chain - see protocol/sendQueueAvailability.ts's
 // own comment on why the two must not be folded together).
 

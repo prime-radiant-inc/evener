@@ -19,7 +19,7 @@ export interface ModelFieldProps {
   loadModels: () => Promise<ModelDescriptor[]>;
   // The spawn harness + working dir, scoping the /api/models enrichment to the
   // SAME set model/list is scoped to (so a non-default harness enriches its own
-  // models, not the default serf catalog). Optional: absent = an unscoped
+  // models, not the default evener catalog). Optional: absent = an unscoped
   // enrichment, exactly what the settings swap site wants.
   harness?: string;
   cwd?: string;
@@ -34,7 +34,7 @@ export function ModelField({ value, onChange, loadModels, harness, cwd, emptyLab
     // The scoped model/list is the authoritative launchable SET; the /api/models
     // catalog only enriches it (badges/cost/Recent), scoped to the SAME
     // harness+cwd so a non-default harness enriches its own models rather than
-    // the default serf catalog. The two loads are independent, so run them
+    // the default evener catalog. The two loads are independent, so run them
     // together; a failed enrichment degrades to the plain scoped list
     // (mergeScopedCatalog tolerates null), while a failed model/list still
     // rejects loadCatalog so the picker surfaces the real error.

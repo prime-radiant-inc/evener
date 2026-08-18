@@ -17,12 +17,12 @@ const FULL_RESPONSE: SettingsOverviewResponse = {
     version: "1.2.3",
     commit: "abc1234",
     listenAddr: "127.0.0.1:9180",
-    runDir: "/tmp/serf-run",
+    runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
     bearerTokenAge: "created 3d ago",
-    pastIndex: { path: "~/.serf/past.db", size: "48 MB", perPage: 20, count: 7 },
+    pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 7 },
   },
-  storage: { stateDir: "/home/user/.serf" },
+  storage: { stateDir: "/home/user/.evener" },
 };
 
 beforeEach(() => {
@@ -34,7 +34,7 @@ afterEach(cleanup);
 
 test("renders every field in the documented order with the cross-referenced State dir from storage", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => FULL_RESPONSE);
+  fake.on("evener/settings/overview", () => FULL_RESPONSE);
 
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
@@ -53,12 +53,12 @@ test("renders every field in the documented order with the cross-referenced Stat
   ]);
   // State dir is General's own field per SettingsStorageOverview - but reads
   // through settingsOverview.storage.stateDir, not any hub.* field.
-  expect(screen.getByText("/home/user/.serf")).toBeTruthy();
+  expect(screen.getByText("/home/user/.evener")).toBeTruthy();
 });
 
 test("never renders the bearer token value itself - only a fixed mask plus the optional age", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => FULL_RESPONSE);
+  fake.on("evener/settings/overview", () => FULL_RESPONSE);
 
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
@@ -69,7 +69,7 @@ test("never renders the bearer token value itself - only a fixed mask plus the o
 
 test("Hub config's static value carries the 'edit to change' dim hint (unlike Storage's own row)", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => FULL_RESPONSE);
+  fake.on("evener/settings/overview", () => FULL_RESPONSE);
 
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
@@ -79,7 +79,7 @@ test("Hub config's static value carries the 'edit to change' dim hint (unlike St
 
 test("Hub version appends the commit only when present", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => FULL_RESPONSE);
+  fake.on("evener/settings/overview", () => FULL_RESPONSE);
 
   render(<GeneralSection />);
 
@@ -90,9 +90,9 @@ test("omits Past index and Past results per page when no past-session index is c
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
     hub: { version: "1.2.3", listenAddr: "127.0.0.1:9180" },
-    storage: { stateDir: "/home/user/.serf" },
+    storage: { stateDir: "/home/user/.evener" },
   };
-  fake.on("serf/settings/overview", () => response);
+  fake.on("evener/settings/overview", () => response);
 
   render(<GeneralSection />);
   await screen.findByText("127.0.0.1:9180");
@@ -106,7 +106,7 @@ test("omits Past index and Past results per page when no past-session index is c
 // generic sentence - see protocol/errors.test.ts for that contract.
 test("shows an inline error state with retry on load failure, not a toast", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => {
+  fake.on("evener/settings/overview", () => {
     throw new Error("hub unreachable");
   });
 
@@ -118,13 +118,13 @@ test("shows an inline error state with retry on load failure, not a toast", asyn
 });
 
 // The verbatim bug report (user testing): this section showed "AppwireClient:
-// cannot call "serf/settings/overview" while state is "closed"" when the
+// cannot call "evener/settings/overview" while state is "closed"" when the
 // fetch landed while the client was tearing down - internal wiring detail,
 // never meant for the screen.
 test("a client-unreachable rejection (the reported bug) shows the friendly hub-unreachable sentence", async () => {
   const fake = connectFakeClient();
-  fake.on("serf/settings/overview", () => {
-    throw new Error('AppwireClient: cannot call "serf/settings/overview" while state is "closed"');
+  fake.on("evener/settings/overview", () => {
+    throw new Error('AppwireClient: cannot call "evener/settings/overview" while state is "closed"');
   });
 
   render(<GeneralSection />);

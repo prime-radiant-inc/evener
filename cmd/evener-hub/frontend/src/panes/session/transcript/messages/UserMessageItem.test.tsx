@@ -312,7 +312,7 @@ function forkWireThread(overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "local",
-    serf: { ref: "local/child_1", capabilities: FORK_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "local/child_1", capabilities: FORK_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }

@@ -9,7 +9,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { applySerfDelegateUpdated } from "../panes/session/transcript/tools/subagentModuleStore";
+import { applyEvenerDelegateUpdated } from "../panes/session/transcript/tools/subagentModuleStore";
 import { mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -214,7 +214,7 @@ export interface ThreadsStoreState {
   // force a fresh request. A failed request never poisons the cache with a
   // rejected promise - the next call (with or without refresh) retries.
   listModels(refresh?: boolean): Promise<ModelListResponse>;
-  // Lists the session's tasks (serf/tasks/list). TaskListResponse.Data is
+  // Lists the session's tasks (evener/tasks/list). TaskListResponse.Data is
   // `any` on the wire catalog (appwire/types.go:896-898) - this returns
   // that raw field verbatim, never wrapped, so the store stays shape-
   // agnostic; the caller owns interpreting it (the chrome stream's own
@@ -223,8 +223,8 @@ export interface ThreadsStoreState {
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
   listTasks(ref: string): Promise<unknown>;
-  // Lists the session's activity tree (serf/jobs/list) and fetches one job's
-  // output tail (serf/jobs/output). Both Data fields are `any` on the wire
+  // Lists the session's activity tree (evener/jobs/list) and fetches one job's
+  // output tail (evener/jobs/output). Both Data fields are `any` on the wire
   // catalog (appwire/types.go) - these return the raw field verbatim, never
   // wrapped, so the store stays shape-agnostic; the caller owns interpreting
   // them (the chrome stream's parseActivityTree / parseJobOutputData).
@@ -235,7 +235,7 @@ export interface ThreadsStoreState {
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
   jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<unknown>;
-  // Answers one serf/sandbox/escalation/requested via serf/sandbox/
+  // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
   // see ThreadsStoreState's own doc comment on why they're independent
@@ -843,14 +843,14 @@ async function enqueueMutation(
 // mapConflict recognizes the WireError shape the daemon uses for a lost turn
 // CAS (turn/start, turn/steer, turn/queue, turn/interrupt) or a stale/raced
 // escalation resolve: code -32013 with
-// data.serfErrorInfo === "conflict" (appwire.Conflict(), appwire/errors.go).
-// The discriminator is the serfErrorInfo string, not the code alone — code
+// data.evenerErrorInfo === "conflict" (appwire.Conflict(), appwire/errors.go).
+// The discriminator is the evenerErrorInfo string, not the code alone — code
 // -32013 is also used by appwire.QueuedDrainPartial with a different
-// serfErrorInfo, which must NOT map to ConflictError. Any other rejection
+// evenerErrorInfo, which must NOT map to ConflictError. Any other rejection
 // (a different WireError, RequestTimeoutError, ConnectionClosedError, ...)
 // passes through unchanged.
 function mapConflict(err: unknown): Error {
-  if (err instanceof WireError && err.serfErrorInfo === "conflict") {
+  if (err instanceof WireError && err.evenerErrorInfo === "conflict") {
     return new ConflictError(err.message);
   }
   return err instanceof Error ? err : new Error(String(err));
@@ -868,7 +868,7 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 
 function notificationMutationIdentities(n: AnyNotification): string[] {
   if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
-  if (n.method === "serf/steering/injected") {
+  if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }
   if (n.method === "item/started" || n.method === "item/completed") {
@@ -905,7 +905,7 @@ function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydra
   const threadId = notificationThreadId(n);
   if (ref !== undefined) {
     if (ref !== routing.ref) return false;
-    if (n.method === "serf/jobs/treeUpdated") return true;
+    if (n.method === "evener/jobs/treeUpdated") return true;
     // A ref-targeted frame is authoritative for the requested subscription,
     // but once that subscription has also taught us its thread id, a
     // contradictory id is a different thread and must not enter this buffer.
@@ -1106,11 +1106,11 @@ function applyToMap(
 // not enter this path: a shell keeps its job row and can never mutate or
 // synthesize a delegate row.
 function applyStableDelegateSignal(n: AnyNotification): void {
-  if (n.method === "serf/delegate/updated") applySerfDelegateUpdated(n.params.delegate, n.params.ref);
+  if (n.method === "evener/delegate/updated") applyEvenerDelegateUpdated(n.params.delegate, n.params.ref);
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "serf/thread/resync") {
+  if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
   }
@@ -1994,7 +1994,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async rename(ref, name) {
     const client = requireClient();
     try {
-      await client.request("serf/thread/name/set", { ref, name });
+      await client.request("evener/thread/name/set", { ref, name });
     } catch (err) {
       throw mapConflict(err);
     }
@@ -2078,20 +2078,20 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async listTasks(ref) {
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels above.
-    const resp = await client.request("serf/tasks/list", { ref });
+    const resp = await client.request("evener/tasks/list", { ref });
     return resp.data;
   },
 
   async listJobs(ref, continuation) {
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels/listTasks above.
-    const resp = await client.request("serf/jobs/list", { ref, ...(continuation ? { continuation } : {}) });
+    const resp = await client.request("evener/jobs/list", { ref, ...(continuation ? { continuation } : {}) });
     return resp.data;
   },
 
   async jobOutput(ref, jobId, beforeBytes, maxBytes) {
     const client = requireClient();
-    const resp = await client.request("serf/jobs/output", {
+    const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
       ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
@@ -2110,7 +2110,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // through unchanged, and the local clear below runs only on a resolve that
     // actually landed.
     try {
-      await client.request("serf/sandbox/escalation/resolve", { ref, escalationId, approve });
+      await client.request("evener/sandbox/escalation/resolve", { ref, escalationId, approve });
     } catch (err) {
       throw mapConflict(err);
     }

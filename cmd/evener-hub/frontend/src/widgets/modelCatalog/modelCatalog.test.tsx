@@ -198,14 +198,14 @@ describe("open state", () => {
     renderPicker({
       loadCatalog: vi
         .fn()
-        .mockRejectedValue(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
+        .mockRejectedValue(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" })),
     });
 
     await user.click(openTrigger());
 
     expect(
       await screen.findByText(
-        "Couldn't load models: No agent daemon responded for this project. Start one by running serf in the repo, then retry.",
+        "Couldn't load models: No agent daemon responded for this project. Start one by running evener in the repo, then retry.",
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/launch-check timed out/i)).toBeNull();

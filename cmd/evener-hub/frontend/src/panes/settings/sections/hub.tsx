@@ -60,7 +60,7 @@ export function HubSection() {
           help={
             <>
               Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-              <Code>~/.serf/hub.toml</Code> or <Code>--addr</Code>.
+              <Code>~/.evener/hub.toml</Code> or <Code>--addr</Code>.
             </>
           }
         />

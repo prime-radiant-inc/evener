@@ -34,7 +34,7 @@ const LOADING_TEXT = "Loading…";
 const EMPTY_TEXT = "Nothing here.";
 
 /** A completion entry is a directory when it carries a trailing "/" - the one
- * bit `serf/paths/complete` adds in includeFiles mode. Dirs-only responses are
+ * bit `evener/paths/complete` adds in includeFiles mode. Dirs-only responses are
  * unsuffixed, so a `dir` field's caller treats every entry as a directory
  * without consulting this. */
 export function isDirEntry(entry: string): boolean {

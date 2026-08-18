@@ -18,7 +18,7 @@ export interface FocusScopeProps {
 /**
  * Focus-management primitive Dialog/Sheet/Menu build on. Ports the
  * semantics of the old UI's cmd/evener-hub/assets/focus-trap.js
- * (SerfFocusTrap): on mount, remember whatever had focus and move focus to
+ * (EvenerFocusTrap): on mount, remember whatever had focus and move focus to
  * the first tabbable descendant (or the scope itself, if there is none); on
  * unmount, restore focus to what was remembered. When `trap` is true, Tab
  * and Shift+Tab additionally cycle within the scope's tabbable elements

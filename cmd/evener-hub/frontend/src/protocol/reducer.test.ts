@@ -128,12 +128,12 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-type TestThreadOverrides = Omit<Partial<Thread>, "serf"> & {
-  serf?: Omit<Thread["serf"], "queue"> & { queue: Partial<QueueState> };
+type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
+  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
 };
 
 function testThread(overrides: TestThreadOverrides = {}): Thread {
-  const { serf, ...threadOverrides } = overrides;
+  const { evener, ...threadOverrides } = overrides;
   return {
     id: "thr_t",
     sessionId: "sess_t",
@@ -145,12 +145,12 @@ function testThread(overrides: TestThreadOverrides = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: {
+    source: "evener",
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      ...serf,
-      queue: { revision: 0, ...serf?.queue },
+      ...evener,
+      queue: { revision: 0, ...evener?.queue },
     },
     ...threadOverrides,
   };
@@ -158,7 +158,7 @@ function testThread(overrides: TestThreadOverrides = {}): Thread {
 
 function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   const thread = testThread(overrides);
-  return hydrateThread({ thread }, thread.serf.ref, 1000);
+  return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
 
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
@@ -246,18 +246,18 @@ test("hydrate carries the thread's location facts (cwd, git branch, project path
 
 test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
   const zero = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },
   });
   expect(zero.activeTurnStartedAt).toBeUndefined();
   const negative = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: -1 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: -1 },
   });
   expect(negative.activeTurnStartedAt).toBeUndefined();
 });
 
 test("stable delegate diagnostics preserve lossless fields and omit call-scoped wait reasons", () => {
   const thread = testThread();
-  (thread.serf as unknown as Record<string, unknown>).diagnostics = {
+  (thread.evener as unknown as Record<string, unknown>).diagnostics = {
     delegates: [
       {
         delegateId: "dlg_lossless",
@@ -313,7 +313,7 @@ test("stable delegate diagnostics preserve lossless fields and omit call-scoped 
     turnSlots: { inUse: 1, cap: 4, jobs: 2, driveTurns: 1 },
   };
 
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000) as ThreadModel & {
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000) as ThreadModel & {
     delegates?: Array<Record<string, unknown>>;
     turnSlots?: Record<string, unknown>;
   };
@@ -549,11 +549,11 @@ test("notification for a different thread is ignored (same object returned)", ()
 });
 
 test("notification method with no handler leaves the model unchanged", () => {
-  // serf/auth/updated is a real, known NotificationName the reducer does not
+  // evener/auth/updated is a real, known NotificationName the reducer does not
   // model any state for (ThreadModel has no auth-provider fields); it also
   // carries neither ref nor threadId, so it can never target a thread.
   const model = testHydrate();
-  const result = applyNotification(model, { method: "serf/auth/updated", params: {} }, 2000);
+  const result = applyNotification(model, { method: "evener/auth/updated", params: {} }, 2000);
   expect(result).toBe(model);
 });
 
@@ -580,27 +580,27 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
   // v2 notifications carry both authoritative identities.
   expect(
     notificationTargetsThread(
-      { method: "serf/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 1, done: 0 } },
+      { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 1, done: 0 } },
       model,
     ),
   ).toBe(true);
   expect(
     notificationTargetsThread(
-      { method: "serf/task/updated", params: { threadId: "not_thr_t", ref: "not_ref_t", total: 1, done: 0 } },
+      { method: "evener/task/updated", params: { threadId: "not_thr_t", ref: "not_ref_t", total: 1, done: 0 } },
       model,
     ),
   ).toBe(false);
-  // Neither field present (e.g. serf/auth/updated) targets no thread model.
-  expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} }, model)).toBe(false);
+  // Neither field present (e.g. evener/auth/updated) targets no thread model.
+  expect(notificationTargetsThread({ method: "evener/auth/updated", params: {} }, model)).toBe(false);
 });
 
-test("serf/jobs/treeUpdated updates only jobsTreeRevision and jobsUpdatedAt, not lastFrameAt", () => {
+test("evener/jobs/treeUpdated updates only jobsTreeRevision and jobsUpdatedAt, not lastFrameAt", () => {
   const model = testHydrate();
 
   const updated = applyNotification(
     model,
     {
-      method: "serf/jobs/treeUpdated",
+      method: "evener/jobs/treeUpdated",
       params: { threadId: "thr_t", ref: "ref_t", revision: 9 },
     },
     2000,
@@ -654,9 +654,9 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   // must be a true no-op: same reference, B's content untouched.
   const threadA = testThread({
     id: "thr_a",
-    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
   });
-  let modelA = hydrateThread({ thread: threadA }, threadA.serf.ref, 1000);
+  let modelA = hydrateThread({ thread: threadA }, threadA.evener.ref, 1000);
   modelA = applyNotification(
     modelA,
     {
@@ -687,7 +687,7 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
 
   const threadB = testThread({
     id: "thr_b",
-    serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 } },
     turns: [
       {
         id: "turn_1",
@@ -697,7 +697,7 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
       },
     ],
   });
-  const modelB = hydrateThread({ thread: threadB }, threadB.serf.ref, 1000);
+  const modelB = hydrateThread({ thread: threadB }, threadB.evener.ref, 1000);
   expect(modelB.activeTurnId).toBeUndefined();
 
   // The real wire's turn/completed is a bare stamp (see
@@ -817,7 +817,7 @@ test("turn/completed settles only the FIRST turn matching a duplicated id, leavi
       },
     ],
   });
-  let model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
   model = { ...model, activeTurnId: "turn_1" };
 
   model = applyNotification(
@@ -1242,7 +1242,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
   expect(item.status).toBe("completed"); // an in-progress item inside a settled turn is a lie
 });
 
-// Part B regression coverage: serf/steering/injected's payload is declared
+// Part B regression coverage: evener/steering/injected's payload is declared
 // `nil` in the AppWire catalog, but the live projector
 // (internal/appprojector/appwire_projection.go:573-593) actually sends
 // {threadId, ref, text, images, source?} — source present ("user") only for
@@ -1251,7 +1251,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
 // reload already renders persisted steering turns
 // (internal/apptranscript/apptranscript.go:211-229).
 
-test('serf/steering/injected with source "user" appends a steering item to the active turn', () => {
+test('evener/steering/injected with source "user" appends a steering item to the active turn', () => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -1265,7 +1265,7 @@ test('serf/steering/injected with source "user" appends a steering item to the a
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
     },
     1002,
@@ -1283,7 +1283,7 @@ test('serf/steering/injected with source "user" appends a steering item to the a
   });
 });
 
-test("serf/steering/injected with no source field appends an item with source undefined", () => {
+test("evener/steering/injected with no source field appends an item with source undefined", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -1297,7 +1297,7 @@ test("serf/steering/injected with no source field appends an item with source un
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "daemon steer text" },
     },
     1002,
@@ -1321,13 +1321,13 @@ test("two steers in one turn get distinct ids in arrival order", () => {
 
   model = applyNotification(
     model,
-    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } },
+    { method: "evener/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } },
     1002,
   );
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "second" },
     },
     1003,
@@ -1338,14 +1338,14 @@ test("two steers in one turn get distinct ids in arrival order", () => {
   expect(items.map((it) => it.text)).toEqual(["first", "second"]);
 });
 
-test("serf/steering/injected with no active turn only updates lastFrameAt (no turn fabricated client-side)", () => {
+test("evener/steering/injected with no active turn only updates lastFrameAt (no turn fabricated client-side)", () => {
   const model = testHydrate();
   expect(model.activeTurnId).toBeUndefined();
 
   const result = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "orphaned steer" },
     },
     2000,
@@ -1368,7 +1368,7 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "mid-turn steer" },
     },
     1002,
@@ -1393,7 +1393,7 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
   expect(items[0]).toMatchObject({ type: "steering", text: "mid-turn steer", status: "completed" });
 });
 
-test("serf/steering/injected images populate display-ready ItemImages via the same conversion other item paths use", () => {
+test("evener/steering/injected images populate display-ready ItemImages via the same conversion other item paths use", () => {
   // Steering images use the same appwire.InputItem shape as userMessage
   // images (internal/appprojector/appwire_projection.go's
   // projectUserInputImages: Type "image", MediaType, Data, Name — no
@@ -1414,7 +1414,7 @@ test("serf/steering/injected images populate display-ready ItemImages via the sa
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: {
         threadId: "thr_t",
         ref: "ref_t",
@@ -1610,7 +1610,7 @@ test("item/completed resolves a sha-routed tool-result image's src from its url"
 });
 
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
-// the wire at each injection site, through to SerfSteeringInjectedParams.kind
+// the wire at each injection site, through to EvenerSteeringInjectedParams.kind
 // on the live notification. The model must carry it the last hop onto the
 // item so the transcript can label a steer from the wire kind instead of
 // pattern-matching its prose (a later task's job — this one only carries the
@@ -1629,7 +1629,7 @@ test("a live steer carries its wire kind onto the item", () => {
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "You have completed all tasks", kind: "tasks-done" },
     },
     1002,
@@ -1654,7 +1654,7 @@ test("a live steer with no wire kind leaves steeringKind undefined", () => {
   model = applyNotification(
     model,
     {
-      method: "serf/steering/injected",
+      method: "evener/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "something unclassified" },
     },
     1002,
@@ -1665,7 +1665,7 @@ test("a live steer with no wire kind leaves steeringKind undefined", () => {
 
 test("prependOlderTurns keeps order and advances olderCursor", () => {
   const thread = testThread({ turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] });
-  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
 
   const resp: ThreadTurnsListResponse = {
     data: [
@@ -1688,7 +1688,7 @@ test("prependOlderTurns keeps order and advances olderCursor", () => {
 // behave as "an empty page" rather than losing the turns already in model.
 test("prependOlderTurns tolerates a wire-nullable data array (treats it as an empty page)", () => {
   const thread = testThread({ turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] });
-  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
 
   const resp = { nextCursor: "cursor_0" } as unknown as ThreadTurnsListResponse;
   const result = prependOlderTurns(model, resp);
@@ -1697,22 +1697,22 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
   expect(result.olderCursor).toBe("cursor_0");
 });
 
-// askPending is a THREAD-level wire signal (SerfThread.askPending, mirroring
+// askPending is a THREAD-level wire signal (EvenerThread.askPending, mirroring
 // the daemon's long-lived HasPendingAsk - "this session is waiting on a human
 // answer", agent/session_tools_ask.go). It is snapshot-authoritative: only a
 // wire snapshot (hydrateThread) sets it; no notification carries it (askPending
-// appears only on SerfThread in types.gen.ts). The AskDock derives its OWN,
+// appears only on EvenerThread in types.gen.ts). The AskDock derives its OWN,
 // separate in-tool pending signal from ask_user items (composer/askDock), so
 // the reducer must NOT recompute this thread field from item lifecycle - doing
 // so clobbers the wire's authoritative value whenever items churn.
 test("askPending is wire-authoritative from the thread snapshot", () => {
   const asking = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
   });
   expect(asking.askPending).toBe(true);
 
   const notAsking = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: false },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: false },
   });
   expect(notAsking.askPending).toBe(false);
 
@@ -1747,7 +1747,7 @@ test("item lifecycle never clobbers the wire's thread-level askPending", () => {
   // call completing is NOT a wire signal that the thread-level ask was
   // answered (that arrives only via the next snapshot / HasPendingAsk).
   let waiting = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
   });
   waiting = applyNotification(waiting, turnStarted, 1001);
   waiting = applyNotification(waiting, askUser("item/started", "inProgress"), 1002);
@@ -1827,7 +1827,7 @@ test("hydrateThread maps a settled item's error onto the model (snapshot path)",
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).error).toBe("exit status 1");
 });
 
@@ -1892,7 +1892,7 @@ test("hydrateThread maps a settled item's exitCode onto the model (snapshot path
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   // A real typed 0 must round-trip as 0, never collapse to undefined — the
   // descriptor distinguishes "ran, exit 0" from "no code (backgrounded)".
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
@@ -1923,7 +1923,7 @@ test("wireItemToModel carries the wire description (tool-call purpose) onto the 
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).description).toBe("audit the reducer");
 });
 
@@ -1943,7 +1943,7 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
           {
             id: "item_system_prompt",
             type: "systemMessage",
-            text: "You are Serf.",
+            text: "You are Evener.",
             eventKind: "system_prompt",
             status: "completed",
           },
@@ -1951,7 +1951,7 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).eventKind).toBe("system_prompt");
 });
 
@@ -1980,7 +1980,7 @@ test("wireItemToModel carries the wire raw (structured system-item detail) onto 
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).raw).toEqual({
     roundTimings: { round: 0, total_round_ns: 1_500_000_000, llm_call_ns: 1_200_000_000 },
   });
@@ -2010,7 +2010,7 @@ test("a reloaded steering item carries steeringKind from the snapshot", () => {
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).steeringKind).toBe("tasks-done");
 });
 
@@ -2058,7 +2058,7 @@ test("reload merges a tool CALL and its RESULT (separate turns, same callId) int
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 0);
+  const model = hydrateThread({ thread }, thread.evener.ref, 0);
 
   // Exactly one tool item survives, carrying both halves.
   const items = model.turns.flatMap((t) => t.items).filter((i) => i.callId === "call_A");
@@ -2128,7 +2128,7 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
 
 test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to empty/false when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
   let model = testHydrate({
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -2340,7 +2340,7 @@ test("hydrated items never carry observed timing fields", () => {
       },
     ],
   });
-  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.observedStartedAt).toBeUndefined();
@@ -2418,7 +2418,7 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
 // for the wire receipts — internal/appprojector/appwire_projection.go's
 // EventWarning and EventError's user-cancel branch) folds NotifyWarning
 // notifications into the active turn as ordinary items, mirroring
-// serf/steering/injected's own shape.
+// evener/steering/injected's own shape.
 
 test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
   let model = testHydrate();
@@ -2730,7 +2730,7 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
   expect(item.argumentsJSON).toBeUndefined();
 });
 
-// pendingEscalations (M7): appwire/types.go's ThreadSerf.PendingEscalations
+// pendingEscalations (M7): appwire/types.go's ThreadEvener.PendingEscalations
 // doc comment calls it the "surface-on-entry snapshot ... so a client
 // entering / reconnecting to / not-having-seen-live this session surfaces
 // the card(s)" and rules it a HUMAN-CLIENT field only, never part of the
@@ -2738,28 +2738,28 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
 // to [], per the Go wire-nullable-array rule: omitempty absent means empty)
 // as a THREAD-level ThreadModel field, not a turn item.
 
-test("hydrateThread maps serf.pendingEscalations verbatim into pendingEscalations", () => {
+test("hydrateThread maps evener.pendingEscalations verbatim into pendingEscalations", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
   expect(model.pendingEscalations).toEqual([escalation]);
 });
 
-test("hydrateThread defaults pendingEscalations to an empty array when serf.pendingEscalations is absent", () => {
+test("hydrateThread defaults pendingEscalations to an empty array when evener.pendingEscalations is absent", () => {
   const model = testHydrate();
   expect(model.pendingEscalations).toEqual([]);
 });
 
-// SerfThread.Cost is the session-level estimated dollar total (the sibling of
+// EvenerThread.Cost is the session-level estimated dollar total (the sibling of
 // per-turn Turn.Cost), snapshot-authoritative like usage/workMillis: only a
 // wire snapshot (hydrateThread) sets it, and everything else preserves it via
 // the reducer's ...model spread. It is null when the daemon omits it (no usage,
 // or an uncataloged model) — an honest "unknown" the status row renders as no
 // chip, never a misleading ~$0.00.
-test("hydrateThread maps serf.cost into the model, null when absent", () => {
+test("hydrateThread maps evener.cost into the model, null when absent", () => {
   const withCost = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, cost: "~$1.23" },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, cost: "~$1.23" },
   });
   expect(withCost.cost).toBe("~$1.23");
 
@@ -2773,18 +2773,18 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     queue: { revision: 0 },
     tasks: { total: 7, done: 6 },
   };
-  let model = testHydrate({ serf: snapshot });
+  let model = testHydrate({ evener: snapshot });
   expect(model.tasks).toEqual({ total: 7, done: 6 });
 
   model = applyNotification(
     model,
-    { method: "serf/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 7 } },
+    { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 7 } },
     2000,
   );
   expect(model.tasks).toEqual({ total: 7, done: 7 });
 
   const rehydrated = testHydrate({
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -2798,7 +2798,7 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
   expect(testHydrate().tasks).toBeNull();
   expect(
     testHydrate({
-      serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, tasks: { total: 0, done: 0 } },
+      evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, tasks: { total: 0, done: 0 } },
     }).tasks,
   ).toEqual({ total: 0, done: 0 });
 });
@@ -2806,7 +2806,7 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
 // The jobs panel's refetch trigger rides the job lifecycle notifications the
 // client already receives, rather than a second stream at the same instants
 // (kata j7y6). Both ends of the lifecycle bump it: a job that starts and a
-// job that finishes both change what serf/jobs/list would return.
+// job that finishes both change what evener/jobs/list would return.
 const jobParams = (ref: string, status: string) => ({
   threadId: ref === "ref_t" ? "thr_t" : "not_thr_t",
   ref,
@@ -2819,10 +2819,10 @@ const jobParams = (ref: string, status: string) => ({
 // The starting model carries a populated task aggregate and goal on purpose —
 // a guard like this only has teeth over fields that hold a distinguishable
 // value, so a clobber to a field left at its null default would slip past.
-test("serf/job/started bumps jobsUpdatedAt and lastFrameAt, and changes nothing else", () => {
+test("evener/job/started bumps jobsUpdatedAt and lastFrameAt, and changes nothing else", () => {
   const before = testHydrate({
     name: "Session J",
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -2831,13 +2831,13 @@ test("serf/job/started bumps jobsUpdatedAt and lastFrameAt, and changes nothing 
     },
   });
   expect(before.jobsUpdatedAt).toBeNull();
-  const after = applyNotification(before, { method: "serf/job/started", params: jobParams("ref_t", "running") }, 2000);
+  const after = applyNotification(before, { method: "evener/job/started", params: jobParams("ref_t", "running") }, 2000);
   expect(after).toEqual({ ...before, jobsUpdatedAt: 2000, lastFrameAt: 2000 });
 });
 
-test("serf/job/finished bumps jobsUpdatedAt for the targeted thread", () => {
+test("evener/job/finished bumps jobsUpdatedAt for the targeted thread", () => {
   let model = testHydrate();
-  model = applyNotification(model, { method: "serf/job/finished", params: jobParams("ref_t", "completed") }, 3000);
+  model = applyNotification(model, { method: "evener/job/finished", params: jobParams("ref_t", "completed") }, 3000);
   expect(model.jobsUpdatedAt).toBe(3000);
   expect(model.lastFrameAt).toBe(3000);
 });
@@ -2845,22 +2845,22 @@ test("serf/job/finished bumps jobsUpdatedAt for the targeted thread", () => {
 test("a job notification for another thread leaves the model untouched", () => {
   const model = testHydrate();
   expect(
-    applyNotification(model, { method: "serf/job/started", params: jobParams("not_ref_t", "running") }, 2000),
+    applyNotification(model, { method: "evener/job/started", params: jobParams("not_ref_t", "running") }, 2000),
   ).toBe(model);
 });
 
 // Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
 // activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
-// from thread.serf (appwire/types.go's SerfThread, lines 223-274). None of
+// from thread.evener (appwire/types.go's EvenerThread, lines 223-274). None of
 // these except reasoningEffortLevels/supportsReasoning (via
 // thread/model/changed, tested above) and reasoningEffort (via
 // thread/reasoning-effort/changed, tested above) ever get a live push - see
-// SerfThread's own doc comment ("read on demand ... rather than pushed on
+// EvenerThread's own doc comment ("read on demand ... rather than pushed on
 // every event") and appwire/protocol.go's Notifications catalog, which has
 // no capabilities/goal/context/usage entry at all.
-test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnStartedAt/reasoningEffortLevels/supportsReasoning verbatim from thread.serf", () => {
+test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnStartedAt/reasoningEffortLevels/supportsReasoning verbatim from thread.evener", () => {
   const model = testHydrate({
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -2888,8 +2888,8 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
   expect(model.supportsReasoning).toBe(true);
 });
 
-test("hydrateThread defaults the wave 5 snapshot-only fields when thread.serf omits them (old daemon / codex thread)", () => {
-  const model = testHydrate(); // testThread()'s default serf carries none of these
+test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / codex thread)", () => {
+  const model = testHydrate(); // testThread()'s default evener carries none of these
 
   expect(model.goal).toBeNull();
   expect(model.contextUsed).toBe(0);
@@ -2922,7 +2922,7 @@ test("hydrateThread treats Go's zero created/updated stamps as absent rather tha
 
 test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive live notifications untouched - no wire push exists for any of them", () => {
   let model = testHydrate({
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -2963,22 +2963,22 @@ test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive li
   expect(model.activeTurnStartedAt).toBe(before.activeTurnStartedAt);
 });
 
-// The work-clock anchor (activeTurnStartedAt) is the sole snapshot-only serf
+// The work-clock anchor (activeTurnStartedAt) is the sole snapshot-only evener
 // field with a rest-state exception to "survives untouched": it has no live
 // push to refresh it, so a cold hydrate mid-turn (server/appwire_runtime.go:865
-// sets serf.activeTurnId, agent stamps ActiveTurnStartedAt) leaves a live anchor
+// sets evener.activeTurnId, agent stamps ActiveTurnStartedAt) leaves a live anchor
 // that would keep clocking now-minus-anchor forever once the turn ends. The
 // reducer clears it on the two transitions it already handles — thread/status/
 // changed to any non-active status, and turn/completed — so the model never
 // carries a live anchor while at rest. StatusRow.tsx:130 feeds it to
 // totalWorkMillis unconditionally, so a stale anchor is a ticking idle clock.
 test("thread/status/changed to a non-active status clears the live work-clock anchor", () => {
-  // Wire shapes: hydrate serf.activeTurnStartedAt is epoch-ms (reducer.ts:266
+  // Wire shapes: hydrate evener.activeTurnStartedAt is epoch-ms (reducer.ts:266
   // epochMsToISO); ThreadStatusChangedParams is {threadId, ref?, status} with
   // status {type} (types.gen.ts:963-972, reducer.ts:574-577).
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
   });
   expect(model.activeTurnStartedAt).toBe(new Date(1_700_000_000_000).toISOString());
 
@@ -2996,13 +2996,13 @@ test("thread/status/changed to a non-active status clears the live work-clock an
 });
 
 test("turn/completed clears the live work-clock anchor — the active turn just ended", () => {
-  // Wire shapes: serf.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
+  // Wire shapes: evener.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
   // server/appwire_runtime.go:865); TurnCompletedParams is the bare {turnId,
   // turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433 citing
   // the internal/appprojector live settle sites).
   let model = testHydrate({
     status: { type: "active" },
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -3036,7 +3036,7 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
   });
   const anchor = model.activeTurnStartedAt;
 
@@ -3055,7 +3055,7 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
 test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
@@ -3073,7 +3073,7 @@ test("pendingEscalations survives a turn/started notification — thread-level s
 test("pendingEscalations survives a turn/completed bare-stamp settle — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
   model = applyNotification(
     model,
@@ -3101,17 +3101,17 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
   expect(model.pendingEscalations).toEqual([escalation]);
 });
 
-test('"serf/sandbox/escalation/requested" appends a new card with full field mapping and stamps lastFrameAt', () => {
+test('"evener/sandbox/escalation/requested" appends a new card with full field mapping and stamps lastFrameAt', () => {
   let model = testHydrate();
   const escalation = testEscalation({ command: "rm -rf /tmp/x", outputSoFar: "partial output", partiallyRan: true });
 
-  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation }, 2000);
+  model = applyNotification(model, { method: "evener/sandbox/escalation/requested", params: escalation }, 2000);
 
   expect(model.pendingEscalations).toEqual([escalation]);
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test('"serf/sandbox/escalation/requested" with an already-present escalationId replaces that entry IN PLACE, index-preserving — not a filter-then-append', () => {
+test('"evener/sandbox/escalation/requested" with an already-present escalationId replaces that entry IN PLACE, index-preserving — not a filter-then-append', () => {
   // Snapshot-then-subscribe overlap: hydration's pendingEscalations snapshot
   // and a live requested notification can race and both deliver the same
   // card (appwire/types.go's PendingEscalations doc comment). Last write
@@ -3125,25 +3125,25 @@ test('"serf/sandbox/escalation/requested" with an already-present escalationId r
   const first = testEscalation({ escalationId: "esc_1", mode: "exempt_denied_path" });
   const second = testEscalation({ escalationId: "esc_2", mode: "exempt_command" });
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [first, second] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [first, second] },
   });
 
   const updatedFirst = testEscalation({ escalationId: "esc_1", mode: "exempt_path_prefix", partiallyRan: true });
-  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updatedFirst }, 2000);
+  model = applyNotification(model, { method: "evener/sandbox/escalation/requested", params: updatedFirst }, 2000);
 
   expect(model.pendingEscalations).toEqual([updatedFirst, second]);
 });
 
-test('"serf/sandbox/escalation/requested" for a different thread is a same-reference no-op', () => {
+test('"evener/sandbox/escalation/requested" for a different thread is a same-reference no-op', () => {
   const model = testHydrate();
   const escalation = testEscalation({ ref: "some_other_ref", threadId: "thr_other" });
 
-  const result = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation }, 2000);
+  const result = applyNotification(model, { method: "evener/sandbox/escalation/requested", params: escalation }, 2000);
 
   expect(result).toBe(model);
 });
 
-test('"serf/sandbox/escalation/resolved" clears the matching card by id and stamps lastFrameAt', () => {
+test('"evener/sandbox/escalation/resolved" clears the matching card by id and stamps lastFrameAt', () => {
   // Wire-honesty spec Part B: the daemon now broadcasts escalation/resolved to
   // every OTHER subscribed client when a pending escalation leaves the set
   // (resolved, turn-interrupted, or cleared by session close). A client still
@@ -3151,13 +3151,13 @@ test('"serf/sandbox/escalation/resolved" clears the matching card by id and stam
   // resolve path already uses (resolvePendingEscalation).
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
     model,
     {
-      method: "serf/sandbox/escalation/resolved",
+      method: "evener/sandbox/escalation/resolved",
       params: { threadId: "thr_t", ref: "ref_t", escalationId: escalation.escalationId },
     },
     2000,
@@ -3167,20 +3167,20 @@ test('"serf/sandbox/escalation/resolved" clears the matching card by id and stam
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test('"serf/sandbox/escalation/resolved" for an id this client never held leaves the set intact but still stamps lastFrameAt', () => {
+test('"evener/sandbox/escalation/resolved" for an id this client never held leaves the set intact but still stamps lastFrameAt', () => {
   // The resolved broadcast is a genuine live frame even when this client's own
   // pending set never carried that id (it hydrated after the raise, or the id
   // belongs to a sibling escalation) — stamp liveness like every other targeted
   // notification, and leave the surviving cards untouched.
   const escalation = testEscalation({ escalationId: "esc_1" });
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
     model,
     {
-      method: "serf/sandbox/escalation/resolved",
+      method: "evener/sandbox/escalation/resolved",
       params: { threadId: "thr_t", ref: "ref_t", escalationId: "esc_never_held" },
     },
     2000,
@@ -3190,16 +3190,16 @@ test('"serf/sandbox/escalation/resolved" for an id this client never held leaves
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test('"serf/sandbox/escalation/resolved" for a different thread is a same-reference no-op', () => {
+test('"evener/sandbox/escalation/resolved" for a different thread is a same-reference no-op', () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = applyNotification(
     model,
     {
-      method: "serf/sandbox/escalation/resolved",
+      method: "evener/sandbox/escalation/resolved",
       params: { threadId: "thr_other", ref: "some_other_ref", escalationId: escalation.escalationId },
     },
     2000,
@@ -3211,7 +3211,7 @@ test('"serf/sandbox/escalation/resolved" for a different thread is a same-refere
 test("resolvePendingEscalation removes the entry with a matching escalationId", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = resolvePendingEscalation(model, escalation.escalationId);
@@ -3222,7 +3222,7 @@ test("resolvePendingEscalation removes the entry with a matching escalationId", 
 test("resolvePendingEscalation on an unknown escalationId is a same-reference no-op", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = resolvePendingEscalation(model, "esc_does_not_exist");
@@ -3383,7 +3383,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
 test("thread/status/changed carries a fresher failure count onto the model", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   expect(model.failedToolCalls).toBe(0);
 
@@ -3406,7 +3406,7 @@ test("thread/status/changed carries a fresher failure count onto the model", () 
 test("thread/status/changed without a failure count leaves the hydrated one alone", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 4 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 4 },
   });
   expect(model.failedToolCalls).toBe(4);
 
@@ -3429,7 +3429,7 @@ test("thread/status/changed without a failure count leaves the hydrated one alon
 test("thread/status/changed can push a measured zero", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 2 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 2 },
   });
 
   model = applyNotification(
@@ -3454,7 +3454,7 @@ test("thread/status/changed can push a measured zero", () => {
 test("item/completed carries a fresher failure count onto the model (existing item)", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   model = applyNotification(
     model,
@@ -3500,7 +3500,7 @@ test("item/completed carries a fresher failure count onto the model (existing it
 test("item/completed inserting a new item can also carry a fresher failure count", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   model = applyNotification(
     model,
@@ -3537,7 +3537,7 @@ test("item/completed inserting a new item can also carry a fresher failure count
 test("item/completed without a failure count leaves the model's figure alone", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 3 },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 3 },
   });
   model = applyNotification(
     model,
@@ -3591,7 +3591,7 @@ test("collectAuthoritativeMutationIds uses pending, queue, and transcript identi
           ],
         },
       ],
-      serf: {
+      evener: {
         ref: "ref_t",
         capabilities: CAPABILITIES,
         queue: {
@@ -3648,7 +3648,7 @@ test("hydrateThread preserves clientMutationId on authoritative transcript items
 // WITHOUT restamping lastFrameAt. The model has genuinely produced nothing —
 // restamping would reset the quiet/stall clock and make a four-hour rate limit
 // render calmer than it does today, which is the opposite of the point.
-test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", () => {
+test("evener/thread/modelRetry records retry state and leaves lastFrameAt alone", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -3663,7 +3663,7 @@ test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", 
   model = applyNotification(
     model,
     {
-      method: "serf/thread/modelRetry",
+      method: "evener/thread/modelRetry",
       params: {
         threadId: "thr_t",
         ref: "ref_t",
@@ -3704,7 +3704,7 @@ test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", 
 // boundary or the completion of a real model-output item.
 function retryNotification(turnId: string): AnyNotification {
   return {
-    method: "serf/thread/modelRetry",
+    method: "evener/thread/modelRetry",
     params: {
       threadId: "thr_t",
       ref: "ref_t",
@@ -3894,7 +3894,7 @@ const PROMPT_LOADED_ITEM: ThreadItem = {
   id: "item_prompt_loaded_2",
   turnId: SYSTEM_PRELUDE_TURN_ID,
   description: "Prompt loaded",
-  text: "Loaded prompt serf (2.1 kB)",
+  text: "Loaded prompt evener (2.1 kB)",
   eventKind: "prompt_loaded",
   status: "completed",
 };
@@ -3908,7 +3908,7 @@ const PROMPT_LOADED_ITEM: ThreadItem = {
 // announcement's item accumulates into it rather than replacing the last.
 test("a live startup burst creates the prelude turn at the front and accumulates every announcement into it", () => {
   let model = testHydrate({
-    serf: {
+    evener: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
@@ -3934,7 +3934,7 @@ test("a live startup burst creates the prelude turn at the front and accumulates
   expect(turnAt(model, 0).items.map((it) => it.id)).toEqual(["item_plugin_loaded_1", "item_prompt_loaded_2"]);
   expect(turnAt(model, 0).status).toBe("completed");
   expect(itemAt(turnAt(model, 0), 0).eventKind).toBe("plugin_loaded");
-  expect(itemAt(turnAt(model, 0), 1).text).toBe("Loaded prompt serf (2.1 kB)");
+  expect(itemAt(turnAt(model, 0), 1).text).toBe("Loaded prompt evener (2.1 kB)");
   // The real turn above the prelude is still in flight: an announcement's
   // completion is not the active turn's, so it must not clear the active turn
   // or its work-clock anchor (the snapshot reduction clears its own active
@@ -3972,7 +3972,7 @@ test("the live startup burst leaves exactly the turns the snapshot path would ha
       },
       { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
     ],
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
 
   const shape = (m: ThreadModel) =>
@@ -4063,7 +4063,7 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
       },
     ],
   });
-  let model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
   expect(model.activeTurnId).toBeUndefined();
 
   model = applyNotification(

@@ -1,5 +1,5 @@
 // Strict client-side parser and disclosure-state helpers for recursive
-// serf/jobs/list activity trees. Wire truth: protocol/types.gen.ts's
+// evener/jobs/list activity trees. Wire truth: protocol/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
 
 export interface ActivityCounts {

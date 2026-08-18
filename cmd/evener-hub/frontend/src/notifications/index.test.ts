@@ -116,7 +116,7 @@ beforeEach(() => {
   resetLeaderForTests();
   // baseTitle() (notifications/title.ts) reads workspaceStore's focused pane
   // - workspaceStore is a module singleton shared with every other file in
-  // the worker, so this file's own "no focused pane -> 'serf hub'" title
+  // the worker, so this file's own "no focused pane -> 'evener hub'" title
   // assertions need a pristine workspace regardless of what an earlier file
   // left focused.
   resetWorkspaceStoreForTests();
@@ -200,7 +200,7 @@ describe("counts apply unconditionally", () => {
     setFocused(true); // focused
     setLeaderForTests(false); // non-leader
     treeStore.setState({ tree: treeOf([node("local:a", "awaiting"), node("local:b", "errored")]) });
-    expect(document.title).toBe("(2) serf hub");
+    expect(document.title).toBe("(2) evener hub");
     expect(faviconHref()).toContain("%23f7768e"); // error dot
   });
 });
@@ -273,7 +273,7 @@ describe("shipped defaults (title ON, favicon/os/sound OFF)", () => {
   test("title counts unconditionally by default; favicon/os/sound stay off", async () => {
     // leader + unfocused (defaults) — ONLY the favicon/os/sound OFF prefs hold anything back.
     await boot(treeOf([node("local:a", "awaiting", true), node("local:e", "errored")]));
-    expect(document.title).toBe("(2) serf hub"); // title default ON: count prefix present
+    expect(document.title).toBe("(2) evener hub"); // title default ON: count prefix present
     expect(faviconHref()).not.toContain("%23f7768e"); // favicon still OFF by default: no error dot
     // a fresh transition still fires nothing while os/sound stay OFF
     treeStore.setState({
@@ -320,7 +320,7 @@ describe("reconnect re-baselines silently", () => {
     await tick();
     const callsAfterConnect = fetchMock.mock.calls.length;
 
-    connectionStore.setState({ serverInfo: { name: "serf-hub", version: "1.0.0" } });
+    connectionStore.setState({ serverInfo: { name: "evener-hub", version: "1.0.0" } });
     await tick();
 
     expect(fetchMock.mock.calls.length).toBe(callsAfterConnect);

@@ -1,13 +1,13 @@
 // credentials.ts is the thin wire-truth gateway for the Providers &
-// credentials settings section: serf/instance/{list,create,edit,remove,
-// setDefault} plus the serf/auth/* RPCs the section's OAuth/API-key/device
+// credentials settings section: evener/instance/{list,create,edit,remove,
+// setDefault} plus the evener/auth/* RPCs the section's OAuth/API-key/device
 // flows drive. Follows stores/threads.ts's own requireClient()-via-
 // connectionStore pattern (this store has no connect() of its own).
 //
-// Every serf/instance/* mutation's Go handler returns the FULL updated
+// Every evener/instance/* mutation's Go handler returns the FULL updated
 // InstanceListResponse (appwire/types.go) - so create/edit/remove/setDefault
 // apply that response directly to `instances`/`availableTypes` instead of
-// issuing a separate serf/instance/list refetch, same round-trip the legacy
+// issuing a separate evener/instance/list refetch, same round-trip the legacy
 // credentials.html's own instanceCreate/instanceEdit/... + refresh() pattern
 // achieves in two calls.
 //
@@ -82,7 +82,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     set({ loading: true, error: null });
     try {
-      const resp = await client.request("serf/instance/list", {});
+      const resp = await client.request("evener/instance/list", {});
       set({ instances: resp.instances, availableTypes: resp.availableTypes, loading: false });
     } catch (err) {
       set({ loading: false, error: errorText(err) });
@@ -91,57 +91,57 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async create(params) {
     const client = requireClient();
-    applyList(await client.request("serf/instance/create", params));
+    applyList(await client.request("evener/instance/create", params));
   },
 
   async edit(params) {
     const client = requireClient();
-    applyList(await client.request("serf/instance/edit", params));
+    applyList(await client.request("evener/instance/edit", params));
   },
 
   async remove(name) {
     const client = requireClient();
-    applyList(await client.request("serf/instance/remove", { name }));
+    applyList(await client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
     const client = requireClient();
-    applyList(await client.request("serf/instance/setDefault", { name }));
+    applyList(await client.request("evener/instance/setDefault", { name }));
   },
 
   async setApiKey(provider, value) {
     const client = requireClient();
-    return client.request("serf/auth/apiKey/set", { provider, value });
+    return client.request("evener/auth/apiKey/set", { provider, value });
   },
 
   async logout(provider) {
     const client = requireClient();
-    return client.request("serf/auth/logout", { provider });
+    return client.request("evener/auth/logout", { provider });
   },
 
   async loginStart(provider) {
     const client = requireClient();
-    return client.request("serf/auth/login/start", { provider });
+    return client.request("evener/auth/login/start", { provider });
   },
 
   async loginComplete(provider, flowId, redirectUrl) {
     const client = requireClient();
-    return client.request("serf/auth/login/complete", { provider, flowId, redirectUrl });
+    return client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
   },
 
   async deviceStart(provider) {
     const client = requireClient();
-    return client.request("serf/auth/device/start", { provider });
+    return client.request("evener/auth/device/start", { provider });
   },
 
   async devicePoll(provider, flowId) {
     const client = requireClient();
-    return client.request("serf/auth/device/poll", { provider, flowId });
+    return client.request("evener/auth/device/poll", { provider, flowId });
   },
 
   async testCredentials(provider) {
     const client = requireClient();
-    return client.request("serf/auth/test", { provider });
+    return client.request("evener/auth/test", { provider });
   },
 }));
 
@@ -156,20 +156,20 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 
 // --- notification-triggered refetch --------------------------------------
 //
-// serf/auth/updated BroadcastAlls to every connected client after a
+// evener/auth/updated BroadcastAlls to every connected client after a
 // successful auth mutation (login/logout/apiKey set/an authorized device
 // poll) from ANY of them - InstanceEntry's own activeSource/hasStoredOAuth/
 // hasStoredFile/storedEmail fields are exactly what such a mutation changes,
 // so a browser tab that already loaded the instance list goes stale
 // otherwise. Mirrors stores/tree.ts's (and stores/extensions.ts's) identical
 // wiring, applied here to this store's one wire-truth list. On the wire
-// serf/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
+// evener/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
 // cmd/evener-hub/app_rpc.go:764-767), but its generated
-// SerfAuthUpdatedPayload type is empty ({}) because codegen can't see
+// EvenerAuthUpdatedPayload type is empty ({}) because codegen can't see
 // into Go's untyped map[string]string - and this refetch is
 // payload-agnostic anyway (nothing reads those fields), so a debounced
-// serf/instance/list refetch is the only option, exactly like
-// serf/tree/changed's own "just refetch" contract.
+// evener/instance/list refetch is the only option, exactly like
+// evener/tree/changed's own "just refetch" contract.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
@@ -191,7 +191,7 @@ function scheduleRefetch(): void {
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "serf/auth/updated") scheduleRefetch();
+  if (n.method === "evener/auth/updated") scheduleRefetch();
 }
 
 function attachNotifications(client: AppwireClientLike): void {

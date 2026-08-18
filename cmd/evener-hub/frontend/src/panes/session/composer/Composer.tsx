@@ -137,7 +137,7 @@ function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] 
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
 // The wire statuses that mean this session's story is over. "notLoaded" is the
-// shape a cold exited serf session actually arrives in (cmd/evener-hub/
+// shape a cold exited evener session actually arrives in (cmd/evener-hub/
 // app_threadread.go's pastEntryThread stamps it) and "closed" is a live session
 // that shut down in front of us; both are appwire's own vocabulary
 // (appwire/types.go's ThreadStatus* constants). "ended" is not one of them -
@@ -565,7 +565,7 @@ export function Composer({ ref }: ComposerProps) {
     hasPendingSend,
   });
   // A finished session can still be sent to when the source says so: the hub
-  // advertises Send for an exited serf thread and auto-resumes it on the first
+  // advertises Send for an exited evener thread and auto-resumes it on the first
   // message (turn/start alone carries that resume loop - app_rpc.go). The
   // CAPABILITY is the authority for THAT question, not the availability table,
   // which reports both-false for a finished session with nothing pending,

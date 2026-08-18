@@ -1,7 +1,7 @@
 // Structure adapted from Beautiful UI's Context card
 // (https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane
 // Levine — see LICENSES/beautiful-ui.txt. Values and markup translated
-// into serf's CSS-module + token system; nothing is copy-pasted.
+// into evener's CSS-module + token system; nothing is copy-pasted.
 import { requireClass } from "../internal/requireClass";
 import { ToolIcon } from "../toolicon";
 import styles from "./contextcard.module.css";

@@ -112,8 +112,8 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     status: { type: "idle" },
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
-    source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    source: "evener",
+    evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -260,7 +260,7 @@ test("a deleted ref shows an honest empty state instead of loading forever, and 
   const fake = connectFakeClient();
   fake.on("thread/read", () => {
     throw new WireError("target has been deleted: local:ref_gone", -32001, {
-      serfErrorInfo: "actionUnavailable",
+      evenerErrorInfo: "actionUnavailable",
       mutationOutcome: "targetDeleted",
       retryDisposition: "none",
     });
@@ -910,7 +910,7 @@ test("unmounting the pane stores the current last turn as the new watermark for 
 
   await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
   unmount();
-  expect(localStorage.getItem("serf.transcript.seen.v1.ref_a")).toBe("turn_2");
+  expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
 });
 
 // --- turn-failure recovery wiring (wave 8) -------------------------------
@@ -1057,7 +1057,7 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
           items: [{ id: "item_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     }),
   );
 
@@ -1706,7 +1706,7 @@ test("mounts Composer even when the transcript is empty (no turns yet) - the com
   expect(screen.getByTestId("composer-slot")).toBeTruthy();
 });
 
-// A real serf session's transcript is never literally turns.length === 0:
+// A real evener session's transcript is never literally turns.length === 0:
 // apptranscript.go's PreludeTurn (or, live, appprojector's bundled
 // SESSION_START announcements) always synthesizes one turn - "turn_system" -
 // from the session's (never-empty) system prompt, the moment thread/read
@@ -1730,7 +1730,7 @@ test("treats a transcript whose only turn is the synthetic prelude (turn_system)
               id: "item_system_prompt",
               turnId: "turn_system",
               type: "systemMessage",
-              text: "You are serf, an agent...",
+              text: "You are evener, an agent...",
               status: "completed",
               eventKind: "system_prompt",
             },
@@ -1770,7 +1770,7 @@ test("does not treat the prelude turn as empty once a real turn exists alongside
               id: "item_system_prompt",
               turnId: "turn_system",
               type: "systemMessage",
-              text: "You are serf, an agent...",
+              text: "You are evener, an agent...",
               status: "completed",
               eventKind: "system_prompt",
             },
@@ -1835,7 +1835,7 @@ test("speaker geometry is declared only in tokens.css, not in session or turnblo
 
 // --- session-open lands at the transcript end (kata cmjb) ------------------
 //
-// A real serf session's transcript is never literally turns.length === 0 -
+// A real evener session's transcript is never literally turns.length === 0 -
 // apptranscript.go's PreludeTurn always synthesizes one turn from the
 // session's system prompt before the first real turn exists (see
 // transcriptVisibility.ts's own isDormantTranscript comment). A dormant
@@ -1869,7 +1869,7 @@ test("a dormant session's transcript follows new content the instant its first r
               id: "item_system_prompt",
               turnId: "turn_system",
               type: "systemMessage",
-              text: "You are serf, an agent...",
+              text: "You are evener, an agent...",
               status: "completed",
               eventKind: "system_prompt",
             },
