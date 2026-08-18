@@ -23,16 +23,23 @@ func recipeLine(line string) string {
 // a delete hiding behind `||` or `;` is examined on its own rather than as a
 // tail of whatever ran before it.
 //
-// Braces and parentheses are deliberately NOT separators. `${TMPDIR:-/tmp}` and
-// `$(SERF_DIST_BIN_DIR)` carry them, and splitting there would tear the variable
-// reference out of the very operand this audit exists to look at.
+// The two spellings that open a nested command are separators too: a backtick,
+// and the `$$(` that is how a recipe writes shell command substitution (make
+// eats the first dollar, so `$(...)` alone is make's own expansion, never a
+// shell command). Without them a delete wrapped in one reads as an operand of
+// whatever encloses it and is never examined -- `trap` is caught only because
+// it leaves rm as a bare word.
+//
+// Bare braces and parentheses are deliberately NOT separators. `${TMPDIR:-/tmp}`
+// and `$(SERF_DIST_BIN_DIR)` carry them, and splitting there would tear the
+// variable reference out of the very operand this audit exists to look at.
 func recipeCommands(line string) []string {
 	const sep = "\x00"
-	// `||` is listed before `|` so the two-character operator wins when both
-	// match at the same index: strings.NewReplacer prefers the pattern given
-	// first on a tie.
+	// `||` is listed before `|`, and `$$(` before either dollar-bearing form, so
+	// the longer operator wins when both match at the same index:
+	// strings.NewReplacer prefers the pattern given first on a tie.
 	return strings.Split(strings.NewReplacer(
-		"&&", sep, "||", sep, "|", sep, ";", sep,
+		"&&", sep, "||", sep, "|", sep, ";", sep, "$$(", sep, "`", sep,
 	).Replace(line), sep)
 }
 
