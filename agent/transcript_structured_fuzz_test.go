@@ -57,7 +57,17 @@ func generateTranscript(s schemagen.Source) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return bytes.Join(g.lines, []byte("\n")), nil
+	// Terminate every record, exactly as transcript.Writer frames them. The
+	// readers drain and discard an unterminated final line as a torn write
+	// (transcript.ReadLine), so joining without a trailing terminator would make
+	// every generated transcript look crash-truncated and cost the last record on
+	// every input.
+	var out []byte
+	for _, line := range g.lines {
+		out = append(out, line...)
+		out = append(out, '\n')
+	}
+	return out, nil
 }
 
 // transcriptGen accumulates JSONL lines and the cross-line state (sequence

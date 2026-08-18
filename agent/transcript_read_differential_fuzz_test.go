@@ -84,10 +84,13 @@ func assertReaderEntriesEqual(t *testing.T, aName string, a []transcript.Entry, 
 // back identically through all three readers. It documents the oracle's intent
 // and guards the readers independently of the fuzz engine.
 func TestTranscriptReadersAgreeSanity(t *testing.T) {
+	// Every record ends with a newline, as transcript.Writer writes them: an
+	// unterminated final line is a torn write and the readers discard it.
 	const tx = `{"kind":"header","format_version":2,"session_id":"sane-1","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"hello"}]},"timestamp":"2026-06-01T10:00:00Z"}}
 {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"hi"},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:01Z"}}
-{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"out","is_error":false}}]},"timestamp":"2026-06-01T10:00:02Z"}}`
+{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"out","is_error":false}}]},"timestamp":"2026-06-01T10:00:02Z"}}
+`
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "t.jsonl")
