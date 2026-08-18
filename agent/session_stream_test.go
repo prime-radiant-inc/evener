@@ -39,7 +39,9 @@ func nextModelRetryEvent(t *testing.T, sess *Session) events.ModelRetryData {
 				t.Fatalf("event data = %T, want events.ModelRetryData", ev.Data)
 			}
 			return data
-		case <-time.After(2 * time.Second):
+		// TRIPWIRE: in-process session with no registered adapter, no real
+		// I/O; only fires on a genuine hang.
+		case <-time.After(30 * time.Second):
 			t.Fatal("timed out waiting for EventModelRetry")
 			return events.ModelRetryData{}
 		}

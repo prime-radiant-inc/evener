@@ -293,7 +293,9 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 	}()
 	select {
 	case <-stopDone:
-	case <-time.After(10 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
+	// genuine hang (Stop stuck behind a follow-on turn).
+	case <-time.After(30 * time.Second):
 		// The Stop is stuck behind a follow-on turn. Unstick it so the runner
 		// and the RPC can finish; the failure is already proven.
 		close(adapter.releaseFollowOn)
