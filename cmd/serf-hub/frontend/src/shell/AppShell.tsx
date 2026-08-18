@@ -25,7 +25,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
-import { workspaceStore } from "./workspace";
+import { type OpenPaneRecord, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -376,22 +376,38 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // entirely: a useReducer dispatch during render of the SAME component is
   // the documented "adjusting state during render" pattern (React re-renders
   // immediately, no warning). The subscriber only fires when the panes array
-  // reference changes (mirroring the selector's Object.is equality that
-  // useWorkspaceStore applied), so the re-render trigger is identical to what
-  // workspacePanes provided — it's a trigger-only dep for the route-placement
-  // effect below, never read inside the effect body (which reads
-  // workspaceStore.getState() directly).
+  // reference changes, mirroring the Object.is equality the useWorkspaceStore
+  // selector applied — the version counter is a trigger-only dep for the
+  // route-placement effect below, never read inside the effect body (which
+  // reads workspaceStore.getState() directly).
+  //
+  // The contract this has to match is useSyncExternalStore's, which is
+  // "re-render for every panes change from this render onwards", NOT "from
+  // the moment the subscription effect runs". Those differ on every mount:
+  // the render-phase openRouteAsPane call below mutates panes after this
+  // snapshot is taken, and DockHost's layout restore is a descendant passive
+  // effect, so both land BEFORE this effect ever subscribes.
+  // renderTimePanesRef carries the render's own snapshot into the effect,
+  // which re-checks the store against it before subscribing and bumps once
+  // if it moved — restoring parity for exactly that window. The
+  // route-placement effect's two-phase routePlacementInProgressRef protocol
+  // depends on being re-entered after such a change, and without this check
+  // its own arm-then-mutate would be swallowed too if it ever ran before
+  // this effect; the snapshot makes that correctness independent of the
+  // order these two hooks are declared in.
   const [workspacePanesVersion, bumpWorkspacePanesVersion] = useReducer((n: number) => n + 1, 0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: useReducer's dispatch is stable, listed for completeness only
+  const renderTimePanesRef = useRef(workspaceStore.getState().panes);
+  renderTimePanesRef.current = workspaceStore.getState().panes;
   useEffect(() => {
-    let lastPanes = workspaceStore.getState().panes;
-    return workspaceStore.subscribe((state) => {
-      if (state.panes !== lastPanes) {
-        lastPanes = state.panes;
-        bumpWorkspacePanesVersion();
-      }
-    });
-  }, [bumpWorkspacePanesVersion]);
+    let lastPanes = renderTimePanesRef.current;
+    const bumpIfPanesChanged = (panes: OpenPaneRecord[]): void => {
+      if (panes === lastPanes) return;
+      lastPanes = panes;
+      bumpWorkspacePanesVersion();
+    };
+    bumpIfPanesChanged(workspaceStore.getState().panes);
+    return workspaceStore.subscribe((state) => bumpIfPanesChanged(state.panes));
+  }, []);
 
   // Opens a pathname's pane during render, not a useEffect, for as long as
   // DockHost hasn't mounted for the very first time yet - a regular effect

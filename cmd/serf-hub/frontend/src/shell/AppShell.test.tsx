@@ -746,6 +746,47 @@ test("clicking Go home from NotFound returns to the welcome pane", async () => {
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
 
+// kata 9r5y: the warning itself, pinned. NotFound -> "Go home" is the
+// shortest path that reaches the render-phase openRouteAsPane call with
+// DockHost already mounted and subscribed to workspaceStore: the 404 render
+// leaves dockHostHasMountedRef false (route === null, DockHost never
+// mounted), so the "/" render still takes the render-phase branch - and by
+// then DockHost IS mounted from the same commit. When AppShell subscribes to
+// workspaceStore through useSyncExternalStore, that mutation runs the store
+// subscriber, which schedules the re-render through React's ordinary
+// scheduleUpdateOnFiber path - the one React flags as an update arriving
+// from outside the render pass, logging "Cannot update a component
+// (`AppShell`) while rendering a different component (`AppShell`)" (both
+// names are AppShell here; the check is about how the update was scheduled,
+// not about which component it targets). A useReducer dispatch on the
+// currently-rendering component takes React's supported
+// adjusting-state-during-render path instead and never reaches that check.
+//
+// The assertion is on a console.error spy, not on test output: vitest's
+// piped reporter swallows console output, so a warning here is invisible to
+// `make test-web` unless a test captures it. Everything else about the flow
+// (route resolves, welcome pane opens) still passes with the warning
+// present - only this spy makes it fail.
+test("NotFound -> Go home emits no render-phase update warning", async () => {
+  const seen: string[] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    seen.push(args.map(String).join(" "));
+  });
+  try {
+    window.history.pushState({}, "", "/not/a/real/route");
+    const user = userEvent.setup();
+    render(<AppShell client={new FakeClient("ready")} />);
+    await screen.findByText("Page not found");
+
+    await user.click(screen.getByRole("button", { name: "Go home" }));
+
+    expect(await screen.findByText("No session open")).toBeTruthy();
+  } finally {
+    spy.mockRestore();
+  }
+  expect(seen.filter((m) => m.includes("Cannot update a component"))).toEqual([]);
+});
+
 test("navigating from one session deep link to another, post-mount, opens the new one", async () => {
   window.history.pushState({}, "", "/s/local:ref_first");
   render(<AppShell client={new FakeClient("ready")} />);
