@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // hooksFuzzPluginDir is the sentinel plugin root the hooks fuzzer expands

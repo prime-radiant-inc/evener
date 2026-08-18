@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // clipboardProbeTimeout bounds each external clipboard tool invocation so a

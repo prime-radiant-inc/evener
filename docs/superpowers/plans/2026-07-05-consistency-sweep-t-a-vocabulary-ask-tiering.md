@@ -4,9 +4,9 @@
 
 **Goal:** Consolidate the three duplicated attention-rank implementations into one shared `hubapi` source of truth; replace the web's text glyphs (`⟳ ◆ ✕`) with real line icons under a green/blue/amber/red/gray palette (needs-you moves amber→blue, warning gets its own amber identity, `processing`→`working` is a display-only rename); and land the ask-tiering remainder (§3–§7 of the folded-in spec) — an additive `pending_ask` wire bit, a three-band NeedsYou sort (errored → ask-pending → your-move), a `loudScope` notification preference, and blue `?`/`!` row markers — as one reviewed unit built on the consolidated rank.
 
-**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/serf-hub/internal/hubcore` and `cmd/serf-tui` (both live in the root Go module `primeradiant.com/serf`; `hubapi` is already a dependency-free package `cmd/serf-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/serf-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.SerfThread` → `cmd/serf-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
+**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/serf-hub/internal/hubcore` and `cmd/serf-tui` (both live in the root Go module `primeradiant.com/evener`; `hubapi` is already a dependency-free package `cmd/serf-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/serf-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.SerfThread` → `cmd/serf-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
 
-**Tech Stack:** Go (root module `primeradiant.com/serf` — `cmd/serf-hub/internal/hubcore`, `cmd/serf-tui`, `hubapi`, `server`, `cmd/serf`, `appwire`; all one module, no `go.work` cross-module wiring needed), vanilla JS (`cmd/serf-hub/assets/*.js`, JSDOM `jstest`), CSS custom properties (`cmd/serf-hub/assets/style.css`), inline SVG icons vendored from the Lucide project (ISC license, `github.com/lucide-icons/lucide`).
+**Tech Stack:** Go (root module `primeradiant.com/evener` — `cmd/serf-hub/internal/hubcore`, `cmd/serf-tui`, `hubapi`, `server`, `cmd/serf`, `appwire`; all one module, no `go.work` cross-module wiring needed), vanilla JS (`cmd/serf-hub/assets/*.js`, JSDOM `jstest`), CSS custom properties (`cmd/serf-hub/assets/style.css`), inline SVG icons vendored from the Lucide project (ISC license, `github.com/lucide-icons/lucide`).
 
 ## Global Constraints
 
@@ -17,7 +17,7 @@
 - `GO_MODULES := . agent llm auth envvars fuzz invariant` (root Makefile) — run `go test ./...` from the relevant module root; everything this track touches (`hubapi`, `hubcore`, `cmd/serf-tui`, `server`, `cmd/serf`, `appwire`) is in the root module `.`, so `go test ./...` from the repo root covers it (no `cd agent`/`cd llm` needed for this track).
 - jstest: `sh cmd/serf-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/serf-jstest-jsdom/node_modules`).
 - Never `git add -A`; every commit lists exact paths.
-- **Corrected module-boundary fact** (the design spec's phrasing is imprecise): `cmd/serf-tui` and `cmd/serf-hub/internal/hubcore` are **not** separate Go modules — there is no `cmd/serf-tui/go.mod`; both live in the root module `primeradiant.com/serf`. The reason `cmd/serf-tui` cannot import `hubcore` directly is Go's `internal/` visibility rule (an `internal` package is importable only by code rooted at the parent of `internal/`, i.e. anything under `cmd/serf-hub/`), not a module boundary. `hubapi` has no such restriction and is already imported by `cmd/serf-tui/internal/hubstart/hub_start.go`, making it the correct shared home.
+- **Corrected module-boundary fact** (the design spec's phrasing is imprecise): `cmd/serf-tui` and `cmd/serf-hub/internal/hubcore` are **not** separate Go modules — there is no `cmd/serf-tui/go.mod`; both live in the root module `primeradiant.com/evener`. The reason `cmd/serf-tui` cannot import `hubcore` directly is Go's `internal/` visibility rule (an `internal` package is importable only by code rooted at the parent of `internal/`, i.e. anything under `cmd/serf-hub/`), not a module boundary. `hubapi` has no such restriction and is already imported by `cmd/serf-tui/internal/hubstart/hub_start.go`, making it the correct shared home.
 - Icon SVGs are vendored verbatim from `https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<name>.svg` (ISC license) — fetched and verified during planning (2026-07-05); do not hand-author path data.
 
 ---
@@ -243,7 +243,7 @@ git commit -m "feat(hubapi): shared AttentionRank/RollupRank source of truth"
 
 - [ ] **Step 1: Update the existing tests to call `hubapi` instead of the local functions**
 
-In `cmd/serf-hub/internal/hubcore/tree_test.go`, add `"primeradiant.com/serf/hubapi"` to the imports, then replace the bodies of `TestAttentionRank`, `TestRollupRank`, and `TestAttentionRanks_Errored` so they call `hubapi.AttentionRank`/`hubapi.RollupRank` instead of the local, soon-to-be-removed functions:
+In `cmd/serf-hub/internal/hubcore/tree_test.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the bodies of `TestAttentionRank`, `TestRollupRank`, and `TestAttentionRanks_Errored` so they call `hubapi.AttentionRank`/`hubapi.RollupRank` instead of the local, soon-to-be-removed functions:
 
 ```go
 func TestAttentionRank(t *testing.T) {
@@ -294,7 +294,7 @@ Expected: PASS (baseline, before removing the local functions).
 
 - [ ] **Step 3: Remove the local rank functions and their call sites**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/serf/hubapi"` to the imports, then delete the `AttentionRank`/`rollupRank` function definitions (currently at lines 148-191, immediately after the `TreeNode` struct):
+In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then delete the `AttentionRank`/`rollupRank` function definitions (currently at lines 148-191, immediately after the `TreeNode` struct):
 
 ```go
 // (delete AttentionRank and rollupRank entirely)
@@ -351,7 +351,7 @@ Expected: PASS (baseline before the refactor — this pins the observable behavi
 
 - [ ] **Step 2: Replace `attentionRankLabel`'s body with a delegation**
 
-In `cmd/serf-tui/hub_dashboard_view.go`, add `"primeradiant.com/serf/hubapi"` to the imports, then replace the `attentionRankLabel` function (currently lines 597-612):
+In `cmd/serf-tui/hub_dashboard_view.go`, add `"primeradiant.com/evener/hubapi"` to the imports, then replace the `attentionRankLabel` function (currently lines 597-612):
 
 ```go
 // attentionRankLabel normalizes state via stateLabel, then delegates to the
@@ -1089,7 +1089,7 @@ func stateLabel(state string, askPending bool) string {
 }
 ```
 
-Add `"primeradiant.com/serf/hubapi"` to the file's imports. Run `grep -rn "stateLabel(" cmd/serf-hub/*.go` (excluding `_test.go`) to find every call site outside this file; update each to pass `false` for now (e.g. `stateLabel(state)` → `stateLabel(state, false)`) — Phase 4 Task 26's TUI-analogue threads the real bit through once `ask_pending` exists on the relevant response type; this task keeps every call site compiling and behaviorally identical for non-awaiting states (only `"awaiting"` differs, and it now reads "Your move" instead of the old "Needs you" — an intentional, spec-mandated wording change, not a regression).
+Add `"primeradiant.com/evener/hubapi"` to the file's imports. Run `grep -rn "stateLabel(" cmd/serf-hub/*.go` (excluding `_test.go`) to find every call site outside this file; update each to pass `false` for now (e.g. `stateLabel(state)` → `stateLabel(state, false)`) — Phase 4 Task 26's TUI-analogue threads the real bit through once `ask_pending` exists on the relevant response type; this task keeps every call site compiling and behaviorally identical for non-awaiting states (only `"awaiting"` differs, and it now reads "Your move" instead of the old "Needs you" — an intentional, spec-mandated wording change, not a regression).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1685,7 +1685,7 @@ func projectSummary(project hubRow, rows []hubRow) string {
 }
 ```
 
-(`hubRow.askPending` does not exist until Phase 4 Task 26 — for this task, add a **temporary** unexported field stub so the file compiles: in `cmd/serf-tui/hub_model.go`, add `askPending bool` to the `hubRow` struct now, defaulted to its zero value everywhere it's constructed. Phase 4 Task 26 is then only a matter of *populating* this already-declared field from the wire, not adding it — reducing that later task's surface. Add `"primeradiant.com/serf/hubapi"` to `hub_dashboard_view.go`'s imports.)
+(`hubRow.askPending` does not exist until Phase 4 Task 26 — for this task, add a **temporary** unexported field stub so the file compiles: in `cmd/serf-tui/hub_model.go`, add `askPending bool` to the `hubRow` struct now, defaulted to its zero value everywhere it's constructed. Phase 4 Task 26 is then only a matter of *populating* this already-declared field from the wire, not adding it — reducing that later task's surface. Add `"primeradiant.com/evener/hubapi"` to `hub_dashboard_view.go`'s imports.)
 
 Add the field to `hubRow` in `cmd/serf-tui/hub_model.go` now:
 
@@ -2445,7 +2445,7 @@ Expected: FAIL — today's sort is errored-first then pure recency, so `01OLD_YO
 
 - [ ] **Step 3: Replace the sort with the band function**
 
-In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/serf/hubapi"` to the imports (if not already added by Task 2), and replace the NeedsYou sort (currently lines 704-717):
+In `cmd/serf-hub/internal/hubcore/tree.go`, add `"primeradiant.com/evener/hubapi"` to the imports (if not already added by Task 2), and replace the NeedsYou sort (currently lines 704-717):
 
 ```go
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
@@ -2650,7 +2650,7 @@ In `cmd/serf-tui/hub_dashboard.go`'s `addSession` closure (currently lines 90-14
 			askPending:  n.AskPending,
 ```
 
-Add `"primeradiant.com/serf/hubapi"` to `hub_dashboard.go`'s imports, then extend `dashboardRowLess` (currently lines 221-234) with the band term between rank and recency:
+Add `"primeradiant.com/evener/hubapi"` to `hub_dashboard.go`'s imports, then extend `dashboardRowLess` (currently lines 221-234) with the band term between rank and recency:
 
 ```go
 func dashboardRowLess(a, b hubRow) bool {

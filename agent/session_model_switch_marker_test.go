@@ -22,9 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // tinyWindowResolver maps "tiny/<model>" to an openai profile whose context

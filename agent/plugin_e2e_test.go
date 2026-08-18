@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // setupFullTestPlugin creates a temp directory with a complete plugin containing

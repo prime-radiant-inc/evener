@@ -1,6 +1,6 @@
 package agent
 
-import "primeradiant.com/serf/agent/provenance"
+import "primeradiant.com/evener/agent/provenance"
 
 // activeCausalProvenance returns a clone of the provenance carried by the input
 // currently being processed, or nil when the active set is empty. Emitted events

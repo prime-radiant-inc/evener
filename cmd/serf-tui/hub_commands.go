@@ -11,12 +11,12 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/llm"
 )
 
 type hubTreeMsg struct {

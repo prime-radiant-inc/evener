@@ -89,9 +89,9 @@ model).
   `plugin.LoadAllFailSoft`, flattened into
   `appwire.CommandDescriptor{Name, PluginName, Description, ArgumentHint}`;
   it **early-returns empty when there are no plugin dirs** (lines 817-819).
-- The agent module must not import `primeradiant.com/serf/internal/plugins`
+- The agent module must not import `primeradiant.com/evener/internal/plugins`
   (root-module internal). It already imports
-  `primeradiant.com/serf/envvars`, the sanctioned XDG seam. `agent/plugin`
+  `primeradiant.com/evener/envvars`, the sanctioned XDG seam. `agent/plugin`
   imports neither `execenv` nor `events` today; neither imports `plugin`, so
   the additions below create no import cycle.
 - Client interception: the TUI resolves typed `/name` against ~27 built-in

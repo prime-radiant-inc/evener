@@ -7,7 +7,7 @@ import (
 	"slices"
 	"sort"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 type coldDelegateAttentionRef struct {

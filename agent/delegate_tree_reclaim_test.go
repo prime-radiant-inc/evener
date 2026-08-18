@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 func TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048(t *testing.T) {

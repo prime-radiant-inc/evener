@@ -38,7 +38,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
@@ -425,7 +425,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {

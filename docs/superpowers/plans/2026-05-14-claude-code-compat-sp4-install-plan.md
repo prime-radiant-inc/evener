@@ -4127,7 +4127,7 @@ package plugin
 import (
 	"context"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // pluginInstaller is the subset of *plugins.Installer the CLI consumes. It
@@ -4174,7 +4174,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type fakeInstaller struct {
@@ -4255,7 +4255,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type pluginInstaller interface {

@@ -577,7 +577,7 @@ func (s *Session) deliverHookUserMessage(text string) {
 }
 ```
 
-Confirm `agent/session_queue.go` imports `events` (`primeradiant.com/serf/agent/events`); add it if missing.
+Confirm `agent/session_queue.go` imports `events` (`primeradiant.com/evener/agent/events`); add it if missing.
 
 - [ ] **Step 2: Migrate the seven `Steer` sites**
 

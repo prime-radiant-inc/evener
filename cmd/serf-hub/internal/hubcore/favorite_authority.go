@@ -3,8 +3,8 @@ package hubcore
 import (
 	"slices"
 
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
 )
 
 // FavoriteAuthorityQuality records whether an authority fact is complete and

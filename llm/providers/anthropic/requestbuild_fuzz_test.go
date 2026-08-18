@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // buildFuzzRequest assembles a moderately rich llm.Request from fuzz primitives:

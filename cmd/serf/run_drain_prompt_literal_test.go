@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // The system prompt is text in the request, so a prompt section that spells a

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // captureReadServer answers thread/read with the persisted transcript through

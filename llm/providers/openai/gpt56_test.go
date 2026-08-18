@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // buildBodyForTest runs the real Responses request builder and round-trips the

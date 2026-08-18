@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // Settings holds per-project settings for a plugin, loaded from

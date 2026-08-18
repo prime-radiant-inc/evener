@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestDelegateAttentionSchemaStrictRoundTrip(t *testing.T) {

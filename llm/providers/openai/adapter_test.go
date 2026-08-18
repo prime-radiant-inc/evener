@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {

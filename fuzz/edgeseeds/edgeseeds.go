@@ -14,7 +14,7 @@
 // would tax the suite. The fuzzer mutates deeper from these starting points,
 // and the memory cap bounds any runaway.
 //
-// This package imports nothing from primeradiant.com/serf — it lives in the
+// This package imports nothing from primeradiant.com/evener — it lives in the
 // portable fuzz module so any target in any module can seed from one source.
 package edgeseeds
 

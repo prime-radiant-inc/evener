@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 )
 
 func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {

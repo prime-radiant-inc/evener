@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzNewForInstanceOAuth drives NewForInstance's OAuth branch end to end through

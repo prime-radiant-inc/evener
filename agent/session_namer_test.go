@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 var builtinAgentsCache struct {

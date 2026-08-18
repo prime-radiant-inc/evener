@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/openai"
 )
 
 // integrationTestModel is the OpenAI model used by live integration tests.

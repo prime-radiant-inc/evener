@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 func TestValidateAppWireInputItemsRejectsOversizedImage(t *testing.T) {

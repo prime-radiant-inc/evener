@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	tooldefs "primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzRootWatchTreeProgram covers the durable generic watch-journal lifecycle

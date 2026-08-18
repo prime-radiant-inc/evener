@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // generatedHeader marks types.gen.ts as generated so editors and reviewers

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // These tests drive a real *Session and exercise the context manager through the

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 type pendingWatchSendDrainFaultKey struct{}

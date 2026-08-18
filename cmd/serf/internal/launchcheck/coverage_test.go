@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestRunLaunchCheckRemainingBranches(t *testing.T) {

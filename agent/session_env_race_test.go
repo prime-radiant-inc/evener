@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 // testSwapEnv is a test-only stand-in for the locked swap helper Task 5

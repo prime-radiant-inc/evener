@@ -13,7 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // Source describes where a provider's effective value came from.

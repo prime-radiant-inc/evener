@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 )
 
 // TestServeInstallsANonBlockingVerboseObserver pins the --verbose WIRING, not

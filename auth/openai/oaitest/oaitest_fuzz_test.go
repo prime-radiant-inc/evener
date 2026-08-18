@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // FuzzIsolateOpenAIAuth drives the real test-isolation helper from arbitrary

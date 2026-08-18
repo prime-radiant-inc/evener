@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func seed100JobsRangeB(t *testing.T) {

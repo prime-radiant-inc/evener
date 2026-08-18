@@ -7,8 +7,8 @@ import (
 )
 
 func FuzzWalkType(f *testing.F) {
-	f.Add("primeradiant.com/serf/agent/internal/example", "Thing", true)
-	f.Add("primeradiant.com/serf/agent/example", "Thing", false)
+	f.Add("primeradiant.com/evener/agent/internal/example", "Thing", true)
+	f.Add("primeradiant.com/evener/agent/example", "Thing", false)
 	f.Fuzz(func(t *testing.T, path, name string, pointer bool) {
 		if len(path)+len(name) > 4096 || name == "" {
 			return

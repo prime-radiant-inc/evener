@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // fixedTreeClock is an injected wall clock so tier classification

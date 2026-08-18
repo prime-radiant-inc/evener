@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 func TestLoadMCPConfigFile_Basic(t *testing.T) {

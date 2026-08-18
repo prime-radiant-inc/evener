@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/selfupdate"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/selfupdate"
 )
 
 var selfUpdateUpgrade = selfupdate.Upgrade

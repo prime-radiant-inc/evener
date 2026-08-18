@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type pluginManager interface {

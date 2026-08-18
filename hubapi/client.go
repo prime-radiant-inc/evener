@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/task"
 )
 
 // Client is a small typed HTTP client for the serf hub JSON API.

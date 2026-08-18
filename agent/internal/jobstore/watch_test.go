@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {

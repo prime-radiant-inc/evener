@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"regexp"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // outputMatchWindowBytes is the rolling scan window an output_match watch reads

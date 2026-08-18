@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // Source names the component a diagnostic is attributed to.

@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/server"
 )
 
 type taskAggregateScriptedAdapter struct{}

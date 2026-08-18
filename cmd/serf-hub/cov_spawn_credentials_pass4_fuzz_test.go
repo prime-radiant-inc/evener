@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 type stubThreadLister struct {

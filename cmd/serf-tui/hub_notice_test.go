@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestNoticePanelTextIncludesCategoryAndNextAction(t *testing.T) {

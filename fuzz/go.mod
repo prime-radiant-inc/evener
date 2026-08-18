@@ -1,9 +1,9 @@
-// Module primeradiant.com/serf/fuzz holds the portable, serf-agnostic core of
+// Module primeradiant.com/evener/fuzz holds the portable, serf-agnostic core of
 // the fuzzing toolkit: the failure→regression promoter and (later) the
-// schema→generator. NOTHING here may import any primeradiant.com/serf package —
+// schema→generator. NOTHING here may import any primeradiant.com/evener package —
 // this go.mod has no serf dependency, so the module simply will not build if
 // that boundary is violated. That structural guarantee IS the portability test.
-module primeradiant.com/serf/fuzz
+module primeradiant.com/evener/fuzz
 
 go 1.25.0
 

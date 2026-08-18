@@ -3,7 +3,7 @@ package rvreg
 import (
 	"testing"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestRegistrationUpdatesSessionIdentity(t *testing.T) {

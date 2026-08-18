@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzOpenAIChatMultimodalParts drives buildChatMultimodalParts, the Chat

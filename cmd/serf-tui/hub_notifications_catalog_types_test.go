@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 // TestApplyHubNotification_DecodesEveryCatalogedNotification is a

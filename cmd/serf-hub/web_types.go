@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
 
 // searchResult is one item in the /api/search response. Ref carries the

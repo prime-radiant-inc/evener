@@ -7,7 +7,7 @@ import (
 )
 
 func FuzzCoverageParsers(f *testing.F) {
-	f.Add("primeradiant.com/serf/agent 10 20\n", "agent", "90")
+	f.Add("primeradiant.com/evener/agent 10 20\n", "agent", "90")
 	f.Add("mode: set\nfile.go:1.1,1.2 1 1\n", "", "100%")
 	f.Fuzz(func(t *testing.T, profile, focus, floor string) {
 		if len(profile) > 1<<20 || len(focus)+len(floor) > 4096 {

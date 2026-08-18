@@ -3,7 +3,7 @@ package openaicompat
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // A catalog output cap that equals (or exceeds) the model's context window is

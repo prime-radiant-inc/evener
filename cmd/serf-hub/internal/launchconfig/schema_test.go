@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {

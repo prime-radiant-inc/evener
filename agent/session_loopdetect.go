@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // failureLoopExcerptRunes bounds the failure excerpt carried by the structural

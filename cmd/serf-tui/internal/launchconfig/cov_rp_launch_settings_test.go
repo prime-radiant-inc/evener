@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestParseOptionalBool(t *testing.T) {

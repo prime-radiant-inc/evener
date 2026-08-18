@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzEventDataProgram runs every member of the sealed event payload set

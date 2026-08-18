@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // The capability preamble is the environment section's factual answer to "what

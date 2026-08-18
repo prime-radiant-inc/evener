@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/identifier"
 )
 
 // ToolArgs is a decoded JSON args map with a convenience Str() accessor.

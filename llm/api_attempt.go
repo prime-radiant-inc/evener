@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/identifier"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/identifier"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 // APIAttemptSink durably appends canonical provider attempts and their group

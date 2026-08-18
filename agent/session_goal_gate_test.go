@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/llm"
 )
 
 // newGateSession builds a session with a fake "openai" adapter and starts

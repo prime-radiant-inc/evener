@@ -6,7 +6,7 @@
 
 **Architecture:** A new `execenv.StreamingExecutor` optional interface streams a process's output to a per-job log and returns a wait/signal handle. A new `JobManager` in package `agent` holds the per-session `*jobstore.Store` plus an in-memory overlay of running jobs, and drives create/list/read/stop. Durable terminal notifications reuse the existing `EntryNotification` queue (`pendingNotifs` → `acceptNotificationInput`) with a new `<job-notification>` format and the `filterDeliverableNotifications` predicate re-keyed onto durable records. Restart reconciliation runs in `RestoreSessionFromMetaWithConfig`. The new job tools register alongside the legacy subagent tools (a temporary parallel surface; Phase 6 removes the legacy one).
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), `agent/execenv`, the existing tool registry (`tool.RegisteredTool`/`Exec`), `EntryNotification`. Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), `agent/execenv`, the existing tool registry (`tool.RegisteredTool`/`Exec`), `EntryNotification`. Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 2 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §2 (seam), §5.3 (shell), §5.6/§5.7/§5.8 (read/list/stop), §6 (notifications), §7 (reconciliation). It depends on Phase 1 (`agent/internal/jobstore`) being merged.
 
@@ -252,7 +252,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func newTestJM(t *testing.T) *jobManager {
@@ -327,8 +327,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
@@ -482,7 +482,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {

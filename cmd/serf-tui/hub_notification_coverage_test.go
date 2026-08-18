@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // notifyMethodsDeliberatelyIgnored lists wire notifications applyHubNotification

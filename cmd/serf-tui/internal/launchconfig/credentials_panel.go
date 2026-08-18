@@ -6,9 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // CredentialsActionMsg carries a credential operation for a specific instance.

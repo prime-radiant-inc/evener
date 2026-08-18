@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/apptranscript"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // activityUsageCache memoizes per-transcript cumulative usage totals (keyed by

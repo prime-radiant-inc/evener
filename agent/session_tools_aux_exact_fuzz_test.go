@@ -16,16 +16,16 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionToolsAuxExact replays finite, deterministic edge states for the

@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // AsideSession creates a new session branched from a parent session at its

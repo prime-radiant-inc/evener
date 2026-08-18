@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // TestW2Conc_RunShellForegroundBlockTimeoutCommitFails pins the foreground

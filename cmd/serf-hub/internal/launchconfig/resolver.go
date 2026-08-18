@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // Resolve loads and merges every layer for the given cwd, applying the

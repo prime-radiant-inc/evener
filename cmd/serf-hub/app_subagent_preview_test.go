@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestSubagentPreviewBoundsLatestDirectItems(t *testing.T) {

@@ -61,8 +61,8 @@ GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestDefaultResponsesContin
 Result:
 
 ```text
-ok  	primeradiant.com/serf/llm	0.328s
-ok  	primeradiant.com/serf/agent	1.567s
+ok  	primeradiant.com/evener/llm	0.328s
+ok  	primeradiant.com/evener/agent	1.567s
 ```
 
 ## Contracts Proven

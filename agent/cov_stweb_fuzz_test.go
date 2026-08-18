@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzStoolCommunicationDispatch drives communicate through the real registry

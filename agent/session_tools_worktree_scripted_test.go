@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func scriptedEnvironmentInfo(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {

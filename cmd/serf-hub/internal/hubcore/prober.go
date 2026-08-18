@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // StatusProber checks daemon liveness by issuing GET <addr>/status and

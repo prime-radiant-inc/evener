@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func exerciseAppserverStack(t rapidTB) {

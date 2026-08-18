@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // byteAtATimeReader delivers its payload one byte per Read call, then io.EOF. It

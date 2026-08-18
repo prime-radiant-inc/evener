@@ -103,7 +103,7 @@ func releaseOnce(unlock func()) func() {
 // victory before the interesting one has even started.
 func awaitParkedOnAMutexIn(t *testing.T, function string) bool {
 	t.Helper()
-	createdBy := "created by primeradiant.com/serf/agent." + t.Name()
+	createdBy := "created by primeradiant.com/evener/agent." + t.Name()
 	deadline := time.Now().Add(closeParkBudget)
 	for {
 		for g := range strings.SplitSeq(goroutineDump(), "\n\ngoroutine ") {

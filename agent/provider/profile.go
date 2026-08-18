@@ -4,9 +4,9 @@ import (
 	"maps"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // resolveEffortLevels returns reasoning effort levels for the given model.

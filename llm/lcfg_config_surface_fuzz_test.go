@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type lcfgSecretFile struct {

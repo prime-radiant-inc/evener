@@ -8,8 +8,8 @@ package events
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/llm"
 )
 
 // EventKind identifies the type of a SessionEvent.

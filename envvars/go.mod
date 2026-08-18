@@ -1,3 +1,3 @@
-module primeradiant.com/serf/envvars
+module primeradiant.com/evener/envvars
 
 go 1.25.6

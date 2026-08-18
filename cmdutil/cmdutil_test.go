@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/kimicoding"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/kimicoding"
 )
 
 func TestResolveSessionMetaRejectsMismatchedIDWithoutMutation(t *testing.T) {

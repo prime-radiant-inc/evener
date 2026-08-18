@@ -19,11 +19,11 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 const (

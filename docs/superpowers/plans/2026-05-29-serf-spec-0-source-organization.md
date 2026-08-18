@@ -38,7 +38,7 @@ Each task moves a named set of declarations out of `agent/session.go` into a tar
    ```bash
    go test ./agent
    ```
-   Expected: `ok  	primeradiant.com/serf/agent  <time>s`. Must stay green.
+   Expected: `ok  	primeradiant.com/evener/agent  <time>s`. Must stay green.
 6. **Confirm formatting is clean:**
    ```bash
    gofmt -l agent/<target>.go agent/session.go
@@ -88,7 +88,7 @@ Move these declarations (by name) from `session.go`:
 - [ ] **Step 2:** Move the two declarations above (with doc comments) from `session.go` into it. Do not edit them.
 - [ ] **Step 3:** `"$(go env GOPATH)/bin/goimports" -w agent/session_config.go agent/session.go`
 - [ ] **Step 4:** `go build ./agent` → expect success (no output).
-- [ ] **Step 5:** `go test ./agent` → expect `ok  primeradiant.com/serf/agent`.
+- [ ] **Step 5:** `go test ./agent` → expect `ok  primeradiant.com/evener/agent`.
 - [ ] **Step 6:** `gofmt -l agent/session_config.go agent/session.go` → expect no output.
 - [ ] **Step 7:** Commit:
   ```bash

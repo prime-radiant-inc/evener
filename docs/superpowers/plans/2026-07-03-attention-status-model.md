@@ -144,7 +144,7 @@ func newTestSessionForState(t *testing.T) *Session {
 }
 ```
 
-Add the imports the file now needs: `"primeradiant.com/serf/llm"` and `"primeradiant.com/serf/agent/internal/..."` — copy the exact import set from `agent/session_lifecycle_test.go` for `llm` and `execenv` (it imports `primeradiant.com/serf/agent/execenv` or similar; use whatever path `session_lifecycle_test.go` uses for `execenv.NewLocalExecutionEnvironment`).
+Add the imports the file now needs: `"primeradiant.com/evener/llm"` and `"primeradiant.com/evener/agent/internal/..."` — copy the exact import set from `agent/session_lifecycle_test.go` for `llm` and `execenv` (it imports `primeradiant.com/evener/agent/execenv` or similar; use whatever path `session_lifecycle_test.go` uses for `execenv.NewLocalExecutionEnvironment`).
 
 - [ ] **Step 6: Run — fails (settleGoalOnIdle returns nothing)**
 
@@ -483,7 +483,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestStatusReportsAwaitingAndSendCapability(t *testing.T) {
@@ -848,9 +848,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestDeriveAttention_SummaryCountsTierEligibleOnly(t *testing.T) {
@@ -921,7 +921,7 @@ package hubcore
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // AttentionEntry is one live session's derived attention level plus the

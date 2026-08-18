@@ -12,12 +12,12 @@ import (
 	"time"
 	"unicode"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 var webSpawnLoadClient = cmdutil.LoadClient

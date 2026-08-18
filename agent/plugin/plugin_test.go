@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 func TestValidatePluginName(t *testing.T) {

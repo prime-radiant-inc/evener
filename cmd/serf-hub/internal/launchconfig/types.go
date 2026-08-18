@@ -7,7 +7,7 @@ package launchconfig
 import (
 	"time"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // Layer is one writable or in-memory layer of launch configuration. All

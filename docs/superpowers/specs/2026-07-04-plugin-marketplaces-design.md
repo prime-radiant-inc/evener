@@ -135,7 +135,7 @@ the `claude` binary.
 
 All lifecycle logic lives in **one new package in the root module**:
 `internal/plugins` (importable by `cmd/serf`, `cmd/serf-hub`, `cmd/serf-doctor`,
-all in the root module `primeradiant.com/serf`). It is the single source of truth
+all in the root module `primeradiant.com/evener`). It is the single source of truth
 for on-disk plugin state, serialized by one file lock. Three things drive it; none
 reimplement it:
 

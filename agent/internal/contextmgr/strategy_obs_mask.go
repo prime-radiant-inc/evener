@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // ObsMaskStrategy implements aggressive observation masking as the primary

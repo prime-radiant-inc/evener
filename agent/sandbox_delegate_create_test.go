@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {

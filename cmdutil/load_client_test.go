@@ -9,11 +9,11 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/openai"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // validProvidersToml is a minimal providers.toml with two openai instances

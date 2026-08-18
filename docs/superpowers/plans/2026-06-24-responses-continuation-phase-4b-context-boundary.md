@@ -50,8 +50,8 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const responseContextMarkerV1 = "cont-ctx-v1"
@@ -151,8 +151,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
@@ -353,7 +353,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 Add the missing import:
 
 ```go
-import "primeradiant.com/serf/agent/execenv"
+import "primeradiant.com/evener/agent/execenv"
 ```
 
 - [x] **Step 2: Run the restore test**

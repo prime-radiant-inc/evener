@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // defaultCheckLeaksTimeout is how long the wave waits for a leak check to

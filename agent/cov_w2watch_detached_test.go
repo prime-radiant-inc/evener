@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // w2watch_seedDetachedPending installs a detached (terminal-flush) watch config

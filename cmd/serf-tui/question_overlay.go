@@ -8,10 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // ---- Data model (spec §4.2/§4.3) ------------------------------------------

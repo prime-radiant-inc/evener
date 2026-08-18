@@ -305,7 +305,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_Stream_ResponseHeaderTimeout(t *testing.T) {

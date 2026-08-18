@@ -49,7 +49,7 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/internal/devtool/scratch"
+	"primeradiant.com/evener/internal/devtool/scratch"
 )
 
 const shardScratchPrefix = "agent-test-shards"

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/llm"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/llm"
 )
 
 func TestClientHasProvider(t *testing.T) {

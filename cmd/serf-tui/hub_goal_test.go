@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // TestSendHubGoalSetsObjective verifies sendHubGoal forwards the objective on

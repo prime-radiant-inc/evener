@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzDiagnosticClassificationProgram replays each user-facing classification

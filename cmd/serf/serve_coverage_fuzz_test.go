@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func testServeLLMClientErrors(t *testing.T) {

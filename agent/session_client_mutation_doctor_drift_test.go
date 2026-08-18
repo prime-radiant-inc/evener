@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/doctor"
+	"primeradiant.com/evener/agent/doctor"
 )
 
 // serf-doctor's mutations reader cannot import clientMutationSnapshot — it is

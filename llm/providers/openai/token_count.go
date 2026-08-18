@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {

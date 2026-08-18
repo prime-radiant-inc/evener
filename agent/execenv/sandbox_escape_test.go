@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // This is the M2 adversarial escape suite. It drives the spec's Validation

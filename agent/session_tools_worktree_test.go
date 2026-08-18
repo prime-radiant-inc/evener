@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/identifier"
 )
 
 func resolvedProjectID(t *testing.T, env execenv.ExecutionEnvironment, path string) string {

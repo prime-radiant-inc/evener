@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
 func TestBuildSystemPrompt(t *testing.T) {

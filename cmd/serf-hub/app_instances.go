@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // hubInstancesController manages provider instance CRUD: Create, Edit, Remove,

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestCov_Classify(t *testing.T) {

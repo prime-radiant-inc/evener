@@ -15,7 +15,7 @@ import (
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func toolResultHasProviderImage(result *llm.ToolResultData) bool {

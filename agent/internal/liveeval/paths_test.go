@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestEnabledRequiresExplicitOptIn(t *testing.T) {

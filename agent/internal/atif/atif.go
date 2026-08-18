@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // ATIF v1.7 types — Agent Trajectory Interchange Format.

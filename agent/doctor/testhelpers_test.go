@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // writeFile writes content to path, creating parent dirs. Test-only helper.

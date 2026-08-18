@@ -2520,7 +2520,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // stubAgentClient returns a canned response that includes a decide(...) tool call.
@@ -2594,7 +2594,7 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // executeAgentHook spawns a lightweight one-shot LLM call that must end

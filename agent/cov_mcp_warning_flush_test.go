@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // mcpWarningFlushTruePath resolves the `true` binary used to build a dead

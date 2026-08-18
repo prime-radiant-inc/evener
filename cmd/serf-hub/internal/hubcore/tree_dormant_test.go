@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // A session can now exist having never run a turn: an empty-prompt spawn starts

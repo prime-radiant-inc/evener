@@ -5,8 +5,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // StateBar returns a single 1-column glyph foreground-colored to state.

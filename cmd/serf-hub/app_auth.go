@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type hubAuthController struct {

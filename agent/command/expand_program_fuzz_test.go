@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 // FuzzExpandTemplateProgram drives a complete slash-command template through

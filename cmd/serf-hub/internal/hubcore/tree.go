@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
 )
 
 // Tree is the navigation data model.

@@ -5,9 +5,9 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // TestHubRouterMatchesCatalog keeps appwire.Methods (the source of the

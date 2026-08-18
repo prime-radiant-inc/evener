@@ -4,13 +4,13 @@
 
 **Goal:** Build the `internal/plugins` manager package — the single source of truth for serf's plugin marketplaces and installed plugins on disk — with marketplace add/remove/list/refresh/browse and plugin install/upgrade/remove/enable/disable/list/update-all, all driven by real `git` against local fixtures.
 
-**Architecture:** One new root-module Go package, `primeradiant.com/serf/internal/plugins`. On-disk state (Claude-Code-shaped, serf-owned) lives under `~/.config/serf/plugins/`: `known_marketplaces.json`, `installed_plugins.json`, `marketplaces/<name>/` clones, and `cache/<marketplace>/<plugin>/<sha>/` materialized plugins. A `Manager` value exposes every operation; registry mutations are serialized by a `flock` and written atomically (temp + rename). The existing `agent/plugin.Load` is reused unchanged as a dry-run validator. This plan implements the parent spec `docs/superpowers/specs/2026-07-04-plugin-marketplaces-design.md` phase **P1** (§15); P2–P7 (CLI, gating, auto-upgrade, web, TUI, slash commands, doctoring) are separate plans.
+**Architecture:** One new root-module Go package, `primeradiant.com/evener/internal/plugins`. On-disk state (Claude-Code-shaped, serf-owned) lives under `~/.config/serf/plugins/`: `known_marketplaces.json`, `installed_plugins.json`, `marketplaces/<name>/` clones, and `cache/<marketplace>/<plugin>/<sha>/` materialized plugins. A `Manager` value exposes every operation; registry mutations are serialized by a `flock` and written atomically (temp + rename). The existing `agent/plugin.Load` is reused unchanged as a dry-run validator. This plan implements the parent spec `docs/superpowers/specs/2026-07-04-plugin-marketplaces-design.md` phase **P1** (§15); P2–P7 (CLI, gating, auto-upgrade, web, TUI, slash commands, doctoring) are separate plans.
 
-**Tech Stack:** Go 1.25 (`go.work` multi-module: this package is in the root module `primeradiant.com/serf`). Stdlib `os/exec` shelling out to the system `git`. `golang.org/x/sys/unix` (already an indirect dep — promoted to direct) for `flock`. `encoding/json`. Reuses `primeradiant.com/serf/agent/plugin` (`Load`, `Manifest`, `ParseManifest`) and `primeradiant.com/serf/envvars` (`XDGConfigHome`). Tests use `t.TempDir()` and real local `git` repositories as fixtures — **no mocks, no network**; git-dependent tests `t.Skip` when `git` is absent.
+**Tech Stack:** Go 1.25 (`go.work` multi-module: this package is in the root module `primeradiant.com/evener`). Stdlib `os/exec` shelling out to the system `git`. `golang.org/x/sys/unix` (already an indirect dep — promoted to direct) for `flock`. `encoding/json`. Reuses `primeradiant.com/evener/agent/plugin` (`Load`, `Manifest`, `ParseManifest`) and `primeradiant.com/evener/envvars` (`XDGConfigHome`). Tests use `t.TempDir()` and real local `git` repositories as fixtures — **no mocks, no network**; git-dependent tests `t.Skip` when `git` is absent.
 
 ## Global Constraints
 
-- Module: package path is `primeradiant.com/serf/internal/plugins` (root module). It MAY import `primeradiant.com/serf/agent/plugin`, `primeradiant.com/serf/frontmatter`, and `primeradiant.com/serf/envvars`. It MUST NOT import anything under `primeradiant.com/serf/agent/internal/...` (Go internal rule forbids it — verified).
+- Module: package path is `primeradiant.com/evener/internal/plugins` (root module). It MAY import `primeradiant.com/evener/agent/plugin`, `primeradiant.com/evener/frontmatter`, and `primeradiant.com/evener/envvars`. It MUST NOT import anything under `primeradiant.com/evener/agent/internal/...` (Go internal rule forbids it — verified).
 - Source-type discriminator is **`url`, never `git`** (the on-disk JSON `"source"` value). `git` is accepted only as a **read-only legacy alias** for `url` on a marketplace container; serf never writes `git`.
 - The install-registry (`installed_plugins.json`) JSON shape is `{"version":2,"plugins":{"<plugin>@<marketplace>":[<entry>...]}}` — the value is an array (Claude drop-in shape); v1 writes exactly one entry per plugin.
 - Cache directories are keyed by resolved commit **`<sha>`**, not by version (`cache/<marketplace>/<plugin>/<sha>/`). Plugins whose **marketplace** is a `directory` source are **referenced in place** (no cache copy, empty sha).
@@ -142,7 +142,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // Manager owns all on-disk plugin state under Root (~/.config/serf/plugins).
@@ -1453,7 +1453,7 @@ git commit -m "plugins: computeVersion precedence"
 - Test: `internal/plugins/validate_test.go`
 
 **Interfaces:**
-- Consumes: `primeradiant.com/serf/agent/plugin` (`Load`).
+- Consumes: `primeradiant.com/evener/agent/plugin` (`Load`).
 - Produces: `func validatePluginDir(dir string) error` — returns nil iff `agent/plugin.Load(dir)` succeeds (manifest + all components parse); `func pluginManifestVersion(dir string) string` — best-effort plugin.json version for `computeVersion` (empty on any error).
 
 - [ ] **Step 1: Write the failing test**
@@ -1518,7 +1518,7 @@ import (
 	"os"
 	"path/filepath"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 // validatePluginDir returns nil iff the plugin at dir loads cleanly — manifest
@@ -2374,7 +2374,7 @@ git commit -m "plugins: List (broken detection) + UpdateAll"
 - [ ] **Step 1: Run the whole package with the race detector**
 
 Run: `go test ./internal/plugins/ -race -count=1`
-Expected: `ok  primeradiant.com/serf/internal/plugins`. No failures. (Git-dependent tests run if `git` is present; otherwise they SKIP — a SKIP is acceptable, a FAIL is not.)
+Expected: `ok  primeradiant.com/evener/internal/plugins`. No failures. (Git-dependent tests run if `git` is present; otherwise they SKIP — a SKIP is acceptable, a FAIL is not.)
 
 - [ ] **Step 2: Vet and build the whole module**
 

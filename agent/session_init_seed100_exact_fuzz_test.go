@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionInitSeed100Exact replays the deterministic constructor and

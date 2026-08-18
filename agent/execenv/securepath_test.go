@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // asDenied reports whether err is (or wraps) a *sandbox.DeniedError, binding it

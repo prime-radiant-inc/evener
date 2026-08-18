@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/appwire/appwiretest"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 )
 
 func TestCmdAuthTestUsesSharedMethodAndInstanceName(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // TestExitBehavior_PerEvent verifies the central exit-code table classifies exit

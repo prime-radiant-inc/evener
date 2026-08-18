@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 var (

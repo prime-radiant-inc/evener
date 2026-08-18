@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // The driver's two documented modes are promises about ONE session's rounds:

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // corruptLargeBody returns an EncodedBody claiming base64 encoding whose

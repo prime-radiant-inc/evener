@@ -11,12 +11,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/google"
-	"primeradiant.com/serf/llm/providers/openai"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/google"
+	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 type outcomeSink struct {

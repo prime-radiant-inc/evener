@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {

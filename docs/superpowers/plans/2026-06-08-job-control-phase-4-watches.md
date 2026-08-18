@@ -6,7 +6,7 @@
 
 **Architecture:** The seam from spec §8 is mandatory. The pure `output_match` matcher lives in `agent/internal/jobstore/watch.go` — RE2 over the append stream, line-buffered so a match in bytes appended while the watch is active is **never** missed by preview eviction; it imports only stdlib + `regexp` and **cannot** see session event kinds. The `events`/`trigger` event-frame gating, the periodic timer, the watch registry keyed `(visible_session_id, target, send.to)`, and delivery all live in the **JobManager** (package `agent`), because event kinds are `agent/events` concepts a `Session`-free package cannot name. The JobManager taps the one event choke point — `Session.emit` (`agent/session_events.go:45`) — to feed the event-frame matcher, wraps the per-job output writer to feed the `output_match` matcher, and owns the Nth-event counter for `trigger.every`. The `job_watch` tool registers alongside the legacy subagent tools (Phase 6 removes the legacy surface).
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the `JobManager` + `jobNotification` queue (Phase 2), `job_send_message` (Phase 3), `agent/events` (`EventKind` constants), the tool registry (`tool.RegisteredTool`/`Exec`). Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the `JobManager` + `jobNotification` queue (Phase 2), `job_send_message` (Phase 3), `agent/events` (`EventKind` constants), the tool registry (`tool.RegisteredTool`/`Exec`). Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 4 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §5.9 (`job_watch`), §8 (watches internals — the seam split), §9 (observer/sidecar composition), §5.10 (errors). It depends on Phase 1 (`agent/internal/jobstore`), Phase 2 (`JobManager`, `pendingJobNotifs`), and Phase 3 (`job_send_message`) being merged.
 
@@ -403,7 +403,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestConfigureWatchRequiresCondition(t *testing.T) {
@@ -533,7 +533,7 @@ Keep `modelEventKinds`'s key set exactly equal to `WatchEventKindNames` (a `_tes
 - [ ] **Step 1: Write the failing test** — append to `agent/job_watch_test.go`:
 
 ```go
-import "primeradiant.com/serf/agent/events" // add to the existing import block
+import "primeradiant.com/evener/agent/events" // add to the existing import block
 
 func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)

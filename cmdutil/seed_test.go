@@ -3,7 +3,7 @@ package cmdutil
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestSeedDescriptorsOnly(t *testing.T) {

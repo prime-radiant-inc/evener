@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func TestPluginMarketplaceList_Empty(t *testing.T) {

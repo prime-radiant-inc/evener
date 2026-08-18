@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 // ---------------------------------------------------------------------------

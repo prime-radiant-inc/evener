@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 // A session whose recorded working directory no longer resolves at tree-build

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // The PWA manifest must carry the auth token in its start_url so that a

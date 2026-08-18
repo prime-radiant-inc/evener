@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 type googleSeedRoundTripper func(*http.Request) (*http.Response, error)

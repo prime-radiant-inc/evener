@@ -9,7 +9,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 func TestSteerKindReachesTheInjectedEvent(t *testing.T) {

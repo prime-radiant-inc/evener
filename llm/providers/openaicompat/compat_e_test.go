@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // toolReq returns a request carrying one tool definition.

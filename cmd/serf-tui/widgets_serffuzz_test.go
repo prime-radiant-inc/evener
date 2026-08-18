@@ -8,11 +8,11 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // FuzzWidgetPrograms is a deterministic replay corpus for the root TUI's

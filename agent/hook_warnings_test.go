@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // writePluginHooks creates a plugin directory named name with the given

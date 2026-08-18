@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 var testNow = time.Date(2026, 7, 17, 18, 0, 0, 0, time.UTC)

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
 )
 
 type seedRoundTripper func(*http.Request) (*http.Response, error)

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzSecurePathResolve drives the resolver with arbitrary path text against a

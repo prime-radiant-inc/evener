@@ -4,7 +4,7 @@
 
 **Goal:** Replace every project-identity implementation with one resolving API and replace every Serf-owned ULID payload with a fixed-width, 22-character base62 UUIDv7 payload.
 
-**Architecture:** Add the leaf module `primeradiant.com/serf/identifier`. It owns project canonicalization, local Git main-checkout resolution, bounded project rendering, UUIDv7/base62 encoding, domain constructors, and validators. Root, `agent`, and `llm` depend on it; `agent/execenv` supplies an environment-backed `identifier.Resolver` without creating a reverse dependency.
+**Architecture:** Add the leaf module `primeradiant.com/evener/identifier`. It owns project canonicalization, local Git main-checkout resolution, bounded project rendering, UUIDv7/base62 encoding, domain constructors, and validators. Root, `agent`, and `llm` depend on it; `agent/execenv` supplies an environment-backed `identifier.Resolver` without creating a reverse dependency.
 
 **Tech Stack:** Go 1.25.6 workspace, `github.com/google/uuid` v1.6.0, SHA-256, Git worktrees, deterministic table/property/fuzz tests.
 
@@ -105,7 +105,7 @@ Expected: FAIL because `identifier/go.mod` or codec symbols do not exist.
 
 - [ ] **Step 3: Add workspace/module wiring and the minimal codec**
 
-Create `identifier/go.mod` with Go 1.25.6 and `github.com/google/uuid v1.6.0`. Add `./identifier` to `go.work`, add a workspace replace for `primeradiant.com/serf/identifier v0.0.0`, and add `identifier` to `GO_MODULES` in `Makefile`.
+Create `identifier/go.mod` with Go 1.25.6 and `github.com/google/uuid v1.6.0`. Add `./identifier` to `go.work`, add a workspace replace for `primeradiant.com/evener/identifier v0.0.0`, and add `identifier` to `GO_MODULES` in `Makefile`.
 
 Implement base62 conversion with a 22-byte output initialized to `'0'`, repeated `big.Int.QuoRem`, strict alphabet lookup, strict width, and `BitLen() <= 128`. `ValidateUUIDv7Payload` must decode, then check `Version() == 7` and `Variant() == uuid.RFC4122`. Generate with `uuid.NewV7()`.
 

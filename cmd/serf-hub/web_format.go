@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/hubapi"
 )
 
 // Pure presentation/data-mapping helpers for the workspace partials. These are

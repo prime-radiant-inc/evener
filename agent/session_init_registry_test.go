@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // TestChildRegistryKeepsDelegateWithAllowance verifies seam 3 (spec §1): the

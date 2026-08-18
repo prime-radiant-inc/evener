@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func waitServeMilestone(ctx context.Context, milestones <-chan string, want string) error {

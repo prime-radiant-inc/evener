@@ -23,7 +23,7 @@ Observed result:
     session_openai_continuation_phase12_live_test.go:196: phase12_public_live model=gpt-5.2 delta_bytes=54736 full_history_shadow_bytes=55049 omitted_input_item_bytes=406 continuation_overhead_bytes=81 net_body_byte_saving=313 provider_input_tokens=372 full_history_shadow_tokens=13197
 --- PASS: TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof (6.21s)
 PASS
-ok  	primeradiant.com/serf/agent	6.546s
+ok  	primeradiant.com/evener/agent	6.546s
 ```
 
 Completion-audit rerun:
@@ -33,7 +33,7 @@ Completion-audit rerun:
     session_openai_continuation_phase12_live_test.go:196: phase12_public_live model=gpt-5.2 delta_bytes=54734 full_history_shadow_bytes=55047 omitted_input_item_bytes=406 continuation_overhead_bytes=81 net_body_byte_saving=313 provider_input_tokens=11127 full_history_shadow_tokens=13196
 --- PASS: TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof (24.00s)
 PASS
-ok  	primeradiant.com/serf/agent	24.332s
+ok  	primeradiant.com/evener/agent	24.332s
 ```
 
 The rerun preserved accepted continuation semantics and the same net request-payload reduction. It also showed that provider-reported input tokens can include substantially more effective prior state than the first run. This reinforces the design constraint that request-payload reduction is proven separately from provider billing reduction.

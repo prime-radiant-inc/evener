@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {

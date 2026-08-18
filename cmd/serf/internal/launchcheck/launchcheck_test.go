@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/openai"
-	_ "primeradiant.com/serf/llm/providers/openrouter"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/openrouter"
 )
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {

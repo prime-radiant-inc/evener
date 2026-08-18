@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // The durable registry row names who RECEIVES a watch, not just who owns it. A

@@ -38,18 +38,18 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/liveeval"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/internal/liveeval"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/ollama"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/ollama"
+	_ "primeradiant.com/evener/llm/providers/openai"
 )
 
 // evalModel is the openai model the eval drives. The profile's cheap-model

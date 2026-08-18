@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
 )
 
 // TestAddPendingAttachment_InsertsMarkerAtCursor verifies that adding a

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // Registration tracks a serve process's rendezvous entry on disk, keeping the

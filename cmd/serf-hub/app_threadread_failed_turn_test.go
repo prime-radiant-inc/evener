@@ -3,9 +3,9 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // kata mcgh: a failed turn's diagnostic has to survive the trip from the

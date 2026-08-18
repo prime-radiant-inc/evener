@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
 )
 
 func TestNonEmptyStrings(t *testing.T) {

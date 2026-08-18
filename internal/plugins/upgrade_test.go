@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 func TestUpgrade_NewShaDirOldRemains(t *testing.T) {

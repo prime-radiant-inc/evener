@@ -3,7 +3,7 @@ package appwire
 import (
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,

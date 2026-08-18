@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 func (h *scriptedWorktreeSession) managedPath(name string) string {

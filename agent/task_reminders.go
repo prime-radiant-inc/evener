@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	taskpkg "primeradiant.com/serf/agent/task"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that

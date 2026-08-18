@@ -5,13 +5,13 @@ import (
 	"os"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // RelayLifecycleHooks are optional test seams the relay idle-retirement loop

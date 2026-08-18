@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // s3cov_visionSession wires a session whose fake adapter records the last vision

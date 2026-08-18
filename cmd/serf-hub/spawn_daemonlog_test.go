@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // registeringFakeSerf is a stub daemon that says one thing on each stream,

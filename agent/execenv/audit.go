@@ -3,7 +3,7 @@ package execenv
 import (
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // AuditRecord is one redacted sandbox-denial audit line. Its JSON keys are

@@ -11,9 +11,9 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // TestWatchSeqFuzz is the stateful / sequence fuzz of the watch state machine —

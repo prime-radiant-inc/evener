@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 var globProjectBuckets = filepath.Glob

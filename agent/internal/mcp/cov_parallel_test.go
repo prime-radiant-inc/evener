@@ -7,7 +7,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // These tests cover NewManager's move from sequential to parallel per-server

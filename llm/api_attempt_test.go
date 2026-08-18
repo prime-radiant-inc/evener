@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/identifier"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/identifier"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.T) {

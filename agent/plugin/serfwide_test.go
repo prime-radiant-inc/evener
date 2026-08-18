@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // writeSerfwideCommand writes dir/<name>.md with content and returns dir.

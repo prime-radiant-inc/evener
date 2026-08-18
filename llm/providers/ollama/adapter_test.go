@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // clientFor builds an llm.Client with a single ollama adapter (empty instance

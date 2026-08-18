@@ -3,7 +3,7 @@ package clipboard
 import (
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestNewSystemClipboardSource(t *testing.T) {

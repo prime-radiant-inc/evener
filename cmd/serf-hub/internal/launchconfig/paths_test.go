@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func checkPathsFor(t *testing.T) {

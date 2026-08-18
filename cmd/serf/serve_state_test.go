@@ -13,15 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf/internal/rvreg"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf/internal/rvreg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/server"
 )
 
 type closedStreamAdapter struct {

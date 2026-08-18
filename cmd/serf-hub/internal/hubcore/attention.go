@@ -1,8 +1,8 @@
 package hubcore
 
 import (
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // attentionLevel maps a normalized UI state to an attention level.

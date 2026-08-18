@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/skill"
 )
 
 var (

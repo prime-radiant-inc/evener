@@ -5,9 +5,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 type composerPanel struct {

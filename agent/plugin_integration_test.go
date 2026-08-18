@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/llm"
 )
 
 // --- initPlugins tests ---

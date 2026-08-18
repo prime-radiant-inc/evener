@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubtest"
+	"primeradiant.com/evener/identifier"
 )
 
 // Sessions that ran inside worktrees which have since been deleted must stay

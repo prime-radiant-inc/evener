@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // FuzzResolveProfileFromConfig drives ResolveProfileFromConfig — the package's

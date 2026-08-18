@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 func gzipBytes(t *testing.T, body []byte) []byte {

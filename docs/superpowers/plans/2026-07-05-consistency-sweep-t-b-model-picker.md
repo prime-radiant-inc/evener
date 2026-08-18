@@ -171,10 +171,10 @@ func TestPastIndex_RecentModels_SkipsBlankProviderOrModel(t *testing.T) {
 	}
 }
 ```
-Add `"reflect"` and `"primeradiant.com/serf/appwire"` to the file's import block.
+Add `"reflect"` and `"primeradiant.com/evener/appwire"` to the file's import block.
 Run: `go test ./cmd/serf-hub/internal/hubcore/... -run 'TestPastIndex_RecentModels' -count=1` → expect FAIL (compile error: `RecentModels` undefined).
 
-- [ ] **Implement** — in `cmd/serf-hub/internal/hubcore/past.go`, add `"primeradiant.com/serf/appwire"` to imports and add near `AllMetas` (~line 480):
+- [ ] **Implement** — in `cmd/serf-hub/internal/hubcore/past.go`, add `"primeradiant.com/evener/appwire"` to imports and add near `AllMetas` (~line 480):
 ```go
 // RecentModels returns up to limit distinct (provider, model) pairs for the
 // model picker's "Recent" group, ordered by global recency — the same
@@ -234,10 +234,10 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // TestHubModelList_AttachesRecentFromPastIndex verifies every ModelList
@@ -1323,8 +1323,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
 )
 
 func TestModelPickerItems_SetsGroupAndPrettifiedDisplay(t *testing.T) {
@@ -1404,7 +1404,7 @@ func TestModelPickerItemProvider_ReadsGroupNotDisplay(t *testing.T) {
 Run: `go test ./cmd/serf-tui/... -run 'TestModelPickerItems|TestModelPickerItemProvider' -count=1` → expect FAIL (`items[0].Group`/`.Meta` empty, order not yet sorted; `modelPickerItemProvider` returns "" because prettified Display has no "/").
 
 - [ ] **Implement** — in `cmd/serf-tui/hub_commands.go`:
-  - Add `"regexp"`, `"sort"`, `"unicode"`, and `"primeradiant.com/serf/llm"` to the import block.
+  - Add `"regexp"`, `"sort"`, `"unicode"`, and `"primeradiant.com/evener/llm"` to the import block.
   - Add, near `modelPickerItems`:
 ```go
 // datedSnapshotSuffix and prettifyModelDisplayName are duplicated from

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 func TestThemePickerUsesOverlayBorder(t *testing.T) {

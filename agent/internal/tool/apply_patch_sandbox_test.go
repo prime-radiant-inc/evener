@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // sandboxedApplyEnv builds a LocalExecutionEnvironment rooted at a fresh worktree

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/plugins"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // fixture writes a session state tree with a runaway-fuse drop, using raw JSONL.

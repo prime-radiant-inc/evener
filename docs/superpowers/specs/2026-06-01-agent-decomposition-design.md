@@ -187,7 +187,7 @@ can embed `schema.ToolOutputLimit` with identical tags. The tool registry
 ## 8. What does NOT change
 
 `agent.NewSession`/`Session`/`SessionConfig` and the import path
-`primeradiant.com/serf/agent`. The module boundary (one Go module). Behavior
+`primeradiant.com/evener/agent`. The module boundary (one Go module). Behavior
 (`-race` + full suite prove equivalence per chunk).
 
 ## 9. Residual risks

@@ -5,7 +5,7 @@
 //
 // Like schemagen, typegen is the serf-agnostic core of the fuzzing toolkit: it
 // imports only the standard library, pgregory.net/rapid, and its sibling
-// schemagen — NOTHING here may import any primeradiant.com/serf package. Go
+// schemagen — NOTHING here may import any primeradiant.com/evener package. Go
 // types cross that boundary as reflect.Type (a stdlib interface carrying no
 // import edge), so a serf-side test can hand its wire structs to a serf-free
 // registry. That structural boundary is the portability test.
@@ -20,7 +20,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/schemagen"
 )
 
 var (

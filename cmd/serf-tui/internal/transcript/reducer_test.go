@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate(t *testing.T) {

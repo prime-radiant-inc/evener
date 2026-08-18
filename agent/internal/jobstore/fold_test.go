@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func ev(kind EventKind, seq int64, jobID string, mut func(*Event)) Event {

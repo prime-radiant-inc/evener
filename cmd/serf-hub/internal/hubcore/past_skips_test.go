@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubtest"
 )
 
 // captureSkipReport runs fn with os.Stderr redirected to a pipe and returns the

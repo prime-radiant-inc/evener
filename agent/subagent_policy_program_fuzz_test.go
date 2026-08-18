@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // FuzzSubagentPolicyProgram exercises the policy decisions that surround a real

@@ -1252,7 +1252,7 @@ Expected: FAIL — no `STEERING_KINDS` in the output.
 
 - [ ] **Step 3: Emit the catalog**
 
-In `internal/appwirets/emit.go`, add the import `"primeradiant.com/serf/agent/events"`
+In `internal/appwirets/emit.go`, add the import `"primeradiant.com/evener/agent/events"`
 (cross-module, already done by `internal/appprojector`), then one call beside the two
 existing catalogs at `:326`/`:332`:
 

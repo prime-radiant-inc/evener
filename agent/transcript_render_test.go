@@ -10,9 +10,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // makeEntry is a convenience helper for building transcript.Entry fixtures.
@@ -764,7 +764,7 @@ func TestRenderMarkdown_ToolCallPairingByID(t *testing.T) {
 		// seq 1: an UNRELATED assistant turn intervenes between call and its result.
 		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("interleaved reasoning")}),
 		// seq 2: the result for c1, arriving out of adjacency.
-		toolResultEntry(result("c1", "shell", "ok  primeradiant.com/serf/agent  1.20s", false)),
+		toolResultEntry(result("c1", "shell", "ok  primeradiant.com/evener/agent  1.20s", false)),
 	}
 	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 
@@ -774,7 +774,7 @@ func TestRenderMarkdown_ToolCallPairingByID(t *testing.T) {
 	if !strings.Contains(out, "[ok] `shell`") {
 		t.Errorf("expected [ok] shell card, got:\n%s", out)
 	}
-	if !strings.Contains(out, "ok  primeradiant.com/serf/agent  1.20s") {
+	if !strings.Contains(out, "ok  primeradiant.com/evener/agent  1.20s") {
 		t.Errorf("expected paired result body under the call, got:\n%s", out)
 	}
 	// The result must render under the ASSISTANT (seq 0) heading, not as its own

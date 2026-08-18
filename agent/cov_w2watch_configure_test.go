@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // An output_match-only watch on a non-running target must load the store to

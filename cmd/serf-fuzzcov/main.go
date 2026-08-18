@@ -61,7 +61,7 @@ type focusSpec struct {
 
 // block is a single coverage block parsed from a profile line.
 type block struct {
-	file  string // import-path-qualified, e.g. primeradiant.com/serf/appwire/jsonrpc.go
+	file  string // import-path-qualified, e.g. primeradiant.com/evener/appwire/jsonrpc.go
 	start int    // start line of the block
 	stmts int    // number of statements
 	count int    // execution count (0 or 1 under mode: set)

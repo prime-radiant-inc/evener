@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // TestSession_ConcurrencyStress is Phase 10 W2: a TRUE-concurrency stress of the

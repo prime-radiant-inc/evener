@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func resolveOpenAIResponsesContinuation(flagValue string, getenv func(string) string) string {

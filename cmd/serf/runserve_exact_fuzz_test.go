@@ -13,11 +13,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf/internal/rvreg"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/rendezvous"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/cmd/serf/internal/rvreg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
+	"primeradiant.com/evener/server"
 )
 
 type exactServeListener struct{ closed chan struct{} }

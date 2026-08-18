@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // dockview-core 7.0.2 opens its default same-origin URL /popout.html in

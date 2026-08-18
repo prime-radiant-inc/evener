@@ -3,9 +3,9 @@ package apptranscript
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // kata qm9y: a persisted HOOK_COMPLETED entry projects to the same

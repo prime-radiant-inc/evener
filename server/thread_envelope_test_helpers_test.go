@@ -1,9 +1,9 @@
 package server
 
 import (
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // stubThreadEnvelopeSource is a test's stand-in for the live session behind the

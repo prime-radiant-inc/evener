@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzToolArgsValidate hunts panics in the tool-call argument decode+validate

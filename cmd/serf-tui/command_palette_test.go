@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
 )
 
 func TestCommandPaletteShowsSlashItems(t *testing.T) {

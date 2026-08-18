@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	tooldefs "primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestJobWatchToolConfiguresWatch(t *testing.T) {

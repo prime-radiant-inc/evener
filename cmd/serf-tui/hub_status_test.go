@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary guards the

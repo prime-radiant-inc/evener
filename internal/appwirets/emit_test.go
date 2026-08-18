@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestEmitStruct(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"text/template"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {

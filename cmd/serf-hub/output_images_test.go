@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestShellOutputImageCandidatesConservative(t *testing.T) {

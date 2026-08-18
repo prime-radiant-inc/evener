@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // IsolateOpenAIAuth clears every env var that the OpenAI provider /

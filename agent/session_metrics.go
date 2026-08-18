@@ -1,6 +1,6 @@
 package agent
 
-import "primeradiant.com/serf/llm"
+import "primeradiant.com/evener/llm"
 
 // WorkMillisSnapshot returns the session's accumulated wall-clock work time
 // across all completed turns (and any dying turn accumulated by Close()

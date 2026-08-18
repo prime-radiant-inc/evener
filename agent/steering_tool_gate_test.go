@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // TestSelfCompactNudgeFallsBackWhenToolMissing pins the rule ruled 2026-08-06:

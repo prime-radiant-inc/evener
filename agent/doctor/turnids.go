@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // entryIndexTurnID matches the turn-id shape the transcript's own entry-index

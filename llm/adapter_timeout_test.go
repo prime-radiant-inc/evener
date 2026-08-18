@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 func TestApplyAdapterTimeout_Request(t *testing.T) {

@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/skill"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/skill"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 type safzEnumerableAdapter struct {

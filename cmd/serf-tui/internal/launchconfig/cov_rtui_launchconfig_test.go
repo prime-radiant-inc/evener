@@ -3,7 +3,7 @@ package launchconfig
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func intPtr(v int) *int    { return &v }

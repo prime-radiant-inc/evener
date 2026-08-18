@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // The OutputStore prune/persist path is a chain of durable filesystem steps —

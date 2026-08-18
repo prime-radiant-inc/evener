@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzFrontmatterParse drives Parse — the package's real YAML-frontmatter decode

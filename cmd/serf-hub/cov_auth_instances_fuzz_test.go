@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func covAIJWT(payload string) string {

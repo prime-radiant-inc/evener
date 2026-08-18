@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 func TestUserMessageGetsAccentBar(t *testing.T) {

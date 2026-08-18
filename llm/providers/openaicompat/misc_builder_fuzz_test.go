@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // miscQuirksFromByte derives a ProviderQuirks from a fuzz byte so every

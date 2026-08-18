@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 type sessionTailNilAccumulator struct{}

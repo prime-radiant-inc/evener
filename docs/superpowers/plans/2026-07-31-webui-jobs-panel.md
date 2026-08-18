@@ -200,7 +200,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 func TestSummarizeJobRecordShell(t *testing.T) {
@@ -344,7 +344,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // JobSummary is the UI wire projection of one jobstore.JobRecord — the
@@ -948,10 +948,10 @@ package main
 import (
 	"context"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // hubJobsList answers serf/jobs/list. A running daemon's jobstore is

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 func coordinatorWorkflowPluginDirForTest(t *testing.T) string {

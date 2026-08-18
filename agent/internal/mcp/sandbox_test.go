@@ -8,8 +8,8 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 func testWrapper(t *testing.T) *sandbox.Wrapper {

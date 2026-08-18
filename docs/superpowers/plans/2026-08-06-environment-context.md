@@ -761,8 +761,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestExpandHistoryEmitsEnvironmentTurnAsUserMessage(t *testing.T) {
@@ -805,7 +805,7 @@ In `agent/schema/turn.go`, after `TurnHookCompleted`:
 	TurnEnvironment TurnKind = "ENVIRONMENT"
 ```
 
-In `agent/schema/snapshot.go`, import `primeradiant.com/serf/agent/internal/envctx`
+In `agent/schema/snapshot.go`, import `primeradiant.com/evener/agent/internal/envctx`
 and add to `SessionMeta` after `PinnedNote`:
 
 ```go

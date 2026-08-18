@@ -3,7 +3,7 @@ package hubapi_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/hubapi"
 )
 
 func TestLocalRefRoundTrip(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // TestScenarioTranscriptFixturesCarryTheFormatVersion keeps a hand-written

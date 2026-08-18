@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // hubFrameFeed restores the hub connection's wire order for the two feeds the

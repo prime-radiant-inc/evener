@@ -45,7 +45,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 type loggingTestAdapter struct{}
@@ -140,7 +140,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // AttachAPILogger installs the standard Serf API logger on client.
@@ -317,7 +317,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 type cacheCaptureAdapter struct {

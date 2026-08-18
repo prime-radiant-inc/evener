@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 // APITimeoutSource identifies the layer that owned a provider-attempt timeout.

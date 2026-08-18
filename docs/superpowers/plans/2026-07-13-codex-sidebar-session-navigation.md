@@ -311,7 +311,7 @@ go test ./cmd/serf-hub \
   -count=1
 ```
 
-Expected: `ok primeradiant.com/serf/cmd/serf-hub`.
+Expected: `ok primeradiant.com/evener/cmd/serf-hub`.
 
 - [ ] **Step 2: Run the complete JavaScript UI suite**
 
@@ -333,7 +333,7 @@ Run:
 go test ./cmd/serf-hub -count=1
 ```
 
-Expected: `ok primeradiant.com/serf/cmd/serf-hub`.
+Expected: `ok primeradiant.com/evener/cmd/serf-hub`.
 
 - [ ] **Step 4: Inspect repository state and committed diff**
 

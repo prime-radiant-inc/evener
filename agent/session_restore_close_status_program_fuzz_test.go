@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSessionRestoreCloseStatusProgram drives the restore, managed-worktree

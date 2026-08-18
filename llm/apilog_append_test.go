@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/identifier"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/identifier"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 func TestSessionAPILoggerCanonicalPermissionsAndRouting(t *testing.T) {

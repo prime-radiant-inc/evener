@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/fuzz/schemagen"
 )
 
 // FuzzTranscriptReadersAgree checks that every semantic v2 reader returns the

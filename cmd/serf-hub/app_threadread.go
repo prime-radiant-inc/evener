@@ -7,14 +7,14 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {

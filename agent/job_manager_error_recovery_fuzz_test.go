@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzJobManagerErrorRecoveryProgram exercises job-manager construction,

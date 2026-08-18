@@ -7,9 +7,9 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // w3sub_readFileEnv is a minimal execenv whose ReadFile returns a caller-supplied

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	apilog "primeradiant.com/serf/llm/apilog"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {

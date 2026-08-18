@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {

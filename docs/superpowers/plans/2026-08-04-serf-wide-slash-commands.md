@@ -207,7 +207,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // writeSerfwideCommand writes dir/<name>.md with content and returns dir.
@@ -291,9 +291,9 @@ import (
 	"strings"
 	"unicode"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 var serfwideUserHomeDir = os.UserHomeDir
@@ -720,7 +720,7 @@ func TestSerfwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 }
 ```
 
-Add `"primeradiant.com/serf/agent/plugin"` to the test file imports.
+Add `"primeradiant.com/evener/agent/plugin"` to the test file imports.
 
 - [ ] **Step 2: Run tests to verify they fail**
 

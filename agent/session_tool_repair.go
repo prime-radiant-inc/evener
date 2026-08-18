@@ -7,9 +7,9 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/llm"
 )
 
 // prepareResult is the outcome of the pre-dispatch repair step. When PrevalErr

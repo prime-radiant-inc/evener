@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/internal/transport"
-	"primeradiant.com/serf/llm/providers/kimicoding"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm/providers/kimicoding"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "https://api.moonshot.ai/v1" // includes /v1 per OpenAI SDK convention

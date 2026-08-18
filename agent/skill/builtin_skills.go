@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 var (

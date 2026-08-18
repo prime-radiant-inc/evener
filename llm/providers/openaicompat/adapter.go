@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
-	"primeradiant.com/serf/llm/providers/internal/transport"
-	openairesponses "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm/providers/internal/transport"
+	openairesponses "primeradiant.com/evener/llm/providers/openai"
 )
 
 type Adapter struct {

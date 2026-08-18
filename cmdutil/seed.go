@@ -3,8 +3,8 @@ package cmdutil
 import (
 	"sort"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // Seed builds a providercfg.Config from a list of provider names, a default

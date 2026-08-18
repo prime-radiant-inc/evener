@@ -61,7 +61,7 @@ already enforced: the build version is **injected**, not imported (`openai.Clien
 
 The repo is a Go workspace (`go.work`, committed). `make build` / `make build-hub` /
 `make build-tui` / `make build-llmcall` work as before; import paths are unchanged
-(`primeradiant.com/serf/…`).
+(`primeradiant.com/evener/…`).
 
 The unpublished sibling modules are wired with **versioned `replace … v0.0.0 => ./dir`
 directives in `go.work`** (repo-local — invisible to external `go get`). This keeps
@@ -80,7 +80,7 @@ library suites.
 - `cmd/<bin>/internal/…` is importable only by that binary.
 - `appwire` / `hubapi` are ordinary packages → all three binaries share them as the
   one legitimately-shared contract tier.
-- External: `go get primeradiant.com/serf/agent` pulls `agent` + `llm` + `auth` and
+- External: `go get primeradiant.com/evener/agent` pulls `agent` + `llm` + `auth` and
   nothing else.
 
 ## The app module's `internal/`

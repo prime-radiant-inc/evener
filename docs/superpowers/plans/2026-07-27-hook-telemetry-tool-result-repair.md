@@ -165,7 +165,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Add the real PreToolUse lifecycle regression**
 
-Add `encoding/json`, `fmt`, and `primeradiant.com/serf/agent/internal/tool` to `agent/session_hook_turn_test.go`, then add:
+Add `encoding/json`, `fmt`, and `primeradiant.com/evener/agent/internal/tool` to `agent/session_hook_turn_test.go`, then add:
 
 ```go
 func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {

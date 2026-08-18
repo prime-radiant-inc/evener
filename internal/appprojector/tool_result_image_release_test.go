@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // toolResultImage is the descriptor shape the agent mints for bytes that came

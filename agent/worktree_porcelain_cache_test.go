@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // recordingRunner is a GitRunner that records every argv it is handed and

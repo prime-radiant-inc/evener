@@ -10,13 +10,13 @@ import (
 	"os/signal"
 	"text/tabwriter"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
-	"primeradiant.com/serf/cmd/serf/internal/launchcheck"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/envvars"
-	openaiprovider "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/serf/internal/cliprompt"
+	"primeradiant.com/evener/cmd/serf/internal/launchcheck"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
+	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.

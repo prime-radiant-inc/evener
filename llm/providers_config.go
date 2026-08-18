@@ -7,7 +7,7 @@ import (
 	"slices"
 	"sync"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // InstanceAdapterFactory constructs a ProviderAdapter for one provider instance.

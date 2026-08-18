@@ -7,11 +7,11 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
-	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 // model holds the per-session UI state that hubModel embeds as

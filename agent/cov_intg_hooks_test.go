@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // These tests drive Session.execTool with real command hooks configured on the

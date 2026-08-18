@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzAgenttestAdaptersProgram exercises the deterministic adapter and response

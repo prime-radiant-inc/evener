@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // blockingWriter stalls its first Write until released, standing in for a

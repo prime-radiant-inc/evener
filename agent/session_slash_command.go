@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/command"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/command"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // expandSlashCommand checks whether input invokes a loaded slash command — a

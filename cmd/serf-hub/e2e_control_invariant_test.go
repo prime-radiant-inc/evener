@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // preTurnParkSeconds is how long the session is held inside its pre-turn work.

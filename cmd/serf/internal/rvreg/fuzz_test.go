@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestRegistrationFailureAndNoopBranches(t *testing.T) {

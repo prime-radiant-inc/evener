@@ -22,9 +22,9 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.

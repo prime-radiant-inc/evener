@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 type delegateStopState struct {

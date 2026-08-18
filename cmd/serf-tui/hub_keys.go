@@ -2,9 +2,9 @@ package main
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
 )
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

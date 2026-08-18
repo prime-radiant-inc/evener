@@ -2,8 +2,8 @@ package tuiprim
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 func RenderStyledPane(text string, width int) string {

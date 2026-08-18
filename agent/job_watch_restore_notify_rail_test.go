@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // No-send watch delivery remains live-only by design. The durable registry names

@@ -173,8 +173,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/appwire/appwiretest"
+	"primeradiant.com/evener/internal/appwire"
+	"primeradiant.com/evener/internal/appwire/appwiretest"
 )
 
 func TestScriptedTransport_ResponseAndNotification(t *testing.T) {
@@ -235,7 +235,7 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 // ScriptedTransport is a fake appwire.Transport whose Send calls are
@@ -375,8 +375,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/appwire/appwiretest"
+	"primeradiant.com/evener/internal/appwire"
+	"primeradiant.com/evener/internal/appwire/appwiretest"
 )
 
 type fakeCoordinator struct {
@@ -1031,7 +1031,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 const pendingTimeout = 10 * time.Second

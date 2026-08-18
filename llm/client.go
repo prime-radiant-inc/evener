@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // ProviderAdapter is the interface a single LLM provider backend implements.

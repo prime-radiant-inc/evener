@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestAppThread_CarriesPendingEscalationsSnapshot(t *testing.T) {

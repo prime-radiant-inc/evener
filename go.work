@@ -11,20 +11,20 @@ use (
 	./llm
 )
 
-replace primeradiant.com/serf v0.0.0 => .
+replace primeradiant.com/evener v0.0.0 => .
 
-replace primeradiant.com/serf/auth v0.0.0 => ./auth
+replace primeradiant.com/evener/auth v0.0.0 => ./auth
 
-replace primeradiant.com/serf/auth v0.1.0 => ./auth
+replace primeradiant.com/evener/auth v0.1.0 => ./auth
 
-replace primeradiant.com/serf/llm v0.0.0 => ./llm
+replace primeradiant.com/evener/llm v0.0.0 => ./llm
 
-replace primeradiant.com/serf/agent v0.0.0 => ./agent
+replace primeradiant.com/evener/agent v0.0.0 => ./agent
 
-replace primeradiant.com/serf/envvars v0.0.0 => ./envvars
+replace primeradiant.com/evener/envvars v0.0.0 => ./envvars
 
-replace primeradiant.com/serf/fuzz v0.0.0 => ./fuzz
+replace primeradiant.com/evener/fuzz v0.0.0 => ./fuzz
 
-replace primeradiant.com/serf/invariant v0.0.0 => ./invariant
+replace primeradiant.com/evener/invariant v0.0.0 => ./invariant
 
-replace primeradiant.com/serf/identifier v0.0.0 => ./identifier
+replace primeradiant.com/evener/identifier v0.0.0 => ./identifier

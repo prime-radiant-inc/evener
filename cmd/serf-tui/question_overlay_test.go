@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 // ---- pendingAskQuestions: the transcript pending-set scan (spec §6) -------

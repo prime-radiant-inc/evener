@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // Each isSerfConfiguration keyword is tested independently so removing either

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // denyTransport is an http.RoundTripper that records every outbound request and

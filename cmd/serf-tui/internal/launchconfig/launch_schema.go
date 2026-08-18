@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 const (

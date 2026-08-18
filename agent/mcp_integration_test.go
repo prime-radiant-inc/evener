@@ -9,10 +9,10 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/mcp"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/llm"
 )
 
 // TestMCPIntegration_ToolCallThroughSession verifies the full flow:

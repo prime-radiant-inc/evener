@@ -6,7 +6,7 @@
 
 **Architecture:** Markdown-only sub-project. Drop `agent/skills/manage-plugins/SKILL.md` into the existing `//go:embed all:skills` tree in `agent/builtin_skills.go`. The file is automatically picked up by `extractEmbeddedSkills()` → `scanSkillsDir()` → `DiscoverSkills()`. No new Go code, no new CLI surface. Tests verify the skill is present, parses as YAML-frontmatter + markdown, surfaces via `DiscoverSkills`, and that its description + body sections cover the LLM's invocation surface.
 
-**Tech Stack:** Go 1.22+, `embed.FS`, `primeradiant.com/serf/frontmatter` for parsing, `testing` standard library. No new dependencies.
+**Tech Stack:** Go 1.22+, `embed.FS`, `primeradiant.com/evener/frontmatter` for parsing, `testing` standard library. No new dependencies.
 
 **Parent specs:**
 - `docs/superpowers/specs/2026-05-14-claude-code-compat-design.md`
@@ -480,7 +480,7 @@ Confirm nothing else broke. The `agent` package owns the embed and discovery pat
 
 Run: `go test ./agent/ -count=1`
 
-Expected: PASS (`ok  primeradiant.com/serf/agent  …`). No failures, no skipped tests, no panics.
+Expected: PASS (`ok  primeradiant.com/evener/agent  …`). No failures, no skipped tests, no panics.
 
 - [ ] **Step 2: Run the full repo test suite as a sanity check**
 

@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 // ── Shared resolver for cross-instance switch tests ───────────────────────────

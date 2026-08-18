@@ -269,7 +269,7 @@ events, for example:
 
 ```jsonl
 {"type":"process_started","time":"...","command":"go test ./..."}
-{"type":"stdout","time":"...","text":"ok primeradiant.com/serf/agent"}
+{"type":"stdout","time":"...","text":"ok primeradiant.com/evener/agent"}
 {"type":"stderr","time":"...","text":"..."}
 {"type":"process_exited","time":"...","exit_code":0}
 ```

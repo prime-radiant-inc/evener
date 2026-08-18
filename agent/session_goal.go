@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/llm"
 )
 
 // SetKickFunc registers the callback an idle SetGoal uses to start the goal loop

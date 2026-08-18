@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
 // timeNowForTest is a fixed clock for tests that need a deterministic

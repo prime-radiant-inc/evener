@@ -9,12 +9,12 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 type queuedInputDrainContextKey struct{}

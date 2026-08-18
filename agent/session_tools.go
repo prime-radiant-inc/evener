@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // ctxKey is a private type for context keys in this package.

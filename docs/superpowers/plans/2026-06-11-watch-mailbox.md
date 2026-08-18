@@ -6,7 +6,7 @@
 
 **Architecture:** Event observation (jobManager) becomes persist-only + wake; the only delivery executors are loop-owned drains and the notification-accept path. `jm.send` (the jobManager→Session delivery closure) is deleted. Caller-targeted sends ride the notification queue as render-by-key wake tokens. Spec: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md` (read it first; §3 is the invariant every task serves).
 
-**Tech Stack:** Go (module `primeradiant.com/serf/agent`), table-driven tests + `agenttest`, `make test` / `make lint` at repo root gate every phase.
+**Tech Stack:** Go (module `primeradiant.com/evener/agent`), table-driven tests + `agenttest`, `make test` / `make lint` at repo root gate every phase.
 
 **Branch:** `job-control-spec`, rolling forward. No worktree.
 

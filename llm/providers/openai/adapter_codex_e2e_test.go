@@ -10,7 +10,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func codexE2EAdapter(t *testing.T) (*Adapter, string) {

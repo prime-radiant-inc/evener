@@ -3,7 +3,7 @@ package appprojector
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // TestGoalContinuationAdoptsItsDaemonTurnID is the projector half of the fix

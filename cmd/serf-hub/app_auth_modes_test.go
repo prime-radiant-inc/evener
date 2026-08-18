@@ -11,11 +11,11 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // newAuthModesController builds a controller over an empty credentials store and

@@ -13,10 +13,10 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/fuzz/promoter"
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/fuzz/promoter"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/llm"
 )
 
 // schemaValidator is the tool-argument schema behavior both this suite and the

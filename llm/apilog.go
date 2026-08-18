@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"primeradiant.com/serf/identifier"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/identifier"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 type apiLogKey struct{}

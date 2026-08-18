@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"strings"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/envvars"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/envvars"
 )
 
 func openAIStateDirFromEnvList(env []string) string {

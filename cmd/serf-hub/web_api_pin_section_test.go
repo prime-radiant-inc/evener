@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 )
 
 func pinSectionAPIWeb(t *testing.T, metas ...schema.SessionMeta) (*WebServer, *hubcore.PinSectionStore) {

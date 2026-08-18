@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // buildModelRequest must clamp the requested reasoning effort to the active

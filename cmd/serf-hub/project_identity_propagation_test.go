@@ -4,9 +4,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/identifier"
 )
 
 // TestSpawnAndResumeRequestsCarryCanonicalProjectSeparatelyFromWorkingDir

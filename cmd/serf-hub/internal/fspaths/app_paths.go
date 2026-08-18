@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 func CompletePaths(params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {

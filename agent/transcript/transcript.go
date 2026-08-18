@@ -19,8 +19,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
 )
 
 // DefaultMaxLineBytes is the maximum transcript record payload. The trailing

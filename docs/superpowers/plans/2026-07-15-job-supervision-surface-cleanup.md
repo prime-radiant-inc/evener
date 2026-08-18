@@ -1180,7 +1180,7 @@ func appendPendingTerminal(t *testing.T, jm *jobManager, sessionID, jobID string
 
 - [ ] **Step 2: Add the coalescing and per-job-ledger tests**
 
-Add the standard-library `bytes` and `encoding/json` imports plus `github.com/spf13/afero`, `primeradiant.com/serf/agent/transcript`, and `primeradiant.com/serf/fuzz/fault`; all are used only by the test below.
+Add the standard-library `bytes` and `encoding/json` imports plus `github.com/spf13/afero`, `primeradiant.com/evener/agent/transcript`, and `primeradiant.com/evener/fuzz/fault`; all are used only by the test below.
 
 ```go
 func TestTerminalNotificationsCoalesceIntoOneDurableSteeringTurn(t *testing.T) {

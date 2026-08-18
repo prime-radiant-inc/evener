@@ -10,12 +10,12 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzStatefulSessionToolsProgram drives the real root-session registry for

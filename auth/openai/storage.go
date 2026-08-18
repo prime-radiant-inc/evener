@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 type authTempFile interface {

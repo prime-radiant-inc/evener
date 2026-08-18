@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // The rail's Live tier must not list archived sessions: archive is a

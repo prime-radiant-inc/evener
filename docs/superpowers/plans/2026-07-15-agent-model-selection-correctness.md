@@ -1165,7 +1165,7 @@ replacement, and pin per-turn requested/actual provenance."
 Import the durable codec as:
 
 ```go
-import apilog "primeradiant.com/serf/llm/apilog"
+import apilog "primeradiant.com/evener/llm/apilog"
 ```
 
 Add a fake provider that behaves like one transport boundary by opening and completing exactly one canonical attempt for each `Complete` call:

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // attemptRecord is one stream attempt's outcome inside a retry group: how it

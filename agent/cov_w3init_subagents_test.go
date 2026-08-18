@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 // TestW3Init_PrepareSubagentRun_ChildSessionError covers the arm where building

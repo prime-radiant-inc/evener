@@ -2318,7 +2318,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestFromWire(t *testing.T) {
@@ -2391,7 +2391,7 @@ go test ./internal/launchconfig/ -run TestFromWire -v
 ```go
 package launchconfig
 
-import "primeradiant.com/serf/internal/appwire"
+import "primeradiant.com/evener/internal/appwire"
 
 // FromWire converts an appwire.LaunchConfigLayer to the internal Layer.
 func FromWire(in appwire.LaunchConfigLayer) Layer {
@@ -2528,8 +2528,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/evener/internal/appwire"
+	"primeradiant.com/evener/internal/launchconfig"
 )
 
 func TestLaunchController_Resolve_Empty(t *testing.T) {
@@ -2630,8 +2630,8 @@ import (
 	"fmt"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/evener/internal/appwire"
+	"primeradiant.com/evener/internal/launchconfig"
 )
 
 // hubLaunchController owns the serf/launch/* RPC handlers.
@@ -2791,7 +2791,7 @@ Append to `cmd/serf-hub/app_auth_test.go`:
 
 ```go
 import (
-	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 func TestAuth_List_IncludesAllProviders(t *testing.T) {
@@ -2908,7 +2908,7 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 Add imports:
 ```go
 import (
-	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/evener/internal/credentials"
 )
 ```
 

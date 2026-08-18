@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type fuzzErrorWriter struct{}

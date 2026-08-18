@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzHookRunnerProgram drives Runner through every supported event with a

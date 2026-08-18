@@ -65,7 +65,7 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 func main() {

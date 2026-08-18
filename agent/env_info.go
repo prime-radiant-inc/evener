@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // envInfoFromEnv builds a schema.EnvironmentInfo from the execution environment,

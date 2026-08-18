@@ -688,9 +688,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
 // launchpadServer stubs the navigation inputs so memoTree builds a fixed tree.

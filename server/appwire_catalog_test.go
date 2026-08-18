@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestDaemonRouterMatchesCatalog keeps appwire.Methods (the source of the

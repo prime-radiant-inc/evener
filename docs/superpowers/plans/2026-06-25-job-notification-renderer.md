@@ -680,7 +680,7 @@ go test ./cmd/serf-hub -count=1
 Expected:
 
 ```text
-ok  primeradiant.com/serf/cmd/serf-hub
+ok  primeradiant.com/evener/cmd/serf-hub
 ```
 
 The elapsed time may differ.

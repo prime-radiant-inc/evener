@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 // seedTranscriptServer writes a transcript with `pairs` user/assistant

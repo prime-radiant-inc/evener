@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // This file fuzzes the pure durable-notification classification core extracted

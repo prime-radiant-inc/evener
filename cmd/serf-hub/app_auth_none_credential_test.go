@@ -17,10 +17,10 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 // ollamaProvidersToml is the config the hub materializes for itself when none

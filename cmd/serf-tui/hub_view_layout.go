@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
 )
 
 func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth int) string {

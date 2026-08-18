@@ -2,11 +2,11 @@
 
 Date: 2026-06-01
 Spec: `docs/superpowers/specs/2026-06-01-go-monorepo-module-architecture.md` (§7 M1)
-Module path: `primeradiant.com/serf` (single root module today; M1 is pre-`go.work`)
+Module path: `primeradiant.com/evener` (single root module today; M1 is pre-`go.work`)
 Scope: **pure relocation + import rewrites. No logic changes.** Gate after every step: `go build ./... && go vet ./...` (and a final `go test ./...`).
 
 > Evidence rule: every classification below cites the authoritative importer grep
-> `grep -rln --include='*.go' "\"primeradiant.com/serf/internal/<pkg>" . | grep -v worktrees`
+> `grep -rln --include='*.go' "\"primeradiant.com/evener/internal/<pkg>" . | grep -v worktrees`
 > (full quoted import path; this excludes the string-literal/comment matches in
 > `cmd/serf-namingcheck/main.go`, which are **not** Go imports — see §0 caveat).
 > All greps exclude `.claude/worktrees/`.
@@ -28,7 +28,7 @@ Scope: **pure relocation + import rewrites. No logic changes.** Gate after every
    `internal/`** for now; relocating `server/` itself into the engine is M4 work, not M1.
 
 2. **`auth` is imported by the `llm` library in NON-TEST code.**
-   `llm/providers/openai/adapter.go:19` → `authopenai "primeradiant.com/serf/internal/auth/openai"`.
+   `llm/providers/openai/adapter.go:19` → `authopenai "primeradiant.com/evener/internal/auth/openai"`.
    `llm` is the lowest-layer published library. `auth` is therefore **not app-side at all** and
    **must not** sink into any `cmd/<bin>/internal/`. This is a layering fact stronger than §6's
    "duplicate" note (which only covered frontmatter/diagnostic). **Leave `auth` in place for M1**;
@@ -146,8 +146,8 @@ grep -rl --include='*.go' '"OLD"' . | grep -v worktrees | xargs sed -i '' 's#"OL
 
 Two distinct import paths move:
 
-- `primeradiant.com/serf/internal/appwire` → `primeradiant.com/serf/appwire`
-- `primeradiant.com/serf/internal/appwire/appwiretest` → `primeradiant.com/serf/appwire/appwiretest`
+- `primeradiant.com/evener/internal/appwire` → `primeradiant.com/evener/appwire`
+- `primeradiant.com/evener/internal/appwire/appwiretest` → `primeradiant.com/evener/appwire/appwiretest`
 
 Files needing rewrite (**122** real-import files — full set):
 
@@ -216,7 +216,7 @@ own import strings there.
 
 ### 3.2 hubapi → hubapi (CONTRACT promotion)
 
-- `primeradiant.com/serf/internal/hubapi` → `primeradiant.com/serf/hubapi`
+- `primeradiant.com/evener/internal/hubapi` → `primeradiant.com/evener/hubapi`
 
 Files (**10**): `cmd/serf-hub/web_api_tree.go`, `cmd/serf-hub/web_api.go`,
 `cmd/serf-hub/web_session.go`, `cmd/serf-hub/web_spawn.go`, `cmd/serf-hub/web_test.go`,
@@ -226,7 +226,7 @@ Files (**10**): `cmd/serf-hub/web_api_tree.go`, `cmd/serf-hub/web_api.go`,
 
 ### 3.3 appsource → cmd/serf-hub/internal/appsource (sink)
 
-- `primeradiant.com/serf/internal/appsource` → `primeradiant.com/serf/cmd/serf-hub/internal/appsource`
+- `primeradiant.com/evener/internal/appsource` → `primeradiant.com/evener/cmd/serf-hub/internal/appsource`
 
 Files (**14**): `cmd/serf-hub/app_compact.go`, `app_models.go`, `app_rpc_test.go`, `app_rpc.go`,
 `app_sources.go`, `app_threadlifecycle.go`, `app_threadlist.go`, `app_transcripts.go`,
@@ -236,7 +236,7 @@ All importers are already inside `cmd/serf-hub/` → the `cmd/serf-hub/internal/
 
 ### 3.4 launchconfig → cmd/serf-hub/internal/launchconfig (sink)
 
-- `primeradiant.com/serf/internal/launchconfig` → `primeradiant.com/serf/cmd/serf-hub/internal/launchconfig`
+- `primeradiant.com/evener/internal/launchconfig` → `primeradiant.com/evener/cmd/serf-hub/internal/launchconfig`
 
 Files (**7**, after step 0 removes the agent-test importer): `cmd/serf-hub/app_launch_test.go`,
 `app_launch.go`, `app_threadlifecycle.go`, `e2e_test.go`, `internal/claudeplugins/claude_plugins.go`,
@@ -248,7 +248,7 @@ agent test) — leave it at `internal/launchconfig/` until M3.
 
 ### 3.5 binresolve → cmd/serf-hub/internal/binresolve (sink; see §5 resolution)
 
-- `primeradiant.com/serf/internal/binresolve` → `primeradiant.com/serf/cmd/serf-hub/internal/binresolve`
+- `primeradiant.com/evener/internal/binresolve` → `primeradiant.com/evener/cmd/serf-hub/internal/binresolve`
 
 Files (**2**): `cmd/serf-hub/main.go`, `cmd/serf-tui/internal/hubstart/hub_start.go`.
 **Cross-binary importer:** `cmd/serf-tui/internal/hubstart/hub_start.go` would lose access (a
@@ -257,7 +257,7 @@ this rewrite line applies to the **hub** copy; the **tui** importer points at a 
 
 ### 3.6 credentials → cmd/serf-hub/internal/credentials (sink; see §5 resolution)
 
-- `primeradiant.com/serf/internal/credentials` → `primeradiant.com/serf/cmd/serf-hub/internal/credentials`
+- `primeradiant.com/evener/internal/credentials` → `primeradiant.com/evener/cmd/serf-hub/internal/credentials`
 
 Files (**9**): `cmd/serf-hub/app_auth_instance_test.go`, `app_auth_test.go`, `app_auth.go`,
 `app_instances_test.go`, `main.go`, `spawn_test.go`, `spawn.go`, `web.go` (8 under `cmd/serf-hub/`),

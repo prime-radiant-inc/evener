@@ -3,7 +3,7 @@ package strutil_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
 )
 
 func TestFirstNonEmpty(t *testing.T) {

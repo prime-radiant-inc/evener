@@ -1989,7 +1989,7 @@ Everything is under `internal/` so external Go modules can't import serf as a li
 
 **Approach:** Move `internal/agent/` to `agent/` (top-level package). This is the simplest approach — it makes the entire agent package importable. The `internal/llm/` package should also be moved to `llm/` since it's the SDK layer.
 
-This is a large but mechanical refactor. Every import path changes from `primeradiant.com/serf/internal/agent` to `primeradiant.com/serf/agent` and from `primeradiant.com/serf/internal/llm` to `primeradiant.com/serf/llm`.
+This is a large but mechanical refactor. Every import path changes from `primeradiant.com/evener/internal/agent` to `primeradiant.com/evener/agent` and from `primeradiant.com/evener/internal/llm` to `primeradiant.com/evener/llm`.
 
 **Files:**
 - Move: `internal/agent/` → `agent/`
@@ -2007,7 +2007,7 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/evener/agent"
 )
 
 func TestPackageIsImportable(t *testing.T) {
@@ -2040,10 +2040,10 @@ Use `sed` or `goimports` to update every import:
 ```bash
 # Update all Go files
 find . -name '*.go' -exec sed -i '' \
-  -e 's|"primeradiant.com/serf/internal/agent"|"primeradiant.com/serf/agent"|g' \
-  -e 's|"primeradiant.com/serf/internal/llm"|"primeradiant.com/serf/llm"|g' \
-  -e 's|primeradiant.com/serf/internal/agent|primeradiant.com/serf/agent|g' \
-  -e 's|primeradiant.com/serf/internal/llm|primeradiant.com/serf/llm|g' \
+  -e 's|"primeradiant.com/evener/internal/agent"|"primeradiant.com/evener/agent"|g' \
+  -e 's|"primeradiant.com/evener/internal/llm"|"primeradiant.com/evener/llm"|g' \
+  -e 's|primeradiant.com/evener/internal/agent|primeradiant.com/evener/agent|g' \
+  -e 's|primeradiant.com/evener/internal/llm|primeradiant.com/evener/llm|g' \
   {} +
 ```
 

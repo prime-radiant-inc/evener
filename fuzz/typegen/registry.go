@@ -6,7 +6,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/schemagen"
 )
 
 // Registry is a thin index of named wire types: each name maps to a JSON-Schema

@@ -4,9 +4,9 @@
 > developer's guide (running, reading coverage, triaging a crasher). This file is
 > the operational reference it points back to.
 
-This module (`primeradiant.com/serf/fuzz`) is the **serf-agnostic core** of the
+This module (`primeradiant.com/evener/fuzz`) is the **serf-agnostic core** of the
 toolkit: the failure→regression promoter (and, later, the schema→generator).
-Nothing here imports any `primeradiant.com/serf` package — `go.mod` declares no
+Nothing here imports any `primeradiant.com/evener` package — `go.mod` declares no
 serf dependency, so the module will not build if that boundary is violated. That
 structural guarantee *is* the portability test (the eventual superpowers skill
 carries this module unchanged).
@@ -37,7 +37,7 @@ scripts/run-fuzz.sh --list               # the target list (single source of tru
 Two cross-cutting facts about every run above:
 
 - **`-tags serffuzz` is on automatically.** The whole fuzz path builds with it so
-  the internal `invariant.Hold()` assertions (`primeradiant.com/serf/invariant`)
+  the internal `invariant.Hold()` assertions (`primeradiant.com/evener/invariant`)
   are live — a tripped invariant panics and the never-panic oracle catches it.
   `make test` / `go build` stay tag-free and byte-unchanged. See
   [`docs/fuzzing.md`](../docs/fuzzing.md) → *Internal invariants*.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 type fakeSource struct{ id string }

@@ -625,7 +625,7 @@ package main
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 type appModel struct {
@@ -723,7 +723,7 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 func TestDashboardRowsShowsOnlyLiveSessionsGroupedByProject(t *testing.T) {
@@ -765,7 +765,7 @@ package main
 import (
 	"sort"
 
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 type dashboardRowKind int
@@ -952,7 +952,7 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 func TestProjectRowsShowsLiveThenRecentEnded(t *testing.T) {
@@ -995,7 +995,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 type projectRowKind int
@@ -1414,7 +1414,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 func TestSessionSurfaceHelpUsesRegistry(t *testing.T) {
@@ -1462,7 +1462,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/textarea"
-	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/evener/internal/hubapi"
 )
 
 type sessionSurface struct {

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzRuntimeBoundaryEdges drives deterministic error paths at the process,

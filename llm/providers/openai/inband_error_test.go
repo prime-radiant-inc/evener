@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // sseAdapterFor serves body as an SSE response on every path and returns an

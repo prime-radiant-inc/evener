@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestAdapter_Complete_MapsToGeminiGenerateContent(t *testing.T) {

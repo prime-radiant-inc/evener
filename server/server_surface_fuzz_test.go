@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // exerciseServerFuzzSurface replays the deterministic server plumbing scenarios

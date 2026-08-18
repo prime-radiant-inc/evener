@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestStatusReportsAwaitingAndSendCapability(t *testing.T) {

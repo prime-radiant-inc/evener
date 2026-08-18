@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // kimi speaks the OpenAI-compatible wire through a forwarder over the

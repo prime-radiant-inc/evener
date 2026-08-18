@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // writeScopingFixtureAt writes the same tree as writeScopingFixture into an

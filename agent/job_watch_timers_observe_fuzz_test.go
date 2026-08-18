@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzWatchTimersObserveProgram covers observation helpers with real managers

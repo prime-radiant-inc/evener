@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/appwire/appwiretest"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 )
 
 func init() {

@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appprojector"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/httpguard"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/httpguard"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the

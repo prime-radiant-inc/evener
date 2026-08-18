@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // newTestPluginsController points XDG_CONFIG_HOME at a fresh temp dir so

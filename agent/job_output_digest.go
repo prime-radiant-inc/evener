@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // assembleOutputDigest renders a head+tail line digest: the head slice, an

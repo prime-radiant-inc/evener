@@ -11,12 +11,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/appwire/appwiretest"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
 )
 
 // FuzzRootTUIModelMisc covers deterministic leaf branches that are awkward to

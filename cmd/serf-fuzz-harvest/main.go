@@ -21,10 +21,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/doctor"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 )
 
 type stringSlice []string

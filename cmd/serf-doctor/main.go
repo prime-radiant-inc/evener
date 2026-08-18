@@ -34,10 +34,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/doctor"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/bundled"
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func main() {

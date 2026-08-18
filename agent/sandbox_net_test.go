@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 func netEnv(t *testing.T, netOn bool) *execenv.LocalExecutionEnvironment {

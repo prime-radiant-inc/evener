@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // salvageText renders a partial response's recoverable output: text parts

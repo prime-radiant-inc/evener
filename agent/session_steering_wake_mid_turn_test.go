@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // Kata dz5j: steering queued against a turn that ends without communicate

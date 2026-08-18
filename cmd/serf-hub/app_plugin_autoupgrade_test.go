@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func hubTestGitAvailable() bool {

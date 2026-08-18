@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	taskpkg "primeradiant.com/serf/agent/task"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 // CoreToolNames stands up a throwaway session and returns the schema-bearing

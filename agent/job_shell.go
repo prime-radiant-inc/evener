@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 const (

@@ -15,12 +15,12 @@ import (
 	"net/http"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/kimicoding"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/kimicoding"
 )
 
 const defaultBaseURL = "https://api.kimi.com/coding"

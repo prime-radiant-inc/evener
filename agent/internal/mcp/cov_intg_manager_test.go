@@ -8,7 +8,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // These tests cover NewManager's per-server failure arms that the happy-path

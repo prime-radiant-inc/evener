@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 type hubTreeResponse struct {

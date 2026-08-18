@@ -3,7 +3,7 @@ package openai
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // The output cap must go on the wire as max_completion_tokens: OpenAI accepts

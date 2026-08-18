@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/internal/selfupdate"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/internal/selfupdate"
 )
 
 var runHubSelfUpgrade = selfupdate.Upgrade

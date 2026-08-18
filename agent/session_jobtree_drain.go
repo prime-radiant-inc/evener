@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // drainStallTimeout bounds how long the one-shot drain will keep blocking on a

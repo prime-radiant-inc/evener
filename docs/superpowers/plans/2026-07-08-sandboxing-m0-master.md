@@ -76,7 +76,7 @@ Nothing is pushed or merged to `main` in this campaign. Jesse merges to main.
 
 ## Shared conventions (all milestones)
 
-- Module `primeradiant.com/serf`, Go 1.25. `golang.org/x/sys v0.42` is a direct
+- Module `primeradiant.com/evener`, Go 1.25. `golang.org/x/sys v0.42` is a direct
   dep (use `unix.Openat2` for M2; no new dep needed there). M3 adds
   `github.com/landlock-lsm/go-landlock`.
 - Commands: `make test-short` (fast gate), `make test`, `make test-race`,

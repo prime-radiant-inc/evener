@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // handleMessageMethods covers the request methods the connection state machine

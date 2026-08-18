@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // countRoundTripper is a fake http.RoundTripper that replays a fuzzer-controlled

@@ -3,7 +3,7 @@ package tool
 import (
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func DefReadFile() llm.ToolDefinition {

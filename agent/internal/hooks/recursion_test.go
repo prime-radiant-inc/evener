@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // TestMatchHooks_NoDispatchEmitBreaksRecursion reproduces the production crash

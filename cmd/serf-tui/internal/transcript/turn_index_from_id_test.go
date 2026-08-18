@@ -3,7 +3,7 @@ package transcript
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestTurnIndexFromIDOnlyResolvesTranscriptEntryIndexes (kata rk09) pins the

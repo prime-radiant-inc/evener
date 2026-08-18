@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // A client holds ThreadCapabilities as a snapshot from its last thread/read,

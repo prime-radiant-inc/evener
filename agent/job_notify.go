@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 type deliverableJobNotification struct {

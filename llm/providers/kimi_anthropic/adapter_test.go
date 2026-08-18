@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/kimicoding"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/kimicoding"
 )
 
 func TestAdapter_Name(t *testing.T) {

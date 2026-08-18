@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // symlinkDiagRe extracts the named component and its resolved target from a

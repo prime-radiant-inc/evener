@@ -11,8 +11,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 var errExternalEdge = errors.New("external edge")

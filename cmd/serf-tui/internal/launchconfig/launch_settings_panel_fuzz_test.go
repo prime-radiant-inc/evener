@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // applyEditFields are the launch-config fields whose edit handler runs a real

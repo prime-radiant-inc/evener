@@ -14,9 +14,9 @@ package providerfwd
 import (
 	"context"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // OpenAICompat forwards to an embedded openai-compatible adapter, overriding

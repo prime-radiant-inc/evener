@@ -13,10 +13,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/fuzz/oracle"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/llm"
 )
 
 const (

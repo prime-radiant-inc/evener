@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/internal/bundled"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 // probedFacts is the toolchain probe result the snapshots below render: both

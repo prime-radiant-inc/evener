@@ -1,6 +1,6 @@
 package main
 
-import "primeradiant.com/serf/identifier"
+import "primeradiant.com/evener/identifier"
 
 // newClientMutationID mints the identity every retry-safe turn mutation must
 // carry (appwire.ValidateMutationParams gates turn/start, steer, interrupt,

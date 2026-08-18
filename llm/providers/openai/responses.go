@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // The session's event buffer. These tests exist to cross it, so they name it

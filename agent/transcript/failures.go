@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"slices"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // ShellToolNames are the tool names whose result carries a process exit code

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // unrepresentableContentKinds is the spec's per-tag policy table

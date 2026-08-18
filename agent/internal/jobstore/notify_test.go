@@ -3,7 +3,7 @@ package jobstore
 import (
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestNewTerminalGenerationUnique(t *testing.T) {

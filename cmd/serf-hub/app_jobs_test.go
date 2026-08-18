@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
 // jobsListSource is a minimal appsource.Source test double that stubs the

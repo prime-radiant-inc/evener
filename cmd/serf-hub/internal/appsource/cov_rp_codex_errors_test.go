@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func fuzzScenarioCodexSourceSessionUnavailable(t *testing.T) {

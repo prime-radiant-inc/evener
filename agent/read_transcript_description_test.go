@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 // TestReadTranscriptDescriptionNamesRetainedOperationRules keys the tool's own

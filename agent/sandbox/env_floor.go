@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // floorExactDrops are environment variables removed from every spawned process in

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
 func clientWith(resp llm.Response, err error) *llm.Client {

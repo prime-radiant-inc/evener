@@ -21,7 +21,7 @@ Four small tooling contracts are currently incomplete:
    warning and a successful exit. CI currently depends on install-step ordering
    to keep its scans real, even though local development deliberately permits
    the missing-tool skip.
-4. The root module imports `primeradiant.com/serf/identifier` through root
+4. The root module imports `primeradiant.com/evener/identifier` through root
    packages and `llm`, but its own `go.mod` does not require that sibling.
    Module graph pruning means an external consumer of only the root module
    cannot obtain the identifier module from `llm/go.mod`.
@@ -134,7 +134,7 @@ scan target.
 Add only this sibling requirement to the root module's existing sibling block:
 
 ```go.mod
-primeradiant.com/serf/identifier v0.0.0
+primeradiant.com/evener/identifier v0.0.0
 ```
 
 Do not change `golang.org/x/sys`, `golang.org/x/text`, any `go.sum`, or any
@@ -142,7 +142,7 @@ other version. The existing versioned replacement in `go.work` remains the
 workspace mapping; the committed module file remains free of local paths.
 
 Verification uses a scratch consumer outside `go.work`. Its `go.mod` requires
-only `primeradiant.com/serf v0.0.0` and contains directory replacements for all
+only `primeradiant.com/evener v0.0.0` and contains directory replacements for all
 Serf modules. After populating only the scratch consumer's sums, run explicit
 root package lists with `GOWORK=off`, `GOFLAGS=-mod=readonly`, `GOPROXY=off`,
 and `GOSUMDB=off`, first for dependencies and then with `-test`. The current

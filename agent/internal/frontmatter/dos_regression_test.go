@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // TestParseInheritsYAMLDoSLimits proves the frontmatter decoder inherits

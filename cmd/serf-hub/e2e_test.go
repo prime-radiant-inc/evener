@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // TestE2E_HubAndDaemon pins the discovery half of the hub: a daemon the hub did

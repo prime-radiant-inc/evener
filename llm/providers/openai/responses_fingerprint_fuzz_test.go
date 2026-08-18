@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzResponsesRequestFingerprint drives requestFingerprintForResponsesBody, the

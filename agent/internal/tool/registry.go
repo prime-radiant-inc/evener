@@ -18,9 +18,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."

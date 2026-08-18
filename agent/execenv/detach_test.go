@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 func TestLocalExecutionEnvironmentImplementsDetachedExecutor(t *testing.T) {

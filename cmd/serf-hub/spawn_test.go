@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/diagnostic"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // writeFakeSerf writes an executable fake-serf stub that the test then runs

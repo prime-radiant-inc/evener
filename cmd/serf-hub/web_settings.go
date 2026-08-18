@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // builtinAgentNames are the agents compiled into the binary (defaultPersona.txt

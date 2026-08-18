@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/server"
 )
 
 // concurrentClearBudget bounds each park below. Nothing in the passing path

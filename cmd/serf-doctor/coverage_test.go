@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/doctor"
+	"primeradiant.com/evener/agent/doctor"
 )
 
 type errorWriter struct{}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // fakeRoster lets proxy tests resolve session_id -> addr without scanning.

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // Task 20: real liveWorkUnder plumbing (spec §5 remove step 4, §7

@@ -3,8 +3,8 @@ package server
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // The prelude turn (appwire.SystemPreludeTurnID) holds content from BEFORE

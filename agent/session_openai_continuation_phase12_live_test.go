@@ -15,11 +15,11 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	apilog "primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T) {

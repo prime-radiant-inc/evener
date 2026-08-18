@@ -15,13 +15,13 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/promoter"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/promoter"
+	"primeradiant.com/evener/llm"
 )
 
 // TestLifecycleSeqFuzz is roadmap item 8.3's first stateful fuzz of the agent

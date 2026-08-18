@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzSecurePathEdgeContractProgram covers the fd-anchored security boundary's

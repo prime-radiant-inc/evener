@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/server"
 )
 
 // TestVerboseTeeOutlivesTheBridgeDrain reproduces the shutdown crash and pins

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // fuzzSetVar is a deterministic environment variable the fuzz target sets so

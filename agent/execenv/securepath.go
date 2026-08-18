@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // This file holds sandboxFS's platform-independent policy logic — denial

@@ -299,7 +299,7 @@ run_module() {
 		run_root_package_list "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
-				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)
+				primeradiant.com/evener/cmd/serf-fuzzcov|primeradiant.com/evener/cmd/serf-fuzz-harvest)
 					continue
 					;;
 			esac
@@ -336,7 +336,7 @@ run_module() {
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do
-			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
+			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done < <(go list ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?

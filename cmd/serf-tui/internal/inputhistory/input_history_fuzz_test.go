@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/serf-tui/internal/inputhistory"
 )
 
 func FuzzUnescapeHistory(f *testing.F) {

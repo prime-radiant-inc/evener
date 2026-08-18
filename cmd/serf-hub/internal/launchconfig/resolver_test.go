@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func writeFile(t *testing.T, path, content string) {

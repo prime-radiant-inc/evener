@@ -2801,7 +2801,7 @@ func TestPermissionDeniedResult_Shape(t *testing.T) {
 }
 ```
 
-Add `"primeradiant.com/serf/llm"` to test imports if missing.
+Add `"primeradiant.com/evener/llm"` to test imports if missing.
 
 - [ ] **Step 2: Run test to verify it fails**
 

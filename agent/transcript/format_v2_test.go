@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestNewWriterEmitsFormatVersionTwoAndSemanticEntries(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // OptInEnv is the environment variable that explicitly enables provider-backed

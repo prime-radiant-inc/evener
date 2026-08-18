@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/promptpath"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/bundled"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/promptpath"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 var renderEmbeddedSystemPrompt = func(resolver *sectionResolver, fs embed.FS, prefix, name string, data promptData) (string, []promptSource, error) {

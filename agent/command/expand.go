@@ -21,7 +21,7 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // maxInlineBytes bounds how much text a single !`cmd` or @file substitution

@@ -13,10 +13,10 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/llm"
 )
 
 // These tests cover Task 8's lazy, call-driven reconnect: on a CallTool error

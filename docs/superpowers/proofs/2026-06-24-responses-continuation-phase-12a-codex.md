@@ -23,7 +23,7 @@ Observed result:
     responses_continuation_discovery_e2e_test.go:64: codex_backend valid previous_response_id request failed: openai error (status=400): responses.create(stream) failed: map[detail:Unsupported parameter: previous_response_id]
 --- FAIL: TestAdapter_E2E_CodexResponsesContinuationDiscovery (1.85s)
 FAIL
-FAIL	primeradiant.com/serf/llm/providers/openai	2.039s
+FAIL	primeradiant.com/evener/llm/providers/openai	2.039s
 FAIL
 ```
 

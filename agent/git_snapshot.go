@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // gitExecTimeout bounds every git subprocess exec this file runs for the

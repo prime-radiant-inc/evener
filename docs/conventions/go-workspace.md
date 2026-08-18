@@ -26,7 +26,7 @@ dependencies: sibling imports 404 against the module proxy. The fix is a
 versioned `replace` in `go.work` itself:
 
 ```
-replace primeradiant.com/serf/agent v0.0.0 => ./agent
+replace primeradiant.com/evener/agent v0.0.0 => ./agent
 ```
 
 Keeping the replace in `go.work` rather than in each `go.mod` leaves the
@@ -42,13 +42,13 @@ recovered thirteen turn-level fields it had been quietly dropping.
 ## `go mod tidy` cannot maintain these `go.mod` files
 
 Tidy ignores `go.work`. Run it in a module here and it tries to download
-`primeradiant.com/serf/llm v0.0.0` and friends from the proxy instead of
+`primeradiant.com/evener/llm v0.0.0` and friends from the proxy instead of
 using the sibling directories, so it cannot be the thing that keeps a
 `go.mod` honest. Every require in them is hand-written.
 
 That matters because each module is at go 1.17+, where **module graph
 pruning makes a module's `go.mod` the complete statement of what its
-packages need**: a consumer that requires only `primeradiant.com/serf/agent`
+packages need**: a consumer that requires only `primeradiant.com/evener/agent`
 sees agent's requires and nothing deeper. A missing indirect is a build
 failure for that consumer even though the workspace is green — the
 workspace fills the gap from a sibling's `go.mod`, and a consumer has no
@@ -61,7 +61,7 @@ module whose `go.mod` requires just that module, plus a directory
 `replace` for every serf module, and no other requires. Then
 
 ```
-GOWORK=off GOFLAGS= GOPROXY=off go list -deps primeradiant.com/serf/agent/...
+GOWORK=off GOFLAGS= GOPROXY=off go list -deps primeradiant.com/evener/agent/...
 ```
 
 `-mod=readonly` is the default and is the point: it reports "no required

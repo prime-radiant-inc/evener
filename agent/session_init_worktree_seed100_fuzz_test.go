@@ -6,10 +6,10 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // FuzzInitWorktreeSeed100 closes deterministic lifecycle/error branches that

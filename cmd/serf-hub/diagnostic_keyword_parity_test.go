@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/diagnostic"
+	"primeradiant.com/evener/agent/diagnostic"
 )
 
 // turnFailurePath is the web client's copy of the hub-failure vocabulary. It is

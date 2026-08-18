@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appprojector"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
 
 // settledToolItem projects one image-returning read_file call through a real

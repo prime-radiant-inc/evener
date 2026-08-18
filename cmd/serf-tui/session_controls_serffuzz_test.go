@@ -10,10 +10,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
 )
 
 // FuzzSessionControls replays deterministic state programs for the session

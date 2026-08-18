@@ -147,7 +147,7 @@ acceptance from ~0% to ~90%+.
 
 ## The portable core
 
-Two packages in the `primeradiant.com/serf/fuzz` module are the travelling
+Two packages in the `primeradiant.com/evener/fuzz` module are the travelling
 tooling. **Nothing in them imports the project under test** — `fuzz/go.mod`
 declares no serf dependency, so the module will not build if that boundary is
 violated. That structural guarantee *is* the portability test.
@@ -242,9 +242,9 @@ are per-ecosystem, all behind the same `Adapter`:
 A local `v0.0.0` workspace module is not `go get`-able. To consume `fuzz/promoter`
 and `fuzz/schemagen` from another module in the same `go.work`:
 
-1. Add `require primeradiant.com/serf/fuzz v0.0.0` (and `pgregory.net/rapid`) to
+1. Add `require primeradiant.com/evener/fuzz v0.0.0` (and `pgregory.net/rapid`) to
    the consumer's `go.mod`.
-2. Add `replace primeradiant.com/serf/fuzz v0.0.0 => ./fuzz` in `go.work`, then
+2. Add `replace primeradiant.com/evener/fuzz v0.0.0 => ./fuzz` in `go.work`, then
    `go work sync`.
 3. Seed third-party checksums the workspace replace hides:
    `GOFLAGS=-mod=mod GOWORK=off go mod download pgregory.net/rapid`.

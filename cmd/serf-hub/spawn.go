@@ -15,16 +15,16 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
 )
 
 const serfLaunchCheckTimeout = 30 * time.Second

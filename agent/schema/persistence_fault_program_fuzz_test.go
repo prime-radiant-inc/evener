@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzSchemaPersistenceFaultProgram drives the real persistence seams through

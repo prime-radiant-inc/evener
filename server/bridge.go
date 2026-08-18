@@ -1,8 +1,8 @@
 package server
 
 import (
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 )
 
 // Bridge reads events from a session event channel, records appwire

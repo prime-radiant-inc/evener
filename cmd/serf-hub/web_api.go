@@ -12,13 +12,13 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/hubapi"
 )
 
 var (

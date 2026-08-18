@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // addDecisionToSchema returns the definition unchanged when any structural

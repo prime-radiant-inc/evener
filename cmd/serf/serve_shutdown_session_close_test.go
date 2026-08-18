@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 )
 
 // TestServeClosesAReplacementInstalledDuringShutdown pins the invariant the

@@ -310,7 +310,7 @@ logger — grep for the current denial/log seam first); tests in
 ## Task 7 — Adversarial escape suite + M1 contract consumption
 
 **Files:** `agent/execenv/sandbox_tools_test.go` (extend into the escape suite);
-import `primeradiant.com/serf/agent/sandbox`.
+import `primeradiant.com/evener/agent/sandbox`.
 
 - [ ] **Failing test:** drive the spec's Validation escapes through **every**
   file tool, consuming M1's exported `sandbox.ContractCase` table + `sandbox.Resolve`

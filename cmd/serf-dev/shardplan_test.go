@@ -15,7 +15,7 @@ func TestParseSurveyReadsTopLevelPassAndSkipLines(t *testing.T) {
 		"--- SKIP: TestBeta (0.00s)",
 		"--- FAIL: TestGamma (0.25s)", // failed: not a weight
 		"--- PASS: ExampleDelta (0.10s)",
-		"ok  \tprimeradiant.com/serf/agent\t2.0s",
+		"ok  \tprimeradiant.com/evener/agent\t2.0s",
 	}, "\n")
 	got := parseSurvey(survey)
 	want := []testCost{

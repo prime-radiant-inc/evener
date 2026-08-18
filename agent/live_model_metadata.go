@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 const liveModelMetadataTimeout = 2 * time.Second

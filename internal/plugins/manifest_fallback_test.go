@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 func TestHasPluginManifest(t *testing.T) {

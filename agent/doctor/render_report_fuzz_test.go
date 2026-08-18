@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/fuzz/oracle"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // doctor_reader is a tiny deterministic byte consumer that decodes a fuzz blob

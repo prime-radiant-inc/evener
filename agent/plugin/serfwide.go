@@ -8,9 +8,9 @@ import (
 	"strings"
 	"unicode"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 var serfwideUserHomeDir = os.UserHomeDir

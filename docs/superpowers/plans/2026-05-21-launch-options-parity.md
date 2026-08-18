@@ -1453,7 +1453,7 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestSchemaRows_PutsAgentFirstAndReasoningWithModel(t *testing.T) {
@@ -1494,7 +1494,7 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type schemaRowMode string

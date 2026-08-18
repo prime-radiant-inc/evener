@@ -17,13 +17,13 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubtest"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 var favoriteRevalidationTreeTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)

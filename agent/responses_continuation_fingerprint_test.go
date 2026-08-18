@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	openaiadapter "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/llm"
+	openaiadapter "primeradiant.com/evener/llm/providers/openai"
 )
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedEnvironment(t *testing.T) {

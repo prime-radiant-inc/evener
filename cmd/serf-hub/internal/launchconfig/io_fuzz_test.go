@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzLaunchConfigDecode drives the in-package TOML decoders for Layer

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/chroma/v2"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 func TestDiffBodyTintsAddLines(t *testing.T) {

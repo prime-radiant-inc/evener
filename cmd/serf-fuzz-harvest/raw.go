@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 const harvestAPILogMaxLineBytes = 128 << 20

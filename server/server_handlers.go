@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {

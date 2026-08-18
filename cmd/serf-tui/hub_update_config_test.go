@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
 )
 
 // TestConfigResultHandlersSurfaceErrorsAndClearThemOnSuccess pins the contract

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzModelRoundContracts covers the deterministic bookkeeping and recovery

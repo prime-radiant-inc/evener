@@ -13,13 +13,13 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appprojector"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 )
 
 func (s *Server) AppServer() *appserver.Server {

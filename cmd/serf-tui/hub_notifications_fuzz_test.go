@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // notifyMethods is the set of wire notification methods applyHubNotification

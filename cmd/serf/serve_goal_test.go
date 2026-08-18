@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // TestServeGoal_TUIPathEndToEnd is the proof that /goal works through the REAL

@@ -19,7 +19,7 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FakeAdapter is a scripted llm.ProviderAdapter. Each call to Complete runs the

@@ -18,8 +18,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // FuzzJobstoreLifecycleProgram drives the real job event store, retained output

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/apptranscript"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // appTranscriptMaxLineBytes bounds a single transcript line. It is the same

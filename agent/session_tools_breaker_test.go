@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // A human approving a sandbox denial has just authorized this exact call, so

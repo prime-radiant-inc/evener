@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/internal/atif"
+	"primeradiant.com/evener/agent/internal/atif"
 )
 
 var (

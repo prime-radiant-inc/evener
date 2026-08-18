@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 func canonicalAPIAttemptLine(t *testing.T, provider string, body []byte) string {

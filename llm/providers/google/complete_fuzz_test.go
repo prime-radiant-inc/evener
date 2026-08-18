@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 var googleCoverageSeedMarker = []byte("serf-google-coverage-seed-union-v1")

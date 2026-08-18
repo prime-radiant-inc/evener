@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
 )
 
 // TestRunWithArgs verifies that the run function processes a prompt from CLI args

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 const responseContextMarkerV1 = "cont-ctx-v1"

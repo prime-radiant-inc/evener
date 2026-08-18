@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // TestW2Conc_FireProgressTickClosingBails pins the closing guard: a progress

@@ -3,7 +3,7 @@ package hubdiagnostics
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestFormatHubDiagnosticProviderCauseOverridesLegacySource(t *testing.T) {

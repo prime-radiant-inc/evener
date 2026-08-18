@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func scriptedDelegateCallWithAllowance(id, task string, allowance int) llm.Response {

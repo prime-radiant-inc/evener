@@ -1,5 +1,5 @@
-module primeradiant.com/serf/auth
+module primeradiant.com/evener/auth
 
 go 1.25.6
 
-require primeradiant.com/serf/envvars v0.0.0
+require primeradiant.com/evener/envvars v0.0.0

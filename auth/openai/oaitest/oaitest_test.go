@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
+	authopenai "primeradiant.com/evener/auth/openai"
 )
 
 func TestIsolateOpenAIAuthReturnsStateDirForStorage(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type relayReadCall struct {

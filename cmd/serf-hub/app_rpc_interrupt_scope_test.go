@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // TestHubRPCRelaysSessionScopedInterrupt covers the two hub-side rejections a

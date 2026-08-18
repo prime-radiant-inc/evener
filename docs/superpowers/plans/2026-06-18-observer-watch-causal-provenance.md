@@ -321,8 +321,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func TestSessionEventCarriesCausalProvenanceOnEnvelope(t *testing.T) {
@@ -364,8 +364,8 @@ In `agent/events/events.go`, add the import and field:
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/llm"
 )
 ```
 
@@ -430,8 +430,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func testProvenance(watchID, generation string) *provenance.Causal {
@@ -544,7 +544,7 @@ activeProvenance provenance.Causal
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 Create `agent/session_provenance.go`:
@@ -552,7 +552,7 @@ Create `agent/session_provenance.go`:
 ```go
 package agent
 
-import "primeradiant.com/serf/agent/provenance"
+import "primeradiant.com/evener/agent/provenance"
 
 func (s *Session) activeCausalProvenance() *provenance.Causal {
 	if s == nil {
@@ -618,7 +618,7 @@ type queuedInput struct {
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 Add provenance-aware steering helpers:
@@ -730,7 +730,7 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 6: Reset and union provenance at turn boundaries**
@@ -889,7 +889,7 @@ func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
 Add the import to `agent/internal/jobstore/fold_test.go`:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 Append to `agent/internal/jobstore/watch_test.go`:
@@ -929,7 +929,7 @@ func TestFoldWatchSendsPreservesProvenance(t *testing.T) {
 Add the import to `agent/internal/jobstore/watch_test.go`:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 2: Run jobstore tests to verify they fail**
@@ -947,7 +947,7 @@ Expected: FAIL because jobstore provenance fields do not exist.
 In `agent/internal/jobstore/record.go`, add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 Add to `DelegateRestoreDescriptor`:
@@ -975,7 +975,7 @@ In `agent/internal/jobstore/event.go`, add the import:
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 ```
 
@@ -1011,7 +1011,7 @@ case EventJobNotificationPending:
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 5: Run jobstore tests to verify they pass**
@@ -1088,8 +1088,8 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 Add imports to `agent/job_notify_test.go` if missing:
 
 ```go
-"primeradiant.com/serf/agent/internal/jobstore"
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/internal/jobstore"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 Append to `agent/session_provenance_test.go`:
@@ -1149,7 +1149,7 @@ type jobNotification struct {
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 In `agent/job_notify.go`, update `jobNotificationFromRecord`:
@@ -1176,7 +1176,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 4: Store provenance on jobs and emitted lifecycle events**
@@ -1309,7 +1309,7 @@ s.replaceActiveProvenance(notificationProvenance)
 Add the import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 7: Run lifecycle tests to verify they pass**
@@ -1415,7 +1415,7 @@ func TestRunningDelegateWatchSendCarriesProvenanceToObserverSteering(t *testing.
 Add imports if missing:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 2: Run delegate provenance tests to verify they fail**
@@ -1441,7 +1441,7 @@ parentSteerDelivered func(string, *provenance.Causal) bool
 Add import:
 
 ```go
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 In `agent/subagents.go`, set callbacks:
@@ -1685,9 +1685,9 @@ func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
 Add imports where needed:
 
 ```go
-"primeradiant.com/serf/agent/events"
-"primeradiant.com/serf/agent/internal/jobstore"
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/events"
+"primeradiant.com/evener/agent/internal/jobstore"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 2: Run watch suppression tests to verify they fail**
@@ -1941,7 +1941,7 @@ Add imports if missing:
 
 ```go
 "strings"
-"primeradiant.com/serf/agent/provenance"
+"primeradiant.com/evener/agent/provenance"
 ```
 
 - [ ] **Step 2: Run frame tests to verify they fail**
@@ -2173,7 +2173,7 @@ Add imports where needed:
 
 ```go
 "context"
-"primeradiant.com/serf/agent/schema"
+"primeradiant.com/evener/agent/schema"
 ```
 
 - [ ] **Step 2: Write notification acknowledgement regression**

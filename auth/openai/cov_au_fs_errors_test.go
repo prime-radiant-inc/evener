@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // TestDefaultStateDirWithStateHomeFallsBackToTempDir covers the arm where the

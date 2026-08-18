@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {

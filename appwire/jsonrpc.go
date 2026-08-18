@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strconv"
 
-	"primeradiant.com/serf/invariant"
+	"primeradiant.com/evener/invariant"
 )
 
 var unmarshalMessageFrame = json.Unmarshal

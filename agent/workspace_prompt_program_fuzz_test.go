@@ -14,14 +14,14 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"primeradiant.com/serf/agent/execenv"
-	tooldefs "primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/internal/bundled"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzWorkspacePromptProgram covers the offline context assembled before a

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // TestGoalPersist_MetaPopulated verifies that Meta() includes a populated

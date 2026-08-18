@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/fuzz/typegen"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/selfupdate"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/typegen"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/selfupdate"
 )
 
 // errSandboxAuthOffline is returned by the sandbox's stubbed OAuth network

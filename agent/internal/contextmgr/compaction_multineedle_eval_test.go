@@ -35,10 +35,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // mnSummarizerModel is the summarizer under test. gpt-5.5 first (the realistic

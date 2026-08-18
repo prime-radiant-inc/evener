@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 // writeProvidersToml writes a minimal providers.toml to path.

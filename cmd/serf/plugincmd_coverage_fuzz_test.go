@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 type pluginManagerReplay struct {

@@ -12,7 +12,7 @@ Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **curr
 - **M4** (root = app module; relocate the remaining `internal/` travelers) and **M5** (per-module hygiene) — pending.
 
 **Decisions made during execution (these AMEND the original plan below):**
-- **`auth/openai` = its own module** (`primeradiant.com/serf/auth`), NOT folded into llm. Review-panel call: it's OpenAI-OAuth machinery (login flow + a localhost callback server, ~31 symbols) that the hub drives far more than llm consumes; keeping it separate preserves llm's Pike-grade surface. It sits below llm; llm/agent/apps all depend on it.
+- **`auth/openai` = its own module** (`primeradiant.com/evener/auth`), NOT folded into llm. Review-panel call: it's OpenAI-OAuth machinery (login flow + a localhost callback server, ~31 symbols) that the hub drives far more than llm consumes; keeping it separate preserves llm's Pike-grade surface. It sits below llm; llm/agent/apps all depend on it.
 - **Build version = injected, never imported.** A library must not import the app's `buildinfo`. `llm` exposes `openai.ClientVersion`; `agent` exposes `agent.BuildVersion` (both default `"dev"`, per-process package-level settings); the serf binaries set them from build info at startup.
 - **`frontmatter`, `diagnostic` = duplicated** into `agent/internal/` (the §6 "duplicate" decision) so agent is self-contained; the app keeps the top-level copies.
 - **The three binaries stay under `cmd/`** of one app module (Jesse-confirmed): they are one application coupled only by protocols (AppWire subprocess, hubapi HTTP), so module boundaries are reserved for the *libraries* (which have importers), not the run-only binaries.
@@ -32,7 +32,7 @@ Serf is a **monorepo of multiple products**, not one application. Restructure it
 - The **serf application** (engine + supervisor + client binaries, plus the wire/HTTP
   contracts between them) is the root module.
 - `go.work` ties the modules together for local development; import paths are unchanged
-  (the modules keep the `primeradiant.com/serf/...` prefix), so this is **additive**, not a
+  (the modules keep the `primeradiant.com/evener/...` prefix), so this is **additive**, not a
   repo-wide rename.
 
 This makes "what goes where" **compiler-enforced**: the app module physically cannot reach
@@ -74,22 +74,22 @@ There is **no top-level `internal/`** in the end state — once each product own
 ## 4. Target layout
 
 ```
-primeradiant.com/serf/                      (repo root)
+primeradiant.com/evener/                      (repo root)
 ├── go.work                                 → ./llm ./agent .   (local dev)
 │
-├── llm/            module primeradiant.com/serf/llm            PUBLIC LIBRARY
+├── llm/            module primeradiant.com/evener/llm            PUBLIC LIBRARY
 │   ├── go.mod                               (deps: LLM/HTTP only)
 │   ├── *.go                                 public API
 │   ├── providers/  + providers/internal/{openaichat,transport}
 │   └── internal/                            llm-private
 │
-├── agent/          module primeradiant.com/serf/agent         PUBLIC LIBRARY (requires llm)
+├── agent/          module primeradiant.com/evener/agent         PUBLIC LIBRARY (requires llm)
 │   ├── go.mod                               (deps: llm + minimal)
 │   ├── *.go                                 public API incl. the persistence schema
 │   ├── events/                              public event-stream subpackage (already carved)
 │   └── internal/                            agent-private (agenttest, workspace, promptpath, installid, …)
 │
-└── (root module: primeradiant.com/serf — the SERF APPLICATION; requires agent, llm)
+└── (root module: primeradiant.com/evener — the SERF APPLICATION; requires agent, llm)
     ├── go.mod
     ├── appwire/                             CONTRACT: versioned engine↔hub↔tui wire protocol
     ├── hubapi/                              CONTRACT: hub HTTP API (client + server types)
@@ -110,7 +110,7 @@ primeradiant.com/serf/                      (repo root)
   leak into the tui or the engine.
 - `appwire` / `hubapi` are ordinary (non-internal) packages in the app module → all three
   binaries import them as the shared contract; they are the one thing legitimately shared.
-- External: `go get primeradiant.com/serf/agent` pulls `agent` + `llm` and nothing else.
+- External: `go get primeradiant.com/evener/agent` pulls `agent` + `llm` and nothing else.
 
 ## 6. The cross-cutting utilities (the only judgment calls)
 

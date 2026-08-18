@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 )
 
 func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]any, error) {

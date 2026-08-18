@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // UsageTotalFromFile sums the per-turn token usage recorded across a WHOLE

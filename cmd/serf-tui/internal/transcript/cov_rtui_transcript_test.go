@@ -3,7 +3,7 @@ package transcript
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestParseJobNotificationHeadline(t *testing.T) {

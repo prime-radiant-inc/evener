@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // FuzzStoreFaultTolerance drives Store.Append/AppendBatch/reopen while a

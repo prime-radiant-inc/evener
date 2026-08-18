@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping

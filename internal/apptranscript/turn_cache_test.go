@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestTurnCacheReusesParseUntilFileChanges(t *testing.T) {

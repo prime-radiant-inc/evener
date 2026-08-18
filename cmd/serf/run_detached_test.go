@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestRunDetachedCommandSurvivesExit(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"regexp"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
 )
 
 var outputImageMarshal = json.Marshal

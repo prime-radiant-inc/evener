@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // The transcript writer cannot be created until initSessionState has run: its

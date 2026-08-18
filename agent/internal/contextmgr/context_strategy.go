@@ -3,11 +3,11 @@ package contextmgr
 import (
 	"context"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // Host is the narrow surface a Strategy needs from its owning session.

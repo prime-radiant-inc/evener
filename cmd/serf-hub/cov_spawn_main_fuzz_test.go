@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/envvars"
 )
 
 func FuzzSpawnMainHelpers(f *testing.F) {

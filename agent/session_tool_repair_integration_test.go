@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 // widgetSchema is a custom tool schema with additionalProperties:false so a

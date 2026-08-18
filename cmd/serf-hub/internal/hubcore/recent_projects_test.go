@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // mkExistingDir creates and returns a real directory under t's temp root so

@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // finishRunningTestJob completes a test shell through the real job-manager

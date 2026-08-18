@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"sort"
 
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/mcpprobe"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpprobe"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubedge"
 )
 
 // hubSettingsOverview answers serf/settings/overview: the field bag behind

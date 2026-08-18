@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/sandbox"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/identifier"
 )
 
 // FuzzWorktreeFaultLifecycleProgram drives the worktree tool's failure and

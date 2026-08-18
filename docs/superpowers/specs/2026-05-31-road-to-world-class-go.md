@@ -89,7 +89,7 @@ keep/hide call; the few genuine disagreements are flagged inline and resolved wi
 
 `agent.ResolveProfileFromConfig(cfg providerconfig.Config, …)` (`agent/resolve.go:26`) and
 `llm.NewFromProviders(cfg providerconfig.Config, …)` (`llm/providers_config.go:45`) both name
-`primeradiant.com/serf/internal/providerconfig.Config`. Go forbids importing another module's
+`primeradiant.com/evener/internal/providerconfig.Config`. Go forbids importing another module's
 `internal/`, so **no external consumer can name the argument type** — these config-driven constructors,
 the exact entry points a library consumer needs, are uncallable outside the serf module. Separately,
 `agent.EnvironmentInfo.Workspace` is typed `workspace.WorkspaceInfo` from `agent/internal/workspace`

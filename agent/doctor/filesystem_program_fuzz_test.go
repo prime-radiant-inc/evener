@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 const doctorFilesystemAbsentSID = "02wLIRxqmq3AUo6vl2OW3A"

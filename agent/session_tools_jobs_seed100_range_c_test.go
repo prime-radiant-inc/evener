@@ -5,7 +5,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // seed100ToolsRangeC covers the result projection, formatting, bounding, and

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {

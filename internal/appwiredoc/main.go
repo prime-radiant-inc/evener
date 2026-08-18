@@ -21,7 +21,7 @@ import (
 	"strings"
 	"text/template"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 //go:embed protocol.md.tmpl

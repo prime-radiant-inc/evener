@@ -3,7 +3,7 @@ package buildinfo
 import "fmt"
 
 var (
-	GitSHA    string // set via -ldflags "-X primeradiant.com/serf/buildinfo.GitSHA=..."
+	GitSHA    string // set via -ldflags "-X primeradiant.com/evener/buildinfo.GitSHA=..."
 	GitDirty  string // "true" or ""
 	BuildTime string // ISO8601
 	Channel   string // release, snapshot, or empty for local dev builds

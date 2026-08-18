@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // deniedResult builds a tool.ExecResult carrying a typed file-tool sandbox denial,

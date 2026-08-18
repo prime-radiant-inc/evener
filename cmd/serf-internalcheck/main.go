@@ -1,6 +1,6 @@
 // serf-internalcheck enforces that the public library packages stay externally
 // importable: no exported symbol in agent, llm, or llm/providercfg may name a
-// serf-internal type (a type whose package path is under primeradiant.com/serf
+// serf-internal type (a type whose package path is under primeradiant.com/evener
 // and contains "/internal/") through its public signature.
 //
 // Such a leak makes a constructor or field uncallable/unnameable from outside
@@ -34,18 +34,18 @@ import (
 // libraryPackages are the caller-facing library packages whose exported surface
 // must not name serf-internal types.
 var libraryPackages = []string{
-	"primeradiant.com/serf/agent",
-	"primeradiant.com/serf/agent/diagnostic",
-	"primeradiant.com/serf/agent/execenv",
-	"primeradiant.com/serf/agent/mcpconfig",
-	"primeradiant.com/serf/agent/plugin",
-	"primeradiant.com/serf/agent/provider",
-	"primeradiant.com/serf/agent/schema",
-	"primeradiant.com/serf/agent/skill",
-	"primeradiant.com/serf/agent/task",
-	"primeradiant.com/serf/agent/transcript",
-	"primeradiant.com/serf/llm",
-	"primeradiant.com/serf/llm/providercfg",
+	"primeradiant.com/evener/agent",
+	"primeradiant.com/evener/agent/diagnostic",
+	"primeradiant.com/evener/agent/execenv",
+	"primeradiant.com/evener/agent/mcpconfig",
+	"primeradiant.com/evener/agent/plugin",
+	"primeradiant.com/evener/agent/provider",
+	"primeradiant.com/evener/agent/schema",
+	"primeradiant.com/evener/agent/skill",
+	"primeradiant.com/evener/agent/task",
+	"primeradiant.com/evener/agent/transcript",
+	"primeradiant.com/evener/llm",
+	"primeradiant.com/evener/llm/providercfg",
 }
 
 func main() {
@@ -202,5 +202,5 @@ func walkTuple(tup *types.Tuple, into map[string]bool, seen map[types.Type]bool)
 }
 
 func isSerfInternal(pkgPath string) bool {
-	return strings.HasPrefix(pkgPath, "primeradiant.com/serf/") && strings.Contains(pkgPath, "/internal/")
+	return strings.HasPrefix(pkgPath, "primeradiant.com/evener/") && strings.Contains(pkgPath, "/internal/")
 }

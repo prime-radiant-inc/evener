@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {

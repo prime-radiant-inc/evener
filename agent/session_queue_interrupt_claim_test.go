@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // The interrupted-turn recovery in session_lifecycle.go is the one place that

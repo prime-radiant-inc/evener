@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // Agent represents a subagent defined by a plugin.

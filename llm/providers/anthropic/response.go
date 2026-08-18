@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Response {

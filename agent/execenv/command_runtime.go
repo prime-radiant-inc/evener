@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // commandRuntime is the narrow boundary between local command preparation and

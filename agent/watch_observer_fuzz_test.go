@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // This file fuzzes the watch/observer machinery in job_watch.go that the

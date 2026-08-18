@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // turnOpening records how a turn of a given EntryKind acquires the identity a

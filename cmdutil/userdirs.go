@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // DefaultConfigRoot returns the user config root for serf:

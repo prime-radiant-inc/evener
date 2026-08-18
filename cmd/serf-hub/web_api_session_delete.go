@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // handleAPISessionDelete removes one ended or confirmed-crashed LOCAL session

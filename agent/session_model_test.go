@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/goal"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSession_StreamOpenFailureHonorsRetryBudget(t *testing.T) {

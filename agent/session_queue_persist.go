@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // queuePersistSubdir is the state-dir subdirectory holding one queue-snapshot

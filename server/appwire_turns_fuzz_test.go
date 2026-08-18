@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // notificationMethods is the set of methods appTurnsFromNotifications reduces

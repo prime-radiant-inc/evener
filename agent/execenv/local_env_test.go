@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // resetLoginShellPATHCache clears the process-wide login-shell PATH cache

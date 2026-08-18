@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/llm"
 )
 
 var errRecorderStreamDied = errors.New("stream died")

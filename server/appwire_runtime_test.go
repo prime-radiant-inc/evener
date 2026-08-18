@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {

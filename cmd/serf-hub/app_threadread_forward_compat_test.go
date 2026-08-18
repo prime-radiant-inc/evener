@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField pins kata wf7e's

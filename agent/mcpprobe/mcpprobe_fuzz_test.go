@@ -13,7 +13,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // FuzzProbe exercises the real concurrent Probe/probeOne flow while replacing

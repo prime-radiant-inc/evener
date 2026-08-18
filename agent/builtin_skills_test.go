@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/llm"
 )
 
 const embeddedDoctoringSkill = "doctoring-serf"

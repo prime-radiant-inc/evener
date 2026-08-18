@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
-	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubdiagnostics"
+	"primeradiant.com/evener/cmd/serf-tui/internal/toolsummary"
 )
 
 // MessagesFromThread folds a full appwire thread into the display message list

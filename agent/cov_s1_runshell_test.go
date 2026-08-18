@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // s1cov_instantExitExecutor completes synchronously so the foreground runShell

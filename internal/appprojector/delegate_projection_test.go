@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testing.T) {

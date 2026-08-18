@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // fakeReporter captures Fatalf instead of aborting, so a single Test can assert

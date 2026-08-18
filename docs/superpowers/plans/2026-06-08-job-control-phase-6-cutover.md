@@ -6,7 +6,7 @@
 
 **Architecture:** This phase is almost entirely **deletions and re-points of existing code**, not new TDD modules. The replacement tools and their runtime already exist (Phases 2–5); here we delete the legacy tool definitions, registrations, profile capability, root-only gating set, per-tool-name behavior tables, UI renderers (Go + JS), the events/wire/snapshot projection chain, the `<subagent-notification>` formatter, and the docs — repointing each live consumer to the job-control equivalent. The child-session **runtime** (`spawnAgent`/`sendInput`/`cancelAgent`/`getSub`/`subagent.run`/the `subagent` struct/`SubagentStatus`) is **kept** — Phase 3 salvaged it as the delegate runtime, and §16 permits those internal-only names to remain. Only the **tool-facing entry points** whose tools are gone (`waitAgent`/`closeAgent`/`listAgents`/`subagent_output`) and the model-/UI-facing surfaces are removed.
 
-**Tech Stack:** Go (module `primeradiant.com/serf/agent`, plus `server`, `appwire`, `internal/appprojector`, `cmd/serf-tui`, `cmd/serf-hub` modules in the go.work workspace), embedded JS assets under `cmd/serf-hub/assets`, Markdown docs and prompt templates. No new dependencies.
+**Tech Stack:** Go (module `primeradiant.com/evener/agent`, plus `server`, `appwire`, `internal/appprojector`, `cmd/serf-tui`, `cmd/serf-hub` modules in the go.work workspace), embedded JS assets under `cmd/serf-hub/assets`, Markdown docs and prompt templates. No new dependencies.
 
 This is **Phase 6 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §13 (cutover — no legacy residue), §15 (acceptance criteria), and §16 (the internal-naming deferral and the decided subagent job-tool set). It is the final phase.
 

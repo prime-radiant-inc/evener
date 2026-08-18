@@ -13,13 +13,13 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/cmd/serf/internal/rvreg"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/cmd/serf/internal/rvreg"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestRunFreshIdleSessionsOwnDistinctResumeTargets(t *testing.T) {

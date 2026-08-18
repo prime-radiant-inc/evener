@@ -10,10 +10,10 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/glamour"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/llm"
 )
 
 var renderReplayOnce sync.Once

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestMergeHeaders(t *testing.T) {

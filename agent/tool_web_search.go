@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // webSearch performs a web search by making a separate Gemini API call with

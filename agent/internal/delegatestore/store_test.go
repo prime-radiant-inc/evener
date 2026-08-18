@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/task"
 )
 
 func TestStoreAppendBatchIsOneCrashAtomicLine(t *testing.T) {

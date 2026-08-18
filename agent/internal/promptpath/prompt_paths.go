@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // GlobalPromptsDir returns the path to the global prompts directory.

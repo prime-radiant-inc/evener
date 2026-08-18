@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // s1cov_baseKey is a fully-populated key whose fields tests mutate one at a time

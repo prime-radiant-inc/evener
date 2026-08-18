@@ -13,8 +13,8 @@
 
 Two Go modules are touched (`go.work` maps `.` and `./agent`; `envvars` is its own module):
 
-- **Root module `primeradiant.com/serf`** (`.`): `cmd/serf-hub`, `hubapi`, `appwire`, `cmd/serf`, `server`, `rendezvous`.
-- **Agent module `primeradiant.com/serf/agent`** (`./agent`): `agent`, `agent/schema`.
+- **Root module `primeradiant.com/evener`** (`.`): `cmd/serf-hub`, `hubapi`, `appwire`, `cmd/serf`, `server`, `rendezvous`.
+- **Agent module `primeradiant.com/evener/agent`** (`./agent`): `agent`, `agent/schema`.
 - **Envvars module** (`./envvars`): the `SERF_SESSION_ORIGIN` declaration only.
 
 Per-task gates (run from repo root `/Users/jesse/prime-radiant/toil-suite/serf`):
@@ -318,7 +318,7 @@ func TestOrphanLiveGroupingUsesPathSlug(t *testing.T) {
 }
 ```
 
-Add imports `encoding/json`, `net/http`, `net/http/httptest`, `primeradiant.com/serf/hubapi`, `primeradiant.com/serf/rendezvous` to the test file if absent.
+Add imports `encoding/json`, `net/http`, `net/http/httptest`, `primeradiant.com/evener/hubapi`, `primeradiant.com/evener/rendezvous` to the test file if absent.
 
 - [ ] **Step 3: Run test to verify it fails**
 
@@ -1006,7 +1006,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 func TestFavoriteEndpointSetsDecision(t *testing.T) {
@@ -1773,7 +1773,7 @@ package hubcore
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
@@ -1810,7 +1810,7 @@ package hubcore
 import (
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // RemoteThreadCache holds the most recent remote-source thread list so a tree
@@ -1907,8 +1907,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 func writeSession(t *testing.T, stateDir, id, wd string) {
@@ -2029,7 +2029,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 type projectDeleteSkip struct {
@@ -2201,8 +2201,8 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestSessionOriginFromEnv(t *testing.T) {
@@ -2275,7 +2275,7 @@ and in the restore-from-meta path (where naming is seeded from `meta` at session
 	s.origin = meta.Origin
 ```
 
-(so resume preserves the persisted origin). Add `"primeradiant.com/serf/envvars"` to `session_init.go` imports if absent.
+(so resume preserves the persisted origin). Add `"primeradiant.com/evener/envvars"` to `session_init.go` imports if absent.
 
 In `agent/session_state.go`, in the `Meta()` return literal, add:
 
@@ -2376,7 +2376,7 @@ package agent_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestRenameSetsUserSourceAndSurvivesCompaction(t *testing.T) {
@@ -2690,8 +2690,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
@@ -2742,8 +2742,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // handleAPIRename renames a session. Live serf sessions route through the

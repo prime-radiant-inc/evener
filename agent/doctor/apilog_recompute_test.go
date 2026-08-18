@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // syntheticZeroedResponsesSSE mirrors the affected Responses-API wire shape

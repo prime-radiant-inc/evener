@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // testEnvRoot is the throwaway root TestMain builds and removes. Anything a

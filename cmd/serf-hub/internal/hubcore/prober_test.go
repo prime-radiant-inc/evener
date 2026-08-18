@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type statusStub struct {

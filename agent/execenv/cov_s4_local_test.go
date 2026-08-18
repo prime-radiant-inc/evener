@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/fuzz/fault"
+	"primeradiant.com/evener/fuzz/fault"
 )
 
 // --- Glob (was 0%) -------------------------------------------------------

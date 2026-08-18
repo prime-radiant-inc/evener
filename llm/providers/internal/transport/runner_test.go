@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // respFrom wraps body in a minimal *http.Response for the runner.

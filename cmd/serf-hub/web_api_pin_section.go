@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 )
 
 type pinSectionMutationResponse struct {

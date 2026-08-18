@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const legacyFormatVersion = 1

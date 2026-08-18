@@ -36,7 +36,7 @@ Result:
     session_openai_continuation_phase12_live_test.go:196: phase12_public_live model=gpt-5.2 delta_bytes=54734 full_history_shadow_bytes=55047 omitted_input_item_bytes=406 continuation_overhead_bytes=81 net_body_byte_saving=313 provider_input_tokens=11127 full_history_shadow_tokens=13196
 --- PASS: TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof (24.00s)
 PASS
-ok  	primeradiant.com/serf/agent	24.332s
+ok  	primeradiant.com/evener/agent	24.332s
 ```
 
 Codex Phase 12 live gate:
@@ -52,7 +52,7 @@ Result:
     responses_continuation_discovery_e2e_test.go:64: codex_backend valid previous_response_id request failed: openai error (status=400): responses.create(stream) failed: map[detail:Unsupported parameter: previous_response_id]
 --- FAIL: TestAdapter_E2E_CodexResponsesContinuationDiscovery (1.85s)
 FAIL
-FAIL	primeradiant.com/serf/llm/providers/openai	2.039s
+FAIL	primeradiant.com/evener/llm/providers/openai	2.039s
 FAIL
 ```
 

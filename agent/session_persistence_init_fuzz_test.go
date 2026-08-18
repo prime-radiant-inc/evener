@@ -11,14 +11,14 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzPersistentSessionInitRestoreProgram drives the persistent constructor

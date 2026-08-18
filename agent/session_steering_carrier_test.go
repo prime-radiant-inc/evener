@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // Kata t9kt: the steering-only carrier turn ran as an empty user turn and was

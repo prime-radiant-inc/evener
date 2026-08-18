@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars"
 )
 
 // ServerConfig describes a single MCP server connection.

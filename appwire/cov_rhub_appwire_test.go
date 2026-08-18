@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // roundTrip drives one client wrapper method against the in-memory transport:

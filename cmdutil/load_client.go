@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 var newClientFromAvailableProviders = llm.NewFromAvailableProviders

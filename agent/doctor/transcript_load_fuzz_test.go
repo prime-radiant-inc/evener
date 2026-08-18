@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 func TestLoadTranscriptRejectsUnsupportedFormatsWithoutPartialState(t *testing.T) {

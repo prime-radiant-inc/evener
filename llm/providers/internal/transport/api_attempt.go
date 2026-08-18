@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 )
 
 // APIAttemptCapture owns one canonical record for one actual HTTP request.

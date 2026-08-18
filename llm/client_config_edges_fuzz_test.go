@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func replayClientConfigEdges(t *testing.T) {

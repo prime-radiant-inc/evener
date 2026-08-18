@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/fuzz/edgeseeds"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzProfileOverrides drives the communicate-tool schema decorators

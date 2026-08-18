@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubstart"
 )
 
 func TestParseTUIStartupOptionsDefaults(t *testing.T) {

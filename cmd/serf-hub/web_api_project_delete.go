@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type projectDeleteSkip struct {

@@ -7,16 +7,16 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 var (

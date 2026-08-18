@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // feedBridge runs the real Bridge over evs and returns when it has drained

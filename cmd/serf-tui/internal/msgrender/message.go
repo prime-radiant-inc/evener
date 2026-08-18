@@ -10,12 +10,12 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-tui/internal/toolsummary"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/llm"
 )
 
 var markdownRenderer *glamour.TermRenderer

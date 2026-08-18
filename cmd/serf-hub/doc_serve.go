@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
 )
 
 var docStat = os.Stat

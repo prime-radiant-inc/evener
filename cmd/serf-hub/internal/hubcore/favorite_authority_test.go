@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubtest"
 )
 
 var favoriteAuthorityTestTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)

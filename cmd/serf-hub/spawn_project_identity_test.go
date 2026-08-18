@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestResolveStateDirForProjectUsesCarriedProjectWithoutResolvingWorkingDir(t *testing.T) {

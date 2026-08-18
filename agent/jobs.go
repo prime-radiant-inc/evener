@@ -19,13 +19,13 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/runetrim"
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")

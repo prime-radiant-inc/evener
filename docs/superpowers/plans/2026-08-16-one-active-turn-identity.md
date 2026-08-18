@@ -226,7 +226,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestMintRunningTurnIDNamesAnAgentStartedTurn pins the contract every
@@ -329,7 +329,7 @@ package agent
 import (
 	"fmt"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // A turn's identity has one owner: whatever opened it. A client's turn/start

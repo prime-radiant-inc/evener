@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // ModelCompat is the fully-resolved per-model wire behavior: the effective

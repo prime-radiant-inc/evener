@@ -9,14 +9,14 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/plugins"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {

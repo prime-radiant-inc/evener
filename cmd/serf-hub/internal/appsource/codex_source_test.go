@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 func fuzzScenarioCodexSourceUsesAdapterNativeInitialize(t *testing.T) {

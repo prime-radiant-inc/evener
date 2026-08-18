@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzCredentialsStoreDecode drives the REAL LoadStore seam: it writes the

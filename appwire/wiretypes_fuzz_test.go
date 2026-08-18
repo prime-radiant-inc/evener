@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/fuzz/typegen"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/typegen"
 )
 
 var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()

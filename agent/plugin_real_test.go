@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/toolname"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 )
 
 // pluginCacheDir returns the directory where the official Anthropic plugins are cached.

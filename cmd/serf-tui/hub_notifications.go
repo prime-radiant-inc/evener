@@ -6,11 +6,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
-	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubdiagnostics"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
+	pendingpkg "primeradiant.com/evener/cmd/serf-tui/internal/pending"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {

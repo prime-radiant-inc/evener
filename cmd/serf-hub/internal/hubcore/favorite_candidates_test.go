@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestFavoriteCandidatesExplicitArchiveDecisionExcludesLiveWithoutMeta(t *testing.T) {

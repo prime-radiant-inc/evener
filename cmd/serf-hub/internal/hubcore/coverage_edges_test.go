@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type failingFs struct {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 // stubFastCheapAdapter is a minimal registered provider for validation tests.

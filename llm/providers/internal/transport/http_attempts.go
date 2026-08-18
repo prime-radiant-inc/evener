@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // APIAttemptMetaBuilder derives provider metadata and credential material from

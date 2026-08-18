@@ -5,7 +5,7 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // FuzzJdKeepListedJobRow drives keepListedJobRow — the pure per-record filter

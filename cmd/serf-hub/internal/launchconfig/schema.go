@@ -1,6 +1,6 @@
 package launchconfig
 
-import "primeradiant.com/serf/envvars"
+import "primeradiant.com/evener/envvars"
 
 type LaunchControlKind string
 type LaunchPathKind string

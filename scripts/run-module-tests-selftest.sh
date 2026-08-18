@@ -174,7 +174,7 @@ case "${1:-}" in
 			exit $?
 		fi
 		: >"$FAKE_STATE/root.listed"
-		printf 'primeradiant.com/serf/%s\n' "$module"
+		printf 'primeradiant.com/evener/%s\n' "$module"
 		exit 0
 		;;
 esac
@@ -194,7 +194,7 @@ esac
 case " ${FAKE_TEST_FAIL:-} " in
 	*" $module "*)
 		printf -- '--- FAIL: TestThing (0.00s)\n'
-		printf 'FAIL\tprimeradiant.com/serf/%s\t0.01s\n' "$module"
+		printf 'FAIL\tprimeradiant.com/evener/%s\t0.01s\n' "$module"
 		exit 1
 		;;
 esac
@@ -430,7 +430,7 @@ out="$case_dir/root-package-discovery-stderr.out"
 if FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "root package-discovery stderr does not fail a successful run"
 root_args="$(arguments_for .)"
-assert_has_word "$root_args" "primeradiant.com/serf/." "root package-discovery stdout reaches go test"
+assert_has_word "$root_args" "primeradiant.com/evener/." "root package-discovery stdout reaches go test"
 assert_not_has_word "$root_args" "go: downloading example.com/dependency v1.2.3" "root package-discovery stderr never becomes a go test package"
 assert_eq "$(runner_logdirs)" "" "a successful root package-discovery removes its stdout and stderr logs"
 

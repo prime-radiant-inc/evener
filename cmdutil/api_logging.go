@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // AttachAPILogger installs the standard Serf API logger on client. Entries

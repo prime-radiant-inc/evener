@@ -12,6 +12,6 @@
 // are verified current in CI, so the catalog in code is the single source of
 // truth.
 //
-//go:generate go run primeradiant.com/serf/internal/appwiredoc -out ../docs/appwire-protocol.md
-//go:generate go run primeradiant.com/serf/internal/appwirets -out ../cmd/serf-hub/frontend/src/protocol/types.gen.ts
+//go:generate go run primeradiant.com/evener/internal/appwiredoc -out ../docs/appwire-protocol.md
+//go:generate go run primeradiant.com/evener/internal/appwirets -out ../cmd/serf-hub/frontend/src/protocol/types.gen.ts
 package appwire

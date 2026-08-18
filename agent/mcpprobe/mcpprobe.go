@@ -39,7 +39,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpconfig"
 )
 
 // probeTimeout bounds each individual server probe so one slow or hung

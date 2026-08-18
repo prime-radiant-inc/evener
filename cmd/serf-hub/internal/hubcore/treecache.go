@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // treeBucketSeconds is the wall-clock granularity at which a fresh tree is

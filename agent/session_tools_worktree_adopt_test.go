@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are REAL-git integration tests for the unmanaged-visibility half of

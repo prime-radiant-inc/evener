@@ -3,7 +3,7 @@ package hubdiagnostics
 import (
 	"strings"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func formatHubDiagnostic(title, source, message, fallback string) string {

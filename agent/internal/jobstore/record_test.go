@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {

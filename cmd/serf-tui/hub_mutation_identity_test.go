@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // kata yjsc: appwire.ValidateMutationParams gates all seven retry-safe turn

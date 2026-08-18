@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 type modelsTokensCoverageTransport func(*http.Request) (*http.Response, error)

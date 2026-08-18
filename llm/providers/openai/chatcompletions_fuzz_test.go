@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // accumulateChatCompletionsSSE drives the OpenAI Chat Completions SSE decoder

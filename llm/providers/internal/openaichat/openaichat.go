@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 // ToChatResponseFormat maps an llm.ResponseFormat onto the Chat Completions

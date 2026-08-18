@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzPluginManifestParse drives plugin.ParseManifest over arbitrary JSON. The

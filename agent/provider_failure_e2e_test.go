@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/doctor"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // This file replays the incident the provider-failure-feedback spec was written

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // EnvConfig holds configuration derived from environment variables and options

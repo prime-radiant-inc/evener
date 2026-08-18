@@ -3,7 +3,7 @@ package inputhistory_test
 import (
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/serf-tui/internal/inputhistory"
 )
 
 func TestUnescapeHistory(t *testing.T) {

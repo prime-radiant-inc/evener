@@ -105,7 +105,7 @@ fuzz/typegen/                 # NEW; reflect→schema bridge + the wire-type reg
   typegen_test.go             #   serf-free unit tests over hand-built reflect.Types
 ```
 
-`typegen` imports `schemagen` + stdlib `reflect`/`encoding/json` only. It stays in module `primeradiant.com/serf/fuzz`, whose `go.mod` (`fuzz/go.mod`) has **no serf dependency** — so the module simply will not compile if the boundary is crossed. That structural fact *is* the portability test (§5; design doc, schemagen.go:8–11).
+`typegen` imports `schemagen` + stdlib `reflect`/`encoding/json` only. It stays in module `primeradiant.com/evener/fuzz`, whose `go.mod` (`fuzz/go.mod`) has **no serf dependency** — so the module simply will not compile if the boundary is crossed. That structural fact *is* the portability test (§5; design doc, schemagen.go:8–11).
 
 ### 3.2 How serf-side types reach a serf-free registry (the load-bearing seam)
 

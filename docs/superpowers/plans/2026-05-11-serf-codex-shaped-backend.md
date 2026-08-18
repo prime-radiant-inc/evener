@@ -1175,7 +1175,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestRouterDispatchesTypedHandler(t *testing.T) {
@@ -1218,7 +1218,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type HandlerFunc func(context.Context, json.RawMessage) (any, error)
@@ -1281,7 +1281,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestServerRequiresInitialize(t *testing.T) {
@@ -1322,7 +1322,7 @@ package appserver
 import (
 	"context"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type ServerConfig struct {
@@ -1422,7 +1422,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/evener/agent"
 )
 
 func TestProjectAssistantDelta(t *testing.T) {
@@ -1469,7 +1469,7 @@ Create `internal/appwire/projection.go`:
 ```go
 package appwire
 
-import "primeradiant.com/serf/agent"
+import "primeradiant.com/evener/agent"
 
 type ServerNotification struct {
 	Method         string `json:"method"`
@@ -1726,7 +1726,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type fakeSource struct{ id string }
@@ -1759,7 +1759,7 @@ package appsource
 import (
 	"context"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type Source interface {
@@ -1784,7 +1784,7 @@ import (
 	"fmt"
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type Registry struct {

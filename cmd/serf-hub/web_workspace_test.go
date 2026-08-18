@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/evener/agent/task"
 )
 
 // TestRenderSessionTasks_PastFallbackMatchesTaskStoreLoader characterizes

@@ -1,9 +1,9 @@
 .PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
-LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/serf/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
-           -X primeradiant.com/serf/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-           -X primeradiant.com/serf/buildinfo.Channel=$(BUILD_CHANNEL)
+LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
+           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
+           -X primeradiant.com/evener/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+           -X primeradiant.com/evener/buildinfo.Channel=$(BUILD_CHANNEL)
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
@@ -330,7 +330,7 @@ fuzz-seeds:
 # the regular test gate and runs through this explicit entry point.
 #
 # Everything here builds with -tags serffuzz so the internal/invariant assertions
-# (primeradiant.com/serf/invariant) are live: a tripped invariant panics and the
+# (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // fixtureWithLegacyReservedTurnID lays out two sessions: one whose persisted

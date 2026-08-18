@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 type sessionAttributionAdapter struct {

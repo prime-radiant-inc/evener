@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // Every kind in the enum must be produced by at least one non-test call site.

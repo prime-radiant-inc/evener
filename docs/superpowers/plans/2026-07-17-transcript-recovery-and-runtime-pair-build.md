@@ -121,7 +121,7 @@ git commit -m "fix: surface transcript read application errors"
 - Create: `cmd/serf-transcript-v2-upgrade/main_test.go`
 
 **Interfaces:**
-- Consumes: `transcript.ReadLine`, `transcript.DecodeHeader`, and `transcript.DecodeEntry` from `primeradiant.com/serf/agent/transcript`.
+- Consumes: `transcript.ReadLine`, `transcript.DecodeHeader`, and `transcript.DecodeEntry` from `primeradiant.com/evener/agent/transcript`.
 - Produces: `run(args []string, now time.Time, stdout, stderr io.Writer) int`, `upgradeRoot(options) summary`, `prepareTranscript(path) preparedTranscript`, and `replaceTranscript(preparedTranscript) error` inside the command package.
 
 - [ ] **Step 1: Write failing filesystem behavior tests**

@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"primeradiant.com/serf/internal/fuzzroutes"
+	"primeradiant.com/evener/internal/fuzzroutes"
 )
 
 // fuzzReadOnlyRoutes is the canonical, order-significant hub-route allowlist

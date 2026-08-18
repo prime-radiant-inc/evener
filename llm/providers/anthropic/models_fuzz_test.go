@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // pagedRoundTripper is a fake http.RoundTripper for the paginating ListModels

@@ -16,12 +16,12 @@ import (
 
 	"github.com/spf13/afero"
 	_ "modernc.org/sqlite"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 const webTestSessionID = "02wMz5Txv1C3Hut0M8GCeB"

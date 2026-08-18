@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // imageShaRegexp limits paths to lowercase hex sha256 (64 chars). The browser

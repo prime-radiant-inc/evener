@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // ExtractRecordedResponse offline re-extracts the canonical llm.Response

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 var (

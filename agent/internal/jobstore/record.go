@@ -4,8 +4,8 @@ package jobstore
 import (
 	"time"
 
-	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/identifier"
 )
 
 // JobType identifies the runtime that owns a job.

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 func geminiThoughtSignature(part map[string]any, fc map[string]any) string {

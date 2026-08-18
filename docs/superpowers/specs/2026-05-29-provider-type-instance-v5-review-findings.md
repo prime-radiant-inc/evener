@@ -150,7 +150,7 @@ selector lives in `cmdutil`/`agent` (no `llm` import cycle).
 ## Verified-resolved (no score)
 
 Both reviewers confirmed at the package-graph level: `llm` imports **zero**
-`primeradiant.com/serf/*` packages (`go list -deps ./llm`), so the
+`primeradiant.com/evener/*` packages (`go list -deps ./llm`), so the
 `internal/providerconfig` leaf imported by both `llm` and `agent`/`cmdutil`
 creates **no cycle** (finding A#1's *structural* fix is sound — the selector lives
 in `cmdutil`). `BehaviorTag` as a plain string compiles fine. Catalog-by-tag works

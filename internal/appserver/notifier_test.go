@@ -3,7 +3,7 @@ package appserver
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func TestNotifierAssignsSequence(t *testing.T) {

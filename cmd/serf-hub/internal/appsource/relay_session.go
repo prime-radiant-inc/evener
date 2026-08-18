@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 type relaySessionConnect func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error)

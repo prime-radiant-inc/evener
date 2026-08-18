@@ -6,7 +6,7 @@
 
 **Architecture:** A `delegate` job is a Phase 2 `runningJob` whose `signal` cancels the child run's context (`runCancel`) and whose finalize calls `jm.finalize(...)`. The child session and its run goroutine are produced by the salvaged `spawnAgent` machinery (`agent/subagents.go`); Phase 3 wraps a `jobstore.JobRecord` (Type=delegate, `transcript_ref = local:<childSessionID>`) around it and streams the child's `communicate` result into the per-job log. The child's prose result is `communicate`'s top-level `message`; its structured result is the **raw** `args["output"]` object, which today is dropped by `normalizeNodeOutput` — Phase 3 preserves it via a new `communicateResult.structured` field + a `setCommunicateStructured` setter and threads it to the job record as `structured_result`. `result_schema` is injected with the existing `Profile.WithCommunicateOutputSchema` (which *replaces* the child `communicate` `output` property wholesale) and validated for free at the communicate call boundary, so `structured_result_valid` is true-by-construction. `job_send_message` reuses `sendInput`'s running-steer / idle-resume mechanics, gating concrete-`job_id` resume/steer to the root session by `s.depth`.
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the Phase 2 `JobManager` (`agent/jobs.go`: `jobManager`, `runningJob`, `jobNotification`, `finalize`, `enqueueJobNotification`, `jobsDir`), the existing child-session runtime (`agent/subagents.go`), the tool registry (`tool.RegisteredTool`/`Exec`), `Profile.WithCommunicateOutputSchema`. Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the Phase 2 `JobManager` (`agent/jobs.go`: `jobManager`, `runningJob`, `jobNotification`, `finalize`, `enqueueJobNotification`, `jobsDir`), the existing child-session runtime (`agent/subagents.go`), the tool registry (`tool.RegisteredTool`/`Exec`), `Profile.WithCommunicateOutputSchema`. Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 3 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §5.4 (delegate), §5.4.1 (delegate result production), §5.5 (`job_send_message`), §5.10 (errors), §5.11 (discovery), §6 (notifications). It depends on **Phase 1** (`agent/internal/jobstore` merged) and **Phase 2** (the `JobManager`, `job_read_output`/`job_list`/`job_stop` tools, `capabilityJobControl`, the durable notification bridge, all merged). The new `delegate` and `job_send_message` tools register **alongside** the legacy subagent tools (`spawn_agent`/`resume_agent`/`wait`/…) — a temporary parallel surface; Phase 6 removes the legacy one.
 
@@ -77,9 +77,9 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // The communicate Exec must preserve the RAW output object (including schema
@@ -126,7 +126,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 }
 ```
 
-NOTE for the implementer: the two `eventsKindShim`/`eventsDataShim` placeholders above are only there because `toolDeps.emit` has a concrete typed signature (`func(events.EventKind, events.EventData)`). Do **not** invent shim types — instead build the test the way the existing communicate tests do: import `primeradiant.com/serf/agent/events` and set `emit: func(events.EventKind, events.EventData) {}`. Drop the `eventsKindShim` lines and the `deps.emit = ...` reassignment; set `emit` directly in the struct literal with the real signature. (Verify the field type at `agent/session_tool_registry.go:29`: `emit func(kind events.EventKind, data events.EventData)`.)
+NOTE for the implementer: the two `eventsKindShim`/`eventsDataShim` placeholders above are only there because `toolDeps.emit` has a concrete typed signature (`func(events.EventKind, events.EventData)`). Do **not** invent shim types — instead build the test the way the existing communicate tests do: import `primeradiant.com/evener/agent/events` and set `emit: func(events.EventKind, events.EventData) {}`. Drop the `eventsKindShim` lines and the `deps.emit = ...` reassignment; set `emit` directly in the struct literal with the real signature. (Verify the field type at `agent/session_tool_registry.go:29`: `emit func(kind events.EventKind, data events.EventData)`.)
 
 - [ ] **Step 2: Run test to verify it fails** — `cd agent && go test ./ -run TestCommunicateCapturesRawStructuredOutput -v`. Expected: FAIL to compile (`toolDeps has no field setCommunicateStructured`).
 
@@ -540,9 +540,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/llm"
 )
 
 // communicateWithStructured scripts a single communicate tool call carrying a
@@ -676,7 +676,7 @@ type delegateResult struct {
    - Add a field `communicateOutputSchema map[string]any` to `spawnConfig` (`session_config.go:189`) with `json:"-"` like the other `spawn` fields (it must never persist).
    - Define a `ctxCommunicateOutputSchema` context key next to `ctxToolCallID` (`session_tools.go:28`). `createDelegate` sets it before spawning: `ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, args.ResultSchema)`.
    - In `spawnAgent`, read it into `subCfg.spawn.communicateOutputSchema` right where the existing `subCfg.spawn.parentToolCallID` is set from `ctxToolCallID` (`subagents.go:217-219`). Immediately before `NewSession` (`subagents.go:302`), apply: `if len(subCfg.spawn.communicateOutputSchema) > 0 { subProfile = provider.WithCommunicateOutputSchema(subProfile, subCfg.spawn.communicateOutputSchema) }`.
-   - Add the import `"primeradiant.com/serf/agent/provider"` to `subagents.go` (it does not import `provider` today; verify with `grep -n "agent/provider" agent/subagents.go`).
+   - Add the import `"primeradiant.com/evener/agent/provider"` to `subagents.go` (it does not import `provider` today; verify with `grep -n "agent/provider" agent/subagents.go`).
    - The legacy `spawn_agent` handler never sets the context value, so it and the `spawnAgent` signature are **completely untouched** (no `nil` to pass).
 
    Validation is then free: the child's `communicate` tool's `output` property *is* the schema, and the registry validates it at the call boundary (`registry.go:424`) before the child's `communicate` Exec runs. Do not re-validate. (`WithCommunicateOutputSchema` returns the profile unchanged for a nil/empty schema — `profile_overrides.go:24` — so passing `nil` is a safe no-op.)

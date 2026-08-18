@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // SessionInfraRoots returns the session's hook and MCP-server paths: the read/

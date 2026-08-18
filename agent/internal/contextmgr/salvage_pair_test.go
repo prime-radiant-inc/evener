@@ -3,8 +3,8 @@ package contextmgr
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // On a provider failure, the session persists a salvage pair: a TurnAssistant

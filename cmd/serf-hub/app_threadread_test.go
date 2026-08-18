@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {

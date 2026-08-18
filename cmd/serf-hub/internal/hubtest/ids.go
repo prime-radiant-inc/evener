@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 // SessionID returns a fresh session id that passes

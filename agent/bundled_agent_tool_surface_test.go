@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // bundledTypedAgentsForTest returns every agent shipped inside the binary that

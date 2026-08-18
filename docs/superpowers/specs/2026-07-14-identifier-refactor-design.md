@@ -41,7 +41,7 @@ This release makes a clean break from the old formats. Serf neither migrates nor
 Add a leaf module:
 
 ```text
-primeradiant.com/serf/identifier
+primeradiant.com/evener/identifier
 ```
 
 All repository modules may depend on it. It depends only on the standard library and `github.com/google/uuid` v1.6.0. It must not import the root, `agent`, or `llm` modules. The repository already uses this UUID version indirectly; the new module makes it a direct dependency and uses its process-monotonic `NewV7` implementation.

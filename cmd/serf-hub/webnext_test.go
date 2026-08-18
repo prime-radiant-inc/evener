@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // newTestWebServer builds a WebServer the same way the rest of this package's

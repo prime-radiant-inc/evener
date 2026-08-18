@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func FuzzRemainingExactCoverage(f *testing.F) {

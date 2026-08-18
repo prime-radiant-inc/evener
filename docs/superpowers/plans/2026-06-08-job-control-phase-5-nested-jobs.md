@@ -6,7 +6,7 @@
 
 **Architecture:** The forwarding seam is a single callback. Each `jobManager` gains a `forward func(jobstore.Event)` hook (nil for the root). When a subagent's `jobManager` writes a `job_started`/`job_session_assigned`/`job_finished`/notification event for a job whose `ParentJobID` is non-empty, it also calls `forward(event)` with the **verbatim** event (same `job_id`, same `terminal_generation`); the parent appends it to its own `jobstore.Store`, producing a forwarded durable record that folds (via the existing `Fold`) into a `JobRecord` carrying `ParentJobID`. The seam is established at spawn: `spawnAgent` threads the parent's forward closure and the spawning delegate's `job_id` into the child's `spawnConfig`, and `NewSession` installs them on the child `jobManager`. `job_list` filters forwarded records (non-empty `ParentJobID`) behind `include_nested`. `job_read_output`/`job_stop` on a forwarded `job_id` route to the owner child's `jobManager` (reached through the parent's `subagentManager`) when the owner runtime is live; after restart with no live owner the forwarded `running` record reconciles to `stopped/runtime_lost` (the existing Phase 1 `Reconcile` + Phase 2 wiring). `terminal_generation` is minted **once by the owner** and copied verbatim into the parent store, so the dedupe key `(visible_session_id, job_id, terminal_generation)` matches in both stores.
 
-**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the Phase 2 `jobManager` (`agent/jobs.go`: `jobManager`, `runningJob`, `jobNotification`, `createShell`, `list`/`listFilter`, `readOutput`, `stop`, `finalize`, `reconcileLostJobs`, `now`, `enqueue`), the Phase 2 streaming-shell path (`agent/job_shell.go`: `runShell`/`shellArgs`/`shellResult`), the existing subagent spawn machinery (`agent/subagents.go`, `agent/session_config.go` `spawnConfig`). Module: `primeradiant.com/serf/agent`.
+**Tech Stack:** Go, `agent/internal/jobstore` (Phase 1), the Phase 2 `jobManager` (`agent/jobs.go`: `jobManager`, `runningJob`, `jobNotification`, `createShell`, `list`/`listFilter`, `readOutput`, `stop`, `finalize`, `reconcileLostJobs`, `now`, `enqueue`), the Phase 2 streaming-shell path (`agent/job_shell.go`: `runShell`/`shellArgs`/`shellResult`), the existing subagent spawn machinery (`agent/subagents.go`, `agent/session_config.go` `spawnConfig`). Module: `primeradiant.com/evener/agent`.
 
 This is **Phase 5 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-job-control-design.md` §10 (nested jobs), §5.7 (`job_list include_nested`), §3.2/§3.3 (`parent_job_id`, `terminal_generation`), §3.4 (output routing), §5.8 (`job_stop include_children`), §7 (forwarded nested-job reconciliation), and the reference contract `docs/job-control.md` §"Nested jobs" (lines 1007–1023). It depends on **Phases 1–4** being merged: Phase 1 (`agent/internal/jobstore`), Phase 2 (the `jobManager`, the job-capable `shell`, `job_read_output`/`job_list`/`job_stop`, the durable notification bridge, restart reconciliation), Phase 3 (`delegate` + `job_send_message`, the `spawnAgent` `communicateOutputSchema` parameter), Phase 4 (watches). The behavior here registers/extends **alongside** the legacy subagent surface — **Phase 6 deletes the legacy surface**; this phase adds no new model-facing tools (it activates `include_nested`/`include_children`, which already exist as parameters on `DefJobList`/`DefJobStop` from Phase 2).
 
@@ -106,9 +106,9 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/llm"
 )
 
 // A delegate child session must end up with a jobManager whose forward hook is
@@ -183,7 +183,7 @@ In `agent/session_config.go`, add to `spawnConfig` (after `sharedTaskStore`, bef
 	parentJobID string
 ```
 
-Add the import `"primeradiant.com/serf/agent/internal/jobstore"` to `session_config.go` (confirm it is not already imported).
+Add the import `"primeradiant.com/evener/agent/internal/jobstore"` to `session_config.go` (confirm it is not already imported).
 
 In `agent/session_tools.go`, next to `ctxToolCallID` (`:27-28`), add:
 
@@ -350,7 +350,7 @@ Create `agent/jobs_nested.go`:
 ```go
 package agent
 
-import "primeradiant.com/serf/agent/internal/jobstore"
+import "primeradiant.com/evener/agent/internal/jobstore"
 
 // forwardLocked mirrors a nested job's event into the parent (visible) session's
 // store via the forward hook, rewriting visible_to_session_id to the parent so

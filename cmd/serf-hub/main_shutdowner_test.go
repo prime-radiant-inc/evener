@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // serveHub guards its companion with `if companion != nil`, which is only a

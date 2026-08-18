@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // recordedFrame mirrors the WS frame recorder's JSONL line.

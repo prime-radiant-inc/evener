@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
 
 // TestActiveTurnRunningForReadsStartedAtAsMillis locks the wire unit for

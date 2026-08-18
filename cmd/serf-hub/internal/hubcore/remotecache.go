@@ -3,7 +3,7 @@ package hubcore
 import (
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // RemoteSourceSnapshot is the source-owned portion of one remote navigation

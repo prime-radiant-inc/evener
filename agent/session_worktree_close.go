@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // isolationLane names one stable worktree-isolated delegate lane.

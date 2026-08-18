@@ -8,14 +8,14 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
-	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
-	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
-	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/evener/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/evener/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 func (m *hubModel) resizeSessionInputFrom(prevHeight int) {

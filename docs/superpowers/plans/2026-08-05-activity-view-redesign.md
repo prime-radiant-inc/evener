@@ -201,9 +201,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestLoadHistoricalActivityBaseReadsUsage(t *testing.T) {
@@ -254,7 +254,7 @@ Expected: FAIL — `snapshot.Usage is nil`.
 
 - [ ] **Step 3: Implement**
 
-`agent/jobs_activity_past.go` — add import `"primeradiant.com/serf/internal/apptranscript"`, then:
+`agent/jobs_activity_past.go` — add import `"primeradiant.com/evener/internal/apptranscript"`, then:
 
 ```go
 // activityUsageCache memoizes per-transcript cumulative usage totals (keyed by

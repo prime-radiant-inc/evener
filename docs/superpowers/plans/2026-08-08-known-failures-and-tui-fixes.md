@@ -299,9 +299,9 @@ WARNING: DATA RACE
 Write at 0x00c0003a0780 by goroutine 112:
   os.(*Process).Release()
       .../os/exec.go:284 +0x2c
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.init.func1()
+  primeradiant.com/evener/cmd/serf-tui/internal/hubstart.init.func1()
       hub_start.go:208 +0x18
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.StartLocalHub()
+  primeradiant.com/evener/cmd/serf-tui/internal/hubstart.StartLocalHub()
       hub_start.go:489 +0xc8c
   ...
 Previous read at 0x00c0003a0780 by goroutine 116:
@@ -310,7 +310,7 @@ Previous read at 0x00c0003a0780 by goroutine 116:
   ...
   os/exec.(*Cmd).Wait()
       .../os/exec/exec.go:930 +0x60
-  primeradiant.com/serf/cmd/serf-tui/internal/hubstart.StartLocalHub.func2()
+  primeradiant.com/evener/cmd/serf-tui/internal/hubstart.StartLocalHub.func2()
       hub_start.go:478 +0x30
 ```
 
@@ -404,18 +404,18 @@ Fails on HEAD with:
 ```
 WARNING: DATA RACE
 Read at 0x00c000520040 by goroutine 37:
-  primeradiant.com/serf/agent.(*execRecordingEnv).ExecCommand()
+  primeradiant.com/evener/agent.(*execRecordingEnv).ExecCommand()
       agent/session_slash_command_test.go:194 +0x70
-  primeradiant.com/serf/agent.runProbeScript()
+  primeradiant.com/evener/agent.runProbeScript()
       agent/session_capabilities.go:344 +0xc0
-  primeradiant.com/serf/agent.probeCapabilities.func2()
+  primeradiant.com/evener/agent.probeCapabilities.func2()
       agent/session_capabilities.go:326 +0xbc
 
 Previous write at 0x00c000520040 by goroutine 36:
-  primeradiant.com/serf/agent.(*execRecordingEnv).ExecCommand()
+  primeradiant.com/evener/agent.(*execRecordingEnv).ExecCommand()
       agent/session_slash_command_test.go:194 +0x84
   ...
-  primeradiant.com/serf/agent.probeCapabilities.func1()
+  primeradiant.com/evener/agent.probeCapabilities.func1()
       agent/session_capabilities.go:320 +0xb4
 ```
 

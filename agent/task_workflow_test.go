@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/plugin"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 func TestFormatTaskList(t *testing.T) {

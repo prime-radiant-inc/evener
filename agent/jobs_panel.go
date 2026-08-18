@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // isOutputNotExistErr reports whether err means the job's output file does

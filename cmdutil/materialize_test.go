@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestMaterializeProvidersConfig(t *testing.T) {

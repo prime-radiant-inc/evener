@@ -1,4 +1,4 @@
-module primeradiant.com/serf/identifier
+module primeradiant.com/evener/identifier
 
 go 1.25.6
 

@@ -24,11 +24,11 @@ import (
 	"net/http"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "http://localhost:11434/v1"

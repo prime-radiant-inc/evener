@@ -21,10 +21,10 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // TestAuthNoneProvider_EveryCredentialGateFollowsTheRegistry holds the four sites

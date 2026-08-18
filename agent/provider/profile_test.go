@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func findToolDef(p *Profile, name string) *llm.ToolDefinition {

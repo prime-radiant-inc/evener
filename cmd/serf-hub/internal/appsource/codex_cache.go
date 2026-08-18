@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // cloneCodexCachedThread gives each reader ownership of the mutable state that

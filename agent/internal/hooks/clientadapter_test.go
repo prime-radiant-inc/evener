@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // --- clientAdapter tests ---

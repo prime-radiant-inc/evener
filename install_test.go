@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/rendezvous"
+	agentplugin "primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {

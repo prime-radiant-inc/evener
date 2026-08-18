@@ -3,7 +3,7 @@ package transcript
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestApplyThreadItemCarriesTranscriptEntryIndexOntoUserMessages (kata e6q0)

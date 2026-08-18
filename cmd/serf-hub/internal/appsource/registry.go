@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 type Registry struct {

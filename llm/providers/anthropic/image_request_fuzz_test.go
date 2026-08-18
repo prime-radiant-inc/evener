@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzAnthropicImageRequestBuild drives the real request-build path with image

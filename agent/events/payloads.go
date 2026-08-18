@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // Typed event payload structs. JSON tags match the map keys used previously.

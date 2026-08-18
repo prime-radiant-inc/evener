@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {

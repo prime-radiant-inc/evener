@@ -11,11 +11,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 )
 
 type tuiProgram interface {

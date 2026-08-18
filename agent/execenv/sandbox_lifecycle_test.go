@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // TestEnableSandboxProvisionsSeatbeltBackend: EnableSandbox provisions the kernel

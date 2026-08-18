@@ -6,7 +6,7 @@
 
 **Architecture:** Three pieces on branch `cc-plugin-marketplaces` (P1's `internal/plugins` is already present + gated green). (1) `internal/plugins/enabled.go` — `EnabledPluginDirs(explicit)` merges explicit `--plugin-dir` values with installed+enabled registry entries, pre-validates each via the existing dry-run `Load`, dedups by plugin name (explicit wins), and skips broken ones, so the fail-hard `agent/plugin.LoadAll` never chokes. (2) `internal/plugins/seed.go` — first-run seeding of `known_marketplaces.json`. (3) A stdlib-`flag` `serf plugin` command tree (`cmd/serf/plugincmd.go`, package `main`, modeled on the existing `runOpenAI` nested switch) plus the two-line gating injection at the only two session-construction sites (`cmd/serf/run.go:183`, `cmd/serf/serve.go:212`). The hub needs NO change: it spawns `serf serve`, which self-computes enabled dirs.
 
-**Tech Stack:** Go 1.25, root module `primeradiant.com/serf`. Stdlib `flag` (NOT cobra — cmd/serf is hand-rolled). Reuses P1 `internal/plugins` (`Manager`, `NewManager`, `DefaultRoot`, `List`, `AddMarketplace`/`ListMarketplaces`/`RemoveMarketplace`/`RefreshMarketplace`/`Browse`, `Install`/`Upgrade`/`Remove`/`SetEnabled`/`SetAutoUpgrade`/`UpdateAll`, `Source`/`SourceKind`, unexported `loadMarketplaces`/`saveMarketplaces`, `validatePluginDir`). Tests use `t.TempDir()` + real local `git` fixtures (the P1 helpers `makeGitRepo`/`makeInstallableMarketplace`/`writePlugin` live in `internal/plugins` test files — the CLI tests build their own small fixtures or drive a `Manager` rooted at a temp dir); `t.Skip` when `git` is absent.
+**Tech Stack:** Go 1.25, root module `primeradiant.com/evener`. Stdlib `flag` (NOT cobra — cmd/serf is hand-rolled). Reuses P1 `internal/plugins` (`Manager`, `NewManager`, `DefaultRoot`, `List`, `AddMarketplace`/`ListMarketplaces`/`RemoveMarketplace`/`RefreshMarketplace`/`Browse`, `Install`/`Upgrade`/`Remove`/`SetEnabled`/`SetAutoUpgrade`/`UpdateAll`, `Source`/`SourceKind`, unexported `loadMarketplaces`/`saveMarketplaces`, `validatePluginDir`). Tests use `t.TempDir()` + real local `git` fixtures (the P1 helpers `makeGitRepo`/`makeInstallableMarketplace`/`writePlugin` live in `internal/plugins` test files — the CLI tests build their own small fixtures or drive a `Manager` rooted at a temp dir); `t.Skip` when `git` is absent.
 
 ## Global Constraints
 
@@ -117,7 +117,7 @@ package plugins
 import (
 	"fmt"
 
-	agentplugin "primeradiant.com/serf/agent/plugin"
+	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 // EnabledPluginDirs returns the plugin directories a session should load:
@@ -380,7 +380,7 @@ import (
 	"io"
 	"strings"
 
-	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -550,7 +550,7 @@ In `cmd/serf/serve.go` at the `PluginDirs: []string(pluginDirs)` line (~:212):
 ```go
 	PluginDirs:                  plugins.NewManager("").EnabledPluginDirs([]string(pluginDirs)),
 ```
-Add the `primeradiant.com/serf/internal/plugins` import to both files.
+Add the `primeradiant.com/evener/internal/plugins` import to both files.
 
 - [ ] **Step 3: First-run seed hook.** In `cmd/serf/run.go` near the existing `cmdutil.EnsureUserConfigDirs()` call (~:88), after ensuring config dirs, seed (respecting a new `--no-default-marketplaces` flag threaded through `runConfig`; default false = seed):
 ```go

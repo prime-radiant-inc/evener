@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 const immediateExitHubHelperEnv = "SERF_TUI_HUBSTART_IMMEDIATE_EXIT_HELPER"

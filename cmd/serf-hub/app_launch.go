@@ -6,9 +6,9 @@ import (
 	"maps"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/serf-hub/internal/launchconfig"
 )
 
 // hubLaunchController owns the serf/launch/* RPC handlers.

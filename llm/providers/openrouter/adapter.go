@@ -6,11 +6,11 @@ package openrouter
 import (
 	"strings"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/providerfwd"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/providerfwd"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1" // includes /v1 per OpenAI SDK convention

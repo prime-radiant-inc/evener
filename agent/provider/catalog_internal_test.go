@@ -6,7 +6,7 @@ package provider
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestResolveOpenAICompatCatalogModel exercises the lookup precedence

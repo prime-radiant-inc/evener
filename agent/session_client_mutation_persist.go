@@ -14,7 +14,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 const (

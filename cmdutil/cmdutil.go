@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/kimicoding"
-	"primeradiant.com/serf/server"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/kimicoding"
+	"primeradiant.com/evener/server"
 )
 
 // GitOriginURLFromDir runs "git remote get-url origin" in dir and returns the

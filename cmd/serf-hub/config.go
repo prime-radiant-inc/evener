@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/evener/envvars"
 )
 
 var configUserHomeDir = os.UserHomeDir

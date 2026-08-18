@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/fault"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/llm"
 )
 
 // This file fuzzes the compaction / context-management core of the contextmgr

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/sessionlog"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/sessionlog"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // forkSummarize makes a side LLM call using a cheap model to produce a

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func fuzzScenarioTreeCacheMemoizesByVersionAndBucket(t *testing.T) {

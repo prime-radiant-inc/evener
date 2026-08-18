@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // verboseEventTeeBuffer is how many events the tee will hold for a stderr that

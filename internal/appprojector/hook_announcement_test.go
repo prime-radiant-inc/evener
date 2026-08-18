@@ -3,8 +3,8 @@ package appprojector
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // kata qm9y: the live hook line and the reloaded one are built by the same

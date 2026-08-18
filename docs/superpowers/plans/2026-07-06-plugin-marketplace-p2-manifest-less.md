@@ -423,7 +423,7 @@ func hasPluginManifest(dir string) bool {
   Task 5 (`Install`) and Task 6 (`upgradeLocked`).
 
 - [ ] **Failing test** — add to `internal/plugins/manifest_fallback_test.go` (add
-  `"encoding/json"`, `"strings"`, and `agentplugin "primeradiant.com/serf/agent/plugin"` to its
+  `"encoding/json"`, `"strings"`, and `agentplugin "primeradiant.com/evener/agent/plugin"` to its
   import block):
 ```go
 func TestEnsureManifestFallback_ExistingManifestIsNoop(t *testing.T) {
@@ -532,7 +532,7 @@ Run: `go test ./internal/plugins/... -run 'TestEnsureManifestFallback' -count=1`
 (compile error: `ensureManifestFallback` undefined).
 
 - [ ] **Implement** — append to `internal/plugins/manifest_fallback.go` (add `"encoding/json"`,
-  `"fmt"`, and `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block):
+  `"fmt"`, and `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block):
 ```go
 // ensureManifestFallback makes a manifest-less plugin installable by
 // honoring its marketplace entry as a fallback manifest — the fix for
@@ -615,7 +615,7 @@ func ensureManifestFallback(dir string, staged bool, cp CatalogPlugin) error {
   components, and fails with the honest error (not the old misleading one) when it declares none.
 
 - [ ] **Failing test** — add to `internal/plugins/install_test.go` (add `"strings"` and
-  `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block):
+  `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block):
 ```go
 func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
 	if !gitAvailable() {
@@ -802,7 +802,7 @@ spec's complaint was the *misleading message*, not the cleanup — see Global Co
   install/upgrade and is untouched, per the existing never-delete-on-upgrade rule).
 
 - [ ] **Failing test** — add to `internal/plugins/upgrade_test.go` (add
-  `agentplugin "primeradiant.com/serf/agent/plugin"` to its import block; `os/exec` is already
+  `agentplugin "primeradiant.com/evener/agent/plugin"` to its import block; `os/exec` is already
   imported):
 ```go
 func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/fuzz/edgeseeds"
+	"primeradiant.com/evener/identifier"
 )
 
 // FuzzLaunchConfigResolve promotes the decode-only corpus to drive the real

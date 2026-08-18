@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/identifier"
+	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/identifier"
 )
 
 // compactThreshold must match agent/internal/contextmgr/context_manager.go's

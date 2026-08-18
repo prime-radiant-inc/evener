@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzFromChatCompletionResponse drives the non-streaming response mapper

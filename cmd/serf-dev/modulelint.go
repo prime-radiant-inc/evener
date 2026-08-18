@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/devtool/procgroup"
-	"primeradiant.com/serf/internal/devtool/report"
-	"primeradiant.com/serf/internal/devtool/scratch"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/devtool/procgroup"
+	"primeradiant.com/evener/internal/devtool/report"
+	"primeradiant.com/evener/internal/devtool/scratch"
 )
 
 // The defaults are the interface run-module-lint.sh shipped with; the

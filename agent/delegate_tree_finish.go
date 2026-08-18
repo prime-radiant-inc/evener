@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 const delegateFinishReasonLimit = 512

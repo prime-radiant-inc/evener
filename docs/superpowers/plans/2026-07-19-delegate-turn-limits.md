@@ -6,7 +6,7 @@
 
 **Architecture:** One root-minted, tree-shared atomic counter per budget (spawn turns vs drive turns), configured via `SessionConfig` with the existing CLI/launchconfig/snapshot plumbing pattern used by `MaxSubagentDepth`. Slot reservations carry a holder kind so occupancy is diagnosable. Error becomes a typed, formatted error preserving `errors.Is(err, errTreeAtCapacity)`.
 
-**Tech Stack:** Go 1.25, `primeradiant.com/serf` module, stdlib only (sync/atomic, context, fmt).
+**Tech Stack:** Go 1.25, `primeradiant.com/evener` module, stdlib only (sync/atomic, context, fmt).
 
 **Spec:** `docs/superpowers/specs/2026-07-19-delegate-turn-limits-design.md` (committed 2f2e41df).
 

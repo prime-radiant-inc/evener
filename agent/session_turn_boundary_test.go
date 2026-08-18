@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/appwire"
 )
 
 // boundaryRecorder collects the events a served session emits. Registering a

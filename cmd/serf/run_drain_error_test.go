@@ -6,10 +6,10 @@ import (
 	"errors"
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 func TestRunSkipsDrainAfterFatalModelError(t *testing.T) {

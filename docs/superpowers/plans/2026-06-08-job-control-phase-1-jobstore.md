@@ -6,7 +6,7 @@
 
 **Architecture:** A leaf package under `agent/internal/jobstore` that deals only in records, bytes, and an append-only JSONL event log. It imports only stdlib + `github.com/oklog/ulid/v2` and knows nothing about `Session`, providers, or the agent runtime — so every behavior is testable in isolation. Later phases (shell jobs, delegate jobs, watches, nested jobs) build the runtime glue in package `agent` on top of this substrate. The event log folds to `JobRecord`s the same way the existing `agent/transcript` writer appends turns.
 
-**Tech Stack:** Go 1.x, `github.com/oklog/ulid/v2` (already an `agent` dependency), `encoding/json`, `regexp` (RE2), standard `os`/`sync`. Module: `primeradiant.com/serf/agent`. Tests: `go test`.
+**Tech Stack:** Go 1.x, `github.com/oklog/ulid/v2` (already an `agent` dependency), `encoding/json`, `regexp` (RE2), standard `os`/`sync`. Module: `primeradiant.com/evener/agent`. Tests: `go test`.
 
 This is **Phase 1 of 6**. It is the design in `docs/superpowers/specs/2026-06-08-job-control-design.md` §3 (data model), §6 (notification bookkeeping), §7 (reconciliation). It produces a tested library with no wiring into the live agent yet; nothing in this phase changes model-facing behavior. The phase roadmap is at the end of this document.
 

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are integration tests for the manage_worktree remove arm (spec §5

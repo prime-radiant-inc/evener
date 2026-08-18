@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/serf-tui/internal/clipboard"
 )
 
 // addPendingAttachment appends a captured image to the composer's

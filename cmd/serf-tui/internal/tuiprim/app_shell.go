@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
 )
 
 type AppShell struct {

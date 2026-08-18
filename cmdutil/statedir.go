@@ -4,9 +4,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 )
 
 // DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,

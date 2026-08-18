@@ -288,7 +288,7 @@ at 4f5ae4a75):**
       return Agent{}, fmt.Errorf("agent task %q: %w", tt.Title, err)
   }
   ```
-  (Add the `primeradiant.com/serf/llm` import; `agent/plugin` is inside the
+  (Add the `primeradiant.com/evener/llm` import; `agent/plugin` is inside the
   `agent` Go module, which already depends on `llm` — same import path
   `agent/session_init.go` uses.)
 - [ ] **Step 7: Run `go build ./... && go test ./...`` in `llm` and `agent`;

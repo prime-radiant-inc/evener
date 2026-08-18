@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/artifactstore"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/llm"
 )
 
 func artifactTranscriptFixture(t *testing.T, output string) (*toolDeps, string) {

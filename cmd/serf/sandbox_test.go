@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // TestConfigureSandboxOffIsNoop: --sandbox off (the default) leaves the config's

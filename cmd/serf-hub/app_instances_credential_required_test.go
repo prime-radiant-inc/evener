@@ -20,8 +20,8 @@ package main
 import (
 	"testing"
 
-	"primeradiant.com/serf/auth/openai/oaitest"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // credentialShapesToml carries one instance per credential-requirement shape:

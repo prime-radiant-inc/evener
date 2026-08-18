@@ -3,7 +3,7 @@ package hubcore
 import (
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {

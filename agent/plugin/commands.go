@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // Command represents a slash command. Plugin commands come from a plugin's

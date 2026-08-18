@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/oracle"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/oracle"
+	"primeradiant.com/evener/llm"
 )
 
 // This file fuzzes ObsMaskStrategy.ManageContext and its aggressive

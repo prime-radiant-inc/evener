@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/fuzz/aliascheck"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/fuzz/aliascheck"
 )
 
 // FuzzAgentClonesShareNoMutableState holds this package's hand-written deep

@@ -13,10 +13,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // LiveEntry is the hub's view of a single live daemon, combining

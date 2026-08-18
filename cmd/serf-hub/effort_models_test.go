@@ -4,10 +4,10 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
-	hubcore "primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/appwire"
+	hubcore "primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // wantOpus46Levels is the canonical effort-level slice for claude-opus-4-6 as

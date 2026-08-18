@@ -28,7 +28,7 @@ The load-bearing toolchain fact (verified, this worktree):
 
 ```
 $ go test -run '^FuzzMessageDecode$' -coverpkg=./appwire -coverprofile=cov.out ./appwire
-ok  primeradiant.com/serf/appwire  coverage: 14.6% of statements in ./appwire
+ok  primeradiant.com/evener/appwire  coverage: 14.6% of statements in ./appwire
 $ head -1 cov.out
 mode: set
 ```
@@ -79,7 +79,7 @@ This keeps the campaign runner and the coverage runner reading the identical tar
 
 ### 2.3 Merging profiles across modules (for the secondary number and the gap map)
 
-Each profile is full-import-path qualified (`primeradiant.com/serf/appwire/jsonrpc.go:113.x,…` vs `primeradiant.com/serf/llm/sse.go:…`) and all use `mode: set`. Merging is therefore concatenation with one header, deduping identical blocks and taking the **union** of covered statements (a block is covered if *any* target's corpus hit it; under `mode: set` count is 0/1, so union = max). No `gocovmerge`/`go tool covdata` dependency is needed — those target binary (`GOCOVERDIR`) coverage, not text profiles. The reporter must assert every profile's first line is `mode: set` and refuse to merge mixed modes.
+Each profile is full-import-path qualified (`primeradiant.com/evener/appwire/jsonrpc.go:113.x,…` vs `primeradiant.com/evener/llm/sse.go:…`) and all use `mode: set`. Merging is therefore concatenation with one header, deduping identical blocks and taking the **union** of covered statements (a block is covered if *any* target's corpus hit it; under `mode: set` count is 0/1, so union = max). No `gocovmerge`/`go tool covdata` dependency is needed — those target binary (`GOCOVERDIR`) coverage, not text profiles. The reporter must assert every profile's first line is `mode: set` and refuse to merge mixed modes.
 
 The reporter groups blocks by package (the import path up to the last `/<file>.go`) and reports the **merged** per-package number (the union across all targets — "is this package fuzzed at all, and how much") for the gap map and the secondary visibility column.
 
@@ -103,8 +103,8 @@ FUZZ SURFACE COVERAGE  (committed corpus, deterministic replay — goal: 100%)
   (↑ above floor — ratchet will rise; = at floor; FOCUS % < FLOOR fails --check)
 
 GAP MAP — decode/parse packages with ZERO fuzz coverage
-  primeradiant.com/serf/agent/schema          (Unmarshal/Decode found, no fuzz target)
-  primeradiant.com/serf/providercfg           (providers.toml decode, no fuzz target)
+  primeradiant.com/evener/agent/schema          (Unmarshal/Decode found, no fuzz target)
+  primeradiant.com/evener/providercfg           (providers.toml decode, no fuzz target)
   …
 ```
 

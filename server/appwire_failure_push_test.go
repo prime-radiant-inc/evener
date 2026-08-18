@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // statusNotifications pulls every thread/status/changed the server broadcast.

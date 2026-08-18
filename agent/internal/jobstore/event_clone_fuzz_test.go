@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/aliascheck"
+	"primeradiant.com/evener/fuzz/aliascheck"
 )
 
 // FuzzCloneEventSharesNoMutableState drives cloneEvent against the bug a

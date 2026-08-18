@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // sandboxSessionID is the local past session the sandbox seeds so routes that

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/envctx"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // envctxFixedTime is the deterministic clock the injected envProbes seam

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TurnKind identifies the category of a Turn in the Session history.

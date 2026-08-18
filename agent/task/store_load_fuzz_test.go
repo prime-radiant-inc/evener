@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/edgeseeds"
+	"primeradiant.com/evener/fuzz/edgeseeds"
 )
 
 // FuzzTaskStoreLoad drives TaskStore.Load — the package's real on-disk decode

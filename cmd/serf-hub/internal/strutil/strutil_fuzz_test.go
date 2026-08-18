@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
 )
 
 func FuzzFirstNonEmpty(f *testing.F) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"primeradiant.com/serf/internal/fuzzroutes"
+	"primeradiant.com/evener/internal/fuzzroutes"
 )
 
 // fuzzSessionID is the local past session the handler fuzz seeds so the

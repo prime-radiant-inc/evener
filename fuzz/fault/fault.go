@@ -13,7 +13,7 @@
 // reproduces from its corpus entry.
 //
 // This package is serf-agnostic — it decorates only stdlib/third-party
-// interfaces and imports no primeradiant.com/serf package, per the fuzz module's
+// interfaces and imports no primeradiant.com/evener package, per the fuzz module's
 // portability boundary.
 package fault
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // s3cov_resultIndexWith builds a resultIndex mapping the given call IDs to

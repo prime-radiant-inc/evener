@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/test/e2e/fakellm"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 // TestE2E_TurnControlReachesTheSession drives the three mid-turn controls the

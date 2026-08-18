@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	toolpkg "primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {

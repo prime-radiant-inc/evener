@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 func (c *delegateTreeController) prepareSettlementForTest(lease delegateLease, packet *delegatestore.TerminalPacket) (bool, delegateMutationPlans, error) {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // readHTTPRecordings parses hub-http.jsonl into its recorded entries.

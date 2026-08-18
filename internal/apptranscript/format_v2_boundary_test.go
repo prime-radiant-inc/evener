@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 )
 
 func requireTurnsFromFile(t testing.TB, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {

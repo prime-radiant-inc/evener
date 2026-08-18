@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // TestToolResultOutputImagesMatchesTheLiveDescriptorFieldForField is the drift

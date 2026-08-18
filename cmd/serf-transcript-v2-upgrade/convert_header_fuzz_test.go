@@ -12,7 +12,7 @@ import (
 	"bytes"
 	"testing"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 func FuzzConvertHeader(f *testing.F) {

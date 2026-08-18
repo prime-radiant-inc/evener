@@ -8,7 +8,7 @@ import (
 	"io"
 	"testing"
 
-	"primeradiant.com/serf/internal/selfupdate"
+	"primeradiant.com/evener/internal/selfupdate"
 )
 
 func FuzzUpgradeErrorSeedCoverage(f *testing.F) {

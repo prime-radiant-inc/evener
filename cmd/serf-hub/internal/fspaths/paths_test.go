@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {

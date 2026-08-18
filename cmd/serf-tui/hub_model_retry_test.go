@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 func modelRetryNotification(t *testing.T, params appwire.ThreadModelRetryParams) appwire.Notification {

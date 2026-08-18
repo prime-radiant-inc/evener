@@ -11,9 +11,9 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/fuzz/fault"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/llm"
 )
 
 // faultTestHeader returns a minimal valid header. newWriterFS overwrites Kind and

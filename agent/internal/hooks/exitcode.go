@@ -1,6 +1,6 @@
 package hooks
 
-import "primeradiant.com/serf/agent/plugin"
+import "primeradiant.com/evener/agent/plugin"
 
 // eventExitPolicy is the exit-code contract for one event (07 §Exit-code semantics).
 // Phase 1 covers only events serf currently fires; everything else defaults to

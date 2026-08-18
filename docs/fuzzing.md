@@ -240,7 +240,7 @@ without crashing. Pick the strongest oracle the surface admits:
 
 External oracles (round-trip, no-panic) only see a bug once it reaches a surface.
 Internal invariants catch a *logic* bug at the point it first happens. The
-`primeradiant.com/serf/invariant` module exposes:
+`primeradiant.com/evener/invariant` module exposes:
 
 ```go
 invariant.Hold(cond bool, format string, args ...any)  // assert cond; else panic with the message

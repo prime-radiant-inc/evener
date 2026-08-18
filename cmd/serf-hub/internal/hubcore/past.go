@@ -14,9 +14,9 @@ import (
 
 	"github.com/spf13/afero"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
 )
 
 // PastEntry is one indexed past session.

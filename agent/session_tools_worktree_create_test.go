@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are integration tests for the manage_worktree create arm (spec §3),

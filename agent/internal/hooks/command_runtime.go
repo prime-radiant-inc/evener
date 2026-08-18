@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // commandHookInvocation is the fully prepared external command boundary. Its

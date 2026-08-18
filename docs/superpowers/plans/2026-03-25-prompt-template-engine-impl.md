@@ -810,7 +810,7 @@ func (r *SectionResolver) resolveRole(data PromptData) string {
 }
 ```
 
-Import `"primeradiant.com/serf/frontmatter"`.
+Import `"primeradiant.com/evener/frontmatter"`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/identifier"
 )
 
 const CodexInstallationIDMetadataKey = "x-codex-installation-id"

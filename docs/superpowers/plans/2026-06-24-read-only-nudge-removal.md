@@ -198,7 +198,7 @@ Run:
 go test ./agent
 ```
 
-Expected: `ok   primeradiant.com/serf/agent`.
+Expected: `ok   primeradiant.com/evener/agent`.
 
 If this fails, inspect the first failure. Fix only failures caused by removing the read-only nudge. Do not alter unrelated tests or behavior.
 

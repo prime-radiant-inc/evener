@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // seed100ToolsRangeA replays deterministic fixtures for the front half of the

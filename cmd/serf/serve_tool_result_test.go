@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func scriptedForegroundShellCall(id, command string) llm.ToolCallData {

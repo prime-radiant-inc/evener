@@ -747,7 +747,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 func TestReconnectRecoveryWarningKeepsRecoveryHint(t *testing.T) {
@@ -1104,7 +1104,7 @@ In `session_init.go`, the `pendingMCPWarnings` append (line ~1350-1354) becomes:
 	}
 ```
 
-Add `"primeradiant.com/serf/agent/internal/diagnostic"` to the import block if not present. If Correctness T2's `reconnectRecoveryWarning` used the literal `"mcp"`, switch it to `string(diagnostic.SourceMCP)` too for consistency.
+Add `"primeradiant.com/evener/agent/internal/diagnostic"` to the import block if not present. If Correctness T2's `reconnectRecoveryWarning` used the literal `"mcp"`, switch it to `string(diagnostic.SourceMCP)` too for consistency.
 
 - [ ] **Step 2: Run — existing MCP init tests stay green**
 

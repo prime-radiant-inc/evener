@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent/internal/globpattern"
+	"primeradiant.com/evener/agent/internal/globpattern"
 )
 
 func expandSearchPattern(pattern string) ([]string, error) {

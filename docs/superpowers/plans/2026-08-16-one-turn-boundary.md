@@ -88,7 +88,7 @@ the data-loss precedent for two minters sharing a turn-id namespace.
 - **Every production line this plan adds must be killed by a test.** Each task
   names its mutations; apply each, watch the test fail, revert.
 - Gates: `make lint`, `make build`, `go test ./...`, the seven module suites
-  (`go test primeradiant.com/serf/<mod>/...` for agent, auth, envvars, fuzz,
+  (`go test primeradiant.com/evener/<mod>/...` for agent, auth, envvars, fuzz,
   identifier, invariant, llm), `make test-web`.
 - Never `git stash`; never `git checkout <file>` to undo.
 
@@ -324,7 +324,7 @@ func TestTurnStartedDataBindsItsKind(t *testing.T) {
 }
 ```
 
-- [x] **Step 2: watch it fail** — `go test primeradiant.com/serf/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
+- [x] **Step 2: watch it fail** — `go test primeradiant.com/evener/agent/events/ -run TestTurnStartedDataBindsItsKind -v`.
 - [x] **Step 3: implement**
 
 ```go
@@ -360,7 +360,7 @@ line. (That list is documentation, not a gate — a payload with the method
 satisfies the interface either way; the real binding is `events.New`
 (`eventdata.go:25-31`), which the test above pins.)
 
-- [x] **Step 4: watch it pass**, then `go test primeradiant.com/serf/agent/events/...`.
+- [x] **Step 4: watch it pass**, then `go test primeradiant.com/evener/agent/events/...`.
 - [x] **Step 5: commit.**
 
 ---
@@ -462,7 +462,7 @@ boundary.
         event.
       A mutation that does not fail its test means the test is not pinning the
       line. Fix the test before continuing.
-- [x] **Step 5:** `go test primeradiant.com/serf/agent/...`; update the stale
+- [x] **Step 5:** `go test primeradiant.com/evener/agent/...`; update the stale
       comment at `:1035-1040` and the `ActiveTurnID` doc at
       `session_client_mutation.go:128-135`; commit.
 

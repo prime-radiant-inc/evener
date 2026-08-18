@@ -6,7 +6,7 @@
 
 **Architecture:** 8 phases (A–H), each shippable. Phase A is data-model and fork-operation in shared packages; B is theming infra; C is the sidebar rewrite; D is the workspace rewrite; E is the spawn surface; F is search; G is settings; H is cleanup. Daemons are unchanged except for one bug-fix to `serf-hub`'s resume redirect.
 
-**Tech Stack:** Go (`primeradiant.com/serf` module). htmx 2.0 + vanilla JS (`renderer.js`). `embed.FS` for assets and templates. `html/template` per-page sets. CSS custom properties for theming. Vendored htmx + marked, no other JS deps.
+**Tech Stack:** Go (`primeradiant.com/evener` module). htmx 2.0 + vanilla JS (`renderer.js`). `embed.FS` for assets and templates. `html/template` per-page sets. CSS custom properties for theming. Vendored htmx + marked, no other JS deps.
 
 **Working from:** branch `serf-hub` in worktree `.worktrees/serf-hub`. Changes commit there. Tests must pass at every commit boundary.
 
@@ -124,7 +124,7 @@ import (
     "testing"
     "time"
 
-    "primeradiant.com/serf/llm"
+    "primeradiant.com/evener/llm"
 )
 
 func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
@@ -259,7 +259,7 @@ import (
     "path/filepath"
     "time"
 
-    "primeradiant.com/serf/llm"
+    "primeradiant.com/evener/llm"
 )
 
 // ForkSession creates a new session whose transcript shares the parent's
@@ -456,7 +456,7 @@ import (
     "testing"
     "time"
 
-    "primeradiant.com/serf/agent"
+    "primeradiant.com/evener/agent"
 )
 
 func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
@@ -540,7 +540,7 @@ import (
     "path/filepath"
     "sort"
 
-    "primeradiant.com/serf/agent"
+    "primeradiant.com/evener/agent"
 )
 
 type Tree struct {

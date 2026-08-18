@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 )
 
 // handleNoToolCalls reacts to a model response that produced no tool calls.

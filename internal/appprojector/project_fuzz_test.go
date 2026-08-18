@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/evener/agent/events"
 )
 
 // projectorCases pairs each SessionEvent kind with a constructor that decodes

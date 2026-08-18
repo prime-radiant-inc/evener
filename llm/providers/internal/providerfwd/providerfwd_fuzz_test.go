@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 type failingRoundTripper struct{ err error }

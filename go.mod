@@ -1,4 +1,4 @@
-module primeradiant.com/serf
+module primeradiant.com/evener
 
 go 1.25.0
 
@@ -10,9 +10,9 @@ require (
 	github.com/spf13/afero v1.15.0
 	golang.org/x/mod v0.34.0
 	pgregory.net/rapid v1.3.0
-	primeradiant.com/serf/fuzz v0.0.0
-	primeradiant.com/serf/identifier v0.0.0
-	primeradiant.com/serf/invariant v0.0.0
+	primeradiant.com/evener/fuzz v0.0.0
+	primeradiant.com/evener/identifier v0.0.0
+	primeradiant.com/evener/invariant v0.0.0
 )
 
 require (
@@ -75,8 +75,8 @@ require (
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	primeradiant.com/serf/agent v0.0.0
-	primeradiant.com/serf/auth v0.0.0
-	primeradiant.com/serf/envvars v0.0.0
-	primeradiant.com/serf/llm v0.0.0
+	primeradiant.com/evener/agent v0.0.0
+	primeradiant.com/evener/auth v0.0.0
+	primeradiant.com/evener/envvars v0.0.0
+	primeradiant.com/evener/llm v0.0.0
 )

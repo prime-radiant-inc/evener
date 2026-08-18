@@ -14,8 +14,8 @@ import (
 
 	"pgregory.net/rapid"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/fuzz/promoter"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/fuzz/promoter"
 )
 
 // TestRouterSeqFuzz is Phase-2 target #6: a stateful (sequence) fuzz of the

@@ -14,8 +14,8 @@ import (
 	"syscall"
 
 	"github.com/coder/websocket"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type LocalDaemonSource struct {

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestRestoredSteeringWakesWhenTheDaemonAttaches closes the crash case the

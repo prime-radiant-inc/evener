@@ -16,7 +16,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/appwire"
 )
 
 // syncBuffer collects the launcher's log the way the hub's stderr does: both

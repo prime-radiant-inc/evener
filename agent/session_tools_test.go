@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
 )
 
 func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {

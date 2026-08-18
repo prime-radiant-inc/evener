@@ -37,8 +37,8 @@ func TestMainUsesExit(t *testing.T) {
 }
 
 func TestWalkTypeAllShapesAndObjects(t *testing.T) {
-	internal := syntheticInternal("primeradiant.com/serf/x/internal/y", "Secret")
-	pkg := types.NewPackage("primeradiant.com/serf/pub", "pub")
+	internal := syntheticInternal("primeradiant.com/evener/x/internal/y", "Secret")
+	pkg := types.NewPackage("primeradiant.com/evener/pub", "pub")
 	into := map[string]bool{}
 	seen := map[types.Type]bool{}
 	typesToWalk := []types.Type{
@@ -77,8 +77,8 @@ func TestFindLeaksLoaderFailuresAndLeak(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 
-	internal := syntheticInternal("primeradiant.com/serf/a/internal/b", "Secret")
-	pkg := types.NewPackage("primeradiant.com/serf/public", "public")
+	internal := syntheticInternal("primeradiant.com/evener/a/internal/b", "Secret")
+	pkg := types.NewPackage("primeradiant.com/evener/public", "public")
 	pkg.Scope().Insert(types.NewVar(token.NoPos, pkg, "Leaky", internal))
 	pkg.Scope().Insert(types.NewVar(token.NoPos, pkg, "hidden", internal))
 	packagesLoad = func(*packages.Config, ...string) ([]*packages.Package, error) {
@@ -91,8 +91,8 @@ func TestFindLeaksLoaderFailuresAndLeak(t *testing.T) {
 }
 
 func TestWalkTypePublicNamedTypeArguments(t *testing.T) {
-	pkg := types.NewPackage("primeradiant.com/serf/public", "public")
-	internal := syntheticInternal("primeradiant.com/serf/a/internal/b", "Secret")
+	pkg := types.NewPackage("primeradiant.com/evener/public", "public")
+	internal := syntheticInternal("primeradiant.com/evener/a/internal/b", "Secret")
 	tp := types.NewTypeParam(types.NewTypeName(token.NoPos, pkg, "T", nil), types.NewInterfaceType(nil, nil).Complete())
 	origin := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Box", nil), types.NewStruct(nil, nil), nil)
 	origin.SetTypeParams([]*types.TypeParam{tp})

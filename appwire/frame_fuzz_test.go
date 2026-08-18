@@ -6,8 +6,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/schemagen"
-	"primeradiant.com/serf/fuzz/typegen"
+	"primeradiant.com/evener/fuzz/schemagen"
+	"primeradiant.com/evener/fuzz/typegen"
 )
 
 // generateFrame builds a valid-but-adversarial AppWire frame from a byte Source

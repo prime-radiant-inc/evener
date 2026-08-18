@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 var doctorUserHomeDir = os.UserHomeDir

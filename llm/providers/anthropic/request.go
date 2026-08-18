@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
 )
 
 // fallbackMaxTokens is the output cap requested for models the catalog does

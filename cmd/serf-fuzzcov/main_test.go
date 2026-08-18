@@ -11,11 +11,11 @@ import (
 )
 
 func TestParseBlock(t *testing.T) {
-	b, err := parseBlock("primeradiant.com/serf/appwire/jsonrpc.go:113.45,120.2 3 1")
+	b, err := parseBlock("primeradiant.com/evener/appwire/jsonrpc.go:113.45,120.2 3 1")
 	if err != nil {
 		t.Fatalf("parseBlock: %v", err)
 	}
-	want := block{file: "primeradiant.com/serf/appwire/jsonrpc.go", start: 113, stmts: 3, count: 1}
+	want := block{file: "primeradiant.com/evener/appwire/jsonrpc.go", start: 113, stmts: 3, count: 1}
 	if b != want {
 		t.Fatalf("parseBlock = %+v, want %+v", b, want)
 	}

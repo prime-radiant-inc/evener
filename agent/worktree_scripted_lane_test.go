@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/internal/clock"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // scriptedLaneRepo is the delegate-lane counterpart to wtRepo: the same session

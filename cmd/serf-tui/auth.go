@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	authopenai "primeradiant.com/serf/auth/openai"
+	authopenai "primeradiant.com/evener/auth/openai"
 )
 
 type authStatus struct {

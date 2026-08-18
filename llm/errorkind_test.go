@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // TestKind_FromHTTPStatus pins the category each constructed error reports, and

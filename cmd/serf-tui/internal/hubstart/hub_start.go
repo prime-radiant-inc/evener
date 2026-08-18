@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/internal/binresolve"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/binresolve"
 )
 
 const DefaultHubAddr = "127.0.0.1:9180"

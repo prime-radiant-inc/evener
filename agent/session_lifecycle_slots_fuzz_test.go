@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/appwire"
 )
 
 // This file fuzzes four session-lifecycle + subagent-slot cores:

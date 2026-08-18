@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/worktree"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/llm"
 )
 
 // This file is the spec §8 error-surface catalog: one test per §8 bullet,

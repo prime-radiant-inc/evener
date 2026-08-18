@@ -3,7 +3,7 @@ package appwire
 import (
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSerfUsageFromLLM_NilWhenAllZero(t *testing.T) {

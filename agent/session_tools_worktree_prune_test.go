@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/worktree"
+	"primeradiant.com/evener/agent/internal/worktree"
 )
 
 // These are REAL-git integration tests for the manage_worktree list and prune

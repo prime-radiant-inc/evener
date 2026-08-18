@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // swapper atomically exchanges the two entries name<->spare beneath dirFd in a

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestWithCommunicateOutputSchema(t *testing.T) {

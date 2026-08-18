@@ -15,14 +15,14 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/diagnostic"
-	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/buildinfo"
-	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // launchCheckLoadClient is the injectable hook for tests. Production code calls

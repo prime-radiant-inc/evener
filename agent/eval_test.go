@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/llm"
 )
 
 func TestNewEvalCollector_SetsInitialFields(t *testing.T) {

@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/invariant"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/invariant"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 // errEmptyResponsesStream is a sentinel error emitted when the Responses API

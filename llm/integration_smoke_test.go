@@ -14,19 +14,19 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 
 	// Blank imports to register provider factories.
-	_ "primeradiant.com/serf/llm/providers/anthropic"
-	_ "primeradiant.com/serf/llm/providers/glm"
-	_ "primeradiant.com/serf/llm/providers/google"
-	_ "primeradiant.com/serf/llm/providers/kimi"
-	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/serf/llm/providers/minimax"
-	_ "primeradiant.com/serf/llm/providers/openai"
-	_ "primeradiant.com/serf/llm/providers/openaicompat"
-	_ "primeradiant.com/serf/llm/providers/openrouter"
-	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/anthropic"
+	_ "primeradiant.com/evener/llm/providers/glm"
+	_ "primeradiant.com/evener/llm/providers/google"
+	_ "primeradiant.com/evener/llm/providers/kimi"
+	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
+	_ "primeradiant.com/evener/llm/providers/minimax"
+	_ "primeradiant.com/evener/llm/providers/openai"
+	_ "primeradiant.com/evener/llm/providers/openaicompat"
+	_ "primeradiant.com/evener/llm/providers/openrouter"
+	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
 )
 
 // providerConfig holds a test model and the env keys that gate the provider.

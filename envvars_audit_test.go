@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 func TestSupportedEnvVarsAreDocumented(t *testing.T) {

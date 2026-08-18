@@ -76,7 +76,7 @@ Companion backstops (all PASS):
 
 ```
 $ go test ./cmd/serf-hub/internal/launchconfig/ -run 'TestToArgs_Sandbox|TestMerge_Sandbox|TestWire_SandboxRoundTrips|TestLaunchOptionSchema_Sandbox'
-ok  primeradiant.com/serf/cmd/serf-hub/internal/launchconfig
+ok  primeradiant.com/evener/cmd/serf-hub/internal/launchconfig
 ```
 
 ## Sharp edges

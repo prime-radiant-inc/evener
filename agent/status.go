@@ -5,13 +5,13 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/skill"
-	"primeradiant.com/serf/appwire"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/appwire"
 )
 
 var detailedStatusMCPServers = func(s *Session) []mcpconfig.ServerInfo { return s.mcpMgr.Servers() }

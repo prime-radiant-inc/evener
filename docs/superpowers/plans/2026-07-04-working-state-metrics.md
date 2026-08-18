@@ -110,7 +110,7 @@ Depends on A1 (schema fields) and A2 (createdAt home). Gives the Session the two
     	}
     }
     ```
-    (import `primeradiant.com/serf/llm` in session_state.go if not already present.)
+    (import `primeradiant.com/evener/llm` in session_state.go if not already present.)
   - `agent/session_state.go` `Meta()`: add `WorkMillis: s.workMillis,` and `CumulativeUsage: cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),` to the returned `schema.SessionMeta{...}`. Guard the `contextMgr` nil case (Meta is called under `s.mu`; `s.contextMgr` is set by init and non-nil in normal operation — mirror the existing `s.contextMgr.LastInputTokens()` call at line 105 which already assumes non-nil).
   - `agent/session_init.go` `RestoreSessionFromMetaWithConfig`: add `workMillis: meta.WorkMillis,` to the `&Session{...}` literal (beside `createdAt`). After `initSessionState` returns and the `RecordInputTokens` seed (line ~439), add:
     ```go

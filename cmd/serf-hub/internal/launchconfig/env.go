@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 // CredentialResolver is the slice of internal/credentials.Store that

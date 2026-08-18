@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 // longCacheQuirks returns quirks with the long-retention flag enabled.

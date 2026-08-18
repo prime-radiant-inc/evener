@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/clock"
 )
 
 // FakeClock is a deterministically-advanceable clock.Clock for tests. Virtual

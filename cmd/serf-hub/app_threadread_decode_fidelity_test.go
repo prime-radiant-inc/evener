@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // hubDecodedTurn writes a turn as the daemon persists it and reads it back the

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // TestHookCommandEnvScrubsSecrets covers reconciliation #5: hook commands built

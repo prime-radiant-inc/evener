@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 var (

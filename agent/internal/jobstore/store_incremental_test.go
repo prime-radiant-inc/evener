@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // The incremental reload path (the tail cursor in store.go) must be

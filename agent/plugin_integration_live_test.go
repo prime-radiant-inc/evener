@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/hooks"
-	"primeradiant.com/serf/agent/internal/mcp"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/llm"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/llm"
+	_ "primeradiant.com/evener/llm/providers/openai"
 )
 
 // buildLiveTestPlugin creates a fully-featured plugin in a temp directory.

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/serf-hub/internal/hubcore"
 )
 
 // hubTasksList answers serf/tasks/list. A running daemon's in-memory task

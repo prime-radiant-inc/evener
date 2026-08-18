@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/apilog"
-	"primeradiant.com/serf/llm/providers/openai"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 // APILogOpts selects which calls to display. Filters narrow the rows shown; the

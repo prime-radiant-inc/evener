@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/openaicompat"
+	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/providers/openaicompat"
 )
 
 type credentialProbeFakeClient struct {

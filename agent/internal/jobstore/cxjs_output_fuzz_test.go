@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // This file fuzzes grepReaderLimit and its nearby line helpers in output.go —

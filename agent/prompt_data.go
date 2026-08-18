@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // promptData is the template context for system prompt rendering.

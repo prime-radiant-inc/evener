@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/evener/envvars"
 )
 
 const refreshSkew = 5 * time.Minute

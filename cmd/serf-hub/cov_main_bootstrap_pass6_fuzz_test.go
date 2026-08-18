@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
 )
 
 func FuzzMainBootstrapPass6(f *testing.F) {

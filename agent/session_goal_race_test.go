@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/llm"
 )
 
 // TestGoal_NoRaceSetClearVsGate hammers SetGoal/ClearGoal from several goroutines

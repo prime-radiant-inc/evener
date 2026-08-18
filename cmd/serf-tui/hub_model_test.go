@@ -15,16 +15,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
-	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
-	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
-	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/serf-tui/internal/hubstart"
+	pendingpkg "primeradiant.com/evener/cmd/serf-tui/internal/pending"
+	"primeradiant.com/evener/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitext"
+	"primeradiant.com/evener/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing

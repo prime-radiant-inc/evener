@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func communicateResponse(endTurn bool, message string) llm.Response {

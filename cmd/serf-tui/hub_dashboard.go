@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
 
 func (m hubModel) selectedDashboardRow() (hubRow, bool) {

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/openaichat"
-	"primeradiant.com/serf/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm/providers/internal/transport"
 )
 
 // streamViaChatCompletions provides a fallback streaming path using the

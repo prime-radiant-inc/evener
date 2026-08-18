@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 )
 
 // RuntimeDir computes the XDG-compliant state directory for a canonical

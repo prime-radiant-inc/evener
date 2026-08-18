@@ -61,7 +61,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type launchResolveResultMsg struct {
@@ -336,7 +336,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestCredentialsPanel_RendersList(t *testing.T) {
@@ -400,7 +400,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type credentialsActionMsg struct {
@@ -685,7 +685,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestLaunchSettingsPanel_TabSwitch(t *testing.T) {
@@ -730,7 +730,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type launchTab int
@@ -1195,7 +1195,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 func TestLaunchOverridesModal_AddsSkillDir(t *testing.T) {
@@ -1248,7 +1248,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/evener/internal/appwire"
 )
 
 type launchOverridesResultMsg struct {

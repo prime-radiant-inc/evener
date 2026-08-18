@@ -1118,9 +1118,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // regTool builds a RegisteredTool with a no-op executor so registration succeeds.
@@ -1214,9 +1214,9 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/agent/internal/tool/repair"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/llm"
 )
 
 // prepareResult is the outcome of the pre-dispatch repair step. When PrevalErr

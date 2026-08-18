@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const expectedStableDelegateWatchSourceKind watchSourceKind = 3

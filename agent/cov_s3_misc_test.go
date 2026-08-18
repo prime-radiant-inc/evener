@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func TestS3Cov_ToolDefinitions(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // settlementKind is what a failed round persists, per the spec's

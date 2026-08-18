@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 func TestConvertToATIF_SimpleConversation(t *testing.T) {
@@ -152,7 +152,7 @@ package agent
 import (
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/llm"
 )
 
 // ATIF v1.6 types — see docs/plans/2026-03-02-native-atif-export-design.md

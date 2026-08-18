@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzSecureFilesystemOperationProgram exercises the enforced file-tool and

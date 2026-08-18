@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/agent/envctx"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/identifier"
 )
 
 var marshalSessionMeta = json.Marshal

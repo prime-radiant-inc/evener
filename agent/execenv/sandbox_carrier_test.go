@@ -3,7 +3,7 @@ package execenv
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // TestSandboxCarrierOffIsInert covers the "off is a byte-identical no-op" half of

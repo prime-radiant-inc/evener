@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/delegatestore"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/identifier"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 )
 
 var (

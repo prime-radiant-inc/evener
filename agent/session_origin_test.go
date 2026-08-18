@@ -3,10 +3,10 @@ package agent
 import (
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/llm"
 )
 
 // TestSessionOriginFromEnv proves a fresh session captures SERF_SESSION_ORIGIN

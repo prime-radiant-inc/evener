@@ -300,7 +300,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   import (
   	"testing"
 
-  	"primeradiant.com/serf/llm"
+  	"primeradiant.com/evener/llm"
   )
 
   func TestSerfUsageFromLLM_NilWhenAllZero(t *testing.T) {
@@ -349,7 +349,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   import (
   	"fmt"
 
-  	"primeradiant.com/serf/llm"
+  	"primeradiant.com/evener/llm"
   )
 
   // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
@@ -609,7 +609,7 @@ value; **no template change is needed**, only the four Go call sites that build 
   second turn's `Usage == nil` (the accumulator reset in `startTurn()`, not leaked from turn one).
   Run: `go test ./internal/appprojector/... -run 'TestProjectorAccumulatesPerTurnUsage|TestProjectorNewTurnResetsUsageAccumulator' -count=1` → FAIL.
 - [ ] **Implement**:
-  - Add `"primeradiant.com/serf/llm"` to `internal/appprojector/appwire_projection.go`'s imports.
+  - Add `"primeradiant.com/evener/llm"` to `internal/appprojector/appwire_projection.go`'s imports.
   - Add fields to `AppEventProjector` (beside `pendingDurationMS`):
     ```go
     	// activeTurnUsage/activeTurnModel accumulate the current turn's own

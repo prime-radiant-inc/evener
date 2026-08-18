@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
-	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/evener/fuzz/oracle"
 )
 
 // fuzzRoot is the logical working directory both fuzz filesystem lanes are

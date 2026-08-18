@@ -12,8 +12,8 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"primeradiant.com/serf/agent/mcpconfig"
-	"primeradiant.com/serf/agent/mcpprobe"
+	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/agent/mcpprobe"
 )
 
 // newMCPTestServer starts an httptest server speaking real MCP over

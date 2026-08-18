@@ -10,7 +10,7 @@ import (
 	"strings"
 	"text/template"
 
-	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // promptSource describes one component of the composed system prompt.

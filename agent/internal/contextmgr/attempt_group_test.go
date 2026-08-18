@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/llm"
-	apilog "primeradiant.com/serf/llm/apilog"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+	apilog "primeradiant.com/evener/llm/apilog"
 )
 
 type contextManagerAttemptAdapter struct {

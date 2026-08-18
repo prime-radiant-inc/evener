@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/evener/agent"
 )
 
 // TestSubmitNotification_DeliveredOnceTheSlotFrees pins that a notification

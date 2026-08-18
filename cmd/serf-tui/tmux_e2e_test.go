@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 var tuiE2EProjectDir = canonicalTUIE2EProjectDir()
