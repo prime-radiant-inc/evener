@@ -115,6 +115,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setSpawnDir("")
 			return m, nil
 		}
+		m.spawnDirPrefillUntouched = false
 		var cmd tea.Cmd
 		m.spawnDirInput, cmd = m.spawnDirInput.Update(msg)
 		m.spawnDir = strings.TrimSpace(m.spawnDirInput.Value())
@@ -248,16 +249,18 @@ func (m hubModel) spawnFieldPrefix(field hubSpawnField) string {
 }
 
 // nextSpawnRecentDir cycles the Dir field through the hub's most recently
-// used project dirs: from an empty field it fills the most recent one, and
-// from a recent option it advances (wrapping) to the next. It returns false
-// when the field holds a custom path, leaving tab to plain path completion.
+// used project dirs: from an empty field (or an untouched open-time prefill,
+// issue #51) it fills the most recent one, and from a recent option it
+// advances (wrapping) to the next. It returns false when the field holds a
+// user-edited custom path, leaving tab to plain path completion.
 func (m *hubModel) nextSpawnRecentDir(current string) (string, bool) {
 	if len(m.spawnRecentDirs) == 0 {
 		return "", false
 	}
 	cur := strings.TrimSpace(current)
-	if cur == "" {
+	if cur == "" || m.spawnDirPrefillUntouched {
 		m.spawnRecentIdx = 0
+		m.spawnDirPrefillUntouched = false
 		return m.spawnRecentDirs[0], true
 	}
 	if m.spawnRecentIdx >= 0 && m.spawnRecentIdx < len(m.spawnRecentDirs) && cur == m.spawnRecentDirs[m.spawnRecentIdx] {
@@ -268,11 +271,15 @@ func (m *hubModel) nextSpawnRecentDir(current string) (string, bool) {
 }
 
 // spawnRecentDirsVisible reports whether the Dir field's recent-project
-// dropdown options render: while the field is empty or shows one of the
-// recent options, hidden once the user types a custom path.
+// dropdown options render: while the field is empty, shows one of the
+// recent options, or still holds its untouched open-time prefill (issue
+// #51), hidden once the user types a custom path.
 func (m hubModel) spawnRecentDirsVisible() bool {
 	if len(m.spawnRecentDirs) == 0 {
 		return false
+	}
+	if m.spawnDirPrefillUntouched {
+		return true
 	}
 	cur := strings.TrimSpace(m.spawnDirInput.Value())
 	if cur == "" {
@@ -304,6 +311,7 @@ func (m *hubModel) openSpawnForm() {
 	m.resetSpawnForm()
 	m.spawnReturnMode = returnMode
 	m.setSpawnDir(dir)
+	m.spawnDirPrefillUntouched = dir != ""
 	m.spawnProject = project
 	m.mode = hubModeSpawn
 	m.err = nil
@@ -345,6 +353,7 @@ func (m *hubModel) setSpawnDir(dir string) {
 	m.spawnDir = dir
 	m.spawnDirInput = newSpawnDirInput()
 	m.spawnDirInput.SetValue(dir)
+	m.spawnDirPrefillUntouched = false
 	if m.spawnFocus == hubSpawnFieldDir {
 		m.spawnDirInput.Focus()
 	}

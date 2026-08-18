@@ -132,6 +132,13 @@ type hubModel struct {
 	// holds anything else.
 	spawnRecentDirs []string
 	spawnRecentIdx  int
+	// spawnDirPrefillUntouched is true when the Dir field still holds the
+	// open-time prefill from the selected project row (issue #51) and the
+	// user hasn't edited it yet. It makes the recent-projects dropdown (and
+	// tab-cycling into it) treat that prefill like an empty field, without
+	// weakening the pinned behavior of hiding recents once the user types a
+	// custom path.
+	spawnDirPrefillUntouched bool
 
 	detail  hubSessionDetail
 	session model

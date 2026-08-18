@@ -97,3 +97,80 @@ func TestHubModelSpawnViewListsRecentProjects(t *testing.T) {
 		t.Fatalf("spawn view should hide recent options for a custom path:\n%s", view)
 	}
 }
+
+// spawnFormWithProjectPrefill opens the spawn form with a real project row
+// selected, so openSpawnForm prefills the Dir field the same way it does in
+// the TUI (issue #51's repro path) rather than via a direct setSpawnDir call.
+func spawnFormWithProjectPrefill(t *testing.T, workingDir string) hubModel {
+	t.Helper()
+	m := newHubModel(nil, "http://hub.test")
+	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
+		Key:        "notrecent",
+		Name:       "not-recent",
+		WorkingDir: workingDir,
+		Sessions: []hubTreeNode{
+			{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "not-recent", Live: true},
+		},
+	}}}
+	m.rows = buildDashboardRows(m.tree)
+	m.selected = 1 // the session row under the project, not the launch row
+	m.openSpawnForm()
+	if m.spawnDir != workingDir {
+		t.Fatalf("spawnDir=%q, want %q (prefilled from selected row)", m.spawnDir, workingDir)
+	}
+	return m
+}
+
+// TestHubModelSpawnDirPrefillShowsRecentsUntilEdited covers issue #51: when
+// the Dir field is prefilled from the selected project row, that prefill
+// must not be treated like a user-typed custom path. Recents stay visible
+// until the user actually edits the field, then hide (preserving the
+// pinned custom-path behavior), and ctrl+u clearing restores visibility.
+func TestHubModelSpawnDirPrefillShowsRecentsUntilEdited(t *testing.T) {
+	m := spawnFormWithProjectPrefill(t, "/work/not-recent")
+	m.spawnRecentDirs = []string{"/proj/alpha", "/proj/beta"}
+	m.setSpawnFocus(hubSpawnFieldDir)
+
+	if !m.spawnRecentDirsVisible() {
+		t.Fatalf("recents should be visible while the prefill is untouched")
+	}
+	if view := m.spawnView(); !strings.Contains(view, "/proj/alpha") {
+		t.Fatalf("spawn view should list recent options for an untouched prefill:\n%s", view)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(hubModel)
+	if m.spawnRecentDirsVisible() {
+		t.Fatalf("recents should hide once the user edits the prefilled dir")
+	}
+	if view := m.spawnView(); strings.Contains(view, "/proj/alpha") {
+		t.Fatalf("spawn view should hide recent options after an edit:\n%s", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = updated.(hubModel)
+	if !m.spawnRecentDirsVisible() {
+		t.Fatalf("ctrl+u clear should restore recents visibility")
+	}
+}
+
+// TestHubModelSpawnDirPrefillTabCyclesIntoRecents covers issue #51: tab must
+// reach the recent-projects list even when the Dir field holds the untouched
+// open-time prefill, not just when it's empty.
+func TestHubModelSpawnDirPrefillTabCyclesIntoRecents(t *testing.T) {
+	m := spawnFormWithProjectPrefill(t, "/work/not-recent")
+	m.spawnRecentDirs = []string{"/proj/alpha", "/proj/beta"}
+	m.setSpawnFocus(hubSpawnFieldDir)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(hubModel)
+	if m.spawnDir != "/proj/alpha" {
+		t.Fatalf("tab from untouched prefill dir=%q, want /proj/alpha (first recent project)", m.spawnDir)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(hubModel)
+	if m.spawnDir != "/proj/beta" {
+		t.Fatalf("second tab dir=%q, want /proj/beta (cycling should continue normally after entering from the prefill)", m.spawnDir)
+	}
+}
