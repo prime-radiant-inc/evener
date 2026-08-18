@@ -53,10 +53,11 @@ func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string
 // (cmd/serf-hub/e2e_control_invariant_test.go): system, environment context,
 // prompt, then assistant/tool pairs.
 type session struct {
-	t        *testing.T
-	baseURL  string
-	name     string
-	messages []map[string]any
+	t                *testing.T
+	baseURL          string
+	name             string
+	messages         []map[string]any
+	affinityHeaderID string // if non-empty, send this value as session-affinity headers
 }
 
 func newSession(t *testing.T, baseURL, name string) *session {
@@ -110,6 +111,12 @@ func (s *session) try(ctx context.Context) (toolCall, error) {
 		return toolCall{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Send affinity headers if configured, mimicking what serf does when send_session_affinity_headers is true.
+	if s.affinityHeaderID != "" {
+		req.Header.Set("session_id", s.affinityHeaderID)
+		req.Header.Set("x-client-request-id", s.affinityHeaderID)
+		req.Header.Set("x-session-affinity", s.affinityHeaderID)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return toolCall{}, fmt.Errorf("model request: %w", err)
@@ -652,4 +659,77 @@ func TestASessionsHoldDoesNotBlockAnother(t *testing.T) {
 	}
 	cancelRequests()
 	wg.Wait()
+}
+
+// TestSessionAffinityHeaderNamesRound1: when affinity headers are present, they
+// should be used to name the session starting from round 1. This is the key
+// improvement over tool-call-id minting: the name comes from the client on
+// every request, not just from round 2 on.
+func TestSessionAffinityHeaderNamesRound1(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 2, "")
+
+	// Session with affinity header
+	s := newSession(t, baseURL, "with-affinity")
+	s.affinityHeaderID = "sess-affinity-123"
+
+	// First round should be logged with the affinity header name, not a tool-call id.
+	s.round(ctx)
+
+	text := logged.String()
+	want := "session sess-affinity-123 round 1"
+	if !strings.Contains(text, want) {
+		t.Errorf("round 1 not named by affinity header: %q not in log:\n%s", want, text)
+	}
+
+	// Verify the affinity header name persists to round 2
+	s.round(ctx)
+	text = logged.String() // refresh the logged text after round 2 completes
+	want = "session sess-affinity-123 round 2"
+	if !strings.Contains(text, want) {
+		t.Errorf("round 2 not named by affinity header: %q not in log:\n%s", want, text)
+	}
+}
+
+// TestToolCallIDFallbackWhenNoAffinityHeader: when no affinity headers are
+// present, the system should fall back to the existing tool-call-id naming
+// scheme. This preserves backward compatibility for instances without
+// send_session_affinity_headers configured.
+func TestToolCallIDFallbackWhenNoAffinityHeader(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 2, "")
+
+	// Session without affinity header (affinityHeaderID remains empty)
+	s := newSession(t, baseURL, "no-affinity")
+
+	// First round: no affinity header, so should use tool-call id
+	call := s.round(ctx)
+	toolCallID := call.id
+
+	text := logged.String()
+	// The session should be named by its tool-call id
+	want := fmt.Sprintf("session %s round 1", toolCallID)
+	if !strings.Contains(text, want) {
+		t.Errorf("round 1 not named by tool-call id: %q not in log:\n%s", want, text)
+	}
+
+	// Verify it persists to round 2
+	s.round(ctx)
+	text = logged.String() // refresh the logged text after round 2 completes
+	want = fmt.Sprintf("session %s round 2", toolCallID)
+	if !strings.Contains(text, want) {
+		t.Errorf("round 2 not named by tool-call id: %q not in log:\n%s", want, text)
+	}
 }

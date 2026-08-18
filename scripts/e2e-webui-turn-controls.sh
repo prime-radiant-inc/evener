@@ -308,6 +308,7 @@ type = "openai"
 api_style = "chat-completions"
 base_url = "http://127.0.0.1:$fakellm_port/v1"
 api_key = "fakellm-not-a-secret"
+send_session_affinity_headers = true
 EOF
 
 echo "==> starting serf-hub" >&2

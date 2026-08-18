@@ -1,8 +1,10 @@
 package serf_test
 
 import (
-	"io/fs"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -409,38 +411,40 @@ func scenarioNeedleIdentifierByte(s string, i int) bool {
 // scenarioNeedleProductionSource concatenates every production source file into
 // one haystack. Reading it once and scanning it per needle is the whole
 // implementation; a needle is a literal, so nothing more is needed.
+//
+// The file set comes from `git ls-files`, not a filesystem walk (kata 6zst). A
+// walk reads whatever the checkout happens to hold on disk right now — build
+// output `make build` left behind (the gate builds before it tests), a
+// scratch file, anything else local — so the same commit gave a different
+// verdict in a checkout that had run the gate than in a clean worktree of it.
+// git ls-files names the same tracked paths in every checkout of a commit; a
+// locally modified tracked file's on-disk content still counts (that is
+// correct — it is what the checkout would actually ship), but nothing
+// untracked can enter the haystack at all.
 func scenarioNeedleProductionSource(t *testing.T) string {
 	t.Helper()
+	paths, err := scenarioNeedleTrackedFiles(t)
+	if err != nil {
+		t.Fatalf("listing tracked source files: %v", err)
+	}
 	var b strings.Builder
 	files := 0
-	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			// A dot directory is .git, .claude, or a sibling worktree holding a
-			// full copy of this tree; descending into one is both wrong and slow.
-			if path != "." && (strings.HasPrefix(entry.Name(), ".") ||
-				scenarioNeedleSkipDirNames[entry.Name()] ||
-				slices.Contains(scenarioNeedleSkipRoots, filepath.ToSlash(path))) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !scenarioNeedleProductionFile(path, entry.Name()) {
-			return nil
+	for _, path := range paths {
+		if scenarioNeedleSkippedPath(path) || !scenarioNeedleProductionFile(path, filepath.Base(path)) {
+			continue
 		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			if os.IsNotExist(err) {
+				// Tracked in the index but absent from the working tree (deleted,
+				// not yet staged) — nothing on disk to add to the haystack.
+				continue
+			}
+			t.Fatalf("reading %s: %v", path, err)
 		}
 		files++
 		b.Write(raw)
 		b.WriteByte('\n')
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking the source tree: %v", err)
 	}
 	// The file set is the half of a corpus audit that can die with every needle
 	// intact: rename the roots and the haystack empties, and the audit passes
@@ -450,6 +454,57 @@ func scenarioNeedleProductionSource(t *testing.T) string {
 			"reading the wrong tree and every needle would report as absent", files)
 	}
 	return b.String()
+}
+
+// scenarioNeedleTrackedFiles lists every git-tracked path that could hold a
+// needle: the compiled-surface extensions, plus everything under
+// scenarioNeedleBundledRoot (scenarioNeedleProductionFile and
+// scenarioNeedleSkippedPath decide which of these actually count).
+func scenarioNeedleTrackedFiles(t *testing.T) ([]string, error) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", ".", "ls-files", "-z", "--",
+		"*.go", "*.ts", "*.tsx", "*.js", "*.jsx", scenarioNeedleBundledRoot)
+	raw, err := cmd.Output()
+	if err != nil {
+		// git says WHY on stderr ("not a git repository", a bad pathspec), and
+		// Output() files that under ExitError rather than in the error text —
+		// so without this the whole diagnosis is "exit status 128".
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return nil, fmt.Errorf("git ls-files: %w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+		}
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	var paths []string
+	for path := range strings.SplitSeq(string(raw), "\x00") {
+		if path == "" {
+			continue
+		}
+		paths = append(paths, filepath.ToSlash(path))
+	}
+	return paths, nil
+}
+
+// scenarioNeedleSkippedPath reports whether path sits under a directory the
+// haystack excludes: a dot directory (.git, .claude, a sibling worktree — see
+// scenarioNeedleTrackedFiles's comment), a build/dependency directory named in
+// scenarioNeedleSkipDirNames, or one of scenarioNeedleSkipRoots (matched
+// root-relative only, per that var's comment). git ls-files should never
+// return a path under any of these — they are gitignored or untracked — so
+// this is a defense-in-depth check, not the mechanism that makes the audit
+// hermetic; that is scenarioNeedleTrackedFiles reading the index instead of
+// the disk.
+func scenarioNeedleSkippedPath(path string) bool {
+	dirs := strings.Split(path, "/")
+	dirs = dirs[:len(dirs)-1] // the file's own name is never skip-checked
+	for i, dir := range dirs {
+		if strings.HasPrefix(dir, ".") ||
+			scenarioNeedleSkipDirNames[dir] ||
+			(i == 0 && slices.Contains(scenarioNeedleSkipRoots, dir)) {
+			return true
+		}
+	}
+	return false
 }
 
 func scenarioNeedleProductionFile(path, name string) bool {
