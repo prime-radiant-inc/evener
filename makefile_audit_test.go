@@ -71,24 +71,24 @@ func variableFedRecursiveDelete(line string) bool {
 // mismatch. This forces explicit review of each site. Removing an entry after
 // converting the recipe to a safe shape is the intended lifecycle.
 var makefileRecipeAllowedSites = []string{
-	"Makefile:test-web:$$dir",           // Line 77: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
-	"Makefile:test-web-browser:$$dir",   // Line 121: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
-	"Makefile:dist:SERF_DIST_BIN_DIR",   // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
-	"Makefile:dist:SERF_DIST_ARCHIVE",   // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
+	"Makefile:test-web:$$dir",         // Line 77: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
+	"Makefile:test-web-browser:$$dir", // Line 121: dir=$(mktemp -d ...) || exit 1; rm -rf "$$dir"
+	"Makefile:dist:SERF_DIST_BIN_DIR", // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
+	"Makefile:dist:SERF_DIST_ARCHIVE", // Line 163: rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
 }
 
 // TestNoMakefileRecipeFeedsVariableToRecursiveDelete audits Makefile recipe
 // lines for variable-fed recursive deletes and keeps the audited set pinned.
 //
 // The rule: a recursive delete that feeds a variable is dangerous because:
-//   1. The variable could be empty, causing rm -rf "" to delete from cwd
-//   2. The variable could be wrong or misconfigured
-//   3. The variable could be set by user input or an earlier failure
+//  1. The variable could be empty, causing rm -rf "" to delete from cwd
+//  2. The variable could be wrong or misconfigured
+//  3. The variable could be set by user input or an earlier failure
 //
 // Safe alternatives:
-//   1. rm -rf literal/hardcoded/path only
-//   2. mkdir -p $TMPDIR/owned-by-us && rm -rf $TMPDIR/owned-by-us/$subdir (mkdir-owned)
-//   3. Guard through a script that uses scratch-lib or covscratch-lib patterns
+//  1. rm -rf literal/hardcoded/path only
+//  2. mkdir -p $TMPDIR/owned-by-us && rm -rf $TMPDIR/owned-by-us/$subdir (mkdir-owned)
+//  3. Guard through a script that uses scratch-lib or covscratch-lib patterns
 //
 // The audit is count-pinned: new entries require explicit review. After
 // converting a recipe to a safe shape, delete the entry and the count will

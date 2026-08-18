@@ -55,11 +55,11 @@ type Call struct {
 	// Body is the decoded chat-completions request.
 	Body map[string]any
 
-	toolCallID      string
-	affinityHeader  string
-	cancelled       <-chan struct{}
-	once            sync.Once
-	reply           chan reply
+	toolCallID     string
+	affinityHeader string
+	cancelled      <-chan struct{}
+	once           sync.Once
+	reply          chan reply
 }
 
 // Cancelled is closed when the requester has given up on this round -- a Stop
