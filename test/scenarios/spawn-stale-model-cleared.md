@@ -24,7 +24,7 @@ cause of a false pass: there is no `[data-chip-value-model]` and no
 control is the shared ARIA combobox in `widgets/modelCatalog/` — its
 **closed trigger is a `<button>` whose text is the qualified
 `provider/model`, or the empty label when nothing is set**
-(`widgets/modelCatalog/index.tsx:380-398`).
+(`widgets/modelCatalog/index.tsx:388-406`).
 
 **Namespace warning**: these keys are `serf-hub.spawn-defaults.*`, a
 *different* namespace from the `serf.prefs.*` flat keys the runbook's

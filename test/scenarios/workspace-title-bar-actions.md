@@ -227,7 +227,7 @@ head and runs it as a fresh user turn.
   The transcript records the partial tool output plus a system
   interrupt marker (a `STEERING` turn whose text contains
   `The user interrupted the previous turn`,
-  `agent/session_lifecycle.go:658`). The turn is reported
+  `agent/session_lifecycle.go:702`). The turn is reported
   `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
   `canceled` value at all (`appwire/types.go:147-152`), so a controller
   grepping for that literal will never find it. The session remains alive —
@@ -243,7 +243,9 @@ head and runs it as a fresh user turn.
 - **Step 3 (compact)**: hub returns `204 No Content`. The transcript grows by
   one entry of `turn.kind = "CHECKPOINT"` (`agent/schema/turn.go:28`) whose
   text starts with `[CONTEXT CHECKPOINT]`
-  (`agent/internal/contextmgr/context_manager.go:927`) and includes the prior
+  (`agent/internal/contextmgr/context_manager.go:998-1000`, the final
+  assembly that writes it first — not the old-format reader at `:802`)
+  and includes the prior
   user messages and agent replies summarized. `turn_count` is unchanged. The
   POST is synchronous over the whole compaction, which is **two** layers, not
   one — see Sharp edges before assuming it should be instant.

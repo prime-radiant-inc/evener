@@ -209,7 +209,7 @@ gesture.
   still reads a bare `Asked: [DB choice]` long after the reply landed.
 - **Step 8 (exact)**: the outline shows the `ask_user` tool result carrying the ack text
   `questions posted; answers arrive in the user's reply after your turn ends`
-  (`agent/session_tools_ask.go:22`), followed by a user turn whose text is exactly the
+  (`agent/session_tools_ask.go:23`), followed by a user turn whose text is exactly the
   §4.3 form (`composeAskAnswers`, `askDock/askCompose.ts:84-93` — byte-exact,
   golden-string tested):
   ```
