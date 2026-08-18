@@ -64,6 +64,16 @@ done
 # not re-derived, so --stop works from a fresh invocation with no shared
 # shell state.
 if [ -n "$stop_dir" ]; then
+	# The marker is checked FIRST, before a single file is read or a single
+	# signal is sent. --stop takes a path from the caller, and the marker is
+	# the one thing that distinguishes "a run of ours" from a typo pointing
+	# at something that matters — so a mistyped path that happens to hold a
+	# fake429.pid or a hub.pid must lose nothing at all, not just escape the
+	# deletion at the end.
+	if [ ! -f "$stop_dir/.e2e-ratelimited-provider" ]; then
+		echo "e2e-ratelimited-provider: $stop_dir is not one of this script's run directories (no .e2e-ratelimited-provider marker); not touching it" >&2
+		exit 2
+	fi
 	for pidfile in "$stop_dir/fake429.pid" "$stop_dir/hub.pid"; do
 		[ -f "$pidfile" ] || continue
 		pid="$(cat "$pidfile")"
@@ -87,6 +97,7 @@ fi
 # this script) cannot collide with each other or with a real hub — the same
 # reasoning docs/agentic-testing.md's setup checklist uses.
 run="$(mktemp -d -t serf-e2e-fake429.XXXXXX)"
+touch "$run/.e2e-ratelimited-provider" # the marker --stop refuses to delete without
 echo "e2e-ratelimited-provider: run directory $run" >&2
 
 echo "==> building fake429, serf, serf-hub, serf-tui" >&2

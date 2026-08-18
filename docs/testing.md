@@ -79,9 +79,12 @@ directory is named `<prefix>.$$`, the trap is armed before `mkdir` so a
 signal in the window abandons nothing, and the next run reclaims
 leftovers whose pid suffix no longer answers `kill -0`
 (scripts/covscratch-lib.sh). Every remaining variable-fed recursive
-delete in scripts/ lives on
-`TestNoScriptFeedsVariableToRecursiveDelete`'s count-pinned list with the
-reason it is allowed to exist, and the list only shrinks.
+delete in the repository's shell — scripts/ and the repo-root
+install.sh — lives on `TestNoScriptFeedsVariableToRecursiveDelete`'s
+count-pinned list with the reason it is allowed to exist. Some entries
+are permanent by design (the two sanctioned patterns' own deletes); the
+list grows only with an explicitly reviewed reason and shrinks as
+scripts convert or retire.
 
 Two parts of the rule the audit cannot hold, which is why it is written
 here for people. Its scan is textual and per-line, so four equally banned
