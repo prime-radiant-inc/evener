@@ -351,10 +351,13 @@ never was, and now it's explicit.
 The corollary runs the other way too, and it is the one that misleads: a
 default-gate number is not "how much of this package is tested". Several
 packages keep whole families of behavioural checks in `check*` functions that
-only a serffuzz-tagged *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
-invokes about thirty. `-run '^(Test|Example)'` never matches those names, so the
-test track cannot see that work at all: `cmd/serf-hub/internal/appsource` reads
-66.4% there and 83.1% under its own program target, and four modules that look
+only a native *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
+invokes 98 of them. These `Fuzz*BehaviorProgram` targets carry no `serffuzz`
+build tag; what excludes them from the test track is the same
+`-run '^(Test|Example)'` filter (`scripts/gate-surface-lib.sh`'s
+`GATE_TEST_RUN`) that excludes every other `FuzzXxx` name, so the test track
+cannot see that work at all: `cmd/serf-hub/internal/appsource` reads 66.4%
+there and 83.1% under its own program target, and four modules that look
 incomplete on both tracks separately are in fact fully covered.
 
 So before concluding a package is under-tested — and certainly before writing a
@@ -362,19 +365,21 @@ test to raise its number — read `make coverage-union`, which unions the two
 tracks. The test you were about to write may already exist under the other build
 tag.
 
-`cmd/serf-hub/cov_*_test.go` and its counterparts across the tree pull the
-union number in the other direction. Each is a `//go:build serffuzz` `FuzzXxx`
-target with one seed whose byte input is ignored (`f.Add(byte(0))`) — a
-deterministic replay matrix that calls production functions and discards most
-results (`_ = f(x)`). Their oracle is real — a panic or a `-race` failure
-still fails the build — but thin: a call site with no assertion cannot fail
-on a wrong answer, only a crash. So statements these files reach count as
-EXECUTED toward coverage-union, not TESTED — read the number that way for any
-package where they are a large share of the fuzz track. Upgrading a call
-site's target from panic-net to an assertion against an independently-written
-literal (see `cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for
-that call site; it is not required for the rest of the file to keep earning
-its lines.
+`cmd/serf-hub/cov_*_test.go` pulls the union number in the other direction.
+(The `cov_`-prefixed name is not the marker — some, like
+`agent/execenv/cov_s4_local_test.go`, are ordinary untagged `TestXxx`
+suites. The marker is the shape: a `//go:build serffuzz` `FuzzXxx` target
+with one seed whose byte input is ignored, `f.Add(byte(0))`.) Each of
+`cmd/serf-hub`'s cov_* files is a deterministic replay matrix that calls
+production functions and discards most results (`_ = f(x)`). Their oracle is
+real — a panic or a `-race` failure still fails the build — but thin: a call
+site with no assertion cannot fail on a wrong answer, only a crash. So
+statements these files reach count as EXECUTED toward coverage-union, not
+TESTED — read the number that way for `cmd/serf-hub`, where they are a large
+share of the fuzz track. Upgrading a call site's target from panic-net to an
+assertion against an independently-written literal (see
+`cov_auth_instances_fuzz_test.go`) turns EXECUTED into TESTED for that call
+site; it is not required for the rest of the file to keep earning its lines.
 
 ## Proving a Type Survives a Round Trip
 
