@@ -1086,6 +1086,54 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	}
 }
 
+// TestDelegateResourceRuntime_StableStopReportsActorAndResumability proves kata
+// tpb0's job_stop enrichment end to end: the completed stop result names the
+// cancelling actor and the delegate's resumable classification, both in the
+// structured State and in the human-readable Output text a caller actually
+// reads.
+func TestDelegateResourceRuntime_StableStopReportsActorAndResumability(t *testing.T) {
+	harness := newStableStopRuntimeHarness(t)
+	waitCtx := newDelegateStopWaitBarrierContext()
+	result := make(chan stableJobStopInvocation, 1)
+	go func() {
+		value, err := jobStopTool(waitCtx, harness.root, map[string]any{
+			"target":      harness.fixture.delegateID,
+			"max_wait_ms": 60_000,
+		}, jobToolResultDefaultMaxChar)
+		result <- stableJobStopInvocation{value: value, err: err}
+	}()
+	select {
+	case invocation := <-result:
+		harness.release()
+		waitForStableSupervisionRun(t, harness.root, harness.fixture.childID)
+		t.Fatalf("positive stable stop returned before entering its wait: %#v, %v", invocation.value, invocation.err)
+	case <-waitCtx.entered:
+	}
+	harness.release()
+	invocation := <-result
+	assertStableStopCompleted(t, invocation, harness.fixture.delegateID, delegateLifecycleRunning, "cancelled_by_request")
+
+	state := stableJobStopState(t, invocation)
+	wantActor := "root session " + harness.root.id
+	if state.RequestedBy != wantActor {
+		t.Fatalf("job_stop requested_by = %q, want %q", state.RequestedBy, wantActor)
+	}
+	if state.Resumable == nil || !*state.Resumable {
+		t.Fatalf("job_stop resumable = %#v, want true for a fresh delegate", state.Resumable)
+	}
+
+	invoked, ok := invocation.value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("job_stop value = %T, want tool.StateResult", invocation.value)
+	}
+	if !strings.Contains(invoked.Output, "requested by: "+wantActor) {
+		t.Fatalf("job_stop human-readable output missing the cancelling actor: %q", invoked.Output)
+	}
+	if !strings.Contains(invoked.Output, "resumable: yes") {
+		t.Fatalf("job_stop human-readable output missing the resumable classification: %q", invoked.Output)
+	}
+}
+
 func TestDelegateResourceRuntime_StableStopIdleCompletionReportsAlreadyIdle(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
@@ -1722,6 +1770,29 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 	worktree, ok := metadata["worktree"].(map[string]any)
 	if !ok || worktree["path"] != "/repo/.worktrees/dlg_target" || worktree["branch"] != "delegate/dlg_target" || worktree["head_sha"] != "abc123" || worktree["ahead"] != float64(4) || worktree["dirty"] != true {
 		t.Fatalf("worktree metadata = %#v", metadata["worktree"])
+	}
+}
+
+// TestDelegateResourceRuntime_CancelledRunCapturesScratchPath proves kata tpb0's
+// scratch-path evidence requirement: a run that ends via ctx.Canceled (an
+// external stop, not a completion) still carries its absolute scratch
+// directory into the terminal packet metadata, the same way worktree evidence
+// already does regardless of outcome.
+func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		runErr:      context.Canceled,
+		descriptor:  delegatestore.Descriptor{Task: "rebuild the search index"},
+		scratchPath: "/abs/scratch/dlg_target",
+	})
+	if finish.outcome != delegatestore.OutcomeCancelled || finish.reason != "cancelled" {
+		t.Fatalf("cancelled run finish = outcome:%q reason:%q, want cancelled/cancelled", finish.outcome, finish.reason)
+	}
+	if finish.packet == nil {
+		t.Fatal("cancelled run terminal packet is nil")
+	}
+	metadata := decodeDelegatePacketMetadata(t, *finish.packet)
+	if got := metadata["scratch_path"]; got != "/abs/scratch/dlg_target" {
+		t.Fatalf("cancelled run metadata[scratch_path] = %#v, want the run's scratch dir", got)
 	}
 }
 

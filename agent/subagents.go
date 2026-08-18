@@ -1772,6 +1772,12 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		controller.mu.Unlock()
 	}
 	inputs.worktree = reporter.stableDelegateWorktreeReport(descriptor)
+	// SessionScratchDir is a reporting-only accessor (never provisions), so this
+	// is safe to read even on an externally cancelled run — it costs nothing and
+	// carries no side effect, matching the worktree report above.
+	if le, ok := a.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+		inputs.scratchPath = le.SessionScratchDir()
+	}
 	finish := stableDelegateFinishFromRun(inputs)
 	if finish.outcome == delegatestore.OutcomeFailed && a.sess.hasSalvageFromFinalRound() && finish.packet != nil {
 		finish.packet.Warnings = appendUniqueStrings(finish.packet.Warnings, delegateSalvagedDraftNote)
@@ -1796,26 +1802,33 @@ type delegateTerminalRunInputs struct {
 	usage                   schema.CumulativeUsage
 	warnings                []string
 	worktree                *delegateWorktreeReport
+	scratchPath             string
 }
 
 type delegateTerminalPacketMetadata struct {
-	Outcome             delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
-	Reason              string                          `json:"reason,omitempty"`
-	Task                string                          `json:"task,omitempty"`
-	Description         string                          `json:"description,omitempty"`
-	AgentType           string                          `json:"agent_type,omitempty"`
-	RequestedModel      string                          `json:"requested_model,omitempty"`
-	ResolvedProfileID   string                          `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string                          `json:"resolved_model,omitempty"`
-	ReasoningEffort     string                          `json:"reasoning_effort,omitempty"`
-	RunStartedAt        string                          `json:"run_started_at,omitempty"`
-	RunEndedAt          string                          `json:"run_ended_at,omitempty"`
-	LatestActivityAt    string                          `json:"latest_activity_at,omitempty"`
-	CumulativeUsage     *schema.CumulativeUsage         `json:"cumulative_usage,omitempty"`
-	Worktree            *delegateTerminalWorktreeReport `json:"worktree,omitempty"`
-	ExhaustionBudget    delegatestore.ExhaustionBudget  `json:"exhaustion_budget,omitempty"`
-	ExhaustionLimit     int                             `json:"exhaustion_limit,omitempty"`
-	ExhaustionResumable *bool                           `json:"resumable,omitempty"`
+	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
+	Reason            string                          `json:"reason,omitempty"`
+	Task              string                          `json:"task,omitempty"`
+	Description       string                          `json:"description,omitempty"`
+	AgentType         string                          `json:"agent_type,omitempty"`
+	RequestedModel    string                          `json:"requested_model,omitempty"`
+	ResolvedProfileID string                          `json:"resolved_profile_id,omitempty"`
+	ResolvedModel     string                          `json:"resolved_model,omitempty"`
+	ReasoningEffort   string                          `json:"reasoning_effort,omitempty"`
+	RunStartedAt      string                          `json:"run_started_at,omitempty"`
+	RunEndedAt        string                          `json:"run_ended_at,omitempty"`
+	LatestActivityAt  string                          `json:"latest_activity_at,omitempty"`
+	CumulativeUsage   *schema.CumulativeUsage         `json:"cumulative_usage,omitempty"`
+	Worktree          *delegateTerminalWorktreeReport `json:"worktree,omitempty"`
+	// ScratchPath is the delegate's absolute per-session scratch directory
+	// (SessionScratchDir), reported for the same reason Worktree is: it is
+	// partial evidence a parent needs to recover after an externally cancelled
+	// run (kata tpb0), retained on disk regardless of outcome. Empty when the
+	// delegate never provisioned one (unsandboxed and no tool spawned yet).
+	ScratchPath         string                         `json:"scratch_path,omitempty"`
+	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit     int                            `json:"exhaustion_limit,omitempty"`
+	ExhaustionResumable *bool                          `json:"resumable,omitempty"`
 }
 
 type delegateTerminalWorktreeReport struct {
@@ -1947,6 +1960,7 @@ func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateT
 			Dirty:   inputs.worktree.Dirty,
 		}
 	}
+	metadata.ScratchPath = inputs.scratchPath
 	return metadata
 }
 

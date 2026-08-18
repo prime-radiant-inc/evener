@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -88,6 +89,66 @@ func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testin
 	executeDelegateCancelPlan(plan)
 	if !fsyncedBeforeCancel {
 		t.Fatal("external cancellation ran before the durable stop request was readable")
+	}
+}
+
+// TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence proves kata
+// tpb0's premise: FinishGeneration's PhaseStopping branch previously discarded
+// whatever the run loop had already captured (task, worktree, scratch path) and
+// replaced it with a bare "stopped by parent" packet carrying no metadata at
+// all. An externally cancelled delegate must retain that partial evidence so a
+// later job_status/delegate_send read can show it, instead of only "cancelled".
+func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+
+	metadata := delegateTerminalPacketMetadata{
+		Task:        "rebuild the search index",
+		ScratchPath: "/abs/scratch/dlg_target",
+		Worktree:    &delegateTerminalWorktreeReport{Path: "/abs/worktree/dlg_target", Branch: "work", HeadSHA: "deadbeef"},
+	}
+	rawMetadata, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	rawMessage, err := json.Marshal("partial output gathered before cancellation")
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	runEvidence := &delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketTerminalError,
+		Message:  rawMessage,
+		Metadata: rawMetadata,
+	}
+
+	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	if _, err := c.FinishGeneration(delegateLease{delegateID: "dlg_target", generation: 1}, delegateFinish{
+		outcome:     delegatestore.OutcomeCancelled,
+		disposition: delegatestore.DispositionTerminalError,
+		reason:      "cancelled",
+		packet:      runEvidence,
+	}); err != nil {
+		t.Fatalf("FinishGeneration for externally cancelled delegate: %v", err)
+	}
+
+	c.mu.Lock()
+	aggregate := c.durable["dlg_target"]
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.LatestPacket == nil {
+		t.Fatal("externally cancelled delegate has no latest terminal packet")
+	}
+	got := decodeDelegatePacketMetadata(t, *aggregate.LatestPacket)
+	if got["task"] != "rebuild the search index" {
+		t.Fatalf("externally cancelled delegate lost its task evidence: %#v", got)
+	}
+	if got["scratch_path"] != "/abs/scratch/dlg_target" {
+		t.Fatalf("externally cancelled delegate lost its scratch path evidence: %#v", got)
+	}
+	worktree, _ := got["worktree"].(map[string]any)
+	if worktree == nil || worktree["path"] != "/abs/worktree/dlg_target" {
+		t.Fatalf("externally cancelled delegate lost its worktree evidence: %#v", got)
 	}
 }
 

@@ -897,8 +897,40 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if maxWaitMS > 0 {
 		completed = waitForDelegateStopDone(ctx, s, result.done, clampJobBlockTimeout(maxWaitMS))
 	}
-	stop := stableDelegateStopResult(result, completed)
+	stop := stableDelegateStopResult(result, completed, actor.describe())
+	if completed {
+		populateDelegateStopEvidence(&stop, s, delegateID)
+	}
 	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
+}
+
+// populateDelegateStopEvidence fills in the cancellation provenance kata tpb0
+// asks for once a stop has actually completed: whether this exact delegate
+// resource can still be resumed, and whatever partial scratch/worktree
+// evidence its run loop had already gathered (preserved through FinishGeneration's
+// PhaseStopping branch, see delegate_tree_finish.go). Reuses the same snapshot
+// row job_status and job_list already project — no new read path.
+func populateDelegateStopEvidence(stop *jobStopResult, s *Session, delegateID string) {
+	for _, row := range stableDelegateRowsForSession(s, true) {
+		if row.snapshot.id != delegateID {
+			continue
+		}
+		resumable := row.snapshot.resumable
+		stop.Resumable = &resumable
+		stop.NotResumableReason = row.snapshot.notResumableReason
+		if packet := row.snapshot.latestPacket; packet != nil && len(packet.Metadata) != 0 {
+			var metadata delegateTerminalPacketMetadata
+			if err := json.Unmarshal(packet.Metadata, &metadata); err == nil {
+				stop.ScratchPath = metadata.ScratchPath
+				if wt := metadata.Worktree; wt != nil {
+					stop.Worktree = &delegateWorktreeToolResult{
+						Path: wt.Path, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Ahead: wt.Ahead, Dirty: wt.Dirty,
+					}
+				}
+			}
+		}
+		return
+	}
 }
 
 func waitForDelegateStopDone(ctx context.Context, s *Session, done <-chan struct{}, timeout time.Duration) bool {
@@ -919,7 +951,7 @@ func waitForDelegateStopDone(ctx context.Context, s *Session, done <-chan struct
 	}
 }
 
-func stableDelegateStopResult(result delegateStopResult, completed bool) jobStopResult {
+func stableDelegateStopResult(result delegateStopResult, completed bool, requestedBy string) jobStopResult {
 	reason := "stop_pending"
 	status := string(jobstore.StatusRunning)
 	outcome := "stop_requested"
@@ -936,6 +968,7 @@ func stableDelegateStopResult(result delegateStopResult, completed bool) jobStop
 		Reason:         &reason,
 		PreviousStatus: string(result.previousLifecycle),
 		Outcome:        outcome,
+		RequestedBy:    requestedBy,
 	}
 }
 
@@ -1143,10 +1176,25 @@ type jobStopResult struct {
 	Reason         *string `json:"reason"`
 	PreviousStatus string  `json:"previous_status"`
 	Outcome        string  `json:"outcome"`
+	// RequestedBy, Resumable, NotResumableReason, ScratchPath, and Worktree are
+	// delegate-only cancellation provenance (kata tpb0): who requested the
+	// stop, whether the same delegate resource can still be resumed, and
+	// whatever partial evidence its run loop had already gathered. Empty/nil
+	// for a shell job_stop and for a delegate stop that hasn't completed yet
+	// (status/outcome are still "running"/"stop_requested").
+	RequestedBy        string                      `json:"requested_by,omitempty"`
+	Resumable          *bool                       `json:"resumable,omitempty"`
+	NotResumableReason string                      `json:"not_resumable_reason,omitempty"`
+	ScratchPath        string                      `json:"scratch_path,omitempty"`
+	Worktree           *delegateWorktreeToolResult `json:"worktree,omitempty"`
 }
 
 // formatJobStop renders a job_stop result as a single plain-text line matching the
-// job-family footer style: [job <id> · <status> · <outcome> · <reason>].
+// job-family footer style: [job <id> · <status> · <outcome> · <reason>]. For a
+// completed delegate stop it appends the cancellation provenance kata tpb0
+// asks for: the requesting actor, the delegate's resumable classification,
+// and any partial scratch/worktree evidence its run loop had already
+// gathered before being cancelled.
 func formatJobStop(out jobStopResult) string {
 	id := out.ID
 	if id == "" {
@@ -1156,7 +1204,38 @@ func formatJobStop(out jobStopResult) string {
 	if out.Reason != nil && *out.Reason != "" {
 		parts = append(parts, *out.Reason)
 	}
-	return "[" + strings.Join(parts, " · ") + "]"
+	if out.Type == "delegate" && out.PreviousStatus != "" {
+		parts = append(parts, "was "+out.PreviousStatus)
+	}
+	var b strings.Builder
+	b.WriteString("[")
+	b.WriteString(strings.Join(parts, " · "))
+	b.WriteString("]")
+	if out.Type != "delegate" {
+		return b.String()
+	}
+	if out.RequestedBy != "" {
+		fmt.Fprintf(&b, "\nrequested by: %s", out.RequestedBy)
+	}
+	if out.Resumable != nil {
+		if *out.Resumable {
+			b.WriteString("\nresumable: yes")
+		} else {
+			reason := out.NotResumableReason
+			if reason == "" {
+				reason = "not resumable"
+			}
+			fmt.Fprintf(&b, "\nresumable: no (%s)", reason)
+		}
+	}
+	if out.ScratchPath != "" {
+		fmt.Fprintf(&b, "\nscratch: %s", out.ScratchPath)
+	}
+	if out.Worktree != nil {
+		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
+			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA, out.Worktree.Ahead, out.Worktree.Dirty)
+	}
+	return b.String()
 }
 
 // classifyStopOutcome distinguishes a stop that cancelled a live job from one that
