@@ -1038,6 +1038,11 @@ func TestCloseBudget_ExhaustedMidPass_LanesLeftSafe(t *testing.T) {
 	idA, pathA, _ := r.seedIsolationLane(t)
 	idB, pathB, _ := r.seedIsolationLane(t)
 
+	// TRIPWIRE: this deadline stands in for an effectively-unlimited close
+	// budget; the fake git runner below calls cancel() explicitly on the
+	// first "worktree list" query, so this hour-long value is never actually
+	// awaited and only bounds the test if that manual cancellation itself
+	// regresses and never fires.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	cancelled := false

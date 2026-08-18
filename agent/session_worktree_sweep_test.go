@@ -455,7 +455,18 @@ func TestP3Timer_FiresAtDelayCollectsResidue(t *testing.T) {
 	}
 
 	clk.Advance(2 * time.Second) // cross laneSweepDelay
-	waitForCondition(t, 3*time.Second, "open-pass timer collects the residue lane", func() bool {
+	// The open-pass timer callback (fireOpenLaneResidueSweep) does register on
+	// sweepWG, but the fake clock fires it via `go w.fn()` from inside
+	// Advance -- there is no happens-before edge between that Add(1) and a
+	// bare sweepWG.Wait() called from here, so a naive wait on sweepWG can
+	// observe the counter still at zero and return before the pass even
+	// starts (unlike Close(), which only joins sweepWG after taking the same
+	// mutex the callback Adds under). Polling the actual side effect is the
+	// only race-free signal available from a test in this package.
+	// TRIPWIRE: the pass runs over an in-memory scripted git boundary with no
+	// real I/O, so it normally finishes in well under a second; 30s only
+	// fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "open-pass timer collects the residue lane", func() bool {
 		return !obs.lanePresent(path)
 	})
 }
