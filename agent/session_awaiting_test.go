@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
@@ -241,12 +243,13 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 // though the ball is in the user's court.
 func TestRestore_AgentLastTurnResumesAwaiting(t *testing.T) {
 	t.Parallel()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("answer") },
 	}})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,16 +261,16 @@ func TestRestore_AgentLastTurnResumesAwaiting(t *testing.T) {
 	id := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, id)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, id)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
 
 	c2 := llm.NewClient()
 	c2.Register(&fakeAdapter{name: "openai"})
-	restored, err := RestoreSessionFromMeta(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer restored.Close()
 	if got := restored.State(); got != SessionAwaiting {
@@ -284,13 +287,14 @@ func TestRestore_AgentLastTurnResumesAwaiting(t *testing.T) {
 // backward-walk against over-triggering on a dangling user turn.
 func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	t.Parallel()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	blocker := make(chan struct{})
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { <-blocker; return finalResponse("late") },
 	}})
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,16 +308,16 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	id := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, id)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, id)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
 
 	c2 := llm.NewClient()
 	c2.Register(&fakeAdapter{name: "openai"})
-	restored, err := RestoreSessionFromMeta(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer restored.Close()
 	if got := restored.State(); got != SessionIdle {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/goal"
@@ -52,6 +54,19 @@ func restoreBudgetSession(
 	stateDir string,
 	resumeHistory []schema.Turn,
 ) *Session {
+	return restoreBudgetSessionFS(t, client, meta, stateDir, resumeHistory, nil)
+}
+
+// restoreBudgetSessionFS is restoreBudgetSession with the session-meta IO
+// routed through metaFS (nil means the real OS filesystem).
+func restoreBudgetSessionFS(
+	t *testing.T,
+	client *llm.Client,
+	meta schema.SessionMeta,
+	stateDir string,
+	resumeHistory []schema.Turn,
+	metaFS afero.Fs,
+) *Session {
 	t.Helper()
 	restoreCfg := RestoreSessionConfig{
 		StateDir:      stateDir,
@@ -61,6 +76,7 @@ func restoreBudgetSession(
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
+			metaFS:              metaFS,
 		},
 	}
 	sess, err := RestoreSessionFromMetaWithConfig(
@@ -227,7 +243,8 @@ func TestSession_TurnBudgetWarningAfterThresholdOnNextAcceptedTurn(t *testing.T)
 func TestSession_TurnBudgetWarningRestoresWithoutDuplication(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sess, adapter, client := newBudgetSession(t, SessionConfig{MaxTurns: 7, StateDir: stateDir}, nil)
+	metaFS := afero.NewMemMapFs()
+	sess, adapter, client := newBudgetSession(t, SessionConfig{MaxTurns: 7, StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}}, nil)
 	for _, input := range []string{"first", "second", "third"} {
 		if _, err := sess.ProcessInput(context.Background(), input, nil); err != nil {
 			t.Fatalf("ProcessInput(%q): %v", input, err)
@@ -243,7 +260,7 @@ func TestSession_TurnBudgetWarningRestoresWithoutDuplication(t *testing.T) {
 	meta.TurnBudgetWarningEmitted = false
 	sess.Close()
 
-	restored := restoreBudgetSession(t, client, meta, stateDir, nil)
+	restored := restoreBudgetSessionFS(t, client, meta, stateDir, nil, metaFS)
 	if _, err := restored.ProcessInput(context.Background(), "after restore", nil); err != nil {
 		t.Fatalf("restored ProcessInput: %v", err)
 	}

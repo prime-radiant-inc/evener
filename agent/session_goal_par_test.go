@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/schema"
@@ -13,18 +15,20 @@ import (
 )
 
 // newStateGoalSession builds a session whose StateDir is enabled (so maybeAutoSave
-// actually persists) and returns it alongside that dir and a stop func.
-func newStateGoalSession(t *testing.T) (*Session, string, func()) {
+// actually persists) and returns it alongside that dir, the in-memory meta fs
+// the session's meta IO is routed through, and a stop func.
+func newStateGoalSession(t *testing.T) (*Session, string, afero.Fs, func()) {
 	t.Helper()
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: stateDir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	stop := drainEvents(sess)
-	return sess, stateDir, func() { sess.Close(); stop() }
+	return sess, stateDir, metaFS, func() { sess.Close(); stop() }
 }
 
 // TestGoalGateBlockIsPersisted pins /par A4 for the no-progress breaker path: the
@@ -33,7 +37,7 @@ func newStateGoalSession(t *testing.T) (*Session, string, func()) {
 // would be saved as still-active and wrongly resume on restart.
 func TestGoalGateBlockIsPersisted(t *testing.T) {
 	t.Parallel()
-	sess, stateDir, stop := newStateGoalSession(t)
+	sess, stateDir, metaFS, stop := newStateGoalSession(t)
 	defer stop()
 
 	store := sess.getOrCreateGoalStore()
@@ -47,7 +51,7 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 		sess.armGoalContinuation(false, true)
 	}
 
-	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, stateDir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -60,13 +64,13 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 // runs after the defer-save too, so its block must be persisted by its own save.
 func TestGoalErrorBlockIsPersisted(t *testing.T) {
 	t.Parallel()
-	sess, stateDir, stop := newStateGoalSession(t)
+	sess, stateDir, metaFS, stop := newStateGoalSession(t)
 	defer stop()
 
 	sess.getOrCreateGoalStore().Set("ship it", time.Now())
 	sess.terminateGoalOnError(context.Background(), errors.New("provider exploded"))
 
-	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, stateDir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -85,7 +89,7 @@ func TestGoalErrorBlockIsPersisted(t *testing.T) {
 // every shutdown.
 func TestGoalRootShutdownLeavesGoalActive(t *testing.T) {
 	t.Parallel()
-	sess, _, stop := newStateGoalSession(t)
+	sess, _, _, stop := newStateGoalSession(t)
 	defer stop()
 
 	sess.getOrCreateGoalStore().Set("long task", time.Now())
@@ -108,6 +112,7 @@ func TestGoalRootShutdownLeavesGoalActive(t *testing.T) {
 // its terminal report (the once-gate resets on load) and leave a stale chip.
 func TestGoalRestoreOnlyActive(t *testing.T) {
 	t.Parallel()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	now := time.Now()
@@ -127,9 +132,9 @@ func TestGoalRestoreOnlyActive(t *testing.T) {
 	}
 
 	for _, status := range []string{string(goal.StatusComplete), string(goal.StatusBlocked)} {
-		sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(status), t.TempDir())
+		sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(status), RestoreSessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}})
 		if err != nil {
-			t.Fatalf("RestoreSessionFromMeta(%s): %v", status, err)
+			t.Fatalf("RestoreSessionFromMetaWithConfig(%s): %v", status, err)
 		}
 		if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
 			t.Fatalf("a %s goal must not be restored (/par #2)", status)
@@ -137,9 +142,9 @@ func TestGoalRestoreOnlyActive(t *testing.T) {
 		sess.Close()
 	}
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusActive)), t.TempDir())
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), metaFor(string(goal.StatusActive)), RestoreSessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta(active): %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig(active): %v", err)
 	}
 	defer sess.Close()
 	snap, ok := sess.getOrCreateGoalStore().Snapshot()

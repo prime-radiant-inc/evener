@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -39,7 +41,7 @@ func TestFailedToolCallsSnapshotStartsMeasuredAtZero(t *testing.T) {
 	// transcript and nothing in it has failed. The strip renders nothing either
 	// way, but only one of the two claims is something the strip may make.
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}))
 	defer sess.Close()
 
 	count, ok := sess.FailedToolCallsSnapshot()
@@ -53,7 +55,7 @@ func TestFailedToolCallsSnapshotStartsMeasuredAtZero(t *testing.T) {
 
 func TestFailedToolCallsSnapshotRisesAsFailuresAreRecorded(t *testing.T) {
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}))
 	defer sess.Close()
 
 	if err := sess.transcript.Append(failedShellResultTurn("call_1", 1)); err != nil {
@@ -86,7 +88,8 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 	// that restarted its count at 0 would under-report exactly like a windowed
 	// one, and under-reporting is the harm the count exists to prevent.
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	metaFS := afero.NewMemMapFs()
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: metaFS}}))
 	if err := sess.transcript.Append(failedShellResultTurn("call_1", 2)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 	resumed, err := RestoreSessionFromMetaWithConfig(
 		llm.NewClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(dir), meta,
-		RestoreSessionConfig{StateDir: dir},
+		RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -124,7 +127,8 @@ func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *tes
 	// prefix. DivergenceTurn is where the child's own history begins, and it
 	// bounds the live count exactly as it bounds the token sum.
 	dir := t.TempDir()
-	parent := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	metaFS := afero.NewMemMapFs()
+	parent := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: metaFS}}))
 	if err := parent.transcript.Append(failedShellResultTurn("call_1", 1)); err != nil {
 		t.Fatalf("append parent failure: %v", err)
 	}
@@ -140,7 +144,7 @@ func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *tes
 	child, err := RestoreSessionFromMetaWithConfig(
 		llm.NewClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(dir), childMeta,
-		RestoreSessionConfig{StateDir: dir},
+		RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -161,7 +165,7 @@ func TestFailedToolCallsSnapshotSurvivesTheSessionEnding(t *testing.T) {
 	// daemon until the next read reroutes to disk. Its settled count has to
 	// still be there, or the figure vanishes at the moment it stops changing.
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}))
 	if err := sess.transcript.Append(erroredResultTurn("call_1")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -180,7 +184,7 @@ func TestFailedToolCallsSnapshotIgnoresATranscriptItCouldNotOpen(t *testing.T) {
 	// Belt and braces on the load-bearing rule: a session whose writer was never
 	// installed reports absent rather than a fabricated clean run.
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}}))
 	defer sess.Close()
 
 	sess.transcript = nil

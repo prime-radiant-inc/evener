@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
@@ -598,6 +600,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 
 func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T) {
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	const (
 		attentionID = "delegate:dlg_drain/delivery/1"
 		content     = `<delegate-notification delegate_id="dlg_drain">drain me</delegate-notification>`
@@ -605,7 +608,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, testOnly: testConfig{metaFS: metaFS}}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
@@ -660,6 +663,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
+		testOnly:         testConfig{metaFS: afero.NewMemMapFs()},
 	}))
 
 	// Background a delegate; it runs to completion in its own goroutine and

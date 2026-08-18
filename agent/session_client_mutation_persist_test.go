@@ -487,11 +487,19 @@ func TestClientMutationPersist_RejectsIncompleteSnapshot(t *testing.T) {
 
 func TestNewSessionMutationSnapshotUsesSnakeCaseStorageKeys(t *testing.T) {
 	stateDir := t.TempDir()
-	sess := newQueuePersistTestSession(t, stateDir)
+	// Build the session inline (rather than via newQueuePersistTestSession) so
+	// the session-meta IO routes through an in-memory metaFS; the client
+	// mutation snapshot under test keeps writing to the real stateDir.
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
 	defer sess.Close()
 
 	const mutationID = "fresh-session-mutation"
-	_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+	_, err = sess.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: mutationID,
 		Input:            []appwire.InputItem{{Type: "text", Text: "persist me"}},
 	})
@@ -608,6 +616,7 @@ func assertSnakeCaseStorageKeys(t *testing.T, scope string, object map[string]an
 
 func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 	stateDir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 
@@ -615,7 +624,7 @@ func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 		client,
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(stateDir),
-		SessionConfig{StateDir: stateDir},
+		SessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}},
 	)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -631,7 +640,7 @@ func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, stateDir, sessionID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -640,7 +649,7 @@ func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(stateDir),
 		meta,
-		RestoreSessionConfig{StateDir: stateDir},
+		RestoreSessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: metaFS}},
 	)
 	if restored != nil {
 		restored.Close()
