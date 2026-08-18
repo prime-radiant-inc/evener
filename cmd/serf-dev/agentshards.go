@@ -68,11 +68,6 @@ type shardsConfig struct {
 	stdout   io.Writer
 	stderr   io.Writer
 	signals  <-chan os.Signal
-	// handBackSignals returns the relayed signals to their default
-	// disposition, so a second one ends the process even while a shard is
-	// wedged. The script cleared its traps inside its first handler for
-	// exactly this reason.
-	handBackSignals func()
 }
 
 // runAgentShards is the subcommand entry: environment in, exit code out.
@@ -104,8 +99,6 @@ func runAgentShards(args []string) int {
 		stdout:   os.Stdout,
 		stderr:   os.Stderr,
 		signals:  signals,
-
-		handBackSignals: func() { signal.Stop(signals) },
 	})
 }
 
@@ -220,18 +213,20 @@ func runShards(cfg shardsConfig) int {
 				}
 				// A shard that ignores TERM would otherwise hold the run
 				// hostage forever: the wait for it never returns, and while
-				// signals are relayed here nothing takes their default
-				// action. Hand them back and re-raise, the way the script's
-				// first handler cleared its traps so the next Ctrl-C landed.
-				// The scratch directory stays on disk as the record.
+				// signals are relayed to this channel none of them takes its
+				// default action. So the second one leaves immediately, with
+				// the same 128+signal code the first would have exited on,
+				// and says where the logs it is abandoning are — os.Exit
+				// runs no deferred cleanup, so the scratch directory stays
+				// on disk as the record.
+				//
+				// The script got here by clearing its traps in the first
+				// handler and letting the next signal kill the shell.
+				// signal.Stop plus a re-raise is the direct translation and
+				// was tried; the re-raised signal does not reliably take the
+				// default action before the process continues, so this exits
+				// under its own power instead.
 				_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %s again — abandoning the running shards; logs: %s\n", signalNames[s], logdir)
-				if cfg.handBackSignals != nil {
-					cfg.handBackSignals()
-				}
-				_ = syscall.Kill(os.Getpid(), s)
-				// Re-raising is a no-op for a signal this process inherited
-				// as ignored (a HUP under nohup, say), and being deaf is the
-				// bug being fixed, so leave under our own power instead.
 				os.Exit(128 + int(s))
 			}
 		}()

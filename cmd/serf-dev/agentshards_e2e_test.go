@@ -523,13 +523,8 @@ func TestAgentShardsSecondSignalEndsAWedgedRun(t *testing.T) {
 	}
 
 	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
-		t.Fatalf("second SIGTERM: runner exit = %v, want death by SIGTERM or exit 143", err)
-	}
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	bySignal := ok && status.Signaled() && status.Signal() == syscall.SIGTERM
-	if !bySignal && exit.ExitCode() != 143 {
-		t.Fatalf("second SIGTERM: runner exit = %v, want death by SIGTERM or exit 143", err)
+	if !errors.As(err, &exit) || exit.ExitCode() != 143 {
+		t.Fatalf("second SIGTERM: runner exit = %v, want exit status 143", err)
 	}
 	stderr := cmd.Stderr.(*bytes.Buffer).String()
 	if !strings.Contains(stderr, "interrupted by SIGTERM") {
