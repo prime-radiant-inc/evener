@@ -1523,3 +1523,46 @@ func TestContextSubscriptionRegistrationSerializesWithConnectionTeardown(t *test
 		})
 	}
 }
+
+// TestBurstWithinClientBufferBoundDoesNotEvict pins the hub-side half of the
+// contract appwire.NotificationBufferCap documents for the client side: the
+// outbound buffer "must hold any single legitimate burst even while the
+// consumer waits for a scheduling slice". A connection is evicted for having
+// STOPPED draining, never for its send loop losing one scheduling slice while
+// a burst lands.
+//
+// Found live, not hypothesized: on a loaded CI runner the turn-boundary
+// notification burst outran the send-loop goroutine of
+// TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary's client, the hub
+// evicted it mid-test with a NORMAL close status and no log line, and the
+// test's Stop then failed with "use of closed network connection" — twice in
+// one day, on diffs that touched neither the hub nor the test.
+func TestBurstWithinClientBufferBoundDoesNotEvict(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("napping")
+	server.registerConnection(conn)
+	conn.Subscribe("thread")
+
+	// The send loop never runs in this test: every frame stays queued, which
+	// is exactly a consumer waiting for a scheduling slice.
+	for i := 0; i < appwire.NotificationBufferCap; i++ {
+		server.Broadcast("thread", "burst", nil)
+	}
+
+	server.mu.RLock()
+	still := server.conns[conn.id] == conn
+	server.mu.RUnlock()
+	if !still {
+		t.Fatalf("a burst of %d sequenced notifications evicted a consumer that had not stopped draining, only napped", appwire.NotificationBufferCap)
+	}
+
+	// The policy itself must survive: one frame past the bound is a consumer
+	// that stopped draining, and eviction is the correct answer.
+	server.Broadcast("thread", "one-past-the-bound", nil)
+	server.mu.RLock()
+	evicted := server.conns[conn.id] == nil
+	server.mu.RUnlock()
+	if !evicted {
+		t.Fatal("a consumer a full buffer past the bound was not evicted; the slow-consumer policy is gone, not retuned")
+	}
+}
