@@ -191,16 +191,11 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		return nil, errDelegateStaleLease
 	}
 	aggregate := c.durable[delegateID]
-	if attentionID == "" || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || live.binding != nil || live.recoveryRequired || c.reclamationCoversLocked(delegateID) {
+	if attentionID == "" || aggregate == nil || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, errDelegateTargetBusy
-	}
-	for _, existing := range c.reservations {
-		if existing.delegateID == delegateID {
-			return nil, errDelegateTargetBusy
-		}
 	}
 	if !c.reserveCapacityLocked(delegateDriveCapacity) {
 		return nil, errTreeAtCapacity

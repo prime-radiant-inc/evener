@@ -143,6 +143,27 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 	return false
 }
 
+// delegateAttentionWakeEligibleLocked reports whether delegateID could accept
+// an attention wake or an escalation right now, before the ancestor fence is
+// consulted. It is the shared eligibility predicate for ReserveAttention and
+// every wake-cache scan, so the driver, the retry loop, and the escalation
+// collector cannot disagree about the same delegate.
+func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
+	aggregate := c.durable[delegateID]
+	if c.closing || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
+		return false
+	}
+	if live := c.live[delegateID]; live != nil && (live.binding != nil || live.recoveryRequired) {
+		return false
+	}
+	for _, record := range c.reservations {
+		if record.delegateID == delegateID {
+			return false
+		}
+	}
+	return true
+}
+
 // hasRunnableDelegateAttention reports whether the root driver has actionable
 // attention work: a wake it may commit, or attention it must escalate because
 // a permanently closed ancestor fences the wake off forever. Attention parked
@@ -154,11 +175,10 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for delegateID, ids := range c.attentionWakeIDs {
-		aggregate := c.durable[delegateID]
-		if len(ids) == 0 || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
+		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
+		blocked, closedAncestorID := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID)
 		if !blocked || closedAncestorID != "" {
 			return true
 		}
@@ -186,11 +206,10 @@ func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bo
 	defer c.mu.Unlock()
 	delegateIDs := make([]string, 0, len(c.attentionWakeIDs))
 	for delegateID, ids := range c.attentionWakeIDs {
-		aggregate := c.durable[delegateID]
-		if len(ids) == 0 || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 {
+		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 			continue
 		}
-		if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		if blocked, _ := c.ancestorFenceLocked(c.durable[delegateID].Descriptor.ParentDelegateID); blocked {
 			continue
 		}
 		delegateIDs = append(delegateIDs, delegateID)
@@ -209,11 +228,10 @@ func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bo
 }
 
 // delegateFencedAttentionEscalation is one delegate's pending attention that a
-// permanently closed ancestor fences off forever. The root resolves it durably
-// and surfaces a notification in its place.
+// permanently closed ancestor fences off forever. The root transfers each
+// message to itself under the original identity and resolves the source.
 type delegateFencedAttentionEscalation struct {
 	delegateID    string
-	ancestorID    string
 	transcriptRef string
 	attentionIDs  []string
 	runtime       *Session
@@ -222,8 +240,9 @@ type delegateFencedAttentionEscalation struct {
 // permanentlyFencedDelegateAttention lists pending attention wakes whose
 // target sits under an ancestor that can never become resumable again. No
 // generation can ever deliver them, so the root escalates and resolves them
-// instead of retrying forever. Delegates with an in-flight generation or
-// reservation are skipped and picked up on a later pass.
+// instead of retrying forever. Delegates that are not wake-eligible (in-flight
+// generation, reservation, recovery, reclamation) are skipped and picked up on
+// a later pass.
 func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegateFencedAttentionEscalation {
 	if c == nil {
 		return nil
@@ -232,24 +251,10 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 	defer c.mu.Unlock()
 	plans := make([]delegateFencedAttentionEscalation, 0)
 	for delegateID, ids := range c.attentionWakeIDs {
+		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
+			continue
+		}
 		aggregate := c.durable[delegateID]
-		if len(ids) == 0 || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
-			continue
-		}
-		live := c.live[delegateID]
-		if live != nil && live.binding != nil {
-			continue
-		}
-		reserved := false
-		for _, record := range c.reservations {
-			if record.delegateID == delegateID {
-				reserved = true
-				break
-			}
-		}
-		if reserved {
-			continue
-		}
 		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
 		if !blocked || closedAncestorID == "" {
 			continue
@@ -260,12 +265,11 @@ func (c *delegateTreeController) permanentlyFencedDelegateAttention() []delegate
 		}
 		sort.Strings(attentionIDs)
 		var runtime *Session
-		if live != nil {
+		if live := c.live[delegateID]; live != nil {
 			runtime = live.runtime
 		}
 		plans = append(plans, delegateFencedAttentionEscalation{
 			delegateID:    delegateID,
-			ancestorID:    closedAncestorID,
 			transcriptRef: aggregate.Descriptor.TranscriptRef,
 			attentionIDs:  attentionIDs,
 			runtime:       runtime,

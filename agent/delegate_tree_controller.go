@@ -462,16 +462,23 @@ func (c *delegateTreeController) admitLeaseLocked(lease delegateLease, phases ..
 // admitLeaseLocked applies to running leases. closedAncestorID identifies the
 // nearest ancestor whose refusal is permanent: resumability closes
 // monotonically (no event reopens it), so a missing or non-resumable ancestor
-// can never admit this subtree again. A blocked result with an empty
-// closedAncestorID is transient -- a pending subtree stop that clears when the
-// stop completes.
+// can never admit this subtree again. PhaseClosed needs no separate check
+// because every fold transition into it requires !Resumable.
+//
+// A blocked result with an empty closedAncestorID is transient -- a pending
+// subtree stop that clears when the stop completes. The controller's own APIs
+// never leave a delegate outside the stop that covers its ancestor (the stop
+// request marks whole subtrees and creation under a stop is refused), so
+// callers that already checked the delegate's own PendingStopSeq reach this
+// branch only through a journal the fold accepts but this controller did not
+// emit; parking, not escalating, is the safe answer for such a journal.
 func (c *delegateTreeController) ancestorFenceLocked(parentID string) (blocked bool, closedAncestorID string) {
 	for ancestorID := parentID; ancestorID != ""; {
 		ancestor := c.durable[ancestorID]
 		if ancestor == nil || !ancestor.Resumable {
 			return true, ancestorID
 		}
-		if ancestor.Phase == delegatestore.PhaseClosed || ancestor.PendingStopSeq != 0 {
+		if ancestor.PendingStopSeq != 0 {
 			return true, ""
 		}
 		ancestorID = ancestor.Descriptor.ParentDelegateID

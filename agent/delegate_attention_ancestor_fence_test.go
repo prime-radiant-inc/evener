@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -193,8 +192,9 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 // TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce drives
 // the hot path end to end: a resident root supervises an idle grandchild whose
 // pending attention sits under a parent delegate that closed permanently. The
-// wake must be refused, the attention durably resolved, and the root must
-// receive exactly one escalation notification -- replays append nothing new.
+// wake must be refused and the exact original message transferred to the root
+// under its original attention ID, with the source durably resolved -- replays
+// append nothing new.
 func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	grandchildDelegateID := identifier.MustNewDelegateID()
@@ -274,21 +274,19 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 		t.Fatalf("read root attention fold: %v", err)
 	}
 	escalations := 0
-	escalationID := ""
 	for _, id := range rootFold.order {
-		if strings.HasPrefix(id, "unreachable:"+grandchildDelegateID+":") {
+		if id == attentionID {
 			escalations++
-			escalationID = id
 		}
 	}
 	if escalations != 1 {
-		t.Fatalf("root escalation notifications = %d, want exactly one", escalations)
+		t.Fatalf("root transferred attention entries = %d, want exactly one", escalations)
 	}
-	content := rootFold.content[escalationID].Text()
-	for _, want := range []string{grandchildDelegateID, fixture.delegateID, "1 undelivered message(s)"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("root escalation content %q omits %q", content, want)
-		}
+	if got := rootFold.content[attentionID].Text(); got != "undelivered grandchild message" {
+		t.Fatalf("root transferred attention content = %q, want the original message", got)
+	}
+	if _, resolved := rootFold.resolutions[attentionID]; resolved {
+		t.Fatal("root transferred attention arrived pre-resolved")
 	}
 	if !root.hasPendingRootDelegateAttention() {
 		t.Fatal("root escalation notification was not armed for the root model")
@@ -315,20 +313,21 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	}
 	escalations = 0
 	for _, id := range rootFold.order {
-		if strings.HasPrefix(id, "unreachable:"+grandchildDelegateID+":") {
+		if id == attentionID {
 			escalations++
 		}
 	}
 	if escalations != 1 {
-		t.Fatalf("root escalation notifications after replay = %d, want exactly one", escalations)
+		t.Fatalf("root transferred attention entries after replay = %d, want exactly one", escalations)
 	}
 }
 
 // TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce covers
 // the cold variant: restart with a permanently closed ancestor and an idle
-// descendant holding pending attention. Bootstrap must resolve the attention,
-// escalate once to the root transcript, arm no wake (no retry loop), and a
-// second bootstrap over the same durable state must not duplicate anything.
+// descendant holding pending attention. Bootstrap must transfer the original
+// message to the root transcript under its original identity, resolve the
+// source, arm no wake (no retry loop), and a second bootstrap over the same
+// durable state must not duplicate anything.
 func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
@@ -350,7 +349,7 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 		count := 0
 		content := ""
 		for _, id := range rootFold.order {
-			if strings.HasPrefix(id, "unreachable:dlg_child:") {
+			if id == attentionID {
 				count++
 				content = rootFold.content[id].Text()
 			}
@@ -371,12 +370,10 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 	}
 	count, content := countEscalations()
 	if count != 1 {
-		t.Fatalf("cold root escalations = %d, want exactly one", count)
+		t.Fatalf("cold root transfers = %d, want exactly one", count)
 	}
-	for _, want := range []string{"dlg_child", "dlg_parent", "1 undelivered message(s)"} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("cold escalation content %q omits %q", content, want)
-		}
+	if content != "attention" {
+		t.Fatalf("cold transferred content = %q, want the original message", content)
 	}
 	if delegateID, _, pending := fresh.delegateController.nextIdleDelegateAttention(); pending {
 		t.Fatalf("cold restore armed fenced attention for %s", delegateID)
@@ -395,9 +392,148 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 	t.Cleanup(func() { _ = replay.closeOwnedDelegateStore() })
 	count, _ = countEscalations()
 	if count != 1 {
-		t.Fatalf("root escalations after replay bootstrap = %d, want exactly one", count)
+		t.Fatalf("root transfers after replay bootstrap = %d, want exactly one", count)
 	}
 	if replay.delegateController.hasPendingDelegateAttention() {
 		t.Fatal("replay bootstrap re-armed resolved fenced attention")
+	}
+}
+
+// TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth
+// pins the crash window BETWEEN the root transfer and the source resolution:
+// the transfer for attention A is durable in the root transcript, the source
+// is still pending, a further ancestor closes (the causally-linked cascade
+// that moved the nearest fenced ancestor), and a second attention B arrives at
+// the fenced child. Replay bootstrap must complete -- the per-attention
+// identity and content are immutable, so A replays as a no-op and B gets its
+// own transfer -- with exactly one root copy of each and both sources
+// resolved. The batch-hash design failed this permanently.
+func TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 4, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_grand", "", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "dlg_grand", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", true)
+	const attentionA = "delegate:crash-window-a"
+	const attentionB = "delegate:crash-window-b"
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	rootPath := transcriptPath(c.stateDir, "root-session")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionA)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_grand"), "child-dlg_grand")
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_parent"), "child-dlg_parent")
+	writeEmptyAttentionTranscript(t, rootPath, "root-session")
+
+	// The grandparent closes; escalation of A transfers to the root and then
+	// crashes before the source resolution becomes durable.
+	closeDelegateControllerResumability(t, c, "dlg_grand", "turn_budget_exhausted")
+	childFold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read child attention before partial transfer: %v", err)
+	}
+	if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(rootPath, "root-session", attentionA, childFold.content[attentionA], time.Unix(200, 0).UTC(), transcript.OpenWriterForSession); err != nil {
+		t.Fatalf("simulate partially completed transfer: %v", err)
+	}
+	// Before the restart, the cascade continues (the parent under the closed
+	// grandparent closes too) and a second attention reaches the fenced child.
+	closeDelegateControllerResumability(t, c, "dlg_parent", "turn_budget_exhausted")
+	appendDelegateAttentionTurn(t, childPath, "child-dlg_child", attentionB)
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("replay bootstrap across the crash window: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
+	rootFold, err := readDelegateAttentionFold(rootPath, "root-session")
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	counts := map[string]int{}
+	for _, id := range rootFold.order {
+		counts[id]++
+	}
+	if counts[attentionA] != 1 || counts[attentionB] != 1 {
+		t.Fatalf("root transfers after crash-window replay = %v, want exactly one of each", counts)
+	}
+	childFold, err = readDelegateAttentionFold(childPath, "child-dlg_child")
+	if err != nil {
+		t.Fatalf("read child attention after replay: %v", err)
+	}
+	if got := childFold.resolutions[attentionA]; got != delegateAttentionDiscarded {
+		t.Fatalf("crash-window attention %s resolution = %q, want discarded", attentionA, got)
+	}
+	if got := childFold.resolutions[attentionB]; got != delegateAttentionDiscarded {
+		t.Fatalf("late attention %s resolution = %q, want discarded", attentionB, got)
+	}
+	if fresh.delegateController.hasPendingDelegateAttention() {
+		t.Fatal("crash-window replay left fenced attention pending")
+	}
+}
+
+// TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild reaches the
+// ancestor fence's transient branch itself: the fold accepts a delegate
+// created under a parent whose subtree stop is already pending (this
+// controller's API refuses that ordering, so the state arrives only through a
+// restored journal), leaving a child whose own PendingStopSeq is clear under a
+// stopping ancestor. The fence must park the wake -- and must NOT classify the
+// stop as permanent, so no escalation fires -- and the attention delivers
+// normally once the stop completes.
+func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_parent", "")
+	c.mu.Lock()
+	appended, err := c.appendLocked(delegatestore.Event{
+		Kind:                 delegatestore.EventDelegateSubtreeStopRequested,
+		DelegateID:           "dlg_parent",
+		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: "dlg_parent"},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append subtree stop request: %v", err)
+	}
+	requestSeq := appended[0].Seq
+	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
+	child := &Session{}
+	c.mu.Lock()
+	c.live["dlg_child"] = &delegateLiveState{runtime: child}
+	childPendingStop := c.durable["dlg_child"].PendingStopSeq
+	c.mu.Unlock()
+	if childPendingStop != 0 {
+		t.Fatalf("child pending stop seq = %d, want 0 so only the ancestor fence can park it", childPendingStop)
+	}
+	const attentionID = "delegate:uncovered-child-wake"
+	if !c.noteDelegateAttention("dlg_child", attentionID) {
+		t.Fatal("note child attention")
+	}
+
+	if _, err := c.ReserveAttention(child, attentionID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("ReserveAttention under stopping ancestor = %v, want target_busy", err)
+	}
+	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
+		t.Fatalf("nextIdleDelegateAttention offered %s under a stopping ancestor", delegateID)
+	}
+	if plans := c.permanentlyFencedDelegateAttention(); len(plans) != 0 {
+		t.Fatalf("stopping ancestor classified as permanent: %#v", plans)
+	}
+
+	c.mu.Lock()
+	_, err = c.appendLocked(delegatestore.Event{
+		Kind:                 delegatestore.EventDelegateSubtreeStopCompleted,
+		DelegateID:           "dlg_parent",
+		SubtreeStopCompleted: &delegatestore.SubtreeStopCompleted{RequestSeq: requestSeq},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append subtree stop completion: %v", err)
+	}
+	delegateID, gotAttentionID, pending := c.nextIdleDelegateAttention()
+	if !pending || delegateID != "dlg_child" || gotAttentionID != attentionID {
+		t.Fatalf("post-stop attention = delegate:%q attention:%q pending:%t, want the parked wake deliverable", delegateID, gotAttentionID, pending)
+	}
+	reservation, err := c.ReserveAttention(child, attentionID)
+	if err != nil {
+		t.Fatalf("ReserveAttention after ancestor stop completed: %v", err)
+	}
+	if _, err := c.CommitStart(reservation); err != nil {
+		t.Fatalf("CommitStart after ancestor stop completed: %v", err)
 	}
 }

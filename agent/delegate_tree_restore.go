@@ -2,12 +2,9 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -304,9 +301,9 @@ func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]st
 // repairPermanentlyUnreachableDelegateAttention transfers pending model-bound
 // input only after resumability has closed monotonically. Transcript I/O is
 // performed from an immutable tree snapshot without the controller mutex. It
-// also resolves the attention of live descendants that a permanently closed
-// ancestor fences off, escalating a notification to the root session so
-// nothing is lost silently and no wake retries forever.
+// also transfers the attention of live descendants that a permanently closed
+// ancestor fences off to the root session -- each message under its own
+// original identity, so nothing is lost silently and no wake retries forever.
 func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) error {
 	if c == nil {
 		return errors.New("delegate controller is nil")
@@ -338,7 +335,7 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			targetRef:        targetRef,
 		})
 	}
-	fenced := make([]delegateFencedAttentionEscalation, 0)
+	fencedIDs := make([]string, 0, len(c.durable))
 	for id, aggregate := range c.durable {
 		if aggregate == nil || !aggregate.Resumable || aggregate.Phase != delegatestore.PhaseIdle || aggregate.PendingStopSeq != 0 {
 			continue
@@ -347,13 +344,17 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 		if !blocked || closedAncestorID == "" {
 			continue
 		}
-		fenced = append(fenced, delegateFencedAttentionEscalation{
-			delegateID:    id,
-			ancestorID:    closedAncestorID,
-			transcriptRef: aggregate.Descriptor.TranscriptRef,
+		fencedIDs = append(fencedIDs, id)
+	}
+	sort.Strings(fencedIDs)
+	for _, id := range fencedIDs {
+		// A live descendant fenced off permanently transfers straight to the
+		// root: an empty target is the existing "escalate to root" shape below.
+		plans = append(plans, delegateAttentionTransferPlan{
+			sourceDelegateID: id,
+			sourceRef:        c.durable[id].Descriptor.TranscriptRef,
 		})
 	}
-	sort.Slice(fenced, func(i, j int) bool { return fenced[i].delegateID < fenced[j].delegateID })
 	c.mu.Unlock()
 	if open == nil {
 		open = transcript.OpenWriterForSession
@@ -385,50 +386,7 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			}
 		}
 	}
-	rootPath := transcriptPath(stateDir, rootSessionID)
-	for _, plan := range fenced {
-		sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(stateDir, plan.transcriptRef)
-		if err != nil {
-			return fmt.Errorf("fenced delegate %s source transcript: %w", plan.delegateID, err)
-		}
-		fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
-		if err != nil {
-			return fmt.Errorf("fenced delegate %s attention fold: %w", plan.delegateID, err)
-		}
-		pending := fold.pendingIDs()
-		if len(pending) == 0 {
-			continue
-		}
-		sort.Strings(pending)
-		// Notification before resolution: a crash in between replays into an
-		// idempotent no-op append and a second resolution attempt, never a
-		// silently discarded message.
-		notificationID := unreachableDelegateAttentionID(plan.delegateID, pending)
-		content := unreachableDelegateAttentionContent(plan.delegateID, plan.ancestorID, len(pending))
-		if _, err := appendColdDelegateNotificationDurablyWithOpen(rootPath, rootSessionID, notificationID, content, now(), open); err != nil {
-			return fmt.Errorf("fenced delegate %s escalate attention: %w", plan.delegateID, err)
-		}
-		if err := appendColdAttentionResolutionWithOpen(sourcePath, sourceSessionID, pending, delegateAttentionDiscarded, open); err != nil {
-			return fmt.Errorf("fenced delegate %s resolve escalated attention: %w", plan.delegateID, err)
-		}
-	}
 	return nil
-}
-
-// unreachableDelegateAttentionID derives one deterministic notification
-// identity per escalated batch so crash replays append nothing new while a
-// later, different batch gets its own notification.
-func unreachableDelegateAttentionID(delegateID string, attentionIDs []string) string {
-	sum := sha256.Sum256([]byte(strings.Join(attentionIDs, "\n")))
-	return "unreachable:" + delegateID + ":" + hex.EncodeToString(sum[:8])
-}
-
-func unreachableDelegateAttentionContent(delegateID, ancestorID string, count int) string {
-	return fmt.Sprintf(
-		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
-		html.EscapeString(delegateID),
-		html.EscapeString(fmt.Sprintf("delegate %s had %d undelivered message(s) when its ancestor %s closed", delegateID, count, ancestorID)),
-	)
 }
 
 func nearestReachableAttentionAncestorLocked(state delegatestore.State, parentID string) string {

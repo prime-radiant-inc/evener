@@ -306,11 +306,22 @@ func delegateAttentionResolutionTurn(attentionID string, disposition delegateAtt
 // item. Replaying the same identity and content is a no-op; reusing an identity
 // for different content is corruption.
 func (s *Session) appendDelegateNotificationDurably(attentionID, content string) (appended bool, err error) {
+	return s.appendDelegateAttentionMessageDurably(attentionID, llm.User(content))
+}
+
+// appendDelegateAttentionMessageDurably is the message-preserving core of
+// appendDelegateNotificationDurably. Escalation of a fenced delegate's
+// attention transfers the exact original message under its original identity,
+// so both the resident and the cold writers stay byte-identical on replay.
+func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, message llm.Message) (appended bool, err error) {
 	if s == nil {
 		return false, errors.New("delegate attention session is nil")
 	}
 	if attentionID == "" {
 		return false, errors.New("delegate attention ID is empty")
+	}
+	if message.Role != llm.RoleUser || len(message.Content) == 0 {
+		return false, errors.New("delegate attention message is invalid")
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
@@ -329,7 +340,6 @@ func (s *Session) appendDelegateNotificationDurably(attentionID, content string)
 	if err != nil {
 		return false, err
 	}
-	message := llm.User(content)
 	deliveryID := strings.TrimPrefix(attentionID, "delegate:")
 	if deliveryID != attentionID && fold.deliveryCommits[deliveryID] != "" {
 		_, durableFold, err := s.reopenAttentionTranscriptDurably(writer, path, sessionID)
