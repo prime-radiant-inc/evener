@@ -45,12 +45,21 @@ func TestStreamContentChant_LongDistinctProse_NoTrip(t *testing.T) {
 
 // TestStreamContentChant_UniquePeriodsGuard_NoTrip pins the false-positive
 // guard the corrected writeup calls "load-bearing, not polish": a repeated
-// short PREFIX (e.g. a numbered-list template) followed by long, mutually
-// distinct text each time must not trip, because the text BETWEEN
-// occurrences of the repeated chunk is not itself repeating.
+// closing line (e.g. a numbered-list template's boilerplate footer) preceded
+// by long, mutually distinct text each time must not trip, because the text
+// BETWEEN occurrences of the repeated chunk is not itself repeating.
+//
+// The repeated chunk here is a SUFFIX, not a prefix: checkChant always
+// compares the buffer's trailing chantChunkRunes runes, so only a chunk that
+// recurs at the END of each observed delta is a real exercise of the
+// uniqueness guard -- a repeated PREFIX followed by varying body text would
+// never make the trailing chunk match at all, and would pass this test
+// trivially without ever reaching the guard it claims to pin (caught while
+// writing this test: revert chantMaxDistinctPeriods to 0 with a repeated
+// PREFIX fixture and nothing goes red).
 func TestStreamContentChant_UniquePeriodsGuard_NoTrip(t *testing.T) {
 	c := newStreamContentChant()
-	prefix := "### Finding\n\nSeverity: medium. Recommendation: review this section carefully before merging.\n\n"
+	closing := "Please flag this finding in the review thread before merging this change.\n\n"
 	distinctBodies := []string{
 		"The auth handler skips a nil check on the session token when the request arrives over the legacy header.",
 		"The retry loop does not reset its backoff counter after a successful attempt, so a later failure waits far too long.",
@@ -67,9 +76,9 @@ func TestStreamContentChant_UniquePeriodsGuard_NoTrip(t *testing.T) {
 	}
 	var trip *loopTrip
 	for i, body := range distinctBodies {
-		trip = c.observe(prefix + body + "\n\n")
+		trip = c.observe(body + " " + closing)
 		if trip != nil {
-			t.Fatalf("finding %d: unexpected trip %+v; the repeated prefix shares no repeating content between occurrences", i, trip)
+			t.Fatalf("finding %d: unexpected trip %+v; the repeated closing shares no repeating content between occurrences", i, trip)
 		}
 	}
 }
@@ -116,5 +125,38 @@ func TestStreamContentChant_CodeFenceResetsTracking(t *testing.T) {
 		if trip != nil {
 			t.Fatalf("block %d fenced code: unexpected trip %+v (fenced content must not accumulate into the chant buffer)", i, trip)
 		}
+	}
+}
+
+// TestStreamContentChant_FenceBoundaryClearsBuffer pins the reset mechanism
+// directly, at the buffer level (same package, so c.buf is reachable): a
+// fence-marker delta must clear whatever text had accumulated before it, not
+// merely skip accumulating the fenced content itself.
+//
+// This is a narrower and more direct property than
+// TestStreamContentChant_CodeFenceResetsTracking above: that test varies the
+// surrounding prose (a different file path each block), which passes
+// regardless of whether the reset runs, because inFence already blocks the
+// fenced content from ever reaching the buffer and the varying prose never
+// forms a repeating chunk on its own -- caught while writing this test:
+// deleting the reset line left that test green. Without the reset, pre-fence
+// text silently persists and gets prefixed onto whatever text follows the
+// fence, which is what this test pins directly by inspecting the buffer.
+func TestStreamContentChant_FenceBoundaryClearsBuffer(t *testing.T) {
+	c := newStreamContentChant()
+	before := "context established immediately before the fence opens here"
+	c.observe(before)
+	c.observe("```go\n")
+	c.observe("func Add(a, b int) int {\n\treturn a + b\n}\n")
+	c.observe("```\n\n")
+	after := "short tail resumed after the fence closes"
+	c.observe(after)
+
+	got := string(c.buf)
+	if strings.Contains(got, "context established") {
+		t.Fatalf("chant buffer = %q, want the fence boundary to have cleared the pre-fence text, not carried it across", got)
+	}
+	if !strings.Contains(got, after) {
+		t.Fatalf("chant buffer = %q, want it to contain the post-fence text %q", got, after)
 	}
 }
