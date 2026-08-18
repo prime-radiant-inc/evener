@@ -59,7 +59,7 @@ func Acquire(prefix string, warn io.Writer) (*Dir, error) {
 	if warn == nil {
 		warn = os.Stderr
 	}
-	if prefix == "" || strings.ContainsAny(prefix, "/.") {
+	if !validPrefix(prefix) {
 		return nil, fmt.Errorf("scratch: invalid prefix %q", prefix)
 	}
 	base, err := tmpBase()
@@ -104,6 +104,10 @@ func (d *Dir) Release() {
 func ReclaimOwn(prefix string, warn io.Writer) {
 	if warn == nil {
 		warn = os.Stderr
+	}
+	if !validPrefix(prefix) {
+		_, _ = fmt.Fprintf(warn, "scratch: not reclaiming: invalid prefix %q\n", prefix)
+		return
 	}
 	base, err := tmpBase()
 	if err != nil {
@@ -175,4 +179,12 @@ func ownerPid(name string) int {
 		}
 	}
 	return pid
+}
+
+// validPrefix mirrors one refusal across Acquire and ReclaimOwn: an empty
+// prefix would match every hidden dot-directory under TMPDIR, and a dot or
+// separator widens the match past the caller's own scratch. Both are
+// removal-adjacent, so both check.
+func validPrefix(prefix string) bool {
+	return prefix != "" && !strings.ContainsAny(prefix, "/.")
 }
