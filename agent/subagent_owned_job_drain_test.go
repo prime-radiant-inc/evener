@@ -180,17 +180,17 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 
 	select {
 	case <-env.started:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("child shell did not start")
 	}
 	select {
 	case <-idleReported:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("child did not report its interim result")
 	}
 	select {
 	case <-drainClock.drainEntered:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("subagent did not enter its owned job-tree drain")
 	}
 
@@ -263,7 +263,7 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 	}
 	select {
 	case <-fixture.freshHandled:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("fresh child notification did not reach the restored parent drive callback")
 	}
 	requests := fixture.adapter.Requests()
@@ -288,7 +288,7 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 	fixture.env.releaseJob()
 	select {
 	case <-fixture.freshHandled:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("notification queued at drain return did not drive after terminal state publication")
 	}
 	requests := fixture.adapter.Requests()
@@ -378,7 +378,7 @@ func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublicat
 	var got handoffResult
 	select {
 	case got = <-handoffDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("subagent did not reach the drain-return handoff")
 	}
 	if !got.running || !got.finalizing {
@@ -402,7 +402,7 @@ func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublicat
 
 	select {
 	case <-fixture.runDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("delegate did not publish terminal state after drain return")
 	}
 	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
@@ -497,7 +497,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 
 	select {
 	case <-runDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("stable delegate did not publish its original structured result")
 	}
 	select {
@@ -505,7 +505,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 		if driveErr != nil {
 			t.Fatalf("late notification drive: %v", driveErr)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("late notification drive did not finish")
 	}
 	liveStructured, ok := child.sess.CommunicateStructured().(map[string]any)
@@ -549,7 +549,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 			fixture.env.releaseJob()
 			select {
 			case <-finalizationEntered:
-			case <-time.After(30 * time.Second):
+			case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 				t.Fatal("subagent did not reach the post-publication finalization window")
 			}
 
@@ -591,7 +591,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 			waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "post-finalization attention generation")
 			select {
 			case <-fixture.runDone:
-			case <-time.After(30 * time.Second):
+			case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 				t.Fatal("delegate did not finish after callback restoration")
 			}
 			if action == "explicit resume" {
@@ -605,7 +605,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 				fixture.child.mu.Unlock()
 				select {
 				case <-resumedDone:
-				case <-time.After(30 * time.Second):
+				case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 					t.Fatal("explicit resume after finalization did not finish")
 				}
 			}
@@ -680,7 +680,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	}
 	select {
 	case <-env.started:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("child shell did not start")
 	}
 	<-enteredFatal
@@ -691,12 +691,12 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	releaseFatalOnce.Do(func() { close(releaseFatal) })
 	select {
 	case <-childDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("stable delegate did not finalize after fatal child run")
 	}
 	select {
 	case <-env.signaled:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("fatal child run did not signal its owned shell")
 	}
 
@@ -749,7 +749,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	child.mu.Unlock()
 	select {
 	case <-resumedDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("explicit child resume did not finish")
 	}
 	waitForOwnedJobDrainGeneration(t, child, stoppedShellHandled, "stopped-shell attention generation")
@@ -817,7 +817,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	child.mu.Unlock()
 	select {
 	case <-runDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("stable delegate did not settle its fatal initial run")
 	}
 	if !child.fatalRunGatedSnapshot() {
@@ -906,7 +906,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	child.mu.Unlock()
 	select {
 	case <-recoveredDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("explicit recovery did not finish")
 	}
 	if child.fatalRunGatedSnapshot() {
@@ -979,7 +979,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	child.mu.Unlock()
 	select {
 	case <-initialDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("stable delegate did not finish before notification drive")
 	}
 	child.mu.Lock()
@@ -997,7 +997,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	}
 	select {
 	case <-env.started:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("automatic notification drive did not launch its owned shell")
 	}
 	<-enteredFatalDrive
@@ -1008,12 +1008,12 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) })
 	select {
 	case <-env.signaled:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("fatal automatic notification drive did not stop its owned shell")
 	}
 	select {
 	case <-shellDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("fatal-drive shell did not durably finalize")
 	}
 	pending, err := child.sess.pendingDelegateAttentionIDs()
@@ -1025,7 +1025,7 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	}
 	select {
 	case <-fatalDriveDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("fatal attention generation did not finalize")
 	}
 	child.sess.notify()
@@ -1057,7 +1057,7 @@ func (f *ownedJobDrainFixture) releaseAndWait(t *testing.T) {
 	f.env.releaseJob()
 	select {
 	case <-f.runDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatalf("stable delegate %s did not finish after its owned shell exited", f.result.DelegateID)
 	}
 	waitForOwnedJobDrainGeneration(t, f.child, f.shellHandled, "shell attention generation")
@@ -1085,7 +1085,7 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	t.Helper()
 	select {
 	case <-entered:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatalf("%s did not reach the provider", description)
 	}
 	child.mu.Lock()
@@ -1093,7 +1093,7 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	child.mu.Unlock()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatalf("%s did not finish", description)
 	}
 }

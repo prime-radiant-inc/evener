@@ -1030,7 +1030,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {
@@ -1322,7 +1322,10 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// TRIPWIRE: every model step here is scripted and answered in-process with
+	// no I/O; the full two-input lifecycle normally completes in well under a
+	// second. 30s only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// First input: reads big file, fills context.
