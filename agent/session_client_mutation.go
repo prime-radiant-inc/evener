@@ -170,10 +170,20 @@ type clientMutationSnapshot struct {
 	// value no pending execution owns, because a turn that was running when
 	// the daemon died is not running now, and an id nothing can settle would
 	// reject every later turn/start forever.
-	ActiveTurnID           string                                     `json:"active_turn_id,omitempty"`
-	AcceptedTurns          uint64                                     `json:"accepted_turns"`
-	Journal                map[string]clientMutationRecord            `json:"journal"`
-	InputQueue             []clientMutationQueueEntry                 `json:"input_queue"`
+	ActiveTurnID  string                          `json:"active_turn_id,omitempty"`
+	AcceptedTurns uint64                          `json:"accepted_turns"`
+	Journal       map[string]clientMutationRecord `json:"journal"`
+	InputQueue    []clientMutationQueueEntry      `json:"input_queue"`
+	// QueueHeld parks the input queue after a Stop: the messages stay where they
+	// are and nothing claims them until the user asks for one to run ("Stop
+	// should cancel execution and wait", kata wms7).
+	//
+	// Durable because the queue it parks is durable: a daemon that restarts must
+	// not treat parked messages as work to resume. There is deliberately no
+	// process-local mirror -- the first attempt at this kata had one and the
+	// review found it drifting on three of four writers, across restarts, and on
+	// a rejected promote.
+	QueueHeld              bool                                       `json:"queue_held,omitempty"`
 	QueueRevision          uint64                                     `json:"queue_revision"`
 	NextTurnSequence       uint64                                     `json:"next_turn_sequence"`
 	NextQueueEntrySequence uint64                                     `json:"next_queue_entry_sequence"`
@@ -255,6 +265,10 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			}).Error()))
 			return nil
 		}
+		// The user is speaking again, so the wait a Stop started is over. Their
+		// new turn runs first and the drain loop takes the parked messages after
+		// it, which is the ordinary queue behaviour they were promised (wms7).
+		snapshot.QueueHeld = false
 		reserveClientMutationTurnID(snapshot, record)
 		record.ExecutionState = "accepted"
 		snapshot.BudgetReservations[record.ClientMutationID] = clientMutationBudgetReservation{
@@ -508,6 +522,11 @@ func (s *Session) InterruptClientMutation(
 			ClientMutationID: params.ClientMutationID,
 			ExpectedTurnID:   target,
 		}
+		// Park the queue from the moment the Stop is ACCEPTED, not when the fence
+		// finalizes. The claim this Stop cancels is returned to the queue by the
+		// runner on its way out and the drain loop is right behind it, so holding
+		// only at finalize leaves exactly the window the restart used (wms7).
+		snapshot.QueueHeld = true
 		return nil
 	})
 	if err != nil {
@@ -571,11 +590,10 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, err
 	}
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
-	// The fence is cleared now, so popQueueHead will claim again -- but nothing
-	// has asked the session to run. A Stop cancelled the runner; anything still
-	// queued behind it would sit there while the session reports itself as
-	// working, which is the strand the fence guard would otherwise create.
-	s.wakeForPendingQueuedInput()
+	// No queued-input wake here, deliberately: the hold above parks the queue
+	// until the user asks for something to run, so a kick would find nothing
+	// claimable. The steering wake stays; a Stop with pending steering still
+	// restarts, and that is kata 1k3m, not this one.
 	s.wakeForPendingSteering()
 	return interruptResponseFromRecord(
 		s.clientMutations.snapshot().Journal[params.ClientMutationID],
@@ -1168,6 +1186,15 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return cloneClientMutationSnapshot(s.state)
+}
+
+// queueHeld reads the parked-queue flag without cloning the snapshot.
+// sessionWorkPending calls this on every WireState sample, and snapshot()
+// deep-copies the whole journal.
+func (s *clientMutationStore) queueHeld() bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state.QueueHeld
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {

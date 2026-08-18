@@ -632,7 +632,9 @@ func TestRun_APILogHealthHuman(t *testing.T) {
 		t.Fatalf("exit %d, stderr=%s", code, errb.String())
 	}
 	outStr := out.String()
-	for _, want := range []string{"session " + sid, "attempts=4", "recorded_empty=1", "retry_storm_groups=0", "unsettled_groups=0", "quota=0*", "permanent=0", "retryable=1", "always reads 0"} {
+	// The `*` on quota must carry a footnote explaining what a zero proves, so
+	// a reader of a pre-fix log does not read "quota=0" as "no quota errors".
+	for _, want := range []string{"session " + sid, "attempts=4", "recorded_empty=1", "retry_storm_groups=0", "unsettled_groups=0", "quota=0*", "permanent=0", "retryable=1", "errors_by_class.quota", "cannot tell"} {
 		if !strings.Contains(outStr, want) {
 			t.Errorf("apilog --health output missing %q; got:\n%s", want, outStr)
 		}
@@ -668,7 +670,7 @@ func TestRun_APILogHealthJSON(t *testing.T) {
 		t.Errorf("recorded_empty_caveat must be present")
 	}
 	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") {
-		t.Errorf("errors_by_class_quota_caveat must be present and explain the quota confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
+		t.Errorf("errors_by_class_quota_caveat must be present and explain what a quota zero proves on a pre-fix log; got %q", res.ErrorsByClassQuotaCaveat)
 	}
 	if strings.Contains(out.String(), "provider-body-sentinel") || strings.Contains(out.String(), "quota detail") {
 		t.Errorf("apilog --health JSON exposed provider body-derived error text:\n%s", out.String())

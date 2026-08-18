@@ -191,13 +191,11 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 		return nil, errDelegateStaleLease
 	}
 	aggregate := c.durable[delegateID]
-	if attentionID == "" || aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || live.binding != nil || live.recoveryRequired || c.reclamationCoversLocked(delegateID) {
+	if attentionID == "" || aggregate == nil || !c.delegateAttentionWakeEligibleLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
-	for _, existing := range c.reservations {
-		if existing.delegateID == delegateID {
-			return nil, errDelegateTargetBusy
-		}
+	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		return nil, errDelegateTargetBusy
 	}
 	if !c.reserveCapacityLocked(delegateDriveCapacity) {
 		return nil, errTreeAtCapacity
@@ -576,6 +574,11 @@ func (c *delegateTreeController) CommitStart(reservation *delegateStartReservati
 			return delegateStartCommit{}, errDelegateTargetBusy
 		}
 	} else if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || aggregate.Generation+1 != record.generation {
+		cancel = c.releaseReservationLocked(record)
+		return delegateStartCommit{}, errDelegateTargetBusy
+	} else if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
+		// Re-check the ancestor chain: an ancestor that closed between reserve
+		// and commit would make every model request of this generation fail.
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}

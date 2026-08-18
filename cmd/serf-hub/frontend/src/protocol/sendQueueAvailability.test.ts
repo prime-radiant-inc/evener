@@ -173,10 +173,28 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: true, canQueue: false });
   });
 
-  test("tier 1 still wins: a pending send does not make an ended or closed session composable", () => {
+  // Tier 6 reaches inside tier 1 rather than being shadowed by it. A finished
+  // session is resumable - turn/start alone carries the hub's auto-resume
+  // (app_rpc.go) - so the first message wakes a daemon, and the seconds it
+  // takes to spawn are all window: the status still says the session is over
+  // while a turn this client submitted is already in flight. Routing the second
+  // message by the status alone sends another turn/start into the daemon that
+  // just started, which refuses it with Conflict("turn is already active"). The
+  // "notLoaded" spelling of the same race was fixed first and called the widest
+  // instance of it; nothing about that argument was specific to which finished
+  // status the thread happened to carry.
+  test("tier 6 reaches into tier 1: a pending send queues the next message on an ended or closed session", () => {
     for (const statusType of ["ended", "closed"]) {
       expect(
         deriveSendQueueAvailability({ statusType, capabilities: daemonIdleCapabilities(), hasPendingSend: true }),
+      ).toEqual({ canSend: false, canQueue: true });
+    }
+  });
+
+  test("tier 1 with nothing pending is unchanged: an ended or closed session offers neither action", () => {
+    for (const statusType of ["ended", "closed"]) {
+      expect(
+        deriveSendQueueAvailability({ statusType, capabilities: daemonIdleCapabilities(), hasPendingSend: false }),
       ).toEqual({ canSend: false, canQueue: false });
     }
   });

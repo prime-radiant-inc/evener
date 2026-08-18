@@ -142,6 +142,8 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 		if marshalErr != nil {
 			return marshalErr
 		}
+		// Queueing another message is re-engaging: release the wait.
+		snapshot.QueueHeld = false
 		snapshot.InputQueue = append(snapshot.InputQueue, clientMutationQueueEntry{
 			ID:               record.StableQueueEntryIDs[0],
 			ClientMutationID: record.ClientMutationID,
@@ -502,6 +504,9 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 			rejectClientMutation(record, appwire.Conflict("reserved queue entries are no longer available"))
 			return nil
 		}
+		// Draining IS the user asking for the queue to run. Below the effect
+		// rejection so a refused drain cannot unpark it.
+		snapshot.QueueHeld = false
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -606,6 +611,9 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 			rejectClientMutation(record, appwire.Conflict("reserved queue entry is no longer available"))
 			return nil
 		}
+		// Promoting is the user picking one to run now. Below the effect
+		// rejection so a refused promote cannot unpark it.
+		snapshot.QueueHeld = false
 		entry := snapshot.InputQueue[index]
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
@@ -1215,6 +1223,18 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 			snapshot.Journal[clientMutationID] = record
 			snapshot.QueueRevision++
 			returned = true
+			// The turn-boundary half of wms7. A turn claimed out of the queue and
+			// stopped during its PRE-TURN WORK ends here, not in the incorporated
+			// branch below, so reporting the Stop only from there left the drain
+			// loop hearing "a bare host cancellation" -- and running the very
+			// message the user stopped, which it has just put back on the queue.
+			//
+			// Nothing is finalized here: the interrupt does that after this
+			// completion returns, which is exactly why the fence is still legible
+			// from this branch and why reporting it costs nothing.
+			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+				stopFinalized = true
+			}
 			return nil
 		}
 		if pending.ExecutionState != "incorporated" {

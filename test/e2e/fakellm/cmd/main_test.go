@@ -228,10 +228,138 @@ func TestRoundsAreCountedPerSession(t *testing.T) {
 	}
 }
 
+// TestConcurrentRoundLinesNameTheirSession: rounds are counted per session, so
+// sessions genuinely overlap and the log interleaves them. fakellm.log is the
+// only view scripts/e2e-webui-turn-controls.sh gives an operator of what
+// reached the model, and two `round 1` lines back to back with nothing between
+// them and their sessions is not a view of anything.
+//
+// The name has to be a token the session's own transcript carries, not a label
+// the log invents: the tool-call id of the first round this driver saw from it,
+// which the session replays on every request after that (fakellm.Call's
+// PreviousToolCallID). That is what makes `grep call_fakellm_3 fakellm.log`
+// return one session's run and nothing else.
+func TestConcurrentRoundLinesNameTheirSession(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// --rounds 3 so each session's third round is an "ending the turn" line as
+	// well: that line has to name its session too.
+	baseURL := startDriver(t, 0, 3, "")
+
+	// Both sessions run at once, on their own goroutines, so the driver is
+	// answering them from separate goroutines of its own and the log lines
+	// really do interleave -- the condition the operator is stuck with.
+	names := make([]string, 2)
+	var wg sync.WaitGroup
+	for i, name := range []string{"first", "second"} {
+		wg.Go(func() {
+			s := newSession(t, baseURL, name)
+			for round := 1; round <= 3; round++ {
+				call, err := s.try(ctx)
+				if err != nil {
+					t.Errorf("%s session round %d: %v", name, round, err)
+					return
+				}
+				if round == 1 {
+					names[i] = call.id
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	if names[0] == "" || names[1] == "" {
+		t.Fatalf("each session must report its first round's tool-call id, got %q and %q", names[0], names[1])
+	}
+	if names[0] == names[1] {
+		t.Fatalf("both sessions were handed the tool-call id %q; there is no handle to name them by", names[0])
+	}
+
+	text := logged.String()
+	for i, id := range names {
+		for round := 1; round <= 3; round++ {
+			want := fmt.Sprintf("session %s round %d: holding", id, round)
+			if !strings.Contains(text, want) {
+				t.Errorf("no log line %q: round %d of session %d cannot be told from the other session's", want, round, i+1)
+			}
+		}
+		want := fmt.Sprintf("session %s round 3: ending the turn", id)
+		if !strings.Contains(text, want) {
+			t.Errorf("no log line %q: the turn-ending line does not name its session", want)
+		}
+	}
+
+	// And nothing the driver says about a round may be anonymous. With two
+	// sessions in flight an unnamed line is unattributable by construction, so
+	// one line missed is the whole defect back again.
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.Contains(line, " round ") && !strings.Contains(line, "session ") {
+			t.Errorf("round line names no session: %q", line)
+		}
+	}
+}
+
+// TestASessionsNameOutlivesItsTurns: the script tells the operator to watch one
+// session for roughly hold x rounds seconds, and its turns start and end
+// underneath that. The name identifies the SESSION, so a turn boundary must not
+// re-mint it -- otherwise grepping the log for it returns one turn rather than
+// the run, which is the thing the operator was told to watch.
+func TestASessionsNameOutlivesItsTurns(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := startDriver(t, 0, 2, "")
+
+	s := newSession(t, baseURL, "long-lived")
+	first := s.round(ctx)
+	if first.name != "read_file" {
+		t.Fatalf("turn 1 round 1: tool %q, want read_file", first.name)
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Fatalf("turn 1 round 2: tool %q, want communicate (--rounds 2 ends it)", got)
+	}
+	// The operator sends the next message. Same session, new turn.
+	s.newTurn("now do the other thing")
+	if got := s.round(ctx).name; got != "read_file" {
+		t.Fatalf("turn 2 round 1: tool %q, want read_file", got)
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Fatalf("turn 2 round 2: tool %q, want communicate", got)
+	}
+
+	// Each line appears once per turn, under the SAME name. A name minted per
+	// turn rather than per session gives the second turn a different one, and
+	// every count here drops to 1.
+	text := logged.String()
+	for _, want := range []string{
+		fmt.Sprintf("session %s round 1: holding", first.id),
+		fmt.Sprintf("session %s round 2: holding", first.id),
+		fmt.Sprintf("session %s round 2: ending the turn", first.id),
+	} {
+		if got := strings.Count(text, want); got != 2 {
+			t.Errorf("log has %d lines %q, want 2 (one per turn): the name changed when the turn did", got, want)
+		}
+	}
+}
+
 // TestBackgroundJobModeAppliesToEverySession: --background-job-until answers
 // EACH session's first round with the background job, not just the first
 // session's.
 func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
+	var logged syncBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	baseURL := startDriver(t, 0, 20, "release-the-job")
@@ -251,6 +379,18 @@ func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
 			t.Errorf("%s session round 2: tool %q, want communicate (go idle holding the job)", name, idle.name)
 		} else if endTurn, _ := idle.args["end_turn"].(bool); !endTurn {
 			t.Errorf("%s session round 2: end_turn %v, want true", name, endTurn)
+		}
+
+		// This mode's own log lines have to be attributable too: the operator
+		// releases one job file and watches several sessions wake from it.
+		text := logged.String()
+		for _, want := range []string{
+			fmt.Sprintf("session %s round 1: launching a background job", launch.id),
+			fmt.Sprintf("session %s round 2: ending the turn so the session goes idle", launch.id),
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s session: no log line %q", name, want)
+			}
 		}
 	}
 }
@@ -307,10 +447,17 @@ func TestACancelledRoundLeavesTheNextTurnItsOwnCount(t *testing.T) {
 	baseURL := startDriver(t, hold, 3, "")
 
 	s := newSession(t, baseURL, "stopped")
-	for round := 1; round <= 2; round++ {
-		if got := s.round(ctx).name; got != "read_file" {
-			t.Fatalf("turn 1 round %d: tool %q, want read_file", round, got)
-		}
+	// Round 1's id is this session's name in the driver's log. It is read here,
+	// from a round that completed before anything below runs concurrently, so
+	// the wait further down is keyed on a value the session has already
+	// reported -- a wait on a name minted by the very round being waited for
+	// would have nothing to match until the line it is waiting for exists.
+	first := s.round(ctx)
+	if first.name != "read_file" {
+		t.Fatalf("turn 1 round 1: tool %q, want read_file", first.name)
+	}
+	if got := s.round(ctx).name; got != "read_file" {
+		t.Fatalf("turn 1 round 2: tool %q, want read_file", got)
 	}
 
 	// Round 3 -- the round that would end the turn -- is cancelled while the
@@ -324,7 +471,7 @@ func TestACancelledRoundLeavesTheNextTurnItsOwnCount(t *testing.T) {
 		defer close(requestDone)
 		_, _ = s.try(requestCtx)
 	}()
-	waitForLog(t, &logged, "--- round 3: holding")
+	waitForLog(t, &logged, fmt.Sprintf("session %s round 3: holding", first.id))
 	cancelRequest()
 	<-requestDone
 	s.messages = recorded

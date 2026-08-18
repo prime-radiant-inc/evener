@@ -52,6 +52,8 @@ done
 
 . "$(dirname "${BASH_SOURCE[0]}")/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/covstmt-lib.sh"
+# How this run reclaims the leftovers of its own earlier runs; no janitor does.
+. "$(dirname "${BASH_SOURCE[0]}")/covscratch-lib.sh"
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 measured_for() { awk -v m="$1" '$1==m {print $2}' "$measured_file" 2>/dev/null; }
@@ -76,16 +78,22 @@ check_measurable() {
 # run's scratch outside the dev-tooling wave's per-suite isolation — and so
 # outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
+# Reclaim what earlier runs of THIS script abandoned here, before taking a name
+# of our own: a SIGKILLed run never reached its trap, and a failed run kept its
+# scratch on purpose. Nothing else sweeps either. See covscratch-lib.sh.
+reclaim_own_scratch "$tmpbase" serf-covunion
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
-# live processes, so concurrent runs cannot collide.
+# live processes, so concurrent runs cannot collide. A failed mkdir means a
+# stale same-pid leftover this run does not own, so the trap is disarmed before
+# exiting rather than deleting it.
 work_dir="${tmpbase%/}/serf-covunion.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and logs,
 # because the failure line printed their path.
 cleanup_work() { [ "$fail" -eq 0 ] && rm -rf "$work_dir"; }
 trap cleanup_work EXIT
-mkdir "$work_dir" || exit 1
+mkdir "$work_dir" || { trap - EXIT; echo "coverage-union: scratch $work_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$work_dir/measured.txt"
 : >"$measured_file"
 

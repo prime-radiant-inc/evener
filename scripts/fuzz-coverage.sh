@@ -17,11 +17,18 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# How this run reclaims the leftovers of its own earlier runs; no janitor does.
+. "$(dirname "$0")/covscratch-lib.sh"
 # An explicit path under TMPDIR, not `mktemp -t`: macOS's mktemp ignores TMPDIR
 # for -t and uses the Darwin per-user temp directory instead, which puts the
 # scratch outside the dev-tooling wave's per-suite isolation — and so outside
 # the leftover check the trap below is written to satisfy.
 tmpbase=${TMPDIR:-/tmp}
+# Reclaim what earlier runs of THIS script abandoned here, before taking a name
+# of our own. The trap below covers every exit a shell can observe; SIGKILL, an
+# OOM kill and a power cut are not among them, and no janitor sweeps what they
+# leave. See covscratch-lib.sh for the pid rules.
+reclaim_own_scratch "$tmpbase" serf-fuzzcov
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a

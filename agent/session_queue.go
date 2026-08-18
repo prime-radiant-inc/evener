@@ -503,6 +503,21 @@ func (s *Session) QueueDepth() int {
 	return len(s.inputQueue)
 }
 
+// pendingQueueDepth is QueueDepth for the purpose of "is this session
+// working": it reports zero for a queue parked by a Stop, because parked
+// messages are not work in progress -- nothing will run them until the user
+// asks.
+//
+// QueueDepth itself still counts them. The messages ARE there and the queue
+// strip must keep showing them; what changes is only whether their presence
+// makes the session claim to be busy (kata wms7).
+func (s *Session) pendingQueueDepth() int {
+	if s.clientMutations != nil && s.clientMutations.queueHeld() {
+		return 0
+	}
+	return s.QueueDepth()
+}
+
 // QueuePreview returns a copy of the queued messages in FIFO order with
 // each entry collapsed to its first line and trimmed of trailing CR. The
 // output is the user-facing preview shape consumed by both UIs via the
@@ -568,6 +583,13 @@ func (s *Session) popQueueHead() queuedInput {
 		// the same rule AcceptClientMutationStart and claimClientMutationStart
 		// hold at the other two claim sites.
 		if snapshot.InterruptFence != nil {
+			return nil
+		}
+		// The same refusal as the fence above, held past the fence's finalize. A
+		// Stop parks the queue until the user asks for something to run, and this
+		// is the single gate both restart rails claim through -- the drain loop
+		// and ProcessPendingUserInput behind the wake (kata wms7).
+		if snapshot.QueueHeld {
 			return nil
 		}
 		entry := snapshot.InputQueue[0]

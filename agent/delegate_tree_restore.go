@@ -300,7 +300,10 @@ func (c *delegateTreeController) closeMissingRestoreInputs(reasons map[string]st
 
 // repairPermanentlyUnreachableDelegateAttention transfers pending model-bound
 // input only after resumability has closed monotonically. Transcript I/O is
-// performed from an immutable tree snapshot without the controller mutex.
+// performed from an immutable tree snapshot without the controller mutex. It
+// also transfers the attention of live descendants that a permanently closed
+// ancestor fences off to the root session -- each message under its own
+// original identity, so nothing is lost silently and no wake retries forever.
 func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) error {
 	if c == nil {
 		return errors.New("delegate controller is nil")
@@ -330,6 +333,26 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			sourceRef:        aggregate.Descriptor.TranscriptRef,
 			targetDelegateID: targetID,
 			targetRef:        targetRef,
+		})
+	}
+	fencedIDs := make([]string, 0, len(c.durable))
+	for id, aggregate := range c.durable {
+		if aggregate == nil || !aggregate.Resumable || aggregate.Phase != delegatestore.PhaseIdle || aggregate.PendingStopSeq != 0 {
+			continue
+		}
+		blocked, closedAncestorID := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID)
+		if !blocked || closedAncestorID == "" {
+			continue
+		}
+		fencedIDs = append(fencedIDs, id)
+	}
+	sort.Strings(fencedIDs)
+	for _, id := range fencedIDs {
+		// A live descendant fenced off permanently transfers straight to the
+		// root: an empty target is the existing "escalate to root" shape below.
+		plans = append(plans, delegateAttentionTransferPlan{
+			sourceDelegateID: id,
+			sourceRef:        c.durable[id].Descriptor.TranscriptRef,
 		})
 	}
 	c.mu.Unlock()
@@ -506,22 +529,8 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	if plan.runtime != nil {
-		if err := plan.runtime.resolveAttentionDurably([]string{plan.attentionID}, plan.disposition); err != nil {
-			return err
-		}
-	} else {
-		path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, plan.transcriptRef)
-		if err != nil {
-			return err
-		}
-		open := c.attentionOpen
-		if open == nil {
-			open = transcript.OpenWriterForSession
-		}
-		if err := appendColdAttentionResolutionWithOpen(path, expectedSessionID, []string{plan.attentionID}, plan.disposition, open); err != nil {
-			return err
-		}
+	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, plan.disposition); err != nil {
+		return err
 	}
 	if plan.disposition == delegateAttentionConsumed {
 		_, err := c.ReportAttentionConsumed(plan.lease, plan.attentionID, plan.runtime)
@@ -529,6 +538,24 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 	}
 	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
+}
+
+// resolveDelegateAttentionDurably appends attention resolution markers through
+// the resident runtime's one writer when it exists, and through a cold writer
+// on the receiver transcript otherwise.
+func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution) error {
+	if runtime != nil {
+		return runtime.resolveAttentionDurably(ids, disposition)
+	}
+	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
+	if err != nil {
+		return err
+	}
+	open := c.attentionOpen
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, open)
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {

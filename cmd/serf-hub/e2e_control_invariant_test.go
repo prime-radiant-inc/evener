@@ -667,57 +667,30 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	t.Logf("a Stop pressed %s after the window opened, while the wire showed status=%s activeTurnId=%s, was applied",
 		time.Since(windowSeenAt), inWindow.Status.Type, inWindow.Serf.ActiveTurnID)
 
-	// PINNED DEFECT (kata wms7) -- read this before changing the assertion.
+	// MEASURED, CLOSED, and now the ruling (kata wms7). Both restart rails end
+	// at popQueueHead, and it refuses while a Stop holds the queue:
 	//
-	// The Stop above was ACCEPTED, and the turn it was aimed at runs anyway: the
-	// queued message the user just stopped reaches the model. That is asserted
-	// here, in both directions, so it cannot change silently. It is not what
-	// anyone wants, and Jesse has ruled on what should happen instead: the
-	// claimed turn is cancelled and its message goes back on the queue, so
-	// nothing is lost and nothing auto-starts.
+	//   1. The DRAIN LOOP: a turn ended by a Stop leaves the queue head alone --
+	//      91810a3be for a turn already producing, the claimed-and-unrun
+	//      completion's fence report for one still in pre-turn work.
+	//   2. The WAKE: ProcessPendingUserInput claims through popQueueHead, which
+	//      refuses while QueueHeld is set.
 	//
-	// Most of that ruling is now built. A turn claimed out of the queue that
-	// never incorporates its input IS returned to the queue -- see
-	// agent/session_stop_and_queued_work_test.go's
-	// TestClaimedQueuedTurnIsReturnedWhenItNeverRan. And the MID-TURN half is
-	// fixed: a Stop that cancels a turn already producing, with a message
-	// queued behind it, settles the turn and parks the message -- the drain
-	// loop skips the queue head when the turn's completion finalized the Stop's
-	// interrupt fence, instead of running the very message the user stopped
-	// under the Stop's own chain (same file's
-	// TestStopOnMidTurnMutationParksTheQueuedMessage). What is missing is the
-	// cancellation ever reaching THIS turn -- one claimed at the boundary and
-	// still in its pre-turn work -- and three measurements narrow where it goes
-	// wrong:
+	// So nothing reaches the model, the message stays on the queue -- visible in
+	// the queue strip, waiting for the user -- and the session settles idle.
 	//
-	//   - the mutation runner is armed when the Stop lands (cancel and done both
-	//     non-nil), so this is NOT a Stop firing into an empty slot;
-	//   - nextTurnCtx is never invoked, so the drain-on-interrupt handler is not
-	//     quietly restarting the turn under a fresh context;
-	//   - popQueueHead already refuses to claim under a pending fence, so a Stop
-	//     that arrives BEFORE the claim keeps the message queued correctly. Only
-	//     a Stop that arrives after the claim and before the turn starts
-	//     producing lands in this hole.
-	//
-	// Which leaves the turn's PRE-TURN WORK not observing its cancelled context
-	// and carrying on into the model round. That is the next thing to measure,
-	// and it is deliberately not guessed at here.
-	//
-	// This is reachable at all only because kata vewa made Stop land in this
-	// window; before that it was refused. So the fix belongs with that work, not
-	// filed away as pre-existing.
-	probe, cancelProbe := context.WithTimeout(ctx, 3*time.Second)
+	// Probed over the whole remaining park plus margin, because the delivery
+	// this replaces re-ran the parked command in full -- a shorter probe would
+	// pass while it was still in flight.
+	probe, cancelProbe := context.WithTimeout(ctx, time.Duration(preTurnParkSeconds+2)*time.Second)
 	defer cancelProbe()
-	round2, err := provider.Next(probe.Done())
-	if err != nil {
-		t.Fatal("no model round followed the Stop: the turn the user stopped no longer runs, which is the DESIRED behaviour (kata wms7) and makes this assertion stale. Invert it -- assert no model round, and that the message is back on the queue with the session settled -- and close wms7")
+	if call, err := provider.Next(probe.Done()); err == nil {
+		carries := call.Contains(queuedText)
+		call.RespondText("this turn should never have run")
+		t.Fatalf("a model round followed the Stop (carries the queued text: %v): a restart rail is still open", carries)
 	}
-	if !round2.Contains(queuedText) {
-		t.Fatalf("a model round followed the Stop but does not carry the queued text; this pin no longer describes what happens. messages:\n%s", strings.Join(round2.Texts(), "\n"))
-	}
-	t.Logf("MEASURED DEFECT (wms7): the Stop was applied and the queued turn ran anyway, carrying the queued text to the model")
-	round2.RespondToolCall("communicate", communicateArgs("post-stop turn done"))
-	awaitThread(ctx, t, client, ref, "the session to settle", func(thread appwire.Thread) bool {
-		return thread.Status.Type != string(appwire.ThreadStatusActive)
+	awaitThread(ctx, t, client, ref, "the stopped session to settle with its message parked", func(thread appwire.Thread) bool {
+		return thread.Status.Type != string(appwire.ThreadStatusActive) && thread.Serf.Queue.Depth == 1
 	})
+	t.Logf("the Stop cancelled its turn and parked the queued message (wms7)")
 }

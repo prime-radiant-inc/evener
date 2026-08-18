@@ -14,8 +14,8 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/setup-gocache.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d -t setup-gocache-selftest.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work setup-gocache-selftest
+trap 'selftest_rm_scratch' EXIT
 export GOENV="$work/goenv"
 
 # --- scenario 1: no argument is an error that asks for a path, not a write ---

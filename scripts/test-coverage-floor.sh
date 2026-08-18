@@ -62,6 +62,8 @@ done
 # How a coverage number is counted, shared with every other script that
 # reports one; see covstmt-lib.sh for why a second copy is a hazard.
 . "$(dirname "${BASH_SOURCE[0]}")/covstmt-lib.sh"
+# How this run reclaims the leftovers of its own earlier runs; no janitor does.
+. "$(dirname "${BASH_SOURCE[0]}")/covscratch-lib.sh"
 
 floor_for() { awk -v m="$1" '$1==m {print $2}' "$floors_file" 2>/dev/null; }
 
@@ -90,13 +92,21 @@ check_measurable() {
 # run's scratch outside the dev-tooling wave's per-suite isolation — and so
 # outside the leftover check that is supposed to catch exactly this.
 tmpbase=${TMPDIR:-/tmp}
+# Reclaim what earlier runs of THIS script abandoned here, before taking a name
+# of our own. Two kinds accumulate: a run killed by SIGKILL never reached its
+# trap, and a failed run kept its scratch on purpose (see cleanup_profiles
+# below). Nothing else sweeps either — this project cleans up at the source —
+# and the moment a failed run's diagnostics stop being the current answer is the
+# moment the next run starts. See covscratch-lib.sh for the pid rules.
+reclaim_own_scratch "$tmpbase" serf-testcov
 # The name is chosen and the trap armed BEFORE the directory exists. With
 # `mktemp -d` first and the trap a few lines later, a signal could land after
 # the directory was created but before any cleanup knew about it — mid-mktemp
 # the shell does not even hold the name yet — and the scratch was abandoned.
 # The kill selftests signal a run the instant its scratch appears, which is
 # exactly that window. $$ is unique among live processes, so concurrent runs
-# cannot collide; a stale same-pid leftover makes the mkdir fail loudly.
+# cannot collide; a stale same-pid leftover makes the mkdir fail loudly. That
+# leftover is not this run's to delete, so the trap is disarmed before exiting.
 profiles_dir="${tmpbase%/}/serf-testcov.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and the
@@ -106,7 +116,7 @@ fail=0
 # suite for.
 cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
 trap cleanup_profiles EXIT
-mkdir "$profiles_dir" || exit 1
+mkdir "$profiles_dir" || { trap - EXIT; echo "test-coverage-floor: scratch $profiles_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"

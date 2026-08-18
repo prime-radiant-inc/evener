@@ -68,7 +68,7 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		// behind). Naming it is the whole job, no run creates it, and two
 		// concurrent reclaims of one already-absent directory collide over
 		// nothing.
-		"3) /tmp/serf-gocache-k3",
+		"2) /tmp/serf-gocache-k3",
 		"gocache_debris='/tmp/serf-gocache-k3'",
 	},
 	"scripts/report-tmp-debris.sh": {

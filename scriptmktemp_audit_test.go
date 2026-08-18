@@ -57,35 +57,22 @@ func mktempEscapesTMPDIR(call string) bool {
 // of work. Removing an entry after fixing its script is the intended lifecycle —
 // the list should only ever get shorter.
 var mktempAllowedScripts = map[string]bool{
-	"deploy-hub-selftest.sh":           true,
-	"e2e-cover.sh":                     true,
-	"e2e-ratelimited-provider.sh":      true,
-	"fuzz-bisect-selftest.sh":          true,
-	"fuzz-bisect.sh":                   true,
-	"fuzz-continuous-selftest.sh":      true,
-	"fuzz-gap-check.sh":                true,
-	"fuzz-oracle-audit-selftest.sh":    true,
-	"fuzz-oracle-audit.sh":             true,
-	"fuzz-registry-check.sh":           true,
-	"fuzz-triage-selftest.sh":          true,
-	"fuzz-triage.sh":                   true,
-	"live-compaction-eval-selftest.sh": true,
-	"live-eval-isolation-selftest.sh":  true,
-	"live-eval-isolation.sh":           true,
-	"merge-approval-gate-selftest.sh":  true,
-	"parallelize-tests.sh":             true,
-	"private-go-home-selftest.sh":      true,
-	"run-module-lint-selftest.sh":      true,
-	"run-module-lint.sh":               true,
-	"run-module-tests-selftest.sh":     true,
-	"seatbelt-smoke.sh":                true,
-	"setup-gocache-selftest.sh":        true,
-	"test-cost.sh":                     true,
-	"test-overlap.sh":                  true,
-	"tmux-read-selftest.sh":            true,
-	"tmux-read.sh":                     true,
-	"tmux-send-selftest.sh":            true,
-	"tmux-send.sh":                     true,
+	"e2e-cover.sh":                true,
+	"e2e-ratelimited-provider.sh": true,
+	"fuzz-bisect.sh":              true,
+	"fuzz-continuous-selftest.sh": true,
+	"fuzz-gap-check.sh":           true,
+	"fuzz-oracle-audit.sh":        true,
+	"fuzz-registry-check.sh":      true,
+	"fuzz-triage.sh":              true,
+	"live-eval-isolation.sh":      true,
+	"parallelize-tests.sh":        true,
+	"run-module-lint.sh":          true,
+	"seatbelt-smoke.sh":           true,
+	"test-cost.sh":                true,
+	"test-overlap.sh":             true,
+	"tmux-read.sh":                true,
+	"tmux-send.sh":                true,
 }
 
 // TestNoScriptCreatesScratchOutsideTMPDIR keeps the swept scripts swept: the
@@ -166,37 +153,13 @@ func uncheckedMktempAssignment(line string) bool {
 // list is the finding rather than an exemption, and removing an entry after
 // converting its suite to selftest_scratch is the intended lifecycle.
 //
-// These were left carrying it deliberately, because none of them is destructive
-// the way the eight converted suites were: they do not canonicalize, so a failed
-// mktemp leaves the variable empty and their cleanup runs `rm -rf ""`, which
-// reaches nothing.
-//
-// fuzz-drive-selftest.sh is the one that does canonicalize (its per-scenario
-// `r`), and it still stays here. Its cleanup only ever removes the suite root,
-// so a failed inner mktemp scribbles fixtures into $PWD without deleting it —
-// and converting it would make things worse, not better: new_repo is called as
-// `repo="$(new_repo)"`, so selftest_scratch's exit would be swallowed by that
-// substitution and hand the caller an empty path.
+// All 28 suites now build their scratch root with selftest_scratch, so what is
+// left here is not a suite root at all: fuzz-continuous-selftest.sh's remaining
+// unchecked `mktemp` is inside a stub's heredoc, minting a temp FILE that the
+// stub redirects into and then `mv`s. It never canonicalizes and nothing deletes
+// it recursively, so a failed mktemp reaches nothing.
 var selftestScratchAllowedScripts = map[string]bool{
-	"coverage-gaps-selftest.sh":        true,
-	"coverage-union-selftest.sh":       true,
-	"deploy-hub-selftest.sh":           true,
-	"fuzz-bisect-selftest.sh":          true,
-	"fuzz-continuous-selftest.sh":      true,
-	"fuzz-drive-selftest.sh":           true,
-	"fuzz-oracle-audit-selftest.sh":    true,
-	"fuzz-triage-selftest.sh":          true,
-	"live-compaction-eval-selftest.sh": true,
-	"live-eval-isolation-selftest.sh":  true,
-	"merge-approval-gate-selftest.sh":  true,
-	"private-go-home-selftest.sh":      true,
-	"run-module-lint-selftest.sh":      true,
-	"run-module-tests-selftest.sh":     true,
-	"setup-gocache-selftest.sh":        true,
-	"test-coverage-floor-selftest.sh":  true,
-	"tmux-read-selftest.sh":            true,
-	"tmux-send-selftest.sh":            true,
-	"web-coverage-floor-selftest.sh":   true,
+	"fuzz-continuous-selftest.sh": true,
 }
 
 // TestSelftestScratchCannotResolveToCWD keeps kata 5hs2's failure mode out of

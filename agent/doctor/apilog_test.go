@@ -1027,13 +1027,13 @@ func TestAPIHealthVerdict(t *testing.T) {
 		t.Fatalf("permanent errors = %d, want 1 (the 403)", res.ErrorsByClass[apiErrorClassPermanent])
 	}
 	if res.ErrorsByClass[apiErrorClassQuota] != 0 {
-		t.Fatalf("quota errors = %d, want 0: today's recorded fields cannot distinguish a quota 429 from a rate-limit 429", res.ErrorsByClass[apiErrorClassQuota])
+		t.Fatalf("quota errors = %d, want 0: this fixture's 429 carries error_class=rate_limit, so it belongs in retryable", res.ErrorsByClass[apiErrorClassQuota])
 	}
 	if res.RecordedEmptyCaveat == "" || !strings.Contains(res.RecordedEmptyCaveat, "apilog --recompute") {
 		t.Fatalf("recorded_empty_caveat must point at apilog --recompute; got %q", res.RecordedEmptyCaveat)
 	}
 	if res.ErrorsByClassQuotaCaveat == "" || !strings.Contains(res.ErrorsByClassQuotaCaveat, "quota") || !strings.Contains(res.ErrorsByClassQuotaCaveat, "rate-limit") {
-		t.Fatalf("errors_by_class_quota_caveat must explain the quota/rate-limit confident-zero trap; got %q", res.ErrorsByClassQuotaCaveat)
+		t.Fatalf("errors_by_class_quota_caveat must explain what a quota zero proves on a pre-fix log; got %q", res.ErrorsByClassQuotaCaveat)
 	}
 
 	human := RenderAPIHealth(res)
@@ -1070,11 +1070,13 @@ func TestAPIHealthRecordedEmptyCountsCompactZeroResponses(t *testing.T) {
 	}
 }
 
-// TestAPIHealthQuotaClassIsForwardCompatible proves the quota bucket is
-// reachable given an explicit error_class=="quota_exceeded" -- forward
-// compatible with a future logging fix, even though today's transport-layer
-// fallback never emits that value (see classifyAPIErrorClass's doc comment).
-func TestAPIHealthQuotaClassIsForwardCompatible(t *testing.T) {
+// TestAPIHealthQuotaClassCountsExplicitQuotaExceeded proves the quota bucket
+// is reached by an explicit error_class=="quota_exceeded", overriding the 429
+// status that would otherwise read as retryable. That is the value the
+// transport layer records for a quota-exhausted 429 (explicitAPIAttemptError
+// Class classifies from the adapter's typed error), so this bucket counts real
+// traffic rather than standing reserved for a future fix.
+func TestAPIHealthQuotaClassCountsExplicitQuotaExceeded(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	attempt := apiHealthAttempt("ag_quota", 1, apilog.AttemptProviderReject)
