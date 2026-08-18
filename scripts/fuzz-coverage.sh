@@ -13,7 +13,7 @@
 #   scripts/fuzz-coverage.sh            # advisory: print the report, exit 0
 #   scripts/fuzz-coverage.sh --check    # ratchet + gap floor: exit non-zero on a breach
 #   scripts/fuzz-coverage.sh --bless    # raise the ratchet floors to the current %
-# Any flags are forwarded to serf-fuzzcov.
+# Any flags are forwarded to evener-fuzzcov.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,13 +28,13 @@ tmpbase=${TMPDIR:-/tmp}
 # of our own. The trap below covers every exit a shell can observe; SIGKILL, an
 # OOM kill and a power cut are not among them, and no janitor sweeps what they
 # leave. See covscratch-lib.sh for the pid rules.
-reclaim_own_scratch "$tmpbase" serf-fuzzcov
+reclaim_own_scratch "$tmpbase" evener-fuzzcov
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed
 # before exiting rather than deleting it.
-profiles_dir="${tmpbase%/}/serf-fuzzcov.$$"
+profiles_dir="${tmpbase%/}/evener-fuzzcov.$$"
 trap 'rm -rf "$profiles_dir"' EXIT
 mkdir "$profiles_dir" || { trap - EXIT; echo "fuzz-coverage: cannot create scratch directory $profiles_dir" >&2; exit 1; }
 manifest="$profiles_dir/manifest.tsv"

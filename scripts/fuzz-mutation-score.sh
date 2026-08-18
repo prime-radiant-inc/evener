@@ -12,7 +12,7 @@
 # tests). gremlins must be installed:
 #   go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
 #
-# serf's tests need a generous per-mutant timeout (gremlins' measured baseline is
+# evener's tests need a generous per-mutant timeout (gremlins' measured baseline is
 # small; a default coefficient makes legitimate mutants spuriously "time out"),
 # so the coefficient defaults to 20 — tune via SERF_MUTATION_TIMEOUT_COEFF.
 #

@@ -109,7 +109,7 @@ PY
 # the dev-tooling wave's per-suite isolation — and so outside the leftover check
 # the trap below is written to satisfy.
 tmpbase=${TMPDIR:-/tmp}
-rollup_file="$(mktemp "${tmpbase%/}/serf-webcov.XXXXXX")"
+rollup_file="$(mktemp "${tmpbase%/}/evener-webcov.XXXXXX")"
 # Removed on every exit path, not just the happy one: the dev-tooling wave fails
 # a suite that leaves anything behind, and this script runs inside one.
 trap 'rm -f "$rollup_file"' EXIT
@@ -144,7 +144,7 @@ if $suite_failed; then
 fi
 
 if $bless; then
-	tmp="$(mktemp "${TMPDIR:-/tmp}/serf-floors.XXXXXX")"
+	tmp="$(mktemp "${TMPDIR:-/tmp}/evener-floors.XXXXXX")"
 	{
 		# Carry the file's existing comment header through instead of restating a
 		# fixed one, exactly like the two Go floor scripts: a downward reset is a

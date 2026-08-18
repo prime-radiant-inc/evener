@@ -1,15 +1,15 @@
 ---
-name: doctoring-evener
-description: Use when diagnosing a evener session, job, watch, or the session tree — investigating watch runaways (self-influence depth + runaway-fuse drops), dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the evener-doctor forensic tools, the Finding contract, runbook authoring, and graduated repair.
+name: doctoring-serf
+description: Use when diagnosing a serf session, job, watch, or the session tree — investigating watch runaways (self-influence depth + runaway-fuse drops), dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the serf-doctor forensic tools, the Finding contract, runbook authoring, and graduated repair.
 ---
 
-# Doctoring evener
+# Doctoring serf
 
-On-demand forensic diagnosis of evener sessions, jobs, watches, and the session
-tree — reading canonical durable state through the `evener-doctor` tools.
+On-demand forensic diagnosis of serf sessions, jobs, watches, and the session
+tree — reading canonical durable state through the `serf-doctor` tools.
 
-**Core principle:** You diagnose by reading evener's own folds and types through
-the `evener-doctor` tools, never by hand-parsing JSONL. The tools import evener's
+**Core principle:** You diagnose by reading serf's own folds and types through
+the `serf-doctor` tools, never by hand-parsing JSONL. The tools import serf's
 canonical code (`jobstore` folds, `provenance`, `transcript`, `apilog`), so the
 numbers they report are the numbers the runtime computed. **A healthy run emits
 zero findings.**
@@ -23,28 +23,28 @@ Two coupled rules, both mandatory:
    means, and which Go type is the source of truth. Hand-written parsers guessed
    the JSONL shape wrong and returned confident zeros (`0 communicate calls`,
    `0 steering entries`). Do not guess. Consult.
-2. **Inspect through `evener-doctor`, never an ad-hoc one-off parser.** `grep -c
+2. **Inspect through `serf-doctor`, never an ad-hoc one-off parser.** `grep -c
    watch_send_pending` overcounts deliveries (pending frames coalesce). `grep -c
    delegate_send` counted 5 where the real invocation count was 0 (the hits were
    a tool list and an instruction). The tools exist precisely because these
    reconstructions rot. Run the tool.
 
-This mirrors evener's own `agent/prompts/sections/transcripts.md` rule: use the
+This mirrors serf's own `agent/prompts/sections/transcripts.md` rule: use the
 transcript tools, do not read raw transcript files directly.
 
 ## The diagnose → findings loop
 
 1. **Pick / load a runbook** (a markdown audit definition in `runbooks/`).
-2. **INSPECT** by running `evener-doctor <cmd>` on the target selector. Pull live
+2. **INSPECT** by running `serf-doctor <cmd>` on the target selector. Pull live
    state first — never hardcode session ids or thresholds.
 3. **CLASSIFY** each result: PASS-with-a-note, or a confirmed, actionable
    problem.
 4. **Emit** a structured Finding per confirmed problem (see the contract below).
 5. **Report** back to the caller in natural language.
 
-evener *is* the agentic loop — these are your steps, not a separate engine.
+serf *is* the agentic loop — these are your steps, not a separate engine.
 
-## The evener-doctor tools
+## The serf-doctor tools
 
 Run them via the shell tool. First positional arg is a session selector:
 `local:<id>`, `proj:<hash>:<id>`, or a bare `<id>` (searched across buckets).
@@ -52,18 +52,18 @@ Run them via the shell tool. First positional arg is a session selector:
 
 | Command | Answers | Key flags |
 |---|---|---|
-| `evener-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
-| `evener-doctor sessions` | enumerate sessions for a batch study — id, bucket, timestamps, model(s), turn count, transcript bytes, subagent/parent linkage, outcome hint | `--since DUR`, `--bucket B \| --all`, `--json` |
-| `evener-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N`, `--text-max N`, `--full-text` |
-| `evener-doctor transcript <sel> --full-text` | **is one response repeating itself?** Turn text and tool-result previews both render capped at 200 bytes by default; a salvaged partial response carries its repeated tool calls as *text*, so no tool-call metric counts them and the cap hides the whole loop. Narrow with `--range` first — one turn can run to tens of kilobytes. | `--range last:N`, `--text-max N` for a middle ground |
-| `evener-doctor transcript <sel> --health` | one session's mechanical metrics in one shot — tool calls/errors by class, longest identical-call run (+ whether it's all errors), truncation warnings, steering counts, jobs by terminal reason, stale notifications, user corrections (proxy) | `--json` |
-| `evener-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--recompute` |
-| `evener-doctor apilog <sel> --health` | one-line API-health verdict — attempts, recorded-empty count, retry-storm groups (≥3 attempts), unsettled groups, errors by class (quota/permanent/retryable) | `--json` |
-| `evener-doctor jobs <sel>` | **what jobs has this session run**, and **what state is job X in** — status, reason, exit code, output bytes, start/end times, delegate/transcript/parent links | `--job <id>` |
-| `evener-doctor mutations <sel>` | **did the user's input reach the daemon?** — the journal of every client mutation the daemon accepted or rejected, plus the durable input queue, pending executions, accepted turns, and queue revision | — |
-| `evener-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)**, and the **target job's state** — "why didn't my watch fire" | `--watch <id>`, `--self-loops` |
-| `evener-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
-| `evener-doctor audit` | run a runbook's mechanical `audit:` checks across a whole session set, deduped into contract-valid Findings, plus a pattern × session-count summary and every non-mechanical CLASSIFY step surfaced as `manual` (never silently skipped) | `--runbook NAME`, `--sessions <sel,...> \| --since DUR`, `--json` |
+| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
+| `serf-doctor sessions` | enumerate sessions for a batch study — id, bucket, timestamps, model(s), turn count, transcript bytes, subagent/parent linkage, outcome hint | `--since DUR`, `--bucket B \| --all`, `--json` |
+| `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N`, `--text-max N`, `--full-text` |
+| `serf-doctor transcript <sel> --full-text` | **is one response repeating itself?** Turn text and tool-result previews both render capped at 200 bytes by default; a salvaged partial response carries its repeated tool calls as *text*, so no tool-call metric counts them and the cap hides the whole loop. Narrow with `--range` first — one turn can run to tens of kilobytes. | `--range last:N`, `--text-max N` for a middle ground |
+| `serf-doctor transcript <sel> --health` | one session's mechanical metrics in one shot — tool calls/errors by class, longest identical-call run (+ whether it's all errors), truncation warnings, steering counts, jobs by terminal reason, stale notifications, user corrections (proxy) | `--json` |
+| `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate`, `--recompute` |
+| `serf-doctor apilog <sel> --health` | one-line API-health verdict — attempts, recorded-empty count, retry-storm groups (≥3 attempts), unsettled groups, errors by class (quota/permanent/retryable) | `--json` |
+| `serf-doctor jobs <sel>` | **what jobs has this session run**, and **what state is job X in** — status, reason, exit code, output bytes, start/end times, delegate/transcript/parent links | `--job <id>` |
+| `serf-doctor mutations <sel>` | **did the user's input reach the daemon?** — the journal of every client mutation the daemon accepted or rejected, plus the durable input queue, pending executions, accepted turns, and queue revision | — |
+| `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)**, and the **target job's state** — "why didn't my watch fire" | `--watch <id>`, `--self-loops` |
+| `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
+| `serf-doctor audit` | run a runbook's mechanical `audit:` checks across a whole session set, deduped into contract-valid Findings, plus a pattern × session-count summary and every non-mechanical CLASSIFY step surfaced as `manual` (never silently skipped) | `--runbook NAME`, `--sessions <sel,...> \| --since DUR`, `--json` |
 
 Flag-level detail lives in each subcommand's `--help`, not here.
 
@@ -71,7 +71,7 @@ Flag-level detail lives in each subcommand's `--help`, not here.
 `errors_by_class`) reflect the compact fields recorded at call time, not a
 re-decode of the response body. Logs written before the
 Responses-API-decoder fix (WS1, merged to main 2026-08-06 as `812eb5c15`)
-can under-record non-empty responses as empty; run `evener-doctor apilog <sel>
+can under-record non-empty responses as empty; run `serf-doctor apilog <sel>
 --recompute` to re-extract text/tool-call counts from the stored body for
 those rows (adds `recomputed_txt`/`recomputed_tools` columns and a
 `recomputed_nonempty` total) before trusting an empty-response verdict on
@@ -80,7 +80,7 @@ pre-fix logs.
 ## The Finding contract (in brief)
 
 A Finding is structured JSON with: `signature` (a stable dedup key), `severity`,
-`category`, `title`, `description`, `evidence` (at least the `evener-doctor`
+`category`, `title`, `description`, `evidence` (at least the `serf-doctor`
 invocation that surfaces it), and `suggestedFix` routing (`diagnosis` /
 `runbook` / `skill`). **Every finding is actionable or it is not emitted** — no
 FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
@@ -98,13 +98,13 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 
 | Don't | Do |
 |---|---|
-| Hand-parse JSONL with grep/jq/python | Run `evener-doctor <cmd>` |
+| Hand-parse JSONL with grep/jq/python | Run `serf-doctor <cmd>` |
 | Read an artifact before reading `data-model.md` | Consult the data model first |
-| Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `evener-doctor watches` |
+| Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `serf-doctor watches` |
 | Read a watch with zero deliveries as broken delivery machinery | Read the `target job:` line on the same row — a target already terminal, or one that produced zero output bytes, could never match the condition |
-| `jq` the client-mutation store to see whether a message arrived | `evener-doctor mutations <sel>` — absence from the journal is the "it never arrived" verdict |
-| Treat a `delegate_send` text mention as a call | `evener-doctor transcript --count delegate_send` |
-| Read a turn that ends in `…` as the whole response, or conclude "no loop" from `longest_identical_run: length=0` | Both are blind to repetition *inside* one response: a salvaged partial response's repeated calls are text, not tool calls. Re-read the turn with `evener-doctor transcript --range <that turn> --full-text` before ruling a loop out |
-| Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `evener-doctor watches --self-loops` |
+| `jq` the client-mutation store to see whether a message arrived | `serf-doctor mutations <sel>` — absence from the journal is the "it never arrived" verdict |
+| Treat a `delegate_send` text mention as a call | `serf-doctor transcript --count delegate_send` |
+| Read a turn that ends in `…` as the whole response, or conclude "no loop" from `longest_identical_run: length=0` | Both are blind to repetition *inside* one response: a salvaged partial response's repeated calls are text, not tool calls. Re-read the turn with `serf-doctor transcript --range <that turn> --full-text` before ruling a loop out |
+| Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `serf-doctor watches --self-loops` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |

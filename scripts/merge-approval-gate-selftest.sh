@@ -7,7 +7,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 real_make="$(command -v make)"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-merge-approval-gate-selftest
+scratch_dir work evener-merge-approval-gate-selftest
 trap 'scratch_rm' EXIT
 
 assert_before() {
@@ -103,7 +103,7 @@ run_gate_blocked() {
 # inside `make test-dev-tooling`, a merge-approval-gate phase. The gate would
 # then fail on exactly the restricted hosts kata 5gvk exists to keep it green
 # on. run_gate above still drives the REAL probe end to end, so the
-# serf-gate-probe -> preflight-parser wire contract stays covered.
+# evener-gate-probe -> preflight-parser wire contract stays covered.
 run_gate_blocked "" "" "$work/all-available.out"
 assert_eq "$gate_rc" "0" "the all-available green path exits zero"
 assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path reports nothing blocked"
@@ -146,7 +146,7 @@ assert_has "$work/blocked-and-failed.out" "BLOCKED loopback-bind" "the blocked-c
 # commands (go, npm, git) and the scripts it shells out to, so it proves
 # make-level target wiring — web-preflight before the frontend build, the
 # frontend build before runtime Go work, dist's default-platform discovery —
-# independent of what run-module-tests-selftest.sh and the serf-dev
+# independent of what run-module-tests-selftest.sh and the evener-dev
 # module-lint tests already cover for their own targets.
 make_case="$work/make-wiring"
 make_repo="$make_case/repo"

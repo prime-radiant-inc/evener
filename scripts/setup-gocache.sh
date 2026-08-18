@@ -38,7 +38,7 @@ fi
 # that is either a typo or — the failure mode this kata added — the volume
 # it lives on is unmounted. Either way, refuse to silently create a deep
 # path that masks the real problem (mkdir -p would happily create
-# "/Volumes/SomeTypo/serf-build-cache" and nobody would notice until the
+# "/Volumes/SomeTypo/evener-build-cache" and nobody would notice until the
 # next reboot mounts nothing there).
 parent=$(dirname "$target")
 if [ ! -d "$parent" ]; then

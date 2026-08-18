@@ -35,7 +35,7 @@ else
 fi
 
 # --- scenario 2: an explicit target is created and written to the go env ---
-target="$work/big-volume/serf-build-cache"
+target="$work/big-volume/evener-build-cache"
 mkdir -p "$work/big-volume"
 if bash "$script" "$target" >"$work/explicit.out" 2>&1; then
 	if [ -d "$target" ] && grep -qF "GOCACHE=$target" "$GOENV"; then
@@ -50,7 +50,7 @@ fi
 # --- scenario 3: a target under a missing parent is refused, not created ---
 # A missing parent is what an unmounted volume looks like; mkdir -p would
 # happily bury the mistake under a path nothing will ever mount over.
-ghost="$work/not-mounted/serf-build-cache"
+ghost="$work/not-mounted/evener-build-cache"
 if bash "$script" "$ghost" >"$work/ghost.out" 2>&1; then
 	bad "a target under a missing parent exited 0"
 else

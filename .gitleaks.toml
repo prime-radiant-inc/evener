@@ -1,4 +1,4 @@
-# Shared gitleaks ruleset for serf.
+# Shared gitleaks ruleset for evener.
 #
 # Used by `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (the fuzz
 # seed corpora the harvester writes). The harvester's write-time barrier shells
@@ -9,7 +9,7 @@
 # key) plus the shape-scrubbed seed corpora (all placeholders / structural enum
 # values — never real secrets by construction).
 
-title = "serf"
+title = "evener"
 
 [extend]
 useDefault = true
@@ -28,7 +28,7 @@ regexes = [
   '''sk-ant-api03-abcdefABCDEF[A-Za-z0-9]+''',
   '''AIzaSyA1234567890123456789012345678901234''',
   '''FUZZ-OUT-OF-ROOT-SECRET[A-Za-z0-9-]+''',
-  '''serf-continuation-scope-v1''', # domain-separation label in llm/continuation_secret.go, not a secret
+  '''evener-continuation-scope-v1''', # domain-separation label in llm/continuation_secret.go, not a secret
   '''observation/drains''',         # benign phrase mis-flagged in agent/job_delegate_send_test.go
   '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
   '''a\.eyJlbWFpbCI6ImpAZXhhbXBsZS5jb20ifQ\.sig''', # fake JWT ({"email":"j@example.com"}) in auth/openai fuzz seeds

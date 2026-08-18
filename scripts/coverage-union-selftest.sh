@@ -11,7 +11,7 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/coverage-union.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-covunion-selftest
+scratch_dir work evener-covunion-selftest
 trap 'scratch_rm' EXIT
 
 repo="$work/repo"
@@ -109,7 +109,7 @@ assert_killed_run_cleans_up HUP
 
 # The exits a trap cannot see, and the failed run that keeps its scratch on
 # purpose, are this script's own to reclaim: no janitor sweeps them.
-scratch_prefix=serf-covunion
+scratch_prefix=evener-covunion
 assert_reclaims_abandoned_scratch
 assert_keeps_concurrent_scratch
 printf 'nosuch 50.0\n' >"$floors"

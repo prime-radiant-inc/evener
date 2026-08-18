@@ -16,7 +16,7 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/test-coverage-floor.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-scratch_dir work serf-testcov-selftest
+scratch_dir work evener-testcov-selftest
 trap 'scratch_rm' EXIT
 
 # The script derives repo_root and the floors path from its OWN location, so the
@@ -150,7 +150,7 @@ assert_killed_run_cleans_up HUP
 
 # The exits a trap cannot see, and the failed run that keeps its scratch on
 # purpose, are this script's own to reclaim: no janitor sweeps them.
-scratch_prefix=serf-testcov
+scratch_prefix=evener-testcov
 assert_reclaims_abandoned_scratch
 assert_keeps_concurrent_scratch
 printf '. 90.0\nagent 75.0\n' >"$floors"

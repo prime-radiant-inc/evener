@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-fuzz.sh — run each serf fuzz target's coverage-guided search for a bounded
+# run-fuzz.sh — run each evener fuzz target's coverage-guided search for a bounded
 # time. This is the NIGHTLY/manual campaign, not the gate: `make fuzz` (seed
 # corpus only) is what runs in CI. A failing input found here is auto-saved by
 # the Go toolchain to the target's testdata/fuzz/<FuzzName>/ directory, where it

@@ -1,4 +1,4 @@
-; Serf Seatbelt network policy. Appended (after the base) ONLY when the resolved
+; Evener Seatbelt network policy. Appended (after the base) ONLY when the resolved
 ; network decision is on. net=off is the ABSENCE of this section — the base's
 ; (deny default) blocks all TCP/UDP/DNS/AF_UNIX outbound with no explicit deny
 ; needed (fail-closed by construction). Derived from Codex's

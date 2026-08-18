@@ -23,7 +23,7 @@
 #                    scratch only exists while the run is in flight.
 #   run            — runs the script to completion under $tmphome, exiting zero
 #                    (used by the reclaim assertions below)
-#   scratch_prefix — the runner's scratch basename prefix, e.g. "serf-testcov"
+#   scratch_prefix — the runner's scratch basename prefix, e.g. "evener-testcov"
 
 # await_scratch — returns 0 once $tmphome is non-empty, 1 after ~10s.
 await_scratch() {

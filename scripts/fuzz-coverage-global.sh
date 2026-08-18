@@ -279,13 +279,13 @@ tmpbase=${TMPDIR:-/tmp}
 # of our own. The trap below covers every exit a shell can observe; SIGKILL, an
 # OOM kill and a power cut are not among them, and no janitor sweeps what they
 # leave. See covscratch-lib.sh for the pid rules.
-reclaim_own_scratch "$tmpbase" serf-fuzzcov-global
+reclaim_own_scratch "$tmpbase" evener-fuzzcov-global
 # The name is chosen and the trap armed BEFORE the directory exists; see
 # test-coverage-floor.sh for the signal window this closes. $$ is unique among
 # live processes, so concurrent runs cannot collide. A failed mkdir means a
 # stale same-pid leftover this run does not own, so the trap is disarmed
 # before exiting rather than deleting it.
-work="${tmpbase%/}/serf-fuzzcov-global.$$"
+work="${tmpbase%/}/evener-fuzzcov-global.$$"
 trap 'rm -rf "$work"' EXIT
 mkdir "$work" || { trap - EXIT; die "cannot create scratch directory $work"; }
 plan="$work/targets.tsv"
@@ -294,7 +294,7 @@ global_manifest="$work/global-profiles.tsv"
 
 is_expected_global_gate_failure() {
 	local stderr_file="$1"
-	grep -Eq '^serf-fuzzcov: (RAW THRESHOLD BREACH:|REGRESSION |refusing to bless:)' "$stderr_file"
+	grep -Eq '^evener-fuzzcov: (RAW THRESHOLD BREACH:|REGRESSION |refusing to bless:)' "$stderr_file"
 }
 
 discover_workspace_modules

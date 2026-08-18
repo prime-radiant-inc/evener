@@ -1,6 +1,6 @@
 (version 1)
 
-; Serf Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
+; Evener Seatbelt base policy. Trimmed from Codex's seatbelt_base_policy.sbpl,
 ; which is itself derived from Chromium's macOS sandbox. This static base is the
 ; deny-default floor plus the platform-service allowances any spawned process
 ; needs to exec, dyld-load, and run a shell. It grants NO filesystem read/write
@@ -25,7 +25,7 @@
 ; Minimal /dev floor — the macOS analog of bwrap's minimal --dev, always present
 ; regardless of mode. The standard character devices plus the process's OWN file
 ; descriptors via /dev/fd. On macOS /dev/fd exposes only the calling process's fd
-; table (serf's fds never leak in: ExtraFiles is emptied and serf's fds are
+; table (evener's fds never leak in: ExtraFiles is emptied and evener's fds are
 ; O_CLOEXEC), so it is safe and is needed for shell process substitution
 ; (`<(cmd)` / `>(cmd)`). /dev/mem is deliberately NOT granted.
 (allow file-write-data
@@ -143,7 +143,7 @@
   (subpath (param "WRITABLE_ROOT_8"))
   (subpath (param "WRITABLE_ROOT_9"))
 )
-; Serf Seatbelt platform defaults — the macOS system read-roots a spawned
+; Evener Seatbelt platform defaults — the macOS system read-roots a spawned
 ; process needs to exec and dyld-load when it is NOT granted full-disk read.
 ; Appended (after the base and the generated sections) ONLY for `restricted`
 ; mode, whose spawned layer reads the worktree only; read-only and
@@ -244,7 +244,7 @@
 (allow file-read* file-test-existence file-write-data file-ioctl
   (literal "/dev/dtracehelper"))
 
-; NOTE: serf deliberately does NOT grant broad read/write of /tmp, /private/tmp,
+; NOTE: evener deliberately does NOT grant broad read/write of /tmp, /private/tmp,
 ; /var/tmp here (codex's defaults do). Those grants are additive allows that would
 ; re-expose a worktree, secret, or git config surface placed under a temp dir,
 ; defeating restricted-mode confinement. The per-session TMPDIR is granted
@@ -288,7 +288,7 @@
   (global-name "com.apple.trustd.agent")
   (local-name "com.apple.cfprefsd.agent"))
 
-; NOTE: serf deliberately omits codex's (allow network-outbound (literal
+; NOTE: evener deliberately omits codex's (allow network-outbound (literal
 ; "/private/var/run/syslog")) here. net=off must be the ABSENCE of every network
 ; allow (fail-closed), and this is the only mode (restricted) that includes the
 ; platform defaults; a stray local-socket egress allow would break that invariant.

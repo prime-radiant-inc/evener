@@ -6,7 +6,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 . "$repo/scripts/selftest-lib.sh"
 
-scratch_dir fixture serf-live-isolation-selftest
+scratch_dir fixture evener-live-isolation-selftest
 cleanup() {
 	scratch_rm
 }
@@ -14,11 +14,11 @@ trap cleanup EXIT
 
 source_state="$fixture/source-state"
 source_home="$fixture/source-home"
-binary="$fixture/source-serf"
+binary="$fixture/source-evener"
 env_file="$fixture/live.env"
-mkdir -p "$source_state/serf/auth" "$source_home/.serf"
-printf 'oauth fixture\n' >"$source_state/serf/auth/openai.json"
-printf 'provider fixture\n' >"$source_home/.serf/providers.toml"
+mkdir -p "$source_state/evener/auth" "$source_home/.evener"
+printf 'oauth fixture\n' >"$source_state/evener/auth/openai.json"
+printf 'provider fixture\n' >"$source_home/.evener/providers.toml"
 cat >"$binary" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -41,14 +41,14 @@ live_eval_prepare_trial baseline-1
 second_trial="$LIVE_EVAL_TRIAL_ROOT"
 
 test "$first_trial" != "$second_trial"
-test -f "$first_state/serf/auth/openai.json"
-test -f "$first_home/.serf/providers.toml"
+test -f "$first_state/evener/auth/openai.json"
+test -f "$first_home/.evener/providers.toml"
 test -x "$first_serf"
-test -f "$second_trial/state/serf/auth/openai.json"
-test -f "$second_trial/home/.serf/providers.toml"
+test -f "$second_trial/state/evener/auth/openai.json"
+test -f "$second_trial/home/.evener/providers.toml"
 test "$first_trial" != "$run_root"
-test "$(cat "$source_state/serf/auth/openai.json")" = "oauth fixture"
-test "$(cat "$source_home/.serf/providers.toml")" = "provider fixture"
+test "$(cat "$source_state/evener/auth/openai.json")" = "oauth fixture"
+test "$(cat "$source_home/.evener/providers.toml")" = "provider fixture"
 
 live_eval_cleanup
 test ! -e "$run_root"
