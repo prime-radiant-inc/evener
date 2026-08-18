@@ -230,6 +230,61 @@ func TestLintRunHonorsASignalPendingAfterTheLastWave(t *testing.T) {
 	}
 }
 
+// signalOnFence wraps the run's stdout and delivers a signal the moment the
+// first replay fence is written — deterministically inside the replay loop,
+// after every earlier checkpoint has already come up empty.
+type signalOnFence struct {
+	strings.Builder
+	signals chan<- os.Signal
+	fired   bool
+}
+
+func (w *signalOnFence) Write(p []byte) (int, error) {
+	if !w.fired && strings.Contains(string(p), "-----") {
+		w.fired = true
+		w.signals <- syscall.SIGTERM
+	}
+	return w.Builder.Write(p)
+}
+
+func TestLintRunHonorsASignalDuringTheLastReplay(t *testing.T) {
+	// The common swallow case: one failed module, and the signal lands
+	// while its log is being replayed. Every pre-replay checkpoint has
+	// already run, so only a checkpoint after the loop can drain it; the
+	// shell trap fired here too, between commands, with exit 143.
+	signals := make(chan os.Signal, 1)
+	out := &signalOnFence{signals: signals}
+	t.Setenv("TMPDIR", t.TempDir())
+	var errOut strings.Builder
+	r := &lintRun{
+		modules:  []string{"one"},
+		parallel: 1,
+		stdout:   out,
+		stderr:   &errOut,
+		linter:   "sh",
+		newCmd:   echoCmd(map[string]int{"one": 7}),
+		signals:  signals,
+		grace:    5 * time.Second,
+	}
+	if code := r.run(); code != 143 {
+		t.Fatalf("run = %d, want 143 (output: %s)", code, out.String())
+	}
+	text := out.String()
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "FAIL lint (interrupted: SIGTERM)" {
+		t.Errorf("final line = %q", last)
+	}
+	if strings.Contains(text, "full logs:") {
+		t.Error("an interrupted replay still printed the retained-log pointer")
+	}
+	if n := summaryCount(text); n != 1 {
+		t.Errorf("summary appears %d times, want exactly once", n)
+	}
+	if left := scratchLeft(t); len(left) != 0 {
+		t.Errorf("interrupt during replay left scratch behind: %v", left)
+	}
+}
+
 func TestLintRunReclaimsAbandonedScratchAtStartup(t *testing.T) {
 	// A SIGKILLed run's scratch has no trap to clean it; the NEXT run of the
 	// same tool reclaims it (dead-pid scoped, covscratch rules — the rules

@@ -191,6 +191,13 @@ func (l *lintRun) run() int {
 		report.Replay(l.stdout, l.modules[i], f)
 		_ = f.Close()
 	}
+	// The last replay has no following iteration to drain a signal that
+	// landed during it; keepLogs is still unset here, so honoring one now
+	// removes the logs and summarizes interrupted — the shell trap's exact
+	// behavior at this point in the run.
+	if code, interrupted := l.pendingSignal(rep); interrupted {
+		return code
+	}
 	report.RetainedPointer(l.stdout, logdir)
 	keepLogs = true
 	rep.Fail(report.Findings, fmt.Sprintf("%d/%d modules: %s", len(failed), len(l.modules), strings.Join(names, " ")))
