@@ -17,7 +17,8 @@
 # Two independent things are checked, both from the same measurement:
 #
 #   - Per-package budget: fail at 1.5x the checked-in budget, warn at 1.1x.
-#   - Per-test ceiling (~2s, testing-budget.json's perTestCeilingSeconds):
+#   - Per-test ceiling (testing-budget.json's perTestCeilingSeconds, currently
+#     3s; 2s when a budget file does not name one at all):
 #     any single test or subtest over the ceiling is flagged regardless of its
 #     package's budget — one runaway test is a defect on its own.
 #

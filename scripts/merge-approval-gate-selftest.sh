@@ -77,8 +77,6 @@ expected_calls=$(printf 'lint\t\nbuild\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "build failure stops test"
 
-assert_not_has "$work/success.out" "BLOCKED" "the all-available green path reports nothing blocked"
-
 # kata 5gvk: FAKE_GATE_PROBE_BLOCKED forces scripts/gate-capability-preflight.sh
 # to report the named capabilities BLOCKED without touching the real host, so
 # the gate's classify-once/skip-not-fail/structured-summary contract is
@@ -96,6 +94,19 @@ run_gate_blocked() {
 		gate_rc=$?
 	fi
 }
+
+# The all-available path, forced: an EMPTY FAKE_GATE_PROBE_BLOCKED reports
+# every capability AVAILABLE without consulting the host. Asserting this
+# against the real probe instead would make the assertion a claim about the
+# machine running the selftest - a host with no Chrome, or no writable git
+# cache directory, genuinely has a blocked capability, and this suite runs
+# inside `make test-dev-tooling`, a merge-approval-gate phase. The gate would
+# then fail on exactly the restricted hosts kata 5gvk exists to keep it green
+# on. run_gate above still drives the REAL probe end to end, so the
+# serf-gate-probe -> preflight-parser wire contract stays covered.
+run_gate_blocked "" "" "$work/all-available.out"
+assert_eq "$gate_rc" "0" "the all-available green path exits zero"
+assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path reports nothing blocked"
 
 run_gate_blocked "loopback-bind" "" "$work/blocked-loopback.out"
 assert_eq "$gate_rc" "0" "a blocked capability alone does not fail the gate"

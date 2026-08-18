@@ -61,11 +61,11 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		"a literal `/tmp/foo/AGENTS.md` containing",
 	},
 	"scripts/gate-surface-lib.sh": {
-		// A comment recording that a repo-wide grep for this fixed path found
-		// NOTHING — a mention of absence explaining why the git-cache skip
-		// pattern is empty (kata 5gvk's capability preflight). No run names
-		// or creates the path.
-		"non-gate target; a repo-wide grep for a fixed /tmp/git-cache path found",
+		// A comment naming where the fixed path actually lives —
+		// cmd/serf-gate-probe's own default — to explain why the git-cache
+		// skip pattern is empty (kata 5gvk's capability preflight). This
+		// script neither names the path for a run to use nor creates it.
+		"/tmp/git-cache path is cmd/serf-gate-probe's own default, which the",
 	},
 	// scripts/*.sh, added to this audit by kata qw8e. Only one row, because a
 	// script has no prose to warn in: this is a script ABOUT the debris in

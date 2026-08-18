@@ -39,11 +39,13 @@ GATE_TEST_RUN='^(Test|Example)'
 #     testing.Short(); merge-approval-gate is the only caller that sets it)
 #     and (b) spawn a real hub/daemon or tmux pane bound to a real loopback
 #     port. Ordinary `make test` never reaches them.
-#   - chrome-cdp, git-cache: no test file anywhere in this tree references
+#   - chrome-cdp, git-cache: no test file anywhere in this tree consumes
 #     either today. test-web-browser needs Chrome but is a separate,
-#     non-gate target; a repo-wide grep for a fixed /tmp/git-cache path found
-#     nothing. Both are still probed and reported for completeness and
-#     honesty; the pattern is empty because nothing is skipped yet.
+#     non-gate target; the only thing in the tree that names the fixed
+#     /tmp/git-cache path is cmd/serf-gate-probe's own default, which the
+#     probe creates in order to prove it is writable. Both are still probed
+#     and reported for completeness and honesty; the pattern is empty because
+#     nothing is skipped yet.
 #
 # Applied to the ROOT module ONLY, deliberately: `agent/session_escalation_e2e_test.go`
 # (Linux-only, unrelated sandbox-escalation coverage) also has two
