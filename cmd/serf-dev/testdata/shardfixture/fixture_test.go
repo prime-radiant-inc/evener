@@ -23,6 +23,14 @@ func TestFixtureGamma(t *testing.T) { time.Sleep(10 * time.Millisecond) }
 
 func TestFixtureDelta(t *testing.T) {}
 
+// TestFixtureSlow dominates its shard's wall time when armed, so a survey
+// isolates it and per-shard timing becomes observable from outside.
+func TestFixtureSlow(t *testing.T) {
+	if os.Getenv("SHARD_FIXTURE_SLOW") != "" {
+		time.Sleep(400 * time.Millisecond)
+	}
+}
+
 // TestFixtureHold announces itself, then blocks on the hold FIFO until a
 // writer arrives or the process is signaled: real held work for the
 // interruption and SIGKILL scenarios, with no timers to flake on.

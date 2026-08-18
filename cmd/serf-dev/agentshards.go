@@ -282,13 +282,15 @@ func runShards(cfg shardsConfig) int {
 	}
 	_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: %d shards, -parallel %d each\n", len(bins), cfg.parallel)
 
-	// Launch every shard, then report in shard order.
+	// Launch every shard, each waited by its own goroutine so its reported
+	// wall time is its OWN clock (the script measured with /usr/bin/time -p
+	// inside each invocation); results are still reported in shard order.
 	extraFlags := translateFlags(cfg.flags)
-	type shard struct {
-		cmd     *exec.Cmd
-		started time.Time
+	type shardResult struct {
+		err     error
+		seconds float64
 	}
-	shards := make([]shard, len(bins))
+	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel), "-test.run", nameRegex(bin)}
@@ -302,7 +304,7 @@ func runShards(cfg shardsConfig) int {
 		cmd.Dir = cfg.agentDir
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		shards[i].started = time.Now()
+		started := time.Now()
 		err = cmd.Start()
 		_ = log.Close()
 		if err != nil {
@@ -311,18 +313,22 @@ func runShards(cfg shardsConfig) int {
 			break
 		}
 		in.add(cmd.Process.Pid)
-		shards[i].cmd = cmd
+		result := make(chan shardResult, 1)
+		results[i] = result
+		go func() {
+			err := cmd.Wait()
+			result <- shardResult{err: err, seconds: time.Since(started).Seconds()}
+		}()
 	}
 
 	fail := launchFailed
-	for i, s := range shards {
-		if s.cmd == nil {
+	for i, result := range results {
+		if result == nil {
 			continue
 		}
-		err := s.cmd.Wait()
-		seconds := time.Since(s.started).Seconds()
-		if err == nil {
-			_, _ = fmt.Fprintf(cfg.stdout, "PASS  agent:%-2d %8s (%d tests)\n", i, fmt.Sprintf("%.2fs", seconds), len(bins[i]))
+		r := <-result
+		if r.err == nil {
+			_, _ = fmt.Fprintf(cfg.stdout, "PASS  agent:%-2d %8s (%d tests)\n", i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
 			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  agent:%-2d\n", i)
 			fail = true
@@ -335,7 +341,7 @@ func runShards(cfg shardsConfig) int {
 	if fail {
 		_, _ = fmt.Fprintln(cfg.stdout)
 		_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
-		for i := range shards {
+		for i := range bins {
 			log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
 			if fileMatches(log, shardRedLine) {
 				_, _ = fmt.Fprintf(cfg.stdout, "----- agent:%d -----\n", i)

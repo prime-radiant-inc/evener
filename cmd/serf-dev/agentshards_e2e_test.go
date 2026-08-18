@@ -102,6 +102,46 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 }
 
+// passLineSeconds extracts each PASS line's reported wall seconds by shard.
+func passLineSeconds(t *testing.T, out string) map[int]float64 {
+	t.Helper()
+	seconds := map[int]float64{}
+	for line := range strings.SplitSeq(out, "\n") {
+		var shard int
+		var s float64
+		if _, err := fmt.Sscanf(line, "PASS  agent:%d %fs", &shard, &s); err == nil {
+			seconds[shard] = s
+		}
+	}
+	return seconds
+}
+
+func TestAgentShardsReportsPerShardWallTime(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	t.Setenv("SHARD_FIXTURE_SLOW", "1")
+
+	// The survey sees one ~0.4s test and five ~0ms tests, so LPT isolates
+	// the slow one in its own shard; the other shard must report its OWN
+	// short wall time, not the slow shard's.
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	seconds := passLineSeconds(t, stdout.String())
+	if len(seconds) != 2 {
+		t.Fatalf("expected 2 PASS lines with times, got %v in:\n%s", seconds, stdout)
+	}
+	slow, fast := seconds[0], seconds[1]
+	if fast > slow {
+		slow, fast = fast, slow
+	}
+	if slow < 0.4 {
+		t.Fatalf("no shard reports the slow test's wall time: %v", seconds)
+	}
+	if fast >= 0.4 {
+		t.Fatalf("the fast shard reports the slow shard's clock (%v): per-shard wall time is not per-shard", seconds)
+	}
+}
+
 func TestAgentShardsFailingShardRetainsEvidence(t *testing.T) {
 	cfg, stdout, stderr, tmp := e2eConfig(t)
 	cfg.noSurvey = true
