@@ -133,7 +133,7 @@ func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, owner llm.A
 		result.Outcome = llm.ClassifyAPIAttemptOutcome(owner, result.StatusCode, result.Err, decodeErr, transportErr)
 	}
 	if result.Err != nil && result.ErrorClass == "" {
-		result.ErrorClass = explicitAPIAttemptErrorClass(result.Outcome, result.StatusCode)
+		result.ErrorClass = explicitAPIAttemptErrorClass(result.Outcome, result.StatusCode, result.Err)
 	}
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now()
@@ -141,12 +141,29 @@ func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, owner llm.A
 	c.attempt.Complete(result)
 }
 
-func explicitAPIAttemptErrorClass(outcome apilog.AttemptOutcomeClass, statusCode int) string {
+// explicitAPIAttemptErrorClass derives the recorded error_class for a completed
+// attempt from the adapter's explicit result: its outcome, the typed error it
+// returned, and failing both, its HTTP status.
+//
+// The typed error outranks the status because a status code is ambiguous where
+// it matters most. A 429 covers both "slow down" and "your allowance is spent",
+// and a 403 covers both a bare access denial and a spent billing cycle; only the
+// error records which one the provider's body actually named. Reading the status
+// alone collapsed the first of each pair onto the second, leaving a
+// quota-exhausted call indistinguishable from a transient one in the API log.
+//
+// Classification reads the error via [llm.DeclaredKind], which asks the value in
+// hand without unwrapping, so this path still never walks an error graph or runs
+// caller-supplied code.
+func explicitAPIAttemptErrorClass(outcome apilog.AttemptOutcomeClass, statusCode int, err error) string {
 	if outcome == apilog.AttemptProviderTimeout {
 		return llm.KindTimeout.String()
 	}
 	if outcome != apilog.AttemptProviderReject {
 		return llm.KindUnknown.String()
+	}
+	if kind := llm.DeclaredKind(err); kind != llm.KindUnknown {
+		return kind.String()
 	}
 	switch statusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
