@@ -139,9 +139,9 @@ git commit -m "feat(agent): a durable parked-queue flag, read without cloning"
 ### Task 2: A Stop sets the hold; popQueueHead refuses while it is set
 
 **Files:**
-- Modify: `agent/session_client_mutation.go` (`InterruptClientMutation`'s `reservePrepared` callback, where `InterruptFence` is written)
+- Modify: `agent/session_client_mutation.go` (`InterruptClientMutation`: the `reservePrepared` callback where `InterruptFence` is written, and the wake calls at the applied path's tail)
 - Modify: `agent/session_queue.go` (`popQueueHead`, beside its existing `InterruptFence` guard)
-- Test: `agent/session_stop_and_queued_work_test.go`
+- Test: `agent/session_stop_and_queued_work_test.go` (adds the new test; deletes `TestStopWakesTheSessionForWorkItLeftQueued`, which pins the superseded contract)
 
 **Interfaces:**
 - Consumes: `clientMutationSnapshot.QueueHeld` from Task 1.
@@ -214,11 +214,49 @@ In `popQueueHead`, immediately after the existing `if snapshot.InterruptFence !=
 Run: `go test ./agent/ -run TestStopParksTheQueueAgainstBothRestartRails -count=1 -v`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Remove the interrupt's own queue wake, which the hold makes dead**
+
+The tail of `InterruptClientMutation`'s applied path currently reads:
+
+```go
+	// The fence is cleared now, so popQueueHead will claim again -- but nothing
+	// has asked the session to run. A Stop cancelled the runner; anything still
+	// queued behind it would sit there while the session reports itself as
+	// working, which is the strand the fence guard would otherwise create.
+	s.wakeForPendingQueuedInput()
+	s.wakeForPendingSteering()
+```
+
+That wake IS the interim behaviour this plan reverses: it was added so a Stop delivers what it left queued. With `QueueHeld` set by this same mutation and cleared only by the user, the kick can never claim anything, and the comment's "popQueueHead will claim again" becomes false. Replace both lines with:
+
+```go
+	// No queued-input wake here, deliberately: the hold above parks the queue
+	// until the user asks for something to run, so a kick would find nothing
+	// claimable. The steering wake stays; a Stop with pending steering still
+	// restarts, and that is kata 1k3m, not this one.
+	s.wakeForPendingSteering()
+```
+
+(Task 3 then makes the session stop REPORTING a parked queue as pending work, which is what retires the strand the old wake existed to close — a session claiming to be busy over a queue nobody drains.)
+
+(`wakePendingUserInput` feeds `notifyFunc`, the server's drain kick. It is not how state reaches the hub -- that is the event stream -- so removing the kick loses no publication. Task 5's flipped e2e proves the live daemon still settles.)
+
+- [ ] **Step 7: Delete the test that pins the superseded contract**
+
+Delete `TestStopWakesTheSessionForWorkItLeftQueued` from `agent/session_stop_and_queued_work_test.go`, including its doc comment. It asserts a Stop over queued work fires the drain kick — the delivery contract this task abolishes — and it fails once Step 6 lands. Its concern (a Stop must not strand queued work invisibly) is carried forward by `TestStopParksTheQueueAgainstBothRestartRails` (nothing runs, the message survives) and Task 3's `TestAParkedQueueDoesNotMakeTheSessionLookBusy` (the session stops claiming to be busy over it). This is contract replacement, not coverage reduction; say so in the commit message.
+
+- [ ] **Step 8: Run the agent suite and commit**
+
+Run: `go test ./agent/ -count=1`
+Expected: PASS, with `TestStopWakesTheSessionForWorkItLeftQueued` gone and nothing else newly failing.
 
 ```bash
 git add agent/session_client_mutation.go agent/session_queue.go agent/session_stop_and_queued_work_test.go
-git commit -m "feat(agent): a Stop parks the queue against both restart rails"
+git commit -m "feat(agent): a Stop parks the queue against both restart rails
+
+Removes the interrupt-tail queued-input wake and its test: they pinned
+the interim contract (a Stop delivers what it left queued) that this
+change replaces with the parked contract (kata wms7)."
 ```
 
 ---
@@ -505,6 +543,8 @@ Then comment on `wms7` with: which rails are closed, the mutation-test results f
 ## Self-Review
 
 **Spec coverage.** `wms7`'s ruling for queued messages: cancel, do not auto-start, do not lose. Task 2 stops both rails, Task 3 makes the resulting idle state honest, Task 4 gives the user the way out, Task 5 proves it live. Steering is explicitly deferred to `1k3m` in Global Constraints.
+
+**The interim contract this replaces, retired explicitly (found on plan review):** `InterruptClientMutation`'s applied path carried `wakeForPendingQueuedInput()` under a comment promising "popQueueHead will claim again" — the deliberate interim behaviour (a Stop delivers what it left queued) that this plan reverses. Task 2 Steps 6–8 remove the wake, rewrite the comment, and delete `TestStopWakesTheSessionForWorkItLeftQueued`, the test that pinned it. Left alone, they would have been dead code under a false comment plus a failing test at Task 5's full gates.
 
 **Review findings from the rejected attempt, each mapped:** mirror drift → no mirror (Global Constraints, Task 1's accessor). Clear above rejections → Task 4 Step 3 ordering plus `TestARejectedPromoteLeavesTheQueueParked`. Sticky hold → `turn/queue` clear in Task 4. Doctor declared-but-unrendered → Task 1 Step 5 renders it. Vacuous tests → Task 5 Step 3 mutation-tests every edit.
 
