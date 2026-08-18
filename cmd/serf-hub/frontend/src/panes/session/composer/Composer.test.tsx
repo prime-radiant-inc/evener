@@ -13,7 +13,12 @@ import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import {
+  readMutationPersistence,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
@@ -1144,6 +1149,88 @@ test("a turn/start pending for another client does not reroute this composer", a
 
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(1));
   expect(routedCalls(fake)).toEqual(["turn/start"]);
+});
+
+// The same window as the tier-6 test above, with a hydrate landing in the
+// middle of it. A reconnect or a pane reopen re-reads the thread, and the read
+// answers with THIS client's still-unsettled send in pendingMutations while the
+// status has not moved off idle yet. Two things happen to the client's own
+// record of that send: the hydrate's identity reconciliation deletes the
+// durable outbox/optimistic record (threads.ts's reconcileIdentities ->
+// settleApplied), and pendingReconcile re-presents the same clientMutationId
+// from the authoritative projection. Routing must still see the send as this
+// client's own - it is the same send, described by a different source.
+test("a hydrate that reports this client's own in-flight send still routes the next message to the queue", async () => {
+  const user = userEvent.setup();
+  let readOverrides: Partial<Thread> = {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: DAEMON_IDLE_CAPABILITIES, queue: { revision: 0 } },
+  };
+  const fake = await mountComposer("ref_a", readOverrides);
+  fake.on("thread/read", () => readResponse("ref_a", readOverrides));
+  let firstSendId: string | undefined;
+  fake.on("turn/start", (params) => {
+    firstSendId ??= params.clientMutationId;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied" as const,
+        threadId: "thread_a",
+        projectionState: "pending" as const,
+      },
+      turn: { id: "turn_1", status: "inProgress" as const, itemsView: "" },
+    };
+  });
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "pending" as const,
+    },
+  }));
+
+  await user.type(textarea(), "first message");
+  await user.click(submitButton());
+  await waitFor(() => expect(firstSendId).toBeTruthy());
+
+  // The re-read the reconnect/reopen performs: same idle status and idle
+  // capability set as before, plus the daemon's own account of the send that is
+  // still in flight.
+  readOverrides = {
+    status: { type: "idle" },
+    serf: {
+      ref: "ref_a",
+      capabilities: DAEMON_IDLE_CAPABILITIES,
+      queue: { revision: 0 },
+      pendingMutations: [
+        {
+          clientMutationId: firstSendId as string,
+          method: "turn/start",
+          input: [{ type: "text", text: "first message" }],
+          executionState: "accepted",
+          projectionState: "pending",
+        },
+      ],
+    },
+  };
+  await act(async () => {
+    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+  });
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.pendingMutations).toHaveLength(1));
+  // Wait out the settlement the publish drives, so the second message is
+  // composed in the harder of the two states this hydrate passes through: not
+  // merely re-described from the authoritative projection, but with the durable
+  // record it re-described GONE. (The transient first state, where the record
+  // still exists and only `source` has flipped, is pendingReconcile.test.ts's.)
+  await waitFor(async () => expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0));
+  await flushPendingTurnsProjectionForTests();
+
+  await user.type(textarea(), "second message");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
+  expect(routedCalls(fake)).toEqual(["turn/start", "turn/queue"]);
 });
 
 test("submitting an empty composer fires no request", async () => {

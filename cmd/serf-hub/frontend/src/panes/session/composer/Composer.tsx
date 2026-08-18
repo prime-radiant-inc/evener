@@ -542,15 +542,23 @@ export function Composer({ ref }: ComposerProps) {
   // with Conflict("turn is already active") - see tier 6 in
   // deriveSendQueueAvailability.
   //
-  // Authoritative entries are excluded deliberately, and tier 6 does not work
-  // without that. usePendingTurnEntries also surfaces model.pendingMutations,
-  // which is the DAEMON's session-wide mutation projection: it covers every
-  // client on the session, reducer.ts writes it only at hydrate, and no
-  // notification ever refreshes it. Feeding it to a routing decision would
-  // reroute this composer on another tab's or the TUI's in-flight send, from a
-  // snapshot that may be arbitrarily old - exactly the "daemon's state arriving
-  // late" that tier 6's own justification rests on not being.
-  const hasPendingSend = pendingSendEntries.some((entry) => entry.source !== "authoritative");
+  // Someone else's pending send is excluded deliberately, and tier 6 does not
+  // work without that. usePendingTurnEntries also surfaces
+  // model.pendingMutations, which is the DAEMON's session-wide mutation
+  // projection: it covers every client on the session, reducer.ts writes it only
+  // at hydrate, and no notification ever refreshes it. Feeding it to a routing
+  // decision would reroute this composer on another tab's or the TUI's in-flight
+  // send, from a snapshot that may be arbitrarily old - exactly the "daemon's
+  // state arriving late" that tier 6's own justification rests on not being.
+  //
+  // The question is whose send it is, which is what fromThisClient answers. It
+  // is deliberately not entry.source: that names the projection describing the
+  // row, and a hydrate landing mid-send re-describes THIS client's own
+  // unsettled send as "authoritative" (pendingReconcile's own doc comment).
+  // Reading routing off the presentation source therefore lost tier 6 for the
+  // sender at exactly the moment the daemon confirmed it had the send - the
+  // next message went to turn/start and bounced.
+  const hasPendingSend = pendingSendEntries.some((entry) => entry.fromThisClient);
   const tableAvailability = deriveSendQueueAvailability({
     statusType: model.status.type,
     capabilities: model.capabilities,
