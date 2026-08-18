@@ -22,6 +22,11 @@ Report real milestones. A status marker is a requested user/caller-visible
 milestone; if internal progress should continue
 immediately through the next work tool, use `end_turn=false`.
 
+When a long or delegated task changes phase — for example moving from
+investigation to implementation — send one checkpoint through
+{{ .ResultToolName }} with `end_turn=false`: what's done,
+the current hypothesis or plan, the next concrete action, and any blockers.
+
 Watch-delivery and observer-callback flow: when handling a `job_watch` frame
 that needs no action, a short internal no-action disposition is enough. When a
 watched trigger is handed to an observer sidecar, Serf yields the caller turn and

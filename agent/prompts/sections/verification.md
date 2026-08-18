@@ -9,3 +9,8 @@ Before you change production behavior, prove whether a failure belongs to the
 product or is a fixture or environment failure. When the parent has an
 environment the child lacked, the parent must rerun the decisive incomplete gate
 itself rather than accept an unverified child result.
+
+Before interpreting a cross-model or cross-configuration comparison as a
+product or model-behavior failure, first prove one known-good smoke case on
+each participant — an infrastructure or configuration failure is not
+evidence about behavior under test.
