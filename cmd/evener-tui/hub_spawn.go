@@ -141,12 +141,12 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
 	models := m.spawnSelectableModels()
-	if len(models) == 0 && !m.spawnHarnessUsesSerfModels() && m.client != nil {
+	if len(models) == 0 && !m.spawnHarnessUsesEvenerModels() && m.client != nil {
 		m.err = nil
 		return m, fetchHubModelsForHarness(m.client, m.spawnHarness, m.spawnDir)
 	}
 	if len(models) == 0 {
-		if !m.spawnHarnessUsesSerfModels() {
+		if !m.spawnHarnessUsesEvenerModels() {
 			m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
 		} else {
 			m.err = errors.New("no models available")
@@ -173,7 +173,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
+	if m.spawnHarnessUsesEvenerModels() && strings.TrimSpace(m.spawnModel) == "" {
 		m.err = errors.New("choose a model before starting")
 		return m, nil
 	}
@@ -293,7 +293,7 @@ func (m hubModel) spawnFieldHint() string {
 	case hubSpawnFieldHarness:
 		return "enter/space: change harness"
 	case hubSpawnFieldModel:
-		if !m.spawnHarnessUsesSerfModels() && len(m.spawnSelectableModels()) == 0 {
+		if !m.spawnHarnessUsesEvenerModels() && len(m.spawnSelectableModels()) == 0 {
 			return "enter: fetch harness models"
 		}
 		return "enter: choose model"
@@ -385,19 +385,19 @@ func (m hubModel) spawnHarnessKind() string {
 	return "evener"
 }
 
-func (m hubModel) spawnHarnessUsesSerfModels() bool {
+func (m hubModel) spawnHarnessUsesEvenerModels() bool {
 	return m.spawnHarnessKind() != "codex"
 }
 
 func (m hubModel) spawnSelectableModels() []tuipick.ModelPickerItem {
-	if !m.spawnHarnessUsesSerfModels() {
+	if !m.spawnHarnessUsesEvenerModels() {
 		return m.spawnHarnessModels[m.spawnHarness]
 	}
 	return m.spawnModels
 }
 
 func (m *hubModel) syncSpawnModelWithHarness() {
-	if !m.spawnHarnessUsesSerfModels() {
+	if !m.spawnHarnessUsesEvenerModels() {
 		if strings.Contains(strings.TrimSpace(m.spawnModel), "/") {
 			m.spawnModel = ""
 		}
@@ -456,7 +456,7 @@ func (m *hubModel) openSpawnModelPicker(models []tuipick.ModelPickerItem) {
 }
 
 func (m hubModel) spawnModelPickerTitle() string {
-	if m.spawnHarnessUsesSerfModels() {
+	if m.spawnHarnessUsesEvenerModels() {
 		return "Select model"
 	}
 	return "Select " + m.spawnHarness + " model"
@@ -515,7 +515,7 @@ func (m hubModel) spawnView() string {
 	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
-	if !m.spawnHarnessUsesSerfModels() {
+	if !m.spawnHarnessUsesEvenerModels() {
 		if model == "" {
 			model = "(harness default)"
 		} else {

@@ -103,7 +103,7 @@ func (d detailsDrawer) View() string {
 		b.WriteString("\n")
 		return strings.TrimSpace(b.String())
 	}
-	writeSerfDiagnostics(&b, detail.Diagnostics)
+	writeEvenerDiagnostics(&b, detail.Diagnostics)
 	return strings.TrimSpace(b.String())
 }
 
@@ -129,7 +129,7 @@ func writeModelOrProviderLine(b *strings.Builder, model, profile string) {
 	}
 }
 
-func writeSerfDiagnostics(b *strings.Builder, diag *appwire.EvenerDiagnostics) {
+func writeEvenerDiagnostics(b *strings.Builder, diag *appwire.EvenerDiagnostics) {
 	core := []string{}
 	mcpTools := map[string][]string{}
 	custom := []string{}

@@ -83,7 +83,7 @@ func exerciseDetailsAndNotices() {
 		Plugins: []appwire.EvenerPluginInfo{{Name: "plugin"}},
 		Hooks:   map[string]int{"turn": 1}, Jobs: []appwire.EvenerJobInfo{{JobID: "job", JobType: "exec", Status: "done"}}, Agents: []string{"agent"},
 	}
-	writeSerfDiagnostics(&b, diag)
+	writeEvenerDiagnostics(&b, diag)
 	_ = detailsDrawer{Detail: hubSessionDetail{Diagnostics: diag}}.View()
 	_ = capabilityList(hubSessionCapabilities{Resume: true, ChangeModel: true})
 

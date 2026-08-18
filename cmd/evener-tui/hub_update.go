@@ -441,7 +441,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubModelsMsg:
 		if msg.err != nil {
 			if m.mode == hubModeSpawn {
-				if msg.harness != "" && !m.spawnHarnessUsesSerfModels() {
+				if msg.harness != "" && !m.spawnHarnessUsesEvenerModels() {
 					m.err = fmt.Errorf("%s models unavailable; using harness default: %w", msg.harness, msg.err)
 				} else {
 					m.err = fmt.Errorf("models failed: %w", msg.err)
@@ -553,7 +553,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnRecentDirs = msg.recentDirs
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
-			if msg.modelErr != nil && m.spawnHarnessUsesSerfModels() {
+			if msg.modelErr != nil && m.spawnHarnessUsesEvenerModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
 		}
