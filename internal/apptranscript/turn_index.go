@@ -1208,7 +1208,7 @@ func writeTurnIndex(path string, index turnIndexDisk, stats *ReadStats) error {
 }
 
 func initialPrefixStamp() string {
-	sum := sha256.Sum256([]byte("evener-apptranscript-prefix-v1"))
+	sum := sha256.Sum256([]byte("serf-apptranscript-prefix-v1"))
 	return hex.EncodeToString(sum[:])
 }
 

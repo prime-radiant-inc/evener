@@ -89,7 +89,7 @@ func runDocsCheck(packages []string, check func(string) ([]violation, error), st
 	for _, v := range violations {
 		_, _ = fmt.Fprintf(stdout, "%s/%s: %s %s is undocumented\n", v.pkg, v.file, v.kind, v.name)
 	}
-	_, _ = fmt.Fprintf(stderr, "\nserf-docscheck: %d undocumented exported declaration(s)\n", len(violations))
+	_, _ = fmt.Fprintf(stderr, "\nevener-docscheck: %d undocumented exported declaration(s)\n", len(violations))
 	return 1
 }
 
