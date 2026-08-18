@@ -237,7 +237,21 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 	return nil, nil
 }
 
-func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]any, _ error) {
+// geminiSupportsMultimodalFunctionResponse reports whether the model accepts
+// media nested under functionResponse.parts. Google documents multimodal
+// function responses as a Gemini 3 series capability ("For Gemini 3 series
+// models, you can include multimodal content in the function response parts
+// that you send to the model" —
+// https://ai.google.dev/gemini-api/docs/function-calling#multimodal-function-responses),
+// so every earlier family is rejected rather than sent image bytes it will not
+// associate with the tool call that produced them. Gemini 3 point releases
+// (gemini-3.1-*, gemini-3.5-*) share the "gemini-3" prefix; a future major
+// family has to be added here deliberately.
+func geminiSupportsMultimodalFunctionResponse(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-3")
+}
+
+func toGeminiContents(model string, msgs []llm.Message) (system string, contents []map[string]any, _ error) {
 	var sysParts []string
 	appendContent := func(role string, parts []map[string]any) {
 		if len(parts) == 0 {
@@ -356,24 +370,28 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 				if p.ToolResult.IsError {
 					respObj["error"] = true
 				}
-				parts = append(parts, map[string]any{
-					"functionResponse": map[string]any{
-						"name":     name,
-						"response": respObj,
-					},
-				})
+				funcResp := map[string]any{
+					"name":     name,
+					"response": respObj,
+				}
 				if len(p.ToolResult.ImageData) > 0 {
+					if !geminiSupportsMultimodalFunctionResponse(model) {
+						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("google model %q does not support tool-result images: multimodal function responses require a Gemini 3 series model", model)}
+					}
 					mt := p.ToolResult.ImageMediaType
 					if mt == "" {
 						mt = "image/png"
 					}
-					parts = append(parts, map[string]any{
+					// Media belongs inside the functionResponse it came from; a sibling
+					// content part would leave the image unassociated with the tool call.
+					funcResp["parts"] = []map[string]any{{
 						"inlineData": map[string]any{
 							"mimeType": mt,
 							"data":     base64.StdEncoding.EncodeToString(p.ToolResult.ImageData),
 						},
-					})
+					}}
 				}
+				parts = append(parts, map[string]any{"functionResponse": funcResp})
 			}
 			appendContent("user", parts)
 		default:

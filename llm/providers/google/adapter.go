@@ -133,7 +133,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}
 	parentCtx := ctx
 
-	system, contents, err := toGeminiContents(req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -250,7 +250,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		a.Client = &http.Client{Timeout: 0}
 	}
 
-	system, contents, err := toGeminiContents(req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages)
 	if err != nil {
 		return llm.InputTokenCount{}, err
 	}
@@ -356,7 +356,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
-	system, contents, err := toGeminiContents(req.Messages)
+	system, contents, err := toGeminiContents(req.Model, req.Messages)
 	if err != nil {
 		cancel()
 		return nil, err

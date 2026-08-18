@@ -126,19 +126,21 @@ func runGoogleCoverageSeedUnion(t *testing.T) {
 	_, _ = geminiImagePart(llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageFile + ".missing"}})
 
 	badMessages := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentAudio}}}}
-	_, _, _ = toGeminiContents(badMessages)
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", badMessages)
 	badMessages[0].Role = llm.RoleAssistant
-	_, _, _ = toGeminiContents(badMessages)
-	_, _, _ = toGeminiContents([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageFile + ".missing"}}}}})
-	_, _, _ = toGeminiContents([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageFile + ".missing"}}}}})
-	_, _, _ = toGeminiContents([]llm.Message{
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", badMessages)
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageFile + ".missing"}}}}})
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imageFile + ".missing"}}}}})
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", []llm.Message{
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: " "}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: " "}, {Kind: llm.ContentImage}, {Kind: llm.ContentImage, Image: &llm.ImageData{}}}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: " "}, {Kind: llm.ContentImage}, {Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.invalid/a"}}, {Kind: llm.ContentToolCall}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{}}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Arguments: json.RawMessage("null")}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentText}, {Kind: llm.ContentToolResult}}},
 		{Role: "unknown"},
 	})
-	_, _, _ = toGeminiContents([]llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "unknown", Content: map[string]any{"ok": true}}}, {Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{Name: "named", Content: 3, ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}})
+	toolResultsWithImage := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "unknown", Content: map[string]any{"ok": true}}}, {Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{Name: "named", Content: 3, ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}
+	_, _, _ = toGeminiContents("gemini-3-pro-preview", toolResultsWithImage)
+	_, _, _ = toGeminiContents("gemini-2.5-pro", toolResultsWithImage)
 	_ = toolNameFromCallID(req.Messages, "")
 	_ = toolNameFromCallID(req.Messages, "missing")
 
