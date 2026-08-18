@@ -4,7 +4,7 @@
 
 **Goal:** Eliminate streaming jank in the Evener web hub transcript: frame-batched live events, coalesced markdown parsing, frozen-head/raw-tail long messages, idempotent finalization, append-only tool output, browser-native windowing, throttled scroll handling.
 
-**Architecture:** No bundler, vanilla JS modules sharing `window.SerfRendererInternal`, loaded in dependency order (see `cmd/evener-hub/jstest/load-renderer.js` and `cmd/evener-hub/templates/app.html`). Live socket events batch per frame at the single `deliverNotification` site; synchronous replay paths (hydration, prepend) bypass the queue. Spec: `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md` (§1 + Increments 1–4). Increments 5–9 (layout/CSS/launchpad) are Plan B, written after this lands.
+**Architecture:** No bundler, vanilla JS modules sharing `window.EvenerRendererInternal`, loaded in dependency order (see `cmd/evener-hub/jstest/load-renderer.js` and `cmd/evener-hub/templates/app.html`). Live socket events batch per frame at the single `deliverNotification` site; synchronous replay paths (hydration, prepend) bypass the queue. Spec: `docs/superpowers/specs/2026-07-18-webui-foundation-experience-design.md` (§1 + Increments 1–4). Increments 5–9 (layout/CSS/launchpad) are Plan B, written after this lands.
 
 **Tech Stack:** vanilla JS, jsdom-based `jstest` harness (`cmd/evener-hub/jstest/run-all.sh`), Go templates, embedded assets (`make build-hub`).
 
@@ -16,7 +16,7 @@
 - The reconcile invariant (`renderer.js:677-684`): `reconcilePendingFromNotification` runs once per notification, after that notification's events apply — preserved exactly under batching.
 - The streaming message element keeps `.assistant-message` + `data-turn-id` at all times.
 - New renderer module files (if any) must be added to BOTH `templates/app.html` `<script>` list and `jstest/load-renderer.js` `RENDERER_FILES`, in dependency order. This plan adds NO new module files — everything lands in existing ones.
-- jstest pattern (mirror `test-renderer-thinking.js`): JSDOM with `pretendToBeVisual: true` unless stated otherwise, `window.marked = { parse: (t) => t }`, `require("./load-renderer").evalRenderer(window)`, `window.SerfRenderer.init(conv)`, async IIFE, `process.exit(0)` at the end (renderer pollers keep the loop alive).
+- jstest pattern (mirror `test-renderer-thinking.js`): JSDOM with `pretendToBeVisual: true` unless stated otherwise, `window.marked = { parse: (t) => t }`, `require("./load-renderer").evalRenderer(window)`, `window.EvenerRenderer.init(conv)`, async IIFE, `process.exit(0)` at the end (renderer pollers keep the loop alive).
 - Work branch: `webui-joy` (already created). Do not touch files outside `cmd/evener-hub/` in this plan.
 
 ---
@@ -81,8 +81,8 @@ Plain jsdom (6 jstest files) has NO `requestAnimationFrame` — any new unguarde
 
 **Interfaces:**
 - Produces (used by Tasks 5, 6, 13, 15):
-  - `SerfRenderer.scheduleFrame(cb)` — schedules `cb` on rAF when available and document visible; else `setTimeout(cb, 16)`. Returns nothing.
-  - `SerfRenderer.cancelFrame()` — cancels the pending scheduled callback, if any.
+  - `EvenerRenderer.scheduleFrame(cb)` — schedules `cb` on rAF when available and document visible; else `setTimeout(cb, 16)`. Returns nothing.
+  - `EvenerRenderer.cancelFrame()` — cancels the pending scheduled callback, if any.
 
 - [ ] **Step 1: Write the failing test** (deliberately NO `pretendToBeVisual` → no rAF)
 
@@ -99,7 +99,7 @@ const { window } = dom;
 window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(window.document.getElementById("conversation"));
 
 const failures = [];
@@ -130,7 +130,7 @@ Expected: FAIL — "scheduleFrame exists"
 
 - [ ] **Step 3: Implement**
 
-In `renderer.js`, add to the `SerfRenderer` object (near `bindWorkspaceViewport`):
+In `renderer.js`, add to the `EvenerRenderer` object (near `bindWorkspaceViewport`):
 
 ```js
     // scheduleFrame runs cb on the next animation frame when rAF exists and the
@@ -215,9 +215,9 @@ Behavior-preserving refactor that Task 5 builds on. Also removes the per-event `
 
 **Interfaces:**
 - Produces (used by Tasks 4, 5):
-  - `SerfRenderer.applyEvent(kind, data)` — the event switch; `data` is a parsed object. Stamps `lastFrameAt`.
-  - `SerfRenderer.handle(kind, ev)` — thin sync wrapper: buffers while `!descriptionsReady`, parses `ev.data` (string OR object), measures stick, calls `applyEvent`, settles.
-  - `SerfRenderer.handleData(kind, data)` — unchanged signature; now passes the object through (no stringify).
+  - `EvenerRenderer.applyEvent(kind, data)` — the event switch; `data` is a parsed object. Stamps `lastFrameAt`.
+  - `EvenerRenderer.handle(kind, ev)` — thin sync wrapper: buffers while `!descriptionsReady`, parses `ev.data` (string OR object), measures stick, calls `applyEvent`, settles.
+  - `EvenerRenderer.handleData(kind, data)` — unchanged signature; now passes the object through (no stringify).
 
 - [ ] **Step 1: Characterization check — no new test; the entire existing suite is the test**
 
@@ -307,7 +307,7 @@ Kills the O(L²)-per-token re-parse for messages ≤4KB (jank finding #1, short-
 
 **Interfaces:**
 - Consumes: `settleFrame` dirty-set block (Task 3), `renderAssistantMessage(m, text)`.
-- Produces: `SerfRenderer.markAssistantDirty(m)` — registers `m` for one render at the next settle.
+- Produces: `EvenerRenderer.markAssistantDirty(m)` — registers `m` for one render at the next settle.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -330,8 +330,8 @@ window.marked = { parse: (t) => { parses++; return t; } };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -412,9 +412,9 @@ The core jank fix. Live socket notifications queue and apply once per frame; hyd
 **Interfaces:**
 - Consumes: `applyEvent`, `settleFrame`, `scheduleFrame`'s rAF guard pattern.
 - Produces:
-  - `SerfRenderer.flush()` — synchronously drains the frame queue (test hook + visibilitychange handler).
-  - `SerfRenderer.scheduleFrameFlush()` — schedules one flush (rAF when visible, 250ms timer when `document.hidden`, 16ms timer when no rAF).
-  - `SerfRenderer.cancelFrameFlush()` — cancels a scheduled flush.
+  - `EvenerRenderer.flush()` — synchronously drains the frame queue (test hook + visibilitychange handler).
+  - `EvenerRenderer.scheduleFrameFlush()` — schedules one flush (rAF when visible, 250ms timer when `document.hidden`, 16ms timer when no rAF).
+  - `EvenerRenderer.cancelFrameFlush()` — cancels a scheduled flush.
   - `this.frameQueue` (array of `{method, params}`), `this.frameGeneration` (number).
 
 - [ ] **Step 1: Write the failing test**
@@ -438,7 +438,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -450,8 +450,8 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(Array.isArray(R.frameQueue), "frameQueue exists");
 
   // Simulate the live delivery path with a stubbed projector.
-  const realEvents = window.SerfAppwire.eventsFromNotification;
-  window.SerfAppwire.eventsFromNotification = (method, params) => {
+  const realEvents = window.EvenerAppwire.eventsFromNotification;
+  window.EvenerAppwire.eventsFromNotification = (method, params) => {
     if (method === "test/delta") return [["ASSISTANT_TEXT_DELTA", { delta: params.delta }]];
     return realEvents ? realEvents(method, params) : [];
   };
@@ -485,7 +485,7 @@ Expected: FAIL — "flush() exists"
 
 - [ ] **Step 3: Implement**
 
-Add to `SerfRenderer`:
+Add to `EvenerRenderer`:
 
 ```js
     // Frame batching — LIVE socket events only. Replay paths (initial hydration,
@@ -536,7 +536,7 @@ Add to `SerfRenderer`:
       const entriesBefore = this.conversation ? this.conversation.children.length : 0;
       for (const item of q) {
         if (gen !== this.frameGeneration) return; // transcript reset mid-flush
-        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(item.method, item.params)) {
+        for (const [kind, data] of window.EvenerAppwire.eventsFromNotification(item.method, item.params)) {
           this.applyEvent(kind, data);
         }
         // Per-notification reconcile, in order, after that notification's
@@ -554,7 +554,7 @@ Change `deliverNotification` (~673):
 ```js
       const deliverNotification = (method, params) => {
         if (!this.appwireHydrated || this.replayingBufferedNotifications) {
-          for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
+          for (const [kind, data] of window.EvenerAppwire.eventsFromNotification(method, params)) {
             this.handleData(kind, data);
           }
           if (this.pending) reconcilePendingFromNotification(this.pending, method, params);
@@ -624,7 +624,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -632,7 +632,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 (async () => {
   await new Promise((r) => setTimeout(r, 30));
   R.appwireHydrated = true;
-  window.SerfAppwire.eventsFromNotification = (m, p) => m === "test/delta" ? [["ASSISTANT_TEXT_DELTA", { delta: p.delta }]] : [];
+  window.EvenerAppwire.eventsFromNotification = (m, p) => m === "test/delta" ? [["ASSISTANT_TEXT_DELTA", { delta: p.delta }]] : [];
   R.handleData("TURN_STARTED", { turnId: "t1" });
   R.handleData("ASSISTANT_TEXT_START", {});
   R.enqueueLiveNotification("test/delta", { delta: "x" });
@@ -689,7 +689,7 @@ Tests that deliver live notifications and assert synchronously now need one `R.f
 - Modify: whichever `cmd/evener-hub/jstest/test-appwire-*.js` (and any other) files fail after Task 5
 
 **Interfaces:**
-- Consumes: `SerfRenderer.flush()`.
+- Consumes: `EvenerRenderer.flush()`.
 
 - [ ] **Step 1: Identify failures**
 
@@ -738,7 +738,7 @@ Kills the O(L²) full-buffer `textContent` replace and the O(L) regex per delta.
 
 **Interfaces:**
 - Consumes: `settleFrame`'s `reasoningPreviewDirty` hook (Task 3).
-- Produces: `SerfRenderer.updateReasoningPreview()` — refreshes the `.pv` teleprompter tail from the last 400 chars of `reasoningBuf`.
+- Produces: `EvenerRenderer.updateReasoningPreview()` — refreshes the `.pv` teleprompter tail from the last 400 chars of `reasoningBuf`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -760,8 +760,8 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -808,7 +808,7 @@ Expected: FAIL — today the body is a single full-buffer text node and `updateR
     },
 ```
 
-(`clip` is imported from `window.SerfRendererInternal` at the top of renderer.js — same helper the old code used.)
+(`clip` is imported from `window.EvenerRendererInternal` at the top of renderer.js — same helper the old code used.)
 
 - [ ] **Step 4: Run tests**
 
@@ -858,8 +858,8 @@ window.marked = { parse: (t) => { parses++; return "<p>" + t + "</p>"; } };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -988,8 +988,8 @@ window.marked = { parse: (t) => "<p>" + t + "</p>" };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -1121,8 +1121,8 @@ window.marked = { parse: (t) => "<p>" + t + "</p>" };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-window.SerfRenderer.init(conv);
-const R = window.SerfRenderer;
+window.EvenerRenderer.init(conv);
+const R = window.EvenerRenderer;
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
@@ -1196,11 +1196,11 @@ const { JSDOM } = require("jsdom");
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 const { window } = dom;
 require("./load-renderer").evalRenderer(window);
-const { toolRendererFor } = window.SerfRendererInternal || {};
+const { toolRendererFor } = window.EvenerRendererInternal || {};
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-const shell = (window.SerfRendererInternal.toolRendererFor || window.toolRendererFor)("shell", {});
+const shell = (window.EvenerRendererInternal.toolRendererFor || window.toolRendererFor)("shell", {});
 const host = window.document.createElement("div");
 const state = { body: shell.body({ command: "make test" }, host), el: host };
 
@@ -1343,7 +1343,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 
 (async () => {
@@ -1351,8 +1351,8 @@ R.init(conv);
   let scheduled = 0;
   const realSchedule = R.scheduleFrame.bind(R);
   R.scheduleFrame = (cb) => { scheduled++; realSchedule(cb); };
-  window.SerfAppwire = window.SerfAppwire || {};
-  window.SerfAppwire.eventsFromTurns = () => [];
+  window.EvenerAppwire = window.EvenerAppwire || {};
+  window.EvenerAppwire.eventsFromTurns = () => [];
   R.prependOlderTurns([{ id: "old1" }]);
   pass(scheduled === 1, "prepend schedules a next-frame settle correction");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
@@ -1445,7 +1445,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -1473,7 +1473,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Expected: FAIL — `suppressScrollSettle` honored since Task 3 in `handle`… verify: Task 3's `handle` checks it, so the flag mechanics may already pass. The REAL failing assertion for this task is the hydration wiring — extend the test: stub `window.SerfAppwire.readThread`/`onNotification`/`refForSession` so `R.connectAppwire` (or the init path that hydrates — check the method name containing `deliverNotification`, ~line 600-860) can be driven, then assert `isNearBottom` was called at most once around a multi-event hydration. Mirror the existing hydration test's appwire stubs (`test-renderer-hydration-order.js` — READ IT FIRST and reuse its stubbing).
+Expected: FAIL — `suppressScrollSettle` honored since Task 3 in `handle`… verify: Task 3's `handle` checks it, so the flag mechanics may already pass. The REAL failing assertion for this task is the hydration wiring — extend the test: stub `window.EvenerAppwire.readThread`/`onNotification`/`refForSession` so `R.connectAppwire` (or the init path that hydrates — check the method name containing `deliverNotification`, ~line 600-860) can be driven, then assert `isNearBottom` was called at most once around a multi-event hydration. Mirror the existing hydration test's appwire stubs (`test-renderer-hydration-order.js` — READ IT FIRST and reuse its stubbing).
 
 - [ ] **Step 3: Implement**
 
@@ -1481,7 +1481,7 @@ In the `readThread(...).then` block: set the flag before the replay loop, clear 
 
 ```js
           hydratedNotificationKeys = hydrationKeysFromThread(thread);
-          const hydrationEvents = Array.from(window.SerfAppwire.eventsFromThread(thread));
+          const hydrationEvents = Array.from(window.EvenerAppwire.eventsFromThread(thread));
           this.suppressScrollSettle = true;
           try {
             for (const [kind, data] of hydrationEvents) {
@@ -1534,8 +1534,8 @@ The scroll listener currently does O(transcript) `querySelectorAll` + layout rea
 **Interfaces:**
 - Consumes: `scheduleFrame` (Task 2).
 - Produces:
-  - `SerfRenderer.onScrollAffordance()` — the extracted scroll handler body.
-  - `SerfRenderer.errorAnchors()` — cached `Array` of `.tool-call[data-attention="error"]`; cache invalidated on `TOOL_CALL_END`, prepend, reset.
+  - `EvenerRenderer.onScrollAffordance()` — the extracted scroll handler body.
+  - `EvenerRenderer.errorAnchors()` — cached `Array` of `.tool-call[data-attention="error"]`; cache invalidated on `TOOL_CALL_END`, prepend, reset.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1557,7 +1557,7 @@ window.marked = { parse: (t) => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
-const R = window.SerfRenderer;
+const R = window.EvenerRenderer;
 R.init(conv);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };

@@ -13,7 +13,7 @@ SP2 ships the contract Claude Code's docs define ([code.claude.com/docs/en/permi
 
 ## 2. Public API Surface
 
-All new symbols live in package `agent`, in a new file `agent/permissions.go`. Names follow SP1's `LoadSerfConfigFile` / `MergeSerfConfigs` triad.
+All new symbols live in package `agent`, in a new file `agent/permissions.go`. Names follow SP1's `LoadEvenerConfigFile` / `MergeEvenerConfigs` triad.
 
 ```go
 // PermissionMatcher decides whether a tool call is allowed, denied, or
@@ -66,7 +66,7 @@ const (
 func NewPermissionMatcher(cfg PermissionsConfig, env ExecutionEnvironment) (*PermissionMatcher, error)
 
 // Evaluate decides one tool call. toolName is the Claude Code tool name
-// (post-MapSerfToolNameToClaude). toolInput is the parsed JSON arguments
+// (post-MapEvenerToolNameToClaude). toolInput is the parsed JSON arguments
 // the model emitted; nil is legal and treated as empty.
 func (m *PermissionMatcher) Evaluate(toolName string, toolInput map[string]any) PermissionDecision
 
@@ -113,7 +113,7 @@ Supported tool keywords:
 
 | Keyword       | Specifier form                                          | Source name on a evener tool call                          |
 | ---           | ---                                                      | ---                                                       |
-| `Bash`        | command pattern with glob                                | evener's `shell` tool, mapped to `Bash` by `MapSerfToolNameToClaude` |
+| `Bash`        | command pattern with glob                                | evener's `shell` tool, mapped to `Bash` by `MapEvenerToolNameToClaude` |
 | `Read`        | gitignore-style path pattern                             | `read_file`, `Grep`, `Glob` (Claude's "best effort")     |
 | `Edit`        | gitignore-style path pattern                             | `edit_file`, `write_file`, `notebook_edit`               |
 | `Write`       | alias for `Edit`                                         | same as `Edit`                                            |
@@ -195,7 +195,7 @@ Tool name on the evener side is `Skill`. The skill name lives in `tool_input.nam
 
 - `Agent(Explore)`, `Agent(Plan)`, `Agent(my-custom)` — exact match on subagent name.
 - Wildcards as for Skill.
-- Tool name on the evener side is `Agent` (mapped from `spawn_agent` by `MapSerfToolNameToClaude`). The subagent type lives in `tool_input.subagent_type`.
+- Tool name on the evener side is `Agent` (mapped from `spawn_agent` by `MapEvenerToolNameToClaude`). The subagent type lives in `tool_input.subagent_type`.
 
 ### 3.8 Parse-error cases
 
@@ -231,7 +231,7 @@ The first-matching-rule-wins precedence inside each list mirrors Claude Code exa
 
 A rule matches a `(toolName, toolInput)` pair when:
 
-- The rule's **tool keyword** equals `toolName` (after `MapSerfToolNameToClaude`), **or** for MCP rules the rule string is a prefix-or-exact match on `toolName`.
+- The rule's **tool keyword** equals `toolName` (after `MapEvenerToolNameToClaude`), **or** for MCP rules the rule string is a prefix-or-exact match on `toolName`.
 - The rule's **specifier** matches the relevant slice of `toolInput`:
   - `Bash` → `toolInput["command"]` as a string. The command is split on the shell operators in §3.2; every subcommand must satisfy the pattern after wrapper-stripping.
   - `Read` / `Edit` → `toolInput["file_path"]` (the canonical evener field — verify in `agent/tool_registry.go`). For `Grep`/`Glob`, the field is the search root.
@@ -287,7 +287,7 @@ Each row becomes one table-driven test (§10).
 // updatedInput is seen by the matcher; runs before execution so a deny
 // short-circuits without invoking the tool registry.
 if s.permissionMatcher != nil {
-    claudeName := MapSerfToolNameToClaude(call.Name)
+    claudeName := MapEvenerToolNameToClaude(call.Name)
     var toolInput map[string]any
     if len(call.Arguments) > 0 {
         _ = json.Unmarshal(call.Arguments, &toolInput)
@@ -321,7 +321,7 @@ Tools that have side effects merely by being parsed (none today) would need a re
 permissionMatcher *PermissionMatcher
 ```
 
-`NewSession` constructs it from a new `SessionConfig.Permissions PermissionsConfig` field (SP1 hands the merged value through; SP8 wires it from `DiscoverSerfConfig` into `SessionConfig`). `NewSession` also reads `SessionConfig.PermissionAskFallback AskFallback` so the entry-point chooses its surface behavior.
+`NewSession` constructs it from a new `SessionConfig.Permissions PermissionsConfig` field (SP1 hands the merged value through; SP8 wires it from `DiscoverEvenerConfig` into `SessionConfig`). `NewSession` also reads `SessionConfig.PermissionAskFallback AskFallback` so the entry-point chooses its surface behavior.
 
 `SessionConfig.AllowedToolNames` and `SessionConfig.DeniedToolNames` (existing — `session.go:188-189`) continue to work for the subagent-restriction path. SP2 layers on top: subagent restrictions filter the tool registry before a call is ever made; SP2 evaluates whatever does get attempted.
 
@@ -367,7 +367,7 @@ Deny rules outrank hooks — a `PermissionRequest` hook cannot upgrade a `deny`-
 
 `NewPermissionMatcher` returns `(nil, error)` if any rule fails to parse. Error text format: `permission rule %q: <reason>` — e.g. `permission rule "Bash(rm": unbalanced parentheses`.
 
-`DiscoverSerfConfig` (SP1) does not call `NewPermissionMatcher`; SP8 does, at session bootstrap. A parse error aborts session startup with the rule-source and the originating file path (SP8 wraps with `evener config <path>:`).
+`DiscoverEvenerConfig` (SP1) does not call `NewPermissionMatcher`; SP8 does, at session bootstrap. A parse error aborts session startup with the rule-source and the originating file path (SP8 wraps with `evener config <path>:`).
 
 ### 8.2 Runtime
 
@@ -392,7 +392,7 @@ Existing files modified:
 | `agent/session.go` | Add `permissionMatcher *PermissionMatcher` field on `Session`; construct in `NewSession` from new `SessionConfig.Permissions` and `SessionConfig.PermissionAskFallback`; insert the §6.1 enforcement block in `execTool`. |
 | `agent/session.go` | Add helpers `permissionDeniedResult` and `resolveAsk`. |
 
-No other files change. SP8 wires `SessionConfig.Permissions` from `DiscoverSerfConfig`; SP5 wires the `PermissionRequest`/`PermissionDenied` hook events.
+No other files change. SP8 wires `SessionConfig.Permissions` from `DiscoverEvenerConfig`; SP5 wires the `PermissionRequest`/`PermissionDenied` hook events.
 
 `SessionConfig` (SP1's spec already names this field on the boundary):
 
@@ -602,7 +602,7 @@ Each is testable as a pinned "v1 does not do this; here is the workaround" asser
 
 - **SP1** ships `PermissionsConfig{Allow, Deny, DefaultMode}`. SP2 consumes that exactly.
 - **SP5** ships the `PermissionRequest` and `PermissionDenied` hook events and their input/output schemas. SP2 fires them via stable signatures (§7) but does not define their wire shape.
-- **SP8** wires `DiscoverSerfConfig` into each entry point and threads `Permissions` + `PermissionAskFallback` into `SessionConfig`. SP2 must export those fields with stable types; SP8 owns the wiring.
+- **SP8** wires `DiscoverEvenerConfig` into each entry point and threads `Permissions` + `PermissionAskFallback` into `SessionConfig`. SP2 must export those fields with stable types; SP8 owns the wiring.
 - **`Ask` hook input — `permission_rule` field.** SP2 emits the matched rule's source string. SP5's hook schema must accept it (string).
 
 ## 12. Implementation Order

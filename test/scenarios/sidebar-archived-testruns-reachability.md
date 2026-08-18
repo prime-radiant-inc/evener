@@ -13,7 +13,7 @@ project delete through to on-disk removal.
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. This card used to
 drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
-`window.SerfSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
+`window.EvenerSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
 All of that died with the vanilla frontend (`660376f78`); the rail is React
 (`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
 

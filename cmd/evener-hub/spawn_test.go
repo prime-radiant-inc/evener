@@ -23,7 +23,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// writeFakeSerf writes an executable fake-evener stub that the test then runs
+// writeFakeEvener writes an executable fake-evener stub that the test then runs
 // through the hub spawner / launch-check.
 //
 // A freshly written executable can fail execve with ETXTBSY ("text file busy"):
@@ -35,7 +35,7 @@ import (
 // whole write excludes any concurrent fork; once the fd is closed no child can
 // inherit it. This keeps these tests parallel while removing the race at its
 // source. See Go issue #22315.
-func writeFakeSerf(t *testing.T, path, script string) {
+func writeFakeEvener(t *testing.T, path, script string) {
 	t.Helper()
 	syscall.ForkLock.RLock()
 	defer syscall.ForkLock.RUnlock()
@@ -166,7 +166,7 @@ EOF
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -443,7 +443,7 @@ func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 echo 'evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory' >&2
 exit 42
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
 	}, 60*time.Second)
@@ -567,7 +567,7 @@ sleep 30
 				t.Parallel()
 				dir := t.TempDir()
 				evenerBinary := filepath.Join(dir, "fake-evener")
-				writeFakeSerf(t, evenerBinary, tc.script)
+				writeFakeEvener(t, evenerBinary, tc.script)
 
 				ctx := context.Background()
 				if tc.callerCtx != nil {
@@ -675,7 +675,7 @@ EOF
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -731,7 +731,7 @@ EOF
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	cfg := DefaultConfig()
 	cfg.SpawnTimeout = 2 * time.Second
@@ -779,7 +779,7 @@ func argValue(args []string, flag string) string {
 	return ""
 }
 
-func TestHubSpawnerListsModelsFromSerfLaunchContract(t *testing.T) {
+func TestHubSpawnerListsModelsFromEvenerLaunchContract(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
@@ -791,7 +791,7 @@ if [ "$1" = "launch-check" ]; then
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	spawner := HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
@@ -966,7 +966,7 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 // these strings are never keyword-classified: no surface runs
 // diagnostic.Classify over them, because the structured error carries the
 // attribution instead.
-func TestSerfLaunchCheckFailureNamesWhatActuallyHappened(t *testing.T) {
+func TestEvenerLaunchCheckFailureNamesWhatActuallyHappened(t *testing.T) {
 	t.Parallel()
 	const neverAnswers = `#!/bin/sh
 sleep 30
@@ -982,13 +982,13 @@ exit 2
 		{
 			name: "validate",
 			call: func(ctx context.Context, evenerBinary string) error {
-				return validateSerfLaunchContract(ctx, evenerBinary, "openrouter/free", nil)
+				return validateEvenerLaunchContract(ctx, evenerBinary, "openrouter/free", nil)
 			},
 		},
 		{
 			name: "models",
 			call: func(ctx context.Context, evenerBinary string) error {
-				_, err := listSerfLaunchModelContract(ctx, evenerBinary, nil)
+				_, err := listEvenerLaunchModelContract(ctx, evenerBinary, nil)
 				return err
 			},
 		},
@@ -1050,7 +1050,7 @@ exit 2
 			t.Run(check.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 				evenerBinary := filepath.Join(t.TempDir(), "fake-evener")
-				writeFakeSerf(t, evenerBinary, tc.script)
+				writeFakeEvener(t, evenerBinary, tc.script)
 
 				ctx := context.Background()
 				if tc.callerCtx != nil {
@@ -1071,32 +1071,32 @@ exit 2
 	}
 }
 
-func TestValidateSerfLaunchContractRejectsUnsupportedProvider(t *testing.T) {
+func TestValidateEvenerLaunchContractRejectsUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, "#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n")
-	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{}))
+	writeFakeEvener(t, bin, "#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n")
+	err := validateEvenerLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "evener launch-check") {
 		t.Fatalf("error=%v", err)
 	}
 }
 
-func TestValidateSerfLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
-	err := validateSerfLaunchContract(context.Background(), filepath.Join(t.TempDir(), "missing-evener"), "openai/gpt-5", envFromMap(map[string]string{}))
+func TestValidateEvenerLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
+	err := validateEvenerLaunchContract(context.Background(), filepath.Join(t.TempDir(), "missing-evener"), "openai/gpt-5", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "evener launch-check failed") {
 		t.Fatalf("error=%v", err)
 	}
 }
 
-func TestValidateSerfLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
+func TestValidateEvenerLaunchContractRedactsSecretsFromDiagnostics(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n")
-	err := validateSerfLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{
+	writeFakeEvener(t, bin, "#!/bin/sh\necho \"$OPENROUTER_API_KEY\" >&2\nexit 2\n")
+	err := validateEvenerLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{
 		"OPENROUTER_API_KEY": "super-secret-key",
 	}))
 	assertHubLaunchError(t, err)
@@ -1117,9 +1117,9 @@ func TestRedactEnvSecretsKeepsShortSensitiveValues(t *testing.T) {
 	}
 }
 
-func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
+func TestResolveEvenerStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	dir := t.TempDir()
-	got, err := resolveSerfStateDir(dir, "")
+	got, err := resolveEvenerStateDir(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,23 +1164,23 @@ func newLinkedWorktreeForSpawn(t *testing.T) (main, wt string) {
 	return main, wt
 }
 
-// TestResolveSerfStateDirLinkedWorktreeSameAsMain proves the fix for the bug
+// TestResolveEvenerStateDirLinkedWorktreeSameAsMain proves the fix for the bug
 // described in
 // docs/superpowers/specs/2026-07-02-native-worktree-tools-design.md §1
-// ("Runtime state keying at launch"): resolveSerfStateDirWithStateHome (the
+// ("Runtime state keying at launch"): resolveEvenerStateDirWithStateHome (the
 // path that computes req.StateDir for every hub-spawned evener session) used
 // to key off the raw workDir, so for an origin-less repo, spawning from a
 // linked worktree computed a different session state dir than spawning from
 // the main checkout — the same class of bug Task 3 already fixed in
 // cmdutil.DefaultProjectStateDir for `evener run`/`evener serve`.
-func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
+func TestResolveEvenerStateDirLinkedWorktreeSameAsMain(t *testing.T) {
 	main, wt := newLinkedWorktreeForSpawn(t)
 
-	mainDir, err := resolveSerfStateDir(main, "")
+	mainDir, err := resolveEvenerStateDir(main, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wtDir, err := resolveSerfStateDir(wt, "")
+	wtDir, err := resolveEvenerStateDir(wt, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1190,33 +1190,33 @@ func TestResolveSerfStateDirLinkedWorktreeSameAsMain(t *testing.T) {
 	}
 }
 
-// TestResolveSerfStateDirNotInRepoFallsBackToWorkDir covers the
+// TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir covers the
 // not-in-a-repo case: ResolveMainRepoRootLocal returns "" and the state dir
 // must key off workDir unchanged, matching pre-existing (pre-fix) behavior
 // for non-git directories. The path must land under the state home it was
 // given, named by the project id workDir resolves to, and two distinct
 // non-repo dirs must not share one.
-func TestResolveSerfStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
+func TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	workDir := t.TempDir()
 	other := t.TempDir()
 	stateHome := t.TempDir()
 
-	project, got, err := resolveSerfStateDirWithProject(workDir, "", stateHome)
+	project, got, err := resolveEvenerStateDirWithProject(workDir, "", stateHome)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if project.ID == "" {
-		t.Fatalf("resolveSerfStateDir(%q) resolved no project id for a non-repo dir", workDir)
+		t.Fatalf("resolveEvenerStateDir(%q) resolved no project id for a non-repo dir", workDir)
 	}
 	if want := filepath.Join(stateHome, "evener", "projects", project.ID); got != want {
 		t.Errorf("state dir = %q, want %q", got, want)
 	}
-	otherDir, err := resolveSerfStateDirWithStateHome(other, "", stateHome)
+	otherDir, err := resolveEvenerStateDirWithStateHome(other, "", stateHome)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == otherDir {
-		t.Errorf("resolveSerfStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
+		t.Errorf("resolveEvenerStateDir collided for distinct non-repo workDirs %q and %q: %q", workDir, other, got)
 	}
 }
 
@@ -1609,7 +1609,7 @@ EOF
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	if err != nil {

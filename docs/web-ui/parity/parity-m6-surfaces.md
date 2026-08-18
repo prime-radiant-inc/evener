@@ -57,7 +57,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] `setChipValue`/`setModelValue` write to every element matching `[data-chip-value-<name>]` in a single pass — this is the entire mechanism keeping the desktop chip bar and the mobile row list in sync, since both markups share the same data attribute (`spawn.js:341-343,345-350,360-362`; dual markup at `spawn.html:13` and `spawn.html:49`)
 - [ ] Harness / access-mode / model / effort pickers all check `document.querySelector(".chip-picker")` FIRST and, if one exists, just remove it and return — i.e. re-clicking ANY chip while a picker is open closes it (toggle-off), it does not swap to a different picker in the same gesture (`spawn.js:1362-1364, 1438-1439, 1466-1467, 1772-1773`)
 - [ ] Branch/worktree text picker has the same toggle-off guard (`spawn.js:1387-1389`)
-- [ ] **Divergence**: the working-dir picker has NO such guard — `openDirPicker(chip)` unconditionally calls `SerfDirPicker.open(...)`, whose `removeExisting()` closes any picker already open (including a stale dir picker of its own) and then unconditionally builds a brand-new one seeded from the chip's current display text — so a second click on the working-dir chip while its own picker is open discards whatever the user had typed but not yet accepted, rather than simply toggling closed (`spawn.js:1907-1924`; `dir-picker.js:57-69, 130-148, 175-187`)
+- [ ] **Divergence**: the working-dir picker has NO such guard — `openDirPicker(chip)` unconditionally calls `EvenerDirPicker.open(...)`, whose `removeExisting()` closes any picker already open (including a stale dir picker of its own) and then unconditionally builds a brand-new one seeded from the chip's current display text — so a second click on the working-dir chip while its own picker is open discards whatever the user had typed but not yet accepted, rather than simply toggling closed (`spawn.js:1907-1924`; `dir-picker.js:57-69, 130-148, 175-187`)
 - [ ] Desktop picker position: absolutely anchored just below its chip, left-clamped so a fixed ~520/480px panel never overflows the right edge of the viewport (`spawn.js:485-491`; same logic duplicated at `dir-picker.js:21-27`)
 - [ ] At `max-width: 767px`, every picker instead becomes a full-width bottom sheet: re-parented onto `<body>`, inline position/top/left cleared, `z-index:901`, with a dimming scrim inserted behind it that self-removes via a `MutationObserver` once the picker leaves the DOM (`spawn.js:469-483, 497-506`; identical duplicate in `dir-picker.js:5-20, 32-41`)
 - [ ] Shared pointerdown+Escape dismiss (`attachPickerDismiss`) is used by the harness, access-mode, model, effort, and harness-default-model pickers; it listens on `pointerdown` (not `click`) specifically so an in-picker tap that re-renders its own target element is never mistaken for an outside click (`spawn.js:1697-1722`, code comment at 1697-1702)
@@ -78,7 +78,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Search-box Enter selects the first currently-visible model row (prevents the enclosing `<form>`'s implicit submit); Escape dismisses the picker (`spawn.js:1664-1678`, code comment at 1664-1668)
 - [ ] Configured providers whose listing failed render as inline diagnostic rows (warning icon + "`<provider>` unavailable: `<message>`" + optional title-attribute hint) instead of silently vanishing (`spawn.js:1504-1520`)
 - [ ] Each model row shows: display name; model id as a second line ONLY if it differs from the display name; capability badges (tools / vision / "reasoning (`levels`)" / web search); and a metadata line (context window, max output, $/M input, $/M output) built from whichever fields are present (`spawn.js:1522-1607`)
-- [ ] The currently-selected model's row gets `.is-current`, `aria-current="true"`, and a trailing check icon (`SerfIcons.ended` or a literal `✓` HTML entity fallback) (`spawn.js:1540-1552, 1567-1571, 1608-1614`)
+- [ ] The currently-selected model's row gets `.is-current`, `aria-current="true"`, and a trailing check icon (`EvenerIcons.ended` or a literal `✓` HTML entity fallback) (`spawn.js:1540-1552, 1567-1571, 1608-1614`)
 - [ ] Selecting a model: for a evener-model harness, stores `"<provider>/<model>"`; for any other harness, stores the bare model id with a synthesized `provider/model`-shaped display label via `modelOptionLabel` (`spawn.js:1619-1626, 1883-1887`)
 - [ ] Empty-state copy differs by whether a filter is active: "No models match." vs "No models available." (`spawn.js:1654-1659`)
 - [ ] On an outright fetch rejection, falls back to the harness-default single-row picker, but ONLY for non-evener-model harnesses (`spawn.js:1690-1694`)
@@ -93,10 +93,10 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.6 Working-directory chip + `dir-picker.js`
 
-- [ ] Entirely delegates to `window.SerfDirPicker.open(...)`; a no-op (button does nothing) if that global isn't loaded (`spawn.js:1907-1908`)
+- [ ] Entirely delegates to `window.EvenerDirPicker.open(...)`; a no-op (button does nothing) if that global isn't loaded (`spawn.js:1907-1908`)
 - [ ] Seeds the picker's starting value from the chip's own current display text, falling back to `localStorage["evener-hub.spawn-defaults.global.last-working-dir"]` when the chip still shows the placeholder (`spawn.js:1910-1913`)
 - [ ] Accepting a directory both updates the chip AND persists it as the new global "last working dir" (`spawn.js:1919-1922`)
-- [ ] "Recent projects" (server-capped at 15 per the code comment, via `SerfAppwire.recentProjects()`) prepopulate the list ONLY on the picker's very first listing; any subsequent typing or "browse into a folder" action drops the recent section for the rest of that picker's lifetime (`dir-picker.js:47-55, 170-173, 230-252, 274-284`)
+- [ ] "Recent projects" (server-capped at 15 per the code comment, via `EvenerAppwire.recentProjects()`) prepopulate the list ONLY on the picker's very first listing; any subsequent typing or "browse into a folder" action drops the recent section for the rest of that picker's lifetime (`dir-picker.js:47-55, 170-173, 230-252, 274-284`)
 - [ ] Recent-project rows show the basename as the primary label and the full path as a secondary line (basenames collide across projects, so the full path disambiguates) (`dir-picker.js:227-251`)
 - [ ] Recent-project rows ACCEPT immediately on click; ordinary listed directory rows instead BROWSE INTO the folder on click (`dir-picker.js:249` vs `dir-picker.js:270`)
 - [ ] Typing in the input debounces 150ms before firing a new completion request (`dir-picker.js:303-307`)
@@ -112,7 +112,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Free-text picker is seeded from the chip's current display text, blanked out if that text is literally the placeholder string `"(default)"` (`spawn.js:1391-1392`)
 - [ ] Setting `working_dir` (whether via chip pick or sticky-default replay) triggers `resolveAndSetHeadBranch`, which fetches `GET /api/git/head?cwd=` and fills the branch chip's DISPLAY text (not its hidden wire value) with the resolved HEAD ref, stashing the raw value in `display.dataset.resolvedHead` so "(default)" can later be explained (`spawn.js:365-367, 372-393`)
 - [ ] Branch auto-resolution is skipped once an explicit branch value exists — checked once before firing the fetch, and checked AGAIN after the fetch resolves, so a value the user picked while the request was in flight can't be clobbered by a late response (`spawn.js:375, 383-384`)
-- [ ] Branch auto-resolution is REST-only: when `window.SerfAppwire` is present the function no-ops entirely, because appwire has no `git/head` RPC yet (`spawn.js:376-379`)
+- [ ] Branch auto-resolution is REST-only: when `window.EvenerAppwire` is present the function no-ops entirely, because appwire has no `git/head` RPC yet (`spawn.js:376-379`)
 
 ### 1.8 Access-mode chip
 
@@ -162,7 +162,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] ⌘/Ctrl+Enter inside the prompt textarea submits the form (`preventDefault` + `form.requestSubmit()`) (`spawn.js:1204-1211`)
 - [ ] Textarea auto-expands to `scrollHeight` on every `input` event, but ONLY under the `max-width: 767px` media-query gate; desktop relies on CSS `max-height` for growth instead (`spawn.js:40-49, 1213-1219`)
 - [ ] Clicking a recent-prompt row fills the textarea with the EXACT stored text, focuses it, and auto-expands (mobile only) (`spawn.js:1193-1201`)
-- [ ] Paste / drag-drop / file-picker attachment handling is wired through shared `window.SerfComposerAttachments` helpers keyed on a per-`<form>` `pendingState.items` array (`form.__composerPasteState`); if that global isn't loaded, none of the attachment wiring runs at all (`spawn.js:1221-1240`)
+- [ ] Paste / drag-drop / file-picker attachment handling is wired through shared `window.EvenerComposerAttachments` helpers keyed on a per-`<form>` `pendingState.items` array (`form.__composerPasteState`); if that global isn't loaded, none of the attachment wiring runs at all (`spawn.js:1221-1240`)
 - [ ] Submit is blocked with an inline error — "Image attachment is still processing." — if ANY pending attachment is still flagged `.pending` (`spawn.js:1257-1260`)
 - [x] ~~Submit is blocked with "Prompt is empty. Type something before spawning." only when BOTH the trimmed prompt text AND the attachment list are empty~~ — **INTENTIONALLY DROPPED (kata `ytpa`)**. The legacy guard (`spawn.js:1246-1265`) contradicted the form's own placeholder, which promises "Leave blank to start it dormant", and the daemon has always honoured that: `hubThreadStart` calls `StartTurn` only when `len(params.Input) > 0` (`cmd/evener-hub/app_threadlifecycle.go:183`). The rewrite lets a blank prompt through and starts a dormant session. The guard was originally added (commit `7743e7f`) to absorb an *accidental* empty submit — Enter bubbling out of the model-picker search into the form's implicit submit — whose root cause was fixed separately (kata `t13x`); the React pane has no `<form>` and no implicit submit at all, so the accident it guarded against can no longer happen. An attachment-only submission (no text) is still allowed through, unchanged.
 - [ ] The prompt is trimmed only for that emptiness CHECK — the raw untrimmed text (newlines and leading whitespace intact) is what's actually sent in the payload (`spawn.js:1251, 1273-1275`) — **ONE TRANSFORMATION ADDED (kata `6nmz`)**: at submit, each `[image N]` attachment marker becomes `(attached image N: <name>)`, dropping the name clause when the staged attachment has none. That is the only edit the text gets; everything else still goes out byte-for-byte untrimmed. A raw marker misled a small model into reading it as a file path — haiku called `read_file("[image 1]")` while the real vision block sat beside it — and the wire loses the marker's position anyway (one text item, then the images as separate parts). The marker stays in the textarea as the tile's anchor. Both send paths share one helper (`frontend/src/stores/attachmentMarkers.ts`), applied by `stores/threads.ts`'s `composerMutationIntent` and by `panes/spawn/startThread.ts`.
@@ -179,11 +179,11 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 - [ ] Submit handler always calls `e.preventDefault()` and rebuilds the entire payload from `FormData` — there is no native form POST path (`spawn.js:1243-1245`)
 - [ ] Payload shape: `{launch_overrides, prompt, harness, model, working_dir, branch, access_mode, agent, reasoning_effort, attachments}` (`spawn.js:1270-1288`)
-- [ ] Prefers `window.SerfAppwire.startThread(body)`; REST fallback POSTs `/api/spawn` with `attachments` re-encoded into `items: [{type:"image", mediaType, data(base64), name}]` and the raw `attachments` key stripped from the body first (`spawn.js:1305-1330`)
+- [ ] Prefers `window.EvenerAppwire.startThread(body)`; REST fallback POSTs `/api/spawn` with `attachments` re-encoded into `items: [{type:"image", mediaType, data(base64), name}]` and the raw `attachments` key stripped from the body first (`spawn.js:1305-1330`)
 - [ ] `spawnEncodeAttachmentData` base64-encodes in `0x8000`-byte chunks (avoids `String.fromCharCode.apply` argument-count blowups on large images) and duck-types ArrayBuffer/typed-array/cross-realm buffers rather than using `instanceof`, specifically to survive JSDOM-originated buffers in tests (`spawn.js:11-38`, code comment at 11-15)
 - [ ] REST failure path parses the response body as JSON looking for an `.error` field, falling back to the raw text for older plain-text error responses (`spawn.js:419-427, 1327`)
 - [ ] Spawn button is disabled and relabeled `spawning…` for the duration of the request, restored to the literal HTML `spawn <kbd>⌘↵</kbd>` on failure (`spawn.js:1303-1304, 1339`)
-- [ ] On success, the pending-attachment bag is cleared AND the paste marker-counter reset (`SerfComposerAttachments.resetMarkerCounter`) BEFORE navigating away, so a back-button return can't resend the same images (`spawn.js:1331-1336`)
+- [ ] On success, the pending-attachment bag is cleared AND the paste marker-counter reset (`EvenerComposerAttachments.resetMarkerCounter`) BEFORE navigating away, so a back-button return can't resend the same images (`spawn.js:1331-1336`)
 - [ ] Success navigates via `window.location.href = "/s/" + encodeURIComponent(routeID)`; `routeID` strips a leading `local:` prefix from whichever of `ref` / `session_id` / `sessionId` is present, preferring a non-`local:` `ref` first (`spawn.js:404-417, 1337`)
 - [ ] Failure renders the error prefixed with `spawn failed: ` UNLESS the underlying message already starts with that phrase (case-insensitive check) (`spawn.js:434-437, 1338-1340`)
 
@@ -201,7 +201,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Global `⌘K` / `Ctrl+K` keydown opens the dialog from anywhere in the app (`search.js:27-28`)
 - [ ] Any `[data-search-trigger]` click opens it (`e.preventDefault()`'d) (`search.js:39-44`)
 - [ ] `Esc` while a command is selected (args mode) backs OUT to command-filter mode instead of closing the dialog; `Esc` in any other mode closes it (`search.js:29-37`)
-- [ ] Opening first closes the mobile sidebar drawer via `window.SerfSidebar.close()` (`search.js:133-135`)
+- [ ] Opening first closes the mobile sidebar drawer via `window.EvenerSidebar.close()` (`search.js:133-135`)
 - [ ] Opening deactivates any active focus traps on `#tasks-panel`/`#details-panel` (so the dialog isn't rendered inert behind them), remembering exactly which ones were suspended (`search.js:139-149`)
 - [ ] On the dialog's native `close` event, every suspended panel trap is reactivated — but only if that panel element is still connected to the DOM and doesn't already have a trap handle (`search.js:89-99`)
 - [ ] `open()` resets state atomically: `selectedCommand=null`, pill hidden, input cleared with placeholder `search live + past sessions`, input focused, `items=[]`/`active=-1`, results cleared, AND any lingering `.palette-error` strip cleared (`search.js:150-161`)
@@ -217,7 +217,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 - [ ] Queries are debounced 150ms before hitting the backend (`search.js:46, 903-917`)
 - [ ] An empty (trimmed) query clears results locally without any backend call (`search.js:904-909`)
-- [ ] Prefers `window.SerfAppwire.search(query)`; REST fallback is `GET /api/search?q=` (`search.js:911-913`)
+- [ ] Prefers `window.EvenerAppwire.search(query)`; REST fallback is `GET /api/search?q=` (`search.js:911-913`)
 - [ ] Results render up to three sections, in this fixed order: "Live", `"Past · N"`, `"In session · N"` (`search.js:919-946`)
 - [ ] In-session matches are computed entirely CLIENT-SIDE by scanning `.user-message, .assistant-message, .system-line` under `#conversation` for a case-insensitive substring match, tracking a 1-based turn counter as it walks (`search.js:961-982`)
 - [ ] In-session snippet building shows ~40 characters of context on each side of the match, with a leading/trailing `…` only when truncated, and `<mark>` around the exact matched substring (`search.js:984-992`)
@@ -252,17 +252,17 @@ All from `search.js:326-517` unless noted:
 - [ ] `/dashboard` (global, argless) → `Nav.go("/")` (340-341)
 - [ ] `/search` (global, argless, `stayOpen`) → clears the input, refocuses, re-fires the `input` event (342-344)
 - [ ] `/help` (global, argless, `stayOpen`) → renders the keyboard-shortcuts panel (345-347)
-- [ ] `/upgrade` (global, argless) → `upgradeSerf("")`; success toasts `"Evener upgraded to <channel>"` and, if `restartMessage` is present, also appends it as an info banner; failure toasts "Upgrade failed" (348-349, 290-318)
+- [ ] `/upgrade` (global, argless) → `upgradeEvener("")`; success toasts `"Evener upgraded to <channel>"` and, if `restartMessage` is present, also appends it as an info banner; failure toasts "Upgrade failed" (348-349, 290-318)
 - [ ] `/compact` (session, argless) → `postSession(ctx, "compact")` (352-353)
 - [ ] `/interrupt` (session, argless) → `postSession(ctx, "interrupt")`; blocked inline with "interrupt failed: no active turn" when there's no active turn id (354-355, 236-243)
 - [ ] `/clear` (session, argless) → `postSession(ctx, "clear")` (356-357)
 - [ ] `/aside` (session, argless) → forks the session's tip into a side thread (same permissions/config) via appwire `asideThread` or `POST /s/<id>/aside`; on success refreshes the sidebar (`sidebar:refresh` htmx trigger on `document.body`) and navigates to the new child session; throws if the response carries no child session id (358-362, 209-234)
 - [ ] `/shutdown` (session, argless) → `postSession(ctx, "shutdown")`; success toasts "Session shut down", failure toasts "Shutdown failed" (363-376)
-- [ ] `/model <enum>` (session) → source is `fetchModels()` (appwire `listModels`, mapped to `{id:"<provider>/<model>", label:display_name||model, hint:provider}`); blocked inline with "model change failed: turn in progress" while the thread is busy (per `SerfThreadState.isBusy`); success toasts `"Model: <id>"`, failure toasts "Model change failed" (377-400, 261-264, 272-288)
-- [ ] `/reasoning-effort <enum>` (session) → source is `window.SerfModelSwitch.effortLevels()` — a SNAPSHOT-based source (reasoningEffortLevels/supportsReasoning from the live thread state), explicitly NOT `/api/models` — prefixed with a `(default)` option; an empty ladder (non-reasoning model) yields ZERO options rather than just `(default)`; "none" is deliberately omitted here because it would normalize to the same wire value as default, unlike the spawn-time picker (§1.5) where they're kept distinct; toasts `"Effort: <value|default>"` / "Effort change failed" (401-433, code comment at 403-411)
+- [ ] `/model <enum>` (session) → source is `fetchModels()` (appwire `listModels`, mapped to `{id:"<provider>/<model>", label:display_name||model, hint:provider}`); blocked inline with "model change failed: turn in progress" while the thread is busy (per `EvenerThreadState.isBusy`); success toasts `"Model: <id>"`, failure toasts "Model change failed" (377-400, 261-264, 272-288)
+- [ ] `/reasoning-effort <enum>` (session) → source is `window.EvenerModelSwitch.effortLevels()` — a SNAPSHOT-based source (reasoningEffortLevels/supportsReasoning from the live thread state), explicitly NOT `/api/models` — prefixed with a `(default)` option; an empty ladder (non-reasoning model) yields ZERO options rather than just `(default)`; "none" is deliberately omitted here because it would normalize to the same wire value as default, unlike the spawn-time picker (§1.5) where they're kept distinct; toasts `"Effort: <value|default>"` / "Effort change failed" (401-433, code comment at 403-411)
 - [ ] `/steer <text>` (session, free arg) → blocked inline with "steer failed: no active turn" when idle; otherwise appwire `steer` or `POST /s/<id>/steer` (434-448)
 - [ ] `/queue <text>` (session, free arg) → blocked inline with "queue failed: no active turn" when idle; otherwise appwire `queueTurn` or `POST /s/<id>/queue`; relies entirely on the daemon's `thread/queueChanged` broadcast to update the UI afterward — no local state mirroring (453-471, code comment at 468-470)
-- [ ] `/goal <text>` (session, free arg, empty text CLEARS the goal) → `SerfAppwire.request("goal/set", {ref, objective: text.trim()})` (474-477)
+- [ ] `/goal <text>` (session, free arg, empty text CLEARS the goal) → `EvenerAppwire.request("goal/set", {ref, objective: text.trim()})` (474-477)
 - [ ] `/drain-as-steer` (session, argless) → blocked inline with "drain failed: no active turn" when idle; otherwise appwire `drainAsSteer` or `POST /s/<id>/drain-as-steer`; relies on the daemon's `thread/queueChanged` (depth=0) broadcast to clear the UI preview (480-496)
 - [ ] `/fork` is intentionally OMITTED from the palette entirely — forking requires an edited message the palette has no UI to collect; the transcript row's own edit affordance is the only entry point (497-499, code comment)
 - [ ] `/copy-id` (ended-ok, argless) → copies the session id via the async Clipboard API with an `execCommand("copy")` fallback for non-secure contexts; banners an error only if BOTH paths fail (502-510, 520-548)
@@ -309,7 +309,7 @@ All from `search.js:326-517` unless noted:
 - [ ] Title is `"<section> · evener hub"` (or bare `"evener hub"` with no active section) whenever the `title` pref is off (`notifications.js:115-124`)
 - [ ] When `title` is on, prefixes `"(<needsYou + error>) "` but ONLY when that sum is greater than 0 (`notifications.js:122-123`)
 - [ ] Section-name resolution: prefers the settings-page URL-derived section (via a `SECTION_LABELS` lookup on `/settings/<section>`) when a settings header element is present in the DOM; otherwise falls back to the visible workspace-header title text (`notifications.js:104-113`)
-- [ ] `SECTION_LABELS` is exposed globally as `window.SerfSectionLabels` specifically so `renderer.js` (loaded later) can reuse the exact same map instead of maintaining a parallel copy (`notifications.js:94-102`, code comment)
+- [ ] `SECTION_LABELS` is exposed globally as `window.EvenerSectionLabels` specifically so `renderer.js` (loaded later) can reuse the exact same map instead of maintaining a parallel copy (`notifications.js:94-102`, code comment)
 
 ### 3.3 Favicon dot
 
@@ -363,7 +363,7 @@ All from `search.js:326-517` unless noted:
 - [ ] `evener/auth/updated` → reloads the credentials/instances panel in place if `#instances-root` is currently loaded (`data-loaded="true"`); separately re-fetches the `/settings/providers` partial via `htmx.ajax` if that's the currently active settings pane (`notifications.js:396-411`)
 - [ ] `evener/launch/updated` → re-fetches whatever `/settings/*` partial is currently open, preserving the existing query string (e.g. `?cwd=`) (`notifications.js:412-417`)
 - [ ] `evener/marketplace/updated` / `evener/plugin/updated` → re-fetches the plugins-manager partial, but ONLY if it's the currently active settings pane — explicitly to avoid a stale "Install" button state or a stale tab silently clobbering another tab's `AutoUpgrade` setting on reinstall (`notifications.js:418-434`, code comment)
-- [ ] This entire second IIFE no-ops immediately if `window.SerfAppwire`/`onNotification` isn't present (`notifications.js:391-393`)
+- [ ] This entire second IIFE no-ops immediately if `window.EvenerAppwire`/`onNotification` isn't present (`notifications.js:391-393`)
 
 ---
 
@@ -399,8 +399,8 @@ All from `search.js:326-517` unless noted:
 
 ### 4.6 Sidebar mode (`settings-appearance.js`) — bundled in the same file though not itself theme/density/font
 
-- [ ] `input[name="sidebar-mode"]` change (`auto`/`rail`/`pane`) prefers `window.SerfSidebar.applySidebarMode(v)` when that global is available, else falls back to writing `localStorage["evener-hub.sidebar.rail"]` directly (`settings-appearance.js:26-33`)
-- [ ] `applyAppearanceState` prefers `window.SerfSidebar.readSidebarMode()` when available, else reads that same fallback key, defaulting to `"auto"` (`settings-appearance.js:58-64`)
+- [ ] `input[name="sidebar-mode"]` change (`auto`/`rail`/`pane`) prefers `window.EvenerSidebar.applySidebarMode(v)` when that global is available, else falls back to writing `localStorage["evener-hub.sidebar.rail"]` directly (`settings-appearance.js:26-33`)
+- [ ] `applyAppearanceState` prefers `window.EvenerSidebar.readSidebarMode()` when available, else reads that same fallback key, defaulting to `"auto"` (`settings-appearance.js:58-64`)
 - [ ] Radio values per template: `auto` / `pane` / `rail`, labeled "Auto" / "Pane" / "Collapsed" — note the radio VALUE for the "Collapsed" label is literally `rail`, and the fallback storage key is `evener-hub.sidebar.rail` (NOT `...sidebar-mode`) (`templates/partials/settings/theme.html:30-32`)
 
 ### 4.7 Font size (`settings-appearance.js`)
@@ -420,7 +420,7 @@ All from `search.js:326-517` unless noted:
 - [ ] `applyComposerKeybindHints` swaps the visible send-button `<kbd>` hint between `↵` (enterToSend ON) and `⌘↵` (OFF), and the steer-button `<kbd>` hint between an empty string (ON) and `⇧↵` (OFF) (`settings-display.js:70-77`)
 - [ ] Keybind hints are re-applied on both `DOMContentLoaded` and `htmx:afterSwap`, same lifecycle as the toggle-state reflection (`settings-display.js:79-82`)
 - [ ] `document.body.dataset.showCost` is set from stored prefs at PARSE TIME — a bare top-level IIFE, not gated on `DOMContentLoaded` — specifically so the `body[data-show-cost="false"]` CSS gate is already correct before any settings pane has even opened (`settings-display.js:84-88`, code comment)
-- [ ] Module exposes `window.SerfSettingsDisplay = {readComposerPrefs, writeComposerPrefs, syncToggleState, applyComposerKeybindHints}` for reuse by other modules (`settings-display.js:28`)
+- [ ] Module exposes `window.EvenerSettingsDisplay = {readComposerPrefs, writeComposerPrefs, syncToggleState, applyComposerKeybindHints}` for reuse by other modules (`settings-display.js:28`)
 
 ---
 

@@ -1064,14 +1064,14 @@ they need explicit handling):**
   `SubagentStartData`/`SubagentEndData` (`payloads.go`). The real consumer is
   `internal/appprojector/appwire_projection.go:410` (it switches on the `events.EventSubagentStart`
   **symbol**, which the gate's string token does NOT catch — see the gate below), translating to the
-  **wire-protocol** notifications `appwire.NotifySerfSubagentStarted`/`Ended`
-  (`"evener/subagent/started"`/`"evener/subagent/completed"`, `appwire/types.go:68`) and `SerfSubagentInfo`
+  **wire-protocol** notifications `appwire.NotifyEvenerSubagentStarted`/`Ended`
+  (`"evener/subagent/started"`/`"evener/subagent/completed"`, `appwire/types.go:68`) and `EvenerSubagentInfo`
   / `Subagents`; `server/server.go`'s `SubagentStatusInfo`/`Subagents` carry it onward to the
   hub/web/tui clients. **Full repoint (decided): emit new job-lifecycle events + wire notifications
   and repoint `appprojector` + `appwire/types.go` + `server` + every UI renderer** — do NOT keep the
   subagent names as an alias. (Those events are not
   switched on in `cmd/evener-hub/internal/hubcore/*` or `cmd/evener-tui/*` directly — but
-  `server/appwire_runtime.go:500` **does** populate `appwire.SerfSubagentInfo` from the snapshot, so it
+  `server/appwire_runtime.go:500` **does** populate `appwire.EvenerSubagentInfo` from the snapshot, so it
   is a gate-token consumer that must be repointed alongside `server/server.go`'s `SubagentStatusInfo`.)
 - `SubagentInfo` / `SubagentStatus` and the snapshot/status/render chain (`agent/status.go`,
   `agent/schema/snapshot.go`, `server/server.go`'s `SubagentStatusInfo`, `server/appwire_runtime.go`,
@@ -1098,12 +1098,12 @@ job tools (shell stays under `capabilityShellSearch`).
 **Acceptance gate.** The gate is **authoritative, not the inventory**: run it, repoint every hit, re-run
 until clean. The inventory above names the known consumers, but treat a green gate + a green build as
 the proof. Gate on real discriminators — the string tokens AND the Go symbol forms (the event symbols
-`EventSubagentStart`/`EventSubagentEnd` and the wire constants `NotifySerfSubagent*` do not contain
+`EventSubagentStart`/`EventSubagentEnd` and the wire constants `NotifyEvenerSubagent*` do not contain
 the `SUBAGENT_START`/`SUBAGENT_END` strings) — not the phantom `wait_job` (the legacy tool is named
 `wait`, an un-greppable English word, so gate on its symbol/registration):
 
 ```
-rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo' \
+rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifyEvenerSubagent|EvenerSubagentInfo|SubagentStatusInfo' \
   -g '!docs/superpowers/specs/**' -g '!docs/superpowers/plans/**' -g '!docs/job-control.md' -g '!**/CHANGELOG*'
 ```
 

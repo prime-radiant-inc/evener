@@ -2658,7 +2658,7 @@ In `agent/session.go`, add fields to `SessionConfig` (right after `DeniedToolNam
 
 ```go
 	// Permissions is the merged Claude Code-style permissions block.
-	// Source: SP1 → SP8 wires it from DiscoverSerfConfig at session bootstrap.
+	// Source: SP1 → SP8 wires it from DiscoverEvenerConfig at session bootstrap.
 	Permissions PermissionsConfig `json:"-"`
 
 	// PermissionAskFallback is the policy each entry-point selects for
@@ -3047,7 +3047,7 @@ In `agent/session.go`, modify `execTool` (currently at line 1275). After the exi
 	// updatedInput is seen by the matcher; runs before execution so a deny
 	// short-circuits without invoking the tool registry.
 	if s.permissionMatcher != nil {
-		claudeName := MapSerfToolNameToClaude(call.Name)
+		claudeName := MapEvenerToolNameToClaude(call.Name)
 		var toolInput map[string]any
 		if len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &toolInput)

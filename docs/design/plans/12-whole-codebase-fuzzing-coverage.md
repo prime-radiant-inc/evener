@@ -112,7 +112,7 @@ A3 findings (carried forward):
 Highest cheap leverage: real inputs reach states random generation never will. The harvest
 path exists; we need the local-record default and a driver.
 
-**A1 — Local-record master switch (D1).** Add `envvars.SERFFuzzRecord`; thread it into the
+**A1 — Local-record master switch (D1).** Add `envvars.EVENERFuzzRecord`; thread it into the
 three recorders' enable checks (`appwire/frame_recorder.go`, `cmd/evener-hub/http_recorder.go`,
 `llm/apilog.go:rawHTTPLogEnabled`) as "per-recorder var OR (master ∧ not explicitly off)".
 Document in dev onboarding. Gitignore `./.evener/`. *~40 LoC + tests asserting off-by-default

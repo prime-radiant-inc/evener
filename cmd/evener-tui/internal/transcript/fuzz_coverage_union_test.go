@@ -82,14 +82,14 @@ func replayTranscriptCoverage(t *testing.T) {
 		{JobID: "background", JobType: "shell", Background: true, Status: "failed", Command: "sleep 1"},
 	}
 	for _, job := range jobs {
-		r.ApplySerfJob(job)
+		r.ApplyEvenerJob(job)
 	}
 	nilInfo := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool}}, nil, nil)
-	nilInfo.ApplySerfJob(appwire.EvenerJobInfo{JobID: "x", JobType: "delegate"})
+	nilInfo.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "x", JobType: "delegate"})
 	ordinary := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, ItemID: "origin"}}, nil, nil)
-	ordinary.ApplySerfJob(appwire.EvenerJobInfo{JobID: "x", JobType: "unknown", OriginItemID: "origin"})
+	ordinary.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "x", JobType: "unknown", OriginItemID: "origin"})
 	matched := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, ItemID: "origin", Tool: &ToolCallInfo{Name: "delegate"}}}, nil, nil)
-	matched.ApplySerfJob(appwire.EvenerJobInfo{JobID: "x", JobType: "delegate", Status: "done", Task: "described", OriginItemID: "origin"})
+	matched.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "x", JobType: "delegate", Status: "done", Task: "described", OriginItemID: "origin"})
 	r.ApplyTieHeadline("", "headline", false)
 	r.ApplyTieHeadline("delegate-job", "", false)
 	r.ApplyTieHeadline("missing", "headline", false)
@@ -142,11 +142,11 @@ func replayTranscriptCoverage(t *testing.T) {
 		{Kind: MsgTool, ItemID: "oi", ToolCallID: "oc", Tool: &ToolCallInfo{Name: "delegate", Subagent: &SubagentRunInfo{JobID: "old", DelegateID: "d"}}},
 	}
 	identities := NewTranscriptReducer(identityRows, nil, nil)
-	identities.ApplySerfJob(appwire.EvenerJobInfo{JobID: "new", JobType: "delegate", DelegateID: "d"})
-	identities.ApplySerfJob(appwire.EvenerJobInfo{JobID: "old", JobType: "delegate"})
-	identities.ApplySerfJob(appwire.EvenerJobInfo{JobType: "delegate", DelegateID: "d"})
-	identities.ApplySerfJob(appwire.EvenerJobInfo{JobID: "by-item", JobType: "delegate", OriginItemID: "oi"})
-	identities.ApplySerfJob(appwire.EvenerJobInfo{JobID: "by-call", JobType: "delegate", OriginToolCallID: "oc"})
+	identities.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "new", JobType: "delegate", DelegateID: "d"})
+	identities.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "old", JobType: "delegate"})
+	identities.ApplyEvenerJob(appwire.EvenerJobInfo{JobType: "delegate", DelegateID: "d"})
+	identities.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "by-item", JobType: "delegate", OriginItemID: "oi"})
+	identities.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "by-call", JobType: "delegate", OriginToolCallID: "oc"})
 
 	// Boundary states are possible when replay begins from a persisted partial.
 	emptyReasoning := NewTranscriptReducer(nil, nil, nil)
@@ -159,7 +159,7 @@ func replayTranscriptCoverage(t *testing.T) {
 	noIDs.ApplyThreadItem(appwire.ThreadItem{Type: "commandExecution", ToolName: "shell"}, 0, false)
 	noIDs.ApplyThreadItem(appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", Output: "done"}, 0, true)
 	unmatchedJob := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Name: "delegate", Subagent: &SubagentRunInfo{JobID: "other"}}}}, nil, nil)
-	unmatchedJob.ApplySerfJob(appwire.EvenerJobInfo{JobID: "plain"})
+	unmatchedJob.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "plain"})
 	terminalActivity := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Subagent: &SubagentRunInfo{TranscriptRef: "terminal", Status: "done"}}}}, nil, nil)
 	terminalActivity.ApplyChildActivity("terminal", "ignored")
 
@@ -191,11 +191,11 @@ func replayTranscriptCoverage(t *testing.T) {
 	runningActivity.ApplyChildActivity("running", "first")
 
 	delegateMatch := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, Tool: &ToolCallInfo{Name: "delegate", Subagent: &SubagentRunInfo{DelegateID: "same"}}}}, nil, nil)
-	delegateMatch.ApplySerfJob(appwire.EvenerJobInfo{DelegateID: "same", JobType: "delegate"})
+	delegateMatch.ApplyEvenerJob(appwire.EvenerJobInfo{DelegateID: "same", JobType: "delegate"})
 	itemMatch := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, ItemID: "origin", Tool: &ToolCallInfo{Name: "delegate"}}}, nil, nil)
-	itemMatch.ApplySerfJob(appwire.EvenerJobInfo{JobID: "item", JobType: "delegate", OriginItemID: "origin"})
+	itemMatch.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "item", JobType: "delegate", OriginItemID: "origin"})
 	callMatch := NewTranscriptReducer([]ChatMessage{{Kind: MsgTool, ToolCallID: "origin-call", Tool: &ToolCallInfo{Name: "delegate"}}}, nil, nil)
-	callMatch.ApplySerfJob(appwire.EvenerJobInfo{JobID: "call", JobType: "delegate", OriginToolCallID: "origin-call"})
+	callMatch.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "call", JobType: "delegate", OriginToolCallID: "origin-call"})
 
 	p1 := r.AppendPendingSteering("steer")
 	p2 := r.AppendPendingUser("user")

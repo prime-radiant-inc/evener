@@ -76,7 +76,7 @@ Library.
 - Add `MutationReceipt`, `MutationProjectionState`, typed response structs for
   the six methods that currently return `EmptyResponse`, and common mutation
   error data on `WireError`.
-- Add `PendingMutation` and `SerfThread.PendingMutations`.
+- Add `PendingMutation` and `EvenerThread.PendingMutations`.
 - Add queue `Revision`, queue-entry `ClientMutationID`, and mutation identity on
   `ThreadItem` and steering notification payloads.
 - Require authoritative `ThreadID` and `Ref` on every thread notification,

@@ -371,7 +371,7 @@ set everything through `launchOverrides`.
 `SpawnRequest` and `ResumeRequest` (in `cmd/evener-hub/spawn.go`) are rewritten
 to carry a `Resolved LaunchConfigResolved` rather than the current ad-hoc
 scalar list. `buildSpawnArgs` becomes `launchconfig.ToArgs(resolved)`; the
-child env construction in `buildSerfChildEnv` is replaced by
+child env construction in `buildEvenerChildEnv` is replaced by
 `launchconfig.ToEnv(resolved, credentials)` which applies the priority
 ordering in §4.5 and merges the layered `env` map on top. Both `Spawn` and
 `Resume` flow through the same resolver, so resumed sessions pick up

@@ -20,7 +20,7 @@ func FuzzInternalCheckCoverage(f *testing.F) {
 			t.Run("type-arguments", TestWalkTypePublicNamedTypeArguments)
 		}
 		t.Run("libraries", TestLibrariesHaveNoInternalLeaks)
-		t.Run("predicate", TestIsSerfInternal)
+		t.Run("predicate", TestIsEvenerInternal)
 		t.Run("detect", TestWalkTypeDetectsInternalNamed)
 		t.Run("ignore", TestWalkTypeIgnoresNonInternalNamed)
 		t.Run("object", TestCheckObjectStructFieldExposesInternal)

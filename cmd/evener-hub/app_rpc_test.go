@@ -6093,7 +6093,7 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	}
 }
 
-func TestHubRPCModelListUsesSerfLaunchContractWhenDaemonFails(t *testing.T) {
+func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{}, appwire.InternalError("provider unavailable")
@@ -6177,7 +6177,7 @@ func TestHubRPCModelListFallsBackToLocalDaemonWithoutLaunchContract(t *testing.T
 	}
 }
 
-func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
+func TestHubRPCModelListPrefersEvenerLaunchContract(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}}}, nil
@@ -6219,7 +6219,7 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 	}
 }
 
-func TestHubRPCModelListUsesWorkingDirForSerfLaunchContract(t *testing.T) {
+func TestHubRPCModelListUsesWorkingDirForEvenerLaunchContract(t *testing.T) {
 	spawner := &fakeRPCWorkingDirModelContractSpawner{
 		fallback: appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{{Provider: "stale", Model: "wrong"}},
@@ -6381,7 +6381,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 	}
 }
 
-func TestHubRPCModelListReportsSerfLaunchDiagnostics(t *testing.T) {
+func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-evener")
@@ -6392,7 +6392,7 @@ if [ "$1" = "launch-check" ]; then
 fi
 exit 2
 `
-	writeFakeSerf(t, bin, script)
+	writeFakeEvener(t, bin, script)
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),
@@ -6688,7 +6688,7 @@ func TestValidateLaunchPathRejectsOutputFileWithMissingParent(t *testing.T) {
 	}
 }
 
-func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *testing.T) {
+func TestHubRPCThreadStartRejectsModelOutsideEvenerLaunchContractBeforeSpawn(t *testing.T) {
 	runDir := t.TempDir()
 	var spawnCalled bool
 	spawner := &fakeRPCSpawner{

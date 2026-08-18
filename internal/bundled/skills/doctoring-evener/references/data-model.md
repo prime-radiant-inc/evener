@@ -35,7 +35,7 @@ durable state only; it is not a live monitor.
 ## State-dir layout
 
 The base resolves with evener's precedence: `--state-dir` flag › `EVENER_STATE_DIR`
-env › `$XDG_STATE_HOME` › `~/.local/state` (there is **no** `SERF_STATE_HOME` —
+env › `$XDG_STATE_HOME` › `~/.local/state` (there is **no** `EVENER_STATE_HOME` —
 it was never read). Under an XDG home the layout is:
 
 ```

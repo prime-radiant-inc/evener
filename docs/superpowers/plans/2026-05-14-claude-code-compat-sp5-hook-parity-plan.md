@@ -1908,7 +1908,7 @@ Replace the matched-hooks branch in `runAll` (`agent/plugin_hooks.go`):
 
 ```go
 func (r *HookRunner) runAll(ctx context.Context, event HookEvent, toolName string, input HookInput) []ParsedHookOutput {
-	claudeName := MapSerfToolNameToClaude(toolName)
+	claudeName := MapEvenerToolNameToClaude(toolName)
 	matched := r.matchHooks(event, claudeName)
 	if len(matched) == 0 {
 		return nil
@@ -4278,7 +4278,7 @@ In `agent/session.go`, immediately after the existing `r.RunPostToolUse(...)` ca
 ```go
 if res.IsError && s.hookRunner != nil {
 	hi := s.hookInput(HookPostToolUseFailure)
-	hi.ToolName = MapSerfToolNameToClaude(call.Name)
+	hi.ToolName = MapEvenerToolNameToClaude(call.Name)
 	if call.Arguments != nil {
 		var args map[string]any
 		_ = json.Unmarshal(call.Arguments, &args)
@@ -4367,7 +4367,7 @@ if s.hookRunner != nil && len(results) > 0 {
 			_ = json.Unmarshal(calls[i].Arguments, &args)
 		}
 		hi.ToolResults[i] = BatchToolResult{
-			ToolName:     MapSerfToolNameToClaude(calls[i].Name),
+			ToolName:     MapEvenerToolNameToClaude(calls[i].Name),
 			ToolUseID:    calls[i].ID,
 			ToolInput:    args,
 			ToolResponse: r.FullOutput,

@@ -61,7 +61,7 @@ reached).
 1. **Cold load:** hydrate the latest window from `thread/read` (now bounded) and
    subscribe — unchanged except the window bound.
 2. **Load earlier:** when the user nears the top, call a new
-   `SerfAppwire.listTurns(ref, cursor, limit)`, convert via `eventsFromThread`'s
+   `EvenerAppwire.listTurns(ref, cursor, limit)`, convert via `eventsFromThread`'s
    per-turn logic, and **prepend** with scroll-anchor preservation (hold the
    pre-prepend scroll height so the viewport doesn't jump).
 3. **Live:** new turns still arrive as notifications and append at the bottom —

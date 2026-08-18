@@ -1019,7 +1019,7 @@ func TestGrantToolsCannotRegrantAskUser(t *testing.T) {
 
 // TestGrantToolsAskUserAliasNeverSilentlyGranted covers the Claude-style
 // spelling "AskUserQuestion". Unlike a plugin's static `tools:` frontmatter
-// (converted at load time via toolname.ClaudeToSerf, agent/plugin/agents.go),
+// (converted at load time via toolname.ClaudeToEvener, agent/plugin/agents.go),
 // grant_tools is a runtime model argument canonicalized only through the
 // provider profile's canonical->wire-name map
 // (Session.canonicalizeToolNames -> Profile.ToolNameMap), which carries

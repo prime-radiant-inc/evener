@@ -13,7 +13,7 @@ boundary until it empties). Exercises the status strip's model switcher
 selector map there is the single place these hooks are maintained. The
 `[data-model-trigger]` / `[data-model-display]` selectors and
 `assets/model-switch.js` this card used to drive died with the vanilla
-frontend (`660376f78`); there is no `SerfAppwire.setModel` to call. The
+frontend (`660376f78`); there is no `EvenerAppwire.setModel` to call. The
 switcher is `[data-testid="model-switch-trigger"]` with its readout in
 `[data-testid="model-switch-value"]` (`ModelSwitch.tsx:129,137`), and the
 picker rows are the shared ARIA combobox's `role="option"` items

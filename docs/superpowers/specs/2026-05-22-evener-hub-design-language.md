@@ -567,7 +567,7 @@ All three: close via Esc, backdrop tap, or explicit close button. Trap focus on 
 }
 ```
 
-API: `window.SerfToast.show(message, kind, opts)` — kind ∈ `success | error | info`. `opts.timeout` overrides default 3s.
+API: `window.EvenerToast.show(message, kind, opts)` — kind ∈ `success | error | info`. `opts.timeout` overrides default 3s.
 
 Initial trigger set: copy session ID, model change, session shutdown, settings saved, credential set/cleared, htmx error.
 

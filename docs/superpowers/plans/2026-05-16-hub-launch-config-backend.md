@@ -36,7 +36,7 @@
 - `cmd/evener-hub/spawn.go` — `SpawnRequest`/`ResumeRequest` carry `Resolved`; `buildSpawnArgs` delegates to `launchconfig.ToArgs`; env via `launchconfig.ToEnv`; credential validation via `credentials.Resolver`
 - `cmd/evener-hub/app_rpc.go` — register `evener/launch/*`, `evener/auth/list`, `evener/auth/apiKey/set`; thread `LaunchOverrides` through `ThreadStart`
 - `cmd/evener-hub/app_auth.go` — `hubAuthController` gains `List`, `ApiKeySet`, gains `credentials.Store` dependency, `Status`/`Logout` become provider-generic
-- `cmd/evener-hub/config.go` — drop `SerfLaunchConfig` and `Env` map; introduce `LaunchConfigGlobalPath` etc. accessors
+- `cmd/evener-hub/config.go` — drop `EvenerLaunchConfig` and `Env` map; introduce `LaunchConfigGlobalPath` etc. accessors
 - `cmd/evener-hub/main.go` — construct `credentials.Store` + thread into hub config
 - `cmd/evener-hub/e2e_test.go` — exercise the resolved config end-to-end
 
@@ -2130,29 +2130,29 @@ git commit -m "launchconfig: ToEnv with priority-ordered credential injection"
 
 Run:
 ```bash
-grep -n "MethodSerfAuthLogout\s*=\s*\"evener/auth/logout\"" internal/appwire/types.go
+grep -n "MethodEvenerAuthLogout\s*=\s*\"evener/auth/logout\"" internal/appwire/types.go
 ```
 
-Expected output: a single line like `30:	MethodSerfAuthLogout            = "evener/auth/logout"`.
+Expected output: a single line like `30:	MethodEvenerAuthLogout            = "evener/auth/logout"`.
 
 - [ ] **Step 2: Add the new method and notification constants**
 
-Open `internal/appwire/types.go`. After the `MethodSerfAuthLogout` line, before the next group, add:
+Open `internal/appwire/types.go`. After the `MethodEvenerAuthLogout` line, before the next group, add:
 
 ```go
-	MethodSerfAuthList              = "evener/auth/list"
-	MethodSerfAuthApiKeySet         = "evener/auth/apiKey/set"
-	MethodSerfLaunchResolve         = "evener/launch/resolve"
-	MethodSerfLaunchGetLayer        = "evener/launch/getLayer"
-	MethodSerfLaunchSetLayer        = "evener/launch/setLayer"
-	MethodSerfLaunchTrustRepo       = "evener/launch/trustRepo"
+	MethodEvenerAuthList              = "evener/auth/list"
+	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
+	MethodEvenerLaunchResolve         = "evener/launch/resolve"
+	MethodEvenerLaunchGetLayer        = "evener/launch/getLayer"
+	MethodEvenerLaunchSetLayer        = "evener/launch/setLayer"
+	MethodEvenerLaunchTrustRepo       = "evener/launch/trustRepo"
 ```
 
-Then after `NotifySerfSubagentEnded` in the notifications block, add:
+Then after `NotifyEvenerSubagentEnded` in the notifications block, add:
 
 ```go
-	NotifySerfAuthUpdated   = "evener/auth/updated"
-	NotifySerfLaunchUpdated = "evener/launch/updated"
+	NotifyEvenerAuthUpdated   = "evener/auth/updated"
+	NotifyEvenerLaunchUpdated = "evener/launch/updated"
 ```
 
 - [ ] **Step 3: Extend `AuthStatusResponse` with `AuthModes`**
@@ -3054,20 +3054,20 @@ git commit -m "evener-hub: auth controller manages credentials store"
 - [ ] **Step 1: Find the dispatcher registration block**
 
 ```bash
-grep -n "MethodSerfAuthLogout\|MethodSerfAuthStatus" cmd/evener-hub/app_rpc.go
+grep -n "MethodEvenerAuthLogout\|MethodEvenerAuthStatus" cmd/evener-hub/app_rpc.go
 ```
 
 You'll see four `appserver.HandleTyped(...)` calls registering the existing evener/auth methods.
 
 - [ ] **Step 2: Add new handler registrations**
 
-Immediately after `appwire.MethodSerfAuthLogout` registration, insert:
+Immediately after `appwire.MethodEvenerAuthLogout` registration, insert:
 
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 	return authController.List(params)
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthApiKeySet, func(_ context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(_ context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 	resp, err := authController.ApiKeySet(params)
 	if err == nil {
 		notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
@@ -3076,9 +3076,9 @@ appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthApiKeySet, func(_ c
 })
 ```
 
-Adjust the existing `MethodSerfAuthLogout` registration to also emit:
+Adjust the existing `MethodEvenerAuthLogout` registration to also emit:
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 	resp, err := authController.Logout(params)
 	if err == nil {
 		notifyAuthUpdated(server, params.Provider, resp.Status.ActiveSource)
@@ -3087,9 +3087,9 @@ appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLogout, func(_ cont
 })
 ```
 
-Similarly for `MethodSerfAuthLoginComplete`:
+Similarly for `MethodEvenerAuthLoginComplete`:
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 	resp, err := authController.LoginComplete(ctx, params)
 	if err == nil {
 		notifyAuthUpdated(server, params.Provider, resp.Status.ActiveSource)
@@ -3102,20 +3102,20 @@ Add the launchController registrations (immediately after the auth block):
 
 ```go
 launchController := newHubLaunchController(cfg.HubStateRoot)
-appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 	return launchController.Resolve(ctx, params)
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
 	return launchController.GetLayer(ctx, params)
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 	resp, err := launchController.SetLayer(ctx, params)
 	if err == nil {
 		notifyLaunchUpdated(server, params.CWD, params.Layer)
 	}
 	return resp, err
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 	resp, err := launchController.TrustRepo(ctx, params)
 	if err == nil {
 		notifyLaunchUpdated(server, params.CWD, "repo")
@@ -3130,14 +3130,14 @@ At the bottom of `cmd/evener-hub/app_rpc.go`:
 
 ```go
 func notifyAuthUpdated(server appServerLike, provider, activeSource string) {
-	server.Broadcast(appwire.NotifySerfAuthUpdated, map[string]string{
+	server.Broadcast(appwire.NotifyEvenerAuthUpdated, map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
 	})
 }
 
 func notifyLaunchUpdated(server appServerLike, cwd, layer string) {
-	server.Broadcast(appwire.NotifySerfLaunchUpdated, map[string]string{
+	server.Broadcast(appwire.NotifyEvenerLaunchUpdated, map[string]string{
 		"cwd":   cwd,
 		"layer": layer,
 	})
@@ -3198,7 +3198,7 @@ git commit -m "evener-hub: register launch + auth RPCs and notifications"
 - [ ] **Step 1: Inspect existing flow**
 
 ```bash
-grep -n "buildSpawnArgs\|buildSerfChildEnv\|validateProviderCredentials" cmd/evener-hub/spawn.go
+grep -n "buildSpawnArgs\|buildEvenerChildEnv\|validateProviderCredentials" cmd/evener-hub/spawn.go
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -3295,7 +3295,7 @@ Replace the existing methods. The spawner now needs the credentials store; add i
 ```go
 type HubSpawner struct {
 	Cfg        Config
-	SerfBinary string
+	EvenerBinary string
 	RunDir     string
 	HubToken   string
 	Creds      *credentials.Store
@@ -3308,7 +3308,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		timeout = 30 * time.Second
 	}
 	if req.StateDir == "" {
-		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+		req.StateDir = resolveEvenerLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.SSERingSize != nil {
@@ -3326,14 +3326,14 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 	if err := validateProviderCredentials(req.Provider, h.Creds); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
+	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
+	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 ```
 
-Similar changes for `Resume`. Drop the now-unused `buildSerfChildEnv`, `buildDefaultSerfChildEnv`, and old `validateProviderCredentials` helpers.
+Similar changes for `Resume`. Drop the now-unused `buildEvenerChildEnv`, `buildDefaultEvenerChildEnv`, and old `validateProviderCredentials` helpers.
 
 Replace `validateProviderCredentials`:
 ```go
@@ -3490,12 +3490,12 @@ git commit -m "evener-hub: ThreadStart honors launchOverrides via Resolve"
 - [ ] **Step 1: Find the obsolete fields**
 
 ```bash
-grep -n "SerfLaunchConfig\|SerfLaunch\b\|sse_ring_size" cmd/evener-hub/config.go
+grep -n "EvenerLaunchConfig\|EvenerLaunch\b\|sse_ring_size" cmd/evener-hub/config.go
 ```
 
-- [ ] **Step 2: Remove `SerfLaunchConfig` from `Config`**
+- [ ] **Step 2: Remove `EvenerLaunchConfig` from `Config`**
 
-In `cmd/evener-hub/config.go`, remove the `SerfLaunchConfig` struct and the `SerfLaunch SerfLaunchConfig` field. Add the new `HubStateRoot` field:
+In `cmd/evener-hub/config.go`, remove the `EvenerLaunchConfig` struct and the `EvenerLaunch EvenerLaunchConfig` field. Add the new `HubStateRoot` field:
 
 ```go
 type Config struct {
@@ -3533,12 +3533,12 @@ Run:
 go test ./cmd/evener-hub/ -run TestLoadConfig -v
 ```
 
-Update any test that referenced `[evener_launch]` or `cfg.SerfLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.evener/launch.toml` and assert via the resolver.
+Update any test that referenced `[evener_launch]` or `cfg.EvenerLaunch.Env`. If those tests asserted behavior that the new design provides via launchconfig layers instead, port them to write into `~/.evener/launch.toml` and assert via the resolver.
 
 - [ ] **Step 4: Update main.go to use HubStateRoot for everything**
 
 ```bash
-grep -n "newHubAuthController\|HubSpawner\|cfg\.SerfLaunch" cmd/evener-hub/main.go
+grep -n "newHubAuthController\|HubSpawner\|cfg\.EvenerLaunch" cmd/evener-hub/main.go
 ```
 
 Wire `HubSpawner.StateRoot = cfg.HubStateRoot` and `HubSpawner.Creds = credsStore`.

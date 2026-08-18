@@ -53,7 +53,7 @@ The audit produced a list of behavioral contracts the visual pass must not break
 The pass is a **CSS + templates** migration. No Go changes except:
 - A new `cmd/evener-hub/assets/style.css` (the existing file rewritten in passes).
 - Template tweaks (sidebar partial restructure, settings partials normalized to two patterns, hamburger moves into header).
-- One or two small JS additions (`window.SerfToast`, sidebar rail toggle persistence, body `data-phone-density` from settings).
+- One or two small JS additions (`window.EvenerToast`, sidebar rail toggle persistence, body `data-phone-density` from settings).
 - CSP allowlist for fonts.googleapis.com / fonts.gstatic.com (if not already permitted).
 
 ### File touch map
@@ -64,7 +64,7 @@ cmd/evener-hub/
     style.css                       ← full rewrite (1037 lines → ~1400 lines with new components + tokens)
     fonts.css                       ← (optional) vendored @font-face fallbacks
     fonts/*.woff2                   ← (optional) vendored fonts
-    toast.js                        ← new — window.SerfToast.show()
+    toast.js                        ← new — window.EvenerToast.show()
     sidebar.js                      ← + rail toggle, density toggle handling
     theme.js                        ← + density persistence
     settings.js                     ← + form-status aria-live wiring
@@ -169,8 +169,8 @@ Goal: implement the 2-line sidebar row, the rail-mode toggle, the workspace head
 - Status pill → status badge.
 
 **Slide-over focus management (drawer + sidebar mobile + modal):**
-- New helper `cmd/evener-hub/assets/focus-trap.js` (~80 LOC) exposing `window.SerfFocusTrap.activate(el, returnFocusTo)` and `.deactivate()`. On activate: stores `document.activeElement` as restore target; adds `inert` to all root siblings of `el`; binds a Tab-key handler that cycles focus within `el`. On deactivate: restores focus, removes `inert`, unbinds handler.
-- `renderer.js` calls `SerfFocusTrap.activate(panelEl, triggerEl)` when opening tasks/details panels. Calls `.deactivate()` on close.
+- New helper `cmd/evener-hub/assets/focus-trap.js` (~80 LOC) exposing `window.EvenerFocusTrap.activate(el, returnFocusTo)` and `.deactivate()`. On activate: stores `document.activeElement` as restore target; adds `inert` to all root siblings of `el`; binds a Tab-key handler that cycles focus within `el`. On deactivate: restores focus, removes `inert`, unbinds handler.
+- `renderer.js` calls `EvenerFocusTrap.activate(panelEl, triggerEl)` when opening tasks/details panels. Calls `.deactivate()` on close.
 - `sidebar.js` calls the same for mobile sidebar (`#sidebar` activated by the hamburger).
 - `search.js` migrates from the existing implicit `<dialog>` focus to the explicit helper for consistency (search palette already uses native `<dialog>` so focus trap is already free — but tested for consistency).
 - Adds `cmd/evener-hub/jstest/test-focus-trap.js` covering: open captures activeElement, Tab cycles, Esc restores focus to trigger.
@@ -211,7 +211,7 @@ Goal: every settings sub-page migrates to `settings-table` or `settings-collecti
 
 Goal: the last 10% — interaction polish.
 
-- `#toast-region` added to `app.html`. New `assets/toast.js` exposes `window.SerfToast.show(message, kind, opts)`. JS calls added for: copy session ID (renderer.js), model change (renderer.js / search.js), session shutdown (search.js / workspace.js), settings saved (settings.js), credential set/cleared (credentials inline JS), htmx error (global hook).
+- `#toast-region` added to `app.html`. New `assets/toast.js` exposes `window.EvenerToast.show(message, kind, opts)`. JS calls added for: copy session ID (renderer.js), model change (renderer.js / search.js), session shutdown (search.js / workspace.js), settings saved (settings.js), credential set/cleared (credentials inline JS), htmx error (global hook).
 - `.skeleton` utility CSS. Applied via `data-loading` attribute that htmx swap handlers set during the request.
 - Empty states for: workspace (no session selected), conversation (no messages), sidebar (no projects), search palette (no results), tasks panel, settings sub-pages.
 - Stagger animation on first sidebar render — JS adds `.stagger` class to the Live section on first paint.

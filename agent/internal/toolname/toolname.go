@@ -5,8 +5,8 @@
 // "shell").
 package toolname
 
-// claudeToSerf maps Claude Code tool names to evener canonical names.
-var claudeToSerf = map[string]string{
+// claudeToEvener maps Claude Code tool names to evener canonical names.
+var claudeToEvener = map[string]string{
 	"Read":            "read_file",
 	"Write":           "write_file",
 	"Edit":            "edit_file",
@@ -24,16 +24,16 @@ var claudeToSerf = map[string]string{
 var evenerToClaude map[string]string
 
 func init() {
-	evenerToClaude = make(map[string]string, len(claudeToSerf))
-	for claude, evener := range claudeToSerf {
+	evenerToClaude = make(map[string]string, len(claudeToEvener))
+	for claude, evener := range claudeToEvener {
 		evenerToClaude[evener] = claude
 	}
 }
 
-// ClaudeToSerf converts a Claude Code tool name to evener's canonical name.
+// ClaudeToEvener converts a Claude Code tool name to evener's canonical name.
 // Unknown names pass through unchanged.
-func ClaudeToSerf(name string) string {
-	if mapped, ok := claudeToSerf[name]; ok {
+func ClaudeToEvener(name string) string {
+	if mapped, ok := claudeToEvener[name]; ok {
 		return mapped
 	}
 	return name

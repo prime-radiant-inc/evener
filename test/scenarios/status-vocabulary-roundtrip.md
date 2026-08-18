@@ -140,7 +140,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   (`cmd/evener-hub/internal/hubcore/tree.go:622-627`), whose own comment
   requires **every** TreeNode builder to use it; all three builders do
   (`:792`, `:996`, `:1094`). On the TUI side, `LocalDaemonEntry` now carries
-  `PendingAsk` and `threadFromEntry` sets `SerfThread.AskPending` from it
+  `PendingAsk` and `threadFromEntry` sets `EvenerThread.AskPending` from it
   (`cmd/evener-hub/internal/appsource/local_daemon.go:38-47,799`), so the
   dashboard's per-row `◆` works through the hub, not just on a direct daemon
   attach. `SetPendingAskFunc` no longer exists at all; the live bit comes

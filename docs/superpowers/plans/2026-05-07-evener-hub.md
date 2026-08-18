@@ -2793,8 +2793,8 @@ Create `cmd/evener-hub/templates/live.html`:
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/renderer.js"></script>
 <script>
-  // renderer.js exposes window.SerfRenderer; init it for this page.
-  window.SerfRenderer.init({
+  // renderer.js exposes window.EvenerRenderer; init it for this page.
+  window.EvenerRenderer.init({
     sessionId: {{.SessionID}},
     transcript: document.getElementById("transcript"),
     statusBar: document.getElementById("status-bar"),
@@ -2964,8 +2964,8 @@ func TestWeb_Assets_ServeRenderer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "SerfRenderer") {
-		t.Errorf("renderer.js does not export SerfRenderer")
+	if !strings.Contains(rec.Body.String(), "EvenerRenderer") {
+		t.Errorf("renderer.js does not export EvenerRenderer")
 	}
 }
 ```
@@ -2981,7 +2981,7 @@ Expected: FAIL — renderer.js missing.
 Create `cmd/evener-hub/assets/renderer.js`:
 
 ```javascript
-// SerfRenderer: client-side SSE coalescing for the hub drive page.
+// EvenerRenderer: client-side SSE coalescing for the hub drive page.
 // Subscribes to /live/<sessionId>/events, parses event frames, and
 // updates the transcript pane with coalesced messages, tool calls,
 // and status. Mirrors evener-tui's coalescing model.
@@ -2989,7 +2989,7 @@ Create `cmd/evener-hub/assets/renderer.js`:
 (function () {
   "use strict";
 
-  const SerfRenderer = {
+  const EvenerRenderer = {
     init(opts) {
       this.opts = opts;
       this.sessionId = opts.sessionId;
@@ -3209,7 +3209,7 @@ Create `cmd/evener-hub/assets/renderer.js`:
     }[c]));
   }
 
-  window.SerfRenderer = SerfRenderer;
+  window.EvenerRenderer = EvenerRenderer;
 })();
 ```
 
@@ -3421,7 +3421,7 @@ import (
 // HubSpawner fulfills the web.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg        Config
-	SerfBinary string // path to the evener binary; "" → "evener" on PATH
+	EvenerBinary string // path to the evener binary; "" → "evener" on PATH
 	RunDir     string
 }
 
@@ -3438,7 +3438,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, templateName, workingDir string)
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, t, workingDir, timeout)
+	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, t, workingDir, timeout)
 }
 ```
 
@@ -3641,7 +3641,7 @@ Create `cmd/evener-hub/templates/past_view.html`:
 <script src="/assets/renderer.js"></script>
 <script>
   // Read-only viewer: connect renderer to the replay endpoint instead of /events.
-  window.SerfRenderer.init({
+  window.EvenerRenderer.init({
     sessionId: {{.Meta.ID}},
     transcript: document.getElementById("transcript"),
     statusBar: document.createElement("div"),  // unused
@@ -3655,15 +3655,15 @@ Create `cmd/evener-hub/templates/past_view.html`:
   });
   // Override connect to point at /past replay instead of /live events.
   // For v1, simplest: rewrite the EventSource URL after init.
-  window.SerfRenderer.eventSource.close();
-  window.SerfRenderer.eventSource = new EventSource(
+  window.EvenerRenderer.eventSource.close();
+  window.EvenerRenderer.eventSource = new EventSource(
     "/past/" + encodeURIComponent({{.Meta.ID}}) + "/replay"
   );
   ["SESSION_START","USER_INPUT","ASSISTANT_TEXT_START","ASSISTANT_TEXT_DELTA",
    "ASSISTANT_TEXT_END","TOOL_CALL_START","TOOL_CALL_OUTPUT_DELTA","TOOL_CALL_END",
    "WARNING","ERROR"].forEach((kind) => {
-    window.SerfRenderer.eventSource.addEventListener(kind, (ev) =>
-      window.SerfRenderer.handle(kind, ev));
+    window.EvenerRenderer.eventSource.addEventListener(kind, (ev) =>
+      window.EvenerRenderer.handle(kind, ev));
   });
 </script>
 {{end}}
@@ -3996,7 +3996,7 @@ func (h *HubSpawner) Resume(ctx context.Context, sessionID string) (rendezvous.E
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, sessionID, timeout)
+	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, sessionID, timeout)
 }
 ```
 
@@ -4156,7 +4156,7 @@ func main() {
 	// Spawner
 	spawner := &HubSpawner{
 		Cfg:        cfg,
-		SerfBinary: *evenerBinary,
+		EvenerBinary: *evenerBinary,
 		RunDir:     runDir,
 	}
 

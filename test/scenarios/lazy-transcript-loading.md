@@ -11,7 +11,7 @@ catches it.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The old
-`window.SerfRenderer.olderTurnsCursor` probe and `.conversation`/`.sb-row`
+`window.EvenerRenderer.olderTurnsCursor` probe and `.conversation`/`.sb-row`
 selectors this card used to drive died with the vanilla frontend
 (`660376f78`); there is no renderer handle to read a cursor out of any more.
 
@@ -130,7 +130,7 @@ programs and the `$run` scratch dir. Leave any real hub untouched.
   browser window size. Assert on `load-older-row`'s presence and on which
   message numbers are reachable instead.
 - **The paging cursor is not readable from the page.** There is no
-  `window.SerfRenderer` and nothing else global; `model.olderCursor` lives in
+  `window.EvenerRenderer` and nothing else global; `model.olderCursor` lives in
   the zustand store. Check the cursor values at the transport level (step 1)
   and use the row's presence/absence as the browser-side proxy.
 - **AppWire frames carry no `jsonrpc` field.** Sending the JSON-RPC 2.0

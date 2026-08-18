@@ -45,7 +45,7 @@
 Run from repo root:
 
 ```bash
-grep -rn 'func DiscoverSerfConfig' agent/ || echo "MISSING: SP1 DiscoverSerfConfig"
+grep -rn 'func DiscoverEvenerConfig' agent/ || echo "MISSING: SP1 DiscoverEvenerConfig"
 grep -rn 'func NewPermissionMatcher' agent/ || echo "MISSING: SP2 NewPermissionMatcher"
 grep -rn 'func.*Installer.*Lookup' internal/plugins/ || echo "MISSING: SP4 Installer.Lookup"
 grep -rn 'func ResolveUserConfig' agent/ || echo "MISSING: SP7 ResolveUserConfig"
@@ -332,7 +332,7 @@ type pluginInstaller interface {
 type trustEnforcer interface {
 	// EnforceTrustOnConfig prunes untrusted project-tier marketplaces from cfg
 	// and returns the (possibly modified) cfg. Source: SP3 §7.1.
-	EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error)
+	EnforceTrustOnConfig(cfg EvenerConfig) (EvenerConfig, error)
 }
 ```
 
@@ -499,9 +499,9 @@ Permissions PermissionsConfig
 // and no hook responds. Source: SP2 §9.
 PermissionAskFallback AskFallback
 
-// MergedConfig is the full SerfConfig from SP1's loader, carried on the
+// MergedConfig is the full EvenerConfig from SP1's loader, carried on the
 // session for ConfigChange diffing (SP5 §3.9) and observability.
-MergedConfig SerfConfig
+MergedConfig EvenerConfig
 
 // EnabledPluginPaths is the ordered (plugin, cache, version, source) tuple
 // list produced by SP8's resolver. When populated, NewSession loads from
@@ -540,7 +540,7 @@ func (c *SessionConfig) validatePluginSources() error {
 }
 ```
 
-If `SerfConfig`, `PermissionsConfig`, `AskFallback`, `PluginConfigStore`, `SecureStore`, `UserConfigPrompter` don't yet exist (SP1/SP2/SP7 not merged), add minimum stub declarations at the bottom of `session_bootstrap.go` with `// TODO: replace with SP{N} export once merged` comments. Do not add bodies — empty structs / nil interfaces are enough for compile.
+If `EvenerConfig`, `PermissionsConfig`, `AskFallback`, `PluginConfigStore`, `SecureStore`, `UserConfigPrompter` don't yet exist (SP1/SP2/SP7 not merged), add minimum stub declarations at the bottom of `session_bootstrap.go` with `// TODO: replace with SP{N} export once merged` comments. Do not add bodies — empty structs / nil interfaces are enough for compile.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -559,7 +559,7 @@ git commit -m "agent: add SP8 fields to SessionConfig with plugin-source validat
 
 ---
 
-## Task 6: `BuildSessionConfig` — DiscoverSerfConfig call (pipeline step 1)
+## Task 6: `BuildSessionConfig` — DiscoverEvenerConfig call (pipeline step 1)
 
 **Files:**
 - Modify: `agent/session_bootstrap.go`
@@ -589,11 +589,11 @@ func TestBuildSessionConfig_LoadsDiscoveredConfig(t *testing.T) {
 	flags := BootstrapFlags{ConfigPaths: []string{configPath}}
 
 	sc, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(env ExecutionEnvironment, paths []string) (SerfConfig, error) {
+		discover: func(env ExecutionEnvironment, paths []string) (EvenerConfig, error) {
 			if len(paths) != 1 || paths[0] != configPath {
 				t.Fatalf("discover got paths=%v, want [%q]", paths, configPath)
 			}
-			return SerfConfig{
+			return EvenerConfig{
 				Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
 			}, nil
 		},
@@ -611,8 +611,8 @@ func TestBuildSessionConfig_LoadsDiscoveredConfig(t *testing.T) {
 
 func TestBuildSessionConfig_DiscoverError_Fatal(t *testing.T) {
 	_, err := BuildSessionConfig(ExecutionEnvironment{}, BootstrapFlags{}, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, fmt.Errorf("parse error in /etc/x.json: bad json")
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, fmt.Errorf("parse error in /etc/x.json: bad json")
 		},
 	})
 	if err == nil {
@@ -640,7 +640,7 @@ Append to `agent/session_bootstrap.go`:
 // bootstrapDeps lets tests substitute the collaborator surfaces.
 // Production code uses defaultBootstrapDeps(). Each field cites its owning SP.
 type bootstrapDeps struct {
-	discover         func(ExecutionEnvironment, []string) (SerfConfig, error) // SP1
+	discover         func(ExecutionEnvironment, []string) (EvenerConfig, error) // SP1
 	installer        pluginInstaller                                          // SP4
 	trust            trustEnforcer                                            // SP3
 	newMatcher       func(PermissionsConfig, ExecutionEnvironment) (*PermissionMatcher, error) // SP2
@@ -648,7 +648,7 @@ type bootstrapDeps struct {
 
 func defaultBootstrapDeps() bootstrapDeps {
 	return bootstrapDeps{
-		discover:   DiscoverSerfConfig,
+		discover:   DiscoverEvenerConfig,
 		newMatcher: NewPermissionMatcher,
 		// installer and trust are nil here; the binary wires them.
 	}
@@ -663,7 +663,7 @@ func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps boo
 		// Preserve any caller overrides for installer/trust/newMatcher.
 	}
 
-	// Step 1: load merged SerfConfig.
+	// Step 1: load merged EvenerConfig.
 	cfg, err := deps.discover(env, flags.ConfigPaths)
 	if err != nil {
 		return SessionConfig{}, fmt.Errorf("load evener config: %w", err)
@@ -693,7 +693,7 @@ Expected: PASS.
 
 ```bash
 git add agent/session_bootstrap.go agent/session_bootstrap_test.go
-git commit -m "agent: BuildSessionConfig step 1 — load merged SerfConfig"
+git commit -m "agent: BuildSessionConfig step 1 — load merged EvenerConfig"
 ```
 
 ---
@@ -711,10 +711,10 @@ Append to `agent/session_bootstrap_test.go`:
 ```go
 type fakeTrust struct {
 	called bool
-	prune  func(SerfConfig) SerfConfig
+	prune  func(EvenerConfig) EvenerConfig
 }
 
-func (f *fakeTrust) EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error) {
+func (f *fakeTrust) EnforceTrustOnConfig(cfg EvenerConfig) (EvenerConfig, error) {
 	f.called = true
 	if f.prune != nil {
 		cfg = f.prune(cfg)
@@ -724,14 +724,14 @@ func (f *fakeTrust) EnforceTrustOnConfig(cfg SerfConfig) (SerfConfig, error) {
 
 func TestBuildSessionConfig_RunsTrustEnforcer(t *testing.T) {
 	trust := &fakeTrust{
-		prune: func(c SerfConfig) SerfConfig {
+		prune: func(c EvenerConfig) EvenerConfig {
 			delete(c.EnabledPlugins, "untrusted@market")
 			return c
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{"untrusted@market": true, "good@market": true},
 			}, nil
 		},
@@ -782,7 +782,7 @@ Final `BuildSessionConfig` body so far:
 ```go
 func BuildSessionConfig(env ExecutionEnvironment, flags BootstrapFlags, deps bootstrapDeps) (SessionConfig, error) {
 	if deps.discover == nil {
-		deps.discover = DiscoverSerfConfig
+		deps.discover = DiscoverEvenerConfig
 	}
 	if deps.newMatcher == nil {
 		deps.newMatcher = NewPermissionMatcher
@@ -848,8 +848,8 @@ func TestBuildSessionConfig_ResolvesEnabledPlugins(t *testing.T) {
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{
 					"foo@market": true,
 					"bar@market": true,
@@ -887,8 +887,8 @@ func TestBuildSessionConfig_NotInstalled_WarnsAndSkips(t *testing.T) {
 		},
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{
 					"missing@market": true,
 					"good@market":    true,
@@ -911,8 +911,8 @@ func TestBuildSessionConfig_NotInstalled_WarnsAndSkips(t *testing.T) {
 
 func TestBuildSessionConfig_MalformedPluginSpec_WarnsAndSkips(t *testing.T) {
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{
 				EnabledPlugins: map[string]any{"bare-no-at": true},
 			}, nil
 		},
@@ -1014,8 +1014,8 @@ func TestBuildSessionConfig_AppendsPluginDirs(t *testing.T) {
 	dir := t.TempDir()
 	flags := BootstrapFlags{PluginDirs: []string{filepath.Join(dir, "foo"), filepath.Join(dir, "bar")}}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, nil
 		},
 	}
 	sc, err := BuildSessionConfig(ExecutionEnvironment{}, flags, deps)
@@ -1044,8 +1044,8 @@ func TestBuildSessionConfig_EnabledThenPluginDir_Order(t *testing.T) {
 	}
 	flags := BootstrapFlags{PluginDirs: []string{"/tmp/devplug"}}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"a@m": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"a@m": true}}, nil
 		},
 		installer: installer,
 	}
@@ -1133,8 +1133,8 @@ func TestBuildSessionConfig_CarriesStoresAndPrompter(t *testing.T) {
 		Prompter: pr,
 	}
 	deps := bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{}, nil
 		},
 	}
 	// Inject stores via deps once we add them.
@@ -1321,7 +1321,7 @@ Append to `agent/session_test.go`:
 ```go
 func TestHookUnion_ConfigBeforePlugins(t *testing.T) {
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PreToolUse": {{Matcher: "Bash", Command: "echo CONFIG"}},
 			},
@@ -1881,7 +1881,7 @@ func TestExecTool_FiresPostToolUseFailure_OnError(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "fired")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostToolUseFailure": {{
 					Matcher: "Bash",
@@ -1962,7 +1962,7 @@ func TestRoundLoop_FiresPostToolBatch(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "batch")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostToolBatch": {{
 					Command: "bash -c 'echo batch > " + sentinel + "'",
@@ -2063,7 +2063,7 @@ func TestProcessOneInput_FiresStopFailure_OnAPIError(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "stop")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"StopFailure": {{
 					Command: "bash -c 'echo stop > " + sentinel + "'",
@@ -2179,7 +2179,7 @@ func TestSpawnAgent_FiresSubagentStart(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "sub")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"SubagentStart": {{
 					Command: "bash -c 'echo sub > " + sentinel + "'",
@@ -2261,7 +2261,7 @@ func TestProcessOneInput_FiresUserPromptExpansion_OnSkill(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "expand")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"UserPromptExpansion": {{
 					Command: "bash -c 'echo expand > " + sentinel + "'",
@@ -2369,7 +2369,7 @@ func TestCompactStrategy_FiresPostCompact(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "comp")
 	cfg := SessionConfig{
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PostCompact": {{
 					Command: "bash -c 'echo comp > " + sentinel + "'",
@@ -3179,8 +3179,8 @@ func TestSP8_MarketplaceAddInstallRunUninstall(t *testing.T) {
 	flags := BootstrapFlags{}
 	env := ExecutionEnvironment{WorkingDir: t.TempDir()}
 	sc, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
 		},
 		installer: installerAdapter{inst},
 	})
@@ -3209,8 +3209,8 @@ func TestSP8_MarketplaceAddInstallRunUninstall(t *testing.T) {
 	_ = os.Remove(sentinel)
 
 	sc2, err := BuildSessionConfig(env, flags, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"sp8-basic@sp8-basic": true}}, nil
 		},
 		installer: installerAdapter{inst},
 	})
@@ -3366,7 +3366,7 @@ func TestSP8_PermissionsEnforcedFromConfig(t *testing.T) {
 
 	cfg := SessionConfig{
 		Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Permissions: PermissionsConfig{Deny: []string{"Bash(rm:*)"}},
 			Hooks: map[string][]HookConfig{
 				"PermissionDenied": {{Command: "bash -c 'echo denied > $SP8_DENY_HOOK'"}},
@@ -3420,7 +3420,7 @@ func TestSP8_PermissionsAskFallback_NonInteractive(t *testing.T) {
 			Ask:         []string{"Bash(*)"},
 			DefaultMode: "default",
 		},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PermissionRequest": {{Command: "bash -c 'echo asked > $SP8_REQ_HOOK'"}},
 			},
@@ -3477,7 +3477,7 @@ func TestSP8_HookUnion_ConfigAndPlugin(t *testing.T) {
 
 	cfg := SessionConfig{
 		PluginDirs: []string{pluginDir},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Hooks: map[string][]HookConfig{
 				"PreToolUse": {{Command: "bash -c 'echo config >> $ORDER_FILE'"}},
 			},
@@ -3529,7 +3529,7 @@ func TestSP8_MCPUnion_ConfigAndPlugin(t *testing.T) {
 
 	cfg := SessionConfig{
 		PluginDirs: []string{pluginDir},
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			MCPServers: map[string]MCPServerConfig{
 				"foo": {Name: "foo", Command: "from-config", Type: "stdio"},
 			},
@@ -3820,8 +3820,8 @@ git commit -m "test: SP8 --plugin-dir shadows enabledPlugins same-name entry"
 ```go
 func TestSP8_PluginMissingWarnsNotFatal(t *testing.T) {
 	sc, err := BuildSessionConfig(ExecutionEnvironment{}, BootstrapFlags{}, bootstrapDeps{
-		discover: func(ExecutionEnvironment, []string) (SerfConfig, error) {
-			return SerfConfig{EnabledPlugins: map[string]any{"not-installed@x": true}}, nil
+		discover: func(ExecutionEnvironment, []string) (EvenerConfig, error) {
+			return EvenerConfig{EnabledPlugins: map[string]any{"not-installed@x": true}}, nil
 		},
 		installer: &fakeInstaller{}, // empty
 	})
@@ -3864,7 +3864,7 @@ func TestSP8_MalformedConfigFatal(t *testing.T) {
 
 	_, err := BuildSessionConfig(ExecutionEnvironment{WorkingDir: dir},
 		BootstrapFlags{ConfigPaths: []string{cfgPath}},
-		bootstrapDeps{discover: DiscoverSerfConfig})
+		bootstrapDeps{discover: DiscoverEvenerConfig})
 	if err == nil {
 		t.Fatal("expected fatal error on malformed config")
 	}
@@ -3917,7 +3917,7 @@ func TestSP8_TrustPrompt_ProjectMarketplace(t *testing.T) {
 	sc, err := BuildSessionConfig(ExecutionEnvironment{WorkingDir: proj},
 		BootstrapFlags{},
 		bootstrapDeps{
-			discover: DiscoverSerfConfig,
+			discover: DiscoverEvenerConfig,
 			trust:    trust,
 		})
 	if err != nil {
@@ -4135,7 +4135,7 @@ func TestSP8_ConfigChange_Reload(t *testing.T) {
 
 	cfg := SessionConfig{
 		WatchConfig: true,
-		MergedConfig: SerfConfig{
+		MergedConfig: EvenerConfig{
 			Sources: []string{cfgPath},
 			Hooks: map[string][]HookConfig{
 				"ConfigChange": {{Command: "bash -c 'echo cc > $CC_S'"}},

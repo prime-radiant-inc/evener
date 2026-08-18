@@ -166,7 +166,7 @@ func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	}
 }
 
-func TestWriteSessionActionErrorSetsSerfErrorInfoHeader(t *testing.T) {
+func TestWriteSessionActionErrorSetsEvenerErrorInfoHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/s/01TEST/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
 	writeSessionActionError(rec, req, appwire.QueuedDrainPartial("queued but drain failed"))
@@ -191,7 +191,7 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 	}
 }
 
-func TestActiveTurnIDFromAppwireThreadPrefersSerfActiveTurn(t *testing.T) {
+func TestActiveTurnIDFromAppwireThreadPrefersEvenerActiveTurn(t *testing.T) {
 	got := activeTurnIDFromAppwireThread(appwire.Thread{
 		Evener: appwire.EvenerThread{ActiveTurnID: "turn_live"},
 		Turns: []appwire.Turn{
@@ -2648,7 +2648,7 @@ func disableStoredOpenAIAuthForModelTest(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 }
 
-func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T) {
+func TestWeb_ApiModels_ReturnsEvenerLaunchContractWhenLiveUnavailable(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -2689,7 +2689,7 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	}
 }
 
-func TestWeb_ApiModels_UsesWorkingDirForSerfLaunchContract(t *testing.T) {
+func TestWeb_ApiModels_UsesWorkingDirForEvenerLaunchContract(t *testing.T) {
 	spawner := &fakeWorkingDirModelContractSpawner{
 		fallback: appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{{Provider: "stale", Model: "wrong"}},

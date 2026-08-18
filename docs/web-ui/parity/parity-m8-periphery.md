@@ -122,7 +122,7 @@ its proper section below — this is a highlight reel, not a separate obligation
    would matter. See §3.8.
 4. **"Open beside" on an image can silently fail depending on where it's clicked from.** A
    sha-addressed `/s/{id}/images/{sha}` href opens fine from the un-framed top-level workspace
-   (`SerfPanes.open()` applies no href allowlist there), but the SAME control clicked from inside an
+   (`EvenerPanes.open()` applies no href allowlist there), but the SAME control clicked from inside an
    already-open pane is dropped silently by the postMessage bridge, whose `isPaneSafeHref` only
    allows `/thread/`/`/doc/` prefixes. See §3.8.
 5. **Panes are iframes with no live theme sync.** No `storage` event listener exists anywhere in the
@@ -393,7 +393,7 @@ single-pane mode needs to replicate through its own layout state.
 - [ ] `#workspace` wraps the exact same `{{template "workspace" .}}` partial the regular session
       route renders — content structure is fully shared; only surrounding chrome differs —
       `templates/thread.html:23-25`
-- [ ] Own `#toast-region` — `SerfToast` is self-contained per document, so a pane's toasts never
+- [ ] Own `#toast-region` — `EvenerToast` is self-contained per document, so a pane's toasts never
       appear in the parent shell — `templates/thread.html:26`
 - [ ] Forbidden markup (tested): `#sidebar`, `#search-dialog`, `[data-sidebar-toggle]`,
       `.settings-link` must NOT appear anywhere in the rendered document — verified by
@@ -555,7 +555,7 @@ to drop).
 - [ ] Suppression is the mechanism that keeps AUTO-OPENED panes (observers, see §3.7) from
       reappearing after a user explicitly dismisses them — a closed pane's href is added to
       `evener-hub.panes.closed` and checked by `renderer.js`'s auto-open path before it calls
-      `SerfPanes.open()` — `panes.js:271-284` (`suppress`/`unsuppress`/`isSuppressed`),
+      `EvenerPanes.open()` — `panes.js:271-284` (`suppress`/`unsuppress`/`isSuppressed`),
       `renderer.js:403` (`isSuppressed` check gating `autoOpenObservers`)
 - [ ] Suppression persists across reload/re-init (it's the whole point) — it survives independently
       of the `evener-hub.panes` open-set key, so a dismissed pane stays dismissed even though it's no
@@ -581,7 +581,7 @@ to drop).
       object literally has an `afterHref` own-property (`hasOwnProperty` check, not just
       truthiness) — distinguishes "insert after this specific href" from "no ordering preference" —
       `panes.js:154`, `panes.js:142-144`
-- [ ] Producer-side selection logic (`renderer.js`'s `openBeside(spec)`): try `window.SerfPanes.open()`
+- [ ] Producer-side selection logic (`renderer.js`'s `openBeside(spec)`): try `window.EvenerPanes.open()`
       directly first (only ever true in the un-framed host document, since `panes.js` is never
       loaded inside a pane — see §2.4); fall back to `window.parent.postMessage(...)` only when
       `isInPane()` is true — `renderer.js:372-383`
@@ -589,12 +589,12 @@ to drop).
       cross-origin parent (shouldn't happen here, but defensively) doesn't throw — treats any thrown
       access as "yes, framed" — `renderer.js:132-134`
 - [ ] `makeOpenBesideButton()` (the shared ⇲ control builder used by every "open beside" affordance)
-      refuses to render the control at all when NEITHER `window.SerfPanes` NOR `isInPane()` is
+      refuses to render the control at all when NEITHER `window.EvenerPanes` NOR `isInPane()` is
       available — i.e. the affordance is hidden entirely in a context that could neither open
       locally nor bridge — `renderer.js:3986-3987`
 - [ ] End-to-end protocol behavior is independently verified by a dedicated jsdom test harness:
       known-child open succeeds and the href appears in `openHrefs()`; a cross-origin href is
-      rejected; an unknown source window is rejected; a framed `SerfPanes.open()` call (no
+      rejected; an unknown source window is rejected; a framed `EvenerPanes.open()` call (no
       `#side-panes` in that document) posts the bridge message instead of opening a local pane and
       itself returns `null` — `jstest/test-thread-document-bridge.js:48-72`
 
@@ -633,7 +633,7 @@ to drop).
 - [ ] All three producers above converge on the same shared `makeOpenBesideButton()` control builder
       and the same `openBeside()`/postMessage-bridge decision logic — `renderer.js:3980-4007`
 - [ ] Sidebar's context-menu "Open beside" item and its subagent-row-wrap ⇲ button call
-      `window.SerfPanes.open()` DIRECTLY, with no `isInPane`/postMessage fallback at all — correct
+      `window.EvenerPanes.open()` DIRECTLY, with no `isInPane`/postMessage fallback at all — correct
       only because `sidebar.js` never itself runs inside a pane iframe (it's absent from
       `thread.html`'s script list, §2.4) — `sidebar.js:276`, `sidebar.js:1136-1153`
 - [ ] Auto-open: a worker session's LIVE observer subagents (`data-observers` on `#conversation`,
@@ -663,7 +663,7 @@ to drop).
       not the real template), `templates/partials/workspace.html:6-8` (actual gating)
 - [ ] Image "open beside" hrefs (`/s/{id}/images/{sha}`) are NOT on `isPaneSafeHref`'s allowlist
       (only `/thread/`/`/doc/` prefixes pass) — opening such an image works fine when the control is
-      clicked from the un-framed top-level workspace (direct `SerfPanes.open()` call applies no
+      clicked from the un-framed top-level workspace (direct `EvenerPanes.open()` call applies no
       allowlist), but the SAME control, clicked from inside an already-open pane, is silently
       dropped by the postMessage bridge. Decide whether image-open-beside should work from inside a
       nested pane (extend the allowlist, or route these through `/doc/image` instead) —

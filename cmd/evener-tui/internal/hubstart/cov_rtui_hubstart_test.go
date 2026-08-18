@@ -26,15 +26,15 @@ func TestHubRPCURL(t *testing.T) {
 	}
 }
 
-func TestStateHomeForSerfStateDir(t *testing.T) {
-	got := StateHomeForSerfStateDir("/home/me/.local/state/evener")
+func TestStateHomeForEvenerStateDir(t *testing.T) {
+	got := StateHomeForEvenerStateDir("/home/me/.local/state/evener")
 	want := filepath.Dir(filepath.Clean("/home/me/.local/state/evener"))
 	if got != want {
-		t.Fatalf("StateHomeForSerfStateDir = %q, want %q", got, want)
+		t.Fatalf("StateHomeForEvenerStateDir = %q, want %q", got, want)
 	}
 	// Trailing slash + whitespace are cleaned before taking the parent.
-	if got := StateHomeForSerfStateDir("  /a/b/evener/  "); got != "/a/b" {
-		t.Fatalf("StateHomeForSerfStateDir(padded) = %q, want /a/b", got)
+	if got := StateHomeForEvenerStateDir("  /a/b/evener/  "); got != "/a/b" {
+		t.Fatalf("StateHomeForEvenerStateDir(padded) = %q, want /a/b", got)
 	}
 }
 

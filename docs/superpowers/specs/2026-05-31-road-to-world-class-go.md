@@ -198,7 +198,7 @@ deeper subpackages deferred behind the seam/test work (per the in-flight PRI-194
   `StopResult`, `SubAgentStatus`, `ToolInfo`, `ToolMiddleware`, `TranscriptData`, `EnvVarPolicy`,
   `PromptSource`. (Zero-risk; can land immediately — they are internal-only.)
 - The prompt-data/tool-mapping internals: `AgentEntry`, `AgentTaskEntry`, `PromptData`, `SectionResolver`,
-  `SectionSource`, `MapClaudeToolName`, `MapSerfToolNameToClaude`, `ApplyPatch`, `EstimateTokens`.
+  `SectionSource`, `MapClaudeToolName`, `MapEvenerToolNameToClaude`, `ApplyPatch`, `EstimateTokens`.
 
 **Slim `SessionConfig` (severity high).** It carries test-only and spawn-internal fields no app sets:
 `ContextStrategyOverride` ("For testing"), `CompactionThresholdScale` ("for evaluation testing"),
@@ -316,7 +316,7 @@ verified app-call counts in parens (entry point → count):
 | strategy / context | `ContextManager`(NewContextManager→0), `ContextStrategy`, 8×`*Strategy`+`New*`, `StrategyHost` | 0 |
 | tools / MCP / hooks | `ToolRegistry`, `RegisteredTool`, `MCPManager`+`NewMCPManager`, `HookRunner`+`NewHookRunner` | 0 |
 | transcript helpers | `ReadTranscriptFull`, `TranscriptData`, ReadTranscript variants | 0 |
-| tool-map utils | `MapClaudeToolName`, `MapSerfToolNameToClaude`, `ApplyPatch`, `EstimateTokens` | 0 |
+| tool-map utils | `MapClaudeToolName`, `MapEvenerToolNameToClaude`, `ApplyPatch`, `EstimateTokens` | 0 |
 | naming | `SubAgent*` → `Subagent*` (public rename; event surface already uses `Subagent`) | n/a |
 
 Net ~80–120 symbols, **all 0-app-ref** (used only inside `agent` + agent's own tests). So

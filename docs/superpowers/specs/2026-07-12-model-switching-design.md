@@ -77,7 +77,7 @@ This spec finishes the feature. Ten deltas:
 | Capability | `ThreadCapabilities.ChangeModel` = `modelFunc != nil && !closed`; surfaced to web + TUI | `server/appwire_runtime.go:639`, `appwire/types.go:347` |
 | TUI command | `/model` — no args opens picker (`fetchHubSessionModels` → `model/list`), arg form sends directly | `cmd/evener-tui/hub_command_registry.go:303-329` |
 | TUI picker | `tuipick.ModelPicker`, already used for spawn/live/transcript-target | `cmd/evener-tui/internal/tuipick/model_picker.go:27` |
-| Web switch | Command palette "Switch model" → `fetchModels()` (`model/list`) → `SerfAppwire.setModel` | `cmd/evener-hub/assets/search.js:337` |
+| Web switch | Command palette "Switch model" → `fetchModels()` (`model/list`) → `EvenerAppwire.setModel` | `cmd/evener-hub/assets/search.js:337` |
 | Web chip | Header `.composer-model` renders `button[data-model-trigger]` when `ChangeModel` | `cmd/evener-hub/templates/partials/workspace.html:71-78` |
 | Model catalog on the wire | `model/list` (scope both) returns `ModelDescriptor`s; spawn path also carries `reasoning_effort_levels` | `cmd/evener-hub/web_spawn.go:382` |
 | Delegate override | `delegate` tool `model` param, "default: parent model"; child inherits parent's *current* profile at spawn | `agent/internal/tool/definitions.go:128`, `agent/subagents.go:361-383` |
@@ -312,7 +312,7 @@ Additive only; no changes to existing methods or params.
   emitted by the setters; projector cases in
   `internal/appprojector/appwire_projection.go` mapping them to the
   notifications (template: `EventSessionNameChanged` at `:652`).
-- Thread snapshot: `SerfThread` gains `reasoningEffort`,
+- Thread snapshot: `EvenerThread` gains `reasoningEffort`,
   `reasoningEffortLevels`, and `supportsReasoning` — cold-attached clients
   must be able to render both settings and populate pickers with no prior
   notification (the appwire `model/list` carries provider+model only,

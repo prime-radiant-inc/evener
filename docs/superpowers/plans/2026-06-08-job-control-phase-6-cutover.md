@@ -82,9 +82,9 @@ agent/events/events.go                        R  EventSubagentStart/End kinds �
 agent/events/payloads.go                      R  SubagentStartData/EndData → job-lifecycle payloads
 agent/events/eventdata.go                     R  the eventKind() bindings + the compile-time _ EventData asserts
 internal/appprojector/appwire_projection.go   R  switch on EventSubagentStart/End → job-lifecycle events
-appwire/types.go                              R  NotifySerfSubagentStarted/Ended + SerfSubagentInfo + Subagents field → job equivalents
+appwire/types.go                              R  NotifyEvenerSubagentStarted/Ended + EvenerSubagentInfo + Subagents field → job equivalents
 server/server.go                              R  SubagentStatusInfo + Subagents field → job equivalents
-server/appwire_runtime.go                     R  SerfSubagentInfo population from the snapshot → job equivalents
+server/appwire_runtime.go                     R  EvenerSubagentInfo population from the snapshot → job equivalents
 agent/status.go                               R  SubagentInfo / SubagentStatus(snapshot) / Subagents field → JobRecord projection
 agent/schema/snapshot.go                      (audit) IsSubagent bool — internal-naming; keep unless it surfaces in a UI/model wire shape
 agent/session_outline.go                      R  subagentLifecycleTools / decodeSubagentResult / extractSubagentResult cluster keyed on old tool names
@@ -195,7 +195,7 @@ git commit -m "refactor(agent): delete legacy subagent tool defs, registration, 
 These three switch statements key per-tool **behavior** on the old names; each is a gate-token hit (`spawn_agent`) and a functional bug if left (the new `delegate` tool would get the default truncation/render instead of the agent-specific one).
 
 **Symbols:**
-- `agent/internal/toolname/toolname.go` — `claudeToSerf` map, the `"Task": "spawn_agent"` entry (Claude `Task` ↔ evener canonical). Verified at the map literal.
+- `agent/internal/toolname/toolname.go` — `claudeToEvener` map, the `"Task": "spawn_agent"` entry (Claude `Task` ↔ evener canonical). Verified at the map literal.
 - `agent/internal/tool/registry.go` — `defaultToolLimit(toolName string)`, the `case "spawn_agent":` output-truncation limit.
 - `agent/internal/contextmgr/context_manager.go` — the compaction-render switch, `case "spawn_agent":` which calls `extractJSONField(contentStr, "agent_id")` and renders `[spawn_agent: ...]`.
 
@@ -263,18 +263,18 @@ git commit -m "refactor(events): rename EventSubagentStart/End to job-lifecycle 
 ## Task 6: repoint the appwire wire protocol + appprojector translation
 
 **Symbols:**
-- `appwire/types.go` — `NotifySerfSubagentStarted = "evener/subagent/started"`, `NotifySerfSubagentEnded = "evener/subagent/completed"`, `type SerfSubagentInfo struct{...}`, and the `Subagents []SerfSubagentInfo` field on the snapshot/status struct.
-- `internal/appprojector/appwire_projection.go` — the `switch` arms `case events.EventSubagentStart:` / `case events.EventSubagentEnd:` that build `p.notification(appwire.NotifySerfSubagentStarted, ...)` / `...Ended`.
+- `appwire/types.go` — `NotifyEvenerSubagentStarted = "evener/subagent/started"`, `NotifyEvenerSubagentEnded = "evener/subagent/completed"`, `type EvenerSubagentInfo struct{...}`, and the `Subagents []EvenerSubagentInfo` field on the snapshot/status struct.
+- `internal/appprojector/appwire_projection.go` — the `switch` arms `case events.EventSubagentStart:` / `case events.EventSubagentEnd:` that build `p.notification(appwire.NotifyEvenerSubagentStarted, ...)` / `...Ended`.
 
-**Decision:** rename to job wire notifications: `NotifySerfJobStarted = "evener/job/started"`, `NotifySerfJobFinished = "evener/job/finished"`, `type SerfJobInfo struct{ JobID, JobType, Status string; ... }`, field `Jobs []SerfJobInfo`. Keep the JSON `method` strings and field names consistent with what the JS client (Task 8) will switch on.
+**Decision:** rename to job wire notifications: `NotifyEvenerJobStarted = "evener/job/started"`, `NotifyEvenerJobFinished = "evener/job/finished"`, `type EvenerJobInfo struct{ JobID, JobType, Status string; ... }`, field `Jobs []EvenerJobInfo`. Keep the JSON `method` strings and field names consistent with what the JS client (Task 8) will switch on.
 
-- [ ] **Step 1: appwire/types.go.** Rename the two `Notify*` consts, `SerfSubagentInfo`→`SerfJobInfo` (reshape its fields to `job_id`/`job_type`/`status`/… matching the snapshot projection), and the `Subagents`→`Jobs` field (keep or update the JSON tag — pick `jobs` and update Task 7/8 to match). `rg -n -A6 'type SerfSubagentInfo' appwire/types.go` first to see the fields.
+- [ ] **Step 1: appwire/types.go.** Rename the two `Notify*` consts, `EvenerSubagentInfo`→`EvenerJobInfo` (reshape its fields to `job_id`/`job_type`/`status`/… matching the snapshot projection), and the `Subagents`→`Jobs` field (keep or update the JSON tag — pick `jobs` and update Task 7/8 to match). `rg -n -A6 'type EvenerSubagentInfo' appwire/types.go` first to see the fields.
 
-- [ ] **Step 2: appprojector.** `rg -n 'EventSubagentStart|EventSubagentEnd|NotifySerfSubagent' internal/appprojector/appwire_projection.go`. Rename the switch arms to `case events.EventJobStarted:` / `case events.EventJobFinished:`, build `appwire.NotifySerfJobStarted`/`...Finished`, and map the event payload fields (`job_id`/`status`/`type` from Task 5) into the notification params. Read the current arm bodies to preserve the param keys the JS expects, then update the JS in Task 8 to match.
+- [ ] **Step 2: appprojector.** `rg -n 'EventSubagentStart|EventSubagentEnd|NotifyEvenerSubagent' internal/appprojector/appwire_projection.go`. Rename the switch arms to `case events.EventJobStarted:` / `case events.EventJobFinished:`, build `appwire.NotifyEvenerJobStarted`/`...Finished`, and map the event payload fields (`job_id`/`status`/`type` from Task 5) into the notification params. Read the current arm bodies to preserve the param keys the JS expects, then update the JS in Task 8 to match.
 
 - [ ] **Step 3: Build both modules.** From the repo root, `make build` (it builds all modules in the workspace) — or target them: `cd appwire && go build ./...` and `cd internal/appprojector && go build ./...`. Fix any straggler. The compiler will flag `server` next (Task 7).
 
-- [ ] **Step 4: Tests.** `rg -rn 'NotifySerfSubagent|SerfSubagentInfo|EventSubagentStart|EventSubagentEnd' appwire/ internal/appprojector/ | rg '_test\.go'`. Rename in tests. Run: `cd appwire && go test ./... ; cd internal/appprojector && go test ./...`. Expected: PASS.
+- [ ] **Step 4: Tests.** `rg -rn 'NotifyEvenerSubagent|EvenerSubagentInfo|EventSubagentStart|EventSubagentEnd' appwire/ internal/appprojector/ | rg '_test\.go'`. Rename in tests. Run: `cd appwire && go test ./... ; cd internal/appprojector && go test ./...`. Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -290,17 +290,17 @@ git commit -m "refactor(appwire): rename evener/subagent wire notifications to e
 
 **Symbols:**
 - `server/server.go` — `type SubagentStatusInfo struct{...}` and the `Subagents []SubagentStatusInfo` field on the status struct.
-- `server/appwire_runtime.go` — the line populating `appwire.SerfSubagentInfo` from the snapshot (`out.Subagents = append(out.Subagents, appwire.SerfSubagentInfo{...})`).
+- `server/appwire_runtime.go` — the line populating `appwire.EvenerSubagentInfo` from the snapshot (`out.Subagents = append(out.Subagents, appwire.EvenerSubagentInfo{...})`).
 
-- [ ] **Step 1: server.go.** `rg -n 'SubagentStatusInfo|Subagents' server/server.go`. Rename `SubagentStatusInfo`→`JobStatusInfo` (reshape fields to `job_id`/`job_type`/`status`/… mirroring `appwire.SerfJobInfo` from Task 6) and the `Subagents`→`Jobs` field. Read the struct body first to map fields.
+- [ ] **Step 1: server.go.** `rg -n 'SubagentStatusInfo|Subagents' server/server.go`. Rename `SubagentStatusInfo`→`JobStatusInfo` (reshape fields to `job_id`/`job_type`/`status`/… mirroring `appwire.EvenerJobInfo` from Task 6) and the `Subagents`→`Jobs` field. Read the struct body first to map fields.
 
-- [ ] **Step 2: appwire_runtime.go.** `rg -n 'SerfSubagentInfo|Subagents' server/appwire_runtime.go`. Repoint the population to `appwire.SerfJobInfo{JobID: ..., JobType: ..., Status: ...}` reading from the **job snapshot** (the `JobRecord` projection from Task 9, or the existing subagent snapshot if Task 9 hasn't replaced it yet — if this task runs before Task 9, populate from whatever the snapshot still exposes and let Task 9 swap the source; keep the build green). Update `out.Subagents`→`out.Jobs` to match Task 6's field rename.
+- [ ] **Step 2: appwire_runtime.go.** `rg -n 'EvenerSubagentInfo|Subagents' server/appwire_runtime.go`. Repoint the population to `appwire.EvenerJobInfo{JobID: ..., JobType: ..., Status: ...}` reading from the **job snapshot** (the `JobRecord` projection from Task 9, or the existing subagent snapshot if Task 9 hasn't replaced it yet — if this task runs before Task 9, populate from whatever the snapshot still exposes and let Task 9 swap the source; keep the build green). Update `out.Subagents`→`out.Jobs` to match Task 6's field rename.
 
 - [ ] **Step 3: Build server.** `cd server && go build ./...` (or `make build`). Fix stragglers.
 
-- [ ] **Step 4: Tests.** `rg -n 'SubagentStatusInfo|SerfSubagentInfo' server/*_test.go`. Rename. Run: `cd server && go test ./...`. Expected: PASS.
+- [ ] **Step 4: Tests.** `rg -n 'SubagentStatusInfo|EvenerSubagentInfo' server/*_test.go`. Rename. Run: `cd server && go test ./...`. Expected: PASS.
 
-- [ ] **Step 5: Token check.** `rg -n 'SubagentStatusInfo|SerfSubagentInfo|NotifySerfSubagent' server/ appwire/ internal/appprojector/ | rg -v '_test\.go'` — expected: **nothing**.
+- [ ] **Step 5: Token check.** `rg -n 'SubagentStatusInfo|EvenerSubagentInfo|NotifyEvenerSubagent' server/ appwire/ internal/appprojector/ | rg -v '_test\.go'` — expected: **nothing**.
 
 - [ ] **Step 6: Commit**
 
@@ -347,7 +347,7 @@ git commit -m "refactor(evener-hub): repoint web client to evener/job lifecycle 
 
 - [ ] **Step 1: Read the current `SubagentInfo` + status struct.** `rg -n -A10 'type SubagentInfo' agent/status.go` and find the `Subagents` field. This is the per-session status the server/UI read.
 
-- [ ] **Step 2: Repoint to a JobRecord projection.** Replace `SubagentInfo`/`Subagents` with a job projection. The cleanest path: expose a `Jobs []JobStatusInfo` (or reuse the Phase 2 `JobRecord` model-facing projection) built from `s.jobs.list(...)`. Define `JobStatusInfo` with `JobID`/`JobType`/`Status`/`Reason`/`TranscriptRef`/`OutputBytes`/`ExitCode` (mirror `appwire.SerfJobInfo` from Task 6 / `server.JobStatusInfo` from Task 7 so the snapshot→wire mapping is 1:1). Repoint the function that populated `Subagents` (grep `rg -n 'Subagents' agent/status.go`) to populate `Jobs` from the JobManager. Keep `SubagentStatus` (the runtime enum) — it is internal; only the snapshot field type changes.
+- [ ] **Step 2: Repoint to a JobRecord projection.** Replace `SubagentInfo`/`Subagents` with a job projection. The cleanest path: expose a `Jobs []JobStatusInfo` (or reuse the Phase 2 `JobRecord` model-facing projection) built from `s.jobs.list(...)`. Define `JobStatusInfo` with `JobID`/`JobType`/`Status`/`Reason`/`TranscriptRef`/`OutputBytes`/`ExitCode` (mirror `appwire.EvenerJobInfo` from Task 6 / `server.JobStatusInfo` from Task 7 so the snapshot→wire mapping is 1:1). Repoint the function that populated `Subagents` (grep `rg -n 'Subagents' agent/status.go`) to populate `Jobs` from the JobManager. Keep `SubagentStatus` (the runtime enum) — it is internal; only the snapshot field type changes.
 
 - [ ] **Step 3: schema/snapshot.go audit.** `rg -n -i 'subagent' agent/schema/snapshot.go` → only `IsSubagent bool` (json:`is_subagent`). This flags whether a *session* was spawned as a subagent — it is **internal session metadata**, not a model-/UI-facing job surface, and it is not a §13 gate token. Per §16, leave `IsSubagent` as-is (renaming it would churn the persisted snapshot schema for zero model/UI benefit). Note this decision in the commit message so a reviewer doesn't flag it as missed.
 
@@ -488,7 +488,7 @@ Docs and the final gate. The gate is **authoritative** (§13): run it, repoint e
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener
-rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo' \
+rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifyEvenerSubagent|EvenerSubagentInfo|SubagentStatusInfo' \
   | rg -v 'docs/superpowers/(specs|plans)/|docs/job-control\.md|CHANGELOG|/original-attractor-specs/|/design/2026-'
 ```
 

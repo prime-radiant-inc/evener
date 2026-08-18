@@ -103,7 +103,7 @@ artifact, not a spec defect; rebase before implementing.
     `cmd/evener-hub/web.go:2024` (live picker `fetchLiveModels`),
     `launch_check.go:94,159`, `serve.go:36`, `cmd/llmcall/main.go:220`,
     `cmd/evenereval/main.go:196`, plus `llm/generate.go:158 DefaultClient()`. Also:
-    `validateSerfLaunchContract` runs `launch-check --model` (no `--models`) on
+    `validateEvenerLaunchContract` runs `launch-check --model` (no `--models`) on
     **every spawn** (`spawn.go:558-564`, called `:141`) → `launch_check.go:159
     NewFromEnv`; §4.3 only re-plumbs the `--models` path. If `NewFromEnv` stays
     there, `providers.toml`-only instances aren't registered →

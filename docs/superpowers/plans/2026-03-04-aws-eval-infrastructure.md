@@ -175,7 +175,7 @@ throwaway instance and then `aws ec2 create-image`.
 #        b. Start apt-cacher-ng
 #        c. Run harbor:
 #           harbor run -d terminal-bench@2.0 \
-#             --agent-import-path evener_agent:SerfAgent \
+#             --agent-import-path evener_agent:EvenerAgent \
 #             -m $MODEL --ak max_rounds=100 \
 #             -k 1 -n 89 \
 #             --job-name ${RUN_ID}_rep${REP} \

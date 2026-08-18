@@ -717,8 +717,8 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 	}
 
 	for claude, evener := range mappings {
-		if toolname.ClaudeToSerf(claude) != evener {
-			t.Errorf("ClaudeToSerf(%q) = %q, want %q", claude, toolname.ClaudeToSerf(claude), evener)
+		if toolname.ClaudeToEvener(claude) != evener {
+			t.Errorf("ClaudeToEvener(%q) = %q, want %q", claude, toolname.ClaudeToEvener(claude), evener)
 		}
 		if toolname.EvenerToClaude(evener) != claude {
 			t.Errorf("EvenerToClaude(%q) = %q, want %q", evener, toolname.EvenerToClaude(evener), claude)
@@ -726,7 +726,7 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 	}
 
 	// Unknown names pass through
-	if toolname.ClaudeToSerf("custom_tool") != "custom_tool" {
+	if toolname.ClaudeToEvener("custom_tool") != "custom_tool" {
 		t.Error("unknown Claude name should pass through")
 	}
 	if toolname.EvenerToClaude("custom_tool") != "custom_tool" {

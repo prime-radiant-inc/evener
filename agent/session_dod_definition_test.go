@@ -1606,7 +1606,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	}
 }
 
-func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
+func TestSession_ConfigurationError_EmitsEvenerDiagnosticEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1641,7 +1641,7 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	t.Fatalf("expected ERROR event")
 }
 
-func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
+func TestSession_RuntimeError_EmitsEvenerDiagnosticEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()

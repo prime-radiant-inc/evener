@@ -4,7 +4,7 @@
 
 **Goal:** Wire the already-collected working-state and token-usage data end-to-end — persist per-session work time and cumulative token totals, surface them (plus current-turn elapsed) in one consolidated status row across web and TUI, relocate the floating liveness line into that row, and delete the ghost header poller.
 
-**Architecture:** The daemon (agent module) holds `createdAt`/`workMillis`/cumulative-usage in-memory, seeds them from `SessionMeta` on restore, accumulates work at the single per-turn terminal boundary (`finishProcessingAtBoundary`, including the `Close()`-mid-turn case), and persists them via `Meta()`/autosave. A new `EventTurnEnded` carries per-turn duration to the appwire projector; metrics ride the wire on `appwire.SerfThread` (pointer `Usage`), on the REST `StatusInfo`, and (for ended sessions) through the `WorkspaceData`→`SessionDetail` carrier chain. The hub web UI renders one status row fed by a lean `/state` fetch, refreshed event-driven (`evener-hub:status-refresh`) with a 30s fallback and a client 10s tick; quiet/stall liveness moves into that row's spans. The TUI mirrors the fields onto `hubSessionDetail`.
+**Architecture:** The daemon (agent module) holds `createdAt`/`workMillis`/cumulative-usage in-memory, seeds them from `SessionMeta` on restore, accumulates work at the single per-turn terminal boundary (`finishProcessingAtBoundary`, including the `Close()`-mid-turn case), and persists them via `Meta()`/autosave. A new `EventTurnEnded` carries per-turn duration to the appwire projector; metrics ride the wire on `appwire.EvenerThread` (pointer `Usage`), on the REST `StatusInfo`, and (for ended sessions) through the `WorkspaceData`→`SessionDetail` carrier chain. The hub web UI renders one status row fed by a lean `/state` fetch, refreshed event-driven (`evener-hub:status-refresh`) with a 30s fallback and a client 10s tick; quiet/stall liveness moves into that row's spans. The TUI mirrors the fields onto `hubSessionDetail`.
 
 **Tech Stack:** Go (agent module: session/events/contextmgr/schema; root module: server, internal/appprojector, cmd/evener-hub, cmd/evener-tui; appwire wire types), htmx + vanilla JS (status row, liveness relocation), jstest (JSDOM).
 
@@ -268,25 +268,25 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 - [ ] **Run** `golangci-lint run ./...` (root) → green.
 - [ ] **Commit** — `git add internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go server/appwire_turns.go server/appwire_turns_test.go internal/apptranscript/apptranscript.go internal/apptranscript/apptranscript_test.go` → `feat(appprojector): stamp turn CompletedAt/DurationMS from EventTurnEnded; carry timing through replay`.
 
-### Task A7 — Wire the metrics onto `SerfThread` + `StatusInfo` (pull-callback-fed) and daemon accessors
+### Task A7 — Wire the metrics onto `EvenerThread` + `StatusInfo` (pull-callback-fed) and daemon accessors
 
-- [ ] **Failing test — appwire type** — in `appwire/types_test.go`, assert a `SerfThread{Usage: &SerfUsage{InputTokens: 1}, WorkMillis: 2, ActiveTurnStartedAt: 3}` marshals with `usage`, `workMillis`, `activeTurnStartedAt`, and that a `SerfThread{}` (nil Usage, zero scalars) omits all three (pointer + omitempty). Run `go test ./appwire/... -run 'SerfUsage|SerfThreadMetrics' -count=1` → fail.
+- [ ] **Failing test — appwire type** — in `appwire/types_test.go`, assert a `EvenerThread{Usage: &EvenerUsage{InputTokens: 1}, WorkMillis: 2, ActiveTurnStartedAt: 3}` marshals with `usage`, `workMillis`, `activeTurnStartedAt`, and that a `EvenerThread{}` (nil Usage, zero scalars) omits all three (pointer + omitempty). Run `go test ./appwire/... -run 'EvenerUsage|EvenerThreadMetrics' -count=1` → fail.
 - [ ] **Failing test — daemon appThread + status** — in `server/appwire_runtime_test.go` and `server/server_handlers_test.go` (or the existing status test), wire a `SetWorkMetricsFunc` returning known values and assert `appThread().Evener.{Usage,WorkMillis,ActiveTurnStartedAt}` and the `/status` `StatusInfo.{Usage,WorkMillis,ActiveTurnStartedAt}` carry them. Run → fail.
 - [ ] **Implement — appwire** (`appwire/types.go`):
   - Add after `GoalState` (line ~206):
     ```go
-    // SerfUsage carries a evener session's cumulative self-only token totals for
-    // the status row. A nil *SerfUsage on SerfThread means no token data (old
+    // EvenerUsage carries a evener session's cumulative self-only token totals for
+    // the status row. A nil *EvenerUsage on EvenerThread means no token data (old
     // daemon, Codex thread, or a session with zero usage) — the clusters hide
     // rather than render ↑0 ↓0.
-    type SerfUsage struct {
+    type EvenerUsage struct {
     	InputTokens     int64 `json:"inputTokens,omitempty"`
     	OutputTokens    int64 `json:"outputTokens,omitempty"`
     	CacheReadTokens int64 `json:"cacheReadTokens,omitempty"`
     	TotalTokens     int64 `json:"totalTokens,omitempty"`
     }
     ```
-  - Add to `SerfThread` (after `Goal`, line ~196): `Usage *SerfUsage \`json:"usage,omitempty"\``, `WorkMillis int64 \`json:"workMillis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"activeTurnStartedAt,omitempty"\``. (Pointer for Usage per L5 — a value struct's `omitempty` never omits.)
+  - Add to `EvenerThread` (after `Goal`, line ~196): `Usage *EvenerUsage \`json:"usage,omitempty"\``, `WorkMillis int64 \`json:"workMillis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"activeTurnStartedAt,omitempty"\``. (Pointer for Usage per L5 — a value struct's `omitempty` never omits.)
   - **No catalog change:** the catalog (`TestDaemonRouterMatchesCatalog`) enumerates `Method*`/`Notify*` constants only; adding struct fields does not touch it. If A7 surfaces a need for a new appwire *method*, STOP — that is a surfaced ambiguity and a one-commit atom across the catalog + both routers (server + evener-hub) with the bidirectional cross-checks; do not fold it in silently.
 - [ ] **Implement — daemon accessors** (`agent`): add three Session methods (in `agent/session_state.go` or a small `agent/session_metrics.go`):
   ```go
@@ -303,13 +303,13 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
   ```
   Add an agent test that a mid-turn session reports `ActiveTurnStartedAtUnix() > 0` and an idle one reports `0`.
 - [ ] **Implement — server StatusInfo + callbacks** (`server`):
-  - `server/server.go`: add to `StatusInfo` (line ~80): `Usage *appwire.SerfUsage \`json:"usage,omitempty"\``, `WorkMillis int64 \`json:"work_millis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``. Add a `workMetricsFn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)` field to `Server` (beside `pressureFn`), and `SetWorkMetricsFunc` mirroring `SetContextPressureFunc` (line ~368).
+  - `server/server.go`: add to `StatusInfo` (line ~80): `Usage *appwire.EvenerUsage \`json:"usage,omitempty"\``, `WorkMillis int64 \`json:"work_millis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``. Add a `workMetricsFn func() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)` field to `Server` (beside `pressureFn`), and `SetWorkMetricsFunc` mirroring `SetContextPressureFunc` (line ~368).
   - `server/server_handlers.go` `handleStatus` (line ~285): after the `cmfn`/`dfn` blocks, `if wmfn := s.workMetricsFn (read under RLock); wmfn != nil { wm, usage, at := wmfn(); status.WorkMillis = wm; status.Usage = usage; status.ActiveTurnStartedAt = at }`.
   - `server/appwire_runtime.go` `appThread` (line ~491): populate `Evener.Usage`, `Evener.WorkMillis`, `Evener.ActiveTurnStartedAt` from the same `workMetricsFn` (read it under the RLock alongside `pfn`/`cmfn`).
-  - Add a wire helper `evenerUsageFromLLM(u llm.Usage) *appwire.SerfUsage` (in server): returns nil when all four totals are zero (so fresh/old/codex all hide); else maps input/output/total and `CacheReadTokens` from the `*int`.
-  - `cmd/evener/serve.go` (~line 344, beside `SetContextPressureFunc`): `srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) { sess := getSession(); return sess.WorkMillisSnapshot(), evenerUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix() })`. **Re-verify serve.go's `getSession()` shape against current code (ask_user touched serve.go).**
+  - Add a wire helper `evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage` (in server): returns nil when all four totals are zero (so fresh/old/codex all hide); else maps input/output/total and `CacheReadTokens` from the `*int`.
+  - `cmd/evener/serve.go` (~line 344, beside `SetContextPressureFunc`): `srv.SetWorkMetricsFunc(func() (int64, *appwire.EvenerUsage, int64) { sess := getSession(); return sess.WorkMillisSnapshot(), evenerUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix() })`. **Re-verify serve.go's `getSession()` shape against current code (ask_user touched serve.go).**
 - [ ] **Run** the A7 tests + `go test ./appwire/... ./server/... -count=1`. If an appwire decode golden drifts (`make fuzz` reports `Test*Golden`), run `make fuzz-goldens` and re-verify. Run `golangci-lint run ./...` (root) + `cd agent && golangci-lint run ./...`.
-- [ ] **Commit** — `git add appwire/types.go appwire/types_test.go agent/session_metrics.go agent/session_state_test.go server/server.go server/server_handlers.go server/appwire_runtime.go cmd/evener/serve.go server/appwire_runtime_test.go server/server_handlers_test.go` (adjust to the files actually touched; `git status` first) → `feat(wire): carry cumulative usage + workMillis + activeTurnStartedAt on SerfThread and /status`.
+- [ ] **Commit** — `git add appwire/types.go appwire/types_test.go agent/session_metrics.go agent/session_state_test.go server/server.go server/server_handlers.go server/appwire_runtime.go cmd/evener/serve.go server/appwire_runtime_test.go server/server_handlers_test.go` (adjust to the files actually touched; `git status` first) → `feat(wire): carry cumulative usage + workMillis + activeTurnStartedAt on EvenerThread and /status`.
 
 ---
 
@@ -333,11 +333,11 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 
 - [ ] **Failing test** — `cmd/evener-hub/web_api_tree_test.go`: build an ended session (Past index) whose `SessionMeta` carries `WorkMillis: 7000` + non-zero `CumulativeUsage`; assert `apiSessionDetail(id)` returns a `SessionDetail` with `WorkMillis == 7000` and a non-nil `Usage` matching. Add a `web_format` test that `workspaceDataFromAppThread` maps `thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt}` onto `WorkspaceData`. Run → fail.
 - [ ] **Implement**:
-  - `cmd/evener-hub/web_types.go`: add to `WorkspaceData` (struct ~160): `WorkMillis int64`, `Usage *appwire.SerfUsage`, `ActiveTurnStartedAt int64`. Add to `daemonStatus` (~255): `WorkMillis int64 \`json:"work_millis,omitempty"\``, `Usage *appwire.SerfUsage \`json:"usage,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``.
-  - `hubapi/types.go`: add to `SessionDetail` (~84): `WorkMillis int64 \`json:"work_millis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``, and a flattened usage — define `type Usage struct { InputTokens, OutputTokens, CacheReadTokens, TotalTokens int64 (snake_case json,omitempty) }` and `Usage *Usage \`json:"usage,omitempty"\`` (hubapi must not depend on appwire — mirror the GoalStatus flattening precedent). Add a hub-side converter `hubUsageFromAppwire(*appwire.SerfUsage) *hubapi.Usage`.
+  - `cmd/evener-hub/web_types.go`: add to `WorkspaceData` (struct ~160): `WorkMillis int64`, `Usage *appwire.EvenerUsage`, `ActiveTurnStartedAt int64`. Add to `daemonStatus` (~255): `WorkMillis int64 \`json:"work_millis,omitempty"\``, `Usage *appwire.EvenerUsage \`json:"usage,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``.
+  - `hubapi/types.go`: add to `SessionDetail` (~84): `WorkMillis int64 \`json:"work_millis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"active_turn_started_at,omitempty"\``, and a flattened usage — define `type Usage struct { InputTokens, OutputTokens, CacheReadTokens, TotalTokens int64 (snake_case json,omitempty) }` and `Usage *Usage \`json:"usage,omitempty"\`` (hubapi must not depend on appwire — mirror the GoalStatus flattening precedent). Add a hub-side converter `hubUsageFromAppwire(*appwire.EvenerUsage) *hubapi.Usage`.
   - `cmd/evener-hub/web_workspace.go` `workspaceData`:
     - Roster/live-local path (~315–327): from `status` (`daemonStatus`) map `data.WorkMillis = status.WorkMillis`, `data.Usage = status.Usage`, `data.ActiveTurnStartedAt = status.ActiveTurnStartedAt`. Also populate the context-gauge fields here so the lean `/state` path (B3) needs no turns fetch: `data.ContextPercent = int(status.ContextPressure*100)`, `data.ContextWindow = status.ContextWindow`, `data.ContextNumbers = formatContextNumbers(status.ContextUsed, status.ContextWindow, status.ContextRemaining)`.
-    - Past-meta literal (`web_workspace.go` ~353–364, the ended-only branch): map `WorkMillis: pe.Meta.WorkMillis` and `Usage: evenerUsageFromCumulative(pe.Meta.CumulativeUsage)` (a hub helper: nil when all-zero, else `*appwire.SerfUsage`). `ActiveTurnStartedAt` stays 0 (ended).
+    - Past-meta literal (`web_workspace.go` ~353–364, the ended-only branch): map `WorkMillis: pe.Meta.WorkMillis` and `Usage: evenerUsageFromCumulative(pe.Meta.CumulativeUsage)` (a hub helper: nil when all-zero, else `*appwire.EvenerUsage`). `ActiveTurnStartedAt` stays 0 (ended).
   - `cmd/evener-hub/web_format.go` `workspaceDataFromAppThread` (~27, remote/appwire path): map `WorkMillis: thread.Evener.WorkMillis`, `Usage: thread.Evener.Usage`, `ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt`.
   - `cmd/evener-hub/web_api_tree.go`:
     - `hubDetailFromAppThread` (~306 literal): map `WorkMillis`, `Usage: hubUsageFromAppwire(thread.Evener.Usage)`, `ActiveTurnStartedAt` from `thread.Evener` (the live branch keeps this mapper).
@@ -390,7 +390,7 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 
 - [ ] **Failing test** — `cmd/evener-tui/hub_status_test.go` (or `hub_types_test.go`): assert `hubDetailFromThread` maps `thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt}` onto `hubSessionDetail`; assert `renderHubSessionStatus` output contains a work-time line and a token breakdown line including cache-read when `Usage` is non-nil, and neither when nil. Run `go test ./cmd/evener-tui/... -run 'HubDetail|HubSessionStatus|Chip' -count=1` → fail.
 - [ ] **Implement**:
-  - `cmd/evener-tui/hub_types.go`: add to `hubSessionDetail` (~56): `WorkMillis int64`, `Usage *appwire.SerfUsage`, `ActiveTurnStartedAt int64` (reuse the appwire type, consistent with the existing `*appwire.GoalState`/`appwire.QueueState` fields). Map them in the `hubDetailFromThread` return literal (~214) from `thread.Evener`.
+  - `cmd/evener-tui/hub_types.go`: add to `hubSessionDetail` (~56): `WorkMillis int64`, `Usage *appwire.EvenerUsage`, `ActiveTurnStartedAt int64` (reuse the appwire type, consistent with the existing `*appwire.GoalState`/`appwire.QueueState` fields). Map them in the `hubDetailFromThread` return literal (~214) from `thread.Evener`.
   - `cmd/evener-tui/hub_status.go`: in `renderHubSessionStatus` (~12) add a `Work:` line (`formatWorkMillis`, mirror `compactDuration`) and, when `detail.Usage != nil`, a `Tokens:` line with the full breakdown `↑<in> ↓<out> · cache-read <cr> · total <tot>` (reuse `formatTokens`). Add the compact work-time + `↑/↓` to the chip strip (`formatContextFragment`'s caller / meta strip) — the drawer carries the full breakdown incl. cache-read; the chip strip stays compact. Dashboard render is unchanged.
   - Update `cmd/evener-tui/tui_samples.go` sample details if a golden/snapshot test references them.
 - [ ] **Run** `go test ./cmd/evener-tui/... -count=1` → green. `golangci-lint run ./...`.
@@ -411,7 +411,7 @@ Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/even
 
 - [ ] `cd agent && golangci-lint run ./... && go test ./...` → green.
 - [ ] From repo root: `golangci-lint run ./...` and `go test ./server/... ./internal/... ./cmd/... ./appwire/... ./hubapi/... -count=1` → green. Then `make test` (all modules) and `make vet`.
-- [ ] `make fuzz` (confirms the appwire decode goldens still hold after the new `SerfThread`/`Turn` fields; if `Test*Golden` drift, `make fuzz-goldens` and re-verify).
+- [ ] `make fuzz` (confirms the appwire decode goldens still hold after the new `EvenerThread`/`Turn` fields; if `Test*Golden` drift, `make fuzz-goldens` and re-verify).
 - [ ] Run the jstest suite: `cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh` → both liveness suites + `test-status-refresh` + context-pressure green.
 - [ ] `make lint` (naming, internal, docs, golangci, generated, secret-scan) → green.
 - [ ] **Commit** any gate-driven fixups with a focused message; do not `git add -A`.
@@ -431,7 +431,7 @@ Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/even
 | K7 (estimate omissions) | — | Estimate note below |
 | L2 (cached handle into swap-destroyed spans) | afterSwap re-bind + `isConnected` detached-node guard | B5 (ported liveness suites) |
 | L3 (terminal-error Close before boundary drops dying turn) | `Close()` accumulates before flipping state | A4 (`TestWorkMillis_CloseMidTurnCounts`) |
-| L5 (nested value usage renders ↑0 ↓0) | pointer `Usage *SerfUsage`; nil when all-zero | A7 (`SerfThreadMetrics` omit test), B3 (nil-usage-hides test) |
+| L5 (nested value usage renders ↑0 ↓0) | pointer `Usage *EvenerUsage`; nil when all-zero | A7 (`EvenerThreadMetrics` omit test), B3 (nil-usage-hides test) |
 | L6 (dropping IncludeTurns zeroed four other callers) | lean `/state`-only path; shared detail keeps IncludeTurns | B3 (`TurnCount` four-caller test) |
 | L7 (liveness suites / data-stalled / CSS dispositions) | both suites ported; `data-stalled` kept on `#conversation`; `.liveness` + CSS die | B5 |
 | L8 (cache-read had no web surface) | uncached ↑/↓ labeled + hover/title breakdown w/ cache-read + total | B3 (hover-breakdown test), C1 (drawer) |
@@ -439,6 +439,6 @@ Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/even
 | Decision 4 (every outcome counts) | accumulate at single boundary incl. interrupt/fail | A4 (completed/interrupted/failed/multi-turn tests) |
 | Replay drops StartedAt; transcript can't span | `appTurnsFromNotifications` copies timing; transcript StartedAt-only | A6 (replay test, transcript test) |
 
-**Type/name consistency:** `CumulativeUsage` (schema, persistence), `SerfUsage` (appwire), `hubapi.Usage` (hub JSON API), all four-field `int64` (input/output/cache-read/total); `WorkMillis`/`workMillis` and `ActiveTurnStartedAt`/`activeTurnStartedAt`/`active_turn_started_at` consistent per layer's json convention; `EventTurnEnded`/`TurnEndedData`/`TurnDurationMS`; `formatWorkMillis`/`formatTokenCount` shared web+TUI grammar.
+**Type/name consistency:** `CumulativeUsage` (schema, persistence), `EvenerUsage` (appwire), `hubapi.Usage` (hub JSON API), all four-field `int64` (input/output/cache-read/total); `WorkMillis`/`workMillis` and `ActiveTurnStartedAt`/`activeTurnStartedAt`/`active_turn_started_at` consistent per layer's json convention; `EventTurnEnded`/`TurnEndedData`/`TurnDurationMS`; `formatWorkMillis`/`formatTokenCount` shared web+TUI grammar.
 
 **Estimate check:** the plan is ~15 tasks. Rough loc incl. tests — Phase A ~480–620 (schema+golden, Session homes+seeds, accumulation+Close, EventTurnEnded, projector+replay+transcript, wire+callbacks); Phase B ~300–420 (ghost delete+port, WorkspaceData/StatusInfo/SessionDetail chain, lean `/state`+row, refresh wiring, liveness relocation + 2 suite ports); Phase C ~110–170 (TUI + e2e cards). Total ~890–1,210, in line with the spec's 800–1,150 (slightly above the top on the pessimistic end, driven by the timing-stamp projector refinement and the extra hubapi.Usage flattening — flagged, not a scope change).

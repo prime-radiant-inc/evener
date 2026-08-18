@@ -269,7 +269,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
       </div>
     </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://test.local/" });
     const { window } = dom;
-    window.SerfToast = { messages: [], show(message, kind) { this.messages.push({ message, kind }); } };
+    window.EvenerToast = { messages: [], show(message, kind) { this.messages.push({ message, kind }); } };
     return window;
   }
 
@@ -284,7 +284,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
     change(dark);
     assert(window.document.documentElement.getAttribute("data-theme") === "dark", "setting theme=dark applies data-theme");
     assert(window.localStorage.getItem("evener-hub.theme") === "dark", "theme choice persists to localStorage");
-    assert(window.SerfToast.messages.some(m => m.message === "Theme: dark"), "theme change toasts the new value");
+    assert(window.EvenerToast.messages.some(m => m.message === "Theme: dark"), "theme change toasts the new value");
 
     const system = window.document.querySelector('input[name="theme"][value="system"]');
     system.checked = true;
@@ -353,7 +353,7 @@ Moves the theme/phone-density/sidebar-mode slice of the `change` listener and `a
       if (target.matches('input[name="theme"]')) {
         const v = target.value;
         window.evenerHub.setTheme(v === "system" ? null : v);
-        if (window.SerfToast) window.SerfToast.show("Theme: " + v, "success");
+        if (window.EvenerToast) window.EvenerToast.show("Theme: " + v, "success");
         return;
       }
 
@@ -455,7 +455,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
       </dl>
     </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://test.local/settings/notifications" });
     const { window } = dom;
-    window.SerfToast = { messages: [], show(message, kind) { this.messages.push({ message, kind }); } };
+    window.EvenerToast = { messages: [], show(message, kind) { this.messages.push({ message, kind }); } };
     return window;
   }
 
@@ -472,7 +472,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     assert(JSON.parse(window.localStorage.getItem("evener-hub.notifications")).title === true, "title toggle persists to localStorage");
     assert(title.parentElement.querySelector(".state").textContent === "ON", "title toggle updates the ON/OFF label");
     assert(changedEvents.some(d => d.key === "title" && d.value === true), "title toggle dispatches evener-hub:notifications-changed");
-    assert(window.SerfToast.messages.some(m => m.kind === "success"), "committed toggle shows a success toast");
+    assert(window.EvenerToast.messages.some(m => m.kind === "success"), "committed toggle shows a success toast");
 
     // --- OS toggle: browser grants permission ---
     const grant = makeWindow();
@@ -497,7 +497,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     assert(os2.checked === false, "OS checkbox reverts to unchecked when permission is denied");
     assert(!JSON.parse(deny.localStorage.getItem("evener-hub.notifications") || "{}").os, "denied OS toggle does not persist as on");
     assert(os2.parentElement.querySelector(".state").textContent === "OFF", "denied OS toggle label reverts to OFF");
-    assert(deny.SerfToast.messages.some(m => m.kind === "warning"), "denied OS permission shows a warning toast");
+    assert(deny.EvenerToast.messages.some(m => m.kind === "warning"), "denied OS permission shows a warning toast");
 
     // --- restore on (re)load ---
     const restored = makeWindow();
@@ -546,7 +546,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
           document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
             detail: { key, value: desired },
           }));
-          if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+          if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
         };
 
         // revertToOff undoes a not-yet-committed OS toggle when the browser
@@ -559,7 +559,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
           cur[key] = false;
           writeNotifPrefs(cur);
           syncToggleState(target);
-          if (reason && window.SerfToast) window.SerfToast.show(reason, "warning");
+          if (reason && window.EvenerToast) window.EvenerToast.show(reason, "warning");
         };
 
         if (key === "os" && desired && "Notification" in window && Notification.permission === "default") {
@@ -647,7 +647,7 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
         document.dispatchEvent(new CustomEvent("evener-hub:transcript-system-status-changed", {
           detail: { key, value: target.checked },
         }));
-        if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+        if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
         return;
       }
     });
@@ -713,7 +713,7 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
 
   (function main() {
     const window = makeWindow('<span data-model-display>anthropic/claude-haiku-4-5-20251001</span>');
-    window.SerfSpawn = { abbreviateModel: (full) => full.replace(/^[^/]+\//, "").replace(/-\d{8}$/, "") };
+    window.EvenerSpawn = { abbreviateModel: (full) => full.replace(/^[^/]+\//, "").replace(/-\d{8}$/, "") };
     window.eval(SRC);
     window.document.dispatchEvent(new window.Event("DOMContentLoaded", { bubbles: true }));
 
@@ -727,12 +727,12 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
     assert(el.textContent === "claude-haiku-4-5", "re-swap keeps the abbreviated text stable");
     assert(el.dataset.fullModel === "anthropic/claude-haiku-4-5-20251001", "re-swap does not overwrite the anchored full id");
 
-    // No SerfSpawn yet (script loaded before spawn.js resolves) — must no-op,
+    // No EvenerSpawn yet (script loaded before spawn.js resolves) — must no-op,
     // not throw.
     const early = makeWindow('<span data-model-display>anthropic/claude-opus-4-20250101</span>');
     early.eval(SRC);
     early.document.dispatchEvent(new early.Event("DOMContentLoaded", { bubbles: true }));
-    assert(early.document.querySelector("[data-model-display]").textContent === "anthropic/claude-opus-4-20250101", "missing SerfSpawn leaves the raw id untouched, no throw");
+    assert(early.document.querySelector("[data-model-display]").textContent === "anthropic/claude-opus-4-20250101", "missing EvenerSpawn leaves the raw id untouched, no throw");
 
     console.log("PASS — model-display abbreviation wiring survives extraction from settings.js");
   })();
@@ -754,7 +754,7 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
     var modelAbbrevHandlerInstalled = false;
 
     function applyModelAbbreviations() {
-      if (!window.SerfSpawn || !window.SerfSpawn.abbreviateModel) return;
+      if (!window.EvenerSpawn || !window.EvenerSpawn.abbreviateModel) return;
       document.querySelectorAll("[data-model-display]").forEach(function (el) {
         // Populate the stable anchor attribute from the server-rendered value on
         // first encounter, before any abbreviation has been applied.
@@ -762,7 +762,7 @@ The last IIFE in `settings.js` (originally `:245-282`) has nothing to do with th
           el.dataset.fullModel = el.textContent || "";
         }
         var full = el.dataset.fullModel;
-        var abbr = window.SerfSpawn.abbreviateModel(full);
+        var abbr = window.EvenerSpawn.abbreviateModel(full);
         if (abbr !== (el.textContent || "")) el.textContent = abbr;
       });
     }

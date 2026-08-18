@@ -1074,11 +1074,11 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 
 - [ ] **Step 4: Run — pass.** Then the method const + wiring.
 
-`appwire/types.go`, in the Notify const block after `NotifySerfLaunchUpdated`:
+`appwire/types.go`, in the Notify const block after `NotifyEvenerLaunchUpdated`:
 ```go
-	NotifySerfAttentionChanged  = "evener/attention/changed"
+	NotifyEvenerAttentionChanged  = "evener/attention/changed"
 ```
-`appwire/protocol.go`: find the catalog entry for `NotifySerfLaunchUpdated` (grep) and add a sibling entry for `evener/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
+`appwire/protocol.go`: find the catalog entry for `NotifyEvenerLaunchUpdated` (grep) and add a sibling entry for `evener/attention/changed` with a one-line description: "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons." Then run `make generate` from repo root and confirm `docs/appwire-protocol.md` picked it up (`git diff --stat docs/appwire-protocol.md`).
 
 `cmd/evener-hub/main.go` — after `archive` and the roster/past wiring (grep for `go roster.Watch(ctx)` at ~:209), add the watcher loop:
 
@@ -1092,7 +1092,7 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 	}
 	go func() {
 		w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
-			appRPCServer.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
+			appRPCServer.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
 		})
 		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
@@ -1162,7 +1162,7 @@ function boot(opts) {
   const w = dom.window;
   w.document.hasFocus = () => !!(opts && opts.focused);
   let notifHandler = null;
-  w.SerfAppwire = {
+  w.EvenerAppwire = {
     onNotification(h) { notifHandler = notifHandler || h; },
     onConnectionRestored() {},
   };
@@ -1230,7 +1230,7 @@ function boot(pre) {
   });
   const w = dom.window;
   w.document.hasFocus = () => false;
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.fetch = () => Promise.resolve({ json: () => Promise.resolve({ attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
   if (pre) w.localStorage.setItem("evener-hub.notifications", JSON.stringify(pre));
   w.eval(src);
@@ -1337,13 +1337,13 @@ Add (structure — write it in the file's existing style):
     initialized = true;
     migratePrefs();
     fetchBaseline();
-    if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
-      window.SerfAppwire.onNotification(function (method, params) {
+    if (window.EvenerAppwire && typeof window.EvenerAppwire.onNotification === "function") {
+      window.EvenerAppwire.onNotification(function (method, params) {
         if (method === "evener/attention/changed") onAttentionChanged(params);
       });
     }
-    if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
-      window.SerfAppwire.onConnectionRestored(fetchBaseline);
+    if (window.EvenerAppwire && typeof window.EvenerAppwire.onConnectionRestored === "function") {
+      window.EvenerAppwire.onConnectionRestored(fetchBaseline);
     }
     document.addEventListener("evener-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
   }

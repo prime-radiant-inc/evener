@@ -38,7 +38,7 @@ var (
 	spawnMkdirTemp                   = os.MkdirTemp
 	spawnWriteFile                   = os.WriteFile
 	spawnRemoveAll                   = os.RemoveAll
-	listSerfLaunchModelContractFn    = listSerfLaunchModelContract
+	listEvenerLaunchModelContractFn    = listEvenerLaunchModelContract
 	openAIStoredOAuthUsableForLaunch = openAIStoredOAuthUsable
 	listRendezvousForWait            = rendezvous.List
 )
@@ -75,7 +75,7 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 }
 
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
-	stateDir, err := resolveSerfLaunchStateDir("", nil)
+	stateDir, err := resolveEvenerLaunchStateDir("", nil)
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
@@ -88,11 +88,11 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContractFn(ctx, h.EvenerBinary, env)
+	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
-	stateDir, err := resolveSerfLaunchStateDir(workingDir, nil)
+	stateDir, err := resolveEvenerLaunchStateDir(workingDir, nil)
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
@@ -105,7 +105,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	return listSerfLaunchModelContractFn(ctx, h.EvenerBinary, env)
+	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -118,7 +118,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		if req.Project.ID != "" {
 			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
 		} else {
-			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+			req.Project, req.StateDir, err = resolveEvenerLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		}
 		if err != nil {
 			return rendezvous.Entry{}, err
@@ -147,7 +147,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	if err := validateSerfLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
+	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
@@ -163,7 +163,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		if req.Project.ID != "" {
 			req.StateDir, err = resolveStateDirForProject(req.Project, req.WorkingDir, req.Resolved.Effective.Env)
 		} else {
-			req.Project, req.StateDir, err = resolveSerfLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
+			req.Project, req.StateDir, err = resolveEvenerLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		}
 		if err != nil {
 			return rendezvous.Entry{}, err
@@ -198,7 +198,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	// session's persisted metadata, not ambient launch config, selects the model;
 	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
 	// resume because of a stale launch-config model.
-	if err := validateSerfLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
+	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
@@ -519,20 +519,20 @@ func launchFailureError(prefix string, err error, stderr string) error {
 	return fmt.Errorf("%s: %w: %s", prefix, err, detail)
 }
 
-func resolveSerfStateDir(workDir, override string) (string, error) {
-	return resolveSerfStateDirWithStateHome(workDir, override, "")
+func resolveEvenerStateDir(workDir, override string) (string, error) {
+	return resolveEvenerStateDirWithStateHome(workDir, override, "")
 }
 
-func resolveSerfLaunchStateDir(workDir string, env map[string]string) (string, error) {
-	_, stateDir, err := resolveSerfLaunchProjectStateDir(workDir, env)
+func resolveEvenerLaunchStateDir(workDir string, env map[string]string) (string, error) {
+	_, stateDir, err := resolveEvenerLaunchProjectStateDir(workDir, env)
 	return stateDir, err
 }
 
-func resolveSerfLaunchProjectStateDir(workDir string, env map[string]string) (identifier.Project, string, error) {
+func resolveEvenerLaunchProjectStateDir(workDir string, env map[string]string) (identifier.Project, string, error) {
 	if env == nil {
-		return resolveSerfStateDirWithProject(workDir, "", "")
+		return resolveEvenerStateDirWithProject(workDir, "", "")
 	}
-	return resolveSerfStateDirWithProject(workDir, env[envvars.EVENERStateDir.Name], env[envvars.XDGStateHome.Name])
+	return resolveEvenerStateDirWithProject(workDir, env[envvars.EVENERStateDir.Name], env[envvars.XDGStateHome.Name])
 }
 
 // resolveStateDirForProject derives state storage from an identity that was
@@ -550,18 +550,18 @@ func resolveStateDirForProject(project identifier.Project, workDir string, env m
 		return override, nil
 	}
 	if project.ID == "" {
-		_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+		_, stateDir, err := resolveEvenerStateDirWithProject(workDir, override, stateHome)
 		return stateDir, err
 	}
 	return agent.RuntimeDirForProjectWithStateHome(project, strings.TrimSpace(stateHome)), nil
 }
 
-func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
-	_, stateDir, err := resolveSerfStateDirWithProject(workDir, override, stateHome)
+func resolveEvenerStateDirWithStateHome(workDir, override, stateHome string) (string, error) {
+	_, stateDir, err := resolveEvenerStateDirWithProject(workDir, override, stateHome)
 	return stateDir, err
 }
 
-func resolveSerfStateDirWithProject(workDir, override, stateHome string) (identifier.Project, string, error) {
+func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (identifier.Project, string, error) {
 	if strings.TrimSpace(override) != "" {
 		return identifier.Project{}, override, nil
 	}
@@ -801,7 +801,7 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
-func validateSerfLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
+func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model string, env []string) error {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -836,7 +836,7 @@ func validateSerfLaunchContract(ctx context.Context, evenerBinary, model string,
 	return nil
 }
 
-func listSerfLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
+func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env []string) (appwire.ModelListResponse, error) {
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}

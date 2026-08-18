@@ -93,7 +93,7 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
 - **Agent `name`/`description`** are required non-empty strings (`getString`). **`tools`**
   accepts the scalar `all` or a list of strings; it rejects scalar `*`, list `all`, list
   `*`, and non-string entries. Claude tool names are mapped to evener canonical names at
-  load (`toolname.ClaudeToSerf`). `model`/`color` default to `inherit`/`blue`.
+  load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
 - **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.

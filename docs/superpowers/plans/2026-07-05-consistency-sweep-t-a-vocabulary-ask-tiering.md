@@ -4,7 +4,7 @@
 
 **Goal:** Consolidate the three duplicated attention-rank implementations into one shared `hubapi` source of truth; replace the web's text glyphs (`⟳ ◆ ✕`) with real line icons under a green/blue/amber/red/gray palette (needs-you moves amber→blue, warning gets its own amber identity, `processing`→`working` is a display-only rename); and land the ask-tiering remainder (§3–§7 of the folded-in spec) — an additive `pending_ask` wire bit, a three-band NeedsYou sort (errored → ask-pending → your-move), a `loudScope` notification preference, and blue `?`/`!` row markers — as one reviewed unit built on the consolidated rank.
 
-**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/evener-hub/internal/hubcore` and `cmd/evener-tui` (both live in the root Go module `primeradiant.com/evener`; `hubapi` is already a dependency-free package `cmd/evener-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/evener-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.SerfThread` → `cmd/evener-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
+**Architecture:** A new file `hubapi/attention.go` becomes the single shared home for `AttentionRank`, `RollupRank`, `NeedsYouBand`, and `StateWord` — pure functions with no dependencies, importable by both `cmd/evener-hub/internal/hubcore` and `cmd/evener-tui` (both live in the root Go module `primeradiant.com/evener`; `hubapi` is already a dependency-free package `cmd/evener-tui` imports elsewhere, so this needs no new module wiring). The web renders icon+dot with the state word as a hover tooltip via a small vendored Lucide SVG set (`cmd/evener-hub/assets/icons.js`); the TUI keeps the word, now unified via `hubapi.StateWord`. The `pending_ask` bit rides two parallel wire chains that both terminate at the same daemon-side `Server.pendingAskFn` callback: the HTTP-polling chain (`StatusInfo` → hub prober → `roster.LiveEntry` → `hubcore.TreeNode`/`AttentionEntry` → `hubapi.TreeNode`, consumed by the web) and the appwire JSON-RPC chain (`appwire.EvenerThread` → `cmd/evener-tui`'s local `hubTreeNode`/`hubRow`, consumed by the TUI).
 
 **Tech Stack:** Go (root module `primeradiant.com/evener` — `cmd/evener-hub/internal/hubcore`, `cmd/evener-tui`, `hubapi`, `server`, `cmd/evener`, `appwire`; all one module, no `go.work` cross-module wiring needed), vanilla JS (`cmd/evener-hub/assets/*.js`, JSDOM `jstest`), CSS custom properties (`cmd/evener-hub/assets/style.css`), inline SVG icons vendored from the Lucide project (ISC license, `github.com/lucide-icons/lucide`).
 
@@ -12,7 +12,7 @@
 
 - JSON/TOML keys stay snake_case; wire enum values `active`/`awaiting`/`warning`/`errored` are the Codex-shaped contract and are **never** renamed. `processing`→`working` touches only CSS custom-property names, TUI theme-token identifiers (`StateProcessing`→`StateWorking`), and Go/JS display-word strings — never the wire state string `"active"`.
 - `appwire`/`hubcore` parallel-type camelCase JSON fields (e.g. `askPending`) require a `// evener:naming-ignore` comment on the line immediately above the field (bare comment, no suffix — confirmed against the existing `AttentionEntry.ID`/`AttentionSummary.NeedsYou` precedent and `cmd/evener-namingcheck/main.go`'s `ignoreMarker`).
-- New struct **fields** (e.g. `PendingAsk` on `StatusInfo`, `AskPending` on `TreeNode`/`AttentionEntry`/`SerfThread`) need no appwire dual-router catalog change — only new/renamed **methods** do (confirmed: `server/appwire_catalog_test.go`'s `TestDaemonRouterMatchesCatalog` and `appwire/cov_rhub_appwire_test.go` diff only registered method names against `appwire.Methods`/`Notifications`, never struct shape).
+- New struct **fields** (e.g. `PendingAsk` on `StatusInfo`, `AskPending` on `TreeNode`/`AttentionEntry`/`EvenerThread`) need no appwire dual-router catalog change — only new/renamed **methods** do (confirmed: `server/appwire_catalog_test.go`'s `TestDaemonRouterMatchesCatalog` and `appwire/cov_rhub_appwire_test.go` diff only registered method names against `appwire.Methods`/`Notifications`, never struct shape).
 - `make lint` runs `lint-naming` (`go run ./cmd/evener-namingcheck`) in addition to `golangci-lint`; per-task `golangci-lint run ./...` misses the naming check, so run `make lint` before any merge-readiness claim.
 - `GO_MODULES := . agent llm auth envvars fuzz invariant` (root Makefile) — run `go test ./...` from the relevant module root; everything this track touches (`hubapi`, `hubcore`, `cmd/evener-tui`, `server`, `cmd/evener`, `appwire`) is in the root module `.`, so `go test ./...` from the repo root covers it (no `cd agent`/`cd llm` needed for this track).
 - jstest: `sh cmd/evener-hub/jstest/run-all.sh` (auto-detects `NODE_PATH`, falling back to `/tmp/evener-jstest-jsdom/node_modules`).
@@ -28,7 +28,7 @@
 - `hubapi/attention.go` — `AttentionRank`, `RollupRank`, `NeedsYouBand`, `StateWord` (the shared source of truth).
 - `hubapi/attention_test.go` — table tests for all four.
 - `cmd/evener-hub/assets/icons.js` — vendored Lucide SVG markup, keyed by unified-vocabulary state name.
-- `cmd/evener-hub/jstest/test-icons.js` — sanity test that every `SerfIcons` entry parses as an SVG element with the expected role.
+- `cmd/evener-hub/jstest/test-icons.js` — sanity test that every `EvenerIcons` entry parses as an SVG element with the expected role.
 - `cmd/evener-hub/jstest/test-style-palette.js` — palette recolor + `processing`→`working` rename assertions against `style.css`.
 - `cmd/evener-hub/jstest/test-style-colorblind-shapes.js` — warning's distinct dot shape.
 - `cmd/evener-hub/jstest/test-sidebar-icons.js` — status-dot icon+tooltip rendering, rollup-badge icons, `data-ask` marker.
@@ -58,9 +58,9 @@
 - `server/server.go` (`StatusInfo.PendingAsk`; `pendingAskFn` field + `SetPendingAskFunc`).
 - `server/server_handlers.go` (`handleStatus` overlays `pendingAskFn`).
 - `server/server_test.go` / `server/awaiting_status_test.go` (new cases).
-- `server/appwire_runtime.go` (`appThread()` overlays `pendingAskFn` into `SerfThread.AskPending`).
+- `server/appwire_runtime.go` (`appThread()` overlays `pendingAskFn` into `EvenerThread.AskPending`).
 - `server/appwire_runtime_test.go` (new case).
-- `appwire/types.go` (`SerfThread.AskPending`).
+- `appwire/types.go` (`EvenerThread.AskPending`).
 - `appwire/types_test.go` (round-trip case).
 - `cmd/evener/serve.go` (`srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })`).
 - `cmd/evener-tui/hub_types.go` (`hubTreeNode.AskPending`; `hubSessionDetail.AskPending`; `hubNodeFromThread`/`hubDetailFromThread` read it).
@@ -694,7 +694,7 @@ git commit -m "feat(web): give warning its own colorblind-safe shape; rewrite gl
 Seven icons, fetched verbatim (2026-07-05) from `https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<name>.svg` (ISC license): `refresh-cw` (Working), `message-circle-question-mark` (Question waiting), `message-circle-warning` (Your move), `triangle-alert` (Warning), `circle-x` (Error), `pause` (Idle), `check` (Ended). `width`/`height` are set to `1em` (not the fetched `24`) so each icon scales with the containing element's font-size via CSS, and `stroke="currentColor"` is preserved so color follows the element's CSS `color`.
 
 **Interfaces:**
-- Produces: `window.SerfIcons = { working, questionWaiting, yourMove, warning, error, idle, ended }`, each an SVG markup string, consumed by Task 8 (sidebar), Task 9 (rollup badge), Task 12-15 (renderer.js), Task 14 (renderer-format.js).
+- Produces: `window.EvenerIcons = { working, questionWaiting, yourMove, warning, error, idle, ended }`, each an SVG markup string, consumed by Task 8 (sidebar), Task 9 (rollup badge), Task 12-15 (renderer.js), Task 14 (renderer-format.js).
 
 - [ ] **Step 1: Write the failing jstest**
 
@@ -712,16 +712,16 @@ const script = fs.readFileSync(path.join(__dirname, "..", "assets", "icons.js"),
 dom.window.eval(script);
 
 const EXPECTED_KEYS = ["working", "questionWaiting", "yourMove", "warning", "error", "idle", "ended"];
-const icons = dom.window.SerfIcons;
-assert.ok(icons, "window.SerfIcons must be defined");
+const icons = dom.window.EvenerIcons;
+assert.ok(icons, "window.EvenerIcons must be defined");
 for (const key of EXPECTED_KEYS) {
   const markup = icons[key];
-  assert.ok(typeof markup === "string" && markup.length > 0, `SerfIcons.${key} must be a non-empty string`);
+  assert.ok(typeof markup === "string" && markup.length > 0, `EvenerIcons.${key} must be a non-empty string`);
   const div = dom.window.document.createElement("div");
   div.innerHTML = markup;
   const svg = div.querySelector("svg");
-  assert.ok(svg, `SerfIcons.${key} must parse to an <svg> element`);
-  assert.strictEqual(svg.getAttribute("stroke"), "currentColor", `SerfIcons.${key} must use stroke="currentColor" to inherit color`);
+  assert.ok(svg, `EvenerIcons.${key} must parse to an <svg> element`);
+  assert.strictEqual(svg.getAttribute("stroke"), "currentColor", `EvenerIcons.${key} must use stroke="currentColor" to inherit color`);
 }
 
 console.log("test-icons.js: OK");
@@ -745,7 +745,7 @@ Create `cmd/evener-hub/assets/icons.js`:
 (function () {
   "use strict";
 
-  window.SerfIcons = {
+  window.EvenerIcons = {
     // refresh-cw — Working (green)
     working:
       '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -820,7 +820,7 @@ git commit -m "feat(web): vendor Lucide icon set for the unified status vocabula
 - Create: `cmd/evener-hub/jstest/test-sidebar-icons.js`
 
 **Interfaces:**
-- Consumes: `window.SerfIcons` (Task 7), `hubapi.TreeNode.State` (already on the wire; the `ask_pending` field itself lands in Phase 4 Task 21 — this task wires the icon-choice function to accept an `askPending` parameter now so Phase 4 only needs to pass the real value, not restructure the call).
+- Consumes: `window.EvenerIcons` (Task 7), `hubapi.TreeNode.State` (already on the wire; the `ask_pending` field itself lands in Phase 4 Task 21 — this task wires the icon-choice function to accept an `askPending` parameter now so Phase 4 only needs to pass the real value, not restructure the call).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -834,18 +834,18 @@ const assert = require("assert");
 // buildRow must render an icon (svg) inside .status-dot's container and set
 // a title attribute carrying the unified word as the hover tooltip.
 const node = { row_id: "project:x:local:01A", ref: "local:01A", state: "active", title: "t", session_id: "01A" };
-const row = window.SerfSidebarInternal.buildRow(node); // exposed for tests, see step 3
+const row = window.EvenerSidebarInternal.buildRow(node); // exposed for tests, see step 3
 const iconWrap = row.querySelector(".status-icon");
 assert.ok(iconWrap, "row must render a .status-icon element");
 assert.ok(iconWrap.querySelector("svg"), "status-icon must contain an svg icon");
 assert.strictEqual(iconWrap.getAttribute("title"), "Working", "status-icon title must be the unified word (hover tooltip)");
 
 const askNode = Object.assign({}, node, { state: "awaiting", ask_pending: true });
-const askRow = window.SerfSidebarInternal.buildRow(askNode);
+const askRow = window.EvenerSidebarInternal.buildRow(askNode);
 assert.strictEqual(askRow.querySelector(".status-icon").getAttribute("title"), "Question waiting");
 
 const moveNode = Object.assign({}, node, { state: "awaiting", ask_pending: false });
-const moveRow = window.SerfSidebarInternal.buildRow(moveNode);
+const moveRow = window.EvenerSidebarInternal.buildRow(moveNode);
 assert.strictEqual(moveRow.querySelector(".status-icon").getAttribute("title"), "Your move");
 
 console.log("test-sidebar-icons.js: OK");
@@ -854,7 +854,7 @@ console.log("test-sidebar-icons.js: OK");
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-sidebar-icons.js`
-Expected: FAIL — no `.status-icon` element, `window.SerfSidebarInternal` undefined.
+Expected: FAIL — no `.status-icon` element, `window.EvenerSidebarInternal` undefined.
 
 - [ ] **Step 3: Add the icon element + tooltip word to `buildRow`/`patchRow`**
 
@@ -862,7 +862,7 @@ In `cmd/evener-hub/assets/sidebar.js`, add a small word/icon-key resolver near t
 
 ```js
   // stateIconKey maps a tree-node state (+ optional ask_pending) to the
-  // SerfIcons key and the hubapi.StateWord-equivalent tooltip text. Mirrors
+  // EvenerIcons key and the hubapi.StateWord-equivalent tooltip text. Mirrors
   // hubapi.StateWord verbatim so the web tooltip and the TUI word agree.
   var STATE_WORDS = {
     active: "Working", warning: "Warning", errored: "Error",
@@ -890,7 +890,7 @@ Replace `buildRow`'s dot markup (currently the `a.innerHTML = '<div class="dot-c
       '<span class="status-icon" data-state="' + n.state + '"></span></div>' +
       '<div class="text-col"><div class="title"></div><div class="meta"></div></div>';
     var icon = a.querySelector(".status-icon");
-    icon.innerHTML = window.SerfIcons[stateIconKey(n.state, n.ask_pending)];
+    icon.innerHTML = window.EvenerIcons[stateIconKey(n.state, n.ask_pending)];
     icon.setAttribute("title", stateWord(n.state, n.ask_pending));
 ```
 
@@ -909,7 +909,7 @@ Replace `buildRow`'s dot markup (currently the `a.innerHTML = '<div class="dot-c
       var word = stateWord(n.state, n.ask_pending);
       if (icon.getAttribute("title") !== word) {
         icon.setAttribute("data-state", n.state);
-        icon.innerHTML = window.SerfIcons[key];
+        icon.innerHTML = window.EvenerIcons[key];
         icon.setAttribute("title", word);
       }
     }
@@ -920,10 +920,10 @@ Replace `buildRow`'s dot markup (currently the `a.innerHTML = '<div class="dot-c
   }
 ```
 
-Expose the internals the test needs, near the top where `window.SerfSidebarModel = model;` already exists:
+Expose the internals the test needs, near the top where `window.EvenerSidebarModel = model;` already exists:
 
 ```js
-  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord }; // test/inspection surface
+  window.EvenerSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord }; // test/inspection surface
 ```
 
 Add the `.status-icon` sizing rule to `cmd/evener-hub/assets/style.css` next to the existing `.status-dot` rule (line 637):
@@ -957,14 +957,14 @@ git commit -m "feat(web): sidebar status-dot renders icon + word tooltip"
 - Modify: `cmd/evener-hub/assets/sidebar.js`
 
 **Interfaces:**
-- Consumes: `window.SerfIcons.working`, `window.SerfIcons.yourMove` (Task 7).
+- Consumes: `window.EvenerIcons.working`, `window.EvenerIcons.yourMove` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
 Append to `cmd/evener-hub/jstest/test-sidebar-icons.js`:
 
 ```js
-const badge = window.SerfSidebarInternal.buildRollupBadge("rollup-live", "working", 3);
+const badge = window.EvenerSidebarInternal.buildRollupBadge("rollup-live", "working", 3);
 assert.ok(badge.querySelector("svg"), "rollup badge must render an svg icon, not a text glyph");
 assert.strictEqual(badge.textContent.trim(), "3", "rollup badge count text must still read as a plain number");
 ```
@@ -1000,17 +1000,17 @@ In `cmd/evener-hub/assets/sidebar.js`, replace `setProjectRollup`/`buildRollupBa
     b.className = "rollup-badge " + cls;
     var g = document.createElement("span");
     g.className = "rollup-glyph";
-    g.innerHTML = window.SerfIcons[iconKey];
+    g.innerHTML = window.EvenerIcons[iconKey];
     b.appendChild(g);
     b.appendChild(document.createTextNode(String(count)));
     return b;
   }
 ```
 
-Add `buildRollupBadge` to the `window.SerfSidebarInternal` export from Task 8:
+Add `buildRollupBadge` to the `window.EvenerSidebarInternal` export from Task 8:
 
 ```js
-  window.SerfSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge };
+  window.EvenerSidebarInternal = { buildRow: buildRow, stateIconKey: stateIconKey, stateWord: stateWord, buildRollupBadge: buildRollupBadge };
 ```
 
 Update `.rollup-glyph`'s CSS (style.css, currently `font-family: var(--font-mono); font-size: 9px;` on the rule at line 1110) to size the inline svg instead:
@@ -1198,12 +1198,12 @@ In `cmd/evener-hub/assets/renderer.js`, replace `showConnectionBanner` (currentl
       banner.classList.remove("reconnecting", "lost");
       if (level === "lost") {
         banner.classList.add("lost");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.warning + '</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.EvenerIcons.warning + '</span>' +
           '<span class="connection-banner-msg">Connection lost</span>' +
           '<span class="connection-banner-sub">retrying… — the agent keeps running on the daemon</span>';
       } else {
         banner.classList.add("reconnecting");
-        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.working + '</span>' +
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.EvenerIcons.working + '</span>' +
           '<span class="connection-banner-msg">Reconnecting…</span>' +
           '<span class="connection-banner-sub">the agent keeps running on the daemon</span>';
       }
@@ -1238,18 +1238,18 @@ git commit -m "feat(web): connection banner adopts icon set"
 - Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
-- Consumes: `window.SerfIcons.working`, `.error`, `.ended` (Task 7). Note: `subagentGlyph("unknown")` returns `"?"` today — there is no unified-vocabulary state named "unknown" (subagent tool-status kinds are `running`/`done`/`failed`/`unknown`, a different axis than session attention state); this task maps `done`→`ended` icon, `failed`→`error` icon, `running`→`working` icon, and leaves `unknown` as a literal `"?"` character (out of scope — it is not one of the five/six unified states).
+- Consumes: `window.EvenerIcons.working`, `.error`, `.ended` (Task 7). Note: `subagentGlyph("unknown")` returns `"?"` today — there is no unified-vocabulary state named "unknown" (subagent tool-status kinds are `running`/`done`/`failed`/`unknown`, a different axis than session attention state); this task maps `done`→`ended` icon, `failed`→`error` icon, `running`→`working` icon, and leaves `unknown` as a literal `"?"` character (out of scope — it is not one of the five/six unified states).
 
 - [ ] **Step 1: Write the failing test**
 
-Create `cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js` (copy the JSDOM + `SerfRendererInternal` bootstrap from a sibling renderer test):
+Create `cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js` (copy the JSDOM + `EvenerRendererInternal` bootstrap from a sibling renderer test):
 
 ```js
 "use strict";
 require("./load-renderer.js");
 const assert = require("assert");
 
-const r = window.SerfRendererInternal;
+const r = window.EvenerRendererInternal;
 assert.ok(r.subagentGlyph("done").includes("<svg"), "done glyph must be an svg icon");
 assert.ok(r.subagentGlyph("failed").includes("<svg"), "failed glyph must be an svg icon");
 assert.ok(r.subagentGlyph("running").includes("<svg"), "running glyph must be an svg icon");
@@ -1261,7 +1261,7 @@ console.log("test-renderer-subagent-glyphs.js: OK");
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node cmd/evener-hub/jstest/test-renderer-subagent-glyphs.js`
-Expected: FAIL — `subagentGlyph("done")` returns `"✓"`, not svg markup; `SerfRendererInternal` may not yet expose `subagentGlyph` (if not already exposed, add it to whatever internal-test-surface object the sibling tests use).
+Expected: FAIL — `subagentGlyph("done")` returns `"✓"`, not svg markup; `EvenerRendererInternal` may not yet expose `subagentGlyph` (if not already exposed, add it to whatever internal-test-surface object the sibling tests use).
 
 - [ ] **Step 3: Implement**
 
@@ -1269,21 +1269,21 @@ In `cmd/evener-hub/assets/renderer.js`, replace `subagentGlyph` (currently lines
 
 ```js
     subagentGlyph(kind) {
-      if (kind === "done") return window.SerfIcons.ended;
-      if (kind === "failed") return window.SerfIcons.error;
+      if (kind === "done") return window.EvenerIcons.ended;
+      if (kind === "failed") return window.EvenerIcons.error;
       if (kind === "unknown") return "?";
-      return window.SerfIcons.working;
+      return window.EvenerIcons.working;
     },
 ```
 
-`subagentGlyphClass` (lines 2557-2562) is unchanged — it still returns CSS class suffixes (`done`/`err`/`unk`/`run`), only the glyph *content* changed. Update every call site that assigns `subagentGlyph(...)`'s return value via `textContent` to use `innerHTML` instead (the value is now markup, not a character) — grep `subagentGlyph(` for call sites (`makeSubagentRow`'s initial placeholder at line 2619 currently sets `glyph.textContent = "⟳";` directly rather than calling the function; change it to `glyph.innerHTML = window.SerfIcons.working;`), plus any `refreshSubagentModule`/row-update function that later calls `subagentGlyph(kind)` and assigns the result — change `.textContent =` to `.innerHTML =` at each.
+`subagentGlyphClass` (lines 2557-2562) is unchanged — it still returns CSS class suffixes (`done`/`err`/`unk`/`run`), only the glyph *content* changed. Update every call site that assigns `subagentGlyph(...)`'s return value via `textContent` to use `innerHTML` instead (the value is now markup, not a character) — grep `subagentGlyph(` for call sites (`makeSubagentRow`'s initial placeholder at line 2619 currently sets `glyph.textContent = "⟳";` directly rather than calling the function; change it to `glyph.innerHTML = window.EvenerIcons.working;`), plus any `refreshSubagentModule`/row-update function that later calls `subagentGlyph(kind)` and assigns the result — change `.textContent =` to `.innerHTML =` at each.
 
 Update the subagent tally block (currently lines 3168-3171):
 
 ```js
-        if (failed) parts.push(["f", window.SerfIcons.error + " " + failed + " failed"]);
-        if (running) parts.push(["r", window.SerfIcons.working + " " + running + " running"]);
-        if (done) parts.push(["o", window.SerfIcons.ended + " " + done + " done"]);
+        if (failed) parts.push(["f", window.EvenerIcons.error + " " + failed + " failed"]);
+        if (running) parts.push(["r", window.EvenerIcons.working + " " + running + " running"]);
+        if (done) parts.push(["o", window.EvenerIcons.ended + " " + done + " done"]);
 ```
 
 Check how `parts` is later joined into DOM (grep the variable a few lines below its `push` calls) — if it is assigned via `.textContent`, change the assignment to build DOM nodes (`.innerHTML =` the joined string, since each part is `[cssHook, htmlString]`) so the icon markup renders instead of appearing as literal `<svg>` text.
@@ -1308,7 +1308,7 @@ git commit -m "feat(web): subagent glyphs + tally adopt icon set"
 - Modify: `cmd/evener-hub/assets/renderer-format.js`
 
 **Interfaces:**
-- Consumes: `window.SerfIcons.ended`, `.working`, `.error` (Task 7).
+- Consumes: `window.EvenerIcons.ended`, `.working`, `.error` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1319,7 +1319,7 @@ Create `cmd/evener-hub/jstest/test-renderer-format-plan-glyphs.js`:
 require("./load-renderer.js");
 const assert = require("assert");
 
-const r = window.SerfRendererFormatInternal || window.SerfRendererInternal;
+const r = window.EvenerRendererFormatInternal || window.EvenerRendererInternal;
 assert.ok(r.planGlyphForStatus("done").includes("<svg"), "done plan glyph must be an svg icon");
 assert.ok(r.planGlyphForStatus("in_progress").includes("<svg"), "in_progress plan glyph must be an svg icon");
 assert.ok(r.planGlyphForStatus("cancelled").includes("<svg"), "cancelled plan glyph must be an svg icon");
@@ -1328,7 +1328,7 @@ assert.strictEqual(r.planGlyphForStatus("pending"), "○", "pending (default) st
 console.log("test-renderer-format-plan-glyphs.js: OK");
 ```
 
-(If `renderer-format.js` does not already expose an internal test surface, add the minimal one following whatever pattern the sibling `renderer-format` tests use — check `test-renderer-format-*.js` for the exact accessor name before assuming `SerfRendererFormatInternal`.)
+(If `renderer-format.js` does not already expose an internal test surface, add the minimal one following whatever pattern the sibling `renderer-format` tests use — check `test-renderer-format-*.js` for the exact accessor name before assuming `EvenerRendererFormatInternal`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1347,9 +1347,9 @@ In `cmd/evener-hub/assets/renderer-format.js`, replace `planGlyphForStatus` (cur
   // neutral literal circle.
   function planGlyphForStatus(status) {
     switch (status) {
-      case "done": return window.SerfIcons.ended;
-      case "in_progress": return window.SerfIcons.working;
-      case "cancelled": return window.SerfIcons.error;
+      case "done": return window.EvenerIcons.ended;
+      case "in_progress": return window.EvenerIcons.working;
+      case "cancelled": return window.EvenerIcons.error;
       default: return "○";
     }
   }
@@ -1377,7 +1377,7 @@ git commit -m "feat(web): plan/task glyphs adopt icon set"
 - Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
-- Consumes: `window.SerfIcons.yourMove`, `.error`, `.questionWaiting` (Task 7).
+- Consumes: `window.EvenerIcons.yourMove`, `.error`, `.questionWaiting` (Task 7).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1388,7 +1388,7 @@ Create `cmd/evener-hub/jstest/test-renderer-needsyou-affordances.js` (drive the 
 require("./load-renderer.js");
 const assert = require("assert");
 
-const r = window.SerfRendererInternal;
+const r = window.EvenerRendererInternal;
 // The scroll-nudge pill (formerly "↓ ◆ needs you")
 const pill = r.buildScrollNudgePill({ dir: "down", level: "needs_you" });
 assert.ok(pill.innerHTML.includes("<svg"), "needs-you scroll pill must render an icon, not ◆");
@@ -1419,40 +1419,40 @@ In `cmd/evener-hub/assets/renderer.js`, the four sites (verify current line numb
 Line ~4213 (scroll-nudge pill, `pill.textContent = "↓ ◆ needs you";`):
 
 ```js
-        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.SerfIcons.yourMove + " needs you";
+        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.EvenerIcons.yourMove + " needs you";
 ```
 
 (the urgent-error branch a few lines above, `pill.textContent = (urgent.dir === "up" ? "↑" : "↓") + " ✕ error";`, becomes:)
 
 ```js
-        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.SerfIcons.error + " error";
+        pill.innerHTML = (urgent.dir === "up" ? "↑ " : "↓ ") + window.EvenerIcons.error + " error";
 ```
 
 Line ~4321 (off-screen dock, `dock.textContent = "◆ The agent is waiting on your answer — jump to it";`):
 
 ```js
-      dock.innerHTML = window.SerfIcons.questionWaiting + " The agent is waiting on your answer — jump to it";
+      dock.innerHTML = window.EvenerIcons.questionWaiting + " The agent is waiting on your answer — jump to it";
 ```
 
 Line ~4451 (Esc-collapsed ask chip, `chip.textContent = "◆ question waiting";`):
 
 ```js
-      chip.innerHTML = window.SerfIcons.questionWaiting + " question waiting";
+      chip.innerHTML = window.EvenerIcons.questionWaiting + " question waiting";
 ```
 
 Line ~4787 (settled-ask summary, `line.textContent = "◆ asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");`):
 
 ```js
-      line.innerHTML = window.SerfIcons.questionWaiting + " asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");
+      line.innerHTML = window.EvenerIcons.questionWaiting + " asked " + askedSummary + (echo ? " — answered: " + echo : " — answered");
 ```
 
 Also update the ask-header glyph near line 2011 (`glyph.textContent = "◆";`, the mockup #16 header comment at line 1997):
 
 ```js
-      glyph.innerHTML = window.SerfIcons.questionWaiting;
+      glyph.innerHTML = window.EvenerIcons.questionWaiting;
 ```
 
-Every string concatenated with `askedSummary`/user-provided text **must** go through `.innerHTML` carefully — confirm at implementation time that `askedSummary`/`echo` are already HTML-escaped upstream (check how the pre-existing `.textContent` assignment sourced them); if they are raw user text, build the icon and text as separate DOM nodes instead of string-concatenating into `innerHTML` to avoid an XSS regression (e.g. `line.textContent = ""; line.appendChild(iconSpan); line.appendChild(document.createTextNode(" asked " + askedSummary + ...));` where `iconSpan.innerHTML = window.SerfIcons.questionWaiting`).
+Every string concatenated with `askedSummary`/user-provided text **must** go through `.innerHTML` carefully — confirm at implementation time that `askedSummary`/`echo` are already HTML-escaped upstream (check how the pre-existing `.textContent` assignment sourced them); if they are raw user text, build the icon and text as separate DOM nodes instead of string-concatenating into `innerHTML` to avoid an XSS regression (e.g. `line.textContent = ""; line.appendChild(iconSpan); line.appendChild(document.createTextNode(" asked " + askedSummary + ...));` where `iconSpan.innerHTML = window.EvenerIcons.questionWaiting`).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2476,7 +2476,7 @@ git commit -m "feat(hub): NeedsYou sort adopts the three-band hubapi.NeedsYouBan
 
 ---
 
-## Task 24: Appwire wire — `SerfThread.AskPending` for the TUI's JSON-RPC path
+## Task 24: Appwire wire — `EvenerThread.AskPending` for the TUI's JSON-RPC path
 
 **Files:**
 - Modify: `appwire/types.go`
@@ -2488,15 +2488,15 @@ The web path (Tasks 19-23) travels through `/status` HTTP polling; the TUI reads
 
 **Interfaces:**
 - Consumes: `Server.pendingAskFn` (Task 19, already wired to `getSession().HasPendingAsk()` in `cmd/evener/serve.go`).
-- Produces: `appwire.SerfThread.AskPending bool` (`json:"askPending,omitempty"`). Consumed by Task 25 (TUI reads it off `thread.Evener.AskPending`).
+- Produces: `appwire.EvenerThread.AskPending bool` (`json:"askPending,omitempty"`). Consumed by Task 25 (TUI reads it off `thread.Evener.AskPending`).
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `appwire/types_test.go`:
 
 ```go
-func TestSerfThread_AskPendingRoundTrips(t *testing.T) {
-	th := SerfThread{Ref: "local:01A", AskPending: true}
+func TestEvenerThread_AskPendingRoundTrips(t *testing.T) {
+	th := EvenerThread{Ref: "local:01A", AskPending: true}
 	data, err := json.Marshal(th)
 	if err != nil {
 		t.Fatal(err)
@@ -2524,11 +2524,11 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./appwire/... ./server/... -run 'AskPending' -v`
-Expected: FAIL to compile — `SerfThread.AskPending` undefined.
+Expected: FAIL to compile — `EvenerThread.AskPending` undefined.
 
 - [ ] **Step 3: Implement**
 
-In `appwire/types.go`, add to `SerfThread` (currently lines 191-223, next to `ActiveTurnStartedAt`):
+In `appwire/types.go`, add to `EvenerThread` (currently lines 191-223, next to `ActiveTurnStartedAt`):
 
 ```go
 	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
@@ -2552,7 +2552,7 @@ compute the overlay after the existing `workMillis`/`usage`/`activeTurnStartedAt
 	}
 ```
 
-and add it to the `appwire.SerfThread{...}` literal (currently lines 514-529, next to `ActiveTurnStartedAt: activeTurnStartedAt,`):
+and add it to the `appwire.EvenerThread{...}` literal (currently lines 514-529, next to `ActiveTurnStartedAt: activeTurnStartedAt,`):
 
 ```go
 			AskPending:          askPending,
@@ -2572,7 +2572,7 @@ Expected: PASS, possibly with a regenerated `docs/appwire-protocol.md` diff to i
 
 ```bash
 git add appwire/types.go appwire/types_test.go server/appwire_runtime.go server/appwire_runtime_test.go docs/appwire-protocol.md
-git commit -m "feat(appwire): SerfThread.AskPending for the TUI's JSON-RPC wire chain"
+git commit -m "feat(appwire): EvenerThread.AskPending for the TUI's JSON-RPC wire chain"
 ```
 
 ---
@@ -2609,7 +2609,7 @@ Append to `cmd/evener-tui/hub_dashboard_view_test.go` (or wherever `hubNodeFromT
 
 ```go
 func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Evener: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.EvenerThread{AskPending: true}}
 	node := hubNodeFromThread(thread)
 	if !node.AskPending {
 		t.Fatal("expected hubTreeNode.AskPending=true from thread.Evener.AskPending")
@@ -2617,7 +2617,7 @@ func TestHubNodeFromThread_CarriesAskPending(t *testing.T) {
 }
 
 func TestHubDetailFromThread_CarriesAskPending(t *testing.T) {
-	thread := appwire.Thread{SessionID: "01A", Evener: appwire.SerfThread{AskPending: true}}
+	thread := appwire.Thread{SessionID: "01A", Evener: appwire.EvenerThread{AskPending: true}}
 	detail := hubDetailFromThread(thread)
 	if !detail.AskPending {
 		t.Fatal("expected hubSessionDetail.AskPending=true from thread.Evener.AskPending")
@@ -2712,14 +2712,14 @@ const assert = require("assert");
 // loudScope key, and bumps the version so migration doesn't re-run.
 localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: false, sound: false }));
 localStorage.setItem("evener-hub.notifications.v", "2");
-window.SerfNotificationsInternal.migratePrefs();
+window.EvenerNotificationsInternal.migratePrefs();
 let prefs = JSON.parse(localStorage.getItem("evener-hub.notifications"));
 assert.strictEqual(prefs.loudScope, "asks", "existing v2 users must backfill to the asks default, not off");
 assert.strictEqual(localStorage.getItem("evener-hub.notifications.v"), "3", "migration must bump the version so it does not re-run");
 
 // A fresh install gets loudScope: "asks" outright.
 localStorage.clear();
-window.SerfNotificationsInternal.migratePrefs();
+window.EvenerNotificationsInternal.migratePrefs();
 prefs = JSON.parse(localStorage.getItem("evener-hub.notifications"));
 assert.strictEqual(prefs.loudScope, "asks");
 
@@ -2727,20 +2727,20 @@ assert.strictEqual(prefs.loudScope, "asks");
 // no askPending) must NOT fire OS/sound; an askPending or error transition
 // must.
 let osNotified = 0, soundPlayed = 0;
-window.SerfNotificationsInternal.setTestHooks({
+window.EvenerNotificationsInternal.setTestHooks({
   fireOsNotification: () => { osNotified++; },
   playTone: () => { soundPlayed++; },
 });
 localStorage.setItem("evener-hub.notifications", JSON.stringify({ title: true, favicon: true, os: true, sound: true, loudScope: "asks" }));
-window.SerfNotificationsInternal.setLeaderForTest(true);
-window.SerfNotificationsInternal.setBaselineForTest({ needsYou: 0, error: 0, working: 0 });
-window.SerfNotificationsInternal.onAttentionChanged({
+window.EvenerNotificationsInternal.setLeaderForTest(true);
+window.EvenerNotificationsInternal.setBaselineForTest({ needsYou: 0, error: 0, working: 0 });
+window.EvenerNotificationsInternal.onAttentionChanged({
   summary: { needsYou: 1, error: 0, working: 0 },
   changed: [{ id: "01A", level: "needs_you", prevLevel: "idle", askPending: false }],
 });
 assert.strictEqual(osNotified, 0, `askScope "asks" must suppress a generic needs_you settle, got ${osNotified} OS fires`);
 
-window.SerfNotificationsInternal.onAttentionChanged({
+window.EvenerNotificationsInternal.onAttentionChanged({
   summary: { needsYou: 2, error: 0, working: 0 },
   changed: [{ id: "01B", level: "needs_you", prevLevel: "idle", askPending: true }],
 });
@@ -2749,7 +2749,7 @@ assert.strictEqual(osNotified, 1, "askScope \"asks\" must still fire for an askP
 console.log("test-notifications-loudscope.js: OK");
 ```
 
-(Match whichever test-hook injection pattern the sibling `test-notifications-*.js` files already use for `leader`/`fireOsNotification`/`playTone`/the baseline `summary` — if no such seam exists yet, add the minimal one following that file's existing style, exposed via a `window.SerfNotificationsInternal` object alongside `migratePrefs`.)
+(Match whichever test-hook injection pattern the sibling `test-notifications-*.js` files already use for `leader`/`fireOsNotification`/`playTone`/the baseline `summary` — if no such seam exists yet, add the minimal one following that file's existing style, exposed via a `window.EvenerNotificationsInternal` object alongside `migratePrefs`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -2804,7 +2804,7 @@ Update the gating in `onAttentionChanged` (currently lines 246-253):
 Add the test-hook seam (near the module's existing `leader`/`summary` module-scope variables):
 
 ```js
-  window.SerfNotificationsInternal = {
+  window.EvenerNotificationsInternal = {
     migratePrefs: migratePrefs,
     onAttentionChanged: onAttentionChanged,
     setTestHooks: function (hooks) {
@@ -2903,7 +2903,7 @@ Add the radio-commit handler to `cmd/evener-hub/assets/settings.js`, in the same
       document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
         detail: { key, value: desired },
       }));
-      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
       return;
     }
 ```
@@ -2944,10 +2944,10 @@ Task 8 already made `buildRow`/`patchRow` choose the `questionWaiting` vs `yourM
 Append to `cmd/evener-hub/jstest/test-sidebar-icons.js`:
 
 ```js
-const askOnRow = window.SerfSidebarInternal.buildRow({ row_id: "x", ref: "local:01A", state: "awaiting", ask_pending: true, title: "t", session_id: "01A" });
+const askOnRow = window.EvenerSidebarInternal.buildRow({ row_id: "x", ref: "local:01A", state: "awaiting", ask_pending: true, title: "t", session_id: "01A" });
 assert.strictEqual(askOnRow.getAttribute("data-ask"), "true", "an ask-pending row must carry data-ask=true");
 
-const askOffRow = window.SerfSidebarInternal.buildRow({ row_id: "y", ref: "local:01B", state: "awaiting", ask_pending: false, title: "t", session_id: "01B" });
+const askOffRow = window.EvenerSidebarInternal.buildRow({ row_id: "y", ref: "local:01B", state: "awaiting", ask_pending: false, title: "t", session_id: "01B" });
 assert.ok(!askOffRow.hasAttribute("data-ask"), "a your-move row must not carry data-ask");
 ```
 

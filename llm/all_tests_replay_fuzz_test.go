@@ -246,7 +246,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestApplyOverrides_DatedVariantInheritsFamily(t)
 		TestApplyOverrides_ExactDatedOverrideWinsOverFamily(t)
 		TestFamilyModelID(t)
-		TestApplyOverrides_MaterializesSerfOnlyModel(t)
+		TestApplyOverrides_MaterializesEvenerOnlyModel(t)
 		TestApplyOverrides_ThinkingAlwaysOn(t)
 		TestApplyOverrides_MaterializesVisionPricingAndAliases(t)
 		TestApplyOverrides_MaxOutputTokens(t)

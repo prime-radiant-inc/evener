@@ -28,7 +28,7 @@ func MessagesFromThread(thread appwire.Thread) []ChatMessage {
 	}
 	if thread.Evener.Diagnostics != nil {
 		for _, delegate := range thread.Evener.Diagnostics.Delegates {
-			reducer.ApplySerfDelegate(delegate)
+			reducer.ApplyEvenerDelegate(delegate)
 		}
 	}
 	return reducer.messages

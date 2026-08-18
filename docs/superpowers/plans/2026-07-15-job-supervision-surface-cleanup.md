@@ -38,7 +38,7 @@ The checkout already has `job_status` and `read_transcript` registered, and alre
 
 Do not delete, rename, recompute, or omit prerequisite-provided exhausted status/metadata while removing the overlapping output surface. Likewise, change only the `job:` branch of transcript reading: default session reads remain semantic-only, and exact provider transport data remains reachable only through the explicit API-log source from Project 2.
 
-AppWire inspection found no job-control RPC or alternate tool-dispatch surface. `server/appwire_runtime.go` only projects diagnostic tool/job inventory. Keep that protocol and `appwire.SerfJobInfo` unchanged; final verification must prove it still passes.
+AppWire inspection found no job-control RPC or alternate tool-dispatch surface. `server/appwire_runtime.go` only projects diagnostic tool/job inventory. Keep that protocol and `appwire.EvenerJobInfo` unchanged; final verification must prove it still passes.
 
 ## File Structure
 

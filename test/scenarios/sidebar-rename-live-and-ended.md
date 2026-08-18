@@ -11,7 +11,7 @@ rail's rename dialog, and the namer-suppression rule in
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
 map there is the single place these hooks are maintained. Rows are
 `[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`); there is no `.sb-row`,
-no `.title` class, and no `window.SerfSidebar.refresh()`.
+no `.title` class, and no `window.EvenerSidebar.refresh()`.
 
 **Rename is a dialog now, not an inline edit.** `sidebar.js`'s
 `startInlineRename` / `.sb-rename-input` are gone. The flow is: the row's `⋯`

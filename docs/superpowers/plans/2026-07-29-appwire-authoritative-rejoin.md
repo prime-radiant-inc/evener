@@ -394,7 +394,7 @@ retained-window storage and switches every read path to the reducer.
 
   Drive an in-progress turn into the snapshot through
   `appwire.NotifyTurnStarted`, then apply two
-  `appwire.NotifySerfSteeringInjected` records. Assert two completed steering
+  `appwire.NotifyEvenerSteeringInjected` records. Assert two completed steering
   items exist on that active turn with:
 
   ```text

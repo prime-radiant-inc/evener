@@ -63,16 +63,16 @@ func FuzzExactTails(f *testing.F) {
 		// highest-priority working-directory contract interface.
 		lister := &exactContractLister{resp: appwire.ModelListResponse{Diagnostics: []appwire.ModelListDiagnostic{{Provider: "p", Message: "unavailable"}}}}
 		cfg := hubcore.WebConfig{Spawner: lister}
-		_ = hasSerfLaunchModelLister(cfg)
+		_ = hasEvenerLaunchModelLister(cfg)
 		_ = validateEvenerLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "p", Model: "m"}, "/tmp")
 		_, _ = ResumeDaemon(context.Background(), "", t.TempDir(), hubcore.ResumeRequest{}, time.Nanosecond)
 
-		oldContract := listSerfLaunchModelContractFn
-		listSerfLaunchModelContractFn = func(context.Context, string, []string) (appwire.ModelListResponse, error) {
+		oldContract := listEvenerLaunchModelContractFn
+		listEvenerLaunchModelContractFn = func(context.Context, string, []string) (appwire.ModelListResponse, error) {
 			return appwire.ModelListResponse{}, errors.New("contract")
 		}
 		_, _ = (&HubSpawner{}).ListLaunchModels(context.Background())
-		listSerfLaunchModelContractFn = oldContract
+		listEvenerLaunchModelContractFn = oldContract
 
 		inline := launchconfig.Resolved{}
 		inline.Effective.SystemPromptMode = "inline"
@@ -105,8 +105,8 @@ func FuzzExactTails(f *testing.F) {
 
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()
-		_ = validateSerfLaunchContract(canceled, "/bin/true", "", nil)
-		_, _ = listSerfLaunchModelContract(canceled, "/bin/true", nil)
+		_ = validateEvenerLaunchContract(canceled, "/bin/true", "", nil)
+		_, _ = listEvenerLaunchModelContract(canceled, "/bin/true", nil)
 
 		oldListRendezvous := listRendezvousForWait
 		startedAfter := time.Now().UTC()

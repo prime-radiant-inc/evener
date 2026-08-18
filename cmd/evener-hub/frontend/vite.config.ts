@@ -9,7 +9,7 @@ import { defineConfig, type Plugin } from "vitest/config";
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth?token= capability flow
 // works through the proxy unchanged.
-const hub = process.env.SERF_HUB_ADDR ?? "http://127.0.0.1:9180";
+const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

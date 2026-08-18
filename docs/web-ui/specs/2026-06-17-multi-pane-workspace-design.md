@@ -54,25 +54,25 @@ realistic implementation options, and recommends a phased plan.
 
 ## Key architectural finding: is the renderer a hard singleton?
 
-**Yes — `SerfRenderer` is a hard singleton, not a per-pane factory.** This is the single most
+**Yes — `EvenerRenderer` is a hard singleton, not a per-pane factory.** This is the single most
 important fact for this design.
 
 - It is a plain object literal, not a class:
-  `const SerfRenderer = { init(conversationEl) { ... } }` — `cmd/evener-hub/assets/renderer.js:64`,
-  exported once as `window.SerfRenderer = SerfRenderer;` — `renderer.js:3596`.
+  `const EvenerRenderer = { init(conversationEl) { ... } }` — `cmd/evener-hub/assets/renderer.js:64`,
+  exported once as `window.EvenerRenderer = EvenerRenderer;` — `renderer.js:3596`.
 - Its session state lives directly on that one object: `this.conversation = conversationEl;
   this.sessionId = conversationEl.dataset.sessionId;` — `renderer.js:96-97`. A second `init()`
   call **overwrites** these — there is no second instance.
 - Bootstrap hard-binds to a single element by ID: `const conv = document.getElementById("conversation");
-  if (conv) SerfRenderer.init(conv);` — `renderer.js:3610-3611`, wired to `DOMContentLoaded` and
+  if (conv) EvenerRenderer.init(conv);` — `renderer.js:3610-3611`, wired to `DOMContentLoaded` and
   `htmx:afterSwap` — `renderer.js:3613-3614`. It assumes **exactly one** `#conversation`.
-- Per-element idempotency exists (`conversationEl.__serfInitialized` — `renderer.js:70-71`), but
+- Per-element idempotency exists (`conversationEl.__evenerInitialized` — `renderer.js:70-71`), but
   because the live state is shared on the singleton, two `#conversation` elements cannot both be
   driven at once.
 
-(Note for the record: an early investigation pass claimed `SerfRenderer` was a
+(Note for the record: an early investigation pass claimed `EvenerRenderer` was a
 `class { constructor(sessionId, element) }`. That is **fabricated** — no such class exists; the
-code above is the truth. The "just `new SerfRenderer()` twice" idea does not work.)
+code above is the truth. The "just `new EvenerRenderer()` twice" idea does not work.)
 
 By contrast, the **transport** layer was clearly built with multiplexing in mind (see below), so
 the renderer singleton is the *only* hard blocker to running two sessions on one page.
@@ -282,7 +282,7 @@ document-global state (below) live in **separate `document` contexts** and never
 
 ### Option B — in-page multi-instance (refactor the renderer)
 
-Make `SerfRenderer` a factory that produces N instances, each scoped to its own root element, all
+Make `EvenerRenderer` a factory that produces N instances, each scoped to its own root element, all
 sharing the one WebSocket via ref-demuxed notifications.
 
 **Why it's attractive (long term):** one socket, no chrome duplication, tighter cross-pane
@@ -292,7 +292,7 @@ no iframe boxing.
 **Why it's the wrong MVP — the specific global state that must become per-instance.** This is the
 cost. Every item below is document-global today and would collide with two renderers on one page:
 
-1. The singleton itself: `const SerfRenderer = {...}`; `window.SerfRenderer = SerfRenderer` —
+1. The singleton itself: `const EvenerRenderer = {...}`; `window.EvenerRenderer = EvenerRenderer` —
    `renderer.js:64`, `:3596`. Must become `create(rootEl) -> instance`.
 2. Bootstrap binds one element: `document.getElementById("conversation")` — `renderer.js:3610`.
    Must iterate roots / accept a root.
@@ -336,7 +336,7 @@ A side pane that is **not** a second live session: just a read-only viewer for a
 
 - Implemented either as a tiny iframe pointed at `/doc/...`, or — since it's read-only and simple —
   as **in-host DOM** reusing the existing client renderers (`renderDiff` — `renderer-tools.js:22`,
-  `marked.parse`, the lightbox) without instantiating a second `SerfRenderer`.
+  `marked.parse`, the lightbox) without instantiating a second `EvenerRenderer`.
 - This is the **cheapest** way to deliver the "documents beside the agent" half of the ask, and it
   composes with Option A (subagent panes are iframes; document panes are read-only viewers).
 

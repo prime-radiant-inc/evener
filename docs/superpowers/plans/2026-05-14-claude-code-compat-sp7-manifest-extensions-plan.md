@@ -30,7 +30,7 @@ This plan implements every numbered section of the sub-spec:
 - §13 Package layout → enforced per task
 
 Stubs/collaborator boundaries cited in code comments:
-- `SerfConfig.PluginConfigs` is owned by SP1; tests here use an in-memory `PluginConfigStore`. SP1 wires the typed JSON store later.
+- `EvenerConfig.PluginConfigs` is owned by SP1; tests here use an in-memory `PluginConfigStore`. SP1 wires the typed JSON store later.
 - SP4 calls `PromptForUserConfig` from the install/enable CLI; this plan only defines and tests the function.
 - SP5/SP6 consume `ExpandUserConfig` / `UserConfigEnvVars`; this plan does not modify hook or MCP spawn sites.
 - SP8 wires per-surface `UserConfigPrompter` into session entry points; this plan ships the interface and the `MapPrompter` used in tests.
@@ -1849,10 +1849,10 @@ import (
 // config.json file. Other fields in the file are preserved verbatim via
 // a generic map[string]any decode.
 //
-// Per SP7 §5.1 and §13: SP1 owns the SerfConfig struct and its
+// Per SP7 §5.1 and §13: SP1 owns the EvenerConfig struct and its
 // PluginConfigs field. This store is a side-door that lets SP7 land
 // before SP1 wires the typed accessor. When SP1 lands, callers may switch
-// to SerfConfig.PluginConfigs directly; this store remains useful for
+// to EvenerConfig.PluginConfigs directly; this store remains useful for
 // CLI commands that only touch the user-config slice of the file.
 type ConfigJSONStore struct {
 	Path string
@@ -4455,7 +4455,7 @@ git commit -m "style: gofmt SP7 sources"
 **Spec coverage (§§3–11):**
 - §3 schema → Tasks 5–8 ✅
 - §4 prompt flow → Tasks 22–25 ✅ (per-surface prompters land in SP4/SP8; this plan ships the interface + MapPrompter + tests)
-- §5 storage → Tasks 9–14 ✅ (FileStore + ConfigJSONStore; SP1 still owns the typed `SerfConfig.PluginConfigs` accessor — flagged in Task 14)
+- §5 storage → Tasks 9–14 ✅ (FileStore + ConfigJSONStore; SP1 still owns the typed `EvenerConfig.PluginConfigs` accessor — flagged in Task 14)
 - §6 substitution → Tasks 15–20 ✅
 - §7 env vars → Task 21 ✅
 - §8 bin/PATH → Tasks 26–28, 34 ✅
@@ -4467,7 +4467,7 @@ git commit -m "style: gofmt SP7 sources"
 **Known gaps / boundaries (not bugs):**
 - `LocalExecutionEnvironment` shell-tool wiring (the actual `extraEnv["PATH"]` injection at `agent/session.go:2930-2942` per spec §8.1) is intentionally left for SP8 integration. Task 28 verifies the PATH helper end-to-end via direct `exec.Command`. The hookup of `extraEnv` to the shell tool registration is one short edit and SP8's integration test exercises it; flagging here so the SP8 implementer doesn't miss it.
 - CLI / TUI / Hub prompter implementations (§4.2) live in SP4 and SP8 respectively; this plan ships the interface and `MapPrompter` only.
-- `SerfConfig.PluginConfigs` typed accessor is owned by SP1. SP7 ships `ConfigJSONStore` so it can land before SP1 is finished; SP1 may later collapse the two paths.
+- `EvenerConfig.PluginConfigs` typed accessor is owned by SP1. SP7 ships `ConfigJSONStore` so it can land before SP1 is finished; SP1 may later collapse the two paths.
 - The `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go` modifications listed in §13 are SP8's responsibility (per spec §15.3).
 
 **Placeholder scan:** No "TBD" / "implement later" entries in any task. Every step shows the actual code to write.

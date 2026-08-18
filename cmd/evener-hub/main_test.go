@@ -121,9 +121,9 @@ func TestRunMainVersionFlag(t *testing.T) {
 	}
 }
 
-func TestResolveSerfBinaryPath(t *testing.T) {
+func TestResolveEvenerBinaryPath(t *testing.T) {
 	t.Run("explicit wins", func(t *testing.T) {
-		got := resolveSerfBinaryPath("/usr/bin/evener", "", nil)
+		got := resolveEvenerBinaryPath("/usr/bin/evener", "", nil)
 		if got != "/usr/bin/evener" {
 			t.Fatalf("explicit = %q, want /usr/bin/evener", got)
 		}
@@ -131,7 +131,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 
 	t.Run("sibling resolution", func(t *testing.T) {
 		dir := t.TempDir()
-		// resolveSerfBinaryPath resolves symlinks in the executable's
+		// resolveEvenerBinaryPath resolves symlinks in the executable's
 		// directory; on macOS t.TempDir() is under /var, a symlink to
 		// /private/var, so the expectation must use the resolved form.
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
@@ -146,7 +146,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 		if err := os.WriteFile(hubPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		got := resolveSerfBinaryPath("", hubPath, func(string) (string, error) {
+		got := resolveEvenerBinaryPath("", hubPath, func(string) (string, error) {
 			return "", errors.New("should not call lookPath")
 		})
 		if got != evenerPath {
@@ -155,7 +155,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 	})
 
 	t.Run("PATH resolution", func(t *testing.T) {
-		got := resolveSerfBinaryPath("", "/no/such/hub", func(name string) (string, error) {
+		got := resolveEvenerBinaryPath("", "/no/such/hub", func(name string) (string, error) {
 			if name != "evener" {
 				t.Fatalf("lookPath called with %q, want evener", name)
 			}
@@ -167,7 +167,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 	})
 
 	t.Run("lookPath error returns empty", func(t *testing.T) {
-		got := resolveSerfBinaryPath("", "/no/such/hub", func(string) (string, error) {
+		got := resolveEvenerBinaryPath("", "/no/such/hub", func(string) (string, error) {
 			return "", errors.New("not found")
 		})
 		if got != "" {
@@ -186,7 +186,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 		defer os.Setenv("PATH", oldPath)
 		os.Setenv("PATH", bindir)
 
-		got := resolveSerfBinaryPath("", "/no/such/hub", nil)
+		got := resolveEvenerBinaryPath("", "/no/such/hub", nil)
 		if got != evenerPath {
 			t.Fatalf("nil lookPath resolution = %q, want %q", got, evenerPath)
 		}

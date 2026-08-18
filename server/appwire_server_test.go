@@ -1013,7 +1013,7 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 // snapshots exactly as WorkMillis/Usage are — and omits it when the model is
 // uncataloged (absent-vs-zero honesty).
 func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
-	readSerf := func(model string) appwire.EvenerThread {
+	readEvener := func(model string) appwire.EvenerThread {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
 		srv.SetAppIdentity("local", "th_1")
@@ -1033,7 +1033,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		return data.Thread.Evener
 	}
 
-	priced := readSerf("claude-opus-4-5")
+	priced := readEvener("claude-opus-4-5")
 	if want := appwire.EstimateCost("claude-opus-4-5", priced.Usage); priced.Cost != want || want == "" {
 		t.Fatalf("cost=%q, want non-empty %q", priced.Cost, want)
 	}
@@ -1041,7 +1041,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		t.Fatalf("cost=%q, want ~$ prefix", priced.Cost)
 	}
 
-	if uncataloged := readSerf("totally-unknown-model-xyz"); uncataloged.Cost != "" {
+	if uncataloged := readEvener("totally-unknown-model-xyz"); uncataloged.Cost != "" {
 		t.Fatalf("uncataloged cost=%q, want \"\" (absent, not ~$0.00)", uncataloged.Cost)
 	}
 }

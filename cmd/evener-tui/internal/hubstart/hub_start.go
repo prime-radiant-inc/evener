@@ -446,7 +446,7 @@ func StartLocalHub(req HubStartRequest) error {
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
 			envvars.EVENERStateDir.Assignment(req.StateDir),
-			envvars.XDGStateHome.Assignment(StateHomeForSerfStateDir(req.StateDir)),
+			envvars.XDGStateHome.Assignment(StateHomeForEvenerStateDir(req.StateDir)),
 		)
 	}
 	var out *os.File
@@ -503,7 +503,7 @@ func StartLocalHub(req HubStartRequest) error {
 	return releaseHubProcess(standalone)
 }
 
-func StateHomeForSerfStateDir(stateDir string) string {
+func StateHomeForEvenerStateDir(stateDir string) string {
 	clean := filepath.Clean(strings.TrimSpace(stateDir))
 	return filepath.Dir(clean)
 }

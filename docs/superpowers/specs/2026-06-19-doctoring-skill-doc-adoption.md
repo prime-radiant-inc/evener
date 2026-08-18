@@ -101,8 +101,8 @@ Rebuild #5 says AppWire types are at `internal/appwire/` — the package is top-
 ### NEW — `docs/conventions/naming.md` itself cites the stale `internal/appwire/` path
 The naming doc's surface map and Exceptions repeatedly name `internal/appwire/` (and `server/appwire_*.go`) for the camelCase carve-out. Per the agentic-testing finding the package is top-level `appwire/`. The naming RULE (snake-on-disk) is what data-model.md needs and is correct; just don't inherit the `internal/appwire/` path when citing the carve-out.
 
-### NEW — `SERF_STATE_HOME` is invented; the real precedence is split across layers
-The doctoring-tools spec describes base = `--state-dir › SERF_STATE_HOME/EVENER_STATE_DIR › $XDG_STATE_HOME › $HOME/.local/state`. **`SERF_STATE_HOME` is read nowhere** (verified: no non-test Go file references it). The real, verified precedence is split across two layers:
+### NEW — `EVENER_STATE_HOME` is invented; the real precedence is split across layers
+The doctoring-tools spec describes base = `--state-dir › EVENER_STATE_HOME/EVENER_STATE_DIR › $XDG_STATE_HOME › $HOME/.local/state`. **`EVENER_STATE_HOME` is read nowhere** (verified: no non-test Go file references it). The real, verified precedence is split across two layers:
 - `agent/runtime_dir.go` reads **only** `XDG_STATE_HOME` (else `~/.local/state`); it knows nothing of `EVENER_STATE_DIR`.
 - `EVENER_STATE_DIR` is resolved at the **cmd layer** (`cmdutil/statedir.go` `DefaultStateRoot`; `cmd/evener/run.go`/`serve.go`: `--state-dir` flag > `EVENER_STATE_DIR` env > XDG) and passed *down* as `overrideDir`/`stateHome`.
 - **Adopt:** precedence = `--state-dir` flag › `EVENER_STATE_DIR` env › `$XDG_STATE_HOME` › `~/.local/state`; attribute the flag/env override to the launch/config layer, not to `RuntimeDir`. Also: the bucket key is `originURL` **else** `workDir` (one or the other; `agent/runtime_dir.go` `key := originURL; if key=="" { key = workDir }`), **not** a concatenation — the spec's `sha256(originURL|workDir)` shorthand reads as concat and should be corrected. Bucket = `hexHash(key)` = SHA256(key)[:8] → 16 hex chars.

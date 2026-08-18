@@ -17,7 +17,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. `form[data-spawn-form]`,
 `[data-drop-zone]`, `[data-composer-attachments]`, `[data-attachment]`,
-`[data-attachment-error]`, `.spawn-btn`, `.drop-active`, `window.SerfAppwire`
+`[data-attachment-error]`, `.spawn-btn`, `.drop-active`, `window.EvenerAppwire`
 and `assets/spawn.js` all died with the vanilla frontend (`660376f78`). There
 is no REST fallback on this path either: `startThread` goes to appwire
 `thread/start`, **not** `/api/spawn` (`startThread.ts:1-5`).

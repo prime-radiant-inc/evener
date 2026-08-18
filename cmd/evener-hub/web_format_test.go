@@ -79,11 +79,11 @@ func TestWorkspaceDataFromAppThread_CarriesCostEstimate(t *testing.T) {
 	}
 }
 
-// TestSerfUsageFromCumulative pins the nil-when-zero convention (mirrors
+// TestEvenerUsageFromCumulative pins the nil-when-zero convention (mirrors
 // evenerUsageFromLLM in cmd/evener/serve.go): an all-zero CumulativeUsage — a
 // fresh session or a meta written before WS2 — must map to a nil
 // *appwire.EvenerUsage so the usage cluster hides rather than rendering ↑0 ↓0.
-func TestSerfUsageFromCumulative(t *testing.T) {
+func TestEvenerUsageFromCumulative(t *testing.T) {
 	if got := evenerUsageFromCumulative(schema.CumulativeUsage{}); got != nil {
 		t.Fatalf("evenerUsageFromCumulative(zero) = %+v, want nil", got)
 	}

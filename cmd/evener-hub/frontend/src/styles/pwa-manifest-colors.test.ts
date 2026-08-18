@@ -20,10 +20,10 @@ import { expect, test } from "vitest";
 
 const STYLES_DIR = dirname(fileURLToPath(import.meta.url)); // frontend/src/styles
 const FRONTEND_ROOT = dirname(dirname(STYLES_DIR)); // .. /.. = frontend
-const SERF_HUB_ROOT = dirname(FRONTEND_ROOT); // frontend/.. = cmd/evener-hub
+const EVENER_HUB_ROOT = dirname(FRONTEND_ROOT); // frontend/.. = cmd/evener-hub
 
 const TOKENS_CSS = readFileSync(join(STYLES_DIR, "tokens.css"), "utf8");
-const MANIFEST_RAW = readFileSync(join(SERF_HUB_ROOT, "assets", "manifest.webmanifest"), "utf8");
+const MANIFEST_RAW = readFileSync(join(EVENER_HUB_ROOT, "assets", "manifest.webmanifest"), "utf8");
 const INDEX_HTML = readFileSync(join(FRONTEND_ROOT, "index.html"), "utf8");
 
 function darkSurface0(): string {

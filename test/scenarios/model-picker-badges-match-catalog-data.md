@@ -9,8 +9,8 @@ settings picker, and the TUI's compact meta tail.
 
 **This card found and fixed a real bug**: the web spawn picker's model-list
 data source (`listModelsWithDiagnosticsForHarness` in `assets/spawn.js`)
-preferred `window.SerfAppwire.listModelsWithDiagnostics(...)` — the appwire
-RPC path — whenever `window.SerfAppwire` was defined, which is
+preferred `window.EvenerAppwire.listModelsWithDiagnostics(...)` — the appwire
+RPC path — whenever `window.EvenerAppwire` was defined, which is
 *unconditional* (`appwire.js` loads in every page via the shared
 `templates/app.html` shell). That RPC response is backed by
 `appwire.ModelDescriptor{Provider, Model}` — a wire type with **no**
@@ -22,7 +22,7 @@ any badge for any model — every row showed the bare lowercase id with no
 meta line, in every real browser session, regardless of how catalogued the
 model was. The web settings picker was unaffected (its `settings-pickers.js`
 fetches `/api/models?diagnostics=1` directly, never through
-`window.SerfAppwire`). See Sharp edges for the fix and the (also
+`window.EvenerAppwire`). See Sharp edges for the fix and the (also
 bug-masking) jstest fixtures this surfaced.
 
 ## Pre-state
@@ -88,7 +88,7 @@ bug-masking) jstest fixtures this surfaced.
 - **The bug and the fix.** `cmd/evener-hub/assets/spawn.js`'s
   `listModelsWithDiagnosticsForHarness` (used solely by `openModelPicker`)
   was changed to always fetch `/api/models?diagnostics=1` (REST), dropping
-  the `window.SerfAppwire.listModelsWithDiagnostics` branch entirely — this
+  the `window.EvenerAppwire.listModelsWithDiagnostics` branch entirely — this
   matches the already-established pattern in the same file
   (`fetchEnrichedModelsForHarness`/`openEffortPicker`, whose own comment
   already said "the appwire model list returns provider/model only") and in
@@ -100,7 +100,7 @@ bug-masking) jstest fixtures this surfaced.
   card, flagged per this project's standing rule against exactly this):
   `cmd/evener-hub/jstest/test-spawn-model-picker-badges.js` and
   `test-spawn-model-picker-recent.js` both stubbed
-  `window.SerfAppwire.listModelsWithDiagnostics` to return hand-built
+  `window.EvenerAppwire.listModelsWithDiagnostics` to return hand-built
   enriched objects (`display_name`, `supports_tools`, `context_window`,
   etc.) that the *real* `appwire.js` implementation
   (`function listModelsWithDiagnostics(params) { return

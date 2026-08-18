@@ -115,7 +115,7 @@ func ParseAgent(data []byte, pluginName string) (Agent, error) {
 			case "":
 				// tolerate empty list entries the same way as empty comma segments
 			default:
-				tools = append(tools, toolname.ClaudeToSerf(s))
+				tools = append(tools, toolname.ClaudeToEvener(s))
 			}
 		}
 	}

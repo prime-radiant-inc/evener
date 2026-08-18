@@ -51,7 +51,7 @@ except where a line says so itself.
 - clicking steer with an empty textarea does not POST /steer — it is a focus-only action (test-input-area.js)
 - clicking steer with text POSTs to /steer and clears the textarea on success (test-input-area.js)
 - if the active turn ends while a steer request is still in flight, the steer button stays disabled once the request settles rather than re-enabling for a turn that's already gone (test-input-area.js)
-- "/" as the very first character of an empty textarea opens the command palette (SerfSearch.openWith); "/" anywhere else — mid-text, or with a modifier key held — is always literal and never opens the palette (test-input-area.js)
+- "/" as the very first character of an empty textarea opens the command palette (EvenerSearch.openWith); "/" anywhere else — mid-text, or with a modifier key held — is always literal and never opens the palette (test-input-area.js)
 
 ### CSS/template-token-only (name only, no runtime behavior to port)
 - test-composer-layout-css.js
@@ -114,7 +114,7 @@ except where a line says so itself.
 ### test-optimistic-rendering.js
 - when the daemon's `turn/steer` RPC returns a JSON-RPC error (e.g. "steer is not available"), the associated pending chip flips to `.optimistic-failed` (test-optimistic-rendering.js)
 - a successful `turn/steer` RPC response does NOT itself reconcile the pending chip — it stays `.optimistic-pending` until a later notification triggers reconciliation (test-optimistic-rendering.js)
-- with no pending registry installed, `SerfAppwire.steer()` still propagates RPC errors normally — optimistic UI is purely additive (test-optimistic-rendering.js)
+- with no pending registry installed, `EvenerAppwire.steer()` still propagates RPC errors normally — optimistic UI is purely additive (test-optimistic-rendering.js)
 - the pending chip is removed once the registry's `tryReconcile` runs with a matching `turn/steer` text (simulating the daemon's STEERING_INJECTED notification), even though RPC success alone didn't reconcile it (test-optimistic-rendering.js)
 
 ### test-appwire-queue-reconcile.js (queue-preview + turn optimistic reconciliation, driven through the renderer)
@@ -122,7 +122,7 @@ except where a line says so itself.
 - a `thread/queueChanged` notification whose string preview matches a pending queue chip's text reconciles (removes) that chip (test-appwire-queue-reconcile.js)
 - registering an image-only pending user turn (`turn/start`) shows an optimistic pending chip in the conversation (test-appwire-queue-reconcile.js)
 - an `item/completed` notification with a matching image-only authoritative user item reconciles the pending `turn/start` chip (test-appwire-queue-reconcile.js)
-- multiple pending turns registered before a frame flush accumulate multiple optimistic chips; reconciliation is deferred until `SerfRenderer.flush()`, then runs once per notification IN QUEUE ORDER within that single batched flush, resolving all matching placeholders (test-appwire-queue-reconcile.js)
+- multiple pending turns registered before a frame flush accumulate multiple optimistic chips; reconciliation is deferred until `EvenerRenderer.flush()`, then runs once per notification IN QUEUE ORDER within that single batched flush, resolving all matching placeholders (test-appwire-queue-reconcile.js)
 
 ## Attachments
 
@@ -228,7 +228,7 @@ except where a line says so itself.
 ### test-ask-submit.js
 - if the ask was already resolved by the time a stale Send click lands (e.g. a suspended tab waking up, or another client's reply arriving first), the dock re-checks before sending and does not call `startTurn` at all (test-ask-submit.js)
 - a `turn/start` Conflict (another client's reply won the daemon's atomic reservation) is never auto-retried: the composed answer text drops into the normal composer, the pending ask and its transcript anchor are discarded rather than settled (no authoritative USER_INPUT confirmed them), and a later acknowledged ask_user call starts a completely fresh pending set instead of merging into the stale conflicted one (test-ask-submit.js)
-- sending ask answers calls the exact same `SerfAppwire.startTurn(ref, text)` function the ordinary composer uses — never a parallel ask-only RPC — with the session's real ref and the composed text verbatim (test-ask-submit.js)
+- sending ask answers calls the exact same `EvenerAppwire.startTurn(ref, text)` function the ordinary composer uses — never a parallel ask-only RPC — with the session's real ref and the composed text verbatim (test-ask-submit.js)
 - the shared Send button disables the instant a send is in flight, stays disabled even if the dock rebuilds mid-flight (a new question arrives), and re-enables once a non-terminal (retryable) send error occurs (test-ask-submit.js)
 - when two ask_user calls are pending with one send in flight, that send's success settles only its own questions in the transcript — a second, later-arrived question keeps its independently-entered answer, note draft, and focus untouched, and remains independently sendable with a payload containing only its own answers (test-ask-submit.js)
 - a late-arriving question queued after an earlier send is now in flight still gets torn down by an authoritative USER_INPUT from another client, even though it was never sent locally (test-ask-submit.js)

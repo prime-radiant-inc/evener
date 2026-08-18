@@ -22,8 +22,8 @@ func TestLibrariesHaveNoInternalLeaks(t *testing.T) {
 	}
 }
 
-// TestIsSerfInternal table-drives the path classifier that gates the leak detector.
-func TestIsSerfInternal(t *testing.T) {
+// TestIsEvenerInternal table-drives the path classifier that gates the leak detector.
+func TestIsEvenerInternal(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool

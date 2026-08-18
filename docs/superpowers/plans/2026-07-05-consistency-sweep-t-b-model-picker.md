@@ -733,13 +733,13 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 
 **Interfaces:**
 - Consumes: `/api/models?diagnostics=1` entries' `display_name`, `model`, `supports_tools`, `supports_vision`, `supports_reasoning`, `reasoning_effort_levels`, `supports_web_search`, `context_window`, `max_output_tokens`, `input_cost_per_million`, `output_cost_per_million` (Tasks 4-6).
-- Produces: `buildModelRow(m)` and `modelBadges(m)` helpers (module-private, not exported on `window.SerfSpawn` — internal refactor of the existing inline row-building code).
+- Produces: `buildModelRow(m)` and `modelBadges(m)` helpers (module-private, not exported on `window.EvenerSpawn` — internal refactor of the existing inline row-building code).
 
 - [ ] **Failing test** — create `cmd/evener-hub/jstest/test-spawn-model-picker-badges.js`:
 ```js
 // Model picker: prettified display name + raw id secondary line + capability
 // badges (kata model-picker-badges). Loads spawn.js in JSDOM, stubs
-// SerfAppwire.listModelsWithDiagnostics to return one catalogued and one
+// EvenerAppwire.listModelsWithDiagnostics to return one catalogued and one
 // uncatalogued model, opens the model chip picker, asserts on the rendered
 // DOM.
 const fs = require("fs");
@@ -776,7 +776,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
   });
   const { window } = dom;
 
-  window.SerfAppwire = {
+  window.EvenerAppwire = {
     listModelsWithDiagnostics() {
       return Promise.resolve({
         models: [
@@ -956,7 +956,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
   const recentModel = { provider: "anthropic", model: "claude-opus-4-6", display_name: "Claude Opus 4 6" };
   const otherModel = { provider: "openai", model: "gpt-5.2", display_name: "Gpt 5.2" };
-  window.SerfAppwire = {
+  window.EvenerAppwire = {
     listModelsWithDiagnostics() {
       return Promise.resolve({ models: [recentModel, otherModel], diagnostics: [], recent: [recentModel] });
     },

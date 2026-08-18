@@ -220,7 +220,7 @@ Reset `ta.style.height = ""` after successful send so it collapses back.
 
 ### State
 
-A `pendingAttachments: ImageAttachment[]` on SerfRenderer where each item is `{name, mediaType, dataBase64, thumbnail}` (thumbnail = data URL for the chip image).
+A `pendingAttachments: ImageAttachment[]` on EvenerRenderer where each item is `{name, mediaType, dataBase64, thumbnail}` (thumbnail = data URL for the chip image).
 
 ### Triggers
 

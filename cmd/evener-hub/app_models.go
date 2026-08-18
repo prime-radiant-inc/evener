@@ -74,7 +74,7 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	}
 
 	launchResp, err := evenerLaunchModelList(ctx, cfg, params.CWD)
-	if hasSerfLaunchModelLister(cfg) {
+	if hasEvenerLaunchModelLister(cfg) {
 		if err != nil {
 			return appwire.ModelListResponse{}, err
 		}
@@ -186,7 +186,7 @@ func evenerLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDi
 	return appwire.ModelListResponse{Data: sanitizeModelDescriptors(models)}, nil
 }
 
-func hasSerfLaunchModelLister(cfg hubcore.WebConfig) bool {
+func hasEvenerLaunchModelLister(cfg hubcore.WebConfig) bool {
 	if lister, ok := cfg.Spawner.(EvenerLaunchModelContractWorkingDirLister); ok && lister != nil {
 		return true
 	}

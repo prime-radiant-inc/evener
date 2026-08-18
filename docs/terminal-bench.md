@@ -24,7 +24,7 @@ On flower-garden it's at `~/.local/bin/harbor` (installed via `uv tool install`)
 ```bash
 cd ~/git/terminal-bench
 harbor run \
-  --agent-import-path 'evener_agent:SerfAgent' \
+  --agent-import-path 'evener_agent:EvenerAgent' \
   -m openai/gpt-5.2-codex \
   --ak max_rounds=100 \
   -d 'terminal-bench@2.0' \
@@ -36,9 +36,9 @@ harbor run \
 ```
 
 ### Key flags
-- `--agent-import-path 'evener_agent:SerfAgent'` — Python module:class for the agent adapter
+- `--agent-import-path 'evener_agent:EvenerAgent'` — Python module:class for the agent adapter
 - `-m openai/gpt-5.2-codex` — model name (passed through to evener)
-- `--ak max_rounds=100` — agent kwargs (passed to SerfAgent constructor)
+- `--ak max_rounds=100` — agent kwargs (passed to EvenerAgent constructor)
 - `-d 'terminal-bench@2.0'` — dataset name and version
 - `-t <task-name>` — specific task(s) to run; omit for ALL 89 tasks; can repeat `-t` for multiple
 - `-o /tmp/output-dir` — output directory for results

@@ -4,7 +4,7 @@
 
 **Goal:** Make a daemon-originated steering message announce itself as one — `◇ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
 
-**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §7 states the family rule the transcript's glyph gutter now enforces.
+**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `EvenerSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §7 states the family rule the transcript's glyph gutter now enforces.
 
 **Tech Stack:** Go 1.x (multi-module workspace), React 19 + TypeScript + CSS Modules, vitest + @testing-library/react, biome.
 
@@ -29,7 +29,7 @@
 **Go — field definitions**
 - `agent/events/payloads.go` — `SteeringInjectedData.Kind` + the `SteeringKind*` constants (the enum's home).
 - `agent/schema/turn.go` — `Turn.SteeringKind`, so the kind survives reload.
-- `appwire/types.go` — `SerfSteeringInjectedParams.Kind`, `ThreadItem.SteeringKind`.
+- `appwire/types.go` — `EvenerSteeringInjectedParams.Kind`, `ThreadItem.SteeringKind`.
 
 **Go — plumbing**
 - `agent/session_queue.go` — `steeringMessage.Kind`, `trySteerEnqueue`'s kind parameter, `SteerKind`, `consumeSteeringMessage`.
@@ -61,7 +61,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `events.SteeringKind*` string constants; `events.SteeringInjectedData.Kind`; `schema.Turn.SteeringKind`; `appwire.SerfSteeringInjectedParams.Kind`; `appwire.ThreadItem.SteeringKind`. Every later task uses these exact names.
+- Produces: `events.SteeringKind*` string constants; `events.SteeringInjectedData.Kind`; `schema.Turn.SteeringKind`; `appwire.EvenerSteeringInjectedParams.Kind`; `appwire.ThreadItem.SteeringKind`. Every later task uses these exact names.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -191,7 +191,7 @@ In `agent/schema/turn.go`, after `SteeringSource` (line ~135):
 	SteeringKind string `json:"steering_kind,omitempty"`
 ```
 
-In `appwire/types.go`, add to `SerfSteeringInjectedParams` (after `Source`):
+In `appwire/types.go`, add to `EvenerSteeringInjectedParams` (after `Source`):
 
 ```go
 	Kind string `json:"kind,omitempty"`
@@ -211,7 +211,7 @@ Expected: PASS (both tests).
 - [ ] **Step 5: Regenerate the wire types and confirm the build**
 
 Run: `make generate && go build ./... && npx tsc --noEmit --incremental false --project cmd/evener-hub/frontend`
-Expected: exit 0. `cmd/evener-hub/frontend/src/protocol/types.gen.ts` now has `kind?: string` on `SerfSteeringInjectedParams` and `steeringKind?: string` on `ThreadItem`.
+Expected: exit 0. `cmd/evener-hub/frontend/src/protocol/types.gen.ts` now has `kind?: string` on `EvenerSteeringInjectedParams` and `steeringKind?: string` on `ThreadItem`.
 
 - [ ] **Step 6: Commit**
 
@@ -595,7 +595,7 @@ rather than letting the call site re-derive it from the text it just built."
 - Test: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
 
 **Interfaces:**
-- Consumes: `types.gen.ts`'s regenerated `SerfSteeringInjectedParams.kind` and `ThreadItem.steeringKind` from Task 1.
+- Consumes: `types.gen.ts`'s regenerated `EvenerSteeringInjectedParams.kind` and `ThreadItem.steeringKind` from Task 1.
 - Produces: `ItemModel.steeringKind?: string` — Task 6 routes on it.
 
 - [ ] **Step 1: Write the failing tests**

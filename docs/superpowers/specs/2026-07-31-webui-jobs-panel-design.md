@@ -48,19 +48,19 @@ session jobstore ──► daemon appwire handlers ──► hub handler ──�
 
 New methods and types:
 
-- `MethodSerfJobsList = "evener/jobs/list"`
+- `MethodEvenerJobsList = "evener/jobs/list"`
   - `JobsListParams{ Ref string }`
   - `JobsListResponse{ Data any }` — same envelope style as
     `TaskListResponse`: the daemon returns its native job-summary shape and
     the frontend parser owns interpretation.
-- `MethodSerfJobsOutput = "evener/jobs/output"`
+- `MethodEvenerJobsOutput = "evener/jobs/output"`
   - `JobsOutputParams{ Ref string; JobID string; MaxBytes int64 }`
   - `JobsOutputResponse{ Data any }` carrying
     `{ tail: string, totalBytes: int64, retainedStart: int64, truncated: bool }`.
 
 No new notification. The panel's refetch trigger is the pair the daemon
-already pushes — `NotifySerfJobStarted` / `NotifySerfJobFinished`, both
-carrying `SerfJobParams`, whose `Job.JobID` and `Job.Status` are everything a
+already pushes — `NotifyEvenerJobStarted` / `NotifyEvenerJobFinished`, both
+carrying `EvenerJobParams`, whose `Job.JobID` and `Job.Status` are everything a
 refetch trigger reads.
 
 Both response payloads are declared here rather than in `agent`, because a

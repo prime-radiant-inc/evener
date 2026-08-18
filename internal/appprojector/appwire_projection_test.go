@@ -1209,7 +1209,7 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 	}
 }
 
-func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
+func TestEvenerJobInfoDelegateFieldsAreOptional(t *testing.T) {
 	payload, err := json.Marshal(appwire.EvenerJobInfo{
 		JobID:       "job_shell",
 		JobType:     "shell",

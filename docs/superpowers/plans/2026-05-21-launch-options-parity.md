@@ -281,7 +281,7 @@ func LaunchOptionExclusions() map[string]string {
 In `internal/appwire/types.go`, add:
 
 ```go
-const MethodSerfLaunchSchema = "evener/launch/schema"
+const MethodEvenerLaunchSchema = "evener/launch/schema"
 
 type LaunchOptionChoice struct {
 	Value    string `json:"value"`
@@ -317,7 +317,7 @@ type LaunchOptionSchemaResponse struct {
 }
 ```
 
-Keep the method constant with the other `MethodSerfLaunch*` constants.
+Keep the method constant with the other `MethodEvenerLaunch*` constants.
 
 - [ ] **Step 5: Add backend conversion and schema RPC**
 
@@ -361,7 +361,7 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 In `cmd/evener-hub/app_rpc.go`, register the handler beside the existing launch RPCs:
 
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSchema, func(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSchema, func(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
 	return launchController.Schema(ctx, params)
 })
 ```
@@ -1285,7 +1285,7 @@ git commit -m "feat: render schema-backed spawn advanced"
 In `cmd/evener-hub/web_test.go`, add:
 
 ```go
-func TestLaunchSerfSettings_UsesSchemaRoot(t *testing.T) {
+func TestLaunchEvenerSettings_UsesSchemaRoot(t *testing.T) {
 	body := renderSettingsPartialForTest(t, "launch-evener", nil)
 	for _, want := range []string{`data-launch-settings-root`, `data-launch-settings-layer="global"`, `data-launch-settings-groups`} {
 		if !strings.Contains(body, want) {
@@ -1302,7 +1302,7 @@ Use the same helper that existing settings partial tests in `cmd/evener-hub/web_
 Run:
 
 ```bash
-go test ./cmd/evener-hub -run TestLaunchSerfSettings_UsesSchemaRoot -count=1
+go test ./cmd/evener-hub -run TestLaunchEvenerSettings_UsesSchemaRoot -count=1
 ```
 
 Expected: fails because the schema root is not present.
@@ -1420,7 +1420,7 @@ For `env`, rely on `evener/launch/setLayer` credential-key rejection and show th
 Run:
 
 ```bash
-go test ./cmd/evener-hub -run 'TestLaunchSerfSettings_UsesSchemaRoot|TestHubLaunchController|TestThreadStart_LaunchOverridesApplied' -count=1
+go test ./cmd/evener-hub -run 'TestLaunchEvenerSettings_UsesSchemaRoot|TestHubLaunchController|TestThreadStart_LaunchOverridesApplied' -count=1
 ```
 
 Expected: selected tests pass.
@@ -1605,7 +1605,7 @@ type launchSchemaResultMsg struct {
 func cmdLaunchSchema(client *appwire.Client) tea.Cmd {
 	return func() tea.Msg {
 		var resp appwire.LaunchOptionSchemaResponse
-		err := client.Request(context.Background(), appwire.MethodSerfLaunchSchema, appwire.EmptyParams{}, &resp)
+		err := client.Request(context.Background(), appwire.MethodEvenerLaunchSchema, appwire.EmptyParams{}, &resp)
 		return launchSchemaResultMsg{Schema: resp.Options, Err: err}
 	}
 }

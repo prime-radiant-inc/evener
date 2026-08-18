@@ -98,7 +98,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 			if !ok ||
 				wire.Code != appwire.CodeInternalError ||
 				wire.Message != resumeMessage ||
-				data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+				data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
 				data.ClientMutationID != mutationID ||
 				data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 				data.RetryDisposition != appwire.RetryDispositionBlocked ||
@@ -140,7 +140,7 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 		Code:    appwire.CodeInternalError,
 		Message: err.Error(),
 		Data: appwire.ErrorData{
-			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			EvenerErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
 			ClientMutationID: clientMutationID,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
 			RetryDisposition: appwire.RetryDispositionBlocked,

@@ -10,7 +10,7 @@ extends).
 ## What we're trying to do
 
 The multi-pane MVP just shipped: a user can manually "open beside" a subagent's session as an
-`<iframe>` pane (`renderer.js` ⇲ button → `SerfPanes.open("/s/<id>", label)`). Jesse's ask:
+`<iframe>` pane (`renderer.js` ⇲ button → `EvenerPanes.open("/s/<id>", label)`). Jesse's ask:
 
 > When the session you're viewing has an **observer subagent** running, that observer's pane should
 > **auto-open** beside it.
@@ -43,8 +43,8 @@ code (file:line), and recommends an approach.
   (`web_workspace.go:243,321` → `fillSubagentLineage` `web_workspace.go:381-396`), so add
   `ObserverRouteIDs` to `WorkspaceData` (`cmd/evener-hub/web_types.go:161-199`) and render it as a
   `data-observers` attribute on `#conversation` (`templates/partials/workspace.html:37-43`). The JS
-  reads it in `SerfRenderer.init()` where `this.sessionId` is already set (`renderer.js:97`) and
-  calls `SerfPanes.open` for each live observer.
+  reads it in `EvenerRenderer.init()` where `this.sessionId` is already set (`renderer.js:97`) and
+  calls `EvenerPanes.open` for each live observer.
 - **Rough effort: ~150–280 LOC**, mostly small additive changes across: meta field (~5), watch-time
   stamp (~30–60), meta→WorkspaceData→template wiring (~30–50), the JS auto-open rule (~50–90),
   tests (moderate). No CSP, transport, or renderer-singleton work — the multi-pane MVP already paid
@@ -56,7 +56,7 @@ code (file:line), and recommends an approach.
   daemon to emit the field over appwire — deferred.
 
 **Top 2 open questions for Jesse** (full list at the end):
-1. **Auto-open on every load, or once?** `SerfPanes` persists *open* panes but does **not** track a
+1. **Auto-open on every load, or once?** `EvenerPanes` persists *open* panes but does **not** track a
    *user-closed* pane (`panes.js` `persist()` writes only the open set), so a naive auto-open would
    re-open a pane the user just dismissed on the next navigation/reload. Do we add a
    "suppressed-observers" memory, or accept re-open?
@@ -160,12 +160,12 @@ stamp until `job_watch` runs.
 - Those fields render as data on `#conversation` / `.workspace-header`
   (`templates/partials/workspace.html:2,37-43`); the parent breadcrumb banner uses them
   (`workspace.html:6-14`).
-- **`#conversation`'s data-attributes are the JS↔server contract.** `SerfRenderer.init` reads
+- **`#conversation`'s data-attributes are the JS↔server contract.** `EvenerRenderer.init` reads
   `conversationEl.dataset.sessionId` (`renderer.js:97`) and siblings; this is where an observer
   attribute is read.
 
 ### appwire thread shape (for the remote story)
-- `appwire.Thread` (`appwire/types.go:136-157`) + `SerfThread` (`:170-193`) carry `Kind`
+- `appwire.Thread` (`appwire/types.go:136-157`) + `EvenerThread` (`:170-193`) carry `Kind`
   (`"subagent"`), `ParentRef`, and the codex-only `AgentRole` (`:152`). No observer/watch field.
   This is the struct a remote daemon would have to extend to make remote auto-open work.
 
@@ -180,9 +180,9 @@ the observer) makes "the session I'm viewing has an observer" a single local fie
 
 From the panes layer (verified against `assets/panes.js` and `assets/renderer.js`):
 
-- `window.SerfPanes` API (`panes.js:131`): `open(href, title)`, `close(href)`, `openHrefs()`,
+- `window.EvenerPanes` API (`panes.js:131`): `open(href, title)`, `close(href)`, `openHrefs()`,
   `restore()`, `setSidePanesWidth(px)`, `MAX_SIDE_PANES`.
-- `SerfPanes.open(href, title)` (`panes.js:34-65`): creates an `<iframe class="pane-frame"
+- `EvenerPanes.open(href, title)` (`panes.js:34-65`): creates an `<iframe class="pane-frame"
   src=href>`. **Dedups by exact href** — a second `open()` with the same href **focuses the existing
   pane and returns it**, never a duplicate (`panes.js:38-39`). Returns `null` if href is falsy, no
   sidebar region, or the cap is hit.
@@ -193,11 +193,11 @@ From the panes layer (verified against `assets/panes.js` and `assets/renderer.js
   remaining open set (`panes.js:67-72`), so there is no record that the user dismissed a specific
   href. (This is the crux of Open Question 1.)
 - **Manual open-beside today:** the ⇲ button on a subagent row in the transcript, added in
-  `applyJobRefTarget` (`renderer.js:2374-2402`), only when `window.SerfPanes` exists (so panes don't
+  `applyJobRefTarget` (`renderer.js:2374-2402`), only when `window.EvenerPanes` exists (so panes don't
   nest inside a pane iframe). It calls
-  `window.SerfPanes.open("/s/" + encodeURIComponent(ref), label)` (`renderer.js:2394`) where `ref`
+  `window.EvenerPanes.open("/s/" + encodeURIComponent(ref), label)` (`renderer.js:2394`) where `ref`
   is the subagent's session id from `row.dataset.transcriptRef`.
-- **Session-load entry point:** `SerfRenderer.init(conversationEl)` (`renderer.js:65`), wired to
+- **Session-load entry point:** `EvenerRenderer.init(conversationEl)` (`renderer.js:65`), wired to
   `DOMContentLoaded` + `htmx:afterSwap` via `autoInit` (`renderer.js:3620-3638`). It sets
   `this.sessionId = conversationEl.dataset.sessionId` (`renderer.js:97`). **This is the single place
   that knows "the session being viewed is X,"** and the natural home for the auto-open rule.
@@ -225,12 +225,12 @@ in hand.
    `web_workspace.go:381-396` / `web_types.go:161-199`).
 3. Template renders it as `data-observers="<id>,<id>"` on `#conversation`
    (`templates/partials/workspace.html:37-43`).
-4. `SerfRenderer.init` reads `conversationEl.dataset.observers`, filters to **live** observers,
-   and calls `SerfPanes.open("/s/<observerId>", label)` for each.
+4. `EvenerRenderer.init` reads `conversationEl.dataset.observers`, filters to **live** observers,
+   and calls `EvenerPanes.open("/s/<observerId>", label)` for each.
 
 **Remote (codex/remote daemon):** the hub has no jobstore access for remote sources, only the
 appwire `Thread` snapshot. To make remote auto-open work, the remote daemon would have to compute
-`ObservedBy` and emit it on `appwire.Thread`/`SerfThread` (`appwire/types.go:136-193`), and the hub
+`ObservedBy` and emit it on `appwire.Thread`/`EvenerThread` (`appwire/types.go:136-193`), and the hub
 would map it in `hubDetailFromAppThread` (`web_api_tree.go:274`) / the remote tree projection
 (`appThreadTreeEntries`, `web_api_tree.go:162-199`). **Out of scope for v1** — recommend local-only
 first.
@@ -330,16 +330,16 @@ remote-capable option but is MVP overkill.
 
 ## The web auto-open rule
 
-In `SerfRenderer.init(conversationEl)` (`renderer.js:65`), after `this.sessionId` is set
+In `EvenerRenderer.init(conversationEl)` (`renderer.js:65`), after `this.sessionId` is set
 (`renderer.js:97`):
 
 1. **Read the signal.** `const observers = (conversationEl.dataset.observers || "").split(",")
    .filter(Boolean);` (server renders `data-observers` from `WorkspaceData.ObserverRouteIDs`).
-2. **Guard the environment.** Do nothing if `!window.SerfPanes` (we're inside a pane iframe — same
+2. **Guard the environment.** Do nothing if `!window.EvenerPanes` (we're inside a pane iframe — same
    guard as the manual ⇲ button, `renderer.js:2379-2380`) or `observers.length === 0`.
-3. **Respect the cap.** `SerfPanes.open` already enforces `MAX_SIDE_PANES = 3` and returns `null`
+3. **Respect the cap.** `EvenerPanes.open` already enforces `MAX_SIDE_PANES = 3` and returns `null`
    when full (`panes.js:40`); just iterate and stop honoring further opens (it no-ops safely).
-4. **Dedup is free for re-navigation.** `SerfPanes.open` focuses an existing same-href pane rather
+4. **Dedup is free for re-navigation.** `EvenerPanes.open` focuses an existing same-href pane rather
    than duplicating (`panes.js:38-39`), and `restore()` re-creates persisted panes on reload — so an
    already-open observer pane won't double.
 5. **Don't fight the user's close (Open Question 1).** Because `panes` does not remember a
@@ -351,7 +351,7 @@ In `SerfRenderer.init(conversationEl)` (`renderer.js:65`), after `this.sessionId
 6. **Skip dead observers.** Filter `data-observers` to **live** observers server-side (the hub has
    the live set, `tree.go:288-292`), so we never auto-open a pane for an ended observer.
 
-Per-observer call: `SerfPanes.open("/s/" + encodeURIComponent(observerId), observerLabel)` — same
+Per-observer call: `EvenerPanes.open("/s/" + encodeURIComponent(observerId), observerLabel)` — same
 shape as the manual hook (`renderer.js:2394`).
 
 ---
@@ -400,13 +400,13 @@ Riskiest assumptions to validate early:
 - Render `data-observers` on `#conversation` (`templates/partials/workspace.html:37-43`).
 
 **Phase 3 — auto-open (JS)**
-- Implement the auto-open rule in `SerfRenderer.init` (`renderer.js:65,97`) per "The web auto-open
+- Implement the auto-open rule in `EvenerRenderer.init` (`renderer.js:65,97`) per "The web auto-open
   rule" above, including closed-pane suppression if chosen.
 - e2e scenario: open a session with a live observer → observer pane auto-opens; close it → it stays
   closed across an htmx swap; reopen the session in a fresh tab → it auto-opens again.
 
 **Phase 4 — remote (only if needed)**
-- Option C: add `ObservedBy` to `appwire.Thread`/`SerfThread`, daemon-side compute, hub mapping in
+- Option C: add `ObservedBy` to `appwire.Thread`/`EvenerThread`, daemon-side compute, hub mapping in
   `hubDetailFromAppThread` (`web_api_tree.go:274`) and remote tree projection (`:162-199`), codex
   parity or explicit unsupported.
 
@@ -414,7 +414,7 @@ Riskiest assumptions to validate early:
 
 ## Open questions for Jesse
 
-1. **Auto-open on every load, or once-per-dismissal?** `SerfPanes` persists open panes but never
+1. **Auto-open on every load, or once-per-dismissal?** `EvenerPanes` persists open panes but never
    records a *user-closed* href (`panes.js` `persist()` writes only the open set; `close()` just
    drops the pane, `:67-72`). Without a suppression memory, auto-open re-opens a dismissed observer
    pane on the next navigation/reload. Add per-session "suppressed observers" memory, or accept

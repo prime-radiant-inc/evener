@@ -4,7 +4,7 @@
 
 **Goal:** Add a `/goal <objective>` feature: the agent works across discrete system-framed continuation turns until it proves completion (`update_goal("complete")`), declares itself blocked, or hits a safety stop — then stops with a user-visible terminal report.
 
-**Architecture:** A per-session in-memory `GoalStore` (own mutex). A priority-3 branch in `ProcessInput`'s existing drain loop ("the gate") re-injects a full evidence-audit continuation prompt as a `TurnSteering` turn (not a user turn) until a terminal condition. The model self-declares done via an `update_goal` tool; a no-progress breaker (reusing evener's `ReadOnly` tool flag) and an iteration cap bound runaway; a per-goal-turn round cap reduces intra-turn compaction. Errors route through `terminateGoalOnError` so a goal is never left silently `active`. Surfaced via one appwire `goal/set` method + a typed `SerfThread.Goal` read field + one terminal `systemAnnouncement`.
+**Architecture:** A per-session in-memory `GoalStore` (own mutex). A priority-3 branch in `ProcessInput`'s existing drain loop ("the gate") re-injects a full evidence-audit continuation prompt as a `TurnSteering` turn (not a user turn) until a terminal condition. The model self-declares done via an `update_goal` tool; a no-progress breaker (reusing evener's `ReadOnly` tool flag) and an iteration cap bound runaway; a per-goal-turn round cap reduces intra-turn compaction. Errors route through `terminateGoalOnError` so a goal is never left silently `active`. Surfaced via one appwire `goal/set` method + a typed `EvenerThread.Goal` read field + one terminal `systemAnnouncement`.
 
 **Tech Stack:** Go; evener `agent` module (`go.work` multi-module); `go test`, `golangci-lint` per `make lint`/`make test`.
 
@@ -156,7 +156,7 @@ definition in `hub_command_registry.go`.
 - `agent/session_model_call.go` — `terminateGoalOnError` before `s.Close()` in `handleModelError`.
 - `agent/session_tool_registry.go` — `goalGuard` on `toolDeps`.
 - `internal/appprojector/appwire_projection.go` — `EventGoalContinuation` + `EventGoalEnded` cases.
-- `appwire/types.go` — `MethodGoalSet`, params/response, `Goal *GoalStatus` on `SerfThread`; `server/server.go` (`InputMessage.Kind`, `goalFunc`, `SetGoalFunc`); `server/appwire_runtime.go` (handler); `appwire/client.go` (`Client.GoalSet`); `cmd/evener/serve.go` (wiring + kind passthrough).
+- `appwire/types.go` — `MethodGoalSet`, params/response, `Goal *GoalStatus` on `EvenerThread`; `server/server.go` (`InputMessage.Kind`, `goalFunc`, `SetGoalFunc`); `server/appwire_runtime.go` (handler); `appwire/client.go` (`Client.GoalSet`); `cmd/evener/serve.go` (wiring + kind passthrough).
 - `cmd/evener-tui/hub_command_registry.go` + a `sendHubGoal` helper — `/goal` command.
 
 **Build/sequencing note:** Tasks 1–7 build and test the engine with no UI; the e2e (Task 8) proves the loop. Tasks 9–11 add the transport + TUI surface. Run `cd agent && go test ./internal/goal/... ./...` after agent-module tasks; `make test`/`make lint` (whole-repo, per `go.work`) before the transport commits.
@@ -778,8 +778,8 @@ func TestGoalLoopCompletesE2E(t *testing.T) {
 
 - [ ] **Step 1: Failing test** — an appwire round-trip test (mirror the existing `turn/queue` handler test) that `goal/set {objective:"x"}` invokes the wired `goalFunc`.
 - [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement** — `MethodGoalSet = "goal/set"`, `GoalSetParams{Objective string}`, `GoalSetResponse{Started bool}`; add `Goal *GoalStatus` to `SerfThread` (`{Status string; Iterations, Max int}`) populated from `goalSnapshot()` in the thread-read projection; `InputMessage{… Kind entryKind}` (default `entryUserInput`); `goalFunc func(objective string) (bool, error)` + `SetGoalFunc`; handler in `registerAppWireHandlers`; `Client.GoalSet`; `serve.go`: `srv.SetGoalFunc(func(obj string)(bool,error){ return getSession().SetGoal(ctx, obj) })` and pass `msg.Kind` into `ProcessInput`.
-- [ ] **Step 4: Run; pass** (`make test`). **Step 5: Commit** — `git commit -m "feat(goal): goal/set appwire method + SerfThread.Goal read field"`
+- [ ] **Step 3: Implement** — `MethodGoalSet = "goal/set"`, `GoalSetParams{Objective string}`, `GoalSetResponse{Started bool}`; add `Goal *GoalStatus` to `EvenerThread` (`{Status string; Iterations, Max int}`) populated from `goalSnapshot()` in the thread-read projection; `InputMessage{… Kind entryKind}` (default `entryUserInput`); `goalFunc func(objective string) (bool, error)` + `SetGoalFunc`; handler in `registerAppWireHandlers`; `Client.GoalSet`; `serve.go`: `srv.SetGoalFunc(func(obj string)(bool,error){ return getSession().SetGoal(ctx, obj) })` and pass `msg.Kind` into `ProcessInput`.
+- [ ] **Step 4: Run; pass** (`make test`). **Step 5: Commit** — `git commit -m "feat(goal): goal/set appwire method + EvenerThread.Goal read field"`
 
 ---
 
@@ -798,9 +798,9 @@ func TestGoalLoopCompletesE2E(t *testing.T) {
 
 **Files:** `internal/appprojector/appwire_projection.go`, `cmd/evener-tui/hub_command_registry.go` (+ `sendHubGoal`)
 
-- [ ] **Step 1: Failing tests** — (projector) `EventGoalContinuation` opens a new rendered turn (non-`userMessage`) and `EventGoalEnded` renders one `systemMessage`; (TUI) `/goal <obj>` dispatches `sendHubGoal`, `/goal status` reads `SerfThread.Goal`, `/goal clear` sends empty objective.
+- [ ] **Step 1: Failing tests** — (projector) `EventGoalContinuation` opens a new rendered turn (non-`userMessage`) and `EventGoalEnded` renders one `systemMessage`; (TUI) `/goal <obj>` dispatches `sendHubGoal`, `/goal status` reads `EvenerThread.Goal`, `/goal clear` sends empty objective.
 - [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement** — projector: add `case events.EventGoalContinuation:` mirroring `EventUserInput`'s close-prior-turn + `startTurn()` (lines ~74–87) but emit a continuation/system item, not `userMessage`; `case events.EventGoalEnded:` → `p.systemAnnouncement("goal", "Goal", goalEndText(data))` where `goalEndText` maps status→"✓ Goal achieved" / "⊘ Goal blocked: <reason>" / "⊘ Goal stopped: hit limit (N turns)". TUI: add a `hubCommandDefinition` for `goal` (session scope) parsing `[<objective>|clear|status]` → `sendHubGoal` (mirror `sendHubQueue`); `status` reads the cached `SerfThread.Goal`.
+- [ ] **Step 3: Implement** — projector: add `case events.EventGoalContinuation:` mirroring `EventUserInput`'s close-prior-turn + `startTurn()` (lines ~74–87) but emit a continuation/system item, not `userMessage`; `case events.EventGoalEnded:` → `p.systemAnnouncement("goal", "Goal", goalEndText(data))` where `goalEndText` maps status→"✓ Goal achieved" / "⊘ Goal blocked: <reason>" / "⊘ Goal stopped: hit limit (N turns)". TUI: add a `hubCommandDefinition` for `goal` (session scope) parsing `[<objective>|clear|status]` → `sendHubGoal` (mirror `sendHubQueue`); `status` reads the cached `EvenerThread.Goal`.
 - [ ] **Step 4: Run; pass** (`make test`). **Step 5: Commit** — `git commit -m "feat(goal): projector cases + /goal TUI command"`
 
 ---

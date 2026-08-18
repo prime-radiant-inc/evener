@@ -100,7 +100,7 @@ func fuzzScenarioCodexSourceListsThreads(t *testing.T) {
 	}
 }
 
-func fuzzScenarioCodexSourceListThreadsTranslatesSerfStatusFilters(t *testing.T) {
+func fuzzScenarioCodexSourceListThreadsTranslatesEvenerStatusFilters(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		statuses, ok := params["statuses"].([]any)

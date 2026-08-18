@@ -12,7 +12,7 @@ the criterion — the status strip's `ReasoningEffortControl`
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The web
-half used to drive `window.SerfModelSwitch.effortLevels()` and read
+half used to drive `window.EvenerModelSwitch.effortLevels()` and read
 `[data-effort-display]` out of `assets/search.js` / `assets/model-switch.js`;
 all four died with the vanilla frontend (`660376f78`). There is no renderer
 handle, and the effort control is no longer read-only — see Sharp edges.

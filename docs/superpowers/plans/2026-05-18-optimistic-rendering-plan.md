@@ -4,9 +4,9 @@
 
 **Goal:** Give every conversation-affecting click (turn/start, turn/queue, turn/steer, turn/drainAsSteer) a pulsing in-progress visual that resolves to reconciled or visibly-failed, in both renderers, and close the underlying silent-drop bug (kata wymv).
 
-**Architecture:** A `PendingCoordinator` interface lives in `internal/appwire`. The Go appwire client's `Turn*` methods invoke `coordinator.Register(method, text) → handle` before the JSON-RPC call and `handle.Fail(reason)` on RPC error. The renderer (TUI hubModel, web SerfAppwirePending) implements the coordinator, renders the visual, and reconciles authoritative events inside its own existing notification path. The web side mirrors the Go shape in JavaScript. The daemon-side bug is fixed by gating `caps.Steer` on `processing` so external steer calls in IDLE / AWAITING reject cleanly through the new path.
+**Architecture:** A `PendingCoordinator` interface lives in `internal/appwire`. The Go appwire client's `Turn*` methods invoke `coordinator.Register(method, text) → handle` before the JSON-RPC call and `handle.Fail(reason)` on RPC error. The renderer (TUI hubModel, web EvenerAppwirePending) implements the coordinator, renders the visual, and reconciles authoritative events inside its own existing notification path. The web side mirrors the Go shape in JavaScript. The daemon-side bug is fixed by gating `caps.Steer` on `processing` so external steer calls in IDLE / AWAITING reject cleanly through the new path.
 
-**Tech Stack:** Go 1.22+ (daemon, appwire client, TUI). Vanilla JS in IIFE-modules (`window.SerfAppwire`, `window.SerfComposerAttachments` style). Bubble Tea + bubbles/spinner for TUI animation. JSDOM-based jstest harness for web. Existing `roborev` review tooling.
+**Tech Stack:** Go 1.22+ (daemon, appwire client, TUI). Vanilla JS in IIFE-modules (`window.EvenerAppwire`, `window.EvenerComposerAttachments` style). Bubble Tea + bubbles/spinner for TUI animation. JSDOM-based jstest harness for web. Existing `roborev` review tooling.
 
 **Spec:** `docs/superpowers/specs/2026-05-18-optimistic-rendering-design.md`
 
@@ -33,9 +33,9 @@ cmd/evener-tui/hub_model.go                         modify  wire pendingCoordina
 cmd/evener-tui/optimistic_test.go                   new     end-to-end wrapper unit tests (using ScriptedTransport)
 
 cmd/evener-hub/assets/style.css                     modify  .optimistic-pending / .optimistic-failed / .optimistic-retry / @keyframes optimistic-pulse
-cmd/evener-hub/assets/appwire.js                    modify  optimisticCall helper + SerfAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
-cmd/evener-hub/assets/pending.js                    new     SerfAppwirePending registry (DOM render + tryReconcile) — own IIFE module loaded before renderer
-cmd/evener-hub/assets/renderer.js                   modify  register pending registry with SerfAppwire; deliverNotification calls pending.tryReconcile after reducer dispatch
+cmd/evener-hub/assets/appwire.js                    modify  optimisticCall helper + EvenerAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
+cmd/evener-hub/assets/pending.js                    new     EvenerAppwirePending registry (DOM render + tryReconcile) — own IIFE module loaded before renderer
+cmd/evener-hub/assets/renderer.js                   modify  register pending registry with EvenerAppwire; deliverNotification calls pending.tryReconcile after reducer dispatch
 cmd/evener-hub/templates/partials/workspace.html    modify  load assets/pending.js before renderer.js
 cmd/evener-hub/jstest/test-optimistic-rendering.js  new     wrapper unit tests with injected fake transport
 
@@ -1778,7 +1778,7 @@ EOF
 
 ---
 
-## Task 9: Web: `SerfAppwirePending` registry module
+## Task 9: Web: `EvenerAppwirePending` registry module
 
 **Files:**
 - Create: `cmd/evener-hub/assets/pending.js`
@@ -1810,7 +1810,7 @@ function build() {
 (function test_register_renders_pending_chip() {
   const window = build();
   const conv = window.document.getElementById("conversation");
-  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  const reg = window.EvenerAppwirePending.create({ conversation: conv });
 
   const h = reg.register({ method: "turn/steer", text: "look at this" });
 
@@ -1824,7 +1824,7 @@ function build() {
 (function test_fail_marks_failed_with_retry() {
   const window = build();
   const conv = window.document.getElementById("conversation");
-  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  const reg = window.EvenerAppwirePending.create({ conversation: conv });
   const h = reg.register({ method: "turn/steer", text: "x" });
 
   reg.fail(h, "steer is not available for this session");
@@ -1840,7 +1840,7 @@ function build() {
 (function test_try_reconcile_removes_match() {
   const window = build();
   const conv = window.document.getElementById("conversation");
-  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  const reg = window.EvenerAppwirePending.create({ conversation: conv });
   reg.register({ method: "turn/steer", text: "look at this" });
 
   const matched = reg.tryReconcile("notify/steeringInjected", { text: "look  at  this" });
@@ -1867,7 +1867,7 @@ function build() {
   };
 
   const conv = window.document.getElementById("conversation");
-  const reg = window.SerfAppwirePending.create({
+  const reg = window.EvenerAppwirePending.create({
     conversation: conv,
     setTimeout: fakeSetTimeout,
     clearTimeout: fakeClearTimeout,
@@ -1898,7 +1898,7 @@ Create `cmd/evener-hub/assets/pending.js`:
 
 ```js
 // pending.js — optimistic-rendering registry for the web hub
-// renderer. Exposes window.SerfAppwirePending.create({...}) which
+// renderer. Exposes window.EvenerAppwirePending.create({...}) which
 // returns an instance with register/fail/tryReconcile methods. The
 // instance owns DOM nodes for each pending entry and animates them
 // via the .optimistic-pending class (style.css).
@@ -2008,7 +2008,7 @@ Create `cmd/evener-hub/assets/pending.js`:
     return { register, fail, tryReconcile };
   }
 
-  window.SerfAppwirePending = { create };
+  window.EvenerAppwirePending = { create };
 })();
 ```
 
@@ -2043,9 +2043,9 @@ Expected: all existing tests still pass.
 ```bash
 git add cmd/evener-hub/assets/pending.js cmd/evener-hub/jstest/test-pending-registry.js cmd/evener-hub/templates/
 git commit -m "$(cat <<'EOF'
-hub-web: SerfAppwirePending registry (DOM + reconcile)
+hub-web: EvenerAppwirePending registry (DOM + reconcile)
 
-Exposes window.SerfAppwirePending.create({...}) returning an instance
+Exposes window.EvenerAppwirePending.create({...}) returning an instance
 with register/fail/tryReconcile. Pending chips are appended to the
 conversation pane immediately, classed .optimistic-pending. Failure
 swaps in .optimistic-failed + reason line + Retry link. tryReconcile
@@ -2060,7 +2060,7 @@ EOF
 
 ---
 
-## Task 10: Web: `optimisticCall` in SerfAppwire + wire the four methods
+## Task 10: Web: `optimisticCall` in EvenerAppwire + wire the four methods
 
 **Files:**
 - Modify: `cmd/evener-hub/assets/appwire.js`
@@ -2125,10 +2125,10 @@ function respondErrorTo(sock, id, code, message) {
   const { window, getSock } = build();
   await new Promise(r => setTimeout(r, 5)); // let connect() open dispatch run
   const conv = window.document.getElementById("conv");
-  const pending = window.SerfAppwirePending.create({ conversation: conv });
-  window.SerfAppwire.setPendingRegistry(pending);
+  const pending = window.EvenerAppwirePending.create({ conversation: conv });
+  window.EvenerAppwire.setPendingRegistry(pending);
 
-  const promise = window.SerfAppwire.steer("sess-1", "turn-1", "look here").catch(e => e);
+  const promise = window.EvenerAppwire.steer("sess-1", "turn-1", "look here").catch(e => e);
   await new Promise(r => setTimeout(r, 5));
   const sock = getSock();
   assert.ok(sock.lastSent, "client should have sent a steer request");
@@ -2150,7 +2150,7 @@ function respondErrorTo(sock, id, code, message) {
 cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-optimistic-rendering.js
 ```
 
-Expected: FAIL — `SerfAppwire.setPendingRegistry` doesn't exist.
+Expected: FAIL — `EvenerAppwire.setPendingRegistry` doesn't exist.
 
 - [ ] **Step 3: Add optimisticCall + setPendingRegistry**
 
@@ -2217,7 +2217,7 @@ Replace the four method bodies:
 Add `setPendingRegistry` to the public exports at the bottom:
 
 ```js
-  window.SerfAppwire = {
+  window.EvenerAppwire = {
     // ... existing names ...
     setPendingRegistry,
   };
@@ -2244,7 +2244,7 @@ Expected: all pass.
 ```bash
 git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/jstest/test-optimistic-rendering.js
 git commit -m "$(cat <<'EOF'
-hub-web: optimisticCall wrap in SerfAppwire for start/steer/queue/drain
+hub-web: optimisticCall wrap in EvenerAppwire for start/steer/queue/drain
 
 startTurn / steer / queueTurn / drainAsSteer all route through
 optimisticCall, which registers a pending entry, awaits the JSON-RPC
@@ -2274,17 +2274,17 @@ Append to `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
   const { window, getSock } = build();
   await new Promise(r => setTimeout(r, 5));
   const conv = window.document.getElementById("conv");
-  const pending = window.SerfAppwirePending.create({ conversation: conv });
-  window.SerfAppwire.setPendingRegistry(pending);
+  const pending = window.EvenerAppwirePending.create({ conversation: conv });
+  window.EvenerAppwire.setPendingRegistry(pending);
 
-  const promise = window.SerfAppwire.steer("sess-1", "turn-1", "go check this");
+  const promise = window.EvenerAppwire.steer("sess-1", "turn-1", "go check this");
   await new Promise(r => setTimeout(r, 5));
   const sock = getSock();
   respondTo(sock, sock.lastSent.id, {});
   await promise;
 
   // Simulate the daemon's STEERING_INJECTED notification.
-  const handlers = window.SerfAppwire._notificationHandlersForTest ? window.SerfAppwire._notificationHandlersForTest() : null;
+  const handlers = window.EvenerAppwire._notificationHandlersForTest ? window.EvenerAppwire._notificationHandlersForTest() : null;
   // If the wire-level path exposes a notify-injection helper for tests, use it.
   // Otherwise simulate by calling pending.tryReconcile directly:
   pending.tryReconcile("turn/steer", { text: "go check this" });
@@ -2296,7 +2296,7 @@ Append to `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
   const { window } = build();
   await new Promise(r => setTimeout(r, 5));
   const conv = window.document.getElementById("conv");
-  const pending = window.SerfAppwirePending.create({ conversation: conv });
+  const pending = window.EvenerAppwirePending.create({ conversation: conv });
   // Register three queue placeholders, then a drain placeholder, then
   // reconcile drain via the first incoming STEERING_INJECTED.
   pending.register({ method: "turn/queue", text: "q1" });
@@ -2374,19 +2374,19 @@ function reconcileMethodFromNotification(method) {
 Wire the renderer's pending registry up at startup. In the renderer's init code:
 
 ```js
-this.pending = window.SerfAppwirePending.create({
+this.pending = window.EvenerAppwirePending.create({
   conversation: this.conversation,
   onRetry: (intent) => {
     // Re-issue the optimistic call by name.
     switch (intent.method) {
-      case "turn/steer":         return window.SerfAppwire.steer(this.sessionId, this.activeTurnId, intent.text);
-      case "turn/start":         return window.SerfAppwire.startTurn(this.sessionId, intent.text, []);
-      case "turn/queue":         return window.SerfAppwire.queueTurn(this.sessionId, intent.text, []);
-      case "turn/drainAsSteer":  return window.SerfAppwire.drainAsSteer(this.sessionId);
+      case "turn/steer":         return window.EvenerAppwire.steer(this.sessionId, this.activeTurnId, intent.text);
+      case "turn/start":         return window.EvenerAppwire.startTurn(this.sessionId, intent.text, []);
+      case "turn/queue":         return window.EvenerAppwire.queueTurn(this.sessionId, intent.text, []);
+      case "turn/drainAsSteer":  return window.EvenerAppwire.drainAsSteer(this.sessionId);
     }
   },
 });
-window.SerfAppwire.setPendingRegistry(this.pending);
+window.EvenerAppwire.setPendingRegistry(this.pending);
 ```
 
 For drain-special: in `deliverNotification` after the regular reconcile attempt, if the method is `notify/steeringInjected`, additionally try `pending.tryReconcile("turn/drainAsSteer", {})` (the registry's drain match accepts any text on the first matching call). To make the registry's drain match work that way, edit `pending.js`'s tryReconcile loop:
@@ -2593,7 +2593,7 @@ Per the writing-plans skill, run a final pass:
 
 - [ ] **Spec coverage:** every numbered §section of the spec has at least one task implementing it. Architecture → Tasks 3-4 (Go), 9-11 (web), 7 (TUI integration). Per-action matrix → Tasks 7 (TUI) + 11 (web). Visual treatment → Tasks 6 (TUI) + 8 (web CSS) + 9 (web pending). Daemon fix → Task 1. Testing → Tasks 2 + 5 + 7 + 9 + 10 + 11 + 12. File layout → all tasks cover their share.
 - [ ] **Placeholder scan:** no "TBD" / "TODO" / "implement later" / "Similar to Task N" hand-waves.
-- [ ] **Type consistency:** PendingCoordinator / PendingHandle / pendingEntry / pendingRegisteredMsg names match across Tasks 3-7. `optimisticCall` / `SerfAppwirePending` / `tryReconcile` match across Tasks 9-11.
+- [ ] **Type consistency:** PendingCoordinator / PendingHandle / pendingEntry / pendingRegisteredMsg names match across Tasks 3-7. `optimisticCall` / `EvenerAppwirePending` / `tryReconcile` match across Tasks 9-11.
 
 If any gap is found, fix inline and re-commit.
 

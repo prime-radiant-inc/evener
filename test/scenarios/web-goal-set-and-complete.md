@@ -33,8 +33,8 @@ proves the palette, the chip, and the marker actually render.
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The
-`window.SerfAppwire.request("goal/set", …)` /
-`window.SerfRenderer.sessionId` route this card used to drive died with the
+`window.EvenerAppwire.request("goal/set", …)` /
+`window.EvenerRenderer.sessionId` route this card used to drive died with the
 vanilla frontend (`660376f78`), and its replacement is **not reachable from
 `eval`**: `threadsStore` is a module import with nothing on `window`. So the
 browser half must go through the real UI, and the exact assertions go to
@@ -221,7 +221,7 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
 
 - **The web's goal setter is not callable from `eval`.** `threadsStore` is a
   module-scoped zustand store; nothing is published on `window`. An `eval`
-  that tries `window.SerfAppwire.request("goal/set", …)` throws, and one that
+  that tries `window.EvenerAppwire.request("goal/set", …)` throws, and one that
   optional-chains it **fails open** — reporting "no goal set" for what looks
   exactly like a real regression. Set the goal through `/rpc` (step 2) for the
   exact assertion and through the palette/dialog (step 3) for the UI one.

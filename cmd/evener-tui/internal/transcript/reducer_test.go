@@ -432,7 +432,7 @@ func TestMessagesFromThreadStripsRedundantCdFromThreadCwd(t *testing.T) {
 	}
 }
 
-func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
+func TestHubTranscriptReducerPreservesEvenerAndCodexToolShapes(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 
 	reducer.ApplyThreadItem(appwire.ThreadItem{
@@ -534,7 +534,7 @@ func TestTranscriptReducerAppliesStableDelegateNotificationsToDelegateTool(t *te
 		Status:        appwire.TurnStatusCompleted,
 	}, 1, true)
 
-	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{
+	reducer.ApplyEvenerDelegate(appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_A",
 		Lifecycle:          "idle",
 		Status:             "idle",
@@ -628,7 +628,7 @@ func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
 	}
 
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{
+	reducer.ApplyEvenerDelegate(appwire.EvenerDelegateInfo{
 		DelegateID:         "dlg_exhausted",
 		Lifecycle:          "idle",
 		Status:             "idle",
@@ -658,17 +658,17 @@ func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T)
 		OriginToolCallID:   "call_delegate",
 		OriginItemID:       "item_delegate",
 	}
-	reducer.ApplySerfDelegate(first)
+	reducer.ApplyEvenerDelegate(first)
 	first.Status = "idle"
 	first.Outcome = "completed"
 	first.Terminal = true
 	first.ProjectionRevision = 2
-	reducer.ApplySerfDelegate(first)
+	reducer.ApplyEvenerDelegate(first)
 	first.Status = "running"
 	first.Terminal = false
 	first.ProjectionRevision = 3
 	first.TranscriptRef = "local:child-second"
-	reducer.ApplySerfDelegate(first)
+	reducer.ApplyEvenerDelegate(first)
 
 	tools := transcriptTools(reducer.messages)
 	if len(tools) != 1 {
@@ -679,10 +679,10 @@ func TestTranscriptReducerResumedDelegateKeepsOneStableResourceRow(t *testing.T)
 	}
 }
 
-func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
+func TestTranscriptReducerIgnoresNonDelegateEvenerJobNotification(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{
 		JobID:       "job_shell",
 		JobType:     "shell",
 		Status:      "completed",
@@ -697,12 +697,12 @@ func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
 func TestTranscriptReducerTracksBackgroundShellJob(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	// A foreground shell is still ignored.
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_fg", JobType: "shell", Status: "running", Command: "ls"})
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "job_fg", JobType: "shell", Status: "running", Command: "ls"})
 	if len(reducer.messages) != 0 {
 		t.Fatalf("a foreground shell must not be tracked: %+v", reducer.messages)
 	}
 	// A long-lived (background) shell IS tracked, named by its command.
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"})
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"})
 	tools := transcriptTools(reducer.messages)
 	if len(tools) != 1 || tools[0].Subagent == nil || !tools[0].Subagent.Background || tools[0].Subagent.JobID != "job_bg" {
 		t.Fatalf("background shell run not captured: %+v", reducer.messages)
@@ -711,7 +711,7 @@ func TestTranscriptReducerTracksBackgroundShellJob(t *testing.T) {
 		t.Fatalf("background shell should be named by its command and still running: %+v", tools[0])
 	}
 	// Finishing it reconciles the SAME entry (no duplicate) and marks it done.
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "completed", OutputBytes: 42})
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "completed", OutputBytes: 42})
 	tools = transcriptTools(reducer.messages)
 	if len(tools) != 1 {
 		t.Fatalf("finishing a background shell must reconcile, not duplicate: %+v", reducer.messages)
@@ -734,7 +734,7 @@ func TestTranscriptReducerDoesNotAttachNonDelegateJobToOriginTool(t *testing.T) 
 		Status:        appwire.TurnStatusCompleted,
 	}, 1, true)
 
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{
 		JobID:            "job_shell",
 		JobType:          "shell",
 		Status:           "completed",
@@ -808,7 +808,7 @@ func transcriptTools(messages []ChatMessage) []ToolCallInfo {
 
 func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Status: "running", ProjectionRevision: 1, TranscriptRef: "local:c1", Task: "port webhook"})
+	reducer.ApplyEvenerDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Status: "running", ProjectionRevision: 1, TranscriptRef: "local:c1", Task: "port webhook"})
 
 	if !reducer.ApplyChildActivity("local:c1", "shell: go test ./...") {
 		t.Fatalf("activity for a watched running child should apply")
@@ -832,7 +832,7 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity for an unknown ref must not apply")
 	}
 	// Once terminal, activity no longer applies.
-	reducer.ApplySerfDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Lifecycle: "idle", Status: "idle", Outcome: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
+	reducer.ApplyEvenerDelegate(appwire.EvenerDelegateInfo{DelegateID: "dlg_a", Lifecycle: "idle", Status: "idle", Outcome: "completed", Terminal: true, ProjectionRevision: 2, TranscriptRef: "local:c1"})
 	if reducer.ApplyChildActivity("local:c1", "late frame") {
 		t.Fatalf("activity must not apply to a finished run")
 	}
@@ -863,7 +863,7 @@ func TestParseJobNotificationHeadlineAndTie(t *testing.T) {
 
 	// The headline ties onto the matching rail run.
 	reducer := NewTranscriptReducer(nil, nil, nil)
-	reducer.ApplySerfJob(appwire.EvenerJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
+	reducer.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
 	if !reducer.ApplyTieHeadline(jobID, headline, isError) {
 		t.Fatalf("headline should tie to the run with the matching job id")
 	}

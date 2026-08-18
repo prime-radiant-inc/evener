@@ -107,14 +107,14 @@ function newHarness() {
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
-  window.SerfRenderer.init(conv);
+  window.EvenerRenderer.init(conv);
   return { window, conv };
 }
 
 async function renderSteering(text) {
   const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
-  window.SerfRenderer.handleData("STEERING_INJECTED", { text });
+  window.EvenerRenderer.handleData("STEERING_INJECTED", { text });
   await new Promise(r => setTimeout(r, 10));
   return { window, conv };
 }

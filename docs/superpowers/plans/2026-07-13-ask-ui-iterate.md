@@ -13,7 +13,7 @@
 - `docs/superpowers/specs/2026-07-09-mobile-safearea-ask-dock-design.md` is authoritative; the supplied uncommitted draft is reference material only.
 - Preserve option, multi-select, free-text, note, decide, fallback, **skip**, optimistic send, conflict recovery, cross-client settlement, and transcript history semantics.
 - Preserve the existing ability to click an active free-text, decide, fallback, or skip choice again to clear that resolution.
-- Preserve the exact existing `[answers]` payload format and the existing `SerfAppwire.startTurn` send path.
+- Preserve the exact existing `[answers]` payload format and the existing `EvenerAppwire.startTurn` send path.
 - Keep `.workspace-input` as the only active response surface and keep the transcript anchor noninteractive.
 - Hidden composer controls must remain hidden and inert during ask mode.
 - Default tests must be deterministic and must not use provider credentials, network access, quota, current model behavior, or ambient developer state.
@@ -30,7 +30,7 @@
 - Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
-- Consumes: `pendingAsk.items`, `setQuestionResolution(item, resolution, options)`, `composeAskAnswers(items)`, and `SerfAppwire.startTurn(ref, text)`.
+- Consumes: `pendingAsk.items`, `setQuestionResolution(item, resolution, options)`, `composeAskAnswers(items)`, and `EvenerAppwire.startTurn(ref, text)`.
 - Produces: one `[data-ask-response-dock]` question scroller and one sibling `[data-ask-footer]`; alternative choices identified by `[data-option-kind="free"]` and `[data-option-kind="decide"]`; the existing `[data-ask-skip-btn]` and `[data-ask-fallback-btn]` behavior remains available.
 
 - [ ] **Step 1: Write failing renderer contract tests**

@@ -37,7 +37,7 @@ live_eval_prepare_trial() {
 	LIVE_EVAL_TRIAL_ROOT=$(mktemp -d "$LIVE_EVAL_ROOT/$1.XXXXXX")
 	LIVE_EVAL_STATE="$LIVE_EVAL_TRIAL_ROOT/state"
 	LIVE_EVAL_HOME="$LIVE_EVAL_TRIAL_ROOT/home"
-	LIVE_EVAL_SERF="$LIVE_EVAL_TRIAL_ROOT/evener"
+	LIVE_EVAL_EVENER="$LIVE_EVAL_TRIAL_ROOT/evener"
 	LIVE_EVAL_WORK="$LIVE_EVAL_TRIAL_ROOT/work"
 
 	# The state root contains credentials as input, but no prior sessions. The
@@ -57,8 +57,8 @@ live_eval_prepare_trial() {
 	fi
 	cp -R "$ISO/evener/auth/." "$LIVE_EVAL_STATE/evener/auth/"
 	cp -R "$HOMEISO/.evener/." "$LIVE_EVAL_HOME/.evener/"
-	cp "$EVENER_LIVE_BINARY" "$LIVE_EVAL_SERF"
-	chmod +x "$LIVE_EVAL_SERF"
+	cp "$EVENER_LIVE_BINARY" "$LIVE_EVAL_EVENER"
+	chmod +x "$LIVE_EVAL_EVENER"
 }
 
 live_eval_cleanup() {

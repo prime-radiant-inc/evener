@@ -34,13 +34,13 @@ reconciled in place and describes what shipped.
 - Modify: `appwire/protocol.go` (request catalog near line 115; notification catalog near line 236)
 - Modify: `appwire/client.go` (near `func (c *Client) TasksList`, line 442)
 - Regenerate: `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
-- Test: `appwire/` round-trip test (extend the existing typed-request test table; find via `rg "MethodSerfTasksList" appwire/*_test.go`)
+- Test: `appwire/` round-trip test (extend the existing typed-request test table; find via `rg "MethodEvenerTasksList" appwire/*_test.go`)
 
 **Interfaces:**
 - Produces (everything downstream uses these exact names):
-  - `appwire.MethodSerfJobsList = "evener/jobs/list"`
-  - `appwire.MethodSerfJobsOutput = "evener/jobs/output"`
-  - `appwire.NotifySerfJobUpdated = "evener/job/updated"`
+  - `appwire.MethodEvenerJobsList = "evener/jobs/list"`
+  - `appwire.MethodEvenerJobsOutput = "evener/jobs/output"`
+  - `appwire.NotifyEvenerJobUpdated = "evener/job/updated"`
   - `appwire.JobsListParams{ Ref string }`, `appwire.JobsListResponse{ Data any }`
   - `appwire.JobsOutputParams{ Ref string; JobID string; MaxBytes int64 }`, `appwire.JobsOutputResponse{ Data any }`
   - `appwire.JobUpdatedParams{ ThreadID string; Ref string; JobID string; Status string }`
@@ -57,7 +57,7 @@ func TestJobsCatalogEntries(t *testing.T) {
 	for _, e := range RequestCatalog { // use the real catalog variable name from appwire/protocol.go
 		methods[e.Method] = true
 	}
-	for _, m := range []string{MethodSerfJobsList, MethodSerfJobsOutput} {
+	for _, m := range []string{MethodEvenerJobsList, MethodEvenerJobsOutput} {
 		if !methods[m] {
 			t.Errorf("request catalog missing %s", m)
 		}
@@ -68,21 +68,21 @@ func TestJobsCatalogEntries(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test -count=1 -run TestJobsCatalogEntries ./appwire/`
-Expected: FAIL — `undefined: MethodSerfJobsList`
+Expected: FAIL — `undefined: MethodEvenerJobsList`
 
 - [ ] **Step 3: Add the wire types**
 
-In `appwire/types.go`, beside `MethodSerfTasksList` (line 31):
+In `appwire/types.go`, beside `MethodEvenerTasksList` (line 31):
 
 ```go
-MethodSerfJobsList               = "evener/jobs/list"
-MethodSerfJobsOutput             = "evener/jobs/output"
+MethodEvenerJobsList               = "evener/jobs/list"
+MethodEvenerJobsOutput             = "evener/jobs/output"
 ```
 
-Beside `NotifySerfTaskUpdated` (line 110):
+Beside `NotifyEvenerTaskUpdated` (line 110):
 
 ```go
-NotifySerfJobUpdated             = "evener/job/updated"
+NotifyEvenerJobUpdated             = "evener/job/updated"
 ```
 
 Beside `TaskListParams`/`TaskListResponse` (line 1138):
@@ -125,17 +125,17 @@ type JobUpdatedParams struct {
 
 - [ ] **Step 4: Add the protocol catalog entries**
 
-In `appwire/protocol.go` beside the `MethodSerfTasksList` entry (line 115):
+In `appwire/protocol.go` beside the `MethodEvenerTasksList` entry (line 115):
 
 ```go
-{MethodSerfJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Lists the session's jobs (shell and delegate)."},
-{MethodSerfJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output."},
+{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Lists the session's jobs (shell and delegate)."},
+{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output."},
 ```
 
-Beside the `NotifySerfTaskUpdated` entry (line 236):
+Beside the `NotifyEvenerTaskUpdated` entry (line 236):
 
 ```go
-{NotifySerfJobUpdated, JobUpdatedParams{}, "A job's lifecycle state changed (started or finished)."},
+{NotifyEvenerJobUpdated, JobUpdatedParams{}, "A job's lifecycle state changed (started or finished)."},
 ```
 
 - [ ] **Step 5: Add the client methods**
@@ -144,11 +144,11 @@ In `appwire/client.go` beside `TasksList` (line 442; read it first and mirror it
 
 ```go
 func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListResponse, error) {
-	// mirror TasksList's body with MethodSerfJobsList / JobsListResponse
+	// mirror TasksList's body with MethodEvenerJobsList / JobsListResponse
 }
 
 func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
-	// same shape with MethodSerfJobsOutput / JobsOutputResponse
+	// same shape with MethodEvenerJobsOutput / JobsOutputResponse
 }
 ```
 
@@ -549,7 +549,7 @@ In `server/server_test.go`, mirroring the tasks-list tests (read the tests at li
 ```go
 func TestHandleAppJobsListNilFunc(t *testing.T) {
 	// same server fixture as the tasks nil-fn test
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{}))
 	// want: result response, data null, no error
 }
 
@@ -618,11 +618,11 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data an
 }
 ```
 
-In `server/appwire_runtime.go` beside the `MethodSerfTasksList` router registration (line 374):
+In `server/appwire_runtime.go` beside the `MethodEvenerTasksList` router registration (line 374):
 
 ```go
-appserver.HandleTyped(router, appwire.MethodSerfJobsList, s.handleAppJobsList)
-appserver.HandleTyped(router, appwire.MethodSerfJobsOutput, s.handleAppJobsOutput)
+appserver.HandleTyped(router, appwire.MethodEvenerJobsList, s.handleAppJobsList)
+appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
 ```
 
 Beside `handleAppTasksList` (line 827):
@@ -704,7 +704,7 @@ git commit -m "server: evener/jobs/list and evener/jobs/output daemon handlers"
 - Test: `internal/appprojector/appwire_projection_test.go` (mirror `TestProject_TaskUpdated`, line 153)
 
 **Interfaces:**
-- Consumes: `events.EventJobStarted`/`events.EventJobFinished` with `events.JobStartedData`/`events.JobFinishedData` payloads (`agent/events/payloads.go:477-505`; both carry `JobID` and `Status`), `appwire.NotifySerfJobUpdated`/`JobUpdatedParams` (Task 1)
+- Consumes: `events.EventJobStarted`/`events.EventJobFinished` with `events.JobStartedData`/`events.JobFinishedData` payloads (`agent/events/payloads.go:477-505`; both carry `JobID` and `Status`), `appwire.NotifyEvenerJobUpdated`/`JobUpdatedParams` (Task 1)
 - Produces: a `evener/job/updated` appwire notification per job lifecycle event; the frontend reducer (Task 7) handles it
 
 **Fact check before writing:** the session already emits these events on every job start/finish (`agent/jobs.go:864` and `agent/jobs.go:940`).
@@ -717,7 +717,7 @@ func TestProject_JobStartedUpdated(t *testing.T) {
 		Kind: events.EventJobStarted,
 		Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobUpdated {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobUpdated {
 		t.Fatalf("want one evener/job/updated notification, got %+v", out)
 	}
 	params, ok := out[0].Params.(appwire.JobUpdatedParams)
@@ -749,7 +749,7 @@ Beside the `EventTaskUpdated` case (`appwire_projection.go:776`):
 case events.EventJobStarted:
 	p.clearSkillCandidate()
 	data := eventData[events.JobStartedData](event.Data)
-	return []AppNotification{p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+	return []AppNotification{p.notification(appwire.NotifyEvenerJobUpdated, appwire.JobUpdatedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
 		JobID:    data.JobID,
@@ -758,7 +758,7 @@ case events.EventJobStarted:
 case events.EventJobFinished:
 	p.clearSkillCandidate()
 	data := eventData[events.JobFinishedData](event.Data)
-	return []AppNotification{p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+	return []AppNotification{p.notification(appwire.NotifyEvenerJobUpdated, appwire.JobUpdatedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
 		JobID:    data.JobID,
@@ -894,7 +894,7 @@ git commit -m "appsource: ListJobs/JobOutput across local and codex sources"
 
 **Files:**
 - Create: `cmd/evener-hub/app_jobs.go`
-- Modify: `cmd/evener-hub/app_rpc.go` (registration beside `MethodSerfTasksList`, line 743)
+- Modify: `cmd/evener-hub/app_rpc.go` (registration beside `MethodEvenerTasksList`, line 743)
 - Test: `cmd/evener-hub/app_jobs_test.go` (mirror `app_tasks_test.go`; shared past-fixture helpers live in `web_workspace_test.go`)
 
 **Interfaces:**
@@ -1040,10 +1040,10 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 Register in `app_rpc.go` beside the tasks registration (line 743):
 
 ```go
-appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 	return hubJobsList(ctx, cfg, sources, params)
 })
-appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return hubJobsOutput(ctx, cfg, sources, params)
 })
 ```
@@ -1551,11 +1551,11 @@ This section records where the shipped code differs, after the branch merged
 spec has been reconciled in place and describes what is there now.
 
 **`evener/job/updated` does not exist** — kata j7y6, `ae4ff7d9f`. Task 1's
-`NotifySerfJobUpdated`/`JobUpdatedParams` and Task 4's projection case both
+`NotifyEvenerJobUpdated`/`JobUpdatedParams` and Task 4's projection case both
 landed and were then folded away. The notification fired at exactly the two
 instants `evener/job/started` and `evener/job/finished` fire, from the same two
 projector cases, to the same audience, and its payload was a strict subset of
-`SerfJobParams` — `Job.JobID` plus `Job.Status` is all a refetch trigger
+`EvenerJobParams` — `Job.JobID` plus `Job.Status` is all a refetch trigger
 reads. Task 7's reducer case now hangs off that lifecycle pair, bumping
 `model.jobsUpdatedAt` on both ends. Task 4 is empty in hindsight: both
 projector cases predate this branch, so the projector never needed a change

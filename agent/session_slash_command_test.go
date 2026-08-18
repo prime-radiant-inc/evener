@@ -14,8 +14,8 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// writeSerfwideCommandFile creates <workDir>/.evener/commands/<name>.md.
-func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
+// writeEvenerwideCommandFile creates <workDir>/.evener/commands/<name>.md.
+func writeEvenerwideCommandFile(t *testing.T, workDir, name, content string) {
 	t.Helper()
 	dir := filepath.Join(workDir, ".evener", "commands")
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -26,7 +26,7 @@ func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
 	}
 }
 
-func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
+func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -34,7 +34,7 @@ func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	}}
 	client.Register(adapter)
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
+	writeEvenerwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -46,10 +46,10 @@ func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	}
 }
 
-func TestSerfwideCommand_ShadowsPluginBareName(t *testing.T) {
+func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "greet", "evener-wide body")
+	writeEvenerwideCommandFile(t, workDir, "greet", "evener-wide body")
 	pluginDir := writePluginCommand(t, "greeter", "greet", "plugin body")
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -70,10 +70,10 @@ func TestSerfwideCommand_ShadowsPluginBareName(t *testing.T) {
 	}
 }
 
-func TestSerfwideCommand_DiscoveryWarningsQueued(t *testing.T) {
+func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
+	writeEvenerwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
@@ -199,14 +199,14 @@ func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, time
 	return e.ExecutionEnvironment.ExecCommand(ctx, command, timeoutMs, dir, env)
 }
 
-func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
+func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
 	}})
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
+	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
 	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
 	if err != nil {

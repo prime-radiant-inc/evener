@@ -388,7 +388,7 @@ controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
    which the shipped `prefs.ts` *deliberately* omits ("No cross-tab `storage` event sync: deliberately
    omitted, matching the legacy", `prefs.ts:57-62`). Adding it is YAGNI and contradicts a landed
    decision. Flagged for ratification.
-2. **`sidebarMode` `pane` semantics.** The legacy `SerfSidebar.applySidebarMode` internals were not
+2. **`sidebarMode` `pane` semantics.** The legacy `EvenerSidebar.applySidebarMode` internals were not
    in the floor's read-set, and the spec (§6.4) states "the tree is not a pane." Resolved using the
    **shipped Wave-7 help copy** (`theme.tsx:103-104`) as the authority: `auto`=responsive@1200px,
    `pane`=always-expanded, `rail`("Collapsed")=hidden→☰ drawer, ⌘B cycles rail→pane→auto. This

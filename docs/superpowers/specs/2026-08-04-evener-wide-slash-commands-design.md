@@ -136,11 +136,11 @@ documented for users in `docs/skills.md`.
 New file `agent/plugin/evenerwide.go`:
 
 ```go
-// DiscoverSerfWideCommands scans the user-global commands dir, then walks
+// DiscoverEvenerWideCommands scans the user-global commands dir, then walks
 // git-root→cwd scanning <dir>/.evener/commands, returning commands keyed by
 // bare name. Later scans shadow earlier ones, so the deepest project dir
 // wins and every project command shadows the user-global one.
-func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData)
+func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData)
 ```
 
 - User-global dir: a `globalCommandsDir(xdgConfigHome string, userHomeDir
@@ -219,7 +219,7 @@ on empty `PluginDirs`). Session init discovers immediately after the
 empty set included), then assembles the whole command map in one place:
 
 ```go
-evenerwide, warnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+evenerwide, warnings := plugin.DiscoverEvenerWideCommands(s.currentEnv())
 s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 // warnings join the session-start warning queue
 ```
@@ -433,7 +433,7 @@ no live requests.
 |---|---|
 | `agent/plugin/commands.go` | Add `Source` and `File` to `Command`; set both in `discoverPluginCommands`; update the `Command` doc comment (currently says "defined by a plugin") |
 | `agent/session.go` | Update the `pluginCommands` field comment (currently says "the union of every loaded plugin's slash commands") |
-| `agent/plugin/evenerwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
+| `agent/plugin/evenerwide.go` | New: `DiscoverEvenerWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
 | `agent/plugin/plugin.go` | New: `MergeCommands` shared flatten-and-overlay |
 | `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
 | `agent/session_slash_command.go` | Branch expansion on `Command.Source` |

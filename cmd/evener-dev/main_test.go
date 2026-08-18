@@ -12,12 +12,12 @@ import (
 // stderr directly. Not `go run`, which reports 1 whatever the child exited
 // with, erasing exactly the codes under test. The per-test build rides the
 // build cache.
-func runSerfDev(t *testing.T, args ...string) (int, string) {
+func runEvenerDev(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration: builds and runs the evener-dev binary")
 	}
-	cmd := exec.Command(buildSerfDev(t), args...) //nolint:noctx // one short-lived run, reaped by Run — buildSerfDev is the shard runner's shared helper
+	cmd := exec.Command(buildEvenerDev(t), args...) //nolint:noctx // one short-lived run, reaped by Run — buildEvenerDev is the shard runner's shared helper
 	var errOut strings.Builder
 	cmd.Stderr = &errOut
 	err := cmd.Run()
@@ -32,7 +32,7 @@ func runSerfDev(t *testing.T, args ...string) (int, string) {
 }
 
 func TestDispatchRejectsMissingSubcommand(t *testing.T) {
-	code, stderr := runSerfDev(t)
+	code, stderr := runEvenerDev(t)
 	if code != 2 {
 		t.Errorf("no subcommand exits %d, want 2", code)
 	}
@@ -45,7 +45,7 @@ func TestDispatchRejectsMissingSubcommand(t *testing.T) {
 }
 
 func TestDispatchRejectsUnknownSubcommand(t *testing.T) {
-	code, stderr := runSerfDev(t, "launder-money")
+	code, stderr := runEvenerDev(t, "launder-money")
 	if code != 2 {
 		t.Errorf("unknown subcommand exits %d, want 2", code)
 	}

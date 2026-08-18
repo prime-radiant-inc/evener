@@ -468,12 +468,12 @@ enough to use freely.
 The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use_browser`) with action verbs.
 
 **There is no renderer handle to drive.** The vanilla-JS frontend that
-published `window.SerfRenderer` and `window.SerfAppwire` was deleted
+published `window.EvenerRenderer` and `window.EvenerAppwire` was deleted
 wholesale at commit `660376f78` (2026-07-22), and the React app that
 replaced it exposes nothing on `window` — the only `window.*` reference
 left in `cmd/evener-hub/frontend/src` outside tests is an `AudioContext`
 lookup (`notifications/channels.ts:45`). Anything in an older card that
-reads `window.SerfRenderer?.state` or calls `window.SerfAppwire.steer(…)`
+reads `window.EvenerRenderer?.state` or calls `window.EvenerAppwire.steer(…)`
 returns `undefined` / throws, and an `eval` that does so **fails open**:
 it reports "no chips found", which reads exactly like a real regression.
 
@@ -697,7 +697,7 @@ arrived.
 
 ### Probing without a renderer handle
 
-`window.SerfRenderer` is gone; ask the DOM and the server instead.
+`window.EvenerRenderer` is gone; ask the DOM and the server instead.
 
 ```javascript
 JSON.stringify({

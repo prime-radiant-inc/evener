@@ -83,7 +83,7 @@ Step 5: reply with the single word DONE."
   HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" \
     EVENER_PROVIDERS_CONFIG="$LIVE_EVAL_HOME/.evener/providers.toml" \
     EVENER_STATE_DIR="$LIVE_EVAL_STATE/evener" \
-    "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
+    "$LIVE_EVAL_EVENER" --model openai/gpt-5.5 \
     --state-dir "$LIVE_EVAL_STATE/evener" --dir "$work" --max-rounds 24 "$prompt" \
     > "$work/run.log" 2>&1
 

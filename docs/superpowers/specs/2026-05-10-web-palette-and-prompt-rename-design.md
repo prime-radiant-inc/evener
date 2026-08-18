@@ -73,7 +73,7 @@ args: {
 
 #### The `Nav` indirection (test hook — see kata #44)
 
-JSDOM's `Location.assign` is non-configurable, so nav-targeting tests need a seam. Production code routes navigations through a module-level `const Nav = { go: (url) => window.location.assign(url) }` exposed on `window.SerfSearch.Nav`. Tests replace `Nav.go` after init to capture targets. The seam is one line; #44 reconsiders whether it stays.
+JSDOM's `Location.assign` is non-configurable, so nav-targeting tests need a seam. Production code routes navigations through a module-level `const Nav = { go: (url) => window.location.assign(url) }` exposed on `window.EvenerSearch.Nav`. Tests replace `Nav.go` after init to capture targets. The seam is one line; #44 reconsiders whether it stays.
 
 ### Triggers and lifecycle
 
@@ -174,7 +174,7 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 
 ### Helpers worth knowing about
 
-- `copyToClipboard(text)` — prefers `navigator.clipboard.writeText`; falls back to textarea + `document.execCommand("copy")` for non-secure-context deployments. On both-fail, surfaces via `window.SerfRenderer.appendBanner("error", …)`.
+- `copyToClipboard(text)` — prefers `navigator.clipboard.writeText`; falls back to textarea + `document.execCommand("copy")` for non-secure-context deployments. On both-fail, surfaces via `window.EvenerRenderer.appendBanner("error", …)`.
 - `applyTheme(name)` — toggles `body.light-theme` / `body.dark-theme` and persists `localStorage["evener-hub.theme"]`. Shared between the palette and the settings page.
 - `revealProject(ctx)` — finds the sidebar link for `ctx.sessionId`, uncollapses its enclosing `[data-project-key]` section, scrolls into view.
 - `renderHelpPanel()` — paints the keyboard-shortcut reference into the results pane; clears `items` so Enter is a no-op until the user types again.
@@ -189,9 +189,9 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 ### Implementation surfaces
 
 **Modified files:**
-- `cmd/evener-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.SerfSearch.{open, close, openWith, Nav}`
+- `cmd/evener-hub/assets/search.js` — registry, mode branching, args mode, helpers, `Nav` indirection, `window.EvenerSearch.{open, close, openWith, Nav}`
 - `cmd/evener-hub/assets/style.css` — pill, command rows, args items, help-row layout
-- `cmd/evener-hub/assets/renderer.js` — `/` at start of empty textarea → `SerfSearch.openWith("/")`
+- `cmd/evener-hub/assets/renderer.js` — `/` at start of empty textarea → `EvenerSearch.openWith("/")`
 - `cmd/evener-hub/templates/app.html` — ARIA on the search dialog markup
 - `cmd/evener-hub/templates/partials/spawn.html` — textarea content pre-fill from `.DefaultTask`
 - `cmd/evener-hub/web.go` — `clear` action proxy; `handleIndex` forwards `?task`; `spawnViewData.DefaultTask`
@@ -231,7 +231,7 @@ Reuses `#search-dialog` exactly as it was — native `<dialog>`, top-anchored mo
 |---|---|---|
 | 42 | Palette mobile layout | v2 deferred |
 | 43 | Fuzzy matching + recent commands | v2 deferred |
-| 44 | Rethink `window.SerfSearch.Nav` indirection | design discussion |
+| 44 | Rethink `window.EvenerSearch.Nav` indirection | design discussion |
 | 45 | `/project` doesn't navigate — it scrolls; rename or build real route | polish |
 
 ---

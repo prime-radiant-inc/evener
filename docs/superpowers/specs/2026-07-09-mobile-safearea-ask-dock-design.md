@@ -86,7 +86,7 @@ The existing inline interactive card is replaced by this record and the bottom d
 - The first acknowledged ask-user call creates the transcript anchor and activates dock ask mode.
 - Additional ask-user calls in the same turn append questions to the same dock form in global posting order.
 - `pendingAsk` continues to own resolutions, notes, collapsed state only if a non-destructive dock presentation affordance is retained, and send-in-flight state.
-- `sendAskAnswers` continues to compose the current byte-exact `[answers]` format and submit through the same `SerfAppwire.startTurn` path.
+- `sendAskAnswers` continues to compose the current byte-exact `[answers]` format and submit through the same `EvenerAppwire.startTurn` path.
 - On a local successful send, echoed `USER_INPUT` from any client, new turn, session change, or supersession, the ask mode settles and the normal composer returns.
 - The transcript anchor becomes the existing neutral settled history line describing the asked questions and response.
 - A start-turn conflict never auto-retries. The composed response moves into the restored normal composer exactly as it does today.

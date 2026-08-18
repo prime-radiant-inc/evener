@@ -674,11 +674,11 @@ func dispatchHubJobsRPC(t *testing.T, cfg hubcore.WebConfig, sources *appsource.
 	})
 }
 
-// TestSerfJobsListRouteReachesTheHubHandler proves evener/jobs/list is wired to
+// TestEvenerJobsListRouteReachesTheHubHandler proves evener/jobs/list is wired to
 // hubJobsList with this hub's cfg and sources: the route answers, the ref
 // decodes, and the past-fallback activity tree built from cfg.Past comes back
 // as the typed JobsListResponse.
-func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
+func TestEvenerJobsListRouteReachesTheHubHandler(t *testing.T) {
 	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
 
 	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodEvenerJobsList, `{"ref":"local:`+sessionID+`"}`)
@@ -696,12 +696,12 @@ func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
 	}
 }
 
-// TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes drives evener/jobs/output at
+// TestEvenerJobsOutputRouteDecodesJobIDAndMaxBytes drives evener/jobs/output at
 // the same boundary. jobId and maxBytes are what no direct hubJobsOutput test
 // can vouch for: they exist only on the wire, so a wrong JSON tag or a route
 // closure forwarding less than it decoded would still answer — with the wrong
 // job, or with the whole log.
-func TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
+func TestEvenerJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
 		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
 	})
@@ -723,11 +723,11 @@ func TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
 	}
 }
 
-// TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams proves the route's
+// TestEvenerJobsOutputRouteMapsUnknownJobToInvalidParams proves the route's
 // error surface: the handler's InvalidParams reaches the caller through
 // Dispatch with its code and message intact, rather than arriving flattened
 // into an internal error or paired with a response.
-func TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
+func TestEvenerJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
 		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
 	})

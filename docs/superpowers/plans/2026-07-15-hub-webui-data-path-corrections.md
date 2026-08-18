@@ -342,15 +342,15 @@ Retain capability and active-turn extraction from `Thread.Evener`.
 
 - [ ] **Step 3: Write the failing JSDOM hydration-order test**
 
-Create `test-renderer-hydration-order.js` from the minimal workspace fixture used by `test-renderer-liveness-selfheal.js`. Provide deferred promises for `SerfAppwire.tasks` and `SerfAppwire.readThread`. Resolve `readThread` with one user turn while leaving tasks pending; deliver one live notification through the registered callback. After microtasks drain, assert both snapshot and live text are present before resolving tasks. Then resolve tasks and assert the task description replaces the numeric label without duplicating transcript items.
+Create `test-renderer-hydration-order.js` from the minimal workspace fixture used by `test-renderer-liveness-selfheal.js`. Provide deferred promises for `EvenerAppwire.tasks` and `EvenerAppwire.readThread`. Resolve `readThread` with one user turn while leaving tasks pending; deliver one live notification through the registered callback. After microtasks drain, assert both snapshot and live text are present before resolving tasks. Then resolve tasks and assert the task description replaces the numeric label without duplicating transcript items.
 
 The key test shape is:
 
 ```js
 let resolveTasks;
 const tasksPromise = new Promise(r => { resolveTasks = r; });
-window.SerfAppwire.tasks = () => tasksPromise;
-window.SerfAppwire.readThread = () => Promise.resolve(snapshot);
+window.EvenerAppwire.tasks = () => tasksPromise;
+window.EvenerAppwire.readThread = () => Promise.resolve(snapshot);
 // init renderer; emit buffered notification; await microtasks
 assert(conversation.textContent.includes("snapshot text"));
 assert(conversation.textContent.includes("live text"));

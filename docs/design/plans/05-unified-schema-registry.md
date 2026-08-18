@@ -41,7 +41,7 @@ type NotificationSpec struct {
 ```
 
 - Each spec carries a **zero value** of the concrete type, expressly "so the doc generator can reflect their JSON fields" (`protocol.go:57–59`). That is the same reflection seam this registry consumes.
-- **92 (Params + Result) slots across 46 methods + 7 notification payloads**, deduping to ~70 distinct named structs: `EmptyParams{}`/`EmptyResponse{}` recur (e.g. `MethodPing`, the `ModelSet`/`EffortSet`/`Compact`/`Shutdown` methods), `InstanceListResponse{}` is the result of all five `SerfInstance*` methods, `LaunchConfigResolved{}` of three `SerfLaunch*` methods, `AuthStatusResponse{}` of two.
+- **92 (Params + Result) slots across 46 methods + 7 notification payloads**, deduping to ~70 distinct named structs: `EmptyParams{}`/`EmptyResponse{}` recur (e.g. `MethodPing`, the `ModelSet`/`EffortSet`/`Compact`/`Shutdown` methods), `InstanceListResponse{}` is the result of all five `EvenerInstance*` methods, `LaunchConfigResolved{}` of three `EvenerLaunch*` methods, `AuthStatusResponse{}` of two.
 
 ### How `params_fuzz_test.go` reflects today (what to reuse vs. replace)
 

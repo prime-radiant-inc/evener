@@ -137,7 +137,7 @@ aren't mislabeled) and is used only by ollama.
 
 ### 3.4 Launch gate, picker, resume
 
-Launch gate is a **subprocess**: `validateSerfLaunchContract` runs `launch-check
+Launch gate is a **subprocess**: `validateEvenerLaunchContract` runs `launch-check
 --model` (no `--models`) on **every spawn** (`spawn.go:558-564`, `:141,186`),
 `--models` for the picker (`:607`). Inside: `SelectProfile` (`launch_check.go:68`)
 + `NewFromEnv` (`:94,159`). Type-literal branches over `client.ProviderNames()`:

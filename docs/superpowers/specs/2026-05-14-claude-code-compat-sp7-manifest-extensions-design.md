@@ -196,7 +196,7 @@ func ResolveUserConfig(
 // included if non-empty. Order matches the order of plugins in the input.
 func PluginBinPATH(plugins []LoadedPlugin) string
 
-// SerfConfig (defined in SP1) gains one field:
+// EvenerConfig (defined in SP1) gains one field:
 //
 //   PluginConfigs map[string]PluginConfig `json:"pluginConfigs,omitempty"`
 //
@@ -607,7 +607,7 @@ Existing files modified:
 - `agent/plugin.go` — extend `PluginManifest` with the new fields (§2), populate the new `LoadedPlugin` fields, thread the `skills` override into `discoverPluginSkills`, stat `<root>/bin`, parse `<root>/settings.json`.
 - `agent/skills.go` / the existing `discoverPluginSkills` helper — accept an override argument; default-only callers pass `nil`.
 - `agent/session.go` — wire `PluginBinPATH` into the shell tool registration; call `ResolveUserConfig` per plugin during `initPlugins`; stash resolved configs on `s.pluginUserConfigs` for SP5/SP6 to consume.
-- `agent/config.go` (SP1) — add the `PluginConfigs` field on `SerfConfig`. SP1's parser already keeps unknown JSON as `RawMessage`; this is the typed accessor.
+- `agent/config.go` (SP1) — add the `PluginConfigs` field on `EvenerConfig`. SP1's parser already keeps unknown JSON as `RawMessage`; this is the typed accessor.
 - `cmd/evener/plugin/install.go` (SP4) — call `PromptForUserConfig` after install/enable.
 - `cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go` — register the surface-specific `UserConfigPrompter` with the session.
 
@@ -771,7 +771,7 @@ Multiple plugins each declaring `api_token` are isolated by plugin ID. Keychain 
 
 ### 15.3 Dependencies on other sub-specs (NOT resolved here)
 
-- **SP1** — must add `PluginConfigs map[string]json.RawMessage` to `SerfConfig` and merge it by-key. SP7 ships the typed accessor.
+- **SP1** — must add `PluginConfigs map[string]json.RawMessage` to `EvenerConfig` and merge it by-key. SP7 ships the typed accessor.
 - **SP4** — must call `PromptForUserConfig` at the end of `install` and `enable`. SP7 ships the function; SP4 owns the CLI surface.
 - **SP5** — must merge `UserConfigEnvVars(r)` into hook subprocess envs for the owning plugin's hooks, and pass `ExpandUserConfig(hookCmd, r)` through before exec. SP7 ships the helpers.
 - **SP6** — same as SP5 for MCP server `command`, `args`, `env`, `url`, `headers`. SP7 ships the helpers.

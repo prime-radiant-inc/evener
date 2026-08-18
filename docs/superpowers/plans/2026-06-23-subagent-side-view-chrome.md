@@ -54,7 +54,7 @@ Modify/create these files:
   - Normalize hrefs before dedupe, open, close, persist, restore, and suppression checks.
 
 - Modify `cmd/evener-hub/assets/renderer.js`
-  - Use `SerfPanes.threadHref()` or a fallback thread href builder for subagent and observer pane URLs.
+  - Use `EvenerPanes.threadHref()` or a fallback thread href builder for subagent and observer pane URLs.
   - Make open-beside controls available in framed thread documents through the bridge.
   - Intercept pane-context parent breadcrumb clicks.
 
@@ -209,12 +209,12 @@ Create `cmd/evener-hub/templates/thread.html`:
   <script src="/assets/renderer.js"></script>
   <script>
     document.body.addEventListener("htmx:responseError", function (e) {
-      if (!window.SerfToast) return;
+      if (!window.EvenerToast) return;
       var status = (e && e.detail && e.detail.xhr && e.detail.xhr.status) || 0;
-      window.SerfToast.show(status ? ("Request failed (" + status + ")") : "Request failed", "error");
+      window.EvenerToast.show(status ? ("Request failed (" + status + ")") : "Request failed", "error");
     });
     document.body.addEventListener("htmx:sendError", function () {
-      if (window.SerfToast) window.SerfToast.show("Network error", "error");
+      if (window.EvenerToast) window.EvenerToast.show("Network error", "error");
     });
   </script>
 </body>
@@ -403,8 +403,8 @@ git commit -m "feat(hub): add standalone thread document"
 **Interfaces:**
 - Consumes: Task 1 route `/thread/<encoded-ref>`.
 - Produces JS API:
-  - `SerfPanes.threadHref(ref: string): string`
-  - `SerfPanes.normalizePaneHref(href: string): string`
+  - `EvenerPanes.threadHref(ref: string): string`
+  - `EvenerPanes.normalizePaneHref(href: string): string`
 
 - [ ] **Step 1: Add failing tests for thread href construction and restore normalization**
 
@@ -424,10 +424,10 @@ await scenario("subagent open-beside uses thread document route", { panes: true 
 });
 ```
 
-If the harness currently stubs `SerfPanes.open` without `threadHref`, update the stub:
+If the harness currently stubs `EvenerPanes.open` without `threadHref`, update the stub:
 
 ```js
-window.SerfPanes = {
+window.EvenerPanes = {
   open: (href, title) => { window.__paneOpenCalls.push({ href, title }); },
   threadHref: ref => "/thread/" + encodeURIComponent(ref),
 };
@@ -438,8 +438,8 @@ In `cmd/evener-hub/jstest/test-panes-url.js`, add a restore normalization scenar
 ```js
 await scenario("restore normalizes legacy /s session pane hrefs to thread documents", ({ window, document }) => {
   window.history.replaceState(null, "", "/s/parent?pane=%2Fs%2Flocal%253Achild-A");
-  window.SerfPanes.restore();
-  const hrefs = window.SerfPanes.openHrefs();
+  window.EvenerPanes.restore();
+  const hrefs = window.EvenerPanes.openHrefs();
   if (hrefs.length !== 1) return { ok: false, detail: "expected one restored pane" };
   if (hrefs[0] !== "/thread/local%3Achild-A") return { ok: false, detail: "wrong restored href: " + hrefs[0] };
   return { ok: true };
@@ -531,7 +531,7 @@ data.forEach(function (p) {
 Export helpers:
 
 ```js
-window.SerfPanes = {
+window.EvenerPanes = {
   open: open,
   close: close,
   openHrefs: openHrefs,
@@ -554,7 +554,7 @@ In `cmd/evener-hub/assets/renderer.js`, add a helper method near navigation help
 threadHref(ref) {
   ref = String(ref || "").trim();
   if (!ref) return "";
-  if (window.SerfPanes && window.SerfPanes.threadHref) return window.SerfPanes.threadHref(ref);
+  if (window.EvenerPanes && window.EvenerPanes.threadHref) return window.EvenerPanes.threadHref(ref);
   return "/thread/" + encodeURIComponent(ref);
 },
 ```
@@ -574,14 +574,14 @@ var href = this.threadHref(refs[i]);
 In `cmd/evener-hub/assets/sidebar.js`, change:
 
 ```js
-window.SerfPanes.open("/s/" + encodeURIComponent(ref), title);
+window.EvenerPanes.open("/s/" + encodeURIComponent(ref), title);
 ```
 
 to:
 
 ```js
-var href = window.SerfPanes.threadHref ? window.SerfPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
-window.SerfPanes.open(href, title);
+var href = window.EvenerPanes.threadHref ? window.EvenerPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
+window.EvenerPanes.open(href, title);
 ```
 
 - [ ] **Step 5: Run targeted JS tests**
@@ -612,11 +612,11 @@ git commit -m "fix(hub): route side panes to thread documents"
 - Create: `cmd/evener-hub/jstest/test-thread-document-bridge.js`
 
 **Interfaces:**
-- Consumes: Task 2 `SerfPanes.threadHref(ref)` and `SerfPanes.open(href, title)`.
+- Consumes: Task 2 `EvenerPanes.threadHref(ref)` and `EvenerPanes.open(href, title)`.
 - Produces:
-  - `SerfPanes.openFromChild(sourceWindow: Window, href: string, title: string): Element|null`
-  - `SerfPanes.isPaneSafeHref(href: string): boolean`
-  - Framed child fallback `window.SerfPanes.open(href, title)` that posts to parent when no local pane host exists.
+  - `EvenerPanes.openFromChild(sourceWindow: Window, href: string, title: string): Element|null`
+  - `EvenerPanes.isPaneSafeHref(href: string): boolean`
+  - Framed child fallback `window.EvenerPanes.open(href, title)` that posts to parent when no local pane host exists.
 
 - [ ] **Step 1: Add failing bridge tests**
 
@@ -649,19 +649,19 @@ function pass(ok, msg) {
 
 (function () {
   const host = newHostHarness();
-  const pane = host.SerfPanes.open("/thread/local%3Achild", "child");
+  const pane = host.EvenerPanes.open("/thread/local%3Achild", "child");
   const frame = pane && pane.querySelector("iframe");
   pass(!!frame, "host opens initial pane");
 
-  const opened = host.SerfPanes.openFromChild(frame.contentWindow, "/thread/local%3Agrandchild", "grandchild");
+  const opened = host.EvenerPanes.openFromChild(frame.contentWindow, "/thread/local%3Agrandchild", "grandchild");
   pass(!!opened, "known child frame can open a pane through host bridge");
-  pass(host.SerfPanes.openHrefs().includes("/thread/local%3Agrandchild"), "host bridge opens requested thread href");
+  pass(host.EvenerPanes.openHrefs().includes("/thread/local%3Agrandchild"), "host bridge opens requested thread href");
 
-  const rejectedExternal = host.SerfPanes.openFromChild(frame.contentWindow, "https://example.com/thread/x", "bad");
+  const rejectedExternal = host.EvenerPanes.openFromChild(frame.contentWindow, "https://example.com/thread/x", "bad");
   pass(!rejectedExternal, "host bridge rejects cross-origin hrefs");
 
   const unknown = { closed: false };
-  const rejectedUnknown = host.SerfPanes.openFromChild(unknown, "/thread/local%3Aintruder", "intruder");
+  const rejectedUnknown = host.EvenerPanes.openFromChild(unknown, "/thread/local%3Aintruder", "intruder");
   pass(!rejectedUnknown, "host bridge rejects unknown source windows");
 
   if (!allPass) process.exit(1);
@@ -736,15 +736,15 @@ isPaneSafeHref: isPaneSafeHref,
 
 - [ ] **Step 4: Add framed fallback in `renderer.js`**
 
-In `makeOpenBesideButton`, replace the early `return null` when `window.SerfPanes` is absent with a framed bridge fallback.
+In `makeOpenBesideButton`, replace the early `return null` when `window.EvenerPanes` is absent with a framed bridge fallback.
 
 Add a method near `isFramed`/navigation helpers if not already present:
 
 ```js
 openBeside(spec) {
   if (!spec || !spec.href) return;
-  if (window.SerfPanes && window.SerfPanes.open) {
-    window.SerfPanes.open(spec.href, spec.title);
+  if (window.EvenerPanes && window.EvenerPanes.open) {
+    window.EvenerPanes.open(spec.href, spec.title);
     return;
   }
   if (this.isFramed && this.isFramed() && window.parent) {
@@ -756,7 +756,7 @@ openBeside(spec) {
 Change button creation to allow framed documents:
 
 ```js
-if (!window.SerfPanes && !(this.isFramed && this.isFramed())) return null;
+if (!window.EvenerPanes && !(this.isFramed && this.isFramed())) return null;
 ```
 
 Change click handler:
@@ -806,7 +806,7 @@ git commit -m "feat(hub): bridge nested pane opens from thread documents"
 - Test: `cmd/evener-hub/jstest/test-thread-document-bridge.js`
 
 **Interfaces:**
-- Consumes: `ThreadDocumentMode bool`, `ParentRouteID`, `SerfRenderer.openBeside(spec)` from Task 3.
+- Consumes: `ThreadDocumentMode bool`, `ParentRouteID`, `EvenerRenderer.openBeside(spec)` from Task 3.
 - Produces: parent breadcrumb in thread-document mode opens/focuses parent as `/thread/<parent>` via host bridge rather than navigating iframe to `/s/<parent>`.
 
 - [ ] **Step 1: Add failing server assertion for pane-safe breadcrumb markup**
@@ -851,11 +851,11 @@ const childDom = new JSDOM(`<!DOCTYPE html><html><body>
 const child = childDom.window;
 let posted = null;
 child.parent = { postMessage: (msg, origin) => { posted = { msg, origin }; } };
-child.SerfRendererInternal = host.SerfRendererInternal || {};
+child.EvenerRendererInternal = host.EvenerRendererInternal || {};
 // If loading full renderer dependencies is too heavy, test a small exported handler added in renderer.js.
 ```
 
-If the full renderer dependencies make this brittle, instead add and test an exported small helper `SerfRenderer.handlePaneParentClick(e)` through the existing renderer harness.
+If the full renderer dependencies make this brittle, instead add and test an exported small helper `EvenerRenderer.handlePaneParentClick(e)` through the existing renderer harness.
 
 - [ ] **Step 3: Run tests and verify they fail**
 
@@ -937,7 +937,7 @@ git commit -m "fix(hub): make pane breadcrumbs thread-safe"
 - Test: `cmd/evener-hub/jstest/test-panes-url.js` or create `cmd/evener-hub/jstest/test-panes-error.js`
 
 **Interfaces:**
-- Consumes: existing `SerfPanes.open(href, title)`.
+- Consumes: existing `EvenerPanes.open(href, title)`.
 - Produces DOM contract:
   - `.pane[data-state="loading"]`
   - `.pane[data-state="ready"]`
@@ -965,14 +965,14 @@ load(window, "../assets/panes.js");
 let allPass = true;
 function check(ok, msg) { console.log((ok ? "PASS" : "FAIL") + " — " + msg); if (!ok) allPass = false; }
 
-const pane = window.SerfPanes.open("/thread/local%3Achild", "child");
+const pane = window.EvenerPanes.open("/thread/local%3Achild", "child");
 check(pane && pane.dataset.state === "loading", "pane starts loading");
 const frame = pane.querySelector("iframe");
 frame.dispatchEvent(new window.Event("load"));
 check(pane.dataset.state === "ready", "pane becomes ready after iframe load");
 
-const bad = window.SerfPanes.open("/thread/local%3Amissing", "missing");
-window.SerfPanes.markError("/thread/local%3Amissing", "Thread failed to load");
+const bad = window.EvenerPanes.open("/thread/local%3Amissing", "missing");
+window.EvenerPanes.markError("/thread/local%3Amissing", "Thread failed to load");
 check(bad.dataset.state === "error", "pane can enter error state");
 check(!!bad.querySelector(".pane-error"), "error state renders pane error UI");
 check(!!bad.querySelector("[data-pane-retry]"), "error state renders retry control");

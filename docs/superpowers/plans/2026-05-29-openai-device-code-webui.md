@@ -15,7 +15,7 @@ Reference (verified current code):
 - `internal/auth/openai/device.go`: `RequestDeviceCode` returns `DeviceCode{VerificationURL, UserCode, DeviceAuthID, Interval}`; on 404 returns a plain "not enabled" error (line ~126). `pollDeviceAuth(ctx, client, cfg, dc, opts)` is the blocking loop (lines ~176-265); per-attempt it POSTs to `<issuer>/api/accounts/deviceauth/token`, treats 403/404 as pending, 2xx decodes `devicePollResponse{authorization_code, code_challenge, code_verifier}`. `ExchangeDeviceCode(ctx, client, cfg, authCode, codeVerifier)` exists.
 - `internal/auth/openai/device_test.go`: `newDeviceMockServer(t)` with hooks `m.usercode`/`m.token`, `m.cfg()` (Config → mock URL), `writeJSON(t, w, status, map[string]any{...})`.
 - `cmd/evener-hub/app_auth.go`: `hubAuthController` has `stateDir, client, now, exchangeCode, mu, flows`. `config()`, `authRecordFromTokens(tokens)` (Source=oauth), `openAIStatus()`, `firstNonEmpty`, `normalizeAuthProvider`. `LoginComplete` shows the exchange→`ParseIDTokenClaims`→`SaveAuth` pattern. `authopenai.GenerateState() (string, error)`.
-- `cmd/evener-hub/app_rpc.go`: auth handlers registered via `appserver.HandleTyped(server.Router(), appwire.MethodSerfAuth…, fn)`; `notifyAuthUpdated(server, provider, activeSource)` after state changes.
+- `cmd/evener-hub/app_rpc.go`: auth handlers registered via `appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuth…, fn)`; `notifyAuthUpdated(server, provider, activeSource)` after state changes.
 - `internal/appwire/types.go`: method consts ~lines 31-36; `AuthStatusResponse`, `AuthLogoutParams` etc. ~lines 520-700; `appwire.InvalidParams(msg)`.
 - `cmd/evener-hub/assets/launchconfig.js`: `request(method, params)` helper; auth wrappers end after `authLogout` (~line 30).
 - `cmd/evener-hub/templates/partials/credentials.html`: IIFE with `renderEditor(p,e)` (kinds `set`, `oauth-redirect`), the list `click` handler (actions `set`/`oauth`/`clear`/`cancel-edit`), `refresh()`, `openEditor` state.
@@ -207,11 +207,11 @@ git commit -m "feat(auth/openai): PollDeviceAuthOnce + ErrDeviceCodeNotEnabled s
 **Files:**
 - Modify: `internal/appwire/types.go`
 
-- [ ] **Step 1: Add method constants.** In `internal/appwire/types.go`, alongside the other `MethodSerfAuth*` constants (after `MethodSerfAuthApiKeySet`):
+- [ ] **Step 1: Add method constants.** In `internal/appwire/types.go`, alongside the other `MethodEvenerAuth*` constants (after `MethodEvenerAuthApiKeySet`):
 
 ```go
-	MethodSerfAuthDeviceStart      = "evener/auth/device/start"
-	MethodSerfAuthDevicePoll       = "evener/auth/device/poll"
+	MethodEvenerAuthDeviceStart      = "evener/auth/device/start"
+	MethodEvenerAuthDevicePoll       = "evener/auth/device/poll"
 ```
 
 - [ ] **Step 2: Add the params/response types.** Add near the other `Auth*` types (after `AuthApiKeySetParams`):
@@ -495,13 +495,13 @@ git commit -m "feat(evener-hub): DeviceStart/DevicePoll controller methods (PRI-
 **Files:**
 - Modify: `cmd/evener-hub/app_rpc.go`
 
-- [ ] **Step 1: Register the handlers.** In `cmd/evener-hub/app_rpc.go`, immediately after the `MethodSerfAuthApiKeySet` handler block, add:
+- [ ] **Step 1: Register the handlers.** In `cmd/evener-hub/app_rpc.go`, immediately after the `MethodEvenerAuthApiKeySet` handler block, add:
 
 ```go
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authController.DevicePoll(ctx, params)
 		if err == nil && resp.State == "authorized" {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
@@ -690,7 +690,7 @@ Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` di
         await refresh();
         startDevicePolling(provider, r.flowId, Math.max(1, r.intervalSeconds || 5) * 1000);
       } catch (err) {
-        if (window.SerfToast) window.SerfToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
+        if (window.EvenerToast) window.EvenerToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
       }
     }
     function startDevicePolling(provider, flowId, intervalMs) {
@@ -711,7 +711,7 @@ Expected: FAIL (`exit=1`) — the `oauth` action still calls `authLoginStart` di
           stopDevicePolling();
           openEditor = null;
           await refresh();
-          if (window.SerfToast) window.SerfToast.show("Signed in to " + provider, "success");
+          if (window.EvenerToast) window.EvenerToast.show("Signed in to " + provider, "success");
           return;
         }
         if (resp.state === "expired") {

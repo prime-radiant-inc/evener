@@ -35,7 +35,7 @@
 **Interfaces:**
 - Consumes: tree nodes shaped as `{ ref: string, session_id: string, row_id: string, ... }` from `/api/tree`.
 - Produces: `sessionRouteID(node) -> string` and `sessionHref(node) -> string`; local nodes produce `session_id`, valid non-local nodes produce `ref`, and malformed refs produce `session_id`.
-- Produces: `window.SerfSidebarInternal.sessionRouteID`, `sessionHref`, `sessionMenuItems`, and `findRevealChain` as deterministic test/inspection surfaces alongside the existing `buildRow` export.
+- Produces: `window.EvenerSidebarInternal.sessionRouteID`, `sessionHref`, `sessionMenuItems`, and `findRevealChain` as deterministic test/inspection surfaces alongside the existing `buildRow` export.
 
 - [ ] **Step 1: Create the failing jsdom regression test**
 
@@ -65,7 +65,7 @@ function boot(pathname) {
   const w = dom.window;
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(iconsSrc);
   w.eval(sidebarSrc);
   return w;
@@ -85,7 +85,7 @@ function node(ref, sessionID, rowID) {
 }
 
 const w = boot("/s/codex-local:th_codex");
-const I = w.SerfSidebarInternal;
+const I = w.EvenerSidebarInternal;
 const local = node("local:01LOCAL", "01LOCAL", "project:p:local:01LOCAL");
 const codex = node("codex-local:th_codex", "codex-session", "project:p:codex-local:th_codex");
 const malformed = node("not a ref", "fallback-id", "project:p:local:fallback-id");
@@ -115,7 +115,7 @@ const tree = {
   projects: [{ key: "p", name: "p", working_dir: "/work/p", default_expanded: true, sessions: [codex] }],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
 };
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const rendered = w.document.querySelector('[data-row-id="project:p:codex-local:th_codex"]');
 assert.ok(rendered, "Codex row must render");
 assert.ok(rendered.hasAttribute("data-active"), "qualified Codex URL must mark its row active");
@@ -137,14 +137,14 @@ NODE_PATH=/tmp/evener-jstest-jsdom/node_modules \
   node cmd/evener-hub/jstest/test-sidebar-session-routes.js
 ```
 
-Expected: FAIL because `SerfSidebarInternal.sessionRouteID` and the other new inspection surfaces do not exist; current Codex row URLs also use `/s/codex-session`.
+Expected: FAIL because `EvenerSidebarInternal.sessionRouteID` and the other new inspection surfaces do not exist; current Codex row URLs also use `/s/codex-session`.
 
 - [ ] **Step 3: Add the minimal canonical-route implementation**
 
-In `cmd/evener-hub/assets/sidebar.js`, replace the current `SerfSidebarInternal` assignment and add these helpers near `rowKey`:
+In `cmd/evener-hub/assets/sidebar.js`, replace the current `EvenerSidebarInternal` assignment and add these helpers near `rowKey`:
 
 ```javascript
-  window.SerfSidebarInternal = {
+  window.EvenerSidebarInternal = {
     buildRow: buildRow,
     stateIconKey: stateIconKey,
     stateWord: stateWord,
@@ -195,10 +195,10 @@ Update `sessionMenuItems` so **Open** exposes and uses the same computed target:
     var openHref = sessionHref(n);
     return [
       { label: "Open", href: openHref, run: function () { window.location.href = openHref; } },
-      { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
-      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
+      { label: "Open beside", run: function () { if (window.EvenerPanes) window.EvenerPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
+      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.EvenerSidebar.favorite(n.ref, !n.favorite); } },
       { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
-      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.SerfSidebar.archive(n.ref, n.tier !== "archived"); } },
+      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.EvenerSidebar.archive(n.ref, n.tier !== "archived"); } },
     ];
   }
 ```

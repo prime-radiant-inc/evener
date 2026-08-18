@@ -10,7 +10,7 @@ card exists to catch is a *silent* one: text that disappears, a chip that
 spins forever, or a steer quietly accepted against an idle session.
 
 The card used to assert a `.optimistic-failed` chip carrying a Retry link,
-driven by calling `window.SerfAppwire.steer(...)` directly. Both are gone —
+driven by calling `window.EvenerAppwire.steer(...)` directly. Both are gone —
 the vanilla frontend was deleted at `660376f78` and there is no global to
 call. The two refusals themselves are alive, and are what this card now
 drives.

@@ -235,13 +235,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		loadedProviderConfig = &materialized
 		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
-	resolvedSerfBinary := resolveSerfBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
-	if opts.evenerBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "evener" {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedSerfBinary)
+	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
+	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
+		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
-		EvenerBinary:          resolvedSerfBinary,
+		EvenerBinary:          resolvedEvenerBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
 		Creds:               credsStore,
@@ -589,7 +589,7 @@ func currentExecutable() string {
 	return ""
 }
 
-// resolveSerfBinaryPath determines which "evener" binary the hub should
+// resolveEvenerBinaryPath determines which "evener" binary the hub should
 // invoke for launch-check + spawning. Resolution order is:
 //  1. explicit (--evener flag): always wins.
 //  2. sibling next to the running evener-hub binary.
@@ -598,7 +598,7 @@ func currentExecutable() string {
 // When none of those succeed, "" is returned so HubSpawner falls back
 // to its built-in default of running "evener" — which lets exec.Command
 // do its own runtime PATH search (matching pre-kata behaviour).
-func resolveSerfBinaryPath(explicit, currentExecutable string, lookPath func(string) (string, error)) string {
+func resolveEvenerBinaryPath(explicit, currentExecutable string, lookPath func(string) (string, error)) string {
 	if explicit != "" {
 		return explicit
 	}

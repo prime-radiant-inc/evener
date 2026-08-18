@@ -35,7 +35,7 @@
 
 **Interfaces:**
 
-- Produces: `appwire.NotifySerfThreadResync = "evener/thread/resync"`.
+- Produces: `appwire.NotifyEvenerThreadResync = "evener/thread/resync"`.
 - Produces:
 
   ```go
@@ -68,7 +68,7 @@
 
   ```go
   appwire.Notification{
-      Method: appwire.NotifySerfThreadResync,
+      Method: appwire.NotifyEvenerThreadResync,
       Params: ThreadResyncParams{
           ThreadID: threadID,
           Ref:      "codex:" + threadID,
@@ -87,7 +87,7 @@
   go test ./cmd/evener-hub -run 'TestHubRelay.*Resync' -count=1
   ```
 
-  Expected: compilation fails because `NotifySerfThreadResync` and
+  Expected: compilation fails because `NotifyEvenerThreadResync` and
   `ThreadResyncParams` do not exist.
 
 - [ ] **Step 3: Add the typed AppWire notification**
@@ -113,7 +113,7 @@
   replacement-channel notification is forwarded, broadcast:
 
   ```go
-  server.Broadcast(relayKey, appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+  server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
       ThreadID: threadID,
       Ref:      subscribeParams.Ref,
   })

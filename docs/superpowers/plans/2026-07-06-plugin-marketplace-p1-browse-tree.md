@@ -401,7 +401,7 @@ Replace the `install` branch (it no longer takes the plugin name off the button,
             await pluginsAdmin.pluginInstall(btn.dataset.plugin, browseName);
             await refreshInstalled();
             render();
-            if (window.SerfToast) window.SerfToast.show("Installed " + btn.dataset.plugin, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Installed " + btn.dataset.plugin, "success");
           } catch (err) {
             toastError("Install", err);
           }
@@ -420,7 +420,7 @@ becomes:
             await pluginsAdmin.pluginInstall(plugin, marketplace);
             await refreshInstalled();
             render();
-            if (window.SerfToast) window.SerfToast.show("Installed " + plugin, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Installed " + plugin, "success");
           } catch (err) {
             toastError("Install", err);
           }
@@ -438,7 +438,7 @@ Replace the `mkt-refresh` branch (invalidates that marketplace's Browse cache; r
             await refreshMarketplaces();
             if (name === browseName) await refreshBrowse();
             render();
-            if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Refreshed " + name, "success");
           } catch (err) {
             toastError("Refresh", err);
           }
@@ -461,7 +461,7 @@ becomes:
             } else {
               render();
             }
-            if (window.SerfToast) window.SerfToast.show("Refreshed " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Refreshed " + name, "success");
           } catch (err) {
             toastError("Refresh", err);
           }
@@ -480,7 +480,7 @@ Replace the `mkt-remove` branch (drops the removed `browseName`/`browseCatalog`/
             if (name === browseName) { browseName = ""; browseCatalog = null; browseError = ""; }
             await refreshMarketplaces();
             render();
-            if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Removed marketplace " + name, "success");
           } catch (err) {
             toastError("Remove marketplace", err);
           }
@@ -500,7 +500,7 @@ becomes:
             expandedMarketplaces.delete(name);
             await refreshMarketplaces();
             render();
-            if (window.SerfToast) window.SerfToast.show("Removed marketplace " + name, "success");
+            if (window.EvenerToast) window.EvenerToast.show("Removed marketplace " + name, "success");
           } catch (err) {
             toastError("Remove marketplace", err);
           }

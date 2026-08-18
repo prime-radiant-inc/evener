@@ -111,10 +111,10 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 
 **The locked scope (thinking + liveness + elapsed, both harnesses) is complete** — see the commit
 table above; items 4–6 below are all done. The renderer is now modular (`renderer.js` 3630 →
-~2170 lines): the no-bundler modules share `window.SerfRendererInternal` and load in dependency
+~2170 lines): the no-bundler modules share `window.EvenerRendererInternal` and load in dependency
 order (`renderer-format` → `renderer-tools` → `renderer-panels` → `renderer`) in both
 `templates/app.html` and `jstest/load-renderer.js`; `renderer.js` retains the stateful
-`SerfRenderer` core + bootstrap. Detail on each delivered increment:
+`EvenerRenderer` core + bootstrap. Detail on each delivered increment:
 
 4. ~~**Codex-adapter parity:**~~ **DONE** (`ae8351ce`). `codex_source.go` `mapNotification`
    normalizes `item/reasoning/summaryTextDelta` (threadId + source-qualified ref, mirroring
@@ -142,7 +142,7 @@ Tests: JS harness `cmd/evener-hub/jstest/` (`run-all.sh`; mirror
 assets are embedded: `make build-hub` + restart.
 
 **Adding a renderer module:** define it as an IIFE that imports what it needs from
-`window.SerfRendererInternal` (destructured at the top, so call sites stay unchanged) and
+`window.EvenerRendererInternal` (destructured at the top, so call sites stay unchanged) and
 publishes its exports back onto the same object via `Object.assign`. Add it to the `<script>` list
 in `templates/app.html` *and* to `RENDERER_FILES` in `jstest/load-renderer.js`, both in dependency
 order before `renderer.js`. The const-import + same-name-function collision means an incomplete

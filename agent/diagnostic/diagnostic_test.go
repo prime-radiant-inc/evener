@@ -9,7 +9,7 @@ import (
 
 // Each isEvenerConfiguration keyword is tested independently so removing either
 // one would leave a failing case.
-func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
+func TestClassifyUnknownProviderAsEvenerConfiguration(t *testing.T) {
 	cases := []struct{ name, msg string }{
 		{"unknown provider keyword only", "unknown provider: openrouter"},
 		{"configuration error keyword only", "configuration error: bad value"},
@@ -44,7 +44,7 @@ func TestDefaultForEverySource(t *testing.T) {
 	}
 }
 
-func TestDefaultForSerfConfiguration(t *testing.T) {
+func TestDefaultForEvenerConfiguration(t *testing.T) {
 	got := defaultForSource(SourceEvener, "unknown provider supplied")
 	if got.Title != "Evener configuration error" {
 		t.Fatalf("got %+v", got)
@@ -162,7 +162,7 @@ func TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider(t *testing.T) {
 	}
 }
 
-func TestFromError_Nil_IsSerfFailure(t *testing.T) {
+func TestFromError_Nil_IsEvenerFailure(t *testing.T) {
 	info := FromError(nil)
 	if info.Source != SourceEvener {
 		t.Fatalf("FromError(nil): Source=%q, want %q", info.Source, SourceEvener)
@@ -172,7 +172,7 @@ func TestFromError_Nil_IsSerfFailure(t *testing.T) {
 	}
 }
 
-func TestFromError_ConfigurationError_IsSerfConfiguration(t *testing.T) {
+func TestFromError_ConfigurationError_IsEvenerConfiguration(t *testing.T) {
 	err := &llm.ConfigurationError{Message: "bad provider"}
 	info := FromError(err)
 	if info.Source != SourceEvener {

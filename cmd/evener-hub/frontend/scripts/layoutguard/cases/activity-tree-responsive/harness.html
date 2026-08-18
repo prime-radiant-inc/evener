@@ -51,7 +51,7 @@
 // strips. This harness mirrors THAT markup; the clipping contracts it guards
 // are .denseName (row label) and .detailCommand (detail strip command), both
 // nowrap + ellipsis, and the continuation strip's wrap-without-scrolling.
-const LONG_COMMAND = "SERF_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
+const LONG_COMMAND = "EVENER_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
 
 function chevron(direction) {
   const pathByDirection = {

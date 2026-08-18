@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Restructure the sidebar to a 2-column dot/text grid with 2-line title wrap and mono meta, add desktop rail mode (56px) toggled by `⌘B`, refactor the workspace header to inline the hamburger and drop separator dots, and introduce a `SerfFocusTrap` helper that traps focus inside slide-over panels (tasks, details, mobile sidebar).
+**Goal:** Restructure the sidebar to a 2-column dot/text grid with 2-line title wrap and mono meta, add desktop rail mode (56px) toggled by `⌘B`, refactor the workspace header to inline the hamburger and drop separator dots, and introduce a `EvenerFocusTrap` helper that traps focus inside slide-over panels (tasks, details, mobile sidebar).
 
-**Architecture:** CSS + templates + small JS additions. One new helper file (`focus-trap.js`) exposing `window.SerfFocusTrap.activate/deactivate`. `sidebar.js` gains rail-mode persistence + `⌘B` binding + a `data-active` row marker driven by `htmx:afterSwap`. `renderer.js` wraps the two existing slide-over toggles in focus-trap calls. `sidebar.html` and `workspace.html` partials are rewritten to the new shape; `web_test.go` assertions are updated in lockstep (no co-applied legacy classes). The new selectors (`.sb-row`, `.dot-col`, `.text-col`, `.title`, `.meta`, `[data-active]`, `[data-sidebar-rail]`) are the ones Pass 5 (buttons + focus rings) will hang `:focus-visible` rules off of, so this pass ships first.
+**Architecture:** CSS + templates + small JS additions. One new helper file (`focus-trap.js`) exposing `window.EvenerFocusTrap.activate/deactivate`. `sidebar.js` gains rail-mode persistence + `⌘B` binding + a `data-active` row marker driven by `htmx:afterSwap`. `renderer.js` wraps the two existing slide-over toggles in focus-trap calls. `sidebar.html` and `workspace.html` partials are rewritten to the new shape; `web_test.go` assertions are updated in lockstep (no co-applied legacy classes). The new selectors (`.sb-row`, `.dot-col`, `.text-col`, `.title`, `.meta`, `[data-active]`, `[data-sidebar-rail]`) are the ones Pass 5 (buttons + focus rings) will hang `:focus-visible` rules off of, so this pass ships first.
 
 **Tech Stack:** Vanilla JS (no framework), htmx events, CSS custom properties + container queries + grid, Go html/template partials, JSDOM-based jstest, Go `httptest` for partial rendering.
 
@@ -20,14 +20,14 @@
 
 | File | Action | Purpose |
 | --- | --- | --- |
-| `cmd/evener-hub/assets/focus-trap.js` | **create** | `window.SerfFocusTrap.activate/deactivate` helper (~80 LOC) |
+| `cmd/evener-hub/assets/focus-trap.js` | **create** | `window.EvenerFocusTrap.activate/deactivate` helper (~80 LOC) |
 | `cmd/evener-hub/jstest/test-focus-trap.js` | **create** | TDD coverage for the focus-trap helper |
 | `cmd/evener-hub/jstest/test-sidebar-active.js` | **create** | Covers `data-active` wiring on `htmx:afterSwap` |
 | `cmd/evener-hub/templates/app.html` | modify | Load `focus-trap.js` before `sidebar.js` + `renderer.js`; remove body-level `#mobile-hamburger` (it moves into the workspace header partial) |
 | `cmd/evener-hub/templates/partials/sidebar.html` | rewrite | New `.sb-row` markup; rail-toggle button at top; project chevron becomes `<button>` |
 | `cmd/evener-hub/templates/partials/workspace.html` | modify | Hamburger inline at left of header (phone only); status pill → status badge; drop `.rule-dot` separators in meta |
 | `cmd/evener-hub/assets/sidebar.js` | modify | Rail toggle + `⌘B` keybinding + localStorage persist; `data-active` wiring on `htmx:afterSwap`; activate focus-trap on mobile drawer open; chevron becomes keyboard-accessible (Enter/Space) |
-| `cmd/evener-hub/assets/renderer.js` | modify | `toggleTasksPanel` + `toggleDetailsPanel` call `SerfFocusTrap.activate/deactivate`; signatures accept the trigger element |
+| `cmd/evener-hub/assets/renderer.js` | modify | `toggleTasksPanel` + `toggleDetailsPanel` call `EvenerFocusTrap.activate/deactivate`; signatures accept the trigger element |
 | `cmd/evener-hub/assets/style.css` | modify | New `.sb-row` rules; rail mode + container query; workspace-header mobile rules drop the 56px padding-left offset; new `.status-badge` for the meta row; remove obsolete `.session-row`/`.live-row`/`.subagent-row`/`.fork-row`/`.row-title`/`.row-age` rules |
 | `cmd/evener-hub/web_test.go` | modify | Replace every `session-row` / `live-row` assertion with the new `sb-row` shape (full list in Task 5) |
 | `cmd/evener-hub/jstest/test-sidebar-collapse.js` | modify | Update inline DOM fixture from `class="session-row"` to `class="sb-row"` and add `data-state` |
@@ -42,14 +42,14 @@ The CSS file is touched throughout; CSS edits are batched per task so each commi
 **Files:**
 - Create: `cmd/evener-hub/jstest/test-focus-trap.js`
 
-This is TDD — the test is written and run **before** `focus-trap.js` exists. It must fail with `SerfFocusTrap is not defined`.
+This is TDD — the test is written and run **before** `focus-trap.js` exists. It must fail with `EvenerFocusTrap is not defined`.
 
 - [ ] **Step 1: Write the test**
 
 Write `cmd/evener-hub/jstest/test-focus-trap.js` with this exact content:
 
 ```js
-// Verify the SerfFocusTrap helper: on activate, stores activeElement as the
+// Verify the EvenerFocusTrap helper: on activate, stores activeElement as the
 // restore target; on Tab, focus cycles through focusable elements inside the
 // trap; on Shift+Tab cycles backwards; on deactivate, restores focus.
 const fs = require("fs");
@@ -75,9 +75,9 @@ window.eval(trapSrc);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-pass(typeof window.SerfFocusTrap === "object", "SerfFocusTrap should exist on window");
-pass(typeof window.SerfFocusTrap.activate === "function", "SerfFocusTrap.activate should be a function");
-pass(typeof window.SerfFocusTrap.deactivate === "function", "SerfFocusTrap.deactivate should be a function");
+pass(typeof window.EvenerFocusTrap === "object", "EvenerFocusTrap should exist on window");
+pass(typeof window.EvenerFocusTrap.activate === "function", "EvenerFocusTrap.activate should be a function");
+pass(typeof window.EvenerFocusTrap.deactivate === "function", "EvenerFocusTrap.deactivate should be a function");
 
 const doc = window.document;
 const trigger = doc.getElementById("trigger");
@@ -92,7 +92,7 @@ const outsideAfter = doc.getElementById("outside-after");
 trigger.focus();
 pass(doc.activeElement === trigger, "trigger should hold focus before activate");
 
-const handle = window.SerfFocusTrap.activate(panel, trigger);
+const handle = window.EvenerFocusTrap.activate(panel, trigger);
 pass(handle && typeof handle === "object", "activate should return a handle object");
 pass(doc.activeElement === first, "after activate, focus should land on first focusable inside panel, got " + (doc.activeElement && doc.activeElement.id));
 
@@ -123,7 +123,7 @@ panel.dispatchEvent(midTab);
 pass(!midTab.defaultPrevented, "Tab in middle of trap should NOT preventDefault");
 
 // --- 6. deactivate restores focus to trigger and removes inert.
-window.SerfFocusTrap.deactivate(handle);
+window.EvenerFocusTrap.deactivate(handle);
 pass(doc.activeElement === trigger, "deactivate should restore focus to trigger, got " + (doc.activeElement && doc.activeElement.id));
 pass(!outsideBefore.hasAttribute("inert"), "outside-before should no longer have inert after deactivate");
 pass(!outsideAfter.hasAttribute("inert"), "outside-after should no longer have inert after deactivate");
@@ -150,13 +150,13 @@ cd /home/jesse/git/prime-radiant/evener/cmd/evener-hub/jstest
 NODE_PATH=/tmp/evener-jstest-jsdom/node_modules node test-focus-trap.js
 ```
 
-Expected: failure with `ENOENT` or `SerfFocusTrap should exist on window` / `SerfFocusTrap.activate should be a function`. Either is acceptable — both prove the helper is absent.
+Expected: failure with `ENOENT` or `EvenerFocusTrap should exist on window` / `EvenerFocusTrap.activate should be a function`. Either is acceptable — both prove the helper is absent.
 
 - [ ] **Step 3: Commit the failing test**
 
 ```bash
 git add cmd/evener-hub/jstest/test-focus-trap.js
-git commit -m "test: add failing jstest for SerfFocusTrap helper"
+git commit -m "test: add failing jstest for EvenerFocusTrap helper"
 ```
 
 ---
@@ -171,12 +171,12 @@ git commit -m "test: add failing jstest for SerfFocusTrap helper"
 Create `cmd/evener-hub/assets/focus-trap.js` with this exact content:
 
 ```js
-// SerfFocusTrap — minimal focus management for slide-over panels, modal
+// EvenerFocusTrap — minimal focus management for slide-over panels, modal
 // dialogs, and the mobile sidebar drawer. The contract:
 //
-//   const handle = SerfFocusTrap.activate(panelEl, triggerEl);
+//   const handle = EvenerFocusTrap.activate(panelEl, triggerEl);
 //   // ...later...
-//   SerfFocusTrap.deactivate(handle);
+//   EvenerFocusTrap.deactivate(handle);
 //
 // On activate, the helper:
 //   1. Captures the current activeElement (or the explicit triggerEl arg) as
@@ -286,7 +286,7 @@ Create `cmd/evener-hub/assets/focus-trap.js` with this exact content:
     }
   }
 
-  window.SerfFocusTrap = { activate: activate, deactivate: deactivate };
+  window.EvenerFocusTrap = { activate: activate, deactivate: deactivate };
 })();
 ```
 
@@ -326,7 +326,7 @@ Edit `cmd/evener-hub/templates/app.html`. Find the script block at the bottom an
 
 ```bash
 git add cmd/evener-hub/assets/focus-trap.js cmd/evener-hub/templates/app.html
-git commit -m "feat: add SerfFocusTrap helper for slide-over focus management"
+git commit -m "feat: add EvenerFocusTrap helper for slide-over focus management"
 ```
 
 ---
@@ -1639,18 +1639,18 @@ Replace with:
       // Only trap focus on phone — desktop sidebar isn't a drawer. Match
       // the design-language breakpoint.
       var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
-      if (isPhone && window.SerfFocusTrap) {
+      if (isPhone && window.EvenerFocusTrap) {
         var sidebar = document.getElementById("sidebar");
         var trigger = document.querySelector("[data-sidebar-toggle]");
         if (sidebar) {
-          sidebarTrapHandle = window.SerfFocusTrap.activate(sidebar, trigger);
+          sidebarTrapHandle = window.EvenerFocusTrap.activate(sidebar, trigger);
         }
       }
     } else {
       document.body.removeAttribute("data-sidebar-open");
       document.removeEventListener("click", onOutsideClick, true);
-      if (sidebarTrapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(sidebarTrapHandle);
+      if (sidebarTrapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(sidebarTrapHandle);
         sidebarTrapHandle = null;
       }
     }
@@ -1676,7 +1676,7 @@ git add cmd/evener-hub/assets/sidebar.js
 git commit -m "feat(evener-hub): trap focus inside mobile sidebar drawer
 
 When setSidebarOpen(true) fires on a phone breakpoint, call
-SerfFocusTrap.activate(sidebar, hamburgerTrigger). Restore focus on
+EvenerFocusTrap.activate(sidebar, hamburgerTrigger). Restore focus on
 close. Desktop (≥768px) is untouched — the sidebar is a pane, not a
 drawer."
 ```
@@ -1689,16 +1689,16 @@ drawer."
 - Modify: `cmd/evener-hub/assets/renderer.js`
 - Modify: `cmd/evener-hub/jstest/test-panels.js`
 
-`toggleTasksPanel` and `toggleDetailsPanel` currently take no arguments. Extend them to accept an optional trigger element (so focus restores correctly even when the toggle fires from a keyboard shortcut or a non-trigger element); call `SerfFocusTrap.activate/deactivate`.
+`toggleTasksPanel` and `toggleDetailsPanel` currently take no arguments. Extend them to accept an optional trigger element (so focus restores correctly even when the toggle fires from a keyboard shortcut or a non-trigger element); call `EvenerFocusTrap.activate/deactivate`.
 
-- [ ] **Step 1: Modify the existing panel test to stub SerfFocusTrap**
+- [ ] **Step 1: Modify the existing panel test to stub EvenerFocusTrap**
 
 In `cmd/evener-hub/jstest/test-panels.js`, immediately after the `window.fetch = (url) => { ... }` block (around line 30, before `window.eval(rendererSrc);`), insert:
 
 ```js
-// Stub SerfFocusTrap — the renderer calls it but the panel test doesn't
+// Stub EvenerFocusTrap — the renderer calls it but the panel test doesn't
 // verify focus-trap behaviour (that's covered by test-focus-trap.js).
-window.SerfFocusTrap = {
+window.EvenerFocusTrap = {
   activate: function () { return { handle: true }; },
   deactivate: function () { /* no-op */ },
 };
@@ -1713,8 +1713,8 @@ In `cmd/evener-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (ar
     const existing = document.getElementById("tasks-panel");
     if (existing) {
       if (existing.__pollTimer) clearInterval(existing.__pollTimer);
-      if (existing.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(existing.__trapHandle);
+      if (existing.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(existing.__trapHandle);
       }
       existing.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
@@ -1723,8 +1723,8 @@ In `cmd/evener-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (ar
     // Close details panel if open — they share the same slot.
     const details = document.getElementById("details-panel");
     if (details) {
-      if (details.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(details.__trapHandle);
+      if (details.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(details.__trapHandle);
       }
       details.remove();
     }
@@ -1744,8 +1744,8 @@ In `cmd/evener-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (ar
     document.body.appendChild(panel);
 
     const refresh = () => {
-      const tasksPromise = window.SerfAppwire
-        ? window.SerfAppwire.tasks(id)
+      const tasksPromise = window.EvenerAppwire
+        ? window.EvenerAppwire.tasks(id)
         : partialFetch(sessionPartialPath(id, "tasks")).then(r => r.json());
       tasksPromise.then(tasks => {
         renderTasksInto(panel, tasks);
@@ -1757,14 +1757,14 @@ In `cmd/evener-hub/assets/renderer.js`, locate `function toggleTasksPanel()` (ar
     panel.__pollTimer = setInterval(refresh, 2000);
     setPanelToggleActive("[data-tasks-trigger]", true);
 
-    if (window.SerfFocusTrap) {
-      panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+    if (window.EvenerFocusTrap) {
+      panel.__trapHandle = window.EvenerFocusTrap.activate(panel, triggerEl);
     }
 
     const close = () => {
       if (panel.__pollTimer) clearInterval(panel.__pollTimer);
-      if (panel.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(panel.__trapHandle);
+      if (panel.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(panel.__trapHandle);
       }
       panel.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
@@ -1785,8 +1785,8 @@ Then locate `function toggleDetailsPanel()` (around line 3039). Replace it with:
   function toggleDetailsPanel(trigger) {
     const existing = document.getElementById("details-panel");
     if (existing) {
-      if (existing.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(existing.__trapHandle);
+      if (existing.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(existing.__trapHandle);
       }
       existing.remove();
       setPanelToggleActive("[data-details-trigger]", false);
@@ -1796,8 +1796,8 @@ Then locate `function toggleDetailsPanel()` (around line 3039). Replace it with:
     const tasks = document.getElementById("tasks-panel");
     if (tasks) {
       if (tasks.__pollTimer) clearInterval(tasks.__pollTimer);
-      if (tasks.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(tasks.__trapHandle);
+      if (tasks.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(tasks.__trapHandle);
       }
       tasks.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
@@ -1816,22 +1816,22 @@ Then locate `function toggleDetailsPanel()` (around line 3039). Replace it with:
     document.body.appendChild(panel);
     partialFetch(sessionPartialPath(id, "details")).then(r => r.text()).then(html => {
       panel.innerHTML = html;
-      if (window.SerfFocusTrap && !panel.__trapHandle) {
+      if (window.EvenerFocusTrap && !panel.__trapHandle) {
         // Re-activate now that the panel has real focusable children.
-        panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+        panel.__trapHandle = window.EvenerFocusTrap.activate(panel, triggerEl);
       }
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
     setPanelToggleActive("[data-details-trigger]", true);
 
     // Initial activation (may have no focusable children until fetch resolves;
     // helper falls back to focusing the panel itself).
-    if (window.SerfFocusTrap) {
-      panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+    if (window.EvenerFocusTrap) {
+      panel.__trapHandle = window.EvenerFocusTrap.activate(panel, triggerEl);
     }
 
     const close = () => {
-      if (panel.__trapHandle && window.SerfFocusTrap) {
-        window.SerfFocusTrap.deactivate(panel.__trapHandle);
+      if (panel.__trapHandle && window.EvenerFocusTrap) {
+        window.EvenerFocusTrap.deactivate(panel.__trapHandle);
       }
       panel.remove();
       setPanelToggleActive("[data-details-trigger]", false);
@@ -1913,13 +1913,13 @@ git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-panels.js
 git commit -m "feat(evener-hub): trap focus inside tasks and details slide-overs
 
 toggleTasksPanel and toggleDetailsPanel now accept the trigger element
-and pass it to SerfFocusTrap.activate. The trap deactivates on close
+and pass it to EvenerFocusTrap.activate. The trap deactivates on close
 (Esc, click-outside, or toggle re-click) and restores focus to the
 trigger. Details panel re-activates once the fetched HTML resolves so
 focus can land on real focusable children rather than the panel
 itself.
 
-test-panels.js stubs SerfFocusTrap so the existing dismissal tests
+test-panels.js stubs EvenerFocusTrap so the existing dismissal tests
 keep passing."
 ```
 
@@ -2024,7 +2024,7 @@ Pass 4 of the evener-hub UI overhaul (per the responsive-ui-design spec's ship-o
 - `data-active` marker on the current session row, driven by `htmx:afterSwap` + `window.location.pathname` matching.
 - Workspace hamburger moves from a body-level fixed-position button into the workspace-header title row (phone only). Partials no longer need a 56px padding-left offset.
 - Workspace meta row: status pill → status badge (typographic small-caps mono in the state colour, no background); `.rule-dot` separators dropped in favour of `gap: var(--space-4)`.
-- New `assets/focus-trap.js` (~85 LOC) exposing `window.SerfFocusTrap.activate/deactivate`. Used by the mobile sidebar drawer + the tasks/details slide-overs. Restores focus to the trigger on close.
+- New `assets/focus-trap.js` (~85 LOC) exposing `window.EvenerFocusTrap.activate/deactivate`. Used by the mobile sidebar drawer + the tasks/details slide-overs. Restores focus to the trigger on close.
 - Container query `@container sidebar (max-width: 80px)` collapses to dot-only if the sidebar ever shrinks structurally.
 - `web_test.go` assertions updated in lockstep.
 - New jstests: `test-focus-trap.js`, `test-sidebar-active.js`.
@@ -2076,4 +2076,4 @@ The plan covers every item in the user's Pass 4 scope:
 | `test-focus-trap.js` covers open, Tab forward, Shift+Tab back, Esc restores | Task 1 |
 | Build + manual verify | Task 12 |
 
-No placeholders, every code block is complete, every selector / function / property name in later tasks is defined in earlier tasks (e.g., `SerfFocusTrap.activate` in Task 2 is consumed by Task 10 + Task 11; `[data-sidebar-rail]` body attribute set in Task 6 matches the CSS selector in Task 4; `.sb-row` class created in Task 3 is consumed by Task 4's CSS, Task 5's tests, Task 7's jstest, and Task 8's JS).
+No placeholders, every code block is complete, every selector / function / property name in later tasks is defined in earlier tasks (e.g., `EvenerFocusTrap.activate` in Task 2 is consumed by Task 10 + Task 11; `[data-sidebar-rail]` body attribute set in Task 6 matches the CSS selector in Task 4; `.sb-row` class created in Task 3 is consumed by Task 4's CSS, Task 5's tests, Task 7's jstest, and Task 8's JS).

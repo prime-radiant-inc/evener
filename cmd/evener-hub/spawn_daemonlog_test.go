@@ -15,12 +15,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-// registeringFakeSerf is a stub daemon that says one thing on each stream,
+// registeringFakeEvener is a stub daemon that says one thing on each stream,
 // registers a rendezvous entry under sessionID, and lingers just long enough
 // to look alive. runDir is baked in rather than read from the environment so
 // the stub cannot pick up an ambient EVENER_RUN_DIR from the machine running
 // the test.
-func registeringFakeSerf(runDir, sessionID, onStdout, onStderr string) string {
+func registeringFakeEvener(runDir, sessionID, onStdout, onStderr string) string {
 	return fmt.Sprintf(`#!/bin/sh
 mkdir -p "%[1]s"
 printf '%%s\n' '%[3]s'
@@ -44,7 +44,7 @@ func TestSpawnedDaemonOutputStaysOutOfTheHubLog(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "daemon says this on stdout", "daemon says this on stderr"))
+	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "daemon says this on stdout", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
 	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
@@ -75,7 +75,7 @@ func TestSpawnBannerNamesTheDaemonLogFile(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "err"))
+	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "err"))
 
 	var hubLog bytes.Buffer
 	entry, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
@@ -100,7 +100,7 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 
 	for _, said := range []string{"first run", "second run"} {
 		bin := filepath.Join(dir, "fake-evener-"+strings.ReplaceAll(said, " ", "-"))
-		writeFakeSerf(t, bin, registeringFakeSerf(runDir, "01JRESUME", said, said+" on stderr"))
+		writeFakeEvener(t, bin, registeringFakeEvener(runDir, "01JRESUME", said, said+" on stderr"))
 		var hubLog bytes.Buffer
 		entry, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: "01JRESUME"}, 60*time.Second, &hubLog)
 		if err != nil {
@@ -139,7 +139,7 @@ func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
 	}
 
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, "#!/bin/sh\nprintf '%s\\n' '"+currentStdout+"'\nprintf '%s\\n' '"+currentStderr+"' >&2\nexit 42\n")
+	writeFakeEvener(t, bin, "#!/bin/sh\nprintf '%s\\n' '"+currentStdout+"'\nprintf '%s\\n' '"+currentStderr+"' >&2\nexit 42\n")
 
 	var hubLog bytes.Buffer
 	_, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 60*time.Second, &hubLog)
@@ -230,7 +230,7 @@ func TestFailedReplacementResumeLeavesLiveDaemonLogNamed(t *testing.T) {
 
 	const replacementDiagnostic = "FAILED_REPLACEMENT_DIAGNOSTIC"
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nprintf '%%s\\n' '%s' >&2\nexit 42\n", replacementDiagnostic, replacementDiagnostic))
+	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nprintf '%%s\\n' '%s' >&2\nexit 42\n", replacementDiagnostic, replacementDiagnostic))
 
 	var hubLog bytes.Buffer
 	_, err = resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 60*time.Second, &hubLog)
@@ -312,7 +312,7 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 	}
 	ran := filepath.Join(dir, "ran")
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, "#!/bin/sh\ntouch "+ran+"\n")
+	writeFakeEvener(t, bin, "#!/bin/sh\ntouch "+ran+"\n")
 
 	var hubLog bytes.Buffer
 	_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog)
@@ -364,7 +364,7 @@ func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
 			runDir := filepath.Join(dir, "run")
 			bin := filepath.Join(dir, "fake-evener")
 			if tc.start {
-				writeFakeSerf(t, bin, tc.script)
+				writeFakeEvener(t, bin, tc.script)
 			}
 
 			var hubLog bytes.Buffer
@@ -397,7 +397,7 @@ func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
+	writeFakeEvener(t, bin, registeringFakeEvener(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
 
 	var hubLog bytes.Buffer
 	if _, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 60*time.Second, &hubLog); err != nil {

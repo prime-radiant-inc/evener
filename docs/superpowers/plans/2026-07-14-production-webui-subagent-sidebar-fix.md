@@ -262,7 +262,7 @@ git commit -m "fix(web): separate current and inactive subagents"
 - Modify: `cmd/evener-hub/jstest/test-sidebar-children.js`
 
 **Interfaces:**
-- Produce `SerfPanes.openAfter(href, title, afterHref)`.
+- Produce `EvenerPanes.openAfter(href, title, afterHref)`.
 - `afterHref == null` inserts the pane first in `#side-panes`, immediately after the main workspace.
 - A non-null `afterHref` inserts after that normalized parent pane.
 - Existing hrefs focus and return their pane without reordering or duplication.
@@ -284,7 +284,7 @@ P.openAfter("/thread/grandchild", "grandchild", "/thread/child");
 
 Assert `MAX_SIDE_PANES` remains enforced and URL/localStorage ordering matches DOM ordering.
 
-In `test-sidebar-children.js`, stub `SerfPanes.openAfter`, click a current child and nested grandchild, and assert ancestry calls use encoded source-qualified refs in parent-to-child order. Assert ordinary main-session rows retain HTMX navigation.
+In `test-sidebar-children.js`, stub `EvenerPanes.openAfter`, click a current child and nested grandchild, and assert ancestry calls use encoded source-qualified refs in parent-to-child order. Assert ordinary main-session rows retain HTMX navigation.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -304,7 +304,7 @@ Refactor pane creation into one internal function used by `open` and `openAfter`
 - insert before the parent's next sibling, or prepend when `afterHref` is null;
 - preserve loading/error UI, persistence, URL ordering, minimum width, and restore behavior.
 
-In the sidebar, intercept activation only for rows stamped `__child` when `window.SerfPanes` exists. Prevent ordinary link navigation, open missing ancestors with `openAfter`, then open/focus the target. Keep the row menu unchanged.
+In the sidebar, intercept activation only for rows stamped `__child` when `window.EvenerPanes` exists. Prevent ordinary link navigation, open missing ancestors with `openAfter`, then open/focus the target. Keep the row menu unchanged.
 
 - [ ] **Step 4: Run focused JS tests**
 

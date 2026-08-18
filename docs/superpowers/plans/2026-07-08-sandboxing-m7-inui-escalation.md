@@ -202,8 +202,8 @@ bool)` so the session layer never type-switches on internals.
   with the grant ctx. This is the *only* edit to the hot tool path.
 - `agent/events/events.go` (modify) — add `EventSandboxEscalationRequested` +
   its payload struct (`SandboxEscalationRequestedData`).
-- `appwire/types.go` (modify) — `MethodSerfSandboxEscalationResolve`
-  (`"evener/sandbox/escalation/resolve"`) and `NotifySerfSandboxEscalationRequested`
+- `appwire/types.go` (modify) — `MethodEvenerSandboxEscalationResolve`
+  (`"evener/sandbox/escalation/resolve"`) and `NotifyEvenerSandboxEscalationRequested`
   (`"evener/sandbox/escalation/requested"`) constants; `SandboxEscalationRequested`
   (notification payload) and `SandboxEscalationResolveParams` request type.
 - `appwire/protocol.go` (modify) — one `Methods` row (ScopeBoth) + one
@@ -213,7 +213,7 @@ bool)` so the session layer never type-switches on internals.
   redacted per seam #6: basename/`<denied>` for denylisted paths, truncated
   command — never file contents).
 - `server/appwire_runtime.go` (modify) — register
-  `MethodSerfSandboxEscalationResolve` → `handleAppSandboxEscalationResolve`,
+  `MethodEvenerSandboxEscalationResolve` → `handleAppSandboxEscalationResolve`,
   which calls the session callback.
 - `server/server.go` (modify) — `sandboxEscalationResolveFunc` field +
   `SetSandboxEscalationResolveFunc`.
@@ -328,7 +328,7 @@ needed (see "consumed contract").
     asserts it calls the registered callback with `(id, approve)` and surfaces a
     clean error for an unknown id.
 - [ ] Implement: the event kind + payload; the projector case; the daemon
-  `HandleTyped(router, MethodSerfSandboxEscalationResolve,
+  `HandleTyped(router, MethodEvenerSandboxEscalationResolve,
   s.handleAppSandboxEscalationResolve)`; the `server.Server` callback field +
   setter; the `serve.go` wiring to `getSession().ResolveSandboxEscalation`. The
   session emits `EventSandboxEscalationRequested` from `escalateOnSandboxDenial`
@@ -357,7 +357,7 @@ package + jstest tests.
   impls; the hub handler in `app_rpc.go` (copy the `:429` `MethodTurnSteer`
   block, swapping in the new method + `source.ResolveSandboxEscalation`); the
   `appwire.js` mapping; the two-shape card in `renderer.js` with Allow/Deny
-  controls that post `MethodSerfSandboxEscalationResolve`. Adapt the `ask_user`
+  controls that post `MethodEvenerSandboxEscalationResolve`. Adapt the `ask_user`
   card's *structure* (a projected, human-answered card) but not its lifecycle —
   this card resolves in place and vanishes; it is never a transcript turn.
 - [ ] **Adversarial verify:** is the card unmistakably a *harness* prompt, not a

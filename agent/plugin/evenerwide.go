@@ -48,7 +48,7 @@ func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Co
 	var warnings []events.WarningData
 
 	if dir := globalCommandsDir(); dir != "" {
-		scanSerfwideDir(dir, "user", out, &warnings)
+		scanEvenerwideDir(dir, "user", out, &warnings)
 	}
 
 	if env != nil {
@@ -62,7 +62,7 @@ func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Co
 				root = gr
 			}
 			for _, dir := range execenv.DirsFromRootToCwd(root, cwd) {
-				scanSerfwideDir(filepath.Join(dir, ".evener", "commands"), "project", out, &warnings)
+				scanEvenerwideDir(filepath.Join(dir, ".evener", "commands"), "project", out, &warnings)
 			}
 		}
 	}
@@ -70,9 +70,9 @@ func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Co
 	return out, warnings
 }
 
-// scanSerfwideDir parses every immediate .md file of dir into out, keyed by
+// scanEvenerwideDir parses every immediate .md file of dir into out, keyed by
 // bare filename. Later directories overwrite earlier entries.
-func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]events.WarningData) {
+func scanEvenerwideDir(dir, source string, out map[string]Command, warnings *[]events.WarningData) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {

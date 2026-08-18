@@ -37,7 +37,7 @@ longer on it".
    HTTP 503
    {"error":"model provider is not reported by the Evener launch harness: totallyfakeprovider","code":-32014,"evener_error_info":"hubLaunch"}
    ```
-   Rejected in `validateSerfLaunchModel` (`cmd/evener-hub/app_models.go#validateSerfLaunchModel`,
+   Rejected in `validateEvenerLaunchModel` (`cmd/evener-hub/app_models.go#validateEvenerLaunchModel`,
    message at `:122`) before any subprocess is spawned. Legible, named,
    structured JSON.
 
@@ -70,7 +70,7 @@ longer on it".
    HTTP 503
    {"error":"evener launch-check failed: fork/exec /nonexistent/path/to/evener-binary-xyz: no such file or directory","code":-32014,"evener_error_info":"hubLaunch"}
    ```
-   Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
+   Caught in `HubSpawner.Spawn` → `validateEvenerLaunchContract`
    (`cmd/evener-hub/spawn.go:741-774`, message at `:762`), which execs
    `<evener-binary> launch-check --protocol <v> --json` before ever
    attempting the real daemon spawn. The Go `exec` error (`fork/exec
@@ -132,12 +132,12 @@ response). Neither was observed.
   ollama spawn is refused again with `"provider credentials missing for
   ollama: ..."`, that is a fresh regression of `1b717fe72`, not this
   card's known ground.
-- `validateSerfLaunchModel` **fails open** when the harness binary
+- `validateEvenerLaunchModel` **fails open** when the harness binary
   can't even be executed to enumerate models
   (`cmd/evener-hub/app_models.go:106-108`, `//nolint:nilerr // fail
   open`) — so a missing-binary hub does NOT reject at the model-check
   stage; the real, correct rejection happens one step later inside
-  `HubSpawner.Spawn`'s own `validateSerfLaunchContract` call. Both
+  `HubSpawner.Spawn`'s own `validateEvenerLaunchContract` call. Both
   stages ultimately converge on a legible error either way, but if you
   are tracing *which* validation caught a given failure, don't assume
   the model check is authoritative when the binary itself is broken.

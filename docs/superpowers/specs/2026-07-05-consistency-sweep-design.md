@@ -192,7 +192,7 @@ pricing path; see §5.
 WS2 shipped work-time + tokens for the web (input_strip.html:10-11, formatWorkMillis
 web_format.go:99-101); the daemon computes `workMillis` (session_state.go:209-220) and token
 totals (contextmgr CumulativeUsage), snapshotted into `SessionMeta.WorkMillis`/`CumulativeUsage`
-(snapshot.go:99/95) and carried on `appwire.SerfThread.Usage`/`.WorkMillis`/`.ActiveTurnStartedAt`
+(snapshot.go:99/95) and carried on `appwire.EvenerThread.Usage`/`.WorkMillis`/`.ActiveTurnStartedAt`
 (types.go:220-222).
 
 - **Dollar cost.** Add an estimated `~$` next to tokens wherever tokens show, computed from
@@ -207,14 +207,14 @@ totals (contextmgr CumulativeUsage), snapshotted into `SessionMeta.WorkMillis`/`
   Show-cost setting). The wire carries `Turn.CompletedAt`/`DurationMS` already.
 - **The two skipped surfaces (WS2 deferred display wiring).** No new design — plumb the existing
   metrics in:
-  - `pastEntryThread` (app_threadread.go:121) builds `SerfThread` (152-163) without
+  - `pastEntryThread` (app_threadread.go:121) builds `EvenerThread` (152-163) without
     `WorkMillis`/`Usage`/`ActiveTurnStartedAt`, so a TUI user viewing an **ended** session via the
     hub sees no metrics. The values exist on `entry.Meta` (web_workspace.go:346-347 maps them for
     the web path) — set them here too.
   - `details_drawer.go` (42-83) renders context pressure (61-62) but no work-time/token line — add
     the session-metrics summary line.
 - **Context pressure in the web details panel.** The data exists — `Session.ContextPressure()`
-  (session_state.go:164-173), wire `SerfThread.ContextPressure`/`ContextRemaining`
+  (session_state.go:164-173), wire `EvenerThread.ContextPressure`/`ContextRemaining`
   (types.go:197/200), web `ContextPercent` (web_workspace.go:304/497). It is already shown in the
   TUI drawer (details_drawer.go:61-62); complete the equivalent display in the **web details
   panel** (verify the exact current gap during build — the value is mapped, the panel display may

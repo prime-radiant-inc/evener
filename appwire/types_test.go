@@ -72,9 +72,9 @@ func TestDiagnosticCauseJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSerfDiagnosticsJobsJSONRoundTrip verifies the job-control diagnostics
+// TestEvenerDiagnosticsJobsJSONRoundTrip verifies the job-control diagnostics
 // wire shape uses the job surface, not the legacy subagent one.
-func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
+func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	exitCode := 2
 	in := EvenerDiagnostics{
 		Jobs: []EvenerJobInfo{
@@ -132,7 +132,7 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
+func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	valid := true
 	exhaustionResumable := false
 	runningForMS := int64(1200)
@@ -173,7 +173,7 @@ func TestSerfDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSerfJobInfo_ExhaustionFields(t *testing.T) {
+func TestEvenerJobInfo_ExhaustionFields(t *testing.T) {
 	resumable := true
 	in := EvenerJobInfo{
 		JobID:            "job_exhausted",

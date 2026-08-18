@@ -119,7 +119,7 @@ easy to distinguish incomplete from complete runs.
     "git_branch": "main",
     "git_dirty": false,
     "build_time": "2026-02-28T23:40:00Z",
-    "adapter": "evener_agent:SerfAgent",
+    "adapter": "evener_agent:EvenerAgent",
     "kwargs": {
       "enable_reviewer_gate": true,
       "max_rounds": 100

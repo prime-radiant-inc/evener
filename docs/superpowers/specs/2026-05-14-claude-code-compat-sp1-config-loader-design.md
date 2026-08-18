@@ -13,10 +13,10 @@ SP1 turns the unified Claude Code-style `config.json` schema into a single typed
 All new symbols live in package `agent`. Names follow the `LoadMCPConfigFile` / `MergeMCPConfigs` / `DiscoverMCPConfigs` triad in `agent/mcp_config.go`.
 
 ```go
-// SerfConfig is the parsed contents of one config.json file. Each field is the
+// EvenerConfig is the parsed contents of one config.json file. Each field is the
 // raw JSON from the file; SP1 does not interpret inner shapes. Empty file or
 // missing field yields a zero value for that field (nil map / nil slice).
-type SerfConfig struct {
+type EvenerConfig struct {
     // Marketplaces keyed by marketplace name. Value shape owned by SP3.
     Marketplaces map[string]json.RawMessage
 
@@ -50,7 +50,7 @@ type PermissionsConfig struct {
     DefaultMode string // "" means "unset"; SP2 picks a default if empty.
 }
 
-// ConfigSource is one file that contributed to a SerfConfig.
+// ConfigSource is one file that contributed to a EvenerConfig.
 type ConfigSource struct {
     Path string     // absolute path
     Tier ConfigTier // Global, Project, or CLI
@@ -67,29 +67,29 @@ const (
     TierCLI
 )
 
-// LoadSerfConfigFile parses one config.json. Missing file is not an error
-// (returns zero SerfConfig, nil). Malformed JSON or a structurally invalid
+// LoadEvenerConfigFile parses one config.json. Missing file is not an error
+// (returns zero EvenerConfig, nil). Malformed JSON or a structurally invalid
 // field is an error annotated with path + offending field.
-func LoadSerfConfigFile(path string) (SerfConfig, error)
+func LoadEvenerConfigFile(path string) (EvenerConfig, error)
 
-// MergeSerfConfigs merges layers low-precedence-first. Returns a single
-// SerfConfig whose Sources slice is the union, in order. See §4 for rules.
-func MergeSerfConfigs(layers ...SerfConfig) SerfConfig
+// MergeEvenerConfigs merges layers low-precedence-first. Returns a single
+// EvenerConfig whose Sources slice is the union, in order. See §4 for rules.
+func MergeEvenerConfigs(layers ...EvenerConfig) EvenerConfig
 
-// DiscoverSerfConfig loads global -> project -> each --config in order and
+// DiscoverEvenerConfig loads global -> project -> each --config in order and
 // returns the merged result. Mirrors DiscoverMCPConfigs. cliPaths is the
 // repeated --config flag in CLI order. env supplies cwd and git-root lookup.
-func DiscoverSerfConfig(env ExecutionEnvironment, cliPaths []string) (SerfConfig, error)
+func DiscoverEvenerConfig(env ExecutionEnvironment, cliPaths []string) (EvenerConfig, error)
 
-// globalSerfConfigPath mirrors globalMCPConfigPath. Unexported.
-func globalSerfConfigPath() string
+// globalEvenerConfigPath mirrors globalMCPConfigPath. Unexported.
+func globalEvenerConfigPath() string
 ```
 
 Validation errors are plain `error` values; their text always starts with the offending file path. See §6.
 
 ## 3. File-Format Details
 
-The schema is identical at every tier. All fields are optional. An empty file `{}` is legal and produces a zero SerfConfig.
+The schema is identical at every tier. All fields are optional. An empty file `{}` is legal and produces a zero EvenerConfig.
 
 ```json
 {
@@ -144,7 +144,7 @@ Optional vs required summary:
 
 ## 4. Layered-Merge Algorithm
 
-Layers arrive low-precedence-first: global → project → `--config A` → `--config B` → … . `MergeSerfConfigs` reduces them in a single pass. Rules per field:
+Layers arrive low-precedence-first: global → project → `--config A` → `--config B` → … . `MergeEvenerConfigs` reduces them in a single pass. Rules per field:
 
 **`hooks` — array concatenate.** For each event name, the merged array is `low[event] ++ high[event]` in layer order. Within a layer, the order from the file is preserved. This resolves the open question (§9.1).
 
@@ -204,7 +204,7 @@ Merged result:
 
 ## 5. Validation Behavior
 
-Validation runs inline in `LoadSerfConfigFile`. Errors fail fast — `DiscoverSerfConfig` returns the first error it hits and does not silently drop a malformed tier.
+Validation runs inline in `LoadEvenerConfigFile`. Errors fail fast — `DiscoverEvenerConfig` returns the first error it hits and does not silently drop a malformed tier.
 
 Validation rules and the errors they produce:
 
@@ -224,24 +224,24 @@ Missing file produces no error and no warning — matches the existing `mcp.json
 
 Unknown top-level keys and unknown keys inside `permissions` produce one warning to `stderr` per occurrence, prefixed `evener config <path>: ignoring unknown field "<name>"`. They do not abort the load.
 
-`DiscoverSerfConfig` wraps any underlying error with the tier label, e.g. `--config <path>: evener config <path>: field "hooks.PreToolUse": must be an array`. The wrap is purely for the CLI-tier breadcrumb; the inner message already has the file path.
+`DiscoverEvenerConfig` wraps any underlying error with the tier label, e.g. `--config <path>: evener config <path>: field "hooks.PreToolUse": must be an array`. The wrap is purely for the CLI-tier breadcrumb; the inner message already has the file path.
 
 ## 6. Error Contracts
 
-`LoadSerfConfigFile`:
+`LoadEvenerConfigFile`:
 
-- Returns `(SerfConfig, error)`.
+- Returns `(EvenerConfig, error)`.
 - `error == nil` iff the file was either absent or successfully validated.
-- Absent file: returns zero `SerfConfig` and `nil` error.
-- Permission denied, I/O error, malformed JSON, validation failure: returns zero `SerfConfig` and a non-nil error.
+- Absent file: returns zero `EvenerConfig` and `nil` error.
+- Permission denied, I/O error, malformed JSON, validation failure: returns zero `EvenerConfig` and a non-nil error.
 
-`MergeSerfConfigs`:
+`MergeEvenerConfigs`:
 
 - Pure function. No errors. Order of `layers` is the only thing that matters.
 
-`DiscoverSerfConfig`:
+`DiscoverEvenerConfig`:
 
-- Returns the merged `SerfConfig` plus an error.
+- Returns the merged `EvenerConfig` plus an error.
 - Fails fast on the first tier that errors. Tier ordering — global → project → each `--config` — is fixed.
 - A missing global or project file is not an error. A missing `--config <path>` IS an error (the user pointed at it explicitly).
 
@@ -251,24 +251,24 @@ There is no "warn and continue" mode. A malformed config aborts session startup.
 
 New files in `agent/`:
 
-- `agent/config.go` — types, `LoadSerfConfigFile`, `MergeSerfConfigs`, `DiscoverSerfConfig`, `globalSerfConfigPath`. Mirrors `agent/mcp_config.go` shape.
+- `agent/config.go` — types, `LoadEvenerConfigFile`, `MergeEvenerConfigs`, `DiscoverEvenerConfig`, `globalEvenerConfigPath`. Mirrors `agent/mcp_config.go` shape.
 - `agent/config_test.go` — table-driven unit tests for parse, merge, and discovery (§8).
 - `agent/testdata/config/<scenario>/` — JSON fixtures for the discovery tests. Each scenario directory contains the global, project, and CLI files needed for one row of the table.
 
-No existing file is modified by SP1 itself. Wiring `DiscoverSerfConfig` into the CLI entry points (`cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go`, `cmd/evenereval/main.go`) is SP8's job — SP1 ships only the loader and its tests.
+No existing file is modified by SP1 itself. Wiring `DiscoverEvenerConfig` into the CLI entry points (`cmd/evener/main.go`, `cmd/evener-tui/embedded.go`, `cmd/evener-hub/web.go`, `cmd/evenereval/main.go`) is SP8's job — SP1 ships only the loader and its tests.
 
 ## 8. Testing Strategy
 
 TDD: write all of §8 first, then implement §2–6 until tests pass. No mocked filesystem; use `t.TempDir()`. Fixtures are real JSON files written by the test or pre-seeded under `agent/testdata/config/`.
 
-### 8.1 `LoadSerfConfigFile`
+### 8.1 `LoadEvenerConfigFile`
 
-Table-driven `TestLoadSerfConfigFile`. Each row: name, file body (or "absent"), expected `SerfConfig` shape, expected error substring (`""` for none).
+Table-driven `TestLoadEvenerConfigFile`. Each row: name, file body (or "absent"), expected `EvenerConfig` shape, expected error substring (`""` for none).
 
 | # | Case | File body | Expect |
 |---|---|---|---|
-| 1 | Absent file | (not written) | zero SerfConfig, no error |
-| 2 | Empty object | `{}` | zero SerfConfig, no error |
+| 1 | Absent file | (not written) | zero EvenerConfig, no error |
+| 2 | Empty object | `{}` | zero EvenerConfig, no error |
 | 3 | All five fields populated | full example from §3 | all fields populated; `Sources[0].Path` is the file |
 | 4 | Hooks present, mcpServers absent | `{"hooks":{"PreToolUse":[...]}}` | hooks populated; `MCPServers == nil` |
 | 5 | Permissions partial (allow only) | `{"permissions":{"allow":["Bash(ls:*)"]}}` | `Allow == ["Bash(ls:*)"]`, `Deny == nil`, `DefaultMode == ""` |
@@ -292,13 +292,13 @@ Table-driven `TestLoadSerfConfigFile`. Each row: name, file body (or "absent"), 
 
 Rows 19–20 capture stderr via a swapped logger or a small `bytes.Buffer` sink. If evener already standardizes on a logger, route warnings through it; otherwise `log.New(os.Stderr, ...)` and inject the writer for tests.
 
-### 8.2 `MergeSerfConfigs`
+### 8.2 `MergeEvenerConfigs`
 
-Table-driven `TestMergeSerfConfigs`. Pure-function tests, no filesystem.
+Table-driven `TestMergeEvenerConfigs`. Pure-function tests, no filesystem.
 
 | # | Case | Inputs | Expect |
 |---|---|---|---|
-| 1 | Zero layers | `()` | zero SerfConfig |
+| 1 | Zero layers | `()` | zero EvenerConfig |
 | 2 | One layer | global with all fields | identical to input |
 | 3 | Hooks concat in layer order | global has `[A]`, project has `[B]`, CLI has `[C]` for `PreToolUse` | `[A,B,C]` |
 | 4 | Hooks per-event independence | global `PreToolUse:[A]`, project `Stop:[B]` | both keys present, no cross-contamination |
@@ -313,15 +313,15 @@ Table-driven `TestMergeSerfConfigs`. Pure-function tests, no filesystem.
 | 13 | Sources concatenate in order | three layers with distinct `Sources[0].Path` | merged `Sources` has all three, lowest first |
 | 14 | Duplicate allow entries preserved | global `["x"]`, project `["x"]` | `["x","x"]` (SP2 dedupes, not SP1) |
 
-### 8.3 `DiscoverSerfConfig`
+### 8.3 `DiscoverEvenerConfig`
 
 Integration-style but still hermetic — every path lives under `t.TempDir()`. Uses a `LocalExecutionEnvironment` rooted at a synthetic git repo (`git init` via `os/exec`; `t.Skip` if `git` is absent, matching the SP3/SP4 fixture rule).
 
-To redirect global lookup, `globalSerfConfigPath` reads `XDG_CONFIG_HOME` — tests set `t.Setenv("XDG_CONFIG_HOME", tmp)` and create `<tmp>/evener/config.json`.
+To redirect global lookup, `globalEvenerConfigPath` reads `XDG_CONFIG_HOME` — tests set `t.Setenv("XDG_CONFIG_HOME", tmp)` and create `<tmp>/evener/config.json`.
 
 | # | Case | Setup | Expect |
 |---|---|---|---|
-| 1 | All three tiers absent | no files written | zero SerfConfig, no error |
+| 1 | All three tiers absent | no files written | zero EvenerConfig, no error |
 | 2 | Only global present | `<xdg>/evener/config.json` populated | merged = global |
 | 3 | Only project present (inside git repo) | `<repo>/.evener/config.json` | merged = project |
 | 4 | Only `--config` present | one CLI path passed | merged = CLI |
@@ -348,13 +348,13 @@ Tests that need per-scenario combinations write inline with `os.WriteFile`. The 
 
 ### 8.5 Coverage gate
 
-Every exported function in §2 has at least one direct test row. Every error path in §5 has a row in §8.1. Every merge rule in §4 has a row in §8.2. `go test ./agent/... -run SerfConfig` is green.
+Every exported function in §2 has at least one direct test row. Every error path in §5 has a row in §8.1. Every merge rule in §4 has a row in §8.2. `go test ./agent/... -run EvenerConfig` is green.
 
 ## 9. Open Questions Settled Here
 
 ### 9.1 Hook ordering across config tiers
 
-**Decision.** Hooks fire in tier order, lowest precedence first: global → project → `--config` (in CLI order, left to right) → plugin-provided. Within a tier, hooks fire in the order they appear in the source file. `MergeSerfConfigs` therefore concatenates per-event arrays in that same order, and SP5 walks the merged array head-to-tail.
+**Decision.** Hooks fire in tier order, lowest precedence first: global → project → `--config` (in CLI order, left to right) → plugin-provided. Within a tier, hooks fire in the order they appear in the source file. `MergeEvenerConfigs` therefore concatenates per-event arrays in that same order, and SP5 walks the merged array head-to-tail.
 
 **Rationale.** Three options were considered:
 
@@ -375,4 +375,4 @@ The following are flagged so the implementing session does not waste cycles gues
 - **SP4 — `enabledPlugins` value semantics.** SP1 keeps it as `RawMessage` so `true` and `{"version":"..."}` are both legal at this layer. SP4 settles whether `true` is permitted long-term.
 - **SP5 — hook entry shape.** SP1 enforces only that `hooks.<event>` is an array. SP5 validates `{matcher, hooks: [{type, command, args, async, …}]}` and runs the merged array head-to-tail per §9.1.
 - **SP6 — `mcpServers` value shape and expansion.** SP1 keeps entries as `RawMessage`. SP6 reuses the existing `mcpServerJSON` decode plus `streamable-http` aliasing and `${CLAUDE_PROJECT_DIR}` / `${user_config.*}` expansion. The pre-existing `MergeMCPConfigs` continues to handle inline `--mcp` and `--mcp-config` overrides; SP1's contribution feeds in as one earlier layer.
-- **SP8 — wiring.** SP8 calls `DiscoverSerfConfig` from each entry point and threads the result through session init. SP1 must export the function with a stable signature; SP8 owns where it gets called.
+- **SP8 — wiring.** SP8 calls `DiscoverEvenerConfig` from each entry point and threads the result through session init. SP1 must export the function with a stable signature; SP8 owns where it gets called.

@@ -438,7 +438,7 @@ Insert the merged block in their place (single source of truth for attachment ch
 
 ```css
 /* Composer attachment rail — paste, drag-drop, and file-picker chips all
-   render here through SerfComposerAttachments. Hides itself when empty. */
+   render here through EvenerComposerAttachments. Hides itself when empty. */
 .composer-attachments {
   display: flex;
   gap: var(--space-2);
@@ -500,11 +500,11 @@ Find the block starting at line 1675:
 
 ```js
       // Attachments: paste / drag-drop / file-picker all funnel through
-      // SerfComposerAttachments (kata r6a1 + 65mm). The submit handler below
+      // EvenerComposerAttachments (kata r6a1 + 65mm). The submit handler below
       // reads composerPasteState.items at send/queue/drain time and lets
       // appwire.js base64-encode the ArrayBuffer payloads at the wire
       // boundary (kata v80q). The legacy addFiles / FileReader / data-URL
-      // pipeline was retired here — chips render via SerfComposerAttachments
+      // pipeline was retired here — chips render via EvenerComposerAttachments
       // into [data-composer-attachments], rejection banners into
       // [data-attachment-error].
 ```
@@ -513,7 +513,7 @@ Replace with:
 
 ```js
       // Attachments: paste / drag-drop / file-picker all funnel through
-      // SerfComposerAttachments (kata r6a1 + 65mm). The submit handler below
+      // EvenerComposerAttachments (kata r6a1 + 65mm). The submit handler below
       // reads composerPasteState.items at send/queue/drain time and lets
       // appwire.js base64-encode the ArrayBuffer payloads at the wire
       // boundary (kata v80q). One container — [data-composer-attachments] —

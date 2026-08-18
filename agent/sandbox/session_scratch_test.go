@@ -73,7 +73,7 @@ func TestSessionScratchCleanupRefusesUnownedPath(t *testing.T) {
 	}
 }
 
-func TestSessionScratchAgeSweepsOnlyStaleSerfDirs(t *testing.T) {
+func TestSessionScratchAgeSweepsOnlyStaleEvenerDirs(t *testing.T) {
 	base := t.TempDir()
 	stale := filepath.Join(base, sessionScratchPrefix+"crashed")
 	fresh := filepath.Join(base, sessionScratchPrefix+"fresh")

@@ -30,13 +30,13 @@ var testEnvRoot string
 // leaves it alone, and the parent's single RemoveAll collects everything.
 const testEnvRootVar = "EVENER_HUB_TEST_ENV_ROOT"
 
-// retiredSerfEnvVars are names the product no longer declares but that a
+// retiredEvenerEnvVars are names the product no longer declares but that a
 // developer machine may still export from when it did. envvars cannot list them
 // (nothing reads them any more), so they are carried here.
-var retiredSerfEnvVars = []string{"EVENER_API_TOKEN"}
+var retiredEvenerEnvVars = []string{"EVENER_API_TOKEN"}
 
-// productSerfEnvVars is every EVENER_* variable Evener itself reads. TestMain
-// clears the lot; TestHostSerfEnvNeverReachesTheTestEnvironment asserts it did.
+// productEvenerEnvVars is every EVENER_* variable Evener itself reads. TestMain
+// clears the lot; TestHostEvenerEnvNeverReachesTheTestEnvironment asserts it did.
 // Deriving the set from envvars rather than writing it out is the point: a
 // variable added to the product is isolated from these tests the day it exists,
 // which a hand-kept list does not manage (EVENER_PROVIDERS_CONFIG was missing from
@@ -46,14 +46,14 @@ var retiredSerfEnvVars = []string{"EVENER_API_TOKEN"}
 // evenerEnvScrubHelperVar, EVENER_FAKE_CODEX_APP_SERVER, EVENER_LIVE_TESTS,
 // EVENER_TEST_PROVIDER, EVENER_TEST_MODEL, EVENER_CODEX_APP_SERVER_BINARY — name the
 // test rig, not the product, so they are absent from envvars and survive.
-func productSerfEnvVars() []envvars.Var {
+func productEvenerEnvVars() []envvars.Var {
 	out := []envvars.Var{}
 	for _, v := range envvars.All() {
 		if strings.HasPrefix(v.Name, "EVENER_") {
 			out = append(out, v)
 		}
 	}
-	for _, name := range retiredSerfEnvVars {
+	for _, name := range retiredEvenerEnvVars {
 		out = append(out, envvars.Var{Name: name})
 	}
 	return out
@@ -113,8 +113,8 @@ func TestMain(m *testing.M) {
 	// the developer's shell reached the live-stack hub and its `evener
 	// launch-check` and enumerated that developer's real providers instead of
 	// the scripted "fake" instance the harness had just written.
-	// TestHostSerfEnvNeverReachesTheTestEnvironment is the guard.
-	for _, v := range productSerfEnvVars() {
+	// TestHostEvenerEnvNeverReachesTheTestEnvironment is the guard.
+	for _, v := range productEvenerEnvVars() {
 		_ = os.Unsetenv(v.Name)
 	}
 
@@ -259,7 +259,7 @@ func TestReExecutedHelperLeavesNoThrowawayRoot(t *testing.T) {
 // EVENER_FAKE_CODEX_APP_SERVER working.
 const evenerEnvScrubHelperVar = "EVENER_HUB_TEST_ENV_SCRUB_HELPER"
 
-// TestHostSerfEnvNeverReachesTheTestEnvironment pins the isolation rule that
+// TestHostEvenerEnvNeverReachesTheTestEnvironment pins the isolation rule that
 // makes this package's results a property of its fixtures rather than of the
 // machine it runs on.
 //
@@ -275,7 +275,7 @@ const evenerEnvScrubHelperVar = "EVENER_HUB_TEST_ENV_SCRUB_HELPER"
 //
 // The assertion is on the whole EVENER_* set, not on the one variable that bit
 // us, because the failure mode is a scrub list that falls behind the product.
-func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
+func TestHostEvenerEnvNeverReachesTheTestEnvironment(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
@@ -283,7 +283,7 @@ func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
 
 	env := append([]string{}, os.Environ()...)
 	seeded := 0
-	for _, v := range productSerfEnvVars() {
+	for _, v := range productEvenerEnvVars() {
 		env = append(env, v.Assignment("host-value-that-must-not-survive"))
 		seeded++
 	}
@@ -292,7 +292,7 @@ func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
 	}
 	env = append(env, testEnvRootVar+"="+testEnvRoot, evenerEnvScrubHelperVar+"=1")
 
-	cmd := exec.Command(exe, "-test.run=^TestSerfEnvScrubHelper$")
+	cmd := exec.Command(exe, "-test.run=^TestEvenerEnvScrubHelper$")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -300,14 +300,14 @@ func TestHostSerfEnvNeverReachesTheTestEnvironment(t *testing.T) {
 	}
 }
 
-// TestSerfEnvScrubHelper is the re-executed half of
-// TestHostSerfEnvNeverReachesTheTestEnvironment. It runs after this package's
+// TestEvenerEnvScrubHelper is the re-executed half of
+// TestHostEvenerEnvNeverReachesTheTestEnvironment. It runs after this package's
 // TestMain, so what it sees is what every subprocess the tests start would see.
-func TestSerfEnvScrubHelper(t *testing.T) {
+func TestEvenerEnvScrubHelper(t *testing.T) {
 	if os.Getenv(evenerEnvScrubHelperVar) == "" {
-		t.Skip("re-executed helper for TestHostSerfEnvNeverReachesTheTestEnvironment")
+		t.Skip("re-executed helper for TestHostEvenerEnvNeverReachesTheTestEnvironment")
 	}
-	for _, v := range productSerfEnvVars() {
+	for _, v := range productEvenerEnvVars() {
 		if value, ok := os.LookupEnv(v.Name); ok {
 			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}

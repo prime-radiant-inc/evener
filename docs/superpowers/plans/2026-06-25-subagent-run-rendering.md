@@ -4,7 +4,7 @@
 
 **Goal:** Make delegate/subagent jobs render as one coherent run in the web UI and TUI by carrying backend linkage through AppWire, merging live/cold signals, shortening IDs, and lazily showing bounded child-step previews.
 
-**Architecture:** Add optional Evener-only delegate linkage fields to existing job event and `SerfJobInfo` payloads; do not add a new notification method. Web and TUI clients fold `evener/job/started`, `evener/job/finished`, delegate tool output, and cold thread data into a shared SubagentRun concept keyed by origin item/call first, then `jobId`, then `delegateId`. Preview content is fetched lazily and bounded by `transcriptRef` instead of embedded in notifications.
+**Architecture:** Add optional Evener-only delegate linkage fields to existing job event and `EvenerJobInfo` payloads; do not add a new notification method. Web and TUI clients fold `evener/job/started`, `evener/job/finished`, delegate tool output, and cold thread data into a shared SubagentRun concept keyed by origin item/call first, then `jobId`, then `delegateId`. Preview content is fetched lazily and bounded by `transcriptRef` instead of embedded in notifications.
 
 **Tech Stack:** Go backend/AppWire/projector tests, plain JavaScript web renderer with JSDOM tests, Bubble Tea TUI reducer/render tests, deterministic scripted tests only.
 
@@ -36,10 +36,10 @@
   - Add low-level event emission assertions proving start and finish events include delegate linkage for create and resume flows.
 
 - Modify `appwire/types.go`
-  - Extend `SerfJobInfo` with optional `delegateId`, `task`, `originTurnId`, `originToolCallId`, and `originItemId`.
+  - Extend `EvenerJobInfo` with optional `delegateId`, `task`, `originTurnId`, `originToolCallId`, and `originItemId`.
 
 - Modify `internal/appprojector/appwire_projection.go`
-  - Copy new event fields into job notification `SerfJobInfo`.
+  - Copy new event fields into job notification `EvenerJobInfo`.
 
 - Modify `internal/appprojector/appwire_projection_test.go`
   - Assert enriched delegate notifications, shell omissions, and `omitempty` compatibility.
@@ -65,7 +65,7 @@
   - Parse SubagentRun metadata from delegate tool raw/output and add notification merge methods.
 
 - Modify `cmd/evener-tui/hub_notifications.go`
-  - Handle `NotifySerfJobStarted` and `NotifySerfJobFinished` by updating the transcript reducer.
+  - Handle `NotifyEvenerJobStarted` and `NotifyEvenerJobFinished` by updating the transcript reducer.
 
 - Modify `cmd/evener-tui/internal/msgrender/tool_bodies.go`
   - Render delegate rows from structured `SubagentRunInfo`, using short IDs as secondary metadata.
@@ -342,10 +342,10 @@ git commit -m "feat(agent): carry delegate linkage in job events"
 
 **Interfaces:**
 - Consumes: enriched `events.JobStartedData` and `events.JobFinishedData` from Task 1.
-- Produces: enriched `appwire.SerfJobInfo`:
+- Produces: enriched `appwire.EvenerJobInfo`:
 
 ```go
-type SerfJobInfo struct {
+type EvenerJobInfo struct {
     JobID            string `json:"jobId"`
     JobType          string `json:"jobType"`
     Status           string `json:"status"`
@@ -419,8 +419,8 @@ and extend the finished assertion with those same field checks.
 Append this test to `internal/appprojector/appwire_projection_test.go`:
 
 ```go
-func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
-    payload, err := json.Marshal(appwire.SerfJobInfo{
+func TestEvenerJobInfoDelegateFieldsAreOptional(t *testing.T) {
+    payload, err := json.Marshal(appwire.EvenerJobInfo{
         JobID:       "job_shell",
         JobType:     "shell",
         Status:      "running",
@@ -458,18 +458,18 @@ Ensure `encoding/json` and `strings` imports exist in the test file.
 Run:
 
 ```bash
-go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestSerfJobInfoDelegateFieldsAreOptional' -count=1 -v
+go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestEvenerJobInfoDelegateFieldsAreOptional' -count=1 -v
 ```
 
-Expected: FAIL because `SerfJobInfo` lacks the new fields and projection does not populate them.
+Expected: FAIL because `EvenerJobInfo` lacks the new fields and projection does not populate them.
 
-- [ ] **Step 4: Extend `SerfJobInfo`**
+- [ ] **Step 4: Extend `EvenerJobInfo`**
 
-In `appwire/types.go`, replace `SerfJobInfo` with the interface shown at the top of this task.
+In `appwire/types.go`, replace `EvenerJobInfo` with the interface shown at the top of this task.
 
 - [ ] **Step 5: Project started linkage**
 
-In `internal/appprojector/appwire_projection.go`, add these fields to the `appwire.SerfJobInfo` constructed for `events.EventJobStarted`:
+In `internal/appprojector/appwire_projection.go`, add these fields to the `appwire.EvenerJobInfo` constructed for `events.EventJobStarted`:
 
 ```go
 DelegateID:       data.DelegateID,
@@ -483,7 +483,7 @@ OriginItemID:     data.OriginItemID,
 The full started job literal should include existing fields plus the new fields:
 
 ```go
-job := appwire.SerfJobInfo{
+job := appwire.EvenerJobInfo{
     JobID:            data.JobID,
     JobType:          data.JobType,
     Status:           data.Status,
@@ -514,7 +514,7 @@ OriginItemID:     data.OriginItemID,
 Run:
 
 ```bash
-go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestSerfJobInfoDelegateFieldsAreOptional' -count=1 -v
+go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestEvenerJobInfoDelegateFieldsAreOptional' -count=1 -v
 ```
 
 Expected: PASS.
@@ -867,7 +867,7 @@ git commit -m "feat(hub): merge delegate job notifications into subagent runs"
 - Test: `cmd/evener-tui/hub_appwire_test.go`
 
 **Interfaces:**
-- Consumes: `appwire.SerfJobInfo` from `evener/job/started` and `evener/job/finished`.
+- Consumes: `appwire.EvenerJobInfo` from `evener/job/started` and `evener/job/finished`.
 - Produces:
 
 ```go
@@ -890,7 +890,7 @@ type ToolCallInfo struct {
     Subagent *SubagentRunInfo
 }
 
-func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo)
+func (r *TranscriptReducer) ApplyEvenerJob(job appwire.EvenerJobInfo)
 ```
 
 - [ ] **Step 1: Write failing reducer test**
@@ -898,7 +898,7 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo)
 Append to `cmd/evener-tui/internal/transcript/reducer_test.go`:
 
 ```go
-func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+func TestTranscriptReducerAppliesEvenerJobNotificationsToDelegateTool(t *testing.T) {
     reducer := NewTranscriptReducer(nil, nil, nil)
     reducer.ApplyThreadItem(appwire.ThreadItem{
         Type:          "commandExecution",
@@ -911,7 +911,7 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
         Status:        appwire.TurnStatusCompleted,
     }, 1, true)
 
-    reducer.ApplySerfJob(appwire.SerfJobInfo{
+    reducer.ApplyEvenerJob(appwire.EvenerJobInfo{
         JobID:            "job_A",
         JobType:          "delegate",
         Status:           "completed",
@@ -942,10 +942,10 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 Run:
 
 ```bash
-go test ./cmd/evener-tui/internal/transcript -run TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool -count=1 -v
+go test ./cmd/evener-tui/internal/transcript -run TestTranscriptReducerAppliesEvenerJobNotificationsToDelegateTool -count=1 -v
 ```
 
-Expected: FAIL because `SubagentRunInfo` and `ApplySerfJob` do not exist.
+Expected: FAIL because `SubagentRunInfo` and `ApplyEvenerJob` do not exist.
 
 - [ ] **Step 3: Add TUI SubagentRun types**
 
@@ -978,7 +978,7 @@ Subagent *SubagentRunInfo
 In `cmd/evener-tui/internal/transcript/reducer.go`, add:
 
 ```go
-func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
+func subagentRunFromJob(job appwire.EvenerJobInfo) SubagentRunInfo {
     return SubagentRunInfo{
         DelegateID:       strings.TrimSpace(job.DelegateID),
         JobID:            strings.TrimSpace(job.JobID),
@@ -1100,12 +1100,12 @@ func firstNonEmptyString(values ...string) string {
 }
 ```
 
-- [ ] **Step 6: Implement `ApplySerfJob`**
+- [ ] **Step 6: Implement `ApplyEvenerJob`**
 
 Add to `cmd/evener-tui/internal/transcript/reducer.go`:
 
 ```go
-func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
+func (r *TranscriptReducer) ApplyEvenerJob(job appwire.EvenerJobInfo) {
     run := subagentRunFromJob(job)
     if run.JobID == "" && run.DelegateID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
         return
@@ -1161,13 +1161,13 @@ func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool
 In `cmd/evener-tui/hub_notifications.go`, add cases inside `applyHubNotification`:
 
 ```go
-case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
+case appwire.NotifyEvenerJobStarted, appwire.NotifyEvenerJobFinished:
     var params struct {
-        Job appwire.SerfJobInfo `json:"job"`
+        Job appwire.EvenerJobInfo `json:"job"`
     }
     if json.Unmarshal(notification.Params, &params) == nil {
         reducer := m.sessionTranscriptReducer()
-        reducer.ApplySerfJob(params.Job)
+        reducer.ApplyEvenerJob(params.Job)
         m.applySessionTranscriptReducer(reducer)
     }
 ```
@@ -1223,7 +1223,7 @@ Update the message rendering switch to call `SubagentRunBody(*info.Subagent, wid
 Append to `cmd/evener-tui/hub_appwire_test.go`:
 
 ```go
-func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+func TestHubModelAppliesEvenerJobNotificationsToDelegateTool(t *testing.T) {
     m := newHubModel(nil, "")
     m.mode = hubModeSession
     m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
@@ -1243,10 +1243,10 @@ func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
         },
     }).Notification})
 
-    updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifySerfJobFinished, map[string]any{
+    updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyEvenerJobFinished, map[string]any{
         "threadId": "th_1",
         "ref":      "local:th_1",
-        "job": appwire.SerfJobInfo{
+        "job": appwire.EvenerJobInfo{
             JobID: "job_A", JobType: "delegate", Status: "completed", DelegateID: "dlg_A", Task: "inspect billing",
             TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate", OutputBytes: 42,
         },
@@ -1268,8 +1268,8 @@ func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
 Run:
 
 ```bash
-go test ./cmd/evener-tui/internal/transcript -run TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool -count=1 -v
-go test ./cmd/evener-tui -run TestHubModelAppliesSerfJobNotificationsToDelegateTool -count=1 -v
+go test ./cmd/evener-tui/internal/transcript -run TestTranscriptReducerAppliesEvenerJobNotificationsToDelegateTool -count=1 -v
+go test ./cmd/evener-tui -run TestHubModelAppliesEvenerJobNotificationsToDelegateTool -count=1 -v
 ```
 
 Expected: PASS.
@@ -1554,14 +1554,14 @@ Expected: FAIL because rows do not lazy-load preview content.
 Prefer existing `readThread` / `listTurns` if it can request the child transcript and slice latest items without loading unbounded content in the client. If no existing endpoint can do that cleanly, add this AppWire method:
 
 ```go
-const MethodSerfSubagentPreview = "evener/subagentPreview"
+const MethodEvenerSubagentPreview = "evener/subagentPreview"
 
-type SerfSubagentPreviewParams struct {
+type EvenerSubagentPreviewParams struct {
     Ref   string `json:"ref"`
     Limit int    `json:"limit,omitempty"`
 }
 
-type SerfSubagentPreviewResponse struct {
+type EvenerSubagentPreviewResponse struct {
     Ref       string       `json:"ref"`
     Items     []ThreadItem `json:"items"`
     Truncated bool         `json:"truncated"`
@@ -1703,7 +1703,7 @@ Run:
 ```bash
 node cmd/evener-hub/jstest/test-subagents.js
 node cmd/evener-hub/jstest/test-tool-renderers.js
-go test ./cmd/evener-tui -run 'TestHubModelAppliesSerfJobNotificationsToDelegateTool|Test.*Status.*Job|Test.*Status.*Delegate' -count=1 -v
+go test ./cmd/evener-tui -run 'TestHubModelAppliesEvenerJobNotificationsToDelegateTool|Test.*Status.*Job|Test.*Status.*Delegate' -count=1 -v
 ```
 
 Expected: PASS.
@@ -1714,7 +1714,7 @@ Run:
 
 ```bash
 go test ./agent -run 'TestDelegate.*Job.*Linkage|TestDelegateResumeJobStartedKeepsOriginalOriginLinkage' -count=1 -v
-go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestSerfJobInfoDelegateFieldsAreOptional' -count=1 -v
+go test ./internal/appprojector -run 'TestAppEventProjectorProjectsJobEvents|TestEvenerJobInfoDelegateFieldsAreOptional' -count=1 -v
 go test ./internal/apptranscript -run 'TestProjectTurnPreservesDelegateToolStateForColdReconciliation' -count=1 -v
 ```
 
@@ -1793,6 +1793,6 @@ Expected: PASS. If either command fails, fix the root cause before reporting com
   - No banned placeholder markers or unspecified generic edge-case steps remain.
   - Task 5 includes one conditional seam because the existing thread-read/jobstore access path must be reused rather than inventing a second store root; the exact helper contract and assertions are specified.
 - Type consistency:
-  - Backend snake_case event fields project to camelCase `SerfJobInfo` fields.
+  - Backend snake_case event fields project to camelCase `EvenerJobInfo` fields.
   - Web normalizer accepts both snake_case and camelCase.
-  - TUI consumes `appwire.SerfJobInfo` directly and stores the same semantic names in `SubagentRunInfo`.
+  - TUI consumes `appwire.EvenerJobInfo` directly and stores the same semantic names in `SubagentRunInfo`.

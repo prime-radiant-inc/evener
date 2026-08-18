@@ -260,7 +260,7 @@ Wait — the safer behavior is to keep firing `PostToolUse` for both outcomes, a
 
 | Field | Type | Source |
 |---|---|---|
-| `tool_name` | string | mapped via `MapSerfToolNameToClaude(call.Name)` |
+| `tool_name` | string | mapped via `MapEvenerToolNameToClaude(call.Name)` |
 | `tool_input` | object | `call.Arguments` unmarshaled |
 | `tool_error` | string | `res.FullOutput` when `res.IsError` |
 | `tool_use_id` | string | `call.ID` |

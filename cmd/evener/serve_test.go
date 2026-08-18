@@ -903,20 +903,20 @@ func TestAgentToServerDetailedStatus_Exhaustion(t *testing.T) {
 	}
 }
 
-// TestSerfUsageFromLLM_ZeroReturnsNil pins the WS2 A7 helper: an llm.Usage
+// TestEvenerUsageFromLLM_ZeroReturnsNil pins the WS2 A7 helper: an llm.Usage
 // with every total at zero (a fresh session, an old daemon that never seeded
 // usage, or a Codex thread) maps to a nil *appwire.EvenerUsage, so the status
 // row hides the usage cluster rather than rendering ↑0 ↓0.
-func TestSerfUsageFromLLM_ZeroReturnsNil(t *testing.T) {
+func TestEvenerUsageFromLLM_ZeroReturnsNil(t *testing.T) {
 	if got := evenerUsageFromLLM(llm.Usage{}); got != nil {
 		t.Fatalf("evenerUsageFromLLM(zero) = %+v, want nil", got)
 	}
 }
 
-// TestSerfUsageFromLLM_MapsTotals pins the field mapping, including
+// TestEvenerUsageFromLLM_MapsTotals pins the field mapping, including
 // CacheReadTokens dereferencing the *int pointer field (distinct values on
 // every field so a transposed mapping is detectable).
-func TestSerfUsageFromLLM_MapsTotals(t *testing.T) {
+func TestEvenerUsageFromLLM_MapsTotals(t *testing.T) {
 	cacheRead := 5
 	got := evenerUsageFromLLM(llm.Usage{
 		InputTokens:     10,
@@ -930,10 +930,10 @@ func TestSerfUsageFromLLM_MapsTotals(t *testing.T) {
 	}
 }
 
-// TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns pins the "any of the
+// TestEvenerUsageFromLLM_NonZeroCacheReadOnlyStillReturns pins the "any of the
 // four totals nonzero" gate: CacheReadTokens alone (input/output/total all
 // zero, e.g. a fully cache-served turn) must not be hidden.
-func TestSerfUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
+func TestEvenerUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
 	cacheRead := 7
 	got := evenerUsageFromLLM(llm.Usage{CacheReadTokens: &cacheRead})
 	if got == nil || got.CacheReadTokens != 7 {

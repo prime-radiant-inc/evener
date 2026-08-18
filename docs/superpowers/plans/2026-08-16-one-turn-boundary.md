@@ -487,7 +487,7 @@ boundary.
    `EventTurnStarted{TurnID:"turn_m2"}` → `EventSteeringInjected` → assistant
    text. Assert the second assistant item's `TurnID` is `turn_m2`, and that
    `turn_m1` completed. **Assert on the assistant item, not the steering
-   notification** — `NotifySerfSteeringInjected`'s params
+   notification** — `NotifyEvenerSteeringInjected`'s params
    (`appwire_projection.go:753-773`) carry no turn id.
 
 - [x] **Step 2: watch them fail.**

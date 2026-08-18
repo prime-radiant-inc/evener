@@ -193,7 +193,7 @@ git commit -m "agent/command: add inert ExpandArgs for evener-wide commands"
 
 **Interfaces:**
 - Consumes: `execenv.ExecutionEnvironment` (`WorkingDirectory()`), `execenv.GitRootOrEmpty`, `execenv.DirsFromRootToCwd`, `ParseCommand`, `envvars.XDGConfigHome`, `events.WarningData`.
-- Produces: `func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData)` — user-global dir scanned first, then `<dir>/.evener/commands` walking git-root→cwd; later scans shadow earlier by bare-name key. A nil env or empty cwd skips the project walk but still scans user-global. Tasks 4–6 and 9 rely on this exact signature.
+- Produces: `func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData)` — user-global dir scanned first, then `<dir>/.evener/commands` walking git-root→cwd; later scans shadow earlier by bare-name key. A nil env or empty cwd skips the project walk but still scans user-global. Tasks 4–6 and 9 rely on this exact signature.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -210,8 +210,8 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 )
 
-// writeSerfwideCommand writes dir/<name>.md with content and returns dir.
-func writeSerfwideCommand(t *testing.T, dir, name, content string) {
+// writeEvenerwideCommand writes dir/<name>.md with content and returns dir.
+func writeEvenerwideCommand(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
@@ -221,12 +221,12 @@ func writeSerfwideCommand(t *testing.T, dir, name, content string) {
 	}
 }
 
-func TestDiscoverSerfWideCommands_UserGlobalOnly(t *testing.T) {
+func TestDiscoverEvenerWideCommands_UserGlobalOnly(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	global := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "commands")
-	writeSerfwideCommand(t, global, "review", "global body")
+	writeEvenerwideCommand(t, global, "review", "global body")
 
-	got, warnings := DiscoverSerfWideCommands(nil) // nil env: no project walk
+	got, warnings := DiscoverEvenerWideCommands(nil) // nil env: no project walk
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %v, want none", warnings)
 	}
@@ -239,31 +239,31 @@ func TestDiscoverSerfWideCommands_UserGlobalOnly(t *testing.T) {
 	}
 }
 
-func TestDiscoverSerfWideCommands_ProjectShadowsUser(t *testing.T) {
+func TestDiscoverEvenerWideCommands_ProjectShadowsUser(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	writeSerfwideCommand(t, filepath.Join(xdg, "evener", "commands"), "review", "global body")
+	writeEvenerwideCommand(t, filepath.Join(xdg, "evener", "commands"), "review", "global body")
 
 	workDir := t.TempDir() // not a git repo: root == cwd
-	writeSerfwideCommand(t, filepath.Join(workDir, ".evener", "commands"), "review", "project body")
+	writeEvenerwideCommand(t, filepath.Join(workDir, ".evener", "commands"), "review", "project body")
 
 	env := execenv.NewLocalExecutionEnvironment(workDir)
-	got, _ := DiscoverSerfWideCommands(env)
+	got, _ := DiscoverEvenerWideCommands(env)
 	cmd := got["review"]
 	if cmd.Source != "project" || cmd.Body != "project body" {
 		t.Errorf("got %+v, want project command shadowing user-global", cmd)
 	}
 }
 
-func TestDiscoverSerfWideCommands_IgnoresNonMarkdown(t *testing.T) {
+func TestDiscoverEvenerWideCommands_IgnoresNonMarkdown(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	dir := filepath.Join(xdg, "evener", "commands")
-	writeSerfwideCommand(t, dir, "review", "body")
+	writeEvenerwideCommand(t, dir, "review", "body")
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	got, warnings := DiscoverSerfWideCommands(nil)
+	got, warnings := DiscoverEvenerWideCommands(nil)
 	if len(got) != 1 || len(warnings) != 0 {
 		t.Errorf("got %d commands, %d warnings; want 1, 0", len(got), len(warnings))
 	}
@@ -274,8 +274,8 @@ func TestDiscoverSerfWideCommands_IgnoresNonMarkdown(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd agent && go test ./plugin/ -run TestDiscoverSerfWideCommands -v`
-Expected: FAIL — `DiscoverSerfWideCommands` undefined.
+Run: `cd agent && go test ./plugin/ -run TestDiscoverEvenerWideCommands -v`
+Expected: FAIL — `DiscoverEvenerWideCommands` undefined.
 
 - [ ] **Step 3: Implement the core**
 
@@ -313,7 +313,7 @@ func globalCommandsDir() string {
 	return filepath.Join(dir, "evener", "commands")
 }
 
-// DiscoverSerfWideCommands scans the user-global commands dir, then walks
+// DiscoverEvenerWideCommands scans the user-global commands dir, then walks
 // git-root→cwd scanning <dir>/.evener/commands, returning commands keyed by
 // bare name. Later scans shadow earlier ones, so the deepest project dir
 // wins and every project command shadows the user-global one. A nil env or
@@ -323,12 +323,12 @@ func globalCommandsDir() string {
 // Discovery is fail-soft: a missing dir is silent, and per-file problems
 // (unreadable dir/file, bad name, malformed frontmatter) skip the file
 // with a warning rather than failing the scan.
-func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData) {
+func DiscoverEvenerWideCommands(env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData) {
 	out := map[string]Command{}
 	var warnings []events.WarningData
 
 	if dir := globalCommandsDir(); dir != "" {
-		scanSerfwideDir(dir, "user", out, &warnings)
+		scanEvenerwideDir(dir, "user", out, &warnings)
 	}
 
 	if env != nil {
@@ -342,7 +342,7 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 				root = gr
 			}
 			for _, dir := range execenv.DirsFromRootToCwd(root, cwd) {
-				scanSerfwideDir(filepath.Join(dir, ".evener", "commands"), "project", out, &warnings)
+				scanEvenerwideDir(filepath.Join(dir, ".evener", "commands"), "project", out, &warnings)
 			}
 		}
 	}
@@ -350,10 +350,10 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 	return out, warnings
 }
 
-// scanSerfwideDir parses every immediate .md file of dir into out, keyed by
+// scanEvenerwideDir parses every immediate .md file of dir into out, keyed by
 // bare filename. Guards and warnings land in Task 4; this step covers
 // scanning, parsing, source/file labeling, and shadowing.
-func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]events.WarningData) {
+func scanEvenerwideDir(dir, source string, out map[string]Command, warnings *[]events.WarningData) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -395,7 +395,7 @@ func evenerwideWarning(title, message string) events.WarningData {
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd agent && go test ./plugin/ -run TestDiscoverSerfWideCommands -v`
+Run: `cd agent && go test ./plugin/ -run TestDiscoverEvenerWideCommands -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -414,7 +414,7 @@ git commit -m "agent/plugin: evener-wide command discovery core"
 - Test: `agent/plugin/evenerwide_test.go`
 
 **Interfaces:**
-- Consumes: `scanSerfwideDir` from Task 3.
+- Consumes: `scanEvenerwideDir` from Task 3.
 - Produces: rejection rules (colon, whitespace, empty name) and advisories (`!`` spans, unenforced `model`/`allowed-tools`) as `events.WarningData` entries naming the file.
 
 - [ ] **Step 1: Write the failing tests**
@@ -422,16 +422,16 @@ git commit -m "agent/plugin: evener-wide command discovery core"
 Add to `agent/plugin/evenerwide_test.go`:
 
 ```go
-func TestDiscoverSerfWideCommands_RejectsBadNames(t *testing.T) {
+func TestDiscoverEvenerWideCommands_RejectsBadNames(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	dir := filepath.Join(xdg, "evener", "commands")
-	writeSerfwideCommand(t, dir, "ok", "body")
-	writeSerfwideCommand(t, dir, "p:forge", "body")   // colon: namespace forgery
-	writeSerfwideCommand(t, dir, "my command", "body") // whitespace: uninvokable
-	writeSerfwideCommand(t, dir, "", "body")           // file named exactly ".md"
+	writeEvenerwideCommand(t, dir, "ok", "body")
+	writeEvenerwideCommand(t, dir, "p:forge", "body")   // colon: namespace forgery
+	writeEvenerwideCommand(t, dir, "my command", "body") // whitespace: uninvokable
+	writeEvenerwideCommand(t, dir, "", "body")           // file named exactly ".md"
 
-	got, warnings := DiscoverSerfWideCommands(nil)
+	got, warnings := DiscoverEvenerWideCommands(nil)
 	if len(got) != 1 {
 		t.Errorf("got keys %v, want only [ok]", maps.Keys(got))
 	}
@@ -440,24 +440,24 @@ func TestDiscoverSerfWideCommands_RejectsBadNames(t *testing.T) {
 	}
 }
 
-func TestDiscoverSerfWideCommands_MalformedFrontmatterSkipped(t *testing.T) {
+func TestDiscoverEvenerWideCommands_MalformedFrontmatterSkipped(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	dir := filepath.Join(xdg, "evener", "commands")
-	writeSerfwideCommand(t, dir, "broken", "---\n[unclosed\n---\nbody")
-	got, warnings := DiscoverSerfWideCommands(nil)
+	writeEvenerwideCommand(t, dir, "broken", "---\n[unclosed\n---\nbody")
+	got, warnings := DiscoverEvenerWideCommands(nil)
 	if len(got) != 0 || len(warnings) != 1 {
 		t.Errorf("got %d commands, %d warnings; want 0, 1", len(got), len(warnings))
 	}
 }
 
-func TestDiscoverSerfWideCommands_Advisories(t *testing.T) {
+func TestDiscoverEvenerWideCommands_Advisories(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	dir := filepath.Join(xdg, "evener", "commands")
-	writeSerfwideCommand(t, dir, "exec", "run !`git status` here")
-	writeSerfwideCommand(t, dir, "front", "---\nmodel: gpt-5.2\nallowed-tools:\n  - shell\n---\nbody")
-	_, warnings := DiscoverSerfWideCommands(nil)
+	writeEvenerwideCommand(t, dir, "exec", "run !`git status` here")
+	writeEvenerwideCommand(t, dir, "front", "---\nmodel: gpt-5.2\nallowed-tools:\n  - shell\n---\nbody")
+	_, warnings := DiscoverEvenerWideCommands(nil)
 	if len(warnings) != 2 {
 		t.Fatalf("got %d warnings, want 2: %v", len(warnings), warnings)
 	}
@@ -471,12 +471,12 @@ func TestDiscoverSerfWideCommands_Advisories(t *testing.T) {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd agent && go test ./plugin/ -run 'TestDiscoverSerfWideCommands_(RejectsBadNames|Malformed|Advisories)' -v`
+Run: `cd agent && go test ./plugin/ -run 'TestDiscoverEvenerWideCommands_(RejectsBadNames|Malformed|Advisories)' -v`
 Expected: FAIL — bad names load (3 keys), no advisory warnings.
 
 - [ ] **Step 3: Implement the guards**
 
-In `agent/plugin/evenerwide.go`, replace the per-file loop body in `scanSerfwideDir` (between the `.md` filter and the parse) and add advisories after a successful parse:
+In `agent/plugin/evenerwide.go`, replace the per-file loop body in `scanEvenerwideDir` (between the `.md` filter and the parse) and add advisories after a successful parse:
 
 ```go
 		name := strings.TrimSuffix(entry.Name(), ".md")
@@ -634,7 +634,7 @@ git commit -m "agent/plugin: add MergeCommands shared command assembly"
 - Test: `agent/session_slash_command_test.go`
 
 **Interfaces:**
-- Consumes: `plugin.DiscoverSerfWideCommands`, `plugin.MergeCommands`, `s.plugins` (set by `initPlugins`; nil when no plugin dirs — safe for `MergeCommands`).
+- Consumes: `plugin.DiscoverEvenerWideCommands`, `plugin.MergeCommands`, `s.plugins` (set by `initPlugins`; nil when no plugin dirs — safe for `MergeCommands`).
 - Produces: `s.pluginCommands` assembled in one place for every session, including `PluginDirs == nil`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -642,8 +642,8 @@ git commit -m "agent/plugin: add MergeCommands shared command assembly"
 Add to `agent/session_slash_command_test.go`:
 
 ```go
-// writeSerfwideCommandFile creates <workDir>/.evener/commands/<name>.md.
-func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
+// writeEvenerwideCommandFile creates <workDir>/.evener/commands/<name>.md.
+func writeEvenerwideCommandFile(t *testing.T, workDir, name, content string) {
 	t.Helper()
 	dir := filepath.Join(workDir, ".evener", "commands")
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -654,7 +654,7 @@ func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
 	}
 }
 
-func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
+func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -662,7 +662,7 @@ func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	}}
 	client.Register(adapter)
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
+	writeEvenerwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -674,10 +674,10 @@ func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	}
 }
 
-func TestSerfwideCommand_ShadowsPluginBareName(t *testing.T) {
+func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "greet", "evener-wide body")
+	writeEvenerwideCommandFile(t, workDir, "greet", "evener-wide body")
 	pluginDir := writePluginCommand(t, "greeter", "greet", "plugin body")
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -698,10 +698,10 @@ func TestSerfwideCommand_ShadowsPluginBareName(t *testing.T) {
 	}
 }
 
-func TestSerfwideCommand_DiscoveryWarningsQueued(t *testing.T) {
+func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
+	writeEvenerwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
@@ -724,7 +724,7 @@ Add `"primeradiant.com/evener/agent/plugin"` to the test file imports.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd agent && go test . -run 'TestSerfwideCommand_' -v`
+Run: `cd agent && go test . -run 'TestEvenerwideCommand_' -v`
 Expected: FAIL — no evener-wide commands in `pluginCommands`.
 
 - [ ] **Step 3: Implement**
@@ -744,7 +744,7 @@ and add discovery+assembly immediately after the `initPlugins` call site (~line 
 	// (which early-returns on empty PluginDirs). Discovery is fail-soft;
 	// warnings join the same session-start queue as command frontmatter
 	// warnings.
-	evenerwide, cmdWarnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
+	evenerwide, cmdWarnings := plugin.DiscoverEvenerWideCommands(s.currentEnv())
 	s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
 ```
@@ -761,7 +761,7 @@ In `agent/session.go`, update the field comment:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd agent && go test . -run 'TestSerfwideCommand_|TestExpandSlashCommand_|TestSessionInitPlugins' `
+Run: `cd agent && go test . -run 'TestEvenerwideCommand_|TestExpandSlashCommand_|TestSessionInitPlugins' `
 Expected: PASS. Then `cd agent && go test . -run 'Plugin'` to catch regressions from removing the per-plugin merge.
 
 - [ ] **Step 5: Commit**
@@ -800,14 +800,14 @@ func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, time
 	return e.ExecutionEnvironment.ExecCommand(ctx, command, timeoutMs, dir, env)
 }
 
-func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
+func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
 	}})
 	workDir := t.TempDir()
-	writeSerfwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
+	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
 	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
 	if err != nil {
@@ -835,7 +835,7 @@ func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd agent && go test . -run TestExpandSlashCommand_SerfwideDoesNotExecute -v`
+Run: `cd agent && go test . -run TestExpandSlashCommand_EvenerwideDoesNotExecute -v`
 Expected: FAIL — the `!` span executes (`calls` == 1, file exists).
 
 - [ ] **Step 3: Implement the branch**
@@ -929,7 +929,7 @@ git commit -m "appwire: add source to CommandDescriptor"
 - Test: `cmd/evener-hub/app_command_list_test.go`
 
 **Interfaces:**
-- Consumes: `plugin.MergeCommands`, `plugin.DiscoverSerfWideCommands(nil)` (nil env — the hub is multi-project and must never see project commands).
+- Consumes: `plugin.MergeCommands`, `plugin.DiscoverEvenerWideCommands(nil)` (nil env — the hub is multi-project and must never see project commands).
 - Produces: catalog entries carry `Source`; user-global commands appear even with zero plugin dirs.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1011,7 +1011,7 @@ func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) 
 	loaded, _ := plugin.LoadAllFailSoft(dirs)
 	// Nil env: the hub is multi-project, so discovery scans the user-global
 	// dir only — project commands are per-session and never appear here.
-	evenerwide, _ := plugin.DiscoverSerfWideCommands(nil)
+	evenerwide, _ := plugin.DiscoverEvenerWideCommands(nil)
 	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor
 	for _, cmd := range merged {
@@ -1277,7 +1277,7 @@ git commit -m "web: forward unmatched slash commands from the palette to the ses
 - Pattern: `agent/plugin/loader_program_fuzz_test.go` (repo fuzz conventions; register per `make fuzz-registry-check`)
 
 **Interfaces:**
-- Consumes: `DiscoverSerfWideCommands` (Task 3-4).
+- Consumes: `DiscoverEvenerWideCommands` (Task 3-4).
 
 - [ ] **Step 1: Write the fuzz target**
 
@@ -1286,10 +1286,10 @@ package plugin
 
 import "testing"
 
-// FuzzDiscoverSerfwideFrontmatter fuzzes command-file content and filenames
+// FuzzDiscoverEvenerwideFrontmatter fuzzes command-file content and filenames
 // through evener-wide discovery: no panics, bare keys only, every rejected
 // file produces a warning.
-func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
+func FuzzDiscoverEvenerwideFrontmatter(f *testing.F) {
 	f.Add("review", "body")
 	f.Add("a b", "---\nmodel: x\n---\n!`ls`")
 	f.Add("p:q", "---\n[bad\n---\nx")
@@ -1303,7 +1303,7 @@ func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
 		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0644); err != nil {
 			t.Skip() // filename not representable on disk
 		}
-		got, warnings := DiscoverSerfWideCommands(nil)
+		got, warnings := DiscoverEvenerWideCommands(nil)
 		for key := range got {
 			if strings.ContainsAny(key, ": \t\n") || key == "" {
 				t.Fatalf("bad key %q escaped the guards", key)
@@ -1318,7 +1318,7 @@ func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
 
 - [ ] **Step 2: Run it briefly**
 
-Run: `cd agent && go test ./plugin/ -run FuzzDiscoverSerfwideFrontmatter -fuzz FuzzDiscoverSerfwideFrontmatter -fuzztime 30s`
+Run: `cd agent && go test ./plugin/ -run FuzzDiscoverEvenerwideFrontmatter -fuzz FuzzDiscoverEvenerwideFrontmatter -fuzztime 30s`
 Expected: no failures. Register the target in the fuzz registry (`make fuzz-registry-check` tells you where).
 
 - [ ] **Step 3: Commit**

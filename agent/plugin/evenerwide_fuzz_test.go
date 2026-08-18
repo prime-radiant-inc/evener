@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// FuzzDiscoverSerfwideFrontmatter fuzzes command-file content and filenames
+// FuzzDiscoverEvenerwideFrontmatter fuzzes command-file content and filenames
 // through evener-wide discovery: no panics, bare keys only, every rejected
 // file produces a warning.
-func FuzzDiscoverSerfwideFrontmatter(f *testing.F) {
+func FuzzDiscoverEvenerwideFrontmatter(f *testing.F) {
 	f.Add("review", "body")
 	f.Add("a b", "---\nmodel: x\n---\n!`ls`")
 	f.Add("p:q", "---\n[bad\n---\nx")

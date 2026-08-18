@@ -143,7 +143,7 @@ Agent frontmatter `tools` arrays use Claude Code tool names. At load time, these
 mapped to evener's canonical tool names:
 
 ```go
-var claudeToSerfToolNames = map[string]string{
+var claudeToEvenerToolNames = map[string]string{
     "Read":         "read_file",
     "Write":        "write_file",
     "Edit":         "edit_file",

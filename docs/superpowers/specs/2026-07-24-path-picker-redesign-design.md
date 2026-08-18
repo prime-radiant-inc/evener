@@ -28,7 +28,7 @@ The three "no browse at all" rows are documented scope cuts from waves 7/8, and 
 
 | File | Change |
 | --- | --- |
-| `appwire/types.go` | `MethodSerfDirsComplete` → `MethodSerfPathsComplete`; `DirsCompleteParams`/`DirsCompleteResponse` → `PathsCompleteParams`/`PathsCompleteResponse` |
+| `appwire/types.go` | `MethodEvenerDirsComplete` → `MethodEvenerPathsComplete`; `DirsCompleteParams`/`DirsCompleteResponse` → `PathsCompleteParams`/`PathsCompleteResponse` |
 | `appwire/client.go:403` | `(*Client).DirsComplete` → `PathsComplete` |
 | `appwire/protocol.go:112` | catalog row; description becomes "Path autocompletion for a prefix." |
 | `cmd/evener-hub/app_rpc.go:659` | handler registration |

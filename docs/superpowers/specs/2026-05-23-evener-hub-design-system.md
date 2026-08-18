@@ -555,7 +555,7 @@ Three zones in `.input-controls`:
 - `.controls-center` — running indicator (active turn pulse).
 - `.controls-right` — Send (primary), Stop (danger), Send-as-steer (ghost). **Three separate buttons, not a split.**
 
-Above the controls sits `.composer-attachments` — a single rail consolidating paste/drag-drop/file-picker chips, owned by `SerfComposerAttachments`. Hides itself when empty (`:empty { display: none }`).
+Above the controls sits `.composer-attachments` — a single rail consolidating paste/drag-drop/file-picker chips, owned by `EvenerComposerAttachments`. Hides itself when empty (`:empty { display: none }`).
 
 Below the controls sits `.input-status` — one mono `--text-xs` line with `.status-item` clusters:
 
@@ -575,7 +575,7 @@ The `.queue-preview` block hovers above the textarea while a turn is in flight, 
 
 ### 2.9 Search palette
 
-`<dialog id="search-dialog">` opened by `⌘K / Ctrl+K`. Native `<dialog>` gives focus trap + Esc handling for free; `SerfFocusTrap` is wired in for consistency.
+`<dialog id="search-dialog">` opened by `⌘K / Ctrl+K`. Native `<dialog>` gives focus trap + Esc handling for free; `EvenerFocusTrap` is wired in for consistency.
 
 - `.search-dialog-inner` — 560px centered raised surface on desktop, full-screen sheet on phone (margin 0, height 100vh, border-radius 0).
 - `.search-dialog-header` — search icon + `#search-input` (transparent, `--text-md`, no border) + hint kbd. Sticky on phone.
@@ -628,13 +628,13 @@ Phone variant scales `.search-row` to `min-height: 48px` and lets `.search-cmd-p
 API:
 
 ```js
-const handle = window.SerfToast.show(message, kind, opts);
+const handle = window.EvenerToast.show(message, kind, opts);
 // kind ∈ "success" | "error" | "info" (unknown kinds become "info")
 // opts.timeout: number ms; default 3000; 0 disables auto-dismiss
-window.SerfToast.dismiss(handle);             // no-op for unknown handle
-window.SerfToast.success(msg, opts);
-window.SerfToast.error(msg, opts);
-window.SerfToast.info(msg, opts);
+window.EvenerToast.dismiss(handle);             // no-op for unknown handle
+window.EvenerToast.success(msg, opts);
+window.EvenerToast.error(msg, opts);
+window.EvenerToast.info(msg, opts);
 ```
 
 `role="alert"` for `error` kind, `role="status"` otherwise. Built-in trigger surfaces: copy session ID, model change, session shutdown, settings saved, theme change, attachment rejected, connection lost/restored, htmx error.
@@ -741,7 +741,7 @@ Rounded controls where `outline-offset: 1px` would visually escape the radius us
 
 #### Focus trap (slide-overs)
 
-`window.SerfFocusTrap.activate(panelEl, returnFocusTo)` and `.deactivate(handle)`:
+`window.EvenerFocusTrap.activate(panelEl, returnFocusTo)` and `.deactivate(handle)`:
 
 1. Captures `document.activeElement` (or explicit trigger) as restore target.
 2. Applies `inert` to every root-level sibling of `panelEl`.
@@ -754,7 +754,7 @@ Wired into: mobile sidebar drawer (`#sidebar`), tasks/details slide-overs, the s
 
 ### 3.2 Optimistic UI
 
-Owned by `pending.js` (`window.SerfAppwirePending`).
+Owned by `pending.js` (`window.EvenerAppwirePending`).
 
 ```css
 .optimistic-pending { animation: optimistic-pulse var(--pulse-cycle) infinite; }
@@ -794,11 +794,11 @@ Container queries handle surface-level responsiveness — used on `.conversation
 
 ### 3.5 Drag-and-drop, paste, file picker
 
-`SerfComposerAttachments` (composer-attachments.js) is the shared helper used by both the session workspace composer (`renderer.js`) and the spawn form (`spawn.js`).
+`EvenerComposerAttachments` (composer-attachments.js) is the shared helper used by both the session workspace composer (`renderer.js`) and the spawn form (`spawn.js`).
 
 - A single `.composer-attachments` rail per surface renders chips.
 - Drop targets carry `.drop-active` (set on dragenter) which adds a dashed accent outline.
-- Rejected attachments fire a `SerfToast.error("Attachment rejected", ...)` plus an inline `.composer-attachment-error` banner.
+- Rejected attachments fire a `EvenerToast.error("Attachment rejected", ...)` plus an inline `.composer-attachment-error` banner.
 
 ---
 
@@ -810,20 +810,20 @@ Files in `cmd/evener-hub/assets/`:
 
 | File | Role |
 | --- | --- |
-| `focus-trap.js` | `SerfFocusTrap.activate/deactivate` — slide-over focus management |
-| `toast.js` | `SerfToast.show/dismiss/success/error/info` — top-center notifications |
+| `focus-trap.js` | `EvenerFocusTrap.activate/deactivate` — slide-over focus management |
+| `toast.js` | `EvenerToast.show/dismiss/success/error/info` — top-center notifications |
 | `skeleton.js` | Toggles `data-loading` on htmx swap targets so `.skeleton` shimmers during requests |
 | `chip-overflow.js` | Caps visible `.chip` children at 4 (most-recently-modified) in `[data-chip-overflow-host]` containers, with a `+N` overflow chip |
 | `sidebar.js` | Project collapse/expand persisted to `localStorage["evener-hub.sidebar.expanded.<key>"]`, rail-toggle, `data-active` row marker, first-paint stagger |
-| `search.js` | `SerfSearch.open/close/openWith` — search palette UI |
-| `settings.js` | Settings page interactivity via body-level event delegation (survives htmx swaps); also exposes `SerfSectionLabels` |
+| `search.js` | `EvenerSearch.open/close/openWith` — search palette UI |
+| `settings.js` | Settings page interactivity via body-level event delegation (survives htmx swaps); also exposes `EvenerSectionLabels` |
 | `settings-pickers.js` | `sp-model-btn` / `sp-dir-btn` / `sp-clear-btn` picker widgets used inside settings cells |
-| `renderer.js` | `SerfRenderer` — conversation transcript rendering, status-dot pulse application, banner append |
-| `spawn.js` | `SerfSpawn` — spawn form interaction |
-| `pending.js` | `SerfAppwirePending.create({...})` — optimistic-rendering registry |
-| `appwire.js` | `SerfAppwire` — RPC wrapper, AppWire notification subscription, connection-loss callbacks |
-| `composer-attachments.js` | `SerfComposerAttachments` — paste/drag-drop/file-picker gesture handling |
-| `diagnostics.js` | `SerfDiagnostics.classify/render` — diagnostic card rendering |
+| `renderer.js` | `EvenerRenderer` — conversation transcript rendering, status-dot pulse application, banner append |
+| `spawn.js` | `EvenerSpawn` — spawn form interaction |
+| `pending.js` | `EvenerAppwirePending.create({...})` — optimistic-rendering registry |
+| `appwire.js` | `EvenerAppwire` — RPC wrapper, AppWire notification subscription, connection-loss callbacks |
+| `composer-attachments.js` | `EvenerComposerAttachments` — paste/drag-drop/file-picker gesture handling |
+| `diagnostics.js` | `EvenerDiagnostics.classify/render` — diagnostic card rendering |
 | `notifications.js` | Browser notifications, title-bar awaiting count, favicon updates |
 | `launchconfig.js` | `LaunchConfigControls.render(el, opts)` — schema-driven launch option form (emits settings-table row markup) |
 | `theme.js` | Theme persistence via `localStorage["evener-hub.theme"]`, density persistence, applies `data-theme` to root |
@@ -832,16 +832,16 @@ Files in `cmd/evener-hub/assets/`:
 
 | Global | Source | Exposes |
 | --- | --- | --- |
-| `window.SerfToast` | toast.js | `show`, `dismiss`, `success`, `error`, `info` |
-| `window.SerfFocusTrap` | focus-trap.js | `activate(panel, returnFocusTo) → handle`, `deactivate(handle)` |
-| `window.SerfAppwire` | appwire.js | `startThread`, `readThread`, `startTurn`, `queueTurn`, `steer`, `drainAsSteer`, `forkThread`, `setModel`, `listModels`, `completeDirs`, `tasks`, `search`, `action`, `refForSession`, `eventsFromNotification`, `eventsFromThread`, `activeTurnIDFromThread`, `setPendingRegistry`, `onNotification`, `onConnectionLost` |
-| `window.SerfAppwirePending` | pending.js | `create(opts)` → registry with `register/fail/tryReconcile` |
-| `window.SerfRenderer` | renderer.js | `SerfRenderer` constructor + `appendBanner`, `applyStatusDotPulse(root)`, `activeTurnId` property |
-| `window.SerfSearch` | search.js | `open`, `close`, `openWith`, `Nav` |
-| `window.SerfSpawn` | spawn.js | spawn form mount API |
-| `window.SerfComposerAttachments` | composer-attachments.js | `attachComposerImageHandlers`, `attachComposerDropHandlers`, `attachComposerFilePickerHandlers`, `renderAttachmentChips`, `resetMarkerCounter` |
-| `window.SerfDiagnostics` | diagnostics.js | `classify(payload)`, `render(payload, actions)` |
-| `window.SerfSectionLabels` | settings.js | Shared section-label map |
+| `window.EvenerToast` | toast.js | `show`, `dismiss`, `success`, `error`, `info` |
+| `window.EvenerFocusTrap` | focus-trap.js | `activate(panel, returnFocusTo) → handle`, `deactivate(handle)` |
+| `window.EvenerAppwire` | appwire.js | `startThread`, `readThread`, `startTurn`, `queueTurn`, `steer`, `drainAsSteer`, `forkThread`, `setModel`, `listModels`, `completeDirs`, `tasks`, `search`, `action`, `refForSession`, `eventsFromNotification`, `eventsFromThread`, `activeTurnIDFromThread`, `setPendingRegistry`, `onNotification`, `onConnectionLost` |
+| `window.EvenerAppwirePending` | pending.js | `create(opts)` → registry with `register/fail/tryReconcile` |
+| `window.EvenerRenderer` | renderer.js | `EvenerRenderer` constructor + `appendBanner`, `applyStatusDotPulse(root)`, `activeTurnId` property |
+| `window.EvenerSearch` | search.js | `open`, `close`, `openWith`, `Nav` |
+| `window.EvenerSpawn` | spawn.js | spawn form mount API |
+| `window.EvenerComposerAttachments` | composer-attachments.js | `attachComposerImageHandlers`, `attachComposerDropHandlers`, `attachComposerFilePickerHandlers`, `renderAttachmentChips`, `resetMarkerCounter` |
+| `window.EvenerDiagnostics` | diagnostics.js | `classify(payload)`, `render(payload, actions)` |
+| `window.EvenerSectionLabels` | settings.js | Shared section-label map |
 | `window.LaunchConfigControls` | launchconfig.js | `render(el, opts)` — emits settings-table row markup for launch options |
 
 ---
@@ -928,7 +928,7 @@ When adding a new pane, sub-page, or component:
    - Conversation-tier annotation? `.tool-call` / `.tool-body` / `.diagnostic` / `.banner` / `.system-line` / `.steering`.
    - Sidebar entry? `.sb-row`.
    - Header? `.workspace-header` pattern.
-   - Modal? `<dialog>` + focus trap. Slide-over? `drawer-right` + `SerfFocusTrap`.
+   - Modal? `<dialog>` + focus trap. Slide-over? `drawer-right` + `EvenerFocusTrap`.
 
 2. **Follow the voice cheatsheet (§1.2).** A label is sans; a value is mono. A section header is uppercase tracked mono. A button label is sans `--text-sm / 500`.
 

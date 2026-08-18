@@ -89,14 +89,14 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_, _, _ = prepareResolvedForSpawn("", resolved)
 		_, _ = SpawnDaemon(context.Background(), "", root, hubcore.SpawnRequest{}, time.Millisecond)
 		_, _ = ResumeDaemon(context.Background(), "", root, hubcore.ResumeRequest{}, time.Millisecond)
-		_ = validateSerfLaunchContract(context.Background(), "", "", nil)
-		_, _ = listSerfLaunchModelContract(context.Background(), "", nil)
+		_ = validateEvenerLaunchContract(context.Background(), "", "", nil)
+		_, _ = listEvenerLaunchModelContract(context.Background(), "", nil)
 		_ = openAIStoredOAuthUsable(nil)
 
 		for _, mode := range []int{0, 1} {
 			cfg := hubcore.WebConfig{Spawner: &finalSmalltailLister{mode: mode}}
 			_, _ = evenerLaunchModelList(context.Background(), cfg, "")
-			_ = hasSerfLaunchModelLister(cfg)
+			_ = hasEvenerLaunchModelLister(cfg)
 			_ = validateEvenerLaunchModel(context.Background(), cfg, cmdutil.ModelRef{Provider: "missing", Model: "m"}, "")
 		}
 

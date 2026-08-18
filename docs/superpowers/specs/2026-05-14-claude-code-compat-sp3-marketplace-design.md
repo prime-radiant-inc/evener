@@ -604,8 +604,8 @@ Trust applies to marketplaces declared in a project's `.evener/config.json` (i.e
 
 Trust is checked the first time a session encounters a project-declared marketplace not already trusted. The check runs in this order:
 
-1. SP1's `DiscoverSerfConfig` produces a merged `SerfConfig`. Project-tier `marketplaces` entries are tagged in `Sources` with `TierProject`.
-2. SP3's session-init hook (called by SP8 in v1; SP3 ships the function `EnforceTrustOnConfig(cfg SerfConfig, env ExecutionEnvironment, ui TrustPrompter) error`) iterates the project-tier marketplace entries.
+1. SP1's `DiscoverEvenerConfig` produces a merged `EvenerConfig`. Project-tier `marketplaces` entries are tagged in `Sources` with `TierProject`.
+2. SP3's session-init hook (called by SP8 in v1; SP3 ships the function `EnforceTrustOnConfig(cfg EvenerConfig, env ExecutionEnvironment, ui TrustPrompter) error`) iterates the project-tier marketplace entries.
 3. For each one, look up `<projectPath, marketplaceName>` in `TrustStore`. If trusted, continue.
 4. If not trusted, call `ui.AskTrust(projectPath, marketplaceName, source)`.
 

@@ -286,7 +286,7 @@ same turn ID, removed text, image count, and affected queue entry IDs.
 
 ### Pending mutation projection
 
-`SerfThread` gains `pendingMutations`. It contains every accepted or claimed
+`EvenerThread` gains `pendingMutations`. It contains every accepted or claimed
 message-producing mutation that is not yet represented by a durable transcript
 item, including its client mutation ID, method, complete input, execution
 state, turn ID when assigned, and queue entry IDs. Queue entries also remain in

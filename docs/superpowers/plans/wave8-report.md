@@ -227,7 +227,7 @@ bad cwd (no crash).
 
 - **P1 — MED/HIGH — work-time clock still shows epoch absurdity (`~495274h`), NEW live finding.**
   Root-caused from the live React fiber: `model.activeTurnStartedAt` parses to `1784774627`, which is
-  **exactly `Date.now()/1000`** — the wire's `SerfThread.ActiveTurnStartedAt` is epoch-**seconds** but
+  **exactly `Date.now()/1000`** — the wire's `EvenerThread.ActiveTurnStartedAt` is epoch-**seconds** but
   `reducer.ts`'s `epochMsToISO` reads it as epoch-**ms** → `1970` → `now − ~epoch ≈ 495274h`; and it is
   not cleared when `status.type==="awaiting"`, so the idle clock keeps ticking. The W8-T4 guard
   (`statusFormat.ts:61`) only catches `startedMs <= 0`, so a positive seconds-scaled anchor slips
@@ -245,7 +245,7 @@ bad cwd (no crash).
 ## Decisions for Jesse
 
 1. **The work-time epoch clock (P1).** Where to fix the seconds-vs-ms anchor: the Go daemon
-   (`SerfThread.ActiveTurnStartedAt` should be epoch-ms), the reducer's `epochMsToISO` coercion, or a
+   (`EvenerThread.ActiveTurnStartedAt` should be epoch-ms), the reducer's `epochMsToISO` coercion, or a
    frontend `status.type==="active"` guard on `totalWorkMillis` (also fixes the tick-while-awaiting
    half). Recommend the Go unit fix as the root cause + the frontend status guard as defense-in-depth.
 2. **Popout Go shell** — add a served same-origin blank shell route so dockview popout can work, or

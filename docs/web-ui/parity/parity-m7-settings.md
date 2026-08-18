@@ -17,7 +17,7 @@ sections + credentials/OAuth + plugins/marketplaces manager", called out in that
   handlers that populate template data and implement the `evener/*` RPCs, `assets/sidebar.js`,
   `assets/notifications.js` (the runtime alerting engine, as opposed to the settings controls for
   it), `assets/spawn.js`, `assets/search.js`. Where those files are referenced below it's only
-  because the read files name them directly (e.g. a `window.SerfSidebar.applySidebarMode` call) —
+  because the read files name them directly (e.g. a `window.EvenerSidebar.applySidebarMode` call) —
   their own internal behavior is not verified here. RPC **response field names** listed below are
   reverse-engineered from what the client JS reads off the response object, not confirmed against
   the Go-side struct definitions — treat them as "what the client currently depends on", not as an
@@ -129,7 +129,7 @@ per-browser" per the page copy.
       `evener-hub.phone-density`; mirrored onto `document.body.dataset.phoneDensity` —
       `assets/settings-appearance.js:19-24,78-81`, `templates/partials/settings/theme.html:17-24`
 - [ ] "Sidebar mode" radio (auto/pane/rail, rail labeled "Collapsed"): delegates to
-      `window.SerfSidebar.applySidebarMode(v)` when present, else falls back to writing localStorage
+      `window.EvenerSidebar.applySidebarMode(v)` when present, else falls back to writing localStorage
       key `evener-hub.sidebar.rail` directly — `assets/settings-appearance.js:26-33`,
       `templates/partials/settings/theme.html:27-35`
 - [ ] "Font size" radio (s/m/l/xl), default **m**. The current React frontend
@@ -201,7 +201,7 @@ localStorage key `evener-hub.composer` (JSON `{enterToSend, showCost}`).
 - [ ] `applyDisplayState()` + `applyComposerKeybindHints()` rerun on `DOMContentLoaded` and every
       `htmx:afterSwap`; `body.dataset.showCost` is additionally set once at script-parse time so the
       CSS gate is correct before any settings pane renders — `assets/settings-display.js:79-88`
-- [ ] `window.SerfSettingsDisplay` exposes `{readComposerPrefs, writeComposerPrefs,
+- [ ] `window.EvenerSettingsDisplay` exposes `{readComposerPrefs, writeComposerPrefs,
       syncToggleState, applyComposerKeybindHints}` for reuse elsewhere (e.g. the composer itself) —
       `assets/settings-display.js:28`
 
@@ -530,7 +530,7 @@ Wrapper: `assets/plugins.js` (`window.pluginsAdmin`).
 `pluginInstall`→`evener/plugin/install`, `pluginUpgrade`→`evener/plugin/upgrade`,
 `pluginRemove`→`evener/plugin/remove`, `pluginEnable`→`evener/plugin/enable`,
 `pluginDisable`→`evener/plugin/disable`, `pluginSetAutoUpgrade`→`evener/plugin/setAutoUpgrade` —
-all defined in `assets/plugins.js:8-23` as thin wrappers over `SerfAppwire.request`.
+all defined in `assets/plugins.js:8-23` as thin wrappers over `EvenerAppwire.request`.
 
 ### 12a. Load & top-level state
 
@@ -859,14 +859,14 @@ Browse button, §§13-14), Marketplaces "Local path" field (inline + Browse butt
       line combining formatted context window (`K`/`M`, 1 decimal, trailing `.0` stripped) and
       `$X.XX/M in` input cost when present — `assets/settings-pickers.js:67-77,126-131`
 - [ ] Selecting a model writes `"{provider}/{model}"` to the hidden input, dispatches a bubbling
-      `change`, updates the display span via `SerfSpawn.abbreviateModel` if present else the raw
+      `change`, updates the display span via `EvenerSpawn.abbreviateModel` if present else the raw
       value, removes the picker — `assets/settings-pickers.js:133-143`
 - [ ] Picker positions absolutely just below-left of its trigger; search input auto-focused on
       open — `assets/settings-pickers.js:166-171`
 - [ ] Dismissal: click-outside (`composedPath()`-based, tolerant of the picker's internal DOM being
       replaced mid-interaction) or `Escape`; both handlers attach only after a `setTimeout(…,0)` so
       the opening click can't also close it — `assets/settings-pickers.js:180-200`
-- [ ] Dir picker (explicit button): `data-settings-dir-picker` opens `SerfDirPicker.open(...)`
+- [ ] Dir picker (explicit button): `data-settings-dir-picker` opens `EvenerDirPicker.open(...)`
       anchored to itself, targeting the sibling `input[type=text]` in its `.sp-dir-wrap` —
       `assets/settings-pickers.js:266-278`
 - [ ] Dir picker (inline autocomplete): any `input[data-settings-dir-input]` opens the same shared
@@ -877,7 +877,7 @@ Browse button, §§13-14), Marketplaces "Local path" field (inline + Browse butt
       after it programmatically writes the chosen value back (`writeDirInput` sets the flag +
       dispatches `input`+`change`; the input's own listener consumes-and-clears it) —
       `assets/settings-pickers.js:204-209,230-234`
-- [ ] If `window.SerfDirPicker` isn't loaded/lacks `.open`, both entry points silently no-op — no
+- [ ] If `window.EvenerDirPicker` isn't loaded/lacks `.open`, both entry points silently no-op — no
       error, no fallback UI — `assets/settings-pickers.js:213`
 - [ ] Both init routines are idempotent per element (`__spInit`/`__spDirInit` guards), rerun on
       every `htmx:afterSwap` (scoped to the swap target) plus once on `DOMContentLoaded`/immediately
@@ -892,10 +892,10 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
 (or, for Marketplaces, against `pluginsAdmin`).
 
 - [ ] `launchconfig` wraps 16 RPCs 1:1 through one `request(method, params)` →
-      `SerfAppwire.request`: `schema`→`evener/launch/schema`, `resolve`→`evener/launch/resolve`,
+      `EvenerAppwire.request`: `schema`→`evener/launch/schema`, `resolve`→`evener/launch/resolve`,
       `getLayer`→`evener/launch/getLayer`, `setLayer`→`evener/launch/setLayer`,
       `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` (via
-      `SerfAppwire.validatePath` when present, else a raw `fetch("/api/path/validate?...")` GET
+      `EvenerAppwire.validatePath` when present, else a raw `fetch("/api/path/validate?...")` GET
       fallback); `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
       `authApiKeySet`→`evener/auth/apiKey/set`, `authLoginStart`→`evener/auth/login/start`,
       `authLoginComplete`→`evener/auth/login/complete`, `authLogout`→`evener/auth/logout`,
@@ -953,7 +953,7 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
       `assets/launchconfig.js:560-587,637-663,710-736`
 - [ ] `populate(root, current)` walks every `[data-launch-wire-field]` and sets value/checked from
       `current`; for `modelPicker` fields with a truthy value, also rewrites the display span via
-      `SerfSpawn.abbreviateModel` if present — `assets/launchconfig.js:821-845`
+      `EvenerSpawn.abbreviateModel` if present — `assets/launchconfig.js:821-845`
 - [ ] `populate()` specifically detects the modelFallbacks explicit-empty case: if `current` has
       the key, it's an array, and it's empty, checks the explicit-empty toggle (avoids an ambiguous
       empty list with an unchecked toggle) — `assets/launchconfig.js:874-881`

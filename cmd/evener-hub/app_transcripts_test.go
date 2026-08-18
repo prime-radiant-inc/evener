@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
+func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)

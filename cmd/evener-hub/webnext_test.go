@@ -72,10 +72,10 @@ func TestWebServesSPAForPageRoutes(t *testing.T) {
 	}
 }
 
-// TestSerfHubWebEnvIsDead pins that EVENER_HUB_WEB no longer gates anything: with
+// TestEvenerHubWebEnvIsDead pins that EVENER_HUB_WEB no longer gates anything: with
 // newWebEnabled() removed, every page route serves the SPA shell regardless of
 // the env var's value (unset/empty, "new", or garbage).
-func TestSerfHubWebEnvIsDead(t *testing.T) {
+func TestEvenerHubWebEnvIsDead(t *testing.T) {
 	s := newTestWebServerWithDist(t, spaDist())
 	var bodies []string
 	for _, v := range []string{"", "new", "garbage"} {

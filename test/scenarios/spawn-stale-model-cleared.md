@@ -39,7 +39,7 @@ runs mount-only (deps `[]`, `Spawn.tsx:275`), so seed before you open
   Setup checklist in `docs/agentic-testing.md`), with `--evener`
   resolvable so the harness enumerates models. This matters — kata
   `6bdb`: with no `evener` on PATH and no `--evener`, the list is empty and
-  `validateSerfLaunchModel` fails open, so nothing is ever classified
+  `validateEvenerLaunchModel` fails open, so nothing is ever classified
   stale and the sweep silently does nothing.
 - A frontend built with `make build-web` before the hub binary.
 - Browser authed via `/auth?token=...`.

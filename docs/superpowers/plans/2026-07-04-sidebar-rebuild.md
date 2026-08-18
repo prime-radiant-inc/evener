@@ -2476,7 +2476,7 @@ import "testing"
 func TestThreadNameSetInCatalog(t *testing.T) {
 	found := false
 	for _, m := range Methods {
-		if m.Name == MethodSerfThreadNameSet {
+		if m.Name == MethodEvenerThreadNameSet {
 			found = true
 			if m.Scope != ScopeBoth {
 				t.Fatalf("rename must be ScopeBoth, got %v", m.Scope)
@@ -2494,14 +2494,14 @@ func TestThreadNameSetInCatalog(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./appwire/ -run TestThreadNameSetInCatalog -v`
-Expected: FAIL — `MethodSerfThreadNameSet`, `ThreadCapabilities.Rename` undefined.
+Expected: FAIL — `MethodEvenerThreadNameSet`, `ThreadCapabilities.Rename` undefined.
 
 - [ ] **Step 3: Add the constant, params, capability**
 
-In `appwire/types.go`, add to the method const block (near `MethodSerfThreadTranscriptsList`):
+In `appwire/types.go`, add to the method const block (near `MethodEvenerThreadTranscriptsList`):
 
 ```go
-	MethodSerfThreadNameSet = "evener/thread/name/set"
+	MethodEvenerThreadNameSet = "evener/thread/name/set"
 ```
 
 Add the params type (near `ThreadModelSetParams`, types.go:576):
@@ -2528,14 +2528,14 @@ Add to `ThreadCapabilities` (types.go:233-250), after `Goal`:
 In `appwire/protocol.go` `var Methods`, add after the `MethodThreadModelSet` row:
 
 ```go
-	{MethodSerfThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
+	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
 ```
 
 In `appwire/client.go`, add (modeled on `ThreadModelSet`, client.go:285-287):
 
 ```go
 func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {
-	return c.request(ctx, MethodSerfThreadNameSet, params, nil)
+	return c.request(ctx, MethodEvenerThreadNameSet, params, nil)
 }
 ```
 
@@ -2560,7 +2560,7 @@ func (s *Server) SetNameFunc(fn func(string)) {
 In `server/appwire_runtime.go`, register in `registerAppWireHandlers` (alongside the others):
 
 ```go
-	appserver.HandleTyped(router, appwire.MethodSerfThreadNameSet, s.handleAppThreadNameSet)
+	appserver.HandleTyped(router, appwire.MethodEvenerThreadNameSet, s.handleAppThreadNameSet)
 ```
 
 Add the handler (modeled on `handleAppThreadModelSet`, appwire_runtime.go:359-375):
@@ -2631,7 +2631,7 @@ In `local_daemon.go`'s capability projection (local_daemon.go:542-553) set `Rena
 In `cmd/evener-hub/app_rpc.go`, register the hub router case (modeled on `MethodThreadModelSet`, app_rpc.go:494-503):
 
 ```go
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(ctx context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
@@ -2888,7 +2888,7 @@ Expected: all green. Commit any lint fixups with `chore(hub): phase A lint`.
 
 # Phase B — Client (vanilla JS)
 
-The new `sidebar.js` holds `/api/tree` data as state and projects it to the DOM via keyed reconciliation on the server's `RowID`. It replaces the htmx partial entirely. The jstest harness is Node + JSDOM: each `test-*.js` reads the asset source with `fs.readFileSync`, evals it in a JSDOM window with `window.fetch`/`window.SerfAppwire` stubbed, and asserts, exiting 0/1 (see `cmd/evener-hub/jstest/run-all.sh`).
+The new `sidebar.js` holds `/api/tree` data as state and projects it to the DOM via keyed reconciliation on the server's `RowID`. It replaces the htmx partial entirely. The jstest harness is Node + JSDOM: each `test-*.js` reads the asset source with `fs.readFileSync`, evals it in a JSDOM window with `window.fetch`/`window.EvenerAppwire` stubbed, and asserts, exiting 0/1 (see `cmd/evener-hub/jstest/run-all.sh`).
 
 ## Task 19: New sidebar renderer core — model, fetch, keyed reconcile, skeleton, active-row
 
@@ -2917,7 +2917,7 @@ function boot() {
   const w = dom.window;
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(src);
   return w;
 }
@@ -2935,13 +2935,13 @@ tree.needs_you = [node("needsyou::local:" + sid, sid, "awaiting")];
 tree.favorites = [node("pinned::local:" + sid, sid, "awaiting")];
 tree.projects = [{ key: "p1", name: "p", working_dir: "/w/p", default_expanded: true, sessions: [node("project:p1:local:" + sid, sid, "awaiting")] }];
 
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const rows1 = w.document.querySelectorAll(".sb-row");
 if (rows1.length !== 3) throw new Error("same session across 3 tiers must yield 3 rows, got " + rows1.length);
 // Tag the project row; a second identical render must keep the SAME node.
 const projRow = w.document.querySelector('[data-row-id="project:p1:local:' + sid + '"]');
 projRow.__probe = true;
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 const projRow2 = w.document.querySelector('[data-row-id="project:p1:local:' + sid + '"]');
 if (!projRow2 || projRow2.__probe !== true) throw new Error("unchanged RowID must keep DOM node identity");
 console.log("ok reconcile keeps identity + cross-tier duplicates");
@@ -2962,7 +2962,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside><m
 const w = dom.window;
 let processed = 0;
 w.htmx = { process() { processed++; } };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [],
   projects: [{ key: "p1", name: "p", working_dir: "/w/p", default_expanded: true,
     sessions: [{ row_id: "project:p1:local:01A", ref: "local:01A", session_id: "01A", title: "hi", state: "idle", kind: "session", tier: "current", live: false }] }],
@@ -2989,7 +2989,7 @@ setTimeout(() => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd cmd/evener-hub/jstest && node test-sidebar-reconcile.js; node test-sidebar-model.js`
-Expected: FAIL — the rewritten `sidebar.js` and `SerfSidebar.renderTree` do not exist yet (the current file has no such API).
+Expected: FAIL — the rewritten `sidebar.js` and `EvenerSidebar.renderTree` do not exist yet (the current file has no such API).
 
 - [ ] **Step 3: Rewrite `sidebar.js` core**
 
@@ -3004,7 +3004,7 @@ Replace `cmd/evener-hub/assets/sidebar.js` with the client-rendered renderer. Co
 
   var EXPAND_PREFIX = "evener-hub.sidebar.expanded.";
   var model = { tree: null, expanded: new Set(), lazyCache: new Map(), seq: 0, pending: new Map() };
-  window.SerfSidebarModel = model; // test/inspection surface
+  window.EvenerSidebarModel = model; // test/inspection surface
 
   function sidebarEl() { return document.getElementById("sidebar"); }
 
@@ -3195,7 +3195,7 @@ Replace `cmd/evener-hub/assets/sidebar.js` with the client-rendered renderer. Co
     if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
+  window.EvenerSidebar = { renderTree: renderTree, refresh: fetchTree, close: function () {} };
 })();
 ```
 
@@ -3258,7 +3258,7 @@ function boot(trees) {
     return Promise.resolve({ ok: true, json: () => Promise.resolve(trees[Math.min(i++, trees.length - 1)]) });
   };
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(src);
   return { w, posts };
 }
@@ -3274,7 +3274,7 @@ function tree(fav) {
   // favorite=true → op completes, no rollback.
   const { w, posts } = boot([tree(false), tree(true)]);
   await new Promise(r => setTimeout(r, 20));
-  w.SerfSidebar.favorite("local:01A", true);
+  w.EvenerSidebar.favorite("local:01A", true);
   // Optimistic: the row shows the star immediately, before any resync.
   let row = w.document.querySelector('[data-row-id="project:p1:local:01A"]');
   if (!row.hasAttribute("data-favorite")) throw new Error("optimistic favorite must apply immediately");
@@ -3290,7 +3290,7 @@ function tree(fav) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd cmd/evener-hub/jstest && node test-sidebar-overlay.js`
-Expected: FAIL — `SerfSidebar.favorite` / overlay undefined.
+Expected: FAIL — `EvenerSidebar.favorite` / overlay undefined.
 
 - [ ] **Step 3: Implement the overlay + resync + events**
 
@@ -3373,7 +3373,7 @@ In `sidebar.js`, replace the `applyPending` stub and add the mutation/resync mac
         return r;
       })
       .catch(function (e) {
-        if (window.SerfToast) window.SerfToast.show("Action failed", "error");
+        if (window.EvenerToast) window.EvenerToast.show("Action failed", "error");
         throw e;
       });
   }
@@ -3422,12 +3422,12 @@ Filter dropped nodes in `flatten` (skip `n.__drop`). Add the coalesced resync + 
     });
   }
 
-  if (window.SerfAppwire && window.SerfAppwire.onNotification) window.SerfAppwire.onNotification(onNotification);
-  if (window.SerfAppwire && window.SerfAppwire.onConnectionRestored) window.SerfAppwire.onConnectionRestored(scheduleResync);
+  if (window.EvenerAppwire && window.EvenerAppwire.onNotification) window.EvenerAppwire.onNotification(onNotification);
+  if (window.EvenerAppwire && window.EvenerAppwire.onConnectionRestored) window.EvenerAppwire.onConnectionRestored(scheduleResync);
   setInterval(scheduleResync, 60000); // 60s idle resync
 ```
 
-Extend the exported surface: `window.SerfSidebar = { renderTree, refresh: fetchTree, favorite, archive, rename, close: function () {} };`
+Extend the exported surface: `window.EvenerSidebar = { renderTree, refresh: fetchTree, favorite, archive, rename, close: function () {} };`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -3458,7 +3458,7 @@ Create `cmd/evener-hub/jstest/test-sidebar-menu.js`:
 
 ```js
 // Menu: ⋯ opens a popover; session rows show Rename only when node.rename;
-// choosing Favorite calls SerfSidebar.favorite; Escape closes; removing the
+// choosing Favorite calls EvenerSidebar.favorite; Escape closes; removing the
 // anchor row closes the menu.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -3474,7 +3474,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body><aside id="sidebar"></aside></
 const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree(true)) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 setTimeout(() => {
   const row = w.document.querySelector('[data-row-id="project:p1:local:01A"]');
@@ -3486,9 +3486,9 @@ setTimeout(() => {
   const items = [].map.call(menu.querySelectorAll(".sb-menu-item"), (e) => e.textContent);
   if (!items.some((t) => /Rename/.test(t))) throw new Error("renameable row must offer Rename, got " + items);
   let favCalled = null;
-  w.SerfSidebar.favorite = (ref, on) => { favCalled = [ref, on]; };
+  w.EvenerSidebar.favorite = (ref, on) => { favCalled = [ref, on]; };
   [].find.call(menu.querySelectorAll(".sb-menu-item"), (e) => /Favorite/.test(e.textContent)).dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
-  if (!favCalled || favCalled[0] !== "local:01A") throw new Error("Favorite item must call SerfSidebar.favorite");
+  if (!favCalled || favCalled[0] !== "local:01A") throw new Error("Favorite item must call EvenerSidebar.favorite");
   console.log("ok menu open + rename gating + favorite action");
   process.exit(0);
 }, 20);
@@ -3559,10 +3559,10 @@ and add the menu component (chip-picker singleton/dismiss patterns):
   function sessionMenuItems(n) {
     return [
       { label: "Open", run: function () { window.location.href = "/s/" + n.session_id; } },
-      { label: "Open beside", run: function () { if (window.SerfPanes) window.SerfPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
-      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.SerfSidebar.favorite(n.ref, !n.favorite); } },
+      { label: "Open beside", run: function () { if (window.EvenerPanes) window.EvenerPanes.open("/thread/" + encodeURIComponent(n.ref), n.title); } },
+      { label: n.favorite ? "Unfavorite" : "Favorite", run: function () { window.EvenerSidebar.favorite(n.ref, !n.favorite); } },
       { label: "Rename", hidden: !n.rename, run: function () { startInlineRename(n); } },
-      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.SerfSidebar.archive(n.ref, n.tier !== "archived"); } },
+      { label: n.tier === "archived" ? "Unarchive" : "Archive", run: function () { window.EvenerSidebar.archive(n.ref, n.tier !== "archived"); } },
     ];
   }
   function projectMenuItems(p) {
@@ -3580,7 +3580,7 @@ and add the menu component (chip-picker singleton/dismiss patterns):
     var input = document.createElement("input");
     input.className = "sb-rename-input"; input.value = n.title;
     title.replaceWith(input); input.focus(); input.select();
-    function commit() { var v = input.value.trim(); if (v && v !== n.title) window.SerfSidebar.rename(n.ref, v); if (model.tree) renderTree(model.tree); }
+    function commit() { var v = input.value.trim(); if (v && v !== n.title) window.EvenerSidebar.rename(n.ref, v); if (model.tree) renderTree(model.tree); }
     input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); commit(); } else if (e.key === "Escape") { e.preventDefault(); if (model.tree) renderTree(model.tree); } });
     input.addEventListener("blur", commit);
   }
@@ -3668,7 +3668,7 @@ const tree = { needs_you: [], favorites: [], archived_projects: [], test_runs: [
   ], attentionSummary: { needsYou: 0, error: 0, working: 0 } };
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(tree) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 setTimeout(() => {
   if (w.localStorage.getItem("evener-hub.sidebar.expanded.foo-aaaa1111") !== "true") throw new Error("migration must copy to first co-basename key");
@@ -3693,12 +3693,12 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ needs_you: [], favorites: [], projects: [], archived_projects: [], test_runs: [], attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
 w.htmx = { process() {} };
-w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
 w.eval(src);
 w.document.querySelector("[data-sidebar-rail-toggle]").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!w.document.body.hasAttribute("data-sidebar-rail")) throw new Error("rail toggle must set body[data-sidebar-rail]");
 if (w.localStorage.getItem("evener-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
-if (typeof w.SerfSidebar.close !== "function") throw new Error("drawer close API must survive");
+if (typeof w.EvenerSidebar.close !== "function") throw new Error("drawer close API must survive");
 console.log("ok survivors: rail toggle + persistence + close API");
 process.exit(0);
 ```
@@ -3757,7 +3757,7 @@ Call `restoreExpanded(tree)` at the top of `renderTree` before `flatten`. In `sy
 
 (Stamp `data-project-key-of` on each session row in `buildRow` when it is pushed under a project in `pushProject`, or resolve the key from the preceding header during flatten — set `n.__projectKey` in `pushProject` and copy it onto the row's `data-project-key-of` attribute in `buildRow`.)
 
-Re-add, verbatim from the pre-rewrite `sidebar.js`, the blocks for: the mobile hamburger drawer (`setSidebarOpen`/`onOutsideClick`/`[data-sidebar-toggle]` handlers), rail mode (`RAIL_KEY`, `isRailEnabled`, `setRail`, `toggleRail`, the `[data-sidebar-rail-toggle]` click, the ⌘B keydown, `syncRailToggleLabel`), and open-beside on subagent rows (`onSidebarOpenBeside` + keydown). Expose `close` via `setSidebarOpen(false)` as before: `window.SerfSidebar.close = function () { setSidebarOpen(false); };`
+Re-add, verbatim from the pre-rewrite `sidebar.js`, the blocks for: the mobile hamburger drawer (`setSidebarOpen`/`onOutsideClick`/`[data-sidebar-toggle]` handlers), rail mode (`RAIL_KEY`, `isRailEnabled`, `setRail`, `toggleRail`, the `[data-sidebar-rail-toggle]` click, the ⌘B keydown, `syncRailToggleLabel`), and open-beside on subagent rows (`onSidebarOpenBeside` + keydown). Expose `close` via `setSidebarOpen(false)` as before: `window.EvenerSidebar.close = function () { setSidebarOpen(false); };`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -3969,7 +3969,7 @@ Every Review-log fold and mechanism maps to a task that implements **and** tests
 - **Renderer/overlay:** RowID keying incl. cross-tier duplicates (B3) → Task 19; sequence guard, instant attention path, ≥2s + 60s resync, per-op predicates, **post-POST resync** (H1), 30s eviction → Task 20; menu incl. anchor-removal close → Task 21; **migration post-first-render + copy-to-all** (G4) + survivors (H5: resizer app-shell + rail + open-beside) → Task 22; delete old only after new suite covers surviving contract → Task 23.
 - **Typography/density:** → Task 24. **e2e cards** (all four spec scenarios) → Task 25. **Final gates + doc regen** → Task 26.
 
-Type/name consistency checked across tasks: `TreeProject.Key`/`ProjectSlug`; `InputsVersion`/`TreeCache`; `PastIndex.UpdateMeta`/`SetOnChange`; `MethodSerfThreadNameSet`/`ThreadNameSetParams`/`ThreadCapabilities.Rename`/`Client.ThreadNameSet`/`Source.SetThreadName`/`Session.Rename`/`sessionNameSourceUser`; client `SerfSidebar.{renderTree,favorite,archive,rename}`; `hubapi.TreeNode.{Tier,Branch,ClusterCount,Favorite,Rename}`.
+Type/name consistency checked across tasks: `TreeProject.Key`/`ProjectSlug`; `InputsVersion`/`TreeCache`; `PastIndex.UpdateMeta`/`SetOnChange`; `MethodEvenerThreadNameSet`/`ThreadNameSetParams`/`ThreadCapabilities.Rename`/`Client.ThreadNameSet`/`Source.SetThreadName`/`Session.Rename`/`sessionNameSourceUser`; client `EvenerSidebar.{renderTree,favorite,archive,rename}`; `hubapi.TreeNode.{Tier,Branch,ClusterCount,Favorite,Rename}`.
 
 ---
 

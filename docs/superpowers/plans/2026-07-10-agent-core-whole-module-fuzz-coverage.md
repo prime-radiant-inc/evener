@@ -341,7 +341,7 @@ Use these package APIs and oracles; each target must be local to its SUT package
   deterministic and remains rooted below the supplied Git root.
 - internal/tool/repair: RepairJSON and RepairArgs; valid JSON is unchanged,
   repaired output parses, and the original args map is not mutated.
-- internal/toolname: ClaudeToSerf and SerfToClaude; every known mapping round
+- internal/toolname: ClaudeToEvener and EvenerToClaude; every known mapping round
   trips and unknown names pass through unchanged.
 - mcpprobe: introduce a narrow lookup/transport seam for probeOne; generated
   stdio configs never invoke a real executable and HTTP configs use a fake

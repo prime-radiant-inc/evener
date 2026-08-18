@@ -9,9 +9,9 @@ Depends on: SP1, SP5, SP6, SP7, SP-A, SP-B (formerly also SP2, SP3, SP4 — defe
 
 SP8 is the seam. It owns the order in which every prior sub-project's output is composed at session startup, so that one call to `agent.NewSession` produces a session whose hooks, MCP servers, permissions, skills, agents, plugin binaries, and user-config substitutions all reflect the merged Claude-Code-shaped configuration. SP8 makes no new architectural decisions of its own — every behavior here is the contract between two earlier sub-projects' surfaces. What SP8 owns:
 
-- The exact call sequence at session startup that turns a `SerfConfig` ([ref: SP1 §2]) plus a set of CLI flags into a fully wired `Session`.
+- The exact call sequence at session startup that turns a `EvenerConfig` ([ref: SP1 §2]) plus a set of CLI flags into a fully wired `Session`.
 - A new typed field set on `SessionConfig` that lets the four CLI binaries hand the merged config to `agent.NewSession` without forcing each binary to re-implement loader composition.
-- The CLI-side wiring in `cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, and `cmd/evenereval` that calls `DiscoverSerfConfig` ([ref: SP1 §2]) and threads the result into `SessionConfig`.
+- The CLI-side wiring in `cmd/evener`, `cmd/evener-tui`, `cmd/evener-hub`, and `cmd/evenereval` that calls `DiscoverEvenerConfig` ([ref: SP1 §2]) and threads the result into `SessionConfig`.
 - The fire sites in `agent/session.go` and `agent/subagents.go` for the seven new lifecycle events SP5 ships, plus the two SP2 fires from its enforcement layer.
 - The end-to-end test: marketplace add ([ref: SP3 §5.1]) → install ([ref: SP4 §4]) → session start fires plugin hook ([ref: SP5 §3]) → uninstall ([ref: SP4 §5]) leaves no residue.
 
@@ -27,7 +27,7 @@ Every entry point follows the same sequence. SP8 ships one helper, `agent.BuildS
 
 ```
  #  Step                                          Owner
- 1  Load SerfConfig (global → project → --config) SP1   DiscoverSerfConfig
+ 1  Load EvenerConfig (global → project → --config) SP1   DiscoverEvenerConfig
  2  Resolve enabledPlugins → cache paths           SP4   Installer.List / ResolvePlugin
  3  Apply --plugin-dir overrides                   SP8   merge into resolved plugin set
  4  Construct PermissionMatcher                    SP2   NewPermissionMatcher
@@ -42,7 +42,7 @@ Every entry point follows the same sequence. SP8 ships one helper, `agent.BuildS
 
 ### 2.1 Per-step responsibilities
 
-**Step 1.** `DiscoverSerfConfig(env, cliConfigPaths)` returns the merged `SerfConfig`. Failure aborts startup with the file path that failed ([ref: SP1 §5]). SP8 always calls this even when no `--config` flag is set — the global and project tiers still apply.
+**Step 1.** `DiscoverEvenerConfig(env, cliConfigPaths)` returns the merged `EvenerConfig`. Failure aborts startup with the file path that failed ([ref: SP1 §5]). SP8 always calls this even when no `--config` flag is set — the global and project tiers still apply.
 
 **Step 2.** For each key in `cfg.EnabledPlugins`, split `"plugin@marketplace"` and call `installer.ResolveCachePath(plugin, marketplace)` ([ref: SP4 §2]). The installer reads `installed_plugins.json`; a missing entry yields the "plugin not installed" warning of §10. The result is an ordered slice of `(pluginID, cachePath, version)`.
 
@@ -74,7 +74,7 @@ This section pins the union rules across tiers and plugins, by field. Every rule
 
 ### 3.1 Hooks
 
-`SerfConfig.Hooks` is already merged across global → project → CLI in firing order ([ref: SP1 §4, §9.1]). SP8 appends plugin-provided hook arrays after the config-tier array for each event:
+`EvenerConfig.Hooks` is already merged across global → project → CLI in firing order ([ref: SP1 §4, §9.1]). SP8 appends plugin-provided hook arrays after the config-tier array for each event:
 
 ```
 finalHooks[event] = cfg.Hooks[event] ++ plugin1.Hooks[event] ++ plugin2.Hooks[event] ++ ...
@@ -134,9 +134,9 @@ Permissions PermissionsConfig
 // SP2 §9; CLI binaries pick at construction.
 PermissionAskFallback AskFallback
 
-// MergedConfig is the full SerfConfig produced by SP1's loader. Carried
+// MergedConfig is the full EvenerConfig produced by SP1's loader. Carried
 // on the session for ConfigChange diffing (SP5 §3.9) and observability.
-MergedConfig SerfConfig
+MergedConfig EvenerConfig
 
 // EnabledPluginPaths is the ordered list of (pluginID, cachePath,
 // version) tuples produced by SP4's resolver. NewSession reads it to
@@ -180,7 +180,7 @@ type ResolvedPlugin struct {
 
 Both are CLI-level concerns and orthogonal:
 
-- `--config <path>` (new, SP1 wires the parser) is the third tier of `SerfConfig` ([ref: SP1 §4]). Repeatable. Each path is loaded in CLI order.
+- `--config <path>` (new, SP1 wires the parser) is the third tier of `EvenerConfig` ([ref: SP1 §4]). Repeatable. Each path is loaded in CLI order.
 - `--plugin-dir <path>` (existing) bypasses the marketplace and adds an ad-hoc plugin payload directly. Repeatable. Per §13, a `--plugin-dir` plugin shadowing an `enabledPlugins` entry wins for that session.
 
 The two flags do not conflict. Both populate distinct fields on `SessionConfig`.
@@ -261,7 +261,7 @@ SP5 owns the events; SP8 lists where they fire in evener source. Two of the nine
 | `PostCompact` | `agent/context_strategy.go:CompactStrategy.ManageContext` after `s.cm.MaybeCompact` returns and the strategy's new `Compacted` return is true | After context compaction completes | `compact_trigger = "auto"` (manual reserved) |
 | `PermissionRequest` | `agent/permissions.go:Session.resolveAsk` ([ref: SP2 §6.3]), before the surface prompt | Before a permission dialog | `tool_name`, `tool_input`, `tool_use_id`, `permission_rule` from the matched `decision.Rule`, `permission_category` reserved |
 | `PermissionDenied` | `agent/permissions.go:Session.permissionDeniedResult` ([ref: SP2 §6.3]), immediately before returning the deny result | After auto-mode denial | `tool_name`, `tool_input`, `tool_use_id`, `denial_reason` from `decision.Reason` |
-| `ConfigChange` | `agent/config_watcher.go` ([ref: SP5 §3.9]) — new file behind `cfg.WatchConfig` | When a config file changes mid-session | `config_source` from the `ConfigTier` of the changed file ([ref: SP1 §2]); `config_file` from the watcher; `changed_keys` from a diff of pre/post `SerfConfig` top-level fields |
+| `ConfigChange` | `agent/config_watcher.go` ([ref: SP5 §3.9]) — new file behind `cfg.WatchConfig` | When a config file changes mid-session | `config_source` from the `ConfigTier` of the changed file ([ref: SP1 §2]); `config_file` from the watcher; `changed_keys` from a diff of pre/post `EvenerConfig` top-level fields |
 
 Each fire site reuses `s.hookInput(event)` to populate the common fields ([ref: SP5 §7]); SP5 extends `hookInput` to fill `transcript_path`, `permission_mode`, `effort`, `agent_id`, `agent_type`, `tool_use_id`.
 
@@ -360,7 +360,7 @@ Collisions across the two slices are handled at load time per §13.
 
 | Error class | Behavior |
 | --- | --- |
-| `DiscoverSerfConfig` returns error (malformed JSON, missing CLI file) | Fatal. Abort startup with the file path. SP1 §6 contract. |
+| `DiscoverEvenerConfig` returns error (malformed JSON, missing CLI file) | Fatal. Abort startup with the file path. SP1 §6 contract. |
 | `NewPermissionMatcher` returns error (bad rule string) | Fatal. Abort startup. Error names the rule and the source file. SP2 §8.1. |
 | `installer.Lookup` returns `ErrNotInstalled` for an `enabledPlugins` entry | Warning. Skip the plugin. Log `evener: plugin "<id>" is enabled but not installed; run 'evener plugin install <id>' to install`. Continue startup. |
 | Marketplace declared by project but not trusted ([ref: SP3 §7]) | Warning. Skip the marketplace and any plugins from it. The plugin's `enabledPlugins` entry effectively skips too. |

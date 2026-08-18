@@ -955,7 +955,7 @@ func TestFamilyModelID(t *testing.T) {
 // A Evener override entry that carries base metadata (a context window) and matches
 // no LiteLLM model materializes a Evener-only catalog entry — how Evener ships models
 // LiteLLM doesn't cover (kimi-for-coding). Overlay-only entries stay no-ops.
-func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
+func TestApplyOverrides_MaterializesEvenerOnlyModel(t *testing.T) {
 	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x"}}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)

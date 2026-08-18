@@ -35,7 +35,7 @@ live_eval_prepare_trial feature-1
 first_trial="$LIVE_EVAL_TRIAL_ROOT"
 first_state="$LIVE_EVAL_STATE"
 first_home="$LIVE_EVAL_HOME"
-first_serf="$LIVE_EVAL_SERF"
+first_evener="$LIVE_EVAL_EVENER"
 
 live_eval_prepare_trial baseline-1
 second_trial="$LIVE_EVAL_TRIAL_ROOT"
@@ -43,7 +43,7 @@ second_trial="$LIVE_EVAL_TRIAL_ROOT"
 test "$first_trial" != "$second_trial"
 test -f "$first_state/evener/auth/openai.json"
 test -f "$first_home/.evener/providers.toml"
-test -x "$first_serf"
+test -x "$first_evener"
 test -f "$second_trial/state/evener/auth/openai.json"
 test -f "$second_trial/home/.evener/providers.toml"
 test "$first_trial" != "$run_root"

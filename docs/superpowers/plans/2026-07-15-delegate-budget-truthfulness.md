@@ -63,14 +63,14 @@ This spec does not:
 | `agent/events/payloads_test.go` | New tests locking the structured job-finished exhaustion payload. |
 | `agent/status.go` | Carry exhaustion through `agent.JobStatusInfo` diagnostic snapshots. |
 | `agent/status_test.go` | Prove durable exhausted records project into agent diagnostics. |
-| `appwire/types.go` | Add exhaustion fields to `SerfJobInfo`. |
+| `appwire/types.go` | Add exhaustion fields to `EvenerJobInfo`. |
 | `appwire/types_test.go` | Lock the AppWire exhaustion field names and optional encoding. |
 | `internal/appprojector/appwire_projection.go` | Project `events.JobFinishedData` exhaustion fields into live AppWire job-finished notifications. |
 | `internal/appprojector/appwire_projection_test.go` | Prove the live job-finished event projection preserves exhaustion facts. |
 | `server/server.go` | Carry exhaustion through `server.JobStatusInfo`. |
 | `cmd/evener/serve.go` | Convert `agent.JobStatusInfo` exhaustion fields into `server.JobStatusInfo`. |
 | `cmd/evener/serve_test.go` | Prove the agent-to-server diagnostics conversion preserves exhaustion facts. |
-| `server/appwire_runtime.go` | Convert `server.JobStatusInfo` exhaustion fields into diagnostic `SerfJobInfo`. |
+| `server/appwire_runtime.go` | Convert `server.JobStatusInfo` exhaustion fields into diagnostic `EvenerJobInfo`. |
 | `server/appwire_runtime_test.go` | Prove the server-to-AppWire diagnostic projection preserves exhaustion facts. |
 | `cmd/evener-hub/app_threadread.go` | Treat `exhausted` as terminal in historical Hub jobs. |
 | `cmd/evener-hub/app_threadread_test.go` | Prove an exhausted historical delegate is terminal and not shown as running. |
@@ -971,7 +971,7 @@ func TestSession_DetailedStatus_JobsIncludesExhaustion(t *testing.T)
 func TestAgentToServerDetailedStatus_Exhaustion(t *testing.T)
 func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T)
 func TestProjectJobFinished_ExhaustionMetadata(t *testing.T)
-func TestSerfJobInfo_ExhaustionFields(t *testing.T)
+func TestEvenerJobInfo_ExhaustionFields(t *testing.T)
 ```
 
 The live event test in `internal/appprojector/appwire_projection_test.go` must set `resumable := true` and feed `events.JobFinishedData`, not a job-store record:
@@ -988,7 +988,7 @@ Data: events.JobFinishedData{
 },
 ```
 
-Assert the projected `appwire.SerfJobInfo` has the same status, budget, limit, and resumability.
+Assert the projected `appwire.EvenerJobInfo` has the same status, budget, limit, and resumability.
 
 The runtime diagnostic tests must cover the actual chain independently:
 
@@ -998,7 +998,7 @@ jobstore.JobRecord
   -> agentToServerDetailedStatus (cmd/evener/serve.go)
   -> server.JobStatusInfo
   -> appDiagnosticsFromDetailedStatus (server/appwire_runtime.go)
-  -> appwire.SerfJobInfo
+  -> appwire.EvenerJobInfo
 ```
 
 In `agent/status_test.go`, seed an exhausted `JobRecord` and assert `Session.DetailedStatus().Jobs`. In `cmd/evener/serve_test.go`, feed an `agent.JobStatusInfo` into `agentToServerDetailedStatus`. In `server/appwire_runtime_test.go`, feed a `server.JobStatusInfo` into `appDiagnosticsFromDetailedStatus`. Do not name or add a nonexistent direct `JobRecord`-to-AppWire projector.
@@ -1066,7 +1066,7 @@ Expected: FAIL because both AppWire paths drop exhaustion metadata and the newly
 
 - [ ] **Step 4: Add exhaustion metadata to AppWire and server projections**
 
-Add these fields to `appwire.SerfJobInfo` in `appwire/types.go`:
+Add these fields to `appwire.EvenerJobInfo` in `appwire/types.go`:
 
 ```go
 ExhaustionBudget string `json:"exhaustionBudget,omitempty"`
@@ -1086,8 +1086,8 @@ Update these actual converters, copying fields directly at each boundary:
 
 - `projectJobStatusInfos` in `agent/status.go`: `jobstore.JobRecord -> agent.JobStatusInfo`.
 - `agentToServerDetailedStatus` in `cmd/evener/serve.go`: `agent.JobStatusInfo -> server.JobStatusInfo`.
-- `appDiagnosticsFromDetailedStatus` in `server/appwire_runtime.go`: `server.JobStatusInfo -> appwire.SerfJobInfo`.
-- the `events.EventJobFinished` arm in `internal/appprojector/appwire_projection.go`: `events.JobFinishedData -> appwire.SerfJobInfo`.
+- `appDiagnosticsFromDetailedStatus` in `server/appwire_runtime.go`: `server.JobStatusInfo -> appwire.EvenerJobInfo`.
+- the `events.EventJobFinished` arm in `internal/appprojector/appwire_projection.go`: `events.JobFinishedData -> appwire.EvenerJobInfo`.
 
 The live event path receives the fields from Task 4's `events.JobFinishedData`; the runtime diagnostic path receives them from `agent.JobStatusInfo`. Keep these as two explicit sources rather than inventing a shared direct-record projector.
 

@@ -187,7 +187,7 @@ No other server work.
   - the `Enter` handler now branches on mode similarly.
   - a public `openWith(initialQuery)` method (additive; existing `open()` preserved).
 - `cmd/evener-hub/assets/style.css` — small additions for the command-args pill and any command-row variants (~40 lines). Existing search row styles reused.
-- `cmd/evener-hub/assets/renderer.js` — hook in the textarea keydown handler: if the textarea is empty and the key is `/`, prevent default and call `window.SerfSearch.openWith("/")`. ~6 lines.
+- `cmd/evener-hub/assets/renderer.js` — hook in the textarea keydown handler: if the textarea is empty and the key is `/`, prevent default and call `window.EvenerSearch.openWith("/")`. ~6 lines.
 - `cmd/evener-hub/web.go` — add `case "clear":` to the session action proxy switch in `handleSession`.
 - `cmd/evener-hub/web_test.go` — `TestWeb_SessionClear_ForwardsToDaemon`.
 
@@ -195,7 +195,7 @@ No template changes — the existing `#search-dialog` markup is reused as-is.
 
 ### Module surface
 
-`window.SerfSearch` (additive — existing surface preserved):
+`window.EvenerSearch` (additive — existing surface preserved):
 - `open()` — existing.
 - `close()` — existing.
 - `openWith(initialQuery)` — new; opens and seeds the input, triggering the appropriate mode.

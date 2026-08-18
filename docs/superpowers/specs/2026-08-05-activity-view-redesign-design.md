@@ -64,7 +64,7 @@ that require full pane width).
 `JobActivityJob` today carries `jobId`, `type`, `status`, `outcome`, `terminal`,
 `background`, `hasOutput`, `description`, `command`, `task`, `startedAt`,
 `endedAt`, `exitCode`, `outputBytes` — but **no token counts and no last-output
-timestamp**. Session-cumulative usage already exists daemon-side (`SerfUsage` in
+timestamp**. Session-cumulative usage already exists daemon-side (`EvenerUsage` in
 `appwire/types.go`: `inputTokens`, `outputTokens`, …), and the jobstore records
 output writes (`agent/internal/jobstore`), so both fields are obtainable without
 new instrumentation plumbing.
@@ -96,7 +96,7 @@ new instrumentation plumbing.
     `failed` (in `--danger`) for shell jobs. Age-style stamps (`13h`) remain the
     format for long-ended rows, matching the rail.
 - Token formatting: compact SI (`900`, `4.2k`, `128k`), reusing whatever compact
-  formatter the status row already uses for `SerfUsage` (extract a shared helper
+  formatter the status row already uses for `EvenerUsage` (extract a shared helper
   if none is exported).
 
 ### Hierarchy and folding
@@ -145,12 +145,12 @@ new instrumentation plumbing.
 1. `appwire/types.go` — extend the activity job struct with:
    - `LastOutputAt string` (RFC3339, omitempty) — last time the jobstore
      observed output for the job.
-   - `Usage *SerfUsage` (omitempty) — present on delegate entries only, sourced
+   - `Usage *EvenerUsage` (omitempty) — present on delegate entries only, sourced
      from the child session's cumulative usage; absent for shell jobs.
 2. `agent/jobs_activity.go` — populate both: `LastOutputAt` from the jobstore
    record/output tracking for that job; `Usage` from the child session's
    existing usage accounting (the same source that feeds the status row's
-   `SerfUsage`).
+   `EvenerUsage`).
 3. Regenerate `src/protocol/types.gen.ts` (existing appwirets codegen) and
    consume the fields in `activityData.ts`.
 4. Old daemons omit both fields; the UI must degrade gracefully — no tokens

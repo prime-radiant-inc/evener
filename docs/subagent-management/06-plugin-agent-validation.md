@@ -281,7 +281,7 @@ Group multiple issues for one plugin when practical so authors can fix them in o
 ## Compatibility notes
 
 - The manifest path precedence is `.claude-plugin/plugin.json` before `.codex-plugin/plugin.json`: evener preserves context across resume (it replays the transcript), so it must use the Claude flavor, whose SessionStart hooks do not re-inject on resume. (Earlier evener preferred `.codex-plugin`, which re-injected the using-superpowers skill on every resume; that was reverted.)
-- `tools` continues to support Claude tool-name mapping through `toolname.ClaudeToSerf` during agent parsing.
+- `tools` continues to support Claude tool-name mapping through `toolname.ClaudeToEvener` during agent parsing.
 - Plugin package agent maps remain namespaced as `plugin-name:agent-name`; session exposure preserves the current `coordinator-workflow` bare-name compatibility exception.
 - MCP server names remain prefixed as `plugin_<pluginName>_...`.
 - Unsupported Claude fields should be clearly ignored or rejected; they must not be partially interpreted without tests.

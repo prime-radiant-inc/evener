@@ -338,7 +338,7 @@ git commit -m "web: composer dock spans the window; hit targets, textarea ceilin
 - Test: `cmd/evener-hub/jstest/test-sidebar-tristate.js` (create)
 
 **Interfaces:**
-- Produces: `window.SerfSidebar.applySidebarMode(mode)`, `window.SerfSidebar.readSidebarMode()`, `window.SerfSidebar.effectiveSidebarState(mode)`. `body[data-sidebar-mode]` records the setting (`auto`|`rail`|`pane`); `body[data-sidebar-rail]` continues to reflect the **effective** state so all existing rail CSS and `panes.js`'s resizer-disable keep working unchanged.
+- Produces: `window.EvenerSidebar.applySidebarMode(mode)`, `window.EvenerSidebar.readSidebarMode()`, `window.EvenerSidebar.effectiveSidebarState(mode)`. `body[data-sidebar-mode]` records the setting (`auto`|`rail`|`pane`); `body[data-sidebar-rail]` continues to reflect the **effective** state so all existing rail CSS and `panes.js`'s resizer-disable keep working unchanged.
 - Consumers: `settings-appearance.js` calls `applySidebarMode`; `panes.js` unchanged.
 
 - [ ] **Step 1: Write the failing test**
@@ -360,7 +360,7 @@ function makeWindow(stored, desktopMatches) {
   w.matchMedia = (q) => ({ matches: q === "(min-width: 1200px)" ? desktopMatches : false, addEventListener() {}, addListener() {} });
   w.fetch = () => new Promise(() => {});
   w.htmx = { process() {} };
-  w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  w.EvenerAppwire = { onNotification() {}, onConnectionRestored() {} };
   w.eval(src);
   return w;
 }
@@ -368,11 +368,11 @@ function assert(cond, msg) { if (!cond) { console.error("FAIL: " + msg); process
 
 // Migration: binary "true" → rail, "false" → pane, absent → auto.
 let w = makeWindow("true", true);
-assert(w.SerfSidebar.readSidebarMode() === "rail", '"true" migrates to rail');
+assert(w.EvenerSidebar.readSidebarMode() === "rail", '"true" migrates to rail');
 w = makeWindow("false", true);
-assert(w.SerfSidebar.readSidebarMode() === "pane", '"false" migrates to pane');
+assert(w.EvenerSidebar.readSidebarMode() === "pane", '"false" migrates to pane');
 w = makeWindow(null, true);
-assert(w.SerfSidebar.readSidebarMode() === "auto", "absent pref defaults to auto");
+assert(w.EvenerSidebar.readSidebarMode() === "auto", "absent pref defaults to auto");
 
 // Effective state: auto follows the 1200px query; explicit modes pin.
 w = makeWindow(null, true);
@@ -385,12 +385,12 @@ assert(w.document.body.hasAttribute("data-sidebar-rail"), "explicit rail pins ra
 
 // Cycle: rail → pane → auto → rail, persisted.
 w = makeWindow("rail", true);
-w.SerfSidebar.cycleSidebarMode();
-assert(w.SerfSidebar.readSidebarMode() === "pane", "rail cycles to pane");
-w.SerfSidebar.cycleSidebarMode();
-assert(w.SerfSidebar.readSidebarMode() === "auto", "pane cycles to auto");
-w.SerfSidebar.cycleSidebarMode();
-assert(w.SerfSidebar.readSidebarMode() === "rail", "auto cycles to rail");
+w.EvenerSidebar.cycleSidebarMode();
+assert(w.EvenerSidebar.readSidebarMode() === "pane", "rail cycles to pane");
+w.EvenerSidebar.cycleSidebarMode();
+assert(w.EvenerSidebar.readSidebarMode() === "auto", "pane cycles to auto");
+w.EvenerSidebar.cycleSidebarMode();
+assert(w.EvenerSidebar.readSidebarMode() === "rail", "auto cycles to rail");
 assert(w.localStorage.getItem("evener-hub.sidebar.rail") === "rail", "cycle persists to storage");
 
 console.log("ok sidebar tri-state");
@@ -488,7 +488,7 @@ In `syncRailToggleLabel` (:1218-1224), make the label name the mode so a press t
 Extend the export at :1243:
 
 ```js
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); }, applySidebarMode: applySidebarMode, readSidebarMode: readSidebarMode, effectiveSidebarState: effectiveSidebarState, cycleSidebarMode: cycleSidebarMode };
+  window.EvenerSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); }, applySidebarMode: applySidebarMode, readSidebarMode: readSidebarMode, effectiveSidebarState: effectiveSidebarState, cycleSidebarMode: cycleSidebarMode };
 ```
 
 - [ ] **Step 4: settings-appearance.js + theme.html**
@@ -498,8 +498,8 @@ Replace the `sidebar-mode` radio handler (:26-32) with:
 ```js
     if (target.matches('input[name="sidebar-mode"]')) {
       const v = target.value; // "auto" | "rail" | "pane"
-      if (window.SerfSidebar && window.SerfSidebar.applySidebarMode) {
-        window.SerfSidebar.applySidebarMode(v);
+      if (window.EvenerSidebar && window.EvenerSidebar.applySidebarMode) {
+        window.EvenerSidebar.applySidebarMode(v);
       } else {
         localStorage.setItem("evener-hub.sidebar.rail", v);
       }
@@ -512,8 +512,8 @@ Replace the sidebar-mode reflect block (:56-60) with:
 ```js
     const sidebarModeRadios = document.querySelectorAll('input[name="sidebar-mode"]');
     if (sidebarModeRadios.length) {
-      const stored = (window.SerfSidebar && window.SerfSidebar.readSidebarMode)
-        ? window.SerfSidebar.readSidebarMode()
+      const stored = (window.EvenerSidebar && window.EvenerSidebar.readSidebarMode)
+        ? window.EvenerSidebar.readSidebarMode()
         : (localStorage.getItem("evener-hub.sidebar.rail") || "auto");
       sidebarModeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
@@ -585,7 +585,7 @@ const w = dom.window;
 w.matchMedia = (q) => ({ matches: false }); // anchored (non-phone) path
 Object.defineProperty(w, "innerWidth", { value: 900, configurable: true });
 w.eval(src);
-assert(w.SerfDirPicker && typeof w.SerfDirPicker.placeChipPicker === "function",
+assert(w.EvenerDirPicker && typeof w.EvenerDirPicker.placeChipPicker === "function",
   "placeChipPicker exported as a test seam");
 const anchor = w.document.getElementById("chip");
 Object.defineProperty(anchor, "offsetLeft", { value: 880 });
@@ -593,7 +593,7 @@ Object.defineProperty(anchor, "offsetTop", { value: 40 });
 Object.defineProperty(anchor, "offsetHeight", { value: 30 });
 const picker = w.document.createElement("div");
 Object.defineProperty(picker, "offsetWidth", { value: 520 });
-w.SerfDirPicker.placeChipPicker(picker, anchor);
+w.EvenerDirPicker.placeChipPicker(picker, anchor);
 assert(picker.style.left !== "880px", "left is clamped away from the anchor's raw offset");
 assert(parseInt(picker.style.left, 10) <= 900 - 520 - 8, "panel right edge stays inside the viewport");
 assert(parseInt(picker.style.left, 10) >= 8, "clamp never pushes past the left edge");
@@ -630,7 +630,7 @@ In `spawn.js`, find `placeChipPicker` (`grep -n 'function placeChipPicker' asset
 Export the seam in `dir-picker.js` (the test calls it directly):
 
 ```js
-  global.SerfDirPicker = {
+  global.EvenerDirPicker = {
     open: openDirPicker,
     placeChipPicker: placeChipPicker, // test seam (test-picker-clamp.js)
   };

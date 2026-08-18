@@ -106,8 +106,8 @@ cases exist.
   So descendant capabilities are **absent** on notifications
   (`ThreadStatusChangedParams.Capabilities` is `*ThreadCapabilities` with
   `omitempty`, `appwire/types.go:1666`) and **present-but-all-false** on
-  `thread/read` (`SerfThread.Capabilities` is a value struct with no `omitempty`,
-  `appwire/types.go:276`; `SerfThread` begins at `:266` and is reached through
+  `thread/read` (`EvenerThread.Capabilities` is a value struct with no `omitempty`,
+  `appwire/types.go:276`; `EvenerThread` begins at `:266` and is reached through
   `Thread.Evener`, `Thread` itself being at `:216`). Nothing is copied from the
   root.
 

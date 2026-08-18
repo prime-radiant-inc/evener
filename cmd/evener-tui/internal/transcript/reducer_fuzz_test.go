@@ -14,7 +14,7 @@ var fuzzCoverageUnion = func(*testing.T) {}
 // item.Output JSON via subagentRunFromToolItem (json.Unmarshal of the wire
 // payload). Feeding a fuzzed ThreadItem (type + raw JSON + fields) through a
 // fresh reducer exercises the JSON decode plus every fold branch. The companion
-// ApplySerfJob path is driven from the same fuzzed bytes. Oracle: no-panic floor
+// ApplyEvenerJob path is driven from the same fuzzed bytes. Oracle: no-panic floor
 // plus a structural invariant — every active-index map entry must point at a
 // real message slot after the fold.
 func FuzzApplyThreadItem(f *testing.F) {
@@ -60,7 +60,7 @@ func FuzzApplyThreadItem(f *testing.F) {
 		// Drive the job-folding decode path from the same payload.
 		var job appwire.EvenerJobInfo
 		if json.Unmarshal([]byte(raw), &job) == nil {
-			r.ApplySerfJob(job)
+			r.ApplyEvenerJob(job)
 		}
 
 		// Structural invariant: active maps must never dangle past the message slice.

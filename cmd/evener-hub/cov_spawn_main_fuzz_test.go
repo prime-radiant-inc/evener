@@ -126,10 +126,10 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if len(buildSpawnArgs(s)) < 2 || len(buildResumeArgs(r)) < 5 {
 				t.Fatal("short launch args")
 			}
-			if got, _ := resolveSerfStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
+			if got, _ := resolveEvenerStateDirWithStateHome("/a/b", "/override", "/xdg"); got != "/override" {
 				t.Fatal(got)
 			}
-			if got, err := resolveSerfStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "evener") {
+			if got, err := resolveEvenerStateDirWithStateHome(workDir, "", "/xdg"); err != nil || !strings.Contains(got, "evener") {
 				t.Fatalf("valid project state dir = %q, %v", got, err)
 			}
 		case 5:
@@ -138,13 +138,13 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			if envHelp.Len() == 0 || currentExecutable() == "" {
 				t.Fatal("main helpers returned empty output")
 			}
-			if got := resolveSerfBinaryPath("/explicit", "/hub", nil); got != "/explicit" {
+			if got := resolveEvenerBinaryPath("/explicit", "/hub", nil); got != "/explicit" {
 				t.Fatal(got)
 			}
-			if got := resolveSerfBinaryPath("", "/x/evener-hub", func(string) (string, error) { return "/path/evener", nil }); got == "" {
+			if got := resolveEvenerBinaryPath("", "/x/evener-hub", func(string) (string, error) { return "/path/evener", nil }); got == "" {
 				t.Fatal("binary path unresolved")
 			}
-			_ = resolveSerfBinaryPath("", "evener-hub", func(string) (string, error) { return "", errors.New("missing") })
+			_ = resolveEvenerBinaryPath("", "evener-hub", func(string) (string, error) { return "", errors.New("missing") })
 			if envToMap([]string{"A=1", "bad", "A=2"})["A"] != "2" {
 				t.Fatal("environment map did not keep last value")
 			}

@@ -38,7 +38,7 @@ The device-code building blocks already exist and are used by the CLI:
 - `ExchangeDeviceCode(ctx, client, cfg, authCode, codeVerifier) (TokenSet, error)`.
 
 The hub auth RPCs follow one pattern: `appserver.HandleTyped(server.Router(),
-appwire.MethodSerfAuth…, handler)` calling a `hubAuthController` method, with
+appwire.MethodEvenerAuth…, handler)` calling a `hubAuthController` method, with
 `notifyAuthUpdated(server, provider, activeSource)` pushing `evener/auth/updated`
 after a state change. `LoginComplete` shows the exchange→claims→`SaveAuth`
 pattern: exchange tokens, `authRecordFromTokens`, enrich via
@@ -96,8 +96,8 @@ var ErrDeviceCodeNotEnabled = errors.New("device-code login is not enabled for t
 
 New appwire methods/types (`internal/appwire/types.go`):
 
-- `MethodSerfAuthDeviceStart = "evener/auth/device/start"`
-- `MethodSerfAuthDevicePoll  = "evener/auth/device/poll"`
+- `MethodEvenerAuthDeviceStart = "evener/auth/device/start"`
+- `MethodEvenerAuthDevicePoll  = "evener/auth/device/poll"`
 - `AuthDeviceStartParams{ Provider string }`
 - `AuthDeviceStartResponse{ Provider, FlowID, UserCode, VerificationURL string; IntervalSeconds int; Fallback bool }`
 - `AuthDevicePollParams{ Provider, FlowID string }`

@@ -343,7 +343,7 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 }
 
 // buildServeDev compiles the real binary for signal-delivery scenarios.
-func buildSerfDev(t *testing.T) string {
+func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "evener-dev")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
@@ -360,7 +360,7 @@ func buildSerfDev(t *testing.T) string {
 // the shard processes.
 func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, string) {
 	t.Helper()
-	bin := buildSerfDev(t)
+	bin := buildEvenerDev(t)
 	tmp := t.TempDir()
 	resolvedTmp, err := filepath.EvalSymlinks(tmp)
 	if err != nil {
@@ -581,7 +581,7 @@ func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 }
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
-	bin := buildSerfDev(t)
+	bin := buildEvenerDev(t)
 	out, err := exec.Command(bin).CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
@@ -601,7 +601,7 @@ func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
 }
 
 func TestAgentShardsEnvValidation(t *testing.T) {
-	bin := buildSerfDev(t)
+	bin := buildEvenerDev(t)
 	workRoot := t.TempDir()
 	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "agent")); err != nil {
 		t.Fatalf("linking fixture: %v", err)

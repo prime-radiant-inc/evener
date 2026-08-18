@@ -4,7 +4,7 @@
 
 **Goal:** Ship the final 10% of the evener-hub UI overhaul — top-center toasts wired across the app, skeleton loading on htmx swaps, per-surface empty states with CTAs, first-paint sidebar stagger, `:active` press states on every button variant, reduced-motion fallbacks for optimistic indicators, spawn-chip overflow, and removal of remaining `.rule-dot` separators.
 
-**Architecture:** All work is additive CSS + a handful of small JS modules — no Go changes, no template restructuring beyond per-surface empty-state markup and `#toast-region` insertion. New JS files (`toast.js`, `skeleton.js`, `chip-overflow.js`) are pure side-effect IIFEs registered in `app.html`; they expose `window.SerfToast` (the only new global), follow the same shape as `notifications.js`/`pending.js`, and never re-fetch from the server. Empty-state CSS reuses tokens from Pass 1; reduced-motion fallbacks add non-animated border/shadow signals to compensate for `*` killing animations.
+**Architecture:** All work is additive CSS + a handful of small JS modules — no Go changes, no template restructuring beyond per-surface empty-state markup and `#toast-region` insertion. New JS files (`toast.js`, `skeleton.js`, `chip-overflow.js`) are pure side-effect IIFEs registered in `app.html`; they expose `window.EvenerToast` (the only new global), follow the same shape as `notifications.js`/`pending.js`, and never re-fetch from the server. Empty-state CSS reuses tokens from Pass 1; reduced-motion fallbacks add non-animated border/shadow signals to compensate for `*` killing animations.
 
 **Tech Stack:** Plain ES2017 (no bundler), CSS custom properties (Pass 1 tokens), htmx 2.x events, JSDOM-based smoke tests, existing template engine (Go `html/template`).
 
@@ -13,10 +13,10 @@
 ## Files
 
 **Create**
-- `cmd/evener-hub/assets/toast.js` — `window.SerfToast.show / .dismiss`, auto-dismiss queue, slide-in animation hook.
+- `cmd/evener-hub/assets/toast.js` — `window.EvenerToast.show / .dismiss`, auto-dismiss queue, slide-in animation hook.
 - `cmd/evener-hub/assets/skeleton.js` — htmx hook that sets/clears `data-loading` on swap targets.
 - `cmd/evener-hub/assets/chip-overflow.js` — caps visible spawn chips at 4, adds `+N more` expand button.
-- `cmd/evener-hub/jstest/test-toast.js` — JSDOM smoke for `SerfToast.show`, auto-dismiss, dismiss handle, `aria-live`.
+- `cmd/evener-hub/jstest/test-toast.js` — JSDOM smoke for `EvenerToast.show`, auto-dismiss, dismiss handle, `aria-live`.
 - `cmd/evener-hub/jstest/test-skeleton-data-loading.js` — JSDOM smoke for `data-loading` set on `htmx:beforeRequest`, cleared on `htmx:afterSwap`.
 - `cmd/evener-hub/jstest/test-chip-overflow.js` — JSDOM smoke for visible-chip cap + expand.
 
@@ -141,7 +141,7 @@ git commit -m "ui(pass-8): add #toast-region and toast CSS"
 - [ ] **Step 1: Write the failing JSDOM test**
 
 ```javascript
-// Verify window.SerfToast.show inserts an .toast element into #toast-region,
+// Verify window.EvenerToast.show inserts an .toast element into #toast-region,
 // auto-dismisses after the configured timeout, returns a handle that can be
 // dismissed early, and that #toast-region has aria-live="polite".
 const fs = require("fs");
@@ -169,22 +169,22 @@ window.eval(toastSrc);
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-pass(typeof window.SerfToast === "object", "SerfToast global should exist");
-pass(typeof window.SerfToast.show === "function", "SerfToast.show should be a function");
-pass(typeof window.SerfToast.dismiss === "function", "SerfToast.dismiss should be a function");
+pass(typeof window.EvenerToast === "object", "EvenerToast global should exist");
+pass(typeof window.EvenerToast.show === "function", "EvenerToast.show should be a function");
+pass(typeof window.EvenerToast.dismiss === "function", "EvenerToast.dismiss should be a function");
 
 const region = window.document.getElementById("toast-region");
 pass(region.getAttribute("aria-live") === "polite", "toast-region should be aria-live=polite");
 
 // Show a success toast.
-const h1 = window.SerfToast.show("Saved", "success");
+const h1 = window.EvenerToast.show("Saved", "success");
 let toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 1, "expected 1 toast, got " + toasts.length);
 pass(toasts[0].classList.contains("toast-success"), "kind class should be applied");
 pass(toasts[0].textContent.includes("Saved"), "message should appear");
 
 // Dismiss handle explicitly.
-window.SerfToast.dismiss(h1);
+window.EvenerToast.dismiss(h1);
 // The dismissing class is applied; the element is still in the DOM until
 // the exit animation timer fires. Flush timers.
 flushTimers();
@@ -192,7 +192,7 @@ toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 0, "after dismiss the toast should be removed");
 
 // Auto-dismiss after timeout.
-window.SerfToast.show("Bye", "info", { timeout: 50 });
+window.EvenerToast.show("Bye", "info", { timeout: 50 });
 toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 1, "after show the toast should exist");
 flushTimers(); // runs the 50ms auto-dismiss timer
@@ -202,14 +202,14 @@ pass(toasts.length === 0, "after auto-dismiss the toast should be removed");
 
 // Default kind is "info"; missing region is tolerated.
 const ghost = window.document.createElement("div");
-const detached = window.SerfToast.show("ignored", "info"); // should still create a toast in the existing region
+const detached = window.EvenerToast.show("ignored", "info"); // should still create a toast in the existing region
 toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 1, "default kind toast inserted");
-window.SerfToast.dismiss(detached);
+window.EvenerToast.dismiss(detached);
 flushTimers();
 
 // Unknown kind defaults to info.
-window.SerfToast.show("hi", "unknown-kind");
+window.EvenerToast.show("hi", "unknown-kind");
 toasts = region.querySelectorAll(".toast");
 pass(toasts[0].classList.contains("toast-info"), "unknown kind should default to toast-info");
 
@@ -250,7 +250,7 @@ git commit -m "test(pass-8): toast smoke test (red)"
 ```javascript
 // toast.js — top-center, aria-live="polite" transient notifications.
 //
-// Exposes window.SerfToast.show(message, kind, opts) and .dismiss(handle).
+// Exposes window.EvenerToast.show(message, kind, opts) and .dismiss(handle).
 // Toasts are inserted into #toast-region (rendered by app.html). Default
 // timeout is 3000ms; opts.timeout overrides. opts.timeout = 0 disables
 // auto-dismiss. Kind defaults to "info"; unknown kinds also become "info".
@@ -333,7 +333,7 @@ git commit -m "test(pass-8): toast smoke test (red)"
   function error(message, opts) { return show(message, "error", opts); }
   function info(message, opts) { return show(message, "info", opts); }
 
-  window.SerfToast = {
+  window.EvenerToast = {
     show: show,
     dismiss: dismiss,
     success: success,
@@ -371,7 +371,7 @@ Expected: all tests pass.
 
 ```bash
 git add cmd/evener-hub/assets/toast.js cmd/evener-hub/templates/app.html
-git commit -m "feat(pass-8): toast.js (window.SerfToast.show/dismiss)"
+git commit -m "feat(pass-8): toast.js (window.EvenerToast.show/dismiss)"
 ```
 
 ---
@@ -407,9 +407,9 @@ with:
       const id = t.getAttribute("data-copy-id");
       if (id && navigator.clipboard) {
         navigator.clipboard.writeText(id).then(() => {
-          if (window.SerfToast) window.SerfToast.show("Session ID copied", "success");
+          if (window.EvenerToast) window.EvenerToast.show("Session ID copied", "success");
         }, () => {
-          if (window.SerfToast) window.SerfToast.show("Copy failed — clipboard blocked", "error");
+          if (window.EvenerToast) window.EvenerToast.show("Copy failed — clipboard blocked", "error");
         });
       }
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
@@ -447,7 +447,7 @@ Locate the `shutdown` and `model` entries in `commands(ctx)` (around lines 253�
       { id: "model", title: "Switch model", hint: "", keywords: [], scope: "session",
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
-          run: (ctx, item) => window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
+          run: (ctx, item) => window.EvenerAppwire ? window.EvenerAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: item.id }),
           }) } },
@@ -460,10 +460,10 @@ with:
         run: (ctx) => {
           const p = postSession(ctx, "shutdown");
           return Promise.resolve(p).then((r) => {
-            if (window.SerfToast) window.SerfToast.show("Session shut down", "success");
+            if (window.EvenerToast) window.EvenerToast.show("Session shut down", "success");
             return r;
           }, (err) => {
-            if (window.SerfToast) window.SerfToast.show("Shutdown failed", "error");
+            if (window.EvenerToast) window.EvenerToast.show("Shutdown failed", "error");
             throw err;
           });
         } },
@@ -471,15 +471,15 @@ with:
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
           run: (ctx, item) => {
-            const p = window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
+            const p = window.EvenerAppwire ? window.EvenerAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ model: item.id }),
             });
             return Promise.resolve(p).then((r) => {
-              if (window.SerfToast) window.SerfToast.show("Model: " + item.id, "success");
+              if (window.EvenerToast) window.EvenerToast.show("Model: " + item.id, "success");
               return r;
             }, (err) => {
-              if (window.SerfToast) window.SerfToast.show("Model change failed", "error");
+              if (window.EvenerToast) window.EvenerToast.show("Model change failed", "error");
               throw err;
             });
           } } },
@@ -520,7 +520,7 @@ Replace the `change` handler body so each successful save fires a toast:
     if (target.matches('input[name="theme"]')) {
       const v = target.value;
       window.evenerHub.setTheme(v === "system" ? null : v);
-      if (window.SerfToast) window.SerfToast.show("Theme: " + v, "success");
+      if (window.EvenerToast) window.EvenerToast.show("Theme: " + v, "success");
       return;
     }
 
@@ -535,7 +535,7 @@ Replace the `change` handler body so each successful save fires a toast:
       document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
         detail: { key, value: target.checked },
       }));
-      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
       return;
     }
   });
@@ -575,11 +575,11 @@ Replace the `form.addEventListener("submit", …)` block:
         try {
           await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
           setStatus("Saved at " + new Date().toLocaleTimeString());
-          if (window.SerfToast) window.SerfToast.show("Launch defaults saved", "success");
+          if (window.EvenerToast) window.EvenerToast.show("Launch defaults saved", "success");
         } catch (err) {
           window.LaunchConfigControls.showBackendError(form, err);
           setStatus("Error: " + (err && err.message ? err.message : err));
-          if (window.SerfToast) window.SerfToast.show("Save failed", "error");
+          if (window.EvenerToast) window.EvenerToast.show("Save failed", "error");
         }
       });
 ```
@@ -590,16 +590,16 @@ Read `cmd/evener-hub/templates/partials/settings/project.html` around line 50–
 
 ```javascript
           setStatus("Saved at " + new Date().toLocaleTimeString());
-          if (window.SerfToast) window.SerfToast.show("Project launch settings saved", "success");
+          if (window.EvenerToast) window.EvenerToast.show("Project launch settings saved", "success");
 ```
 
 And in the corresponding `catch (err)` branch:
 
 ```javascript
-          if (window.SerfToast) window.SerfToast.show("Save failed", "error");
+          if (window.EvenerToast) window.EvenerToast.show("Save failed", "error");
 ```
 
-(Copy the same `if (window.SerfToast) …` pair into the project.html submit handler at the matching success and failure points.)
+(Copy the same `if (window.EvenerToast) …` pair into the project.html submit handler at the matching success and failure points.)
 
 - [ ] **Step 3: Build evener-hub to confirm templates parse**
 
@@ -658,8 +658,8 @@ with:
     const banner = findErrorBanner(anchorEl);
     if (!banner) {
       // Even without a banner anchor we still want the user to know.
-      if (rejected && rejected.length && window.SerfToast) {
-        window.SerfToast.show("Attachment rejected", "error");
+      if (rejected && rejected.length && window.EvenerToast) {
+        window.EvenerToast.show("Attachment rejected", "error");
       }
       return;
     }
@@ -674,7 +674,7 @@ with:
       : "Skipped " + rejected.length + " non-image files: " + names;
     banner.textContent = msg;
     banner.hidden = false;
-    if (window.SerfToast) window.SerfToast.show(msg, "error");
+    if (window.EvenerToast) window.EvenerToast.show(msg, "error");
   }
 ```
 
@@ -684,7 +684,7 @@ with:
 cd cmd/evener-hub/jstest && node test-submit-attachments.js && node test-composer-image-markers.js && node test-drag-drop-image.js && node test-paste-image.js
 ```
 
-Expected: PASS (existing assertions still pass; the toast call is best-effort guarded by `if (window.SerfToast)`, so jsdom tests without the global skip it).
+Expected: PASS (existing assertions still pass; the toast call is best-effort guarded by `if (window.EvenerToast)`, so jsdom tests without the global skip it).
 
 - [ ] **Step 3: Commit**
 
@@ -766,11 +766,11 @@ In the `open` success branch:
         }, (err) => {
 ```
 
-Finally, expose `onConnectionRestored` from the public surface. Locate the existing `return {` block at the bottom of the file and add `onConnectionRestored: onConnectionRestored,` next to `onConnectionLost`. (The file declares `window.SerfAppwire = { … }` or returns a public surface — add the key inside whichever shape it uses.)
+Finally, expose `onConnectionRestored` from the public surface. Locate the existing `return {` block at the bottom of the file and add `onConnectionRestored: onConnectionRestored,` next to `onConnectionLost`. (The file declares `window.EvenerAppwire = { … }` or returns a public surface — add the key inside whichever shape it uses.)
 
 - [ ] **Step 2: Register subscribers that show toast + persistent banner**
 
-Append to the end of `appwire.js` (inside the same IIFE, after `window.SerfAppwire = …`):
+Append to the end of `appwire.js` (inside the same IIFE, after `window.EvenerAppwire = …`):
 
 ```javascript
   // Wire toast + persistent banner. The banner is required because a 3s
@@ -792,11 +792,11 @@ Append to the end of `appwire.js` (inside the same IIFE, after `window.SerfAppwi
     if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
   }
   onConnectionLost(() => {
-    if (window.SerfToast) window.SerfToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
+    if (window.EvenerToast) window.EvenerToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
     ensureConnectionBanner();
   });
   onConnectionRestored(() => {
-    if (window.SerfToast) window.SerfToast.show("Connection restored", "success");
+    if (window.EvenerToast) window.EvenerToast.show("Connection restored", "success");
     clearConnectionBanner();
   });
 ```
@@ -854,13 +854,13 @@ In `app.html`, just before the closing `</body>` (after all other `<script>` tag
     // Global htmx error → toast. Renderer-specific error handling continues
     // to win because htmx:responseError bubbles and we never preventDefault.
     document.body.addEventListener("htmx:responseError", function (e) {
-      if (!window.SerfToast) return;
+      if (!window.EvenerToast) return;
       var status = (e && e.detail && e.detail.xhr && e.detail.xhr.status) || 0;
       var msg = status ? ("Request failed (" + status + ")") : "Request failed";
-      window.SerfToast.show(msg, "error");
+      window.EvenerToast.show(msg, "error");
     });
     document.body.addEventListener("htmx:sendError", function () {
-      if (window.SerfToast) window.SerfToast.show("Network error", "error");
+      if (window.EvenerToast) window.EvenerToast.show("Network error", "error");
     });
   </script>
 ```
@@ -2011,7 +2011,7 @@ Replace:
 with:
 ```javascript
         } catch (err) {
-          if (window.SerfToast) window.SerfToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
+          if (window.EvenerToast) window.EvenerToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
         }
 ```
 
@@ -2038,9 +2038,9 @@ with:
           await launchconfig.authLogout(provider);
           openEditor = null;
           await refresh();
-          if (window.SerfToast) window.SerfToast.show("Credentials cleared for " + provider, "success");
+          if (window.EvenerToast) window.EvenerToast.show("Credentials cleared for " + provider, "success");
         } catch (err) {
-          if (window.SerfToast) window.SerfToast.show("Clear failed: " + (err && err.message ? err.message : err), "error");
+          if (window.EvenerToast) window.EvenerToast.show("Clear failed: " + (err && err.message ? err.message : err), "error");
         }
       }
 ```
@@ -2063,10 +2063,10 @@ with:
           await launchconfig.authApiKeySet(provider, value);
           openEditor = null;
           await refresh();
-          if (window.SerfToast) window.SerfToast.show("API key saved for " + provider, "success");
+          if (window.EvenerToast) window.EvenerToast.show("API key saved for " + provider, "success");
         } catch (err) {
           showInlineError(err && err.message ? err.message : String(err));
-          if (window.SerfToast) window.SerfToast.show("Save failed: " + (err && err.message ? err.message : err), "error");
+          if (window.EvenerToast) window.EvenerToast.show("Save failed: " + (err && err.message ? err.message : err), "error");
         }
 ```
 
@@ -2088,10 +2088,10 @@ with:
           await launchconfig.authLoginComplete(provider, flowId, redirectUrl);
           openEditor = null;
           await refresh();
-          if (window.SerfToast) window.SerfToast.show("Signed in to " + provider, "success");
+          if (window.EvenerToast) window.EvenerToast.show("Signed in to " + provider, "success");
         } catch (err) {
           showInlineError(err && err.message ? err.message : String(err));
-          if (window.SerfToast) window.SerfToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
+          if (window.EvenerToast) window.EvenerToast.show("Sign-in failed: " + (err && err.message ? err.message : err), "error");
         }
 ```
 
@@ -2270,7 +2270,7 @@ If verification was clean, no commit needed for this step.
 - [x] **TDD:** Tests precede implementation for toast (Task 2 → 3), skeleton (Task 11 → 12), chip overflow (Task 22).
 - [x] **Bite-sized tasks:** every task has discrete steps with explicit commands and expected output.
 - [x] **No placeholders:** all code, file paths, and commands are concrete; no "TODO" / "TBD".
-- [x] **Type consistency:** `window.SerfToast.show(message, kind, opts)` signature is identical across all callers; `data-loading` attribute name is identical between `skeleton.js`, CSS, and partials; `data-chip-overflow-host` matches between `chip-overflow.js` and `spawn.html`.
+- [x] **Type consistency:** `window.EvenerToast.show(message, kind, opts)` signature is identical across all callers; `data-loading` attribute name is identical between `skeleton.js`, CSS, and partials; `data-chip-overflow-host` matches between `chip-overflow.js` and `spawn.html`.
 
 ---
 

@@ -7,7 +7,7 @@ expand bookkeeping doesn't carry across that render, a project you deliberately
 opened silently collapses the moment something happens somewhere else.
 
 The mechanism moved wholesale. There is no `doResync()` and no
-`window.SerfSidebarModel` — expansion is React state in `Rail.tsx`
+`window.EvenerSidebarModel` — expansion is React state in `Rail.tsx`
 (`expandedOverrides`, `:164`, seeded from `localStorage` by `loadExpansion`),
 resolved per row by `overrideLookup` (`railNodes.ts:106-108`) and persisted on
 every toggle by `setExpanded` (`Rail.tsx:197-205`). The refetch is
@@ -152,7 +152,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
   distinguish "attribute absent" from "attribute is the string `undefined`",
   which is why the probe reports `hasAttr` separately.
 - **Don't try to force a refetch by hand.** There is no
-  `window.SerfSidebar.refresh()`; the only triggers are the four notification
+  `window.EvenerSidebar.refresh()`; the only triggers are the four notification
   methods in `REFRESH_NOTIFICATIONS` and the rail's own mount effect. Causing
   real live activity is the point of step 5 anyway — a hand-poked refetch would
   not exercise the notification path this card guards.

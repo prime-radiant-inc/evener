@@ -396,7 +396,7 @@ production call site, inside `initSessionState`, called synchronously —
 need heavy load):**
 
 ```
-go test -race ./agent/ -run 'TestExpandSlashCommand_SerfwideDoesNotExecute' -count=10
+go test -race ./agent/ -run 'TestExpandSlashCommand_EvenerwideDoesNotExecute' -count=10
 ```
 
 Fails on HEAD with:
@@ -458,7 +458,7 @@ and say why the test-fixture theory above is wrong.
 **Verify:**
 
 ```
-go test -race ./agent/ -run 'TestExpandSlashCommand_SerfwideDoesNotExecute' -count=10
+go test -race ./agent/ -run 'TestExpandSlashCommand_EvenerwideDoesNotExecute' -count=10
 ```
 
 Must pass clean, no `WARNING: DATA RACE`, all 10 iterations.
@@ -510,7 +510,7 @@ already be mid-retry.
    `cmd/evener-hub/frontend/src/protocol/model.ts:184` for the web
    analog). Add a field (e.g. `modelRetryReceivedAt time.Time`) to
    `hubModel`, set alongside `m.modelRetry = &params` in
-   `hub_notifications.go`'s `NotifySerfThreadModelRetry` case (around line
+   `hub_notifications.go`'s `NotifyEvenerThreadModelRetry` case (around line
    128-136).
 2. Compute the effective in-progress state as the OR: the existing
    delta-driven `m.modelRetryInProgress` flag, OR

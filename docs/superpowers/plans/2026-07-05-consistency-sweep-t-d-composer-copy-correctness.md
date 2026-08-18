@@ -51,7 +51,7 @@ agent/
 internal/appprojector/
   appwire_projection.go          # project EventTaskUpdated → evener/task/updated (~588 EventQueueChanged pattern) — Correctness T9
 appwire/
-  types.go                       # NotifySerfTaskUpdated (~87, exists), TaskUpdatedParams (new type) — Correctness T9
+  types.go                       # NotifyEvenerTaskUpdated (~87, exists), TaskUpdatedParams (new type) — Correctness T9
   protocol.go                    # Notifications catalog — add evener/task/updated entry (remove "intentionally absent" note) — Correctness T9
 docs/superpowers/plans/
   2026-07-05-consistency-sweep-t-d-composer-copy-correctness.md   # this plan
@@ -164,7 +164,7 @@ Append to `cmd/evener-hub/jstest/test-actions.js` (before the final pass/exit bl
 // ── Composer-at-rest: a rested "awaiting" session shows plain Send ──────────
 // updateThreadState("awaiting") must NOT flip the send button into queue mode
 // nor enable the Stop/steer controls — awaiting is a rest, not a running turn.
-const R = window.SerfRenderer || window.evenerRenderer;
+const R = window.EvenerRenderer || window.evenerRenderer;
 if (R && typeof R.updateThreadState === "function") {
   R.sessionId = "01ACT001";
   R.conversation = window.document.getElementById("conversation");
@@ -244,7 +244,7 @@ func TestWeb_WorkspaceAwaitingRestDisablesStopAndSteer(t *testing.T) {
 			ID: "th_await", SessionID: "th_await", Source: "codex",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
 			ModelProvider: "gpt-5",
-			Evener: appwire.SerfThread{
+			Evener: appwire.EvenerThread{
 				Ref:          "codex:th_await",
 				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
 			},
@@ -327,7 +327,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "th_tasks", SessionID: "th_tasks", Source: "codex",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener:   appwire.SerfThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener:   appwire.EvenerThread{Ref: "codex:th_tasks", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_tasks")+"/workspace", nil)
@@ -676,7 +676,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 		thread: appwire.Thread{
 			ID: "01RENAMED", SessionID: "01RENAMED", Source: "local",
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Evener: appwire.SerfThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
+			Evener: appwire.EvenerThread{Ref: "local:01RENAMED", Capabilities: appwire.ThreadCapabilities{Send: true}},
 		},
 	})
 	detail, ok := web.apiSessionDetail("01RENAMED")
@@ -910,7 +910,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	r.Refresh() // session reads as live
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	// scriptedAppSource.SetThreadName returns Unavailable — the daemon rename fails.
-	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: "01RACE", SessionID: "01RACE", Source: "local", CWD: proj, Evener: appwire.SerfThread{Ref: "local:01RACE"}}})
+	web.sources.Add(&scriptedAppSource{id: "local", thread: appwire.Thread{ID: "01RACE", SessionID: "01RACE", Source: "local", CWD: proj, Evener: appwire.EvenerThread{Ref: "local:01RACE"}}})
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01RACE/rename", strings.NewReader(`{"name":"new"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = "127.0.0.1:9180"
@@ -993,7 +993,7 @@ Extend `test-sidebar-menu.js` with a project carrying both the test-run placemen
 // which section stamped the row (WS3 R2).
 tree.test_runs = [{ key: "tr1", name: "e2e", working_dir: "/t/e2e", is_archived: true, default_expanded: true,
   sessions: [{ row_id: "project:tr1:local:0X", ref: "local:0X", session_id: "0X", title: "run", state: "ended", kind: "session", tier: "archived" }] }];
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 // expand test-runs section, open the project menu, read items:
 const items = /* ...open menu, map .sb-menu-item textContent... */;
 if (!items.some((t) => /^Unarchive$/.test(t))) throw new Error("archived test-run project must offer Unarchive, got " + JSON.stringify(items));
@@ -1051,7 +1051,7 @@ let navigated = "";
 Object.defineProperty(w.location, "href", { set(v) { navigated = v; }, get() { return navigated; }, configurable: true });
 const tree = emptyTree();
 tree.projects = [{ key: "p1", name: "p", working_dir: "/w/a b&c#d", default_expanded: true, sessions: [] }];
-w.SerfSidebar.renderTree(tree);
+w.EvenerSidebar.renderTree(tree);
 // open the project menu, click "New session"
 // ...
 if (!/\/new\?dir=%2Fw%2Fa%20b%26c%23d/.test(navigated)) {
@@ -1188,15 +1188,15 @@ _~15 loc._
 
 ### Correctness T9: Emit `evener/task/updated` on task-status change; subscribe the task row
 
-`evener/task/updated` is in the appwire notification catalog constant (`NotifySerfTaskUpdated`, types.go:87) but **emitted by nothing** — `protocol.go:152-154` even documents it as "intentionally absent" from the `Notifications` catalog list. The web keeps the task badge fresh with a 5s poll (retired in Copy T3). Jesse's decision: emit the event on task-status change, subscribe the status row to it, delete the poll.
+`evener/task/updated` is in the appwire notification catalog constant (`NotifyEvenerTaskUpdated`, types.go:87) but **emitted by nothing** — `protocol.go:152-154` even documents it as "intentionally absent" from the `Notifications` catalog list. The web keeps the task badge fresh with a 5s poll (retired in Copy T3). Jesse's decision: emit the event on task-status change, subscribe the status row to it, delete the poll.
 
 **Appwire router question (answered):** the topic constant already exists; this adds a **notification emit**, not a new request **method**. Notification emits do not go through the request routers, and the handoff rule ("new METHODS need catalog + both routers in one commit; new struct fields don't") does not cover notifications. The one catalog touch needed: `evener/task/updated` must appear in the `Notifications` slice in `protocol.go` (it currently does not — it's the "intentionally absent" case), so the generated-doc + `TestNotificationCatalogWellFormed` cross-check stays honest. That is a single-slice append in `appwire/protocol.go` plus a new `TaskUpdatedParams` payload type — **no router change**.
 
 **Files:**
 - Modify: `agent/session_tools_task.go` (emit an `EventTaskUpdated` after `store.Append`/`store.Update`)
 - Modify: `agent/events/events.go` (+ `EventTaskUpdated` kind), `agent/events/payloads.go` (+ `TaskUpdatedData`)
-- Modify: `internal/appprojector/appwire_projection.go` (project `EventTaskUpdated` → `NotifySerfTaskUpdated`, mirroring the `EventQueueChanged` case at ~588)
-- Modify: `appwire/types.go` (+ `TaskUpdatedParams`), `appwire/protocol.go` (add the `Notifications` catalog entry; drop `NotifySerfTaskUpdated` from the "intentionally absent" prose)
+- Modify: `internal/appprojector/appwire_projection.go` (project `EventTaskUpdated` → `NotifyEvenerTaskUpdated`, mirroring the `EventQueueChanged` case at ~588)
+- Modify: `appwire/types.go` (+ `TaskUpdatedParams`), `appwire/protocol.go` (add the `Notifications` catalog entry; drop `NotifyEvenerTaskUpdated` from the "intentionally absent" prose)
 - Modify: `cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`: map `evener/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
 - Test: `agent/session_tools_task_test.go` (emit), `internal/appprojector/*_test.go` (projection), `cmd/evener-hub/jstest/test-task-updated-subscription.js` (client)
 
@@ -1253,13 +1253,13 @@ Expected: PASS
 
 - [ ] **Step 5: Failing test (projector) — EventTaskUpdated projects to evener/task/updated**
 
-In `internal/appprojector/appwire_projection_test.go` (or the suite's projection test file), feed an `EventTaskUpdated` and assert one `NotifySerfTaskUpdated` notification with the mapped params:
+In `internal/appprojector/appwire_projection_test.go` (or the suite's projection test file), feed an `EventTaskUpdated` and assert one `NotifyEvenerTaskUpdated` notification with the mapped params:
 
 ```go
 func TestProject_TaskUpdated(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Data: events.TaskUpdatedData{Total: 3, Done: 1}})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfTaskUpdated {
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
 		t.Fatalf("want one evener/task/updated notification, got %+v", out)
 	}
 }
@@ -1286,10 +1286,10 @@ type TaskUpdatedParams struct {
 }
 ```
 
-In `appwire/protocol.go`, add to the `Notifications` slice (and edit the prose at lines 152-154 to drop `NotifySerfTaskUpdated` from the "intentionally absent" list, leaving only `NotifySerfContextPressure`):
+In `appwire/protocol.go`, add to the `Notifications` slice (and edit the prose at lines 152-154 to drop `NotifyEvenerTaskUpdated` from the "intentionally absent" list, leaving only `NotifyEvenerContextPressure`):
 
 ```go
-	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
+	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 ```
 
 In `internal/appprojector/appwire_projection.go`, add a case alongside `EventQueueChanged` (~588):
@@ -1298,7 +1298,7 @@ In `internal/appprojector/appwire_projection.go`, add a case alongside `EventQue
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfTaskUpdated, appwire.TaskUpdatedParams{
+		return []AppNotification{p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Total:    data.Total,
@@ -1313,7 +1313,7 @@ Expected: PASS; `make generate` updates `docs/appwire-protocol.md` to list `even
 
 - [ ] **Step 9: Failing test (client) — a evener/task/updated notification refreshes the badge, no 5s poll**
 
-Create `cmd/evener-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `SerfAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `evener/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
+Create `cmd/evener-hub/jstest/test-task-updated-subscription.js` (JSDOM). Stub `EvenerAppwire` with an `onNotification` hook and `eventsFromNotification`, attach the renderer to a session, deliver a `evener/task/updated` notification with `{total:3, done:1}`, and assert the badge text updates to `1/3` (and — the Copy T3 guard — no 5000ms interval was armed):
 
 ```js
 const intervals = [];
@@ -1352,8 +1352,8 @@ In `renderer.js`'s `handleData` switch (alongside `QUEUE_CHANGED`, ~1003), add:
           // once to refresh the panel's per-row detail, but update the badge
           // immediately from the pushed counts so the status row never lags.
           updateTasksBadge(data.done, data.total, "");
-          if (window.SerfAppwire) {
-            window.SerfAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
+          if (window.EvenerAppwire) {
+            window.EvenerAppwire.tasks(this.sessionId).then(tasks => this.applyTasks(tasks)).catch(() => {});
           }
           break;
 ```

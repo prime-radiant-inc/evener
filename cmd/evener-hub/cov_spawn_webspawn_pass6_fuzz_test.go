@@ -102,8 +102,8 @@ sleep 1`)
 			`exit 4`,
 		} {
 			bin := pass6Executable(t, body)
-			_ = validateSerfLaunchContract(ctx, bin, "model", []string{"API_KEY=supersecret"})
-			_, _ = listSerfLaunchModelContract(ctx, bin, []string{"API_KEY=supersecret"})
+			_ = validateEvenerLaunchContract(ctx, bin, "model", []string{"API_KEY=supersecret"})
+			_, _ = listEvenerLaunchModelContract(ctx, bin, []string{"API_KEY=supersecret"})
 		}
 	})
 }

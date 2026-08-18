@@ -378,7 +378,7 @@ func TestMapClaudeToolName(t *testing.T) {
     }
 }
 
-func TestMapSerfToolNameToClaude(t *testing.T) {
+func TestMapEvenerToolNameToClaude(t *testing.T) {
     tests := map[string]string{
         "read_file": "Read", "write_file": "Write", "edit_file": "Edit",
         "shell": "Bash", "grep": "Grep", "glob": "Glob",
@@ -386,8 +386,8 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
         "unknown": "unknown", // passthrough
     }
     for input, want := range tests {
-        if got := MapSerfToolNameToClaude(input); got != want {
-            t.Errorf("MapSerfToolNameToClaude(%q) = %q, want %q", input, got, want)
+        if got := MapEvenerToolNameToClaude(input); got != want {
+            t.Errorf("MapEvenerToolNameToClaude(%q) = %q, want %q", input, got, want)
         }
     }
 }
@@ -398,7 +398,7 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
 **Step 3: Implement**
 
 Two maps and two functions. `MapClaudeToolName(name) string` and
-`MapSerfToolNameToClaude(name) string`. Unknown names pass through unchanged.
+`MapEvenerToolNameToClaude(name) string`. Unknown names pass through unchanged.
 
 **Step 4: Run tests, verify pass**
 

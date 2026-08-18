@@ -31,7 +31,7 @@ func init() {
 		TestStartupErrorScreenNamesFailureKind(t)
 		TestStartupError_DetailFallsBackToWrappedErr(t)
 		TestStartupError_ErrorMessagesPerKind(t)
-		TestStateHomeForSerfStateDir(t)
+		TestStateHomeForEvenerStateDir(t)
 
 	}
 }

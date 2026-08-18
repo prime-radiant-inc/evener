@@ -45,7 +45,7 @@ runaway, compaction, and observability defects (see "Revision history").
 
 Still a deliberately lean v1: the "Non-goals" section records what was cut. The added
 machinery is correctness, not features — and it leans on evener mechanisms that already
-exist (`TurnSteering`, the `ReadOnly` tool flag, `systemAnnouncement`, `SerfThread`).
+exist (`TurnSteering`, the `ReadOnly` tool flag, `systemAnnouncement`, `EvenerThread`).
 
 ## Motivation
 
@@ -361,7 +361,7 @@ after the current turn" rather than implying immediate start.
 **Do not use `ThreadStatus.ActiveFlags`** — it has zero non-test consumers (dead wire-compat
 scaffolding), so using it means building the consumer anyway and string-parsing structured
 data back out. Instead add a typed `Goal *GoalStatus {status, iterations, max}` to
-`SerfThread` (`appwire/types.go`), which already carries structured per-session state
+`EvenerThread` (`appwire/types.go`), which already carries structured per-session state
 (`Queue`, `ContextPressure`, `Capabilities`). `/goal status` reads the already-fetched
 thread snapshot; this same field powers a future status-bar indicator with no new transport.
 
@@ -435,7 +435,7 @@ direction, not a stall).
 - `server/server.go` (`InputMessage` kind; `goalFunc` + `SetGoalFunc`),
   `server/appwire_runtime.go` (handler registration; carry kind on the idle kick),
   `appwire/types.go` (`MethodGoalSet` + params/response; typed `Goal *GoalStatus` on
-  `SerfThread`), `appwire/client.go` (`Client.GoalSet`), `cmd/evener/serve.go`
+  `EvenerThread`), `appwire/client.go` (`Client.GoalSet`), `cmd/evener/serve.go`
   (`SetGoalFunc` wiring; pass the kind from `inputCh`).
 - `cmd/evener-tui/hub_command_registry.go` + a `sendHubGoal` helper — `/goal` command.
 
@@ -497,7 +497,7 @@ direction, not a stall).
   (§2b) to bound intra-turn compaction *and* spend. No-progress now reuses the `ReadOnly` flag
   (write/exec = progress; reads/`task`/result excluded) with `NoProgressLimit=3`. Error→blocked
   now distinguishes user-interrupt from system cancellation/deadline/abort and emits before any
-  `Close`. Terminal report reuses `systemAnnouncement`; status uses a typed `SerfThread.Goal`
+  `Close`. Terminal report reuses `systemAnnouncement`; status uses a typed `EvenerThread.Goal`
   field (not dead `ActiveFlags`). Dropped the subagent-in-flight guard. `ClearGoal` shares the
   set/gate lock coordination. Q3 resolved (reuse `TurnSteering`).
 - **rev 2:** post round 1 — cross-lock TOCTOU fix, error→blocked, no-progress breaker, terminal

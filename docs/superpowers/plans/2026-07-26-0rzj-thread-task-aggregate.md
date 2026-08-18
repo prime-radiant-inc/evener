@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an optional authoritative task aggregate to `appwire.SerfThread` so live, cold, and reconnect snapshots preserve task counts and the frontend never loses its Tasks badge.
+**Goal:** Add an optional authoritative task aggregate to `appwire.EvenerThread` so live, cold, and reconnect snapshots preserve task counts and the frontend never loses its Tasks badge.
 
 **Architecture:** Define a nullable Go wire aggregate with only `total` and `done`, wire a live callback from the session's real task store into the server snapshot, and project persisted task-store data in the hub's past-thread projector. Missing or unsupported sources leave the pointer nil; a source that has an authoritative empty task file emits a present zero aggregate. Regenerate TypeScript and consume the field in `hydrateThread`, preserving it through websocket reconnect replacement.
 
@@ -30,7 +30,7 @@
 
 **Interfaces:**
 - Consumes: the existing `evener/task/updated` `total`/`done` contract and `Session.Tasks()` callback.
-- Produces: `appwire.TaskAggregate`, `SerfThread.Tasks *TaskAggregate`, and `Server.SetTaskAggregateFunc(func() *appwire.TaskAggregate)` used only by authoritative live thread reads.
+- Produces: `appwire.TaskAggregate`, `EvenerThread.Tasks *TaskAggregate`, and `Server.SetTaskAggregateFunc(func() *appwire.TaskAggregate)` used only by authoritative live thread reads.
 
 - [ ] **Step 1: Write the failing Go wire and live-snapshot tests**
 
@@ -57,7 +57,7 @@
   }
   ```
 
-  Add `Tasks *TaskAggregate `json:"tasks,omitempty"`` to `SerfThread`. Add a server callback field and setter. In `Server.appThread`, call the callback if wired and assign its pointer; leave it nil when the callback is absent. In `cmd/evener/serve.go`, wire the callback to `getSession().Tasks()`, counting `TaskDone` exactly as `TaskStore.Progress` does and returning a non-nil aggregate even when the real store is empty.
+  Add `Tasks *TaskAggregate `json:"tasks,omitempty"`` to `EvenerThread`. Add a server callback field and setter. In `Server.appThread`, call the callback if wired and assign its pointer; leave it nil when the callback is absent. In `cmd/evener/serve.go`, wire the callback to `getSession().Tasks()`, counting `TaskDone` exactly as `TaskStore.Progress` does and returning a non-nil aggregate even when the real store is empty.
 
 - [ ] **Step 4: Run focused server/appwire tests**
 
@@ -130,7 +130,7 @@
 - Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts:2400-2500`
 
 **Interfaces:**
-- Consumes: generated `SerfThread.tasks?: TaskAggregate` and existing `evener/task/updated` reducer behavior.
+- Consumes: generated `EvenerThread.tasks?: TaskAggregate` and existing `evener/task/updated` reducer behavior.
 - Produces: `ThreadModel.tasks` initialized from every authoritative snapshot, with absent wire data mapped to null and `{total: 0, done: 0}` preserved as a real value.
 
 - [ ] **Step 1: Write the failing reducer reconnect test**
@@ -156,7 +156,7 @@
   make generate
   ```
 
-  Confirm the generated `SerfThread` interface contains optional `tasks?: TaskAggregate` and the generated docs describe the field. Do not edit either generated file by hand.
+  Confirm the generated `EvenerThread` interface contains optional `tasks?: TaskAggregate` and the generated docs describe the field. Do not edit either generated file by hand.
 
 - [ ] **Step 4: Implement snapshot hydration and run the reducer test**
 

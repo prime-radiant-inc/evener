@@ -12,7 +12,7 @@ pressure display; and add three new client-side web settings (font size, Enter-t
 in the per-section settings files Track 0 creates.
 
 **Architecture:** Session-level cost is computed server-side in Go from already-wired
-`appwire.SerfThread.Usage`/`WorkspaceData.Usage`/`hubapi.SessionDetail.Usage` plus the thread's
+`appwire.EvenerThread.Usage`/`WorkspaceData.Usage`/`hubapi.SessionDetail.Usage` plus the thread's
 model id, via one new shared helper (`appwire.EstimateCost`) that both `cmd/evener-hub` and
 `internal/appprojector` call — no new pricing arithmetic duplicated per surface. Per-turn cost/
 tokens require one small piece of NEW wire plumbing the design spec undersold (flagged below):
@@ -52,7 +52,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   StatusInfo, appwire `AttentionEntry`) or Track B's files (app_models.go, web_spawn.go models
   path, spawn.js model picker, settings-pickers.js, TUI tuipick/model_picker.go, hub_commands.go
   model-list path, past.go). `appwire/types.go` is shared with Track A (different structs,
-  `SerfThread`/`Turn` here vs `AttentionEntry` there) — expect a trivial merge, not a real
+  `EvenerThread`/`Turn` here vs `AttentionEntry` there) — expect a trivial merge, not a real
   conflict.
 - TDD red-first for every behavioral change; test output must be pristine. Per-module test
   commands (`GO_MODULES` in Makefile) — this track's Go changes are entirely in the **root**
@@ -119,16 +119,16 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 
 - `llm/pricing.go` — strengthen `GetPrice` resolution; add `EstimateCost` pure arithmetic.
 - `llm/pricing_test.go` — new resolution + arithmetic tests.
-- `appwire/cost.go` (new) — `SerfUsageFromLLM`, `EstimateCost` (wire-level, calls `llm`).
+- `appwire/cost.go` (new) — `EvenerUsageFromLLM`, `EstimateCost` (wire-level, calls `llm`).
 - `appwire/cost_test.go` (new) — marshal/omit + arithmetic tests.
-- `appwire/types.go` — `Turn.Usage *SerfUsage`, `Turn.Cost string`.
+- `appwire/types.go` — `Turn.Usage *EvenerUsage`, `Turn.Cost string`.
 - `appwire/types_test.go` — `Turn` marshal/omit tests.
 - `internal/appprojector/appwire_projection.go` — `activeTurnUsage`/`activeTurnModel` accumulation
   + stamp at the four turn-completion sites.
 - `internal/appprojector/appwire_projection_test.go` — projector usage-accumulation tests.
 - `internal/apptranscript/apptranscript.go` — per-round `Usage` stamp in `TurnsFromFile`.
 - `internal/apptranscript/apptranscript_test.go` — usage-stamp test.
-- `cmd/evener/serve.go` — dedup `evenerUsageFromLLM` onto `appwire.SerfUsageFromLLM`.
+- `cmd/evener/serve.go` — dedup `evenerUsageFromLLM` onto `appwire.EvenerUsageFromLLM`.
 - `cmd/evener-hub/app_threadread.go` — `pastEntryThread` gains Usage/WorkMillis/ActiveTurnStartedAt;
   `pastEntryTurns` gains a per-turn Cost post-pass.
 - `cmd/evener-hub/app_threadread_test.go` — new tests for both.
@@ -285,13 +285,13 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
 
 ## Phase Q — Wire-level cost + usage conversion (`appwire`)
 
-### Task Q1 — `appwire.SerfUsageFromLLM` + `appwire.EstimateCost`
+### Task Q1 — `appwire.EvenerUsageFromLLM` + `appwire.EstimateCost`
 
 **Files:** New `appwire/cost.go`. Test: new `appwire/cost_test.go`.
 
 **Interfaces:**
-- Produces: `func SerfUsageFromLLM(u llm.Usage) *SerfUsage`; `func EstimateCost(model string, usage *SerfUsage) string`.
-- Consumes: `llm.DefaultPrice`, `llm.EstimateCost` (Task P2), existing `appwire.SerfUsage`.
+- Produces: `func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage`; `func EstimateCost(model string, usage *EvenerUsage) string`.
+- Consumes: `llm.DefaultPrice`, `llm.EstimateCost` (Task P2), existing `appwire.EvenerUsage`.
 
 - [ ] **Failing test** — new `appwire/cost_test.go`:
   ```go
@@ -303,15 +303,15 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	"primeradiant.com/evener/llm"
   )
 
-  func TestSerfUsageFromLLM_NilWhenAllZero(t *testing.T) {
-  	if got := SerfUsageFromLLM(llm.Usage{}); got != nil {
+  func TestEvenerUsageFromLLM_NilWhenAllZero(t *testing.T) {
+  	if got := EvenerUsageFromLLM(llm.Usage{}); got != nil {
   		t.Errorf("got %+v, want nil for all-zero usage", got)
   	}
   }
 
-  func TestSerfUsageFromLLM_MapsFields(t *testing.T) {
+  func TestEvenerUsageFromLLM_MapsFields(t *testing.T) {
   	cacheRead := 7
-  	got := SerfUsageFromLLM(llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 10, CacheReadTokens: &cacheRead})
+  	got := EvenerUsageFromLLM(llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 10, CacheReadTokens: &cacheRead})
   	if got == nil || got.InputTokens != 1 || got.OutputTokens != 2 || got.TotalTokens != 10 || got.CacheReadTokens != 7 {
   		t.Errorf("got %+v, want {1 2 7 10}", got)
   	}
@@ -324,7 +324,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   }
 
   func TestEstimateCost_UnpricedModelReturnsEmpty(t *testing.T) {
-  	got := EstimateCost("totally-unknown-model-xyz", &SerfUsage{InputTokens: 100})
+  	got := EstimateCost("totally-unknown-model-xyz", &EvenerUsage{InputTokens: 100})
   	if got != "" {
   		t.Errorf("got %q, want empty for an unpriced model (not a misleading ~$0.00)", got)
   	}
@@ -333,14 +333,14 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   func TestEstimateCost_FormatsToCents(t *testing.T) {
   	// claude-opus-4-5: $5/$25 per million (llm/pricing_test.go's known fixture values
   	// also hold for the embedded catalog per TestDefaultPrice_WellKnownModels).
-  	got := EstimateCost("claude-opus-4-5", &SerfUsage{InputTokens: 100_000, OutputTokens: 20_000})
+  	got := EstimateCost("claude-opus-4-5", &EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000})
   	// 100_000/1e6*5 + 20_000/1e6*25 = 0.5 + 0.5 = 1.00
   	if got != "~$1.00" {
   		t.Errorf("got %q, want ~$1.00", got)
   	}
   }
   ```
-  Run: `go test ./appwire/... -run 'TestSerfUsageFromLLM|TestEstimateCost' -count=1` → FAIL
+  Run: `go test ./appwire/... -run 'TestEvenerUsageFromLLM|TestEstimateCost' -count=1` → FAIL
   (undefined symbols).
 - [ ] **Implement** — new `appwire/cost.go`:
   ```go
@@ -352,13 +352,13 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	"primeradiant.com/evener/llm"
   )
 
-  // SerfUsageFromLLM converts a raw llm.Usage into the wire SerfUsage shape,
+  // EvenerUsageFromLLM converts a raw llm.Usage into the wire EvenerUsage shape,
   // returning nil when every total (including CacheReadTokens) is zero so
   // callers hide the usage cluster rather than render ↑0 ↓0 — the established
   // WS2 convention (mirrors cmd/evener/serve.go's evenerUsageFromLLM and
   // cmd/evener-hub's evenerUsageFromCumulative; this is the appwire-level home the
   // other two should eventually delegate to).
-  func SerfUsageFromLLM(u llm.Usage) *SerfUsage {
+  func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage {
   	cacheRead := int64(0)
   	if u.CacheReadTokens != nil {
   		cacheRead = int64(*u.CacheReadTokens)
@@ -366,7 +366,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	if u.InputTokens == 0 && u.OutputTokens == 0 && cacheRead == 0 && u.TotalTokens == 0 {
   		return nil
   	}
-  	return &SerfUsage{
+  	return &EvenerUsage{
   		InputTokens:     int64(u.InputTokens),
   		OutputTokens:    int64(u.OutputTokens),
   		CacheReadTokens: cacheRead,
@@ -380,7 +380,7 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   // pricing, so callers render nothing rather than a misleading "~$0.00" for
   // an uncataloged model. The "~" marks every non-empty result as an
   // estimate, not a billing-exact figure.
-  func EstimateCost(model string, usage *SerfUsage) string {
+  func EstimateCost(model string, usage *EvenerUsage) string {
   	if usage == nil {
   		return ""
   	}
@@ -392,10 +392,10 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   	return fmt.Sprintf("~$%.2f", dollars)
   }
   ```
-- [ ] **Run** `go test ./appwire/... -run 'TestSerfUsageFromLLM|TestEstimateCost' -count=1` → pass.
+- [ ] **Run** `go test ./appwire/... -run 'TestEvenerUsageFromLLM|TestEstimateCost' -count=1` → pass.
   `golangci-lint run ./...` (root) → green.
 - [ ] **Commit** — `git add appwire/cost.go appwire/cost_test.go` →
-  `feat(appwire): SerfUsageFromLLM + EstimateCost — one cost path for session- and turn-level usage`.
+  `feat(appwire): EvenerUsageFromLLM + EstimateCost — one cost path for session- and turn-level usage`.
 
 ### Task Q2 — Dedup `cmd/evener/serve.go`'s `evenerUsageFromLLM` onto the shared helper
 
@@ -405,13 +405,13 @@ row, details panel, per-turn badge, settings), jstest (JSDOM), `docs/web-ui/desi
   callers/tests of `evenerUsageFromLLM` in `cmd/evener` already cover its behavior). Run the existing
   suite first to confirm current green baseline: `go test ./cmd/evener/... -run 'ServeStatus|Usage' -count=1`.
 - [ ] **Implement** — in `cmd/evener/serve.go:604`, replace the body of
-  `func evenerUsageFromLLM(u llm.Usage) *appwire.SerfUsage { ... }` with
-  `return appwire.SerfUsageFromLLM(u)` (keep the function — its call sites stay unchanged — just
+  `func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage { ... }` with
+  `return appwire.EvenerUsageFromLLM(u)` (keep the function — its call sites stay unchanged — just
   delegate the body).
 - [ ] **Run** `go test ./cmd/evener/... -count=1` → green (byte-identical behavior, same nil-when-
   all-zero rule). `golangci-lint run ./...` → green.
 - [ ] **Commit** — `git add cmd/evener/serve.go` →
-  `refactor(serve): evenerUsageFromLLM delegates to appwire.SerfUsageFromLLM (dedup)`.
+  `refactor(serve): evenerUsageFromLLM delegates to appwire.EvenerUsageFromLLM (dedup)`.
 
 ### Task Q3 — Pricing parity: cost path (GetPrice→LookupModelInfo) equals the picker's direct ModelInfo field reads
 
@@ -502,12 +502,12 @@ value; **no template change is needed**, only the four Go call sites that build 
 **Files:** Modify `cmd/evener-hub/web_workspace.go`. Test: `cmd/evener-hub/web_test.go`.
 
 **Interfaces:**
-- Consumes: `appwire.EstimateCost(model string, usage *appwire.SerfUsage) string` (Task Q1).
+- Consumes: `appwire.EstimateCost(model string, usage *appwire.EvenerUsage) string` (Task Q1).
 
 - [ ] **Failing test** — in `cmd/evener-hub/web_test.go`, add `TestWorkspaceData_LiveSessionCarriesCostEstimate`:
   build a roster live entry + `fetchStatus` stub (or a fake daemon status server, matching the
   existing pattern other roster-branch tests use — grep `s.fetchStatus` test doubles in
-  `web_test.go` first) reporting `Model: "claude-opus-4-5"`, `Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}`;
+  `web_test.go` first) reporting `Model: "claude-opus-4-5"`, `Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}`;
   call `workspaceData(id)`; assert `data.Cost == "~$1.00"`. Add
   `TestWorkspaceData_PastSessionCarriesCostEstimate`: save a `schema.SessionMeta{Model: "claude-opus-4-5", CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000}}`,
   rebuild the past index, call `workspaceData(id)` for the now-ended session; assert
@@ -534,7 +534,7 @@ value; **no template change is needed**, only the four Go call sites that build 
 `cmd/evener-hub/web_format_test.go`, `cmd/evener-hub/web_test.go`.
 
 - [ ] **Failing test 1** — in `cmd/evener-hub/web_format_test.go`, add
-  `TestWorkspaceDataFromAppThread_CarriesCostEstimate`: build an `appwire.Thread{ModelProvider: "claude-opus-4-5", Evener: appwire.SerfThread{Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}}}`;
+  `TestWorkspaceDataFromAppThread_CarriesCostEstimate`: build an `appwire.Thread{ModelProvider: "claude-opus-4-5", Evener: appwire.EvenerThread{Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}}}`;
   call `workspaceDataFromAppThread(thread)`; assert `data.Cost == "~$1.00"`. Run:
   `go test ./cmd/evener-hub/... -run 'TestWorkspaceDataFromAppThread_CarriesCostEstimate' -count=1` → FAIL.
 - [ ] **Implement 1** — in `cmd/evener-hub/web_format.go`'s `workspaceDataFromAppThread`, in the
@@ -564,9 +564,9 @@ value; **no template change is needed**, only the four Go call sites that build 
 **Files:** Modify `appwire/types.go`. Test: `appwire/types_test.go`.
 
 - [ ] **Failing test** — in `appwire/types_test.go`, add `TestTurnUsageCostJSONRoundTrip` (marshal
-  a `Turn{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.01"}`, assert `"usage":{"inputTokens":1}`
+  a `Turn{Usage: &EvenerUsage{InputTokens: 1}, Cost: "~$0.01"}`, assert `"usage":{"inputTokens":1}`
   and `"cost":"~$0.01"` present) and `TestTurnUsageCostOmitEmpty` (marshal a zero-value `Turn{}`,
-  assert neither `"usage"` nor `"cost"` appears — mirrors `TestSerfThreadMetricsOmitEmpty`'s
+  assert neither `"usage"` nor `"cost"` appears — mirrors `TestEvenerThreadMetricsOmitEmpty`'s
   pattern at appwire/types_test.go:249). Run: `go test ./appwire/... -run 'TestTurnUsageCost' -count=1` → FAIL.
 - [ ] **Implement** — in `appwire/types.go`'s `Turn` struct (after `DurationMS`):
   ```go
@@ -576,7 +576,7 @@ value; **no template change is needed**, only the four Go call sites that build 
   	// summing EventAssistantTextEnd's per-round usage across the turn
   	// (internal/appprojector), and for ended sessions by reading the
   	// persisted per-round schema.Turn.Usage (internal/apptranscript).
-  	Usage *SerfUsage `json:"usage,omitempty"`
+  	Usage *EvenerUsage `json:"usage,omitempty"`
   	Cost  string      `json:"cost,omitempty"`
   ```
 - [ ] **Run** `go test ./appwire/... -run 'TestTurnUsageCost' -count=1` → pass. `golangci-lint run ./...` → green.
@@ -640,7 +640,7 @@ value; **no template change is needed**, only the four Go call sites that build 
     // accumulator resets only in startTurn(), which the wrap-up sites call
     // AFTER building the completing Turn).
     func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
-    	usage := appwire.SerfUsageFromLLM(p.activeTurnUsage)
+    	usage := appwire.EvenerUsageFromLLM(p.activeTurnUsage)
     	if usage == nil {
     		return
     	}
@@ -674,7 +674,7 @@ Test: `internal/apptranscript/apptranscript_test.go`, `cmd/evener-hub/app_thread
 - [ ] **Implement 1** — in `internal/apptranscript/apptranscript.go`'s `TurnsFromFile`, in the
   `case "entry":` branch (~line 559-567, right after the `StartedAt` stamping block), add:
   ```go
-  				if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+  				if usage := appwire.EvenerUsageFromLLM(entry.Turn.Usage); usage != nil {
   					turn.Usage = usage
   				}
   ```
@@ -776,7 +776,7 @@ new `cmd/evener-hub/jstest/test-turn-meta-badge.js`.
           if (turn && turn.id) {
             const els = this.conversation.querySelectorAll('.assistant-message[data-turn-id="' + CSS.escape(turn.id) + '"]');
             const el = els.length ? els[els.length - 1] : null;
-            const parts = window.SerfRendererFormat.turnMetaParts(turn);
+            const parts = window.EvenerRendererFormat.turnMetaParts(turn);
             if (el && (parts.duration || parts.tokens || parts.cost)) {
               let meta = el.querySelector(".turn-meta");
               if (!meta) {
@@ -795,7 +795,7 @@ new `cmd/evener-hub/jstest/test-turn-meta-badge.js`.
                 costEl.textContent = parts.cost;
                 meta.appendChild(costEl);
               }
-              meta.title = window.SerfRendererFormat.formatTurnMetaText(turn);
+              meta.title = window.EvenerRendererFormat.formatTurnMetaText(turn);
             }
           }
         }
@@ -881,7 +881,7 @@ parent.
   (ended — no turn in flight). Run:
   `go test ./cmd/evener-hub/... -run 'TestPastEntryThread_CarriesWorkMetrics' -count=1` → FAIL.
 - [ ] **Implement** — in `cmd/evener-hub/app_threadread.go`'s `pastEntryThread` (line 121), in the
-  `Evener: appwire.SerfThread{...}` literal (~line 152-163), add after `Capabilities: ...`:
+  `Evener: appwire.EvenerThread{...}` literal (~line 152-163), add after `Capabilities: ...`:
   ```go
   			WorkMillis: entry.Meta.WorkMillis,
   			Usage:      evenerUsageFromCumulative(entry.Meta.CumulativeUsage),
@@ -899,7 +899,7 @@ parent.
 
 - [ ] **Failing test** — in `cmd/evener-tui/details_drawer_test.go`, add
   `TestDetailsDrawerShowsWorkTimeAndTokens`: build
-  `detailsDrawer{Detail: hubSessionDetail{WorkMillis: 4200, Usage: &appwire.SerfUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 160}}}`;
+  `detailsDrawer{Detail: hubSessionDetail{WorkMillis: 4200, Usage: &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 160}}}`;
   assert `d.View()` contains `"Work:"` and a token line containing `"↑100"`, `"↓50"`. Add
   `TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent`: a `hubSessionDetail{}` zero value; assert
   neither `"Work:"` nor a tokens line appears. Run:
@@ -973,7 +973,7 @@ parent.
   how other tests stub the daemon HTTP status endpoint, e.g. via `httptest.NewServer` registered
   on the roster entry's address) reporting `ContextPressure: 0.42`, `ContextUsed`/`ContextWindow`/
   `ContextRemaining`, `Model: "claude-opus-4-5"`, `WorkMillis: 4200`,
-  `Usage: &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000}`; fetch
+  `Usage: &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000}`; fetch
   `/_partials/s/<id>/details`; assert the body contains a context row (`"42%"` and the formatted
   context numbers via `formatContextNumbers`), a work-time row (`formatWorkMillis(4200)`'s output),
   a tokens row (`"↑100"`/`"↓20"` or the full token-count formatting), and a cost row containing
@@ -1134,7 +1134,7 @@ would violate its byte-identical-rendering rule). So:
     // and data-composer="showCost", the applyDisplayState() restore function,
     // and the composer keybind-hint sync. Expose the pref helpers so those
     // additions and the page-load IIFEs below share one source of truth.
-    window.SerfSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
+    window.EvenerSettingsDisplay = { readComposerPrefs, writeComposerPrefs, syncToggleState };
 
     // Show-cost applies to <body> on every page load so the CSS gate
     // (body[data-show-cost="false"]) is correct before any settings pane opens.
@@ -1250,7 +1250,7 @@ new `cmd/evener-hub/jstest/test-font-size-presets.js`.
 
 Lands in the **Display** section Task W0 created (`display.html` + `settings-display.js`) — NOT the
 Track-0-deleted `settings.js`. Uses the `evener-hub.composer` JSON-blob pref
-(`{enterToSend, showCost}`) and its `window.SerfSettingsDisplay.readComposerPrefs()` accessor that
+(`{enterToSend, showCost}`) and its `window.EvenerSettingsDisplay.readComposerPrefs()` accessor that
 W0's scaffold established, so Enter-to-send and Show-cost share one pref object.
 
 **Files:** Modify `cmd/evener-hub/templates/partials/settings/display.html`,
@@ -1319,9 +1319,9 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
             }
           }
           if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && ta.value === "") {
-            if (window.SerfSearch && typeof window.SerfSearch.openWith === "function") {
+            if (window.EvenerSearch && typeof window.EvenerSearch.openWith === "function") {
               e.preventDefault();
-              window.SerfSearch.openWith("/");
+              window.EvenerSearch.openWith("/");
             }
           }
         });
@@ -1343,7 +1343,7 @@ is called out explicitly so a reviewer doesn't think the collision was missed.
         writeComposerPrefs(prefs);
         syncToggleState(target);
         applyComposerKeybindHints();
-        if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+        if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
         return;
       }
     });
@@ -1441,7 +1441,7 @@ adds the toggle control and the CSS gate.
       writeComposerPrefs(prefs);
       syncToggleState(target);
       document.body.dataset.showCost = target.checked ? "true" : "false";
-      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
       return;
     }
     ```
@@ -1567,7 +1567,7 @@ stored model ids was found and fixed rather than assumed away.
   provider-qualified and `[1m]`-suffixed ids P1 fixed, asserting `GetPrice` cost equals a direct
   `ModelInfo`-field read.
 
-**Type/name consistency:** `appwire.SerfUsage` (existing) reused for `Turn.Usage` (no new usage
+**Type/name consistency:** `appwire.EvenerUsage` (existing) reused for `Turn.Usage` (no new usage
 shape); `appwire.EstimateCost`/`llm.EstimateCost` (two layers: wire-level convenience wrapping the
 pure arithmetic) both named `EstimateCost` deliberately (same concept, different layer, mirrors the
 `Price`/`GetPrice` naming already established); `formatWorkMillis`/`formatTokens` reused verbatim

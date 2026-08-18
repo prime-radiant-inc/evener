@@ -49,7 +49,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
    `work_millis`, and `usage.{input_tokens,output_tokens,cache_read_tokens,total_tokens}`
    (`hubapi.Usage`, `:180-185`). Cost is **not** on this object — it is a
    server-formatted `~$X.XX` string on the appwire thread
-   (`SerfThread.Cost`, `appwire/types.go:288-303`), which the web displays
+   (`EvenerThread.Cost`, `appwire/types.go:288-303`), which the web displays
    verbatim (no client-side formatter; the pricing table is Go-side).
 
 4. **[browser] Web.** Navigate to `/auth?token=$TOKEN&next=/s/local:$SID`,

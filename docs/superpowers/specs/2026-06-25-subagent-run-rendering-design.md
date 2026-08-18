@@ -58,14 +58,14 @@ Existing methods remain:
 
 Existing required fields remain valid. New clients use optional linkage fields; older clients ignore them.
 
-Prefer enriching existing `SerfJobInfo` first. Do not add a new notification method in the initial implementation. A dedicated Evener-only `evener/delegate/updated` notification is a fallback for a later design revision only if implementation proves that enriched `SerfJobInfo` cannot target the originating tool item reliably.
+Prefer enriching existing `EvenerJobInfo` first. Do not add a new notification method in the initial implementation. A dedicated Evener-only `evener/delegate/updated` notification is a fallback for a later design revision only if implementation proves that enriched `EvenerJobInfo` cannot target the originating tool item reliably.
 
 ## AppWire and backend data model
 
-Extend `appwire.SerfJobInfo` with optional delegate linkage fields:
+Extend `appwire.EvenerJobInfo` with optional delegate linkage fields:
 
 ```go
-type SerfJobInfo struct {
+type EvenerJobInfo struct {
     JobID         string `json:"jobId"`
     JobType       string `json:"jobType"`
     Status        string `json:"status"`
@@ -84,7 +84,7 @@ type SerfJobInfo struct {
 }
 ```
 
-Internally, treat these fields as a `SubagentRunInfo` projection even if the public wire shape is `SerfJobInfo`:
+Internally, treat these fields as a `SubagentRunInfo` projection even if the public wire shape is `EvenerJobInfo`:
 
 ```go
 type SubagentRunInfo struct {
@@ -176,7 +176,7 @@ type ToolCallInfo struct {
 }
 ```
 
-Handle `NotifySerfJobStarted` and `NotifySerfJobFinished` in `hub_notifications.go`.
+Handle `NotifyEvenerJobStarted` and `NotifyEvenerJobFinished` in `hub_notifications.go`.
 
 Resolution order for updating a row:
 
@@ -195,7 +195,7 @@ TUI `/status` and details drawer should not dump long raw IDs as the primary job
 
 1. Parent model calls `delegate`.
 2. Backend creates `delegateId` and `jobId`, persists delegate/job start events, and emits `JOB_STARTED`.
-3. AppWire projects `evener/job/started` with enriched `SerfJobInfo`.
+3. AppWire projects `evener/job/started` with enriched `EvenerJobInfo`.
 4. UI creates or updates a SubagentRun.
 
 Ordering cases:
@@ -354,7 +354,7 @@ Add or extend JS tests for:
 
 Add or extend tests for:
 
-- applying `NotifySerfJobStarted` / `NotifySerfJobFinished` to an existing delegate `MsgTool`;
+- applying `NotifyEvenerJobStarted` / `NotifyEvenerJobFinished` to an existing delegate `MsgTool`;
 - fallback update by `jobId`;
 - short collapsed IDs and full expanded IDs;
 - terminal notifications stop running display;
@@ -365,7 +365,7 @@ Add or extend tests for:
 
 Assert:
 
-- old `SerfJobInfo` fields still marshal and unmarshal;
+- old `EvenerJobInfo` fields still marshal and unmarshal;
 - new fields omit cleanly when empty;
 - clients decoding only old fields can parse enriched payloads;
 - Codex source mapping remains unaffected.

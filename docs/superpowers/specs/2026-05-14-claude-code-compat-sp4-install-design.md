@@ -9,7 +9,7 @@ Depends on: SP1 (config loader), SP3 (marketplace resolution)
 
 SP4 owns the plugin lifecycle: install, uninstall, update, list, enable, disable. It maintains the on-disk install state under `~/.config/evener/plugins/`, mirrors Claude Code's `installed_plugins.json` shape, and exposes a `evener plugin` subcommand tree that mirrors `claude plugin`'s CLI surface so existing scripts and muscle memory transfer.
 
-SP4 does not parse marketplace catalogs, does not fetch plugin source bytes, and does not load plugin contents at session startup. It calls SP3 to resolve a `(plugin, marketplace)` pair to a fetched payload directory and records the result. SP1 supplies the merged `SerfConfig`; SP4 updates the `enabledPlugins` field on disk in the appropriate scope's `config.json`. SP8 reads that field at session startup and asks SP4 for the cache path of every enabled plugin.
+SP4 does not parse marketplace catalogs, does not fetch plugin source bytes, and does not load plugin contents at session startup. It calls SP3 to resolve a `(plugin, marketplace)` pair to a fetched payload directory and records the result. SP1 supplies the merged `EvenerConfig`; SP4 updates the `enabledPlugins` field on disk in the appropriate scope's `config.json`. SP8 reads that field at session startup and asks SP4 for the cache path of every enabled plugin.
 
 ## 2. Public API Surface
 

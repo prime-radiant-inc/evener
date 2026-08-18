@@ -709,7 +709,7 @@ This is a ~200-line bash script. Key sections:
 --reps N            Repetitions (default: 3)
 --concurrency N     Parallel tasks (default: 4)
 --ak KEY=VALUE      Agent kwarg (repeatable)
---adapter PATH      Agent import path (default: evener_agent:SerfAgent)
+--adapter PATH      Agent import path (default: evener_agent:EvenerAgent)
 --no-build          Skip cross-compile
 --allow-dirty       Run from dirty git tree (stores diff)
 --collect-only      Just collect/report an already-finished job

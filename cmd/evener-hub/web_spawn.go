@@ -140,12 +140,12 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	launchResp, err := evenerLaunchModelList(r.Context(), s.cfg, workingDir)
-	if err != nil && hasSerfLaunchModelLister(s.cfg) {
+	if err != nil && hasEvenerLaunchModelLister(s.cfg) {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}
 	models := modelDescriptorsToAPIModels(launchResp.Data, s.cfg.ProviderConfig)
-	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
+	if len(models) == 0 && !hasEvenerLaunchModelLister(s.cfg) {
 		liveModels := s.fetchLiveModels
 		if s.cfg.LiveModels != nil {
 			liveModels = s.cfg.LiveModels

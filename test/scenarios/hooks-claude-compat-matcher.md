@@ -38,7 +38,7 @@ evener's shell tool is canonically named `shell`
 (`agent/internal/tool/definitions.go` `DefShell`). Matchers, however,
 are tested against the **Claude** tool name: at the PreToolUse site
 (`agent/session_tools.go` `execTool`) evener sets the hook input's tool
-name to `toolname.SerfToClaude(call.Name)`, and `shell` → `Bash`
+name to `toolname.EvenerToClaude(call.Name)`, and `shell` → `Bash`
 (`agent/internal/toolname/toolname.go`). So the matcher that fires on
 the shell tool is `"Bash"`, NOT `"shell"`. Matching the substring proof
 to the real tool name: `"Bas"` is the substring of the real Claude name
@@ -183,7 +183,7 @@ Session metadata under the XDG state dir lingers but is harmless.
 ## Sharp edges
 
 - **Match against the Claude name, not `shell`.** The matcher is tested
-  against `toolname.SerfToClaude(call.Name)`; for evener's `shell` tool
+  against `toolname.EvenerToClaude(call.Name)`; for evener's `shell` tool
   that is `"Bash"`. A matcher of `"shell"` would NOT fire. If evener adds
   a shell tool with no Claude alias (passing through unchanged), match
   on that raw name instead.

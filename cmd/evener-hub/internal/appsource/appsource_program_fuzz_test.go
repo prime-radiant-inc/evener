@@ -83,7 +83,7 @@ func FuzzAppSourceProgram(f *testing.F) {
 		fuzzScenarioRegistryRemove,
 		fuzzScenarioMapCodexTurnStatus,
 		fuzzScenarioCodexSourceListsThreads,
-		fuzzScenarioCodexSourceListThreadsTranslatesSerfStatusFilters,
+		fuzzScenarioCodexSourceListThreadsTranslatesEvenerStatusFilters,
 		fuzzScenarioMapCodexTurnPreservesErrorDetails,
 		fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions,
 		fuzzScenarioCodexSourceStartThreadMapsPromptToInput,

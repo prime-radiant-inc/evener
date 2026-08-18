@@ -103,7 +103,7 @@ func cmdResolveLaunch(client *appwire.Client, cwd string, overrides *appwire.Lau
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchResolve, appwire.LaunchConfigResolveParams{CWD: cwd, LaunchOverrides: overrides}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchResolve, appwire.LaunchConfigResolveParams{CWD: cwd, LaunchOverrides: overrides}, &resp)
 		return launchResolveResultMsg{Resolved: resp, Err: err}
 	}
 }
@@ -113,7 +113,7 @@ func cmdGetLayer(client *appwire.Client, cwd, layer string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigLayer
-		err := client.Request(ctx, appwire.MethodSerfLaunchGetLayer, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: layer}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchGetLayer, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: layer}, &resp)
 		return launchLayerResultMsg{Layer: layer, CWD: cwd, Data: resp, Err: err}
 	}
 }
@@ -123,7 +123,7 @@ func cmdSetLayer(client *appwire.Client, cwd, layer string, config appwire.Launc
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: layer, Config: config}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: layer, Config: config}, &resp)
 		return launchSetLayerResultMsg{Layer: layer, CWD: cwd, Resolved: resp, Err: err}
 	}
 }
@@ -133,7 +133,7 @@ func cmdTrustRepo(client *appwire.Client, cwd, hash string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.LaunchConfigResolved
-		err := client.Request(ctx, appwire.MethodSerfLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}, &resp)
 		return launchTrustResultMsg{CWD: cwd, Resolved: resp, Err: err}
 	}
 }
@@ -143,7 +143,7 @@ func cmdAuthList(client *appwire.Client) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthListResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthList, appwire.EmptyParams{}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthList, appwire.EmptyParams{}, &resp)
 		return authListResultMsg{List: resp, Err: err}
 	}
 }
@@ -153,7 +153,7 @@ func cmdAuthApiKeySet(client *appwire.Client, provider, value string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthStatusResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: provider, Value: value}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: provider, Value: value}, &resp)
 		return authApiKeySetResultMsg{Status: resp, Err: err}
 	}
 }
@@ -163,7 +163,7 @@ func cmdAuthLogout(client *appwire.Client, provider string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthLogoutResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthLogout, appwire.AuthLogoutParams{Provider: provider}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthLogout, appwire.AuthLogoutParams{Provider: provider}, &resp)
 		return authApiKeySetResultMsg{Status: resp.Status, Err: err}
 	}
 }
@@ -597,7 +597,7 @@ func cmdAuthLoginStart(client *appwire.Client, provider string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.AuthLoginStartResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthLoginStart, appwire.AuthLoginStartParams{Provider: provider}, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerAuthLoginStart, appwire.AuthLoginStartParams{Provider: provider}, &resp)
 		return authLoginStartResultMsg{Provider: provider, URL: resp.URL, FlowID: resp.FlowID, Err: err}
 	}
 }
@@ -1426,10 +1426,10 @@ git commit -m "tui: Ctrl-L composer modal for per-launch overrides"
 In `cmd/evener-tui/sse_client.go`, find the existing dispatch (the switch on `notification.Method`). Add:
 
 ```go
-case appwire.NotifySerfAuthUpdated:
+case appwire.NotifyEvenerAuthUpdated:
 	// Forward as tea.Msg so the appshell can refresh panels.
 	emit(authUpdatedNotifMsg{})
-case appwire.NotifySerfLaunchUpdated:
+case appwire.NotifyEvenerLaunchUpdated:
 	emit(launchUpdatedNotifMsg{})
 ```
 

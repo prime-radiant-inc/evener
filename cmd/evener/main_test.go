@@ -628,7 +628,7 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 	}
 }
 
-func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
+func TestOpenAILogoutDeletesOnlyEvenerOwnedAuthState(t *testing.T) {
 	// Isolate from any OPENAI_API_KEY / stored OAuth in the dev environment
 	// so the post-logout status reports signed-out, not env-fallback.
 	oaitest.IsolateOpenAIAuth(t)

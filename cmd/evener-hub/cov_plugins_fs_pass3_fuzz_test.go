@@ -154,7 +154,7 @@ func fuzzExerciseModels(data []byte) {
 	contract := &fakeRPCModelContractSpawner{contract: appwire.ModelListResponse{Data: models, Diagnostics: diags}}
 	ccfg := hubcore.WebConfig{Spawner: contract}
 	_, _ = evenerLaunchModelList(ctx, ccfg, "")
-	_ = hasSerfLaunchModelLister(ccfg)
+	_ = hasEvenerLaunchModelLister(ccfg)
 	contract.err = errors.New("contract")
 	_, _ = evenerLaunchModelList(ctx, ccfg, "")
 	working := &fakeRPCWorkingDirModelContractSpawner{contractForWorkingDir: func(context.Context, string) (appwire.ModelListResponse, error) {
@@ -166,7 +166,7 @@ func fuzzExerciseModels(data []byte) {
 		return appwire.ModelListResponse{}, errors.New("cwd")
 	}
 	_, _ = evenerLaunchModelList(ctx, wcfg, "/tmp")
-	_ = hasSerfLaunchModelLister(hubcore.WebConfig{})
+	_ = hasEvenerLaunchModelLister(hubcore.WebConfig{})
 }
 
 func mustModelRef(raw string) (out cmdutil.ModelRef) {

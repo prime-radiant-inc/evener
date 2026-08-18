@@ -30,7 +30,7 @@ used to name is gone with the vanilla frontend (`660376f78`):
 `form[data-spawn-form]`, `[data-attach-trigger]`, `[data-file-picker]`,
 `[data-composer-attachments]`, `[data-attachment]`,
 `input[name="model"]`, `textarea[name="prompt"]`, `.spawn-btn`,
-`window.SerfAppwire`. The spawn pane has no `<form>` element at all and
+`window.EvenerAppwire`. The spawn pane has no `<form>` element at all and
 no hidden `name=model` input — the model is set through the shared ARIA
 combobox, as a real gesture.
 

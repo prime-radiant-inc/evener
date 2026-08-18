@@ -122,7 +122,7 @@ func FuzzHubStartupCoverage(f *testing.F) {
 		case 19:
 			TestStartLocalHubReportsImmediateExitOutput(t)
 		case 20:
-			TestStateHomeForSerfStateDir(t)
+			TestStateHomeForEvenerStateDir(t)
 		case 21:
 			TestClassifyStartHubError(t)
 		case 22:

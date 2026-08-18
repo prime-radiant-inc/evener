@@ -32,7 +32,7 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `llm/model_catalog_test.go` (the file already uses `parseLiteLLMCatalog` to build fixture catalogs — see `TestApplyOverrides_MaterializesSerfOnlyModel` around line 839 for the pattern):
+Append to `llm/model_catalog_test.go` (the file already uses `parseLiteLLMCatalog` to build fixture catalogs — see `TestApplyOverrides_MaterializesEvenerOnlyModel` around line 839 for the pattern):
 
 ```go
 func TestMaxOutputTokensFor(t *testing.T) {

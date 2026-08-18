@@ -51,7 +51,7 @@ Spec: `docs/superpowers/specs/2026-08-05-activity-view-redesign-design.md`
 - Test: `agent/jobs_activity_test.go`
 
 **Interfaces:**
-- Produces: `appwire.JobActivityJob.LastOutputAt string` (json `lastOutputAt,omitempty`, RFC3339, live-running jobs only); `appwire.JobActivityDelegate.Usage *appwire.SerfUsage` (json `usage,omitempty`); `activitySessionSnapshot.Usage *appwire.SerfUsage`.
+- Produces: `appwire.JobActivityJob.LastOutputAt string` (json `lastOutputAt,omitempty`, RFC3339, live-running jobs only); `appwire.JobActivityDelegate.Usage *appwire.EvenerUsage` (json `usage,omitempty`); `activitySessionSnapshot.Usage *appwire.EvenerUsage`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -97,7 +97,7 @@ For the delegate usage copy, find the existing test that drives `projectActivity
 func TestProjectActivityDelegateCopiesChildUsage(t *testing.T) {
 	// Build the same minimal snapshot shape the neighboring delegate tests use,
 	// then set the child snapshot's Usage:
-	want := &appwire.SerfUsage{InputTokens: 41200, OutputTokens: 6100}
+	want := &appwire.EvenerUsage{InputTokens: 41200, OutputTokens: 6100}
 	// snapshot.Children[childID].Usage = want
 	// delegate := projectActivityDelegate(snapshot, group, nil, 0, nil)
 	// if delegate.Usage == nil || *delegate.Usage != *want { t.Fatalf(...) }
@@ -129,7 +129,7 @@ In `JobActivityDelegate` after `Branch` (line 1236):
 	Branch         JobActivityBranchState `json:"branch"`
 	// Usage is the child session's cumulative self-only token totals. Nil when
 	// the child has no token data (fresh session, old daemon, shell-only work).
-	Usage *SerfUsage `json:"usage,omitempty"`
+	Usage *EvenerUsage `json:"usage,omitempty"`
 ```
 
 `agent/jobs_activity.go`:
@@ -138,14 +138,14 @@ In `JobActivityDelegate` after `Branch` (line 1236):
 
 ```go
 	Delegates map[string]*jobstore.DelegateRecord
-	Usage     *appwire.SerfUsage // cumulative self-only tokens; nil = unknown
+	Usage     *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
 	Children  map[string]*activitySessionSnapshot // child session ID
 ```
 
 2. `loadLiveActivityBase` — after the snapshot literal (after line 314), add:
 
 ```go
-	snapshot.Usage = appwire.SerfUsageFromLLM(s.CumulativeUsageSnapshot())
+	snapshot.Usage = appwire.EvenerUsageFromLLM(s.CumulativeUsageSnapshot())
 ```
 
 3. `projectActivityJob` — after the `EndedAt` block (line 1005-1007), add:
@@ -187,8 +187,8 @@ git commit -m "feat(agent): stamp lastOutputAt and delegate usage on activity wi
 - Modify (generated): `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
-- Consumes: `apptranscript.NewTurnCache()`, `(*TurnCache).UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.SerfUsage, error)`; `sessionsSubdir = "sessions"` (`agent/session.go:1298`); `transcriptJSONLMaxLineBytes` (`agent/transcript_read.go:15`); `schema.SessionMeta.DivergenceTurn`.
-- Produces: historical `activitySessionSnapshot.Usage`; regenerated TS types with `lastOutputAt?: string` and `usage?: SerfUsage`.
+- Consumes: `apptranscript.NewTurnCache()`, `(*TurnCache).UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error)`; `sessionsSubdir = "sessions"` (`agent/session.go:1298`); `transcriptJSONLMaxLineBytes` (`agent/transcript_read.go:15`); `schema.SessionMeta.DivergenceTurn`.
+- Produces: historical `activitySessionSnapshot.Usage`; regenerated TS types with `lastOutputAt?: string` and `usage?: EvenerUsage`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -266,7 +266,7 @@ var activityUsageCache = apptranscript.NewTurnCache()
 // transcript. nil (not zero) when the transcript carries no usage, so the wire
 // omits the field and the UI hides the token cluster rather than rendering
 // ↑0 ↓0.
-func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.SerfUsage {
+func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta) *appwire.EvenerUsage {
 	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
 	total, err := activityUsageCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, meta.DivergenceTurn)
 	if err != nil {
@@ -287,7 +287,7 @@ Expected: PASS
 
 Run: `make generate`
 Then: `make lint-generated`
-Expected: both exit 0; `git status` shows `cmd/evener-hub/frontend/src/protocol/types.gen.ts` modified, containing `lastOutputAt?: string` on `JobActivityJob` and `usage?: SerfUsage` on `JobActivityDelegate`. Verify with:
+Expected: both exit 0; `git status` shows `cmd/evener-hub/frontend/src/protocol/types.gen.ts` modified, containing `lastOutputAt?: string` on `JobActivityJob` and `usage?: EvenerUsage` on `JobActivityDelegate`. Verify with:
 
 Run: `rg -n "lastOutputAt|usage" cmd/evener-hub/frontend/src/protocol/types.gen.ts | head`
 Expected: hits on both fields.

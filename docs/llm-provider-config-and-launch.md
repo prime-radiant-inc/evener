@@ -419,10 +419,10 @@ the per-instance `auth/<instance>.json` via its client builder using the injecte
 
 `HubSpawner` builds env with `ToEnv`, then runs the checker as a subprocess:
 
-- `listSerfLaunchModelContract` (`spawn.go:601`) runs
+- `listEvenerLaunchModelContract` (`spawn.go:601`) runs
   `evener launch-check --protocol <v> --json --models` with `cmd.Env = env`
   (`spawn.go:607-608`) and decodes the JSON contract.
-- `validateSerfLaunchContract` (`spawn.go:558`) runs the same binary with
+- `validateEvenerLaunchContract` (`spawn.go:558`) runs the same binary with
   `--model <provider/model>` to validate a specific model (`spawn.go:562-570`).
 - Both have a timeout (`evenerLaunchCheckTimeout`) and redact secrets out of error
   output via `redactEnvSecrets` (`spawn.go:655`).
@@ -455,7 +455,7 @@ config-aware:
    openai-compatible when `OPENAI_COMPATIBLE_BASE_URL` is set (`spawn.go:507`),
    and for `ollama` (no creds); otherwise it requires either a stored key or the
    matching env var or it fails the launch,
-3. run `validateSerfLaunchContract` (the launch-check subprocess) against the
+3. run `validateEvenerLaunchContract` (the launch-check subprocess) against the
    model,
 4. `SpawnDaemon` / `ResumeDaemon` exec `evener serve` with `cmd.Env = req.Env`
    (`spawn.go:276-277`), binding an ephemeral port (`--addr 127.0.0.1:0`,

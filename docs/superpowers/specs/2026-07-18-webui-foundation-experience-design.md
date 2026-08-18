@@ -57,7 +57,7 @@ at `be125a62`.
 ## Design decisions
 
 Architecture unchanged: no bundler, no framework, embedded assets, the
-`window.SerfRendererInternal` module pattern. `docs/web-ui/design-system.md` is the
+`window.EvenerRendererInternal` module pattern. `docs/web-ui/design-system.md` is the
 north star; where shipped code contradicts it the code changes, and where this spec
 extends it the doc gets an addendum in the same commit.
 
@@ -83,7 +83,7 @@ extends it the doc gets an addendum in the same commit.
   leak or cross-match. The queue is drained and generation-guarded on
   `resetTranscriptReplay`.
 - **jstest migration.** The batching increment ships a synchronous
-  `SerfRenderer.flush()` test hook and migrates affected tests in the same
+  `EvenerRenderer.flush()` test hook and migrates affected tests in the same
   commits; the suite stays green at every commit.
 - **Streaming text [v3 — frozen head, raw tail].** Assistant deltas coalesce per
   frame. While accumulated length ≤4KB: markdown re-parse at most once per frame.

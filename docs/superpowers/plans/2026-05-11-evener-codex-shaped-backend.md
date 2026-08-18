@@ -406,14 +406,14 @@ const (
 )
 
 type ErrorData struct {
-	SerfErrorInfo ErrorInfo `json:"evenerErrorInfo"`
+	EvenerErrorInfo ErrorInfo `json:"evenerErrorInfo"`
 	SourceID      string    `json:"sourceId,omitempty"`
 	ThreadID      string    `json:"threadId,omitempty"`
 	Retryable     bool      `json:"retryable"`
 }
 
 func InvalidParams(message string) WireError {
-	return WireError{Code: CodeInvalidParams, Message: message, Data: ErrorData{SerfErrorInfo: ErrorInvalidParams}}
+	return WireError{Code: CodeInvalidParams, Message: message, Data: ErrorData{EvenerErrorInfo: ErrorInvalidParams}}
 }
 
 func MethodNotFound(method string) WireError {
@@ -552,8 +552,8 @@ const (
 	MethodTurnStart            = "turn/start"
 	MethodTurnSteer            = "turn/steer"
 	MethodTurnInterrupt        = "turn/interrupt"
-	MethodSerfTasksList        = "evener/tasks/list"
-	MethodSerfDirsComplete     = "evener/dirs/complete"
+	MethodEvenerTasksList        = "evener/tasks/list"
+	MethodEvenerDirsComplete     = "evener/dirs/complete"
 	MethodModelList            = "model/list"
 	NotifyThreadStarted        = "thread/started"
 	NotifyThreadStatusChanged  = "thread/status/changed"
@@ -562,8 +562,8 @@ const (
 	NotifyItemStarted          = "item/started"
 	NotifyItemCompleted        = "item/completed"
 	NotifyAgentMessageDelta    = "item/agentMessage/delta"
-	NotifySerfContextPressure  = "evener/thread/contextPressure/updated"
-	NotifySerfTaskUpdated      = "evener/task/updated"
+	NotifyEvenerContextPressure  = "evener/thread/contextPressure/updated"
+	NotifyEvenerTaskUpdated      = "evener/task/updated"
 )
 
 type InitializeParams struct {
@@ -625,7 +625,7 @@ type Thread struct {
 	GitInfo       *GitInfo     `json:"gitInfo,omitempty"`
 	Name          string       `json:"name,omitempty"`
 	Turns         []Turn       `json:"turns"`
-	Evener          SerfThread   `json:"evener"`
+	Evener          EvenerThread   `json:"evener"`
 }
 
 type GitInfo struct {
@@ -639,7 +639,7 @@ type ThreadStatus struct {
 	ActiveFlags []string `json:"activeFlags,omitempty"`
 }
 
-type SerfThread struct {
+type EvenerThread struct {
 	Ref             string             `json:"ref"`
 	Profile         string             `json:"profile,omitempty"`
 	ContextPressure float64            `json:"contextPressure,omitempty"`
@@ -1521,7 +1521,7 @@ func (p *Projector) Project(event agent.SessionEvent) []ServerNotification {
 	case agent.EventToolCallEnd:
 		base.Method = NotifyItemCompleted
 	case agent.EventContextCompaction:
-		base.Method = NotifySerfContextPressure
+		base.Method = NotifyEvenerContextPressure
 	case agent.EventSubagentStart:
 		base.Method = "evener/subagent/started"
 	case agent.EventSubagentEnd:

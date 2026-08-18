@@ -1718,20 +1718,20 @@ Open `cmd/evener-hub/assets/renderer.js`. At the bottom of the file (or in the s
   }
   // Expose so sidebar.js / search.js can call it after their own swaps.
   if (typeof window !== "undefined") {
-    window.SerfRenderer = window.SerfRenderer || {};
-    window.SerfRenderer.applyStatusDotPulse = applyStatusDotPulse;
+    window.EvenerRenderer = window.EvenerRenderer || {};
+    window.EvenerRenderer.applyStatusDotPulse = applyStatusDotPulse;
   }
 ```
 
-(If a `window.SerfRenderer` namespace is already attached in this file, hang the helper off that. If not, the `||=` form above creates it.)
+(If a `window.EvenerRenderer` namespace is already attached in this file, hang the helper off that. If not, the `||=` form above creates it.)
 
 - [ ] **Step 3: Call `applyStatusDotPulse` after htmx swaps in renderer.js**
 
 Find the existing `htmx:afterSwap` listener in renderer.js (search the file for `afterSwap`). After the swap is processed, invoke:
 
 ```javascript
-        if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-          window.SerfRenderer.applyStatusDotPulse(document);
+        if (window.EvenerRenderer && window.EvenerRenderer.applyStatusDotPulse) {
+          window.EvenerRenderer.applyStatusDotPulse(document);
         }
 ```
 
@@ -1739,8 +1739,8 @@ If renderer.js has no `afterSwap` listener already, add a small handler at modul
 
 ```javascript
   document.addEventListener("htmx:afterSwap", () => {
-    if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-      window.SerfRenderer.applyStatusDotPulse(document);
+    if (window.EvenerRenderer && window.EvenerRenderer.applyStatusDotPulse) {
+      window.EvenerRenderer.applyStatusDotPulse(document);
     }
   });
 ```
@@ -1748,8 +1748,8 @@ If renderer.js has no `afterSwap` listener already, add a small handler at modul
 Also call it once at module load (in case the initial render had dots already on the page):
 
 ```javascript
-  if (typeof window !== "undefined" && window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-    window.SerfRenderer.applyStatusDotPulse(document);
+  if (typeof window !== "undefined" && window.EvenerRenderer && window.EvenerRenderer.applyStatusDotPulse) {
+    window.EvenerRenderer.applyStatusDotPulse(document);
   }
 ```
 
@@ -1758,8 +1758,8 @@ Also call it once at module load (in case the initial render had dots already on
 Open `cmd/evener-hub/assets/sidebar.js`. Find the function that runs after the sidebar partial is swapped in (look for `htmx:afterSwap` listener scoped to `#sidebar`, or any function that processes a fresh sidebar DOM). At the end of that function, add:
 
 ```javascript
-  if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-    window.SerfRenderer.applyStatusDotPulse(document.getElementById("sidebar") || document);
+  if (window.EvenerRenderer && window.EvenerRenderer.applyStatusDotPulse) {
+    window.EvenerRenderer.applyStatusDotPulse(document.getElementById("sidebar") || document);
   }
 ```
 
@@ -1768,8 +1768,8 @@ If no such hook exists, register one at the top level of sidebar.js:
 ```javascript
   document.addEventListener("htmx:afterSwap", (ev) => {
     if (!ev.target || ev.target.id !== "sidebar") return;
-    if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
-      window.SerfRenderer.applyStatusDotPulse(ev.target);
+    if (window.EvenerRenderer && window.EvenerRenderer.applyStatusDotPulse) {
+      window.EvenerRenderer.applyStatusDotPulse(ev.target);
     }
   });
 ```

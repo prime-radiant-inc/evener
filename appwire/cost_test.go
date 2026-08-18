@@ -6,13 +6,13 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestSerfUsageFromLLM_NilWhenAllZero(t *testing.T) {
+func TestEvenerUsageFromLLM_NilWhenAllZero(t *testing.T) {
 	if got := EvenerUsageFromLLM(llm.Usage{}); got != nil {
 		t.Errorf("got %+v, want nil for all-zero usage", got)
 	}
 }
 
-func TestSerfUsageFromLLM_MapsFields(t *testing.T) {
+func TestEvenerUsageFromLLM_MapsFields(t *testing.T) {
 	cacheRead := 7
 	got := EvenerUsageFromLLM(llm.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 10, CacheReadTokens: &cacheRead})
 	if got == nil || got.InputTokens != 1 || got.OutputTokens != 2 || got.TotalTokens != 10 || got.CacheReadTokens != 7 {

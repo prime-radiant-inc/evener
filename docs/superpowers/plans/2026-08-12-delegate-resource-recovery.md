@@ -1609,7 +1609,7 @@ git commit -m "feat: project stable delegates without mutation" -m "Cut stable t
 **Interfaces:**
 
 - Consume lossless stable snapshots, canonical packets, descendant event callbacks, ParentDelegateID shells, typed watches, and per-delegate monotonic projection revision.
-- Produce DELEGATE_UPDATED internally and evener/delegate/updated on AppWire, carrying one immutable stable snapshot. SerfDelegateInfo and SerfDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
+- Produce DELEGATE_UPDATED internally and evener/delegate/updated on AppWire, carrying one immutable stable snapshot. EvenerDelegateInfo and EvenerDiagnostics.Delegates carry the same stable fields through live, reconnect, and cold thread-read. Neither stable type carries call-scoped wait_ignored_reason; delegate_send results and their transcript/UI transport carry it separately. Projection revision fences rendering only; it is not a control identity.
 - Replace address-derived tree-clock sharing with one explicitly inherited *jobActivityClock for projection ordering only. It carries no lifecycle, generation, capacity, authorization, phase, or stop state.
 - Remove activation cards and legacy Detailed.Jobs discovery without removing send/stop/status/watch/observer/navigation capability.
 

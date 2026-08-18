@@ -12,7 +12,7 @@ branch regresses, this catches it.
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. `#image-lightbox`,
 `.open-beside-btn`, `.tool-output-images .user-image-card` and
-`window.SerfPanes` all died with the vanilla frontend (`660376f78`): there is
+`window.EvenerPanes` all died with the vanilla frontend (`660376f78`): there is
 no pane handle on `window`, and the opener is `paneActions.openBeside`
 (`shell/paneActions.ts:44-46`).
 

@@ -4,7 +4,7 @@
 
 **Goal:** Make every evener-hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
 
-**Architecture:** Extract the existing canonical directory picker behavior from `cmd/evener-hub/assets/spawn.js` into a shared `window.SerfDirPicker.open(options)` helper in a new `cmd/evener-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
+**Architecture:** Extract the existing canonical directory picker behavior from `cmd/evener-hub/assets/spawn.js` into a shared `window.EvenerDirPicker.open(options)` helper in a new `cmd/evener-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
 
 **Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing evener-hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
 
@@ -14,14 +14,14 @@
 
 - Create: `cmd/evener-hub/assets/dir-picker.js`
   - Owns the single directory picker implementation.
-  - Exports `window.SerfDirPicker.open(options)`.
+  - Exports `window.EvenerDirPicker.open(options)`.
   - Contains the canonical popup behavior currently in `spawn.js:openDirPicker`: `.chip-picker-dir`, `.chip-picker-search`, `.chip-picker-results`, git tag rendering, Tab completion, Enter exact-match-vs-literal semantics, initial fetch, click-outside dismissal.
 
 - Modify: `cmd/evener-hub/templates/app.html`
   - Include `/assets/dir-picker.js` before scripts that use it (`settings-pickers.js` and `spawn.js`).
 
 - Modify: `cmd/evener-hub/assets/spawn.js`
-  - Replace the body of the local `openDirPicker(chip)` function with a call to `window.SerfDirPicker.open(...)`.
+  - Replace the body of the local `openDirPicker(chip)` function with a call to `window.EvenerDirPicker.open(...)`.
   - Keep top-screen behavior unchanged from the user's perspective.
   - Continue setting `evener-hub.spawn-defaults.global.last-working-dir` when a value is accepted.
 
@@ -30,7 +30,7 @@
   - Keep existing selectors:
     - `button[data-settings-dir-picker]`
     - `input[data-settings-dir-input]`
-  - Wire both selector families to `window.SerfDirPicker.open(...)`.
+  - Wire both selector families to `window.EvenerDirPicker.open(...)`.
   - For settings inputs, accepted values must set `input.value` and dispatch both `input` and `change` events with `{ bubbles: true }`.
 
 - Create: `cmd/evener-hub/jstest/test-dir-picker.js`
@@ -86,7 +86,7 @@ function deferred() {
 
   const calls = [];
   let accepted = [];
-  dom.window.SerfAppwire = {
+  dom.window.EvenerAppwire = {
     completeDirs(prefix) {
       calls.push(prefix);
       return Promise.resolve({
@@ -99,11 +99,11 @@ function deferred() {
   };
 
   dom.window.eval(dirPickerSrc);
-  assert(dom.window.SerfDirPicker && typeof dom.window.SerfDirPicker.open === "function",
-    "SerfDirPicker.open should be exported");
+  assert(dom.window.EvenerDirPicker && typeof dom.window.EvenerDirPicker.open === "function",
+    "EvenerDirPicker.open should be exported");
 
   const anchor = dom.window.document.getElementById("anchor");
-  dom.window.SerfDirPicker.open({
+  dom.window.EvenerDirPicker.open({
     anchor,
     currentValue: "/tmp",
     placeholder: "/path/to/repo",
@@ -130,7 +130,7 @@ function deferred() {
   assert(accepted[0] === "/tmp/project", "Enter on exact match should accept matching suggestion");
   assert(!dom.window.document.querySelector(".chip-picker-dir"), "picker should close after exact accept");
 
-  dom.window.SerfDirPicker.open({
+  dom.window.EvenerDirPicker.open({
     anchor,
     currentValue: "/custom/literal",
     placeholder: "/path/to/repo",
@@ -144,7 +144,7 @@ function deferred() {
   assert(accepted[1] === "/custom/literal", "Enter on non-exact value should accept typed literal");
   assert(!dom.window.document.querySelector(".chip-picker-dir"), "picker should close after literal accept");
 
-  dom.window.SerfDirPicker.open({
+  dom.window.EvenerDirPicker.open({
     anchor,
     currentValue: "",
     placeholder: "/path/to/repo",
@@ -156,11 +156,11 @@ function deferred() {
   assert(accepted[2] === "/tmp/project", "clicking a row should accept that path");
 
   const slow = deferred();
-  dom.window.SerfAppwire.completeDirs = (prefix) => {
+  dom.window.EvenerAppwire.completeDirs = (prefix) => {
     calls.push(prefix);
     return slow.promise;
   };
-  dom.window.SerfDirPicker.open({
+  dom.window.EvenerDirPicker.open({
     anchor,
     currentValue: "/slow",
     placeholder: "/path/to/repo",
@@ -196,8 +196,8 @@ Create `cmd/evener-hub/assets/dir-picker.js` with this content:
   "use strict";
 
   function completeDirs(prefix) {
-    if (global.SerfAppwire && typeof global.SerfAppwire.completeDirs === "function") {
-      return global.SerfAppwire.completeDirs(prefix);
+    if (global.EvenerAppwire && typeof global.EvenerAppwire.completeDirs === "function") {
+      return global.EvenerAppwire.completeDirs(prefix);
     }
     return fetch("/api/dirs?prefix=" + encodeURIComponent(prefix || ""), {
       credentials: "same-origin",
@@ -334,7 +334,7 @@ Create `cmd/evener-hub/assets/dir-picker.js` with this content:
     return picker;
   }
 
-  global.SerfDirPicker = {
+  global.EvenerDirPicker = {
     open: openDirPicker,
   };
 })(window);
@@ -393,7 +393,7 @@ After the existing model picker assertions around the first form DOM, add this t
 
 ```javascript
 let dirCalls = [];
-formDom.window.SerfAppwire.completeDirs = (prefix) => {
+formDom.window.EvenerAppwire.completeDirs = (prefix) => {
   dirCalls.push(prefix);
   return Promise.resolve({ results: [{ path: "/tmp/project-with-oauth", is_git: true }] });
 };
@@ -435,7 +435,7 @@ In `cmd/evener-hub/templates/app.html`, locate the script includes for assets. A
 <script src="/assets/dir-picker.js"></script>
 ```
 
-The final order must ensure `window.SerfDirPicker` exists before `settings-pickers.js` and `spawn.js` execute. A correct local ordering is:
+The final order must ensure `window.EvenerDirPicker` exists before `settings-pickers.js` and `spawn.js` execute. A correct local ordering is:
 
 ```html
 <script src="/assets/appwire.js"></script>
@@ -457,8 +457,8 @@ In `cmd/evener-hub/assets/spawn.js`, replace the full `openDirPicker(chip)` func
       ? ""
       : (display ? display.textContent.trim() : "");
     const fallback = window.localStorage.getItem("evener-hub.spawn-defaults.global.last-working-dir") || "";
-    if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
-    window.SerfDirPicker.open({
+    if (!window.EvenerDirPicker || typeof window.EvenerDirPicker.open !== "function") return;
+    window.EvenerDirPicker.open({
       anchor: chip,
       currentValue: current || fallback,
       placeholder: "/path/to/repo",
@@ -548,7 +548,7 @@ function assert(cond, msg) {
   };
 
   const dirCalls = [];
-  dom.window.SerfAppwire = {
+  dom.window.EvenerAppwire = {
     completeDirs(prefix) {
       dirCalls.push(prefix);
       return Promise.resolve({ results: [{ path: prefix === "/opt" ? "/opt/shared" : "/tmp/shared", is_git: false }] });
@@ -620,8 +620,8 @@ In `cmd/evener-hub/assets/settings-pickers.js`:
 
   function openSharedDirPicker(anchor, input) {
     if (!anchor || !input) return;
-    if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
-    window.SerfDirPicker.open({
+    if (!window.EvenerDirPicker || typeof window.EvenerDirPicker.open !== "function") return;
+    window.EvenerDirPicker.open({
       anchor,
       currentValue: input.value || "",
       placeholder: input.placeholder || "/path/to/repo",
@@ -795,8 +795,8 @@ git diff -- cmd/evener-hub/assets/dir-picker.js cmd/evener-hub/assets/settings-p
 
 Expected:
 - One shared implementation in `dir-picker.js`.
-- `spawn.js` delegates top working-dir chip to `window.SerfDirPicker.open`.
-- `settings-pickers.js` delegates inline and button directory controls to `window.SerfDirPicker.open`.
+- `spawn.js` delegates top working-dir chip to `window.EvenerDirPicker.open`.
+- `settings-pickers.js` delegates inline and button directory controls to `window.EvenerDirPicker.open`.
 - No browser datalist implementation remains for settings directory inputs.
 - Tests cover the shared helper, spawn integration, settings integration, and generated launch control markers.
 
@@ -817,7 +817,7 @@ If there were no additional changes, do not create an empty commit.
 
 - The top-screen project directory picker still behaves the same:
   - Opens `.chip-picker-dir`.
-  - Fetches directory completions from `SerfAppwire.completeDirs` or `/api/dirs` fallback.
+  - Fetches directory completions from `EvenerAppwire.completeDirs` or `/api/dirs` fallback.
   - Renders directory rows and git tags.
   - Tab autocompletes to first suggestion plus `/`.
   - Enter selects an exact matching suggestion, otherwise accepts typed literal.

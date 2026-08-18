@@ -78,7 +78,7 @@
 **Interfaces:**
 - Produces: `JobsListParams{Ref, Continuation}` and `JobsListResponse{Data any}`.
 - Produces: `JobActivityTree`, `JobActivitySession`, `JobActivityEntry`, `JobActivityJob`, `JobActivityDelegate`, `JobActivityCounts`, `JobActivityBranchState`.
-- Produces: `NotifySerfJobsTreeUpdated` and `JobsTreeUpdatedParams{ThreadID, Ref, Revision}`.
+- Produces: `NotifyEvenerJobsTreeUpdated` and `JobsTreeUpdatedParams{ThreadID, Ref, Revision}`.
 - Keeps: `JobsOutputParams{Ref, JobID, MaxBytes}` and `JobOutputTail` unchanged.
 
 - [ ] **Step 1: Write failing AppWire shape and catalog tests**
@@ -197,7 +197,7 @@ Write explicit JSON tags for every field in `appwire/types.go`; do not rely on G
 
 - [ ] **Step 4: Register the notification and regenerate**
 
-Add `NotifySerfJobsTreeUpdated = "evener/jobs/treeUpdated"`, its params type, and the notification catalog entry. Then run:
+Add `NotifyEvenerJobsTreeUpdated = "evener/jobs/treeUpdated"`, its params type, and the notification catalog entry. Then run:
 
 ```bash
 make generate
@@ -552,7 +552,7 @@ if child.jobTreeClock != root.jobTreeClock { t.Fatal("child did not inherit root
 For each job start/finish event with `RootSessionID: "root", TreeRevision: 9`, require exactly the existing job notification plus one tree-update notification:
 
 ```go
-params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifySerfJobsTreeUpdated)
+params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifyEvenerJobsTreeUpdated)
 if params.Ref != "local:root" || params.Revision != 9 { t.Fatalf("params=%+v", params) }
 ```
 

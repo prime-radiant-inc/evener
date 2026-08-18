@@ -35,7 +35,7 @@ Out of scope:
 
 One coordinator per renderer, structured as a thin wrapper inside the existing appwire client.
 
-- **Web**: `window.SerfAppwire` (in `cmd/evener-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `SerfAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
+- **Web**: `window.EvenerAppwire` (in `cmd/evener-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `EvenerAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
 - **TUI**: `internal/appwire.Client` (Go) gains the same shape. The wrapper lives inside `TurnStart`, `TurnSteer`, `TurnQueue`, `TurnDrainAsSteer` — those are the existing public methods, no rename. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
 
 `optimisticCall` owns the **call lifecycle**, not the event-matching:
@@ -49,7 +49,7 @@ Reject and timeout are independent triggers; first to fire wins. No double-fail.
 
 Event matching lives **inside the renderer's existing notification path**, not inside the wrapper and not in a parallel subscriber. The renderer's notification handler already performs session/ref filtering (`notificationMatches`) and hydration buffering (`pendingNotifications` queue replayed after hydration) before applying authoritative updates. Running a second raw subscriber would let a pending entry confirm against a different session's notification, or remove the placeholder *before* the buffered authoritative replay had a chance to render the real item. Both renderers therefore reconcile from the same single notification path:
 
-- **Web**: `pending.tryReconcile(method, params)` is called **inside** `deliverNotification(method, params)` in `renderer.js`, **after** the authoritative reducer update completes — exactly one reconciliation site. The hydration-replay loop (`while (pendingNotifications.length > 0)` after hydration) only calls `deliverNotification`, so each replayed notification gets exactly one `tryReconcile` for free via that single site. There is no second `onNotification` handler; the wrapper writes nothing to the SerfAppwire bus.
+- **Web**: `pending.tryReconcile(method, params)` is called **inside** `deliverNotification(method, params)` in `renderer.js`, **after** the authoritative reducer update completes — exactly one reconciliation site. The hydration-replay loop (`while (pendingNotifications.length > 0)` after hydration) only calls `deliverNotification`, so each replayed notification gets exactly one `tryReconcile` for free via that single site. There is no second `onNotification` handler; the wrapper writes nothing to the EvenerAppwire bus.
 - **TUI**: there is only one consumer of `appwire.Client.Notifications()` — the existing `hubModel.Update` path that pumps notifications into the reducer. After the reducer applies the notification, call `pending.tryReconcile(notification)`. No new subscription.
 
 The pending registry per renderer has four operations: `register`, `confirm`, `fail`, `tryReconcile`. Everything else — rendering, animation, retry-button wiring — is the renderer's own concern.
@@ -140,7 +140,7 @@ Write the test, confirm it fails on the current code (Steer is always `true`), a
 
 `cmd/evener-hub/jstest/test-optimistic-rendering.js`:
 
-Tests must exercise the real `SerfAppwire.steer` (and siblings) facades — those facades are where the wrapper logic lives. Mocking the facade itself defeats the test. Instead, inject a fake transport at the lower-level RPC layer (the WebSocket `send` plus `onNotification` event bus) so the wrapper's full lifecycle runs end-to-end while we control the wire-level reply and the notification stream.
+Tests must exercise the real `EvenerAppwire.steer` (and siblings) facades — those facades are where the wrapper logic lives. Mocking the facade itself defeats the test. Instead, inject a fake transport at the lower-level RPC layer (the WebSocket `send` plus `onNotification` event bus) so the wrapper's full lifecycle runs end-to-end while we control the wire-level reply and the notification stream.
 
 - Reject path: fake transport replies to the steer JSON-RPC with an `Unavailable` error. Click steer through the renderer. Assert pending chip is rendered first, then `.optimistic-failed` class within one microtask, retry link present.
 - Success-then-event path: fake transport replies with success; harness then synthesizes a `STEERING_INJECTED` notification matching the text after 50ms. Assert pending chip transitions to confirmed (placeholder removed, authoritative entry rendered).

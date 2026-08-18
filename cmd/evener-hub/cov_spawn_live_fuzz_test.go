@@ -75,8 +75,8 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 		rreq := hubcore.ResumeRequest{SessionID: "old", WorkingDir: dir, StateDir: dir, RunDir: dir, AppReplaySize: 2, Resolved: r}
 		_ = buildSpawnArgs(sreq)
 		_ = buildResumeArgs(rreq)
-		_, _ = resolveSerfLaunchStateDir(dir, map[string]string{})
-		_, _ = resolveSerfLaunchStateDir(dir, nil)
+		_, _ = resolveEvenerLaunchStateDir(dir, map[string]string{})
+		_, _ = resolveEvenerLaunchStateDir(dir, nil)
 
 		store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 		for _, provider := range []string{"", "unknown", "openai", "openai-compatible", "ollama"} {
@@ -94,11 +94,11 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 			`printf '{"protocol":"` + appwire.ProtocolVersion + `","models":[{"provider":" p ","model":" m "},{"provider":"","model":"x"}],"diagnostics":[{"message":" hi ","provider":" p "},{"message":" "}]}'`,
 		}
 		bin := fuzzExecutable(t, responses[int(mode)%len(responses)])
-		_, _ = listSerfLaunchModelContract(ctx, bin, []string{"API_KEY=supersecret"})
-		_ = validateSerfLaunchContract(ctx, bin, " model ", []string{"API_KEY=supersecret"})
-		_ = validateSerfLaunchContract(ctx, bin, "", nil)
-		_, _ = listSerfLaunchModelContract(ctx, filepath.Join(dir, "missing"), nil)
-		_ = validateSerfLaunchContract(ctx, filepath.Join(dir, "missing"), "", nil)
+		_, _ = listEvenerLaunchModelContract(ctx, bin, []string{"API_KEY=supersecret"})
+		_ = validateEvenerLaunchContract(ctx, bin, " model ", []string{"API_KEY=supersecret"})
+		_ = validateEvenerLaunchContract(ctx, bin, "", nil)
+		_, _ = listEvenerLaunchModelContract(ctx, filepath.Join(dir, "missing"), nil)
+		_ = validateEvenerLaunchContract(ctx, filepath.Join(dir, "missing"), "", nil)
 
 		bad := filepath.Join(dir, "missing")
 		_, _ = SpawnDaemon(ctx, bad, dir, hubcore.SpawnRequest{}, time.Millisecond)

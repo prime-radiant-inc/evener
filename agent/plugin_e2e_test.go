@@ -171,8 +171,8 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 7. Tool name mapping bidirectional
-	if toolname.ClaudeToSerf("Read") != "read_file" {
-		t.Errorf("ClaudeToSerf(Read) = %q, want read_file", toolname.ClaudeToSerf("Read"))
+	if toolname.ClaudeToEvener("Read") != "read_file" {
+		t.Errorf("ClaudeToEvener(Read) = %q, want read_file", toolname.ClaudeToEvener("Read"))
 	}
 	if toolname.EvenerToClaude("read_file") != "Read" {
 		t.Errorf("EvenerToClaude(read_file) = %q, want Read", toolname.EvenerToClaude("read_file"))

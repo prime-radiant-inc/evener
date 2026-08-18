@@ -322,12 +322,12 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 	}
 }
 
-func (r *TranscriptReducer) ApplySerfJob(job appwire.EvenerJobInfo) {
+func (r *TranscriptReducer) ApplyEvenerJob(job appwire.EvenerJobInfo) {
 	run := subagentRunFromJob(job)
 	if run.JobID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
 		return
 	}
-	// Stable delegates arrive through ApplySerfDelegate. Job notifications are
+	// Stable delegates arrive through ApplyEvenerDelegate. Job notifications are
 	// reserved for long-lived shell activity; foreground shells remain ordinary
 	// tool calls.
 	if !isBackgroundShellRun(run) {
@@ -357,10 +357,10 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.EvenerJobInfo) {
 	r.messages = append(r.messages, ChatMessage{Kind: MsgTool, ItemID: run.OriginItemID, ToolCallID: run.OriginToolCallID, Tool: info})
 }
 
-// ApplySerfDelegate folds one immutable stable delegate snapshot into the
+// ApplyEvenerDelegate folds one immutable stable delegate snapshot into the
 // transcript rail. The delegate id is the control identity; activation job ids
 // never enter this path.
-func (r *TranscriptReducer) ApplySerfDelegate(delegate appwire.EvenerDelegateInfo) {
+func (r *TranscriptReducer) ApplyEvenerDelegate(delegate appwire.EvenerDelegateInfo) {
 	run := subagentRunFromDelegate(delegate)
 	if run.DelegateID == "" {
 		return
