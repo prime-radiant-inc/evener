@@ -1,6 +1,7 @@
 package serf_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -465,6 +466,13 @@ func scenarioNeedleTrackedFiles(t *testing.T) ([]string, error) {
 		"*.go", "*.ts", "*.tsx", "*.js", "*.jsx", scenarioNeedleBundledRoot)
 	raw, err := cmd.Output()
 	if err != nil {
+		// git says WHY on stderr ("not a git repository", a bad pathspec), and
+		// Output() files that under ExitError rather than in the error text —
+		// so without this the whole diagnosis is "exit status 128".
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return nil, fmt.Errorf("git ls-files: %w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+		}
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	var paths []string
