@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/goal"
@@ -230,6 +232,7 @@ func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
 func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 
 	var streamCallCount int
@@ -271,6 +274,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
+		testOnly:       testConfig{metaFS: metaFS},
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -289,7 +293,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -307,6 +311,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	commCall := communicateCall("c1", "the answer")
 	f := &streamingAdapter{
@@ -324,7 +329,7 @@ func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -372,6 +377,7 @@ func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
 func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	f := &streamingAdapter{
 		name: "openai",
@@ -384,6 +390,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
+		testOnly:       testConfig{metaFS: metaFS},
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -402,7 +409,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -418,6 +425,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 
 	var streamCallCount int
@@ -464,6 +472,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
+		testOnly:       testConfig{metaFS: metaFS},
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -482,7 +491,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 		t.Fatalf("turn 1 ProcessInput: %v", err)
 	}
 	sessID := sess.ID()
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after turn 1: %v", err)
 	}
@@ -497,7 +506,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	}
 	sess.Close()
 
-	meta, err = schema.LoadSessionMeta(dir, sessID)
+	meta, err = schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after error turn: %v", err)
 	}
@@ -514,6 +523,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	// Each empty response increments modelResponses (the loop bumps it before
 	// retrying). After maxEmptyRetries=3 consecutive empties, the loop returns
@@ -533,6 +543,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -551,7 +562,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -569,6 +580,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	bareStep := func(req llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without tool")}
@@ -583,6 +595,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
+		testOnly: testConfig{metaFS: metaFS},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -601,7 +614,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -618,6 +631,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	// Always return a non-communicate tool call — the model never delivers,
 	// so the loop runs until MaxToolRoundsPerInput is hit.
@@ -646,6 +660,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:              dir,
+		testOnly:              testConfig{metaFS: metaFS},
 		MaxToolRoundsPerInput: 1,
 	})
 	if err != nil {
@@ -666,7 +681,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := schema.LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMetaWithFS(metaFS, dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -1752,6 +1767,7 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	f := &streamingAdapter{
 		name: "openai",
@@ -1765,6 +1781,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
+		testOnly:       testConfig{metaFS: metaFS},
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {
@@ -1800,6 +1817,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 
 func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	client := llm.NewClient()
 	comm := communicateCall("c1", "ok")
 	client.Register(&fakeAdapter{
@@ -1815,7 +1833,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 			},
 		},
 	})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1889,6 +1907,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
+			metaFS := afero.NewMemMapFs()
 			client := llm.NewClient()
 			client.Register(&fakeAdapter{
 				name: "openai",
@@ -1900,7 +1919,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 					},
 				},
 			})
-			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
@@ -2026,6 +2045,7 @@ func TestProviderErrorEmitsStructuredCause(t *testing.T) {
 func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	f := &streamingAdapter{
 		name:      "openai",
@@ -2036,6 +2056,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
+		testOnly:       testConfig{metaFS: metaFS},
 		LLMRetryPolicy: &policy,
 	})
 	if err != nil {

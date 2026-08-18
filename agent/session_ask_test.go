@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
@@ -1241,6 +1243,7 @@ func newAskRestoreClient() *llm.Client {
 func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1249,7 +1252,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1266,7 +1269,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1289,6 +1292,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1297,7 +1301,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1315,7 +1319,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1346,6 +1350,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1355,7 +1360,7 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1388,7 +1393,7 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1423,6 +1428,7 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	id := "01ASKRESTOREINTERRUPTED"
 
 	askArgs, err := json.Marshal(askUserArgsValid())
@@ -1462,7 +1468,7 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 		Model:     "gpt-5.2",
 		Config:    (SessionConfig{}).toSnapshot(),
 	}
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1513,6 +1519,7 @@ func TestAskUser_RestoreRederivesIdleAfterInterruptedAsk(t *testing.T) {
 func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1521,7 +1528,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1538,7 +1545,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 	restoreAdapter := &fakeAdapter{name: "openai"}
 	restoreClient := llm.NewClient()
 	restoreClient.Register(restoreAdapter)
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1578,6 +1585,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1586,7 +1594,7 @@ func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1600,7 +1608,7 @@ func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1639,6 +1647,7 @@ func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1647,7 +1656,7 @@ func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1661,7 +1670,7 @@ func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1686,6 +1695,7 @@ func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask1 := askUserCall("ask1", askUserArgsValid()) // header "DB choice"
 	ask2Args := map[string]any{
 		"questions": []any{
@@ -1707,7 +1717,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1724,7 +1734,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1755,6 +1765,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -1762,7 +1773,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1779,7 +1790,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 	meta := sess.Meta()
 	sess.Close()
 
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1818,6 +1829,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	metaFS := afero.NewMemMapFs()
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1826,7 +1838,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1847,7 +1859,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMetaWithConfig(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir, testOnly: testConfig{metaFS: metaFS}})
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
