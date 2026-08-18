@@ -72,14 +72,14 @@ func TestModuleLintHonorsARealSignalThroughTheBinary(t *testing.T) {
 	dir := writeFixtureModule(t, "package fixture\n\n// Ok exists to be lint-clean.\nfunc Ok() int { return 1 }\n")
 	tmp := t.TempDir()
 	cmd := exec.Command(buildSerfDev(t), "module-lint") //nolint:noctx // stopped by the SIGTERM under test, reaped by Wait
-	env := os.Environ()
-	kept := env[:0]
-	for _, kv := range env {
+	var kept []string
+	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "TMPDIR=") && !strings.HasPrefix(kv, "MODULES=") && !strings.HasPrefix(kv, "LINT_PARALLEL=") {
 			kept = append(kept, kv)
 		}
 	}
-	cmd.Env = append(kept, "TMPDIR="+tmp, "MODULES="+dir)
+	kept = append(kept, "TMPDIR="+tmp, "MODULES="+dir)
+	cmd.Env = kept
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out
