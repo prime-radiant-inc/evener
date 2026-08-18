@@ -4,13 +4,13 @@
 // directly.
 
 import type {
+  EvenerDelegateInfo,
+  EvenerTurnSlots,
+  EvenerUsage,
   GoalState,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
-  EvenerDelegateInfo,
-  EvenerTurnSlots,
-  EvenerUsage,
   ThreadCapabilities,
   ThreadStatus,
 } from "./types.gen";

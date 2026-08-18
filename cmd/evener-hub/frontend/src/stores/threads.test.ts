@@ -1553,7 +1553,10 @@ describe("useThreadsStore.ensureThread", () => {
     fake.on("thread/read", (params) => {
       const ref = params.ref ?? "";
       if (ref === "local:root") {
-        return readResponse(ref, { id: "thr_root", evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+        return readResponse(ref, {
+          id: "thr_root",
+          evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
       }
       if (ref === "local:child") {
         return readResponse(ref, {

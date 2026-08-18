@@ -23,9 +23,9 @@ test("errorText prefers an Error's message and stringifies anything else", () =>
 });
 
 test("isHubLaunchError matches only a WireError carrying the hubLaunch discriminator", () => {
-  expect(isHubLaunchError(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
-    true,
-  );
+  expect(
+    isHubLaunchError(new WireError("fork/exec evener: no such file", -32014, { evenerErrorInfo: "hubLaunch" })),
+  ).toBe(true);
   // The code alone is never the discriminator - a sibling error can share it.
   expect(isHubLaunchError(new WireError("turn t1 is active", -32014, { evenerErrorInfo: "conflict" }))).toBe(false);
   expect(isHubLaunchError(new WireError("no data at all", -32014))).toBe(false);
@@ -50,7 +50,10 @@ test("sessionActionError names the action for every other failure", () => {
     "Couldn't change model: switch boom",
   );
   expect(
-    sessionActionError("Couldn't set goal", new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" })),
+    sessionActionError(
+      "Couldn't set goal",
+      new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }),
+    ),
   ).toBe("Couldn't set goal: turn t1 is active");
 });
 
@@ -168,7 +171,9 @@ test("errorKind classifies anything else as unknown", () => {
 // the daemon-missing family - everything else passes through unchanged.
 test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy instead of the launch-check's raw text", () => {
   expect(
-    friendlyLaunchErrorMessage(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" })),
+    friendlyLaunchErrorMessage(
+      new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }),
+    ),
   ).toBe("No agent daemon responded for this project. Start one by running evener in the repo, then retry.");
 });
 
@@ -187,7 +192,9 @@ test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message t
   ).toBe("provider credentials missing for openai: set via evener/auth/apiKey/set or set the matching env var");
   expect(
     friendlyLaunchErrorMessage(
-      new WireError("model is not configured for Evener launch: openai/gpt-5.5", -32014, { evenerErrorInfo: "hubLaunch" }),
+      new WireError("model is not configured for Evener launch: openai/gpt-5.5", -32014, {
+        evenerErrorInfo: "hubLaunch",
+      }),
     ),
   ).toBe("model is not configured for Evener launch: openai/gpt-5.5");
   expect(
@@ -219,7 +226,9 @@ test("friendlyLaunchErrorMessage preserves the daemon's own stderr (the hub prop
     'daemon spawn failed: process exited before rendezvous: exit status 1: evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/x": lstat /Users: no such file or directory';
   expect(friendlyLaunchErrorMessage(new WireError(stderr, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(stderr);
   expect(
-    friendlyLaunchErrorMessage(new WireError("evener launch-check failed: boom", -32014, { evenerErrorInfo: "hubLaunch" })),
+    friendlyLaunchErrorMessage(
+      new WireError("evener launch-check failed: boom", -32014, { evenerErrorInfo: "hubLaunch" }),
+    ),
   ).toBe("evener launch-check failed: boom");
 });
 

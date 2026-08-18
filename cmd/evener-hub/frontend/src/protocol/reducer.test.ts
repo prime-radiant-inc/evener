@@ -2831,7 +2831,11 @@ test("evener/job/started bumps jobsUpdatedAt and lastFrameAt, and changes nothin
     },
   });
   expect(before.jobsUpdatedAt).toBeNull();
-  const after = applyNotification(before, { method: "evener/job/started", params: jobParams("ref_t", "running") }, 2000);
+  const after = applyNotification(
+    before,
+    { method: "evener/job/started", params: jobParams("ref_t", "running") },
+    2000,
+  );
   expect(after).toEqual({ ...before, jobsUpdatedAt: 2000, lastFrameAt: 2000 });
 });
 
@@ -2978,7 +2982,12 @@ test("thread/status/changed to a non-active status clears the live work-clock an
   // status {type} (types.gen.ts:963-972, reducer.ts:574-577).
   let model = testHydrate({
     status: { type: "active" },
-    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnStartedAt: 1_700_000_000_000,
+    },
   });
   expect(model.activeTurnStartedAt).toBe(new Date(1_700_000_000_000).toISOString());
 
@@ -3036,7 +3045,12 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.
   let model = testHydrate({
     status: { type: "active" },
-    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnStartedAt: 1_700_000_000_000,
+    },
   });
   const anchor = model.activeTurnStartedAt;
 

@@ -39,9 +39,9 @@ describe("globalDefaultHint", () => {
 
 describe("matchesEnvCredentialError", () => {
   test("matches the exact backend message shape, case-insensitively", () => {
-    expect(matchesEnvCredentialError('env key "FOO" looks like a credential; route through evener/auth/apiKey/set')).toBe(
-      true,
-    );
+    expect(
+      matchesEnvCredentialError('env key "FOO" looks like a credential; route through evener/auth/apiKey/set'),
+    ).toBe(true);
     expect(matchesEnvCredentialError('ENV KEY "FOO" LOOKS LIKE A CREDENTIAL')).toBe(true);
   });
   test("requires both 'env key' and 'credential' to be present", () => {

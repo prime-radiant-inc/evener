@@ -665,7 +665,9 @@ describe("ActivityPanel", () => {
   test("continuation grafts only the targeted branch", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
-    fake.on("evener/jobs/list", ({ continuation }) => ({ data: continuation ? continuedPartialTree() : activityTree() }));
+    fake.on("evener/jobs/list", ({ continuation }) => ({
+      data: continuation ? continuedPartialTree() : activityTree(),
+    }));
 
     render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));

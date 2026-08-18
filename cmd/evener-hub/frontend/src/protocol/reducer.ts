@@ -7,10 +7,10 @@
 import { type ItemImage, type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import type {
   AnyNotification,
+  EvenerDelegateInfo,
   InputItem,
   OutputImage,
   SandboxEscalationRequested,
-  EvenerDelegateInfo,
   Thread,
   ThreadItem,
   ThreadReadResponse,
@@ -51,7 +51,10 @@ function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelega
   return { ...state, latestActivityAt: activity };
 }
 
-function upsertStableDelegate(delegates: readonly EvenerDelegateInfo[], incoming: EvenerDelegateInfo): EvenerDelegateInfo[] {
+function upsertStableDelegate(
+  delegates: readonly EvenerDelegateInfo[],
+  incoming: EvenerDelegateInfo,
+): EvenerDelegateInfo[] {
   const index = delegates.findIndex((delegate) => delegate.delegateId === incoming.delegateId);
   if (index === -1) return [...delegates, cloneStableDelegate(incoming)];
   const current = delegates[index];

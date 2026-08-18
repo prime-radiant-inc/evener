@@ -246,7 +246,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
   // help here; these coalesce so a consumer counting entries never sees null.
-  const listRecents = useCallback(() => client.request("evener/projects/recent", {}).then((r) => r.data ?? []), [client]);
+  const listRecents = useCallback(
+    () => client.request("evener/projects/recent", {}).then((r) => r.data ?? []),
+    [client],
+  );
   // Injected into every PathField on this pane (the working directory here and
   // the advanced panel's path/pathList fields): the widget derives includeFiles
   // from its own kind, so this just forwards it.
@@ -568,7 +571,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
-    saveDefaults({ cwd, harness, model, branch, accessMode, reasoningEffort, harnessUsesEvenerModels: usesEvenerModels });
+    saveDefaults({
+      cwd,
+      harness,
+      model,
+      branch,
+      accessMode,
+      reasoningEffort,
+      harnessUsesEvenerModels: usesEvenerModels,
+    });
     // Reset transient form state on success, before navigating away (floor
     // §1.14 L186: the pending-attachment bag is cleared and the paste
     // marker-counter reset). The spawn pane is a dockview singleton that can
@@ -670,7 +681,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }
 
   const harnessOptions =
-    harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "evener", label: "evener" }];
+    harnesses.length > 0
+      ? harnesses.map((h) => ({ value: h.id, label: h.label }))
+      : [{ value: "evener", label: "evener" }];
 
   return (
     <PaneScaffold title="Start an agent" mobileTitle="new">
