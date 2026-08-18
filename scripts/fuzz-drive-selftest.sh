@@ -13,8 +13,8 @@ set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/fuzz-drive.sh"
 . "$(dirname "$0")/selftest-lib.sh"
-selftest_root="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-selftest.XXXXXX")"
-cleanup() { rm -rf "$selftest_root"; }
+selftest_scratch selftest_root fuzz-drive-selftest
+cleanup() { selftest_rm_scratch; }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -24,7 +24,7 @@ trap 'exit 143' TERM
 # the stub binaries under the one root owned by this selftest; echoes its path.
 # The root trap covers normal completion and signal exits alike.
 new_repo() {
-	local r; r="$(mktemp -d "$selftest_root/scenario.XXXXXX")"
+	local r; r="$(mktemp -d "$selftest_root/scenario.XXXXXX")" || { echo "fuzz-drive-selftest: mktemp under \$selftest_root failed" >&2; exit 1; }
 	r="$(cd "$r" && pwd -P)"
 	mkdir -p "$r/scripts" "$r/fuzz/drive-tasks" "$r/bin"
 	cp "$script" "$r/scripts/fuzz-drive.sh"

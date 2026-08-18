@@ -11,8 +11,8 @@ set -uo pipefail
 real_script="$(cd "$(dirname "$0")" && pwd)/coverage-union.sh"
 . "$(dirname "$0")/selftest-lib.sh"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/serf-covunion-selftest.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+selftest_scratch work serf-covunion-selftest
+trap 'selftest_rm_scratch' EXIT
 
 repo="$work/repo"
 mkdir -p "$repo/scripts" "$repo/agent"

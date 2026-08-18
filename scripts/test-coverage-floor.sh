@@ -96,7 +96,8 @@ tmpbase=${TMPDIR:-/tmp}
 # the shell does not even hold the name yet — and the scratch was abandoned.
 # The kill selftests signal a run the instant its scratch appears, which is
 # exactly that window. $$ is unique among live processes, so concurrent runs
-# cannot collide; a stale same-pid leftover makes the mkdir fail loudly.
+# cannot collide; a stale same-pid leftover makes the mkdir fail loudly. That
+# leftover is not this run's to delete, so the trap is disarmed before exiting.
 profiles_dir="${tmpbase%/}/serf-testcov.$$"
 fail=0
 # A clean run leaves nothing behind; a failed one keeps the profiles and the
@@ -106,7 +107,7 @@ fail=0
 # suite for.
 cleanup_profiles() { [ "$fail" -eq 0 ] && rm -rf "$profiles_dir"; }
 trap cleanup_profiles EXIT
-mkdir "$profiles_dir" || exit 1
+mkdir "$profiles_dir" || { trap - EXIT; echo "test-coverage-floor: scratch $profiles_dir already exists or cannot be created" >&2; exit 1; }
 measured_file="$profiles_dir/measured.txt"
 : >"$measured_file"
 printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "cov%" "floor"

@@ -2,9 +2,11 @@
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-fixture=$(mktemp -d -t serf-live-compaction-selftest.XXXXXX)
+. "$repo/scripts/selftest-lib.sh"
+
+selftest_scratch fixture serf-live-compaction-selftest
 cleanup() {
-	rm -rf -- "$fixture"
+	selftest_rm_scratch
 }
 trap cleanup EXIT
 
