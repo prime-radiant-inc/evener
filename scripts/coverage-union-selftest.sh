@@ -19,6 +19,7 @@ mkdir -p "$repo/scripts" "$repo/agent"
 cp "$real_script" "$repo/scripts/coverage-union.sh"
 cp "$(dirname "$0")/gate-surface-lib.sh" "$repo/scripts/gate-surface-lib.sh"
 cp "$(dirname "$0")/covstmt-lib.sh" "$repo/scripts/covstmt-lib.sh"
+cp "$(dirname "$0")/covscratch-lib.sh" "$repo/scripts/covscratch-lib.sh"
 script="$repo/scripts/coverage-union.sh"
 floors="$repo/scripts/covunion-floors.txt"
 printf 'module fake\n\ngo 1.25\n' >"$repo/go.mod"
@@ -105,6 +106,15 @@ assert_scratch_inside_tmpdir
 assert_killed_run_cleans_up TERM
 assert_killed_run_cleans_up INT
 assert_killed_run_cleans_up HUP
+
+# The exits a trap cannot see, and the failed run that keeps its scratch on
+# purpose, are this script's own to reclaim: no janitor sweeps them.
+scratch_prefix=serf-covunion
+assert_reclaims_abandoned_scratch
+assert_keeps_concurrent_scratch
+printf 'nosuch 50.0\n' >"$floors"
+assert_failed_run_keeps_scratch_until_next_run run --modules "nosuch" --check
+: >"$floors"
 
 run --bless >"$out" 2>&1
 assert_has "$floors" "agent 100.0" "bless records the measured union floor"

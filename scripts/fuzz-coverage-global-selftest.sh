@@ -111,6 +111,10 @@ assert_rapid_replays_opt_in_to_fuzz_tests() {
 repo="$work/repo"
 mkdir -p "$repo/scripts"
 cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
+# The runner sources its own-scratch reclaim from its own directory, so the
+# fixture needs the real library beside it. Later scenarios replace only the
+# runner, so this copy is made once.
+cp "$(dirname "$0")/covscratch-lib.sh" "$repo/scripts/covscratch-lib.sh"
 for module in added agent auth envvars fuzz invariant llm; do
 	mkdir -p "$repo/$module"
 done
@@ -910,5 +914,33 @@ reset_logs
 expect_failure FAKE_GO_LIST_FAIL=1
 has "$last_output" 'go list failed for module: .' 'go list failure is fatal'
 lacks "$(cat "$go_log")" $'\ttest ' 'go list failure invokes no replay'
+
+# A run killed by SIGKILL (or an OOM kill, or a power cut) never reaches the
+# runner's EXIT trap, and no janitor sweeps what it leaves — this project cleans
+# up at the source, so the next run of the same script reclaims it. A live
+# process's scratch is off limits: a developer can start this runner twice
+# against one TMPDIR, and pids are unique among live processes.
+echo '== abandoned scratch is reclaimed, a live one is not =='
+reset_logs
+tmphome="$work/tmp"
+mkdir -p "$tmphome"
+# A pid that has already exited AND been reaped, versus this suite's own pid,
+# which is live and is not the run being started.
+abandoned="$tmphome/serf-fuzzcov-global.$(bash -c 'echo $$')"
+concurrent="$tmphome/serf-fuzzcov-global.$$"
+mkdir -p "$abandoned" "$concurrent"
+run_runner TMPDIR="$tmphome" >/dev/null 2>&1
+if [ -e "$abandoned" ]; then
+	bad 'an abandoned scratch survived the next run, and nothing else sweeps it'
+else
+	ok 'the next run reclaims an abandoned scratch'
+fi
+if [ -d "$concurrent" ]; then
+	ok "a live process's scratch survives another run's reclaim"
+else
+	bad "a live process's scratch was reclaimed out from under it"
+fi
+rm -rf "$concurrent"
+assert_eq "$(ls -A "$tmphome")" "" 'the run itself leaves no scratch behind'
 
 selftest_summary
