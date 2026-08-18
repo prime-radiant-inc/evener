@@ -1,29 +1,37 @@
 package main
 
 import (
+	"errors"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // The dispatcher lives entirely in main(), so its contract is pinned the
-// real-process way: run the actual binary via `go run` and read its exit
-// code and stderr.
+// real-process way: build the actual binary and read its exit code and
+// stderr directly. Not `go run`, which reports 1 whatever the child exited
+// with, erasing exactly the codes under test. The per-test build rides the
+// build cache.
 func runSerfDev(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration: builds and runs the serf-dev binary")
 	}
-	cmd := exec.Command("go", append([]string{"run", "."}, args...)...) //nolint:noctx // one short-lived build-and-run, reaped by Wait
+	binary := filepath.Join(t.TempDir(), "serf-dev")
+	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil { //nolint:noctx // one short-lived build, reaped by CombinedOutput
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	cmd := exec.Command(binary, args...) //nolint:noctx // one short-lived run, reaped by Run
 	var errOut strings.Builder
 	cmd.Stderr = &errOut
 	err := cmd.Run()
 	if err == nil {
 		return 0, errOut.String()
 	}
-	exit, ok := err.(*exec.ExitError)
-	if !ok {
-		t.Fatalf("go run ./cmd/serf-dev: %v", err)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("running serf-dev: %v", err)
 	}
 	return exit.ExitCode(), errOut.String()
 }
