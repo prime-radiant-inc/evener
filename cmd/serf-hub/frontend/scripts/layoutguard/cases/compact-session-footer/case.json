@@ -18,6 +18,17 @@
     "deviceScaleFactor": 1,
     "mobile": false
   },
+  "widthMatrix": [
+    { "width": 320 },
+    { "width": 538.890625, "expectedStatusWidth": 399 },
+    { "width": 539.890625, "expectedStatusWidth": 400 },
+    { "width": 618.890625, "expectedStatusWidth": 479 },
+    { "width": 619.890625, "expectedStatusWidth": 480 },
+    { "width": 698.890625, "expectedStatusWidth": 559 },
+    { "width": 699.890625, "expectedStatusWidth": 560 },
+    { "width": 900 },
+    { "width": 900, "shortModel": true }
+  ],
   "forcePseudoStates": [
     { "selector": ".focusAttach", "pseudoClasses": ["focus-visible"] },
     { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] },

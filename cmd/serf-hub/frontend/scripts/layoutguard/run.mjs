@@ -42,7 +42,13 @@
 //                  optional "forcePseudoStates":
 //                  [{ "selector": ".x", "pseudoClasses": ["hover"] }] for a
 //                  state no page script can reach (see browserGuardCdp.mjs's
-//                  forcePseudoStates doc)
+//                  forcePseudoStates doc). Plus an optional "widthMatrix":
+//                  [{ "width": 320 }, { "width": 480, "expectedFooBar": 1 }]
+//                  when one harness must cover N body widths - the runner
+//                  splices the normalized array into harness.html wherever it
+//                  declares __LAYOUTGUARD_WIDTH_MATRIX__, so the widths live
+//                  in exactly one place instead of N hand-copied fixtures
+//                  (see widthMatrix.mjs and cases/compact-session-footer)
 //   - harness.html a hand-authored DOM fragment reproducing the real
 //                  component's markup/classnames (link tags for tokens.css
 //                  and resolved.css - both are generated fresh at run time,
@@ -75,6 +81,7 @@ import {
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
 import { diagnoseRealizedViewport, normalizeViewportSpec } from "./viewport.mjs";
+import { injectWidthMatrix } from "./widthMatrix.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CASES_DIR = path.join(__dirname, "cases");
@@ -119,7 +126,8 @@ function buildCaseFiles(name, caseJson) {
   const sources = moduleCssFiles.map((rel) => readFileSync(path.join(SRC_DIR, rel), "utf8"));
   writeFileSync(path.join(outDir, "resolved.css"), resolveComposes(sources));
 
-  writeFileSync(path.join(outDir, "harness.html"), readFileSync(path.join(CASES_DIR, name, "harness.html"), "utf8"));
+  const harnessSource = readFileSync(path.join(CASES_DIR, name, "harness.html"), "utf8");
+  writeFileSync(path.join(outDir, "harness.html"), injectWidthMatrix(harnessSource, caseJson.widthMatrix, name));
   return outDir;
 }
 
