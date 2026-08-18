@@ -379,7 +379,11 @@ async function main() {
       if (widthFailed) failed++;
     }
   } finally {
-    await cleanup();
+    // A rejecting teardown (escaped Chrome helper) must not turn a run with
+    // zero failing cases into a red exit — warn and let the verdict stand.
+    await cleanup().catch((cleanupError) => {
+      console.error(`warning: browser cleanup error: ${cleanupError.message}`);
+    });
   }
   return failed > 0 ? 1 : 0;
 }

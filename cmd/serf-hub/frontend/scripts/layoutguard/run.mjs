@@ -183,6 +183,17 @@ async function main() {
     return 2;
   }
 
+  // Ensure the generated directory is removed even on signal interruption.
+  // Register handlers BEFORE creating the guard so they run first (event
+  // emitter calls listeners in registration order). The guard's own handlers
+  // (installed via createBrowserProcessCleanup) will run after ours and exit
+  // the process; by then the generated dir will already be removed.
+  const handleSignal = () => {
+    rmSync(GENERATED_ROOT, { recursive: true, force: true });
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+
   // One Vite dev server + one headless Chrome for the whole run (the old
   // file:// design launched a fresh Chrome PER CASE). Startup failures are
   // environment problems, not test case failures - say so, with the Vite
@@ -264,8 +275,15 @@ async function main() {
       page.close();
     }
   } finally {
-    await guard.cleanup();
-    rmSync(GENERATED_ROOT, { recursive: true, force: true });
+    try {
+      await guard.cleanup();
+    } catch (cleanupError) {
+      // Cleanup rejection should not prevent removing the generated dir.
+      // Report the error but continue to cleanup.
+      console.error(`warning: browser cleanup error: ${cleanupError.message}`);
+    } finally {
+      rmSync(GENERATED_ROOT, { recursive: true, force: true });
+    }
   }
 
   if (warnings.length > 0) {
