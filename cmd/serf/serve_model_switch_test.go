@@ -267,7 +267,19 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 				}
 				if params.Status.Type == appwire.ThreadStatusIdle &&
 					params.Capabilities != nil && params.Capabilities.ChangeModel {
-					record("idle with model capability")
+					// Boot parks the thread idle with ChangeModel too, and on a
+					// starved runner that status notification is still draining
+					// when the subscribe cut lands — the same drain the
+					// SystemPreludeTurnID filter above absorbs for
+					// turn/completed. An idle recorded before the failed turn
+					// proves nothing about restoration, so only one seen
+					// afterwards counts as the milestone.
+					onceMu.Lock()
+					afterFailure := seen["failed turn"]
+					onceMu.Unlock()
+					if afterFailure {
+						record("idle with model capability")
+					}
 				}
 			}
 		}
