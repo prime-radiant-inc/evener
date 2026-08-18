@@ -315,6 +315,42 @@ for both of them git's own "is this safe" check is unavailable:
 Both remain read-only inspection tools; nothing in this repo deletes
 either class for you.
 
+## A controller in a worktree pins its whole in-session fleet
+
+In-session subagents (Workflow or Agent-tool fleets) inherit the
+controller session's worktree sandbox: their Bash and Write are
+hard-pinned to the CONTROLLER'S worktree, whatever worktree the dispatch
+brief assigns. Eleven implementers were once briefed each into a
+hand-built worktree; every one was actually pinned to the controller's
+integration worktree. Three noticed and blocked honestly. The rest did
+the work where they stood — four kata commits landed interleaved on the
+controller's branch, and five reports plus three half-edited files piled
+up in a tree that was supposed to stay clean. Brief-level discipline
+cannot beat the pin; do not hand-build per-agent worktrees for an
+in-session fleet. What works:
+
+- **Per-agent `isolation: "worktree"` in the dispatch.** The harness
+  cuts the agent its own worktree, correctly pinned. It branches from
+  origin's default branch — the stacked-work caveat above still applies.
+- **A cheap canary first.** One throwaway agent reports pwd, branch,
+  HEAD, and whether a write round-trips; the orchestration script gates
+  the fleet on it. The canary also caught the next surprise: origin/main
+  had moved, so every fresh worktree sat on a newer base than the batch.
+  Gate on ancestry (`git merge-base --is-ancestor <batch-base> HEAD`),
+  not SHA equality.
+- **Commits are the only cross-agent handoff.** Every worktree of one
+  repo sees every branch, so a verifier in its own worktree checks out
+  the implementer's tip detached (`git checkout --detach <tip>`) and
+  runs tests there. Uncommitted work in another worktree is invisible;
+  the brief must say "uncommitted work is treated as not done."
+- **`EnterWorktree` is not an escape hatch for a pinned subagent.**
+  Switching moves the cwd bookkeeping but not the enforcement root;
+  afterwards every Bash call is refused everywhere, `ExitWorktree`
+  refuses too, and the session's shell is dead for good. Two agents
+  proved this deterministically; briefs now forbid the call outright.
+- **Fresh isolation worktrees have no `node_modules` symlink.** A
+  frontend brief must carry the `ln -sfn` line itself.
+
 ## Model tiering
 
 Use the cheapest model that does the job. Decompose for tier: many small
