@@ -153,44 +153,54 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
   const label = labelFor(kind);
-  const { notifications, leftover } = parseSteeringNotifications(item.text);
-  if (notifications.length > 0) {
+  const fragments = parseSteeringNotifications(item.text);
+  const hasNotification = fragments.some((f) => f.kind === "notification");
+  if (hasNotification) {
     return (
       <>
-        {notifications.map((n, index) => (
-          // rawText is NOT a safe key: a generic notification the daemon
-          // never gave a job_id (e.g. a watch-timeout retry, kata rail-nav
-          // React invariant) can appear more than once in the same steer
-          // with byte-identical text, and rawText was colliding on it -
-          // "Encountered two children with the same key" in the console,
-          // and downstream React reconciler corruption (an "Expected static
-          // flag was missing" internal invariant) on the next update once a
-          // streamed delta rebuilds this same item with another duplicate.
-          // notifications is a fresh, order-stable parse of this one item's
-          // text every render (parseSteeringNotifications above), never a
-          // diffed/reordered list, so the array index is a safe, stable
-          // identity here - same reasoning as ExcerptText's own index key in
-          // NotificationCard.tsx.
-          // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
-          <NotificationCard key={index} notification={n} sessionRef={sessionRef} />
-        ))}
-        {leftover && (
-          <SteeringDivider
-            id={item.id}
-            label={label ? `${STEERED}: ${label}` : STEERED}
-            text={leftover}
-            sessionRef={sessionRef}
-          />
+        {fragments.map((fragment, index) =>
+          fragment.kind === "notification" ? (
+            // rawText is NOT a safe key: a generic notification the daemon
+            // never gave a job_id (e.g. a watch-timeout retry, kata rail-nav
+            // React invariant) can appear more than once in the same steer
+            // with byte-identical text, and rawText was colliding on it -
+            // "Encountered two children with the same key" in the console,
+            // and downstream React reconciler corruption (an "Expected static
+            // flag was missing" internal invariant) on the next update once a
+            // streamed delta rebuilds this same item with another duplicate.
+            // fragments is a fresh, order-stable parse of this one item's
+            // text every render (parseSteeringNotifications above), never a
+            // diffed/reordered list, so the array index is a safe, stable
+            // identity here - same reasoning as ExcerptText's own index key in
+            // NotificationCard.tsx.
+            // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
+            <NotificationCard key={index} notification={fragment.notification} sessionRef={sessionRef} />
+          ) : (
+            // Each interstitial text span gets its own divider, positioned
+            // where it appeared in the original text (issue #48) rather than
+            // every span merged into one divider rendered after all cards. A
+            // per-fragment id keeps its collapsed/expanded state independent
+            // of any other divider on the same item.
+            <SteeringDivider
+              // biome-ignore lint/suspicious/noArrayIndexKey: index is stable - see comment above
+              key={index}
+              id={`${item.id}:${index}`}
+              label={label ? `${STEERED}: ${label}` : STEERED}
+              text={fragment.text}
+              sessionRef={sessionRef}
+            />
+          ),
         )}
       </>
     );
   }
 
+  const soleFragment = fragments[0];
   return (
     <SteeringDivider
       id={item.id}
       label={label ? `${STEERED}: ${label}` : STEERED}
-      text={leftover}
+      text={soleFragment?.kind === "text" ? soleFragment.text : ""}
       sessionRef={sessionRef}
     />
   );
