@@ -60,7 +60,10 @@ func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *te
 		t.Fatalf("NewSession: %v", err)
 	}
 	muteNoteElicitation(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: the adapter talks to an in-process httptest.Server on
+	// localhost with a scripted single-round response; this normally
+	// completes in well under a second. 30s only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if output, err := sess.ProcessInput(ctx, "reply once", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

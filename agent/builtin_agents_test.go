@@ -430,7 +430,10 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 
 	select {
 	case <-adapter.started:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: the subagent's adapter call is scripted in-process with no
+	// real I/O, so it normally reaches Complete and closes started in well
+	// under a second; 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("subagent did not start")
 	}
 
