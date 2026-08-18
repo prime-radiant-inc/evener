@@ -873,3 +873,117 @@ func TestSectionResolver_DiskOverrideBeatsEmbeddedTemplate(t *testing.T) {
 		t.Fatalf("section = %q, want the disk override to win over the embedded .md.tmpl", got)
 	}
 }
+
+// postureSectionResolver builds an embedded-only resolver for the orchestration
+// posture sections, which carry no provider or agent variants.
+func postureSectionResolver(agent string) *sectionResolver {
+	return &sectionResolver{
+		provider: "openai",
+		agent:    agent,
+		agentFS:  bundled.Agents(),
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+}
+
+// TestVerificationSectionDefinesIncompleteGates pins the verification posture:
+// a gate counts only when it ran and exited zero, everything else is reported as
+// incomplete with its exact condition, and the parent reruns what the child
+// could not.
+func TestVerificationSectionDefinesIncompleteGates(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("coordinator").Section("verification", promptData{Provider: "openai", Agent: "coordinator"})
+	for _, want := range []string{
+		"actually ran and exited zero", "timeout", "launch failure", "sandbox denial",
+		"environmental blockage", "verification incomplete", "fixture or environment failure",
+		"rerun the decisive incomplete gate",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("verification section missing %q: %s", want, section)
+		}
+	}
+}
+
+// TestContextManagementSectionIsAdvisoryAndBounded pins the context-management
+// posture: compaction is a suggestion at a task boundary, and a stalled
+// implement/review/fix loop stops after two cycles instead of repeating.
+func TestContextManagementSectionIsAdvisoryAndBounded(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("coordinator").Section("context-management", promptData{
+		Provider: "openai", Agent: "coordinator",
+		CallableTools: map[string]bool{"compact_context": true},
+	})
+	for _, want := range []string{
+		"After completing and reporting a task", "compact_context", "before unrelated work",
+		"two incomplete implement/review/fix cycles", "Report the evidence", "reslice", "ask for direction",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("context-management section missing %q: %s", want, section)
+		}
+	}
+}
+
+// TestContextManagementSection_SilentAboutAnUncallableCompactTool applies the
+// tool-mention rule (ruled 2026-08-06) to this section: a session without
+// compact_context keeps the stop rule and loses only the tool suggestion.
+func TestContextManagementSection_SilentAboutAnUncallableCompactTool(t *testing.T) {
+	t.Parallel()
+	section := postureSectionResolver("explorer").Section("context-management", promptData{Provider: "openai", Agent: "explorer"})
+	if strings.Contains(section, "compact_context") {
+		t.Fatalf("context-management section names a tool this session cannot call: %s", section)
+	}
+	if !strings.Contains(section, "two incomplete implement/review/fix cycles") {
+		t.Fatalf("tool-free context-management section lost its tool-independent guidance: %s", section)
+	}
+}
+
+// TestOrchestrationPostureTemplateInclusion checks where the posture lands: both
+// master templates carry verification and context management, and a leaf child
+// gets them without the delegation guidance it cannot act on.
+func TestOrchestrationPostureTemplateInclusion(t *testing.T) {
+	t.Parallel()
+	data := func(canDelegate bool) promptData {
+		return promptData{
+			Provider:       "openai",
+			Agent:          "coordinator",
+			WorkingDir:     "/tmp/test",
+			Model:          "gpt-5.4",
+			ResultToolName: "communicate",
+			CallableTools:  map[string]bool{"compact_context": true},
+			CanDelegate:    canDelegate,
+		}
+	}
+	posture := []string{"## Verification", "## Context management"}
+
+	root, _, err := postureSectionResolver("coordinator").RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data(true))
+	if err != nil {
+		t.Fatalf("render system: %v", err)
+	}
+	for _, marker := range append([]string{"## Delegation"}, posture...) {
+		if !strings.Contains(root, marker) {
+			t.Errorf("root prompt missing %q", marker)
+		}
+	}
+
+	leaf, _, err := postureSectionResolver("coordinator").RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data(false))
+	if err != nil {
+		t.Fatalf("render subagent: %v", err)
+	}
+	for _, marker := range posture {
+		if !strings.Contains(leaf, marker) {
+			t.Errorf("leaf child prompt missing %q", marker)
+		}
+	}
+	if strings.Contains(leaf, "## Delegation") {
+		t.Error("leaf child prompt should not contain the delegation section")
+	}
+
+	delegating, _, err := postureSectionResolver("coordinator").RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data(true))
+	if err != nil {
+		t.Fatalf("render delegating subagent: %v", err)
+	}
+	for _, marker := range append([]string{"## Delegation"}, posture...) {
+		if !strings.Contains(delegating, marker) {
+			t.Errorf("delegating child prompt missing %q", marker)
+		}
+	}
+}
