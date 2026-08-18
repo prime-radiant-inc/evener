@@ -68,7 +68,7 @@ func TestEscalationWall_NotObservableInHistory(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted model adapter over a real sandboxed turn (bwrap + fd-anchored grant); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "read", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

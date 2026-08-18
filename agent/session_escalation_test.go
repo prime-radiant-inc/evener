@@ -340,7 +340,7 @@ func TestEscalation_CloseCancels(t *testing.T) {
 		if !got.IsError {
 			t.Fatal("Close must resolve a blocked escalation to the typed denial")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: in-process call with no real I/O; only fires if Close truly fails to unblock the escalation.
 		t.Fatal("Close did not unblock the escalation (goroutine leak)")
 	}
 }

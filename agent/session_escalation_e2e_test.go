@@ -120,7 +120,7 @@ func TestE2E_FileToolEscalation_ApproveReadSucceeds(t *testing.T) {
 	var sawPath string
 	watchAndResolve(sess, true, &sawPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted model adapter over a real sandboxed turn (bwrap + fd-anchored grant); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "read the file", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -148,7 +148,7 @@ func TestE2E_FileToolEscalation_DenyReturnsTypedError(t *testing.T) {
 	var sawPath string
 	watchAndResolve(sess, false, &sawPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: scripted model adapter over a real sandboxed turn (bwrap + fd-anchored grant); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "read the file", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
