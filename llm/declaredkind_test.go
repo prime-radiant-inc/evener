@@ -56,11 +56,14 @@ func usageLimitRawBody() map[string]any {
 	}
 }
 
-// TestDeclaredKindMatchesKindForEveryConstructedError is the net that keeps
-// DeclaredKind's per-type methods in sync with Kind's type switch. The two
-// mappings are written separately -- Kind walks the chain, DeclaredKind asks
-// the value in hand -- so nothing but this test stops them from drifting when a
-// new error type is added to the taxonomy.
+// TestDeclaredKindMatchesKindForEveryConstructedError checks DeclaredKind's
+// per-type methods against Kind's type switch. The two mappings are written
+// separately -- Kind walks the chain, DeclaredKind asks the value in hand -- so
+// they can disagree, and this is what catches it when they do.
+//
+// Its reach is the table, not the taxonomy: a new error type added without a
+// row here is simply not checked, silently. Adding the row is the author's job;
+// the table only guarantees that every case listed in it agrees.
 func TestDeclaredKindMatchesKindForEveryConstructedError(t *testing.T) {
 	for _, tc := range declaredKindStatusCases {
 		t.Run(tc.name, func(t *testing.T) {
