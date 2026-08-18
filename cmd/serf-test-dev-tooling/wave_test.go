@@ -132,10 +132,17 @@ func mkFixtureFifos(t *testing.T, names ...string) string {
 // on purpose, so a loaded machine never trips it before the real signal lands.
 const fifoReadTripwire = 60 * time.Second
 
-// postExitGrace bounds how long a descendant that outlived the wave may still
-// take to write. An orphan already past its TERM trap writes within
-// milliseconds, so this only elapses when no writer exists at all.
-const postExitGrace = 5 * time.Second
+// postExitGraceMin is the minimum grace for descendants that outlived the wave.
+// An orphan already past its TERM trap writes within milliseconds, so this
+// only elapses when no writer exists at all. But when the test has a deadline,
+// we extend the grace to use all available time rather than guessing.
+const postExitGraceMin = 5 * time.Second
+
+// deadlineReportReserve is held back from the test deadline so a genuinely
+// absent writer surfaces as this file's clean one-line error, not as the test
+// runner's deadline panic — the panic kills the whole binary and buries the
+// diagnosis under a goroutine dump.
+const deadlineReportReserve = 15 * time.Second
 
 // waveRun is a running wave whose exit any number of waiters can observe.
 // A plain exit-code channel could be received only once, which is why the FIFO
@@ -160,11 +167,17 @@ func (w *waveRun) wait() int {
 // races the wave's exit. Once the wave is done no writer can ever appear, and
 // that is reported immediately with the exit code rather than as a timeout.
 //
+// When a deadline is provided (typically from t.Deadline()), the grace period
+// after wave exit extends to use all available time, giving descendants as much
+// opportunity as possible to write. This avoids false failures when the machine
+// is under load. If no deadline is provided (zero value), a default grace period
+// is used instead.
+//
 // The goroutine may outlive this call, blocked in open() on a FIFO nobody will
 // ever write to. That is deliberate: it holds only a file descriptor, the test
 // binary is about to exit, and the alternative (a non-blocking open plus a
 // readiness poll) would reintroduce polling where an awaitable event exists.
-func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration) (string, error) {
+func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration, deadline time.Time) (string, error) {
 	type result struct {
 		line string
 		err  error
@@ -189,15 +202,27 @@ func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration) (stri
 		// Wave exit does NOT prove a writer is never coming: a forked descendant
 		// is reaped via the process group and can still write after runWave
 		// returns (TestForkedDescendantIsReaped depends on exactly that). So exit
-		// demotes the wait to a short grace instead of ending it. The grace only
+		// demotes the wait to a bounded grace instead of ending it. The grace only
 		// ever elapses on a genuinely absent writer, which is the case that used
 		// to hang until the package timeout.
+		//
+		// The grace is the time remaining until the test deadline (less a
+		// reserve, so the clean error below beats the runner's deadline
+		// panic), floored at postExitGraceMin, which also covers callers
+		// with no deadline at all. A live-but-slow descendant gets every
+		// second the test can spare; only a genuinely absent writer pays.
+		grace := postExitGraceMin
+		if !deadline.IsZero() {
+			if timeLeft := time.Until(deadline) - deadlineReportReserve; timeLeft > grace {
+				grace = timeLeft
+			}
+		}
 		select {
 		case got := <-lines:
 			return got.line, got.err
-		case <-time.After(postExitGrace):
+		case <-time.After(grace):
 			return "", fmt.Errorf("wave exited (code %d) and nothing wrote to %s within %s of its exit",
-				run.code, filepath.Base(path), postExitGrace)
+				run.code, filepath.Base(path), grace)
 		}
 	case <-time.After(tripwire):
 		return "", fmt.Errorf("no line on %s within %s and the wave is still running", filepath.Base(path), tripwire)
@@ -205,9 +230,12 @@ func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration) (stri
 }
 
 // readFifoLine is readFifoLineOrExit's fatal wrapper for the fixture tests.
+// It extracts the test's deadline and passes it to readFifoLineOrExit so that
+// the grace period can extend to use all available test time under load.
 func readFifoLine(t *testing.T, path string, run *waveRun) string {
 	t.Helper()
-	line, err := readFifoLineOrExit(path, run, fifoReadTripwire)
+	deadline, _ := t.Deadline()
+	line, err := readFifoLineOrExit(path, run, fifoReadTripwire, deadline)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +427,7 @@ func TestReadFifoLineFailsWhenWaveExitsWithoutWriting(t *testing.T) {
 	close(dead.done) // the wave is already over; nobody will ever open for write
 
 	start := time.Now()
-	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute)
+	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute, time.Time{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -439,11 +467,47 @@ func TestReadFifoLineWaitsForWriterThatOutlivesTheWave(t *testing.T) {
 		_, _ = f.WriteString("late-descendant\n")
 	}()
 
-	line, err := readFifoLineOrExit(path, dead, time.Minute)
+	line, err := readFifoLineOrExit(path, dead, time.Minute, time.Time{})
 	if err != nil {
 		t.Fatalf("read failed on a writer that outlived the wave: %v", err)
 	}
 	if line != "late-descendant" {
 		t.Fatalf("got %q, want %q", line, "late-descendant")
+	}
+}
+
+// TestReadFifoLineRespectsTestDeadline verifies that the grace period after wave
+// exit extends to use all available test time. When a test has a deadline far in
+// the future, the grace can wait longer for slow descendants. This prevents
+// false failures under load, where a legitimate descendant might take longer than
+// the default grace to execute and write.
+func TestReadFifoLineRespectsTestDeadline(t *testing.T) {
+	fx := mkFixtureFifos(t, "slow-write")
+	path := filepath.Join(fx, "slow-write")
+	dead := &waveRun{done: make(chan struct{}), code: 143}
+	close(dead.done) // the wave is already over ...
+
+	// Simulate a slow descendant that takes 2 seconds to write.
+	// With a deadline 10 seconds away, this should succeed.
+	// With a 5-second default grace, it would fail if the grace was too short.
+	go func() {
+		time.Sleep(2 * time.Second)
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString("slow-write-done\n")
+	}()
+
+	// Set a deadline 10 seconds in the future, plenty of time for the 2-second delay.
+	// The grace should extend to use this time, not just use the default 5 seconds.
+	deadline := time.Now().Add(10 * time.Second)
+	line, err := readFifoLineOrExit(path, dead, time.Minute, deadline)
+	if err != nil {
+		t.Fatalf("read failed with deadline: %v", err)
+	}
+	if line != "slow-write-done" {
+		t.Fatalf("got %q, want %q", line, "slow-write-done")
 	}
 }
