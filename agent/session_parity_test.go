@@ -214,7 +214,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 			sess, f := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: the adapter is scripted in-process, but the shell tool call spawns a real `echo` subprocess; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "run echo", nil); err != nil {
 				t.Fatal(err)
@@ -266,7 +266,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 			sess, f := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: the adapter is scripted in-process, but the shell tool call launches a real background `sleep 30` subprocess; only fires on a genuine hang, not the background sleep completing.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "run slow", nil); err != nil {
 				t.Fatal(err)

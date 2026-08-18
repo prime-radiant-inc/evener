@@ -548,7 +548,9 @@ func TestAskUser_StopHookCannotBlockAskBoundary(t *testing.T) {
 	})
 	sess.hookRunner = runner
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	// TRIPWIRE: the adapter is scripted in-process, but the Stop hook is a
+	// real `touch`/`printf` subprocess run through exec.CommandContext that
+	// writes a real file the test os.Stat's below; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := sess.ProcessInput(ctx, "which db should we use?", nil)
@@ -693,7 +695,9 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	})
 	sess.hookRunner = runner
 
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	// TRIPWIRE: the adapter is scripted in-process, but the PreToolUse hook
+	// is a real `printf` subprocess run through exec.CommandContext; only
+	// fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "which db should we use?", nil)

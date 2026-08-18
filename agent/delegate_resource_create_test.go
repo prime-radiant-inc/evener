@@ -940,9 +940,11 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 	var request llm.Request
 	select {
 	case request = <-adapter.entered:
-	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
-	// request normally arrives in well under a second. 30s only fires on
-	// a genuine hang, not scheduler contention under a loaded suite.
+	// TRIPWIRE: ForceRealIO is set and the session runs a real hooks.json
+	// SessionStart `echo` hook subprocess before the provider request lands
+	// on this channel; the request normally arrives in well under a second.
+	// 30s only fires on a genuine hang, not scheduler contention under a
+	// loaded suite.
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider did not receive the new child's request")
 	}
@@ -1565,9 +1567,11 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		select {
 		case childID := <-provider.entered:
 			t.Errorf("registered delegate reached provider for child %q", childID)
-		// TRIPWIRE: this select proves absence (the provider must NOT be
-		// reached), so the bound is a deliberate wait window, not a hang
-		// guard tuned to a known-fast completion.
+		// TRIPWIRE: this branch only runs once the call.IsError assertion
+		// above has already failed the test, so it's a diagnostic for that
+		// already-failing case, not proof of absence on the passing path.
+		// The 5s bound is a deliberate wait window, not a hang guard tuned
+		// to a known-fast completion.
 		case <-time.After(5 * time.Second):
 			t.Error("registered delegate admitted creation max_wait_ms but did not reach the provider sentinel")
 		}
