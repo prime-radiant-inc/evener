@@ -311,19 +311,11 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// expansion (`rm -rf "\$dir"`) to reach the reader verbatim. Nothing
 	// runs it; a human reviews each entry and removes it by hand (kata gmpr).
 	"report-tmp-debris.sh": 1,
-	// Fake binaries simulating a scratch directory vanishing mid-run; the
-	// delete IS the behaviour under test, and its targets are pinned to the
-	// fixture's own serf-module-lint.* / wave.start paths.
-	"run-module-lint-selftest.sh": 2,
 	// A sourced operator library that must return, never exit, so it cannot
 	// adopt scratch_dir. Its mint is a bare mktemp; what keeps the delete safe
 	// is the cleanup guard beside it, which refuses to run when the root
 	// variable is empty or unset.
 	"live-eval-isolation.sh": 1,
-	// Every failing exit must route through fail_lint's one-summary contract,
-	// which scratch_dir's own exit would bypass; the mint is checked,
-	// empty-guarded, and never canonicalized.
-	"run-module-lint.sh": 1,
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
 	"fuzz-drive.sh": 2,

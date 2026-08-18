@@ -231,14 +231,13 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union test-timing-budget scratch-lib merge-into-branch
+DEV_TOOLING_TEST_SCRIPTS := run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-oracle-audit test-coverage-floor web-coverage-floor coverage-gaps coverage-union test-timing-budget scratch-lib merge-into-branch
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand
-# — not in every inner-loop `make test`. It stays off `make lint` because
-# run-module-lint-selftest.sh drives a fixture `make lint` of its own —
-# putting the suites there would have that fixture reach back for scripts it
-# does not have. The wave runner (cmd/serf-test-dev-tooling) owns parallel
+# — not in every inner-loop `make test` and not on `make lint`, which checks
+# the product's code, not the tooling's behaviour.
+# The wave runner (cmd/serf-test-dev-tooling) owns parallel
 # spawn, signal forwarding to each suite's process group, per-suite TMPDIR
 # isolation, and the leftover-files check that fails any suite that does not
 # clean up after itself. Quiet on success; a failing suite's whole log is
@@ -618,8 +617,10 @@ build-namingcheck:
 	go build -o serf-namingcheck ./cmd/serf-namingcheck/
 
 # golangci-lint across every module (./... is per-module under go.work).
+# The runner lives in Go (cmd/serf-dev); MODULES and LINT_PARALLEL keep the
+# interface run-module-lint.sh shipped with.
 lint-golangci:
-	@MODULES="$(GO_MODULES)" scripts/run-module-lint.sh
+	@MODULES="$(GO_MODULES)" go run ./cmd/serf-dev module-lint
 
 # generate runs all `go generate` directives. The AppWire protocol reference
 # and frontend TypeScript declarations come from the catalog in appwire/protocol.go.

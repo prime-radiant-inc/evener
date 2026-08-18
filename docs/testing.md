@@ -105,8 +105,10 @@ would be and assert the marker is never reached. Fixtures aim at seeded
 decoy directories, never at `/`, `$HOME`, or anything a person would
 miss. Where deletion itself is the behaviour under test, the delete
 targets fixture-owned paths and sits on the audit's count-pinned list
-with that reason — run-module-lint-selftest's vanishing-scratch fakes
-are the only two such lines.
+with that reason. No shell suite holds such a line today: the last two
+(run-module-lint-selftest's vanishing-scratch fakes) retired when that
+runner ported to Go, where the equivalent tests remove only their own
+`t.TempDir` scratch.
 
 **Test depth caps at one meta-level.** Tools get selftests; the shared
 libraries under them get one direct test file each; nothing tests the
