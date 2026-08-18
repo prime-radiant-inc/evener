@@ -656,6 +656,56 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
+// kata 9r5y: the DockHost first-mount race regression test. React fires
+// child effects before parent effects within a commit, so DockHost's
+// handleReady (called from DockviewReact's own mount effect, a descendant
+// of AppShell) runs BEFORE any plain useEffect in AppShell. handleReady's
+// boot sequence is "restore the saved layout, then ensure the main slot
+// isn't empty (fallback to welcome)". If AppShell opened its initial
+// route's pane in a useEffect instead of during render, handleReady would
+// restore the saved layout FIRST, and only then would AppShell's effect
+// open the routed pane - landing a welcome-route pane ALONGSIDE the
+// restored layout as a spurious extra secondary tab, instead of in place.
+//
+// The render-phase openRouteAsPane call exists to beat that race: it opens
+// the route's pane during render, before ANY effect fires, so handleReady
+// captures it as a routed pane and re-applies it through replacePrimary
+// (which the "welcome" route is excluded from re-applying - kata eve5 -
+// because welcome is never itself part of a saved layout, so a re-open
+// always resolves to "genuinely new" and would steal focus into a fresh
+// secondary tab). This test pins the race end-to-end through the real
+// AppShell + DockHost: a saved real layout, reloaded at the welcome route,
+// restores exactly that layout with NO spurious welcome tab.
+//
+// It fails red against the naive "move the open into useEffect" fix:
+// handleReady restores the saved session+doc, then the effect opens
+// welcome into the secondary slot beside them.
+test("kata 9r5y: a reload at the welcome route over a saved layout restores the layout with no spurious welcome tab", async () => {
+  // Phase 1: save a REAL layout - a session in main and a doc in secondary -
+  // through the real AppShell/DockHost save path.
+  await saveRealSessionLayout();
+  // localStorage now holds the saved layout (saveRealSessionLayout asserted
+  // it), and resetWorkspaceStoreForTests has reset the in-memory workspace.
+
+  // Phase 2: fresh mount at the welcome route ("/"). Deliberately NOT calling
+  // localStorage.clear() - the whole point is the saved layout is restored,
+  // and the welcome route's pane must NOT land alongside it as a spurious
+  // extra tab.
+  window.history.pushState({}, "", "/");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  // The restored session takes main; welcome is never opened beside it.
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:session-a" }));
+
+  // Exactly the saved layout: one session (main) + one doc (secondary). No
+  // welcome pane at all - the race would add a welcome pane in secondary.
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "welcome")).toBe(false);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "session")).toBe(true);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "doc")).toBe(true);
+  expect(screen.queryByText("No session open")).toBeNull();
+});
+
 test("opening /s/{ref} replaces unrelated main session instead of opening a secondary", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:existing" });
   const fetchMock = vi.fn((url: string) => {
@@ -694,6 +744,47 @@ test("clicking Go home from NotFound returns to the welcome pane", async () => {
 
   expect(window.location.pathname).toBe("/");
   expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+// kata 9r5y: the warning itself, pinned. NotFound -> "Go home" is the
+// shortest path that reaches the render-phase openRouteAsPane call with
+// DockHost already mounted and subscribed to workspaceStore: the 404 render
+// leaves dockHostHasMountedRef false (route === null, DockHost never
+// mounted), so the "/" render still takes the render-phase branch - and by
+// then DockHost IS mounted from the same commit. When AppShell subscribes to
+// workspaceStore through useSyncExternalStore, that mutation runs the store
+// subscriber, which schedules the re-render through React's ordinary
+// scheduleUpdateOnFiber path - the one React flags as an update arriving
+// from outside the render pass, logging "Cannot update a component
+// (`AppShell`) while rendering a different component (`AppShell`)" (both
+// names are AppShell here; the check is about how the update was scheduled,
+// not about which component it targets). A useReducer dispatch on the
+// currently-rendering component takes React's supported
+// adjusting-state-during-render path instead and never reaches that check.
+//
+// The assertion is on a console.error spy, not on test output: vitest's
+// piped reporter swallows console output, so a warning here is invisible to
+// `make test-web` unless a test captures it. Everything else about the flow
+// (route resolves, welcome pane opens) still passes with the warning
+// present - only this spy makes it fail.
+test("NotFound -> Go home emits no render-phase update warning", async () => {
+  const seen: string[] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    seen.push(args.map(String).join(" "));
+  });
+  try {
+    window.history.pushState({}, "", "/not/a/real/route");
+    const user = userEvent.setup();
+    render(<AppShell client={new FakeClient("ready")} />);
+    await screen.findByText("Page not found");
+
+    await user.click(screen.getByRole("button", { name: "Go home" }));
+
+    expect(await screen.findByText("No session open")).toBeTruthy();
+  } finally {
+    spy.mockRestore();
+  }
+  expect(seen.filter((m) => m.includes("Cannot update a component"))).toEqual([]);
 });
 
 test("navigating from one session deep link to another, post-mount, opens the new one", async () => {
