@@ -152,6 +152,16 @@ func (s *session) try(ctx context.Context) (toolCall, error) {
 	return toolCall{name: raw.Function.Name, args: args, id: raw.ID}, nil
 }
 
+// fork copies the conversation as it stands so one round can be driven from a
+// goroutine while the session carries on without it. The driver knows a
+// session by the tool-call ids its conversation replays and not by anything
+// this struct holds, so a fork's round is the SAME session's round -- which is
+// what makes a round driven from one and then dropped a round the session
+// abandoned, rather than a second session's.
+func (s *session) fork(name string) *session {
+	return &session{t: s.t, baseURL: s.baseURL, name: name, messages: append([]map[string]any(nil), s.messages...)}
+}
+
 // newTurn is what the operator does from the browser: send a message to a
 // session whose previous turn has ended. The conversation carries on; only
 // the turn is new.
@@ -488,6 +498,136 @@ func TestACancelledRoundLeavesTheNextTurnItsOwnCount(t *testing.T) {
 	if got := s.round(ctx).name; got != "communicate" {
 		t.Errorf("turn 2 round 3: tool %q, want communicate (the cancelled round must not touch the new turn's count)", got)
 	}
+}
+
+// TestAnAbandonedRoundDoesNotEndTheTurnThatReplacedIt: a round the session has
+// abandoned reaches the far side of its hold with the session already into the
+// turn that replaced it, and must not apply its turn-ending side effect there.
+// The count it would zero belongs to that new turn, which then runs past
+// --rounds.
+//
+// That the round is stale is what matters, not how it got that way.
+// TestACancelledRoundLeavesTheNextTurnItsOwnCount covers the ordinary escape:
+// a cancelled round leaves its hold at once and never reaches the side effect.
+// This test covers the round that gets there anyway, which the driver has two
+// independent ways to produce -- a hold expiring in the same instant as the
+// cancellation leaves the select free to take either branch, and a client's
+// abort reaches the fake's request context only when the server's read loop
+// notices the closed connection, which is not ordered against the session's
+// next request at all. Both end with the driver holding a round the session
+// will never record while that session carries on; the test puts it in that
+// state directly rather than racing for one of them.
+func TestAnAbandonedRoundDoesNotEndTheTurnThatReplacedIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Installed before the driver exists: its goroutines read the hold hook,
+	// and startDriver's cleanup joins them before this one puts it back.
+	holds := controlHolds(t)
+	baseURL := startDriver(t, 0, 3, "")
+
+	s := newSession(t, baseURL, "abandoning")
+	for round := 1; round <= 2; round++ {
+		if got := s.round(ctx).name; got != "read_file" {
+			t.Fatalf("turn 1 round %d: tool %q, want read_file", round, got)
+		}
+	}
+
+	// Round 3 -- the round that ends the turn -- is the one the session
+	// abandons, so the side effect at stake is the turn-ending one. Its
+	// request is driven from a fork of the session: the answer never reaches
+	// the transcript, which is the whole of what the session sees of it.
+	parked, release := holds.stallNext()
+	abandoned := s.fork("abandoned round")
+	answered := make(chan answeredRound, 1)
+	go func() {
+		call, err := abandoned.try(ctx)
+		answered <- answeredRound{call: call, err: err}
+	}()
+	select {
+	case <-parked:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the driver never held the abandoned round")
+	}
+
+	// The operator sends something else. Round 1 of that turn is answered
+	// while the abandoned round is still held, which is what makes the
+	// abandoned round stale: the session now replays a different id.
+	s.newTurn("stop that and do this instead")
+	if got := s.round(ctx).name; got != "read_file" {
+		t.Fatalf("turn 2 round 1: tool %q, want read_file", got)
+	}
+
+	// Now let the abandoned round out of its hold. Its answer coming back is
+	// what proves it ran the turn-ending path with the stale call -- without
+	// that, a round still parked in its hold would pass this test having
+	// exercised nothing.
+	release()
+	switch got := <-answered; {
+	case got.err != nil:
+		t.Fatalf("abandoned round: %v", got.err)
+	case got.call.name != "communicate":
+		t.Fatalf("abandoned round: tool %q, want communicate (it must reach the turn-ending path)", got.call.name)
+	}
+
+	if got := s.round(ctx).name; got != "read_file" {
+		t.Errorf("turn 2 round 2: tool %q, want read_file", got)
+	}
+	if got := s.round(ctx).name; got != "communicate" {
+		t.Errorf("turn 2 round 3: tool %q, want communicate (the abandoned round must not zero this turn's count)", got)
+	}
+}
+
+// answeredRound is what a round driven from a goroutine came back with. It is
+// carried to the test goroutine rather than reported from the driving one, so
+// nothing touches *testing.T after the test has moved on.
+type answeredRound struct {
+	call toolCall
+	err  error
+}
+
+// holdControl lets a test decide when a round stops being held. Rounds it has
+// not been armed for are held exactly as the fixture holds them.
+type holdControl struct {
+	mu        sync.Mutex
+	stall     chan time.Time // non-nil while the next round held is to be stalled
+	reached   chan struct{}  // closed when that round reaches its hold
+	unstalled func(time.Duration) <-chan time.Time
+}
+
+// controlHolds routes the driver's holds through the test. It replaces a
+// package-level variable, so it must be called BEFORE the driver starts: the
+// write then happens before the goroutines that read it exist, and
+// startDriver's cleanup joins them before this cleanup puts it back. Which
+// round is stalled is decided later, through stallNext, under the lock.
+func controlHolds(t *testing.T) *holdControl {
+	t.Helper()
+	holds := &holdControl{unstalled: afterHold}
+	afterHold = holds.hold
+	t.Cleanup(func() { afterHold = holds.unstalled })
+	return holds
+}
+
+func (h *holdControl) hold(d time.Duration) <-chan time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stall == nil {
+		return h.unstalled(d)
+	}
+	stall, reached := h.stall, h.reached
+	h.stall, h.reached = nil, nil
+	close(reached)
+	return stall
+}
+
+// stallNext holds the next round the driver holds until release is called,
+// closing parked once that round is inside its hold.
+func (h *holdControl) stallNext() (parked <-chan struct{}, release func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stall = make(chan time.Time)
+	h.reached = make(chan struct{})
+	stall := h.stall
+	return h.reached, func() { close(stall) }
 }
 
 // waitForLog blocks until the driver has logged substr, so a test can cancel

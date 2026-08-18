@@ -274,17 +274,31 @@ func (s *sessions) endedTurn(state *sessionState, call *fakellm.Call) {
 	state.turnRound = 0
 }
 
-// launchedJob records that the answer to `call` carries the session's one
-// background job. Guarded like endedTurn: a round the session has already
-// abandoned must not mark a job it will never see as launched.
-func (s *sessions) launchedJob(state *sessionState, call *fakellm.Call) {
+// launchedJob records that this session's one background job has been
+// launched.
+//
+// It carries no stale-round check of its own, unlike endedTurn, because no
+// round can be stale here: this runs only on the FIRST round of a session's
+// state — every later round finds the flag already set — and at that point the
+// state is filed under exactly one id, this round's, which the session is told
+// only in the answer sent after this returns. Until then no request can name
+// this state, so nothing can have moved lastAnswered off this round. Add a
+// hold ahead of the job launch and that stops being true, and this needs the
+// check endedTurn has.
+func (s *sessions) launchedJob(state *sessionState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if state.lastAnswered != call.ToolCallID() {
-		return
-	}
 	state.launchedJob = true
 }
+
+// afterHold reports when a round's hold has expired. Every use of the fixture
+// runs the time.After it is set to here; it is a variable so a test can decide
+// the instant one round stops being held, which is the only way to put a round
+// on the far side of its hold while the session that abandoned it has already
+// moved on (sessions.endedTurn). Racing a real timer against a real
+// cancellation decides that by coin flip, and docs/testing.md forbids buying a
+// race with wall-clock tuning.
+var afterHold = time.After
 
 // answer holds one round for --hold and then replies to it. A round whose
 // request is cancelled while it is held — what a Stop does — is dropped
@@ -316,7 +330,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 		switch {
 		case !launchedJob && round == 1:
 			log.Printf("session %s round 1: launching a background job that waits for %s", name, jobRelease)
-			live.launchedJob(state, call)
+			live.launchedJob(state)
 			call.RespondToolCall("shell", map[string]any{
 				"command": "while [ ! -f " + jobRelease + " ]; do sleep 0.5; done",
 				"mode":    "background",
@@ -328,7 +342,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 			return
 		case launchedJob && round == 1:
 			select {
-			case <-time.After(hold):
+			case <-afterHold(hold):
 			case <-ctx.Done():
 				return
 			case <-call.Cancelled():
@@ -341,7 +355,7 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	}
 
 	select {
-	case <-time.After(hold):
+	case <-afterHold(hold):
 	case <-ctx.Done():
 		return
 	case <-call.Cancelled():
