@@ -167,6 +167,129 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 	}
 }
 
+// TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries pins a sibling gap
+// to the straddle above, through a different channel entirely:
+// pendingDelegateDeliveries.
+//
+// acceptDelegateDeliveryPlan defers a delivery into that queue instead of
+// delivering it immediately whenever the receiving session is
+// SessionProcessing at that instant -- e.g. a second, unrelated delegate's
+// completion targeting this session while the drain loop's own notification
+// turn is already running one delivery. The deferral calls notify() exactly
+// once, but treeHasOutstandingWork never reads pendingDelegateDeliveries at
+// all (unlike outstandingDrainJobCount, peekNotifications, and every attention
+// signal it does read). So once that one-shot wake is consumed, nothing about
+// this session's state says a completion is still owed, and the drain
+// concludes quiescence with a real delivery sitting undelivered -- letting
+// Close() SIGKILL it. Same PRI-2441 symptom, different signal the original fix
+// didn't touch.
+//
+// This test seeds the queue exactly the way acceptDelegateDeliveryPlan does
+// (append under delegateDeliveryMu) and asks the read function the drain loop
+// actually calls, so it is independent of how the entry got there.
+func TestTreeHasOutstandingWorkCountsPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	outstanding, err := sess.treeHasOutstandingWork()
+	if err != nil {
+		t.Fatalf("treeHasOutstandingWork: %v", err)
+	}
+	if !outstanding {
+		t.Fatal("treeHasOutstandingWork = false with a delegate delivery still pending; a deferred completion must keep the drain open")
+	}
+
+	live, err := sess.subtreeHasLiveComponent()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveComponent: %v", err)
+	}
+	if !live {
+		t.Fatal("subtreeHasLiveComponent = false with a delegate delivery still pending; the stall watchdog must not treat this as a genuine wedge, since kickDriveTree flushes it every pass")
+	}
+}
+
+// TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed proves the drain
+// loop itself, not just the read function, respects a pending delegate
+// delivery: with a kick that deliberately never flushes anything (isolating
+// treeHasOutstandingWork's verdict from kickDriveTree's own behavior, which
+// TestKickDriveTreeFlushesPendingDelegateDeliveries covers separately),
+// drainJobTreeWith must block rather than ever declaring quiescence, exactly
+// as TestDrainJobTreeReturnsOnContextCancel already pins for a stuck managed
+// job. recheck is left permanently unfired, so the only way this run ends is
+// wrongly quiescing (an immediate nil-error return, independent of ctx) or
+// correctly blocking in waitDrainWake until cancel() reaches it.
+func TestDrainJobTreeWaitsWhilePendingDelegateDeliveryUnflushed(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	kick := func(context.Context) error { return nil } // deliberately never flushes
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		t.Error("drain ran a notification turn with nothing queued")
+		return "", nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), kick, process)
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("drainJobTreeWith error = %v, want context.Canceled: a pending delegate delivery must keep the drain open, not let it quiesce", err)
+		}
+	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal, after
+	// cancel(); a correctly blocked drain observes ctx.Err() and returns as
+	// soon as it reaches waitDrainWake. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("drainJobTreeWith did not return after context cancellation")
+	}
+}
+
+// TestKickDriveTreeFlushesPendingDelegateDeliveries pins the other half of the
+// fix: counting a pending delivery as outstanding work only stops the drain
+// from a FALSE quiescence. Something still has to resolve it, or the drain
+// just waits out its stall timeout instead of making progress. kickDriveTree
+// runs at the top of every pass (before the outstanding check), alongside
+// drivePendingStableDelegateAttention and rematerializeDurablePendings -- the
+// same "drive whatever is waiting" role -- so it is where the flush belongs.
+//
+// The seeded entry is a placeholder with no live controller, not a delegate
+// produced by the real accept/defer path, so its OWN delivery attempt reports
+// errDelegateStaleLease (the same "something else already resolved this"
+// outcome a genuinely superseded delivery would produce) -- deliverDelegatePacket
+// checks plan.controller before anything else. flushPendingDelegateDeliveries
+// pops the queue entry before attempting delivery, so that pop -- not the
+// placeholder's delivery outcome -- is the fact this test pins: did
+// kickDriveTree reach into the queue at all.
+func TestKickDriveTreeFlushesPendingDelegateDeliveries(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	sess.delegateDeliveryMu.Lock()
+	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	sess.delegateDeliveryMu.Unlock()
+
+	err := sess.kickDriveTree(context.Background())
+	if err != nil && !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("kickDriveTree: %v", err)
+	}
+	if sess.hasPendingDelegateDeliveries() {
+		t.Fatal("kickDriveTree did not flush the pending delegate delivery")
+	}
+}
+
 // TestOutstandingDrainJobCountIncludesRunningManagedJobs verifies every owned
 // managed job keeps the drain open while it remains in the running map. Shell
 // execution mode is not part of that durable drain contract.
