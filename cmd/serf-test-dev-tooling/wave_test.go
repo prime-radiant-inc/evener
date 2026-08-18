@@ -134,15 +134,36 @@ const fifoReadTripwire = 60 * time.Second
 
 // postExitGraceMin is the minimum grace for descendants that outlived the wave.
 // An orphan already past its TERM trap writes within milliseconds, so this
-// only elapses when no writer exists at all. But when the test has a deadline,
-// we extend the grace to use all available time rather than guessing.
+// only elapses when no writer exists at all. It is also the whole grace for a
+// caller with no deadline to scale against.
 const postExitGraceMin = 5 * time.Second
+
+// postExitGraceMax caps how far the deadline can stretch the grace. Without a
+// ceiling, one absent writer spends nearly the entire remaining test budget
+// before it says so: measured at 1m45s under `-timeout 2m`, and it would be
+// 9m45s of the gate's 10m. A descendant that is alive writes in milliseconds,
+// so past a minute the extra waiting buys no new information — it only moves
+// the cost of the diagnosis onto every other test in the binary.
+const postExitGraceMax = 60 * time.Second
 
 // deadlineReportReserve is held back from the test deadline so a genuinely
 // absent writer surfaces as this file's clean one-line error, not as the test
 // runner's deadline panic — the panic kills the whole binary and buries the
 // diagnosis under a goroutine dump.
 const deadlineReportReserve = 15 * time.Second
+
+// graceFor is how long readFifoLineOrExit keeps waiting after the wave has
+// exited: the time left until the test's own deadline, less the reserve that
+// keeps the report ahead of the runner's panic, clamped between
+// postExitGraceMin and postExitGraceMax. A zero deadline means the caller has
+// none (`go test` without -timeout), which is the floor case, as is a deadline
+// already inside the reserve.
+func graceFor(deadline, now time.Time) time.Duration {
+	if deadline.IsZero() {
+		return postExitGraceMin
+	}
+	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGraceMin), postExitGraceMax)
+}
 
 // waveRun is a running wave whose exit any number of waiters can observe.
 // A plain exit-code channel could be received only once, which is why the FIFO
@@ -167,11 +188,8 @@ func (w *waveRun) wait() int {
 // races the wave's exit. Once the wave is done no writer can ever appear, and
 // that is reported immediately with the exit code rather than as a timeout.
 //
-// When a deadline is provided (typically from t.Deadline()), the grace period
-// after wave exit extends to use all available time, giving descendants as much
-// opportunity as possible to write. This avoids false failures when the machine
-// is under load. If no deadline is provided (zero value), a default grace period
-// is used instead.
+// deadline is the caller's own test deadline (t.Deadline(), zero if it has
+// none); graceFor turns it into how long the post-exit wait may run.
 //
 // The goroutine may outlive this call, blocked in open() on a FIFO nobody will
 // ever write to. That is deliberate: it holds only a file descriptor, the test
@@ -206,17 +224,9 @@ func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration, deadl
 		// ever elapses on a genuinely absent writer, which is the case that used
 		// to hang until the package timeout.
 		//
-		// The grace is the time remaining until the test deadline (less a
-		// reserve, so the clean error below beats the runner's deadline
-		// panic), floored at postExitGraceMin, which also covers callers
-		// with no deadline at all. A live-but-slow descendant gets every
-		// second the test can spare; only a genuinely absent writer pays.
-		grace := postExitGraceMin
-		if !deadline.IsZero() {
-			if timeLeft := time.Until(deadline) - deadlineReportReserve; timeLeft > grace {
-				grace = timeLeft
-			}
-		}
+		// A live-but-slow descendant gets the time the test can spare (see
+		// graceFor); only a genuinely absent writer ever pays it in full.
+		grace := graceFor(deadline, time.Now())
 		select {
 		case got := <-lines:
 			return got.line, got.err
@@ -229,9 +239,9 @@ func readFifoLineOrExit(path string, run *waveRun, tripwire time.Duration, deadl
 	}
 }
 
-// readFifoLine is readFifoLineOrExit's fatal wrapper for the fixture tests.
-// It extracts the test's deadline and passes it to readFifoLineOrExit so that
-// the grace period can extend to use all available test time under load.
+// readFifoLine is readFifoLineOrExit's fatal wrapper for the fixture tests. It
+// hands over the test's own deadline, which is what lets a slow descendant use
+// the time this test can spare instead of the bare floor.
 func readFifoLine(t *testing.T, path string, run *waveRun) string {
 	t.Helper()
 	deadline, _ := t.Deadline()
@@ -476,38 +486,62 @@ func TestReadFifoLineWaitsForWriterThatOutlivesTheWave(t *testing.T) {
 	}
 }
 
-// TestReadFifoLineRespectsTestDeadline verifies that the grace period after wave
-// exit extends to use all available test time. When a test has a deadline far in
-// the future, the grace can wait longer for slow descendants. This prevents
-// false failures under load, where a legitimate descendant might take longer than
-// the default grace to execute and write.
-func TestReadFifoLineRespectsTestDeadline(t *testing.T) {
-	fx := mkFixtureFifos(t, "slow-write")
-	path := filepath.Join(fx, "slow-write")
-	dead := &waveRun{done: make(chan struct{}), code: 143}
-	close(dead.done) // the wave is already over ...
+// TestGraceFor pins the arithmetic that turns a test deadline into a post-exit
+// grace. It is a table test on the pure function rather than a wall-clock one
+// because every interesting case here is minutes long: the only honest way to
+// exercise the cap is to hand it a deadline nine minutes out.
+func TestGraceFor(t *testing.T) {
+	t.Parallel()
 
-	// Simulate a slow descendant that takes 2 seconds to write.
-	// With a deadline 10 seconds away, this should succeed.
-	// With a 5-second default grace, it would fail if the grace was too short.
-	go func() {
-		time.Sleep(2 * time.Second)
-		f, err := os.OpenFile(path, os.O_WRONLY, 0)
-		if err != nil {
-			return
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		deadline time.Time
+		want     time.Duration
+	}{
+		{"no deadline is the floor", time.Time{}, postExitGraceMin},
+		{"a deadline inside the reserve is the floor", now.Add(deadlineReportReserve / 2), postExitGraceMin},
+		{"an expired deadline is the floor", now.Add(-time.Minute), postExitGraceMin},
+		{"less than the floor past the reserve is still the floor", now.Add(deadlineReportReserve + time.Second), postExitGraceMin},
+		{"the remainder past the reserve becomes the grace", now.Add(deadlineReportReserve + 30*time.Second), 30 * time.Second},
+		{"a distant deadline is capped", now.Add(deadlineReportReserve + 9*time.Minute), postExitGraceMax},
+	} {
+		if got := graceFor(tc.deadline, now); got != tc.want {
+			t.Errorf("%s: graceFor(deadline %v from now) = %v, want %v", tc.name, tc.deadline.Sub(now), got, tc.want)
 		}
-		defer f.Close()
-		_, _ = f.WriteString("slow-write-done\n")
-	}()
-
-	// Set a deadline 10 seconds in the future, plenty of time for the 2-second delay.
-	// The grace should extend to use this time, not just use the default 5 seconds.
-	deadline := time.Now().Add(10 * time.Second)
-	line, err := readFifoLineOrExit(path, dead, time.Minute, deadline)
-	if err != nil {
-		t.Fatalf("read failed with deadline: %v", err)
 	}
-	if line != "slow-write-done" {
-		t.Fatalf("got %q, want %q", line, "slow-write-done")
+}
+
+// TestReadFifoLineGraceFollowsTheTestDeadline is the wiring half: TestGraceFor
+// proves the arithmetic, and this proves readFifoLineOrExit actually waits the
+// duration that arithmetic returns rather than the floor it used to.
+//
+// It costs its own grace in wall clock, which is why the deadline here is the
+// smallest one that produces a visibly extended grace instead of a realistic
+// one. Pinning the elapsed time is the whole point: hand the same case a
+// readFifoLineOrExit that ignores the deadline and it returns at the 5-second
+// floor, a second before this test will accept.
+func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
+	t.Parallel()
+
+	fx := mkFixtureFifos(t, "never-written")
+	dead := &waveRun{done: make(chan struct{}), code: 9}
+	close(dead.done) // the wave is already over; nobody will ever open for write
+
+	grace := postExitGraceMin + 2*time.Second
+	start := time.Now()
+	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute,
+		start.Add(deadlineReportReserve+grace))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected an error when the wave exited without writing")
+	}
+	if elapsed < postExitGraceMin+time.Second {
+		t.Errorf("waited %v: the deadline's %v of grace was ignored and the floor (%v) was used instead: %v",
+			elapsed, grace, postExitGraceMin, err)
+	}
+	if elapsed > grace+10*time.Second {
+		t.Errorf("waited %v, well past the %v of grace the deadline allows: %v", elapsed, grace, err)
 	}
 }
