@@ -1592,6 +1592,7 @@ export const STEERING_KINDS = [
   "image-description",
   "no-tool-calls",
   "loop-detected",
+  "stream-loop",
   "tasks-done",
   "task-nudge",
   "task-inactive",

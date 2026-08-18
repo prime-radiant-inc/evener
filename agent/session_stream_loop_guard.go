@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/agent/events"
 )
@@ -180,11 +181,7 @@ func describeCyclePattern(pattern []string) string {
 		}
 		names[i] = name
 	}
-	out := names[0]
-	for _, n := range names[1:] {
-		out += ", " + n
-	}
-	return out
+	return strings.Join(names, ", ")
 }
 
 // deliverPendingStreamLoopNudge reads and clears s.pendingStreamLoopNudge and,

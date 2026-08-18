@@ -35,7 +35,7 @@ func TestStreamContentChant_LongDistinctProse_NoTrip(t *testing.T) {
 		summer when the crops stand tall across the valley floor beneath a sky full
 		of slow moving clouds that drift toward the distant mountains every single
 		afternoon without fail as the season turns from green to gold and back again`)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		delta := words[i%len(words)] + " " + words[(i+7)%len(words)] + " "
 		if trip := c.observe(delta); trip != nil {
 			t.Fatalf("delta %d: unexpected trip %+v on ordinary prose", i, trip)

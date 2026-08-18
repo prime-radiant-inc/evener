@@ -42,13 +42,13 @@ func buildEightyThreeCallNoCycleFixture(t *testing.T) []toolSig {
 	}
 
 	heavyPositions := make(map[int]bool, heavyCount)
-	for i := 0; i < heavyCount; i++ {
+	for i := range heavyCount {
 		heavyPositions[i*heavyGap] = true
 	}
 
 	sigs := make([]toolSig, 0, total)
 	fillerIdx := 0
-	for pos := 0; pos < total; pos++ {
+	for pos := range total {
 		if heavyPositions[pos] {
 			sigs = append(sigs, heavy)
 			continue
@@ -79,15 +79,15 @@ func countDistinctSigs(sigs []toolSig) int {
 
 func maxRepeatCount(sigs []toolSig) int {
 	counts := map[string]int{}
-	max := 0
+	maxCount := 0
 	for _, s := range sigs {
 		key := s.name + ":" + s.args
 		counts[key]++
-		if counts[key] > max {
-			max = counts[key]
+		if counts[key] > maxCount {
+			maxCount = counts[key]
 		}
 	}
-	return max
+	return maxCount
 }
 
 // assertNoShortCycleAnywhere offline-checks every suffix of sigs for a

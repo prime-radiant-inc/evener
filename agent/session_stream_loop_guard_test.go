@@ -47,7 +47,7 @@ func TestStreamLoopGuard_CycleDetection_DoesNotTripBeforeFiveRepeats(t *testing.
 		{"task_list", `{}`},
 		{"communicate", `{"message":"still working"}`},
 	}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		c := calls[i%3]
 		if trip := g.observeToolCall(c.name, c.args); trip != nil {
 			t.Fatalf("call %d: tripped early (%+v), want no trip before 15 calls", i+1, trip)
@@ -61,7 +61,7 @@ func TestStreamLoopGuard_CycleDetection_DoesNotTripBeforeFiveRepeats(t *testing.
 func TestStreamLoopGuard_CycleDetection_SingleCallRepeatedFiveTimes(t *testing.T) {
 	g := newStreamLoopGuard()
 	var trip *loopTrip
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		trip = g.observeToolCall("read_file", `{"path":"/x"}`)
 	}
 	if trip == nil {
@@ -78,7 +78,7 @@ func TestStreamLoopGuard_CycleDetection_SingleCallRepeatedFiveTimes(t *testing.T
 // nor the raw ceiling (well under it).
 func TestStreamLoopGuard_EighteenDistinctCalls_NoTrip(t *testing.T) {
 	g := newStreamLoopGuard()
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		name := distinctToolName(i)
 		if trip := g.observeToolCall(name, `{"n":`+itoaTest(i)+`}`); trip != nil {
 			t.Fatalf("call %d (%s): unexpected trip %+v", i+1, name, trip)

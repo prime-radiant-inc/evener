@@ -159,7 +159,7 @@ func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
 // mid-stream failure those tests are built around never arrives.
 func nonChantingFiller(unit string, n int) string {
 	var b strings.Builder
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&b, "%s%d ", unit, i)
 	}
 	return b.String()

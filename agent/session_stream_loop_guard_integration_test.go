@@ -93,7 +93,7 @@ func TestConsumeModelStream_LoopGuard_CycleShape(t *testing.T) {
 	// trip — using only the first 15, never touching (let alone needing) the
 	// remaining 5 this fixture still provides.
 	resp, _, err := runConsumeModelStream(t, sess, req, st, func() {
-		for i := 0; i < sent; i++ {
+		for i := range sent {
 			p := pattern[i%3]
 			sendToolCall(st, callID(i), p.name, p.args)
 		}
@@ -174,7 +174,7 @@ func TestConsumeModelStream_LoopGuard_ChantShape(t *testing.T) {
 	const sent = 300
 	resp, _, err := runConsumeModelStream(t, sess, req, st, func() {
 		defer st.CloseSend()
-		for i := 0; i < sent; i++ {
+		for range sent {
 			st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: phrase})
 		}
 	})
@@ -205,7 +205,7 @@ func TestConsumeModelStream_LoopGuard_EighteenDistinctCalls_NoTrip(t *testing.T)
 	st := llm.NewChanStream(nil)
 
 	resp, _, err := runConsumeModelStream(t, sess, req, st, func() {
-		for i := 0; i < 18; i++ {
+		for i := range 18 {
 			sendToolCall(st, callID(i), distinctToolName(i), `{"n":`+itoaTest(i)+`}`)
 		}
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
@@ -287,7 +287,7 @@ func TestConsumeModelStream_LoopGuard_DefersUntilParallelCallCloses(t *testing.T
 	}
 	resp, _, err := runConsumeModelStream(t, sess, req, st, func() {
 		// 14 calls of the cycle (not yet tripped: need=15).
-		for i := 0; i < 14; i++ {
+		for i := range 14 {
 			p := pattern[i%3]
 			sendToolCall(st, callID(i), p.name, p.args)
 		}
@@ -343,7 +343,7 @@ func TestConsumeModelStream_LoopGuard_SecondConsecutiveTrip_HardStops(t *testing
 	}
 	feedTrip := func(st *llm.ChanStream) func() {
 		return func() {
-			for i := 0; i < 15; i++ {
+			for i := range 15 {
 				p := pattern[i%3]
 				sendToolCall(st, callID(i), p.name, p.args)
 			}
@@ -403,7 +403,7 @@ func TestConsumeModelStream_LoopGuard_CleanRoundResetsStreak(t *testing.T) {
 	}
 	feedTrip := func(st *llm.ChanStream) func() {
 		return func() {
-			for i := 0; i < 15; i++ {
+			for i := range 15 {
 				p := pattern[i%3]
 				sendToolCall(st, callID(i), p.name, p.args)
 			}
