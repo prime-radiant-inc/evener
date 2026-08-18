@@ -205,7 +205,8 @@ func TestScenarioSourceCitationNeedleReadsEveryCompiledExtension(t *testing.T) {
 // scenarioSourceLineCitation matches the `path:lines` half of a source
 // citation, capturing the anchor so it can be read rather than merely parsed.
 // A `#Symbol` anchor is deliberately absent: it names a declaration, not a
-// range, and TestScenarioSourceSymbolsAreDeclared already keeps it honest.
+// range. TestScenarioSourceSymbolsAreDeclared already keeps the Go ones honest;
+// a `.tsx#symbol` anchor is checked by nothing today, which kata 26ya tracks.
 var scenarioSourceLineCitation = regexp.MustCompile(
 	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + ")):([0-9][0-9,-]*)`")
 
@@ -390,6 +391,10 @@ var scenarioLineCitationExempt = map[scenarioLineCitationExemption]string{
 //     is why scenarioMinCheckedLineCitations exists below; it turns a mass drop
 //     into a failure, but it cannot see one or two. A card rewording a sentence
 //     around a citation can still quietly remove it from this audit's reach.
+//     Gap 1 drops a pair just as silently from the other side, and with the card
+//     untouched: edit the production string a card quotes and the literal stops
+//     appearing verbatim in the cited file, so the pair leaves through the
+//     `continue` below and the checked count falls.
 func TestScenarioQuotedLiteralsSitInsideTheCitedLineRange(t *testing.T) {
 	byBase := scenarioSourceFilesByBase(t)
 	sources := map[string][]string{}
@@ -450,11 +455,16 @@ func TestScenarioQuotedLiteralsSitInsideTheCitedLineRange(t *testing.T) {
 	// pair extractor broke, not that the quotations left.
 	if checked < scenarioMinCheckedLineCitations {
 		t.Fatalf("this audit checked %d quoted-literal line citations, below the "+
-			"floor of %d. Either the pair extractor broke, or cards were reworded "+
-			"so that prose now sits between a quote and its citation — gap 4 above, "+
-			"which is silent by construction and is the only reason this floor "+
-			"exists. Restore the adjacency, or lower the floor deliberately and say "+
-			"why here.", checked, scenarioMinCheckedLineCitations)
+			"floor of %d. Three causes, all silent by construction, which is the "+
+			"only reason this floor exists: the pair extractor broke; cards were "+
+			"reworded so that prose now sits between a quote and its citation "+
+			"(gap 4 above); or — the likeliest — a PRODUCTION STRING a card quotes "+
+			"was edited, so the literal no longer appears verbatim in the file the "+
+			"card cites and the pair leaves as unchecked (gap 1 above) with the "+
+			"card never touched. For that last one the repair is the card: requote "+
+			"the string production carries now, or repoint at the line that carries "+
+			"the old one. Otherwise restore the adjacency, or lower the floor "+
+			"deliberately and say why here.", checked, scenarioMinCheckedLineCitations)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)

@@ -304,7 +304,11 @@ var afterHold = time.After
 // request is cancelled while it is held — what a Stop does — is dropped
 // without touching the session's state: the session never records it, so the
 // turn that follows must find its count exactly where the last RECORDED round
-// left it.
+// left it. What keeps the state clean is endedTurn's stale-round guard, not the
+// `case <-call.Cancelled()` below: the guard is the correctness mechanism, and
+// it also catches the round whose hold expires anyway with the next turn
+// already under way (TestAnAbandonedRoundDoesNotEndTheTurnThatReplacedIt),
+// which Cancelled cannot. Cancelled only makes the drop prompt.
 func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.Duration, rounds int, jobRelease, notesDir string) {
 	state, name, round, launchedJob := live.begin(call)
 	log.Printf("--- session %s round %d: holding %s ---\n%s", name, round, hold, strings.Join(call.Texts(), "\n"))
