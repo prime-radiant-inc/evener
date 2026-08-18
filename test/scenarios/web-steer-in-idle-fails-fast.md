@@ -180,9 +180,13 @@ rm -rf "$tmpdir"
 
 ## Sharp edges
 
-- **Part A is the exact half and needs no browser.** Run it alone if Chrome
-  is unavailable; it pins both refusal messages verbatim. Part B pins the
-  human-visible half, which no unit test can speak for.
+- **Part A WAS the exact half; it is KNOWN-STALE now, so Part B is the
+  runnable one.** Part A needed no browser and pinned both refusal messages
+  verbatim — but serf-appwire-v3 removed the `expectedTurnId` those refusals
+  answered, and neither message exists any more (see the Part A note; kata
+  `pt6k` owns re-deriving what a v3 daemon refuses). Until that lands, Chrome
+  is required rather than optional: Part B pins the human-visible half, which
+  no unit test can speak for.
 - **AppWire frames carry no `jsonrpc` field.** Sending the JSON-RPC 2.0
   envelope every other tool defaults to gets the frame rejected outright
   (`"jsonrpc field is not part of AppWire"`,
