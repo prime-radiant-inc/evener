@@ -76,6 +76,7 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 	EntryContinuation:      opensOnItsContentEvent,
 	EntryNotification:      opensOnTurnStarted,
 	EntryDelegateAttention: unservedSoUnaddressable,
+	EntrySteeringCarrier:   opensOnTurnStarted,
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
