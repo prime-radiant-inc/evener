@@ -231,7 +231,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # the guard or the pid-suffixed covscratch pattern, is enforced statically by
 # the audits in scriptmktemp_audit_test.go, not by re-running suites under
 # sabotage (kata 5hs2).
-DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home reclaim-test-debris agent-test-shards merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib
+DEV_TOOLING_TEST_SCRIPTS := run-module-lint run-module-tests private-go-home merge-approval-gate setup-gocache web-preflight live-eval-isolation e2e-webui-turn-controls fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage test-coverage-floor web-coverage-floor coverage-gaps coverage-union scratch-lib
 
 # test-dev-tooling tests tooling, not the product, so it runs in
 # `make merge-approval-gate` (where tooling regressions matter) and on demand

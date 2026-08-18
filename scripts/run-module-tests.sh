@@ -92,7 +92,7 @@ done
 # user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time
 # doubles in scheduler churn — and at 32 a test's reported elapsed becomes mostly
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
-# cost ranking derived from it useless. See scripts/agent-test-shards.sh.
+# cost ranking derived from it useless. See cmd/serf-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
@@ -298,7 +298,7 @@ run_module() {
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
-		# opposite -parallel settings. agent-test-shards.sh runs those halves as
+		# opposite -parallel settings. serf-dev agent-shards runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
@@ -307,7 +307,7 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		(cd .. && ./scripts/agent-test-shards.sh $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/serf-dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do

@@ -7,8 +7,9 @@
 # and touches nothing until a runner calls it.
 #
 # Why it exists: this project cleans up at the source, and nothing sweeps TMPDIR
-# on these runners' behalf — reclaim-test-debris.sh deliberately does not know
-# their prefixes. Two exit paths still leave a directory behind. A run killed by
+# on these runners' behalf — the last janitor retired when its one remaining
+# debris class moved to a self-reclaiming owner (cmd/serf-dev agent-shards).
+# Two exit paths still leave a directory behind. A run killed by
 # SIGKILL (or an OOM kill, or a power cut) never reaches its trap. And
 # test-coverage-floor.sh and coverage-union.sh KEEP their scratch on a failed
 # run on purpose: the failure line printed its path, and the profiles and per-
