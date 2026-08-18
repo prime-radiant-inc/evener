@@ -28,9 +28,13 @@ import (
 // vxz3). Writing unservedSoUnaddressable next to a kind that opens a named turn
 // on a served session now fails.
 //
-// The one label with no behaviour to observe -- noProductionProducer, worn by a
-// kind nothing dispatches -- is exempt from the probe by construction.
-// probeExemptTurnOpenings records that exemption and the ruling behind it.
+// WHAT IT STILL DOES NOT: check the one label with no behaviour to observe.
+// noProductionProducer says nothing dispatches the kind, so there is no turn to
+// run and a kind wearing it is skipped. Claiming it therefore takes TWO
+// deliberate edits -- the row, and kindsNothingDispatches -- so a probe that
+// goes red cannot be silenced by quietly relabelling its kind. What no test can
+// do is confirm the claim itself: that a producer really is absent stays a grep
+// and a reviewer's judgement.
 type turnOpening string
 
 const (
@@ -65,13 +69,13 @@ const (
 	// landing in stages) can only go green by claiming a label that is FALSE for
 	// it, most plausibly unservedSoUnaddressable.
 	//
-	// The behaviour probes below settle that second argument in a way z5fm could
-	// not have: a false label is now caught rather than invisible. That makes
-	// the escape hatch load-bearing rather than merely tidy. With it gone, a
-	// producerless kind has no label any probe can confirm -- there is no turn
-	// to run and nothing to observe -- so the suite would stay red until someone
-	// invented either a producer or a lie. Keeping it is what keeps the table
-	// truthful.
+	// The behaviour probes below check every OTHER label against what the kind
+	// does, so a false live label is caught rather than invisible. This label is
+	// the one they cannot check -- there is no turn to observe -- so wearing it
+	// costs a second, deliberate edit instead: kindsNothingDispatches has to
+	// name the kind too. Without the label at all, a producerless kind would
+	// have no honest option left: no live label any probe could confirm, and a
+	// suite red until someone invented either a producer or a lie.
 	noProductionProducer turnOpening = "no-producer"
 )
 
@@ -101,6 +105,20 @@ var probeExemptTurnOpenings = map[turnOpening]string{
 	// re-argued here.
 	noProductionProducer: "nothing dispatches this kind, so no turn of it exists to observe",
 }
+
+// kindsNothingDispatches names every EntryKind excused from the behaviour
+// probe. Empty today, and it has to stay in exact agreement with the rows
+// wearing a probeExemptTurnOpenings label --
+// TestTheProbeExemptionNamesTheSameKindsAsTheTable is what holds the two
+// together.
+//
+// It exists because an exemption has two halves and guarding only the label
+// side leaves the cheaper lie open. Widening probeExemptTurnOpenings is an edit
+// TestOnlyTheUnobservableLabelIsExemptFromTheProbe refuses; MOVING a live
+// kind's row to noProductionProducer was, until this set, one edit that skipped
+// that kind's probe in silence. Naming the kind here as well is what turns
+// excusing a kind into a decision somebody has to make on purpose.
+var kindsNothingDispatches = map[EntryKind]bool{}
 
 // entryKindTurnOpening maps every EntryKind to how its turns acquire identity.
 var entryKindTurnOpening = map[EntryKind]turnOpening{
@@ -356,7 +374,9 @@ func TestEveryTurnOpeningLabelMatchesTheKindsBehaviour(t *testing.T) {
 		if !ok {
 			continue // TestEveryEntryKindDeclaresHowItsTurnOpens owns this failure.
 		}
-		if _, exempt := probeExemptTurnOpenings[claimed]; exempt {
+		// Keyed on the KIND, not on its label: a row moved to a probe-exempt
+		// label without the matching entry here still gets probed, and fails.
+		if kindsNothingDispatches[kind] {
 			continue
 		}
 		observed := classifyTurnOpening(t, kind)
@@ -381,6 +401,34 @@ func TestOnlyTheUnobservableLabelIsExemptFromTheProbe(t *testing.T) {
 		if !exempt && label == noProductionProducer {
 			t.Fatalf("turn opening %q lost its probe exemption; a kind nothing dispatches runs no turn, "+
 				"so the probe has nothing to observe (kata z5fm)", label)
+		}
+	}
+}
+
+// TestTheProbeExemptionNamesTheSameKindsAsTheTable closes the other half of the
+// exemption. The audit skips a kind named in kindsNothingDispatches; the table
+// says which kinds claim to have no producer. Letting those two drift is what
+// makes an excused kind cheap: with the skip keyed on the label alone, moving a
+// live kind's row to noProductionProducer silences its probe in one edit and
+// says so nowhere.
+func TestTheProbeExemptionNamesTheSameKindsAsTheTable(t *testing.T) {
+	for kind, opening := range entryKindTurnOpening {
+		_, labelClaimsNoProducer := probeExemptTurnOpenings[opening]
+		if labelClaimsNoProducer && !kindsNothingDispatches[kind] {
+			t.Fatalf("EntryKind %d is labelled %q, which claims nothing dispatches it, but "+
+				"kindsNothingDispatches does not name it: excusing a kind from the behaviour probe takes "+
+				"both, so that it is a decision rather than a side effect of editing one row", kind, opening)
+		}
+		if !labelClaimsNoProducer && kindsNothingDispatches[kind] {
+			t.Fatalf("EntryKind %d is excused from the behaviour probe but is labelled %q, which claims a "+
+				"behaviour the probe can observe: probe it, or say why nothing dispatches it", kind, opening)
+		}
+	}
+	for kind := range kindsNothingDispatches {
+		if _, ok := entryKindTurnOpening[kind]; !ok {
+			t.Fatalf("kindsNothingDispatches names EntryKind %d, which the table does not: a stale "+
+				"exemption outlives the kind it was written for and silently excuses whatever takes "+
+				"that number next", kind)
 		}
 	}
 }
