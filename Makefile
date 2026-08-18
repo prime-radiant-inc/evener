@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor test-coverage-floor-selftest web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -157,6 +157,9 @@ build-all: build-runtime build-tui build-doctor
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
+
+build-migrate:
+	go build -o evener-migrate ./cmd/evener-migrate/
 
 # A shipped dist archive must embed a fresh SPA, not the tracked PLACEHOLDER.
 dist: build-web
@@ -637,4 +640,4 @@ LINT_TARGETS := lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lin
 lint: $(LINT_TARGETS)
 
 clean:
-	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-internalcheck evener-fuzzcov
+	rm -f evener evener-hub evener-tui evener-doctor llmcall evener-namingcheck evener-internalcheck evener-fuzzcov evener-migrate
