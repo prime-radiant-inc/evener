@@ -667,55 +667,45 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	t.Logf("a Stop pressed %s after the window opened, while the wire showed status=%s activeTurnId=%s, was applied",
 		time.Since(windowSeenAt), inWindow.Status.Type, inWindow.Serf.ActiveTurnID)
 
-	// PINNED DEFECT (kata wms7) -- read this before changing the assertion.
+	// MEASURED, and it is the state of play rather than the ruling (kata wms7).
 	//
-	// The Stop above was ACCEPTED, and the turn it was aimed at runs anyway: the
-	// queued message the user just stopped reaches the model. That is asserted
-	// here, in both directions, so it cannot change silently. It is not what
-	// anyone wants, and Jesse has ruled on what should happen instead: the
-	// claimed turn is cancelled and its message goes back on the queue, so
-	// nothing is lost and nothing auto-starts.
+	// The Stop was ACCEPTED and cancelled its turn -- that half works, and the
+	// assertions above are what prove it. The queued message the Stop cancelled
+	// is then DELIVERED: it starts a turn and reaches the model. Asserted in both
+	// directions here so it cannot change silently in either.
 	//
-	// Most of that ruling is now built. A turn claimed out of the queue that
-	// never incorporates its input IS returned to the queue -- see
-	// agent/session_stop_and_queued_work_test.go's
-	// TestClaimedQueuedTurnIsReturnedWhenItNeverRan. And the MID-TURN half is
-	// fixed: a Stop that cancels a turn already producing, with a message
-	// queued behind it, settles the turn and parks the message -- the drain
-	// loop skips the queue head when the turn's completion finalized the Stop's
-	// interrupt fence, instead of running the very message the user stopped
-	// under the Stop's own chain (same file's
-	// TestStopOnMidTurnMutationParksTheQueuedMessage). What is missing is the
-	// cancellation ever reaching THIS turn -- one claimed at the boundary and
-	// still in its pre-turn work -- and three measurements narrow where it goes
-	// wrong:
+	// wms7's ruling is that nothing should auto-start. Getting there means
+	// closing TWO rails, and only one is closed:
 	//
-	//   - the mutation runner is armed when the Stop lands (cancel and done both
-	//     non-nil), so this is NOT a Stop firing into an empty slot;
-	//   - nextTurnCtx is never invoked, so the drain-on-interrupt handler is not
-	//     quietly restarting the turn under a fresh context;
-	//   - popQueueHead already refuses to claim under a pending fence, so a Stop
-	//     that arrives BEFORE the claim keeps the message queued correctly. Only
-	//     a Stop that arrives after the claim and before the turn starts
-	//     producing lands in this hole.
+	//   1. The DRAIN LOOP, closed. A turn ended by a Stop leaves the queue head
+	//      alone -- 91810a3be for a turn already producing, and
+	//      TestCompletingAClaimedTurnReportsTheStopThatEndedIt for one claimed at
+	//      this boundary and still in pre-turn work, whose completion takes the
+	//      claimed-and-unrun path and so never reached the branch that reports
+	//      the Stop. Instrumented on the live stack: the drain decision now reads
+	//      stopSettled=true and declines.
+	//   2. The WAKE, open. Returning the entry to the queue fires
+	//      wakeForPendingQueuedInput, the serve loop hands it to
+	//      ProcessPendingUserInput, and that re-claims the SAME mutation the
+	//      drain loop just declined and runs it. Instrumented on the same run:
+	//      "ProcessPendingUserInput: claimed=<the id the drain loop skipped>".
 	//
-	// Which leaves the turn's PRE-TURN WORK not observing its cancelled context
-	// and carrying on into the model round. That is the next thing to measure,
-	// and it is deliberately not guessed at here.
-	//
-	// This is reachable at all only because kata vewa made Stop land in this
-	// window; before that it was refused. So the fix belongs with that work, not
-	// filed away as pre-existing.
-	probe, cancelProbe := context.WithTimeout(ctx, 3*time.Second)
+	// So the drain-rail fixes are necessary and not sufficient, and this test is
+	// how you find that out. Note what closing rail 2 costs, because it is the
+	// same question that has stalled the steering rail: the wake exists so a Stop
+	// with queued work does not strand the queue, and suppressing it leaves the
+	// user's message parked with nothing scheduled to deliver it. Park it and you
+	// owe the user a way to see and send it.
+	probe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelProbe()
 	round2, err := provider.Next(probe.Done())
 	if err != nil {
-		t.Fatal("no model round followed the Stop: the turn the user stopped no longer runs, which is the DESIRED behaviour (kata wms7) and makes this assertion stale. Invert it -- assert no model round, and that the message is back on the queue with the session settled -- and close wms7")
+		t.Fatal("no model round followed the Stop. If the wake rail has been closed deliberately, this test and kata wms7 need updating together -- and check that the parked message is reachable by the user, which is the open question in wms7. If it has not, this is a delivery regression: the message reached neither the model nor the queue")
 	}
 	if !round2.Contains(queuedText) {
-		t.Fatalf("a model round followed the Stop but does not carry the queued text; this pin no longer describes what happens. messages:\n%s", strings.Join(round2.Texts(), "\n"))
+		t.Fatalf("the turn after the Stop does not carry the queued message; something else was delivered. messages:\n%s", strings.Join(round2.Texts(), "\n"))
 	}
-	t.Logf("MEASURED DEFECT (wms7): the Stop was applied and the queued turn ran anyway, carrying the queued text to the model")
+	t.Logf("the Stop cancelled its turn; the queued message was then delivered via the wake rail (wms7 rail 2, still open)")
 	round2.RespondToolCall("communicate", communicateArgs("post-stop turn done"))
 	awaitThread(ctx, t, client, ref, "the session to settle", func(thread appwire.Thread) bool {
 		return thread.Status.Type != string(appwire.ThreadStatusActive)

@@ -1215,6 +1215,18 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 			snapshot.Journal[clientMutationID] = record
 			snapshot.QueueRevision++
 			returned = true
+			// The turn-boundary half of wms7. A turn claimed out of the queue and
+			// stopped during its PRE-TURN WORK ends here, not in the incorporated
+			// branch below, so reporting the Stop only from there left the drain
+			// loop hearing "a bare host cancellation" -- and running the very
+			// message the user stopped, which it has just put back on the queue.
+			//
+			// Nothing is finalized here: the interrupt does that after this
+			// completion returns, which is exactly why the fence is still legible
+			// from this branch and why reporting it costs nothing.
+			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+				stopFinalized = true
+			}
 			return nil
 		}
 		if pending.ExecutionState != "incorporated" {
