@@ -443,13 +443,69 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string) (*Sessi
 	return owner, sub, nil
 }
 
+// escalateUnreachableDelegateAttention transfers pending attention wakes that
+// a permanently closed ancestor fences off forever to the root session -- each
+// message under its own original identity and content, mirroring the cold
+// repair in repairPermanentlyUnreachableDelegateAttention. Transfer before
+// resolution: a crash in between replays into an idempotent no-op append and a
+// second resolution attempt, never a silently discarded message. A failing
+// delegate does not starve the rest of the batch.
+func (s *Session) escalateUnreachableDelegateAttention() bool {
+	progressed := false
+	var failures []error
+	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
+		if err := s.escalateOneUnreachableDelegateAttention(plan); err != nil {
+			failures = append(failures, fmt.Errorf("delegate %s: %w", plan.delegateID, err))
+			continue
+		}
+		progressed = true
+	}
+	if len(failures) != 0 {
+		s.emit(events.EventWarning, warningDataFromError("escalate unreachable delegate attention", errors.Join(failures...)))
+		s.scheduleStableDelegateAttentionRetry()
+	}
+	return progressed
+}
+
+func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAttentionEscalation) error {
+	sourcePath, sourceSessionID, err := delegateTranscriptPathFromRef(s.delegateController.stateDir, plan.transcriptRef)
+	if err != nil {
+		return err
+	}
+	fold, err := readDelegateAttentionFold(sourcePath, sourceSessionID)
+	if err != nil {
+		return err
+	}
+	for _, attentionID := range plan.attentionIDs {
+		message, exists := fold.content[attentionID]
+		if _, resolved := fold.resolutions[attentionID]; resolved || !exists {
+			// Already durably resolved (or never durable): only the stale
+			// process-local wake remains.
+			s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
+			continue
+		}
+		if _, err := s.appendDelegateAttentionMessageDurably(attentionID, message); err != nil {
+			return err
+		}
+		if err := s.armDelegateAttention(attentionID); err != nil {
+			return err
+		}
+		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {
+			return err
+		}
+		s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)
+	}
+	return nil
+}
+
 func (s *Session) drivePendingStableDelegateAttention() bool {
 	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
 		return false
 	}
+	escalated := s.escalateUnreachableDelegateAttention()
 	delegateID, _, pending := s.delegateController.nextIdleDelegateAttention()
 	if !pending {
-		return false
+		return escalated
 	}
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
