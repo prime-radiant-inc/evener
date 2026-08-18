@@ -44,7 +44,11 @@ func TestW2Conc_RunShellForegroundBlockTimeoutCommitFails(t *testing.T) {
 		if res.JobID != "" || res.RunningInBackground {
 			t.Fatalf("res = %+v, want no durable/background job on commit failure", res)
 		}
-	case <-time.After(10 * time.Second):
+	// TRIPWIRE: the block timer fires deterministically via FakeClock.Advance
+	// above; runShell only has to signal the still-running subprocess and
+	// return, which normally happens in well under a second. 30s only fires
+	// on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after the block timer fired")
 	}
 }

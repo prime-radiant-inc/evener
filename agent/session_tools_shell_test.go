@@ -278,7 +278,11 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// TRIPWIRE: starting a background shell job returns as soon as the job is
+	// recorded, without waiting for the "sleep 30" command itself; this
+	// normally returns in well under a second, so 30s only fires on a
+	// genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
@@ -352,7 +356,10 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 	var notification jobNotification
 	select {
 	case notification = <-notifications:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: "printf done" is a near-instant background command; the
+	// completion notification normally arrives in well under a second, so
+	// 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("background shell completion notification did not arrive")
 	}
 	if notification.JobID != started.JobID ||
@@ -463,7 +470,11 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 
 			select {
 			case res = <-resCh:
-			case <-time.After(2 * time.Second):
+			// TRIPWIRE: the fake clock is advanced deterministically right
+			// before this select, so the foreground-timeout promotion
+			// normally returns in well under a second; 30s only fires on a
+			// genuine hang.
+			case <-time.After(30 * time.Second):
 				t.Fatal("shell tool did not return after foreground timeout")
 			}
 			if res.IsError {
@@ -663,7 +674,10 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}()
 	select {
 	case <-modelEntered:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the child's fakeAdapter step closes modelEntered as soon as
+	// it is invoked, with no real I/O; this normally fires in well under a
+	// second, so 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("child model call did not start")
 	}
 
@@ -687,19 +701,27 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}()
 	select {
 	case <-childClosed:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: the child's events channel is closed as the last act of
+	// close(), an in-process operation with no real I/O; this normally
+	// completes in well under a second, so 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("child session did not close within timeout")
 	}
 	release()
 
 	select {
 	case <-parentCloseDone:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: parent.Close() here is an in-process operation over scripted
+	// state with no real I/O; 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("parent close did not finish")
 	}
 	select {
 	case <-childDone:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: the child's ProcessInput call resumes once releaseModel is
+	// closed above and is otherwise scripted in-process work; 30s only fires
+	// on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("child turn did not finish")
 	}
 

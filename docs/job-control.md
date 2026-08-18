@@ -194,34 +194,33 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 
 | Value | Surface | Meaning | Normative reasons | Owner attention |
 | --- | --- | --- | --- | --- |
-| `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `awaiting_permission`, `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
+| `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
 | `idle` | delegate status | No delegate generation is processing; resumability is separate metadata. | usually `null` | none by lifecycle alone |
 | `completed` | shell status or delegate `last_outcome` | Work ended normally. | `exit_zero` for shell; otherwise usually `null` | typed terminal attention |
-| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `permission_denied`, `startup_failed`, `runtime_lost` as applicable | typed terminal attention |
+| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
 | `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Serf intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
-| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `stop_unconfirmed`, `supervision_lost`, `run_timeout` | typed terminal attention |
+| `stopped` | shell status or delegate `last_outcome` | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
 
 Validation, lookup, and routing errors are synchronous tool errors and create
 neither a shell JobRecord nor a delegate generation. Canonical codes include
 `invalid_request`, `permission_required`, `target_not_found`,
 `target_not_messageable`, `target_terminal`, `target_not_resumable`,
-`target_not_watchable`, `delegate_session_busy`, and `not_controllable`.
+`target_not_watchable`, and `not_controllable`.
 
 `status` is the primary machine branch field. `reason` is optional diagnostic
 metadata. Branch first on shell status or delegate status/last outcome, then
 consult `reason` for documented operational cases such as `runtime_lost`,
-`run_timeout`, `awaiting_permission`, budget exhaustion, and `stop_pending`.
+`run_timeout`, and `stop_pending`.
 Keep this portable vocabulary small; other diagnostics belong in free-text
 `diagnostic` or `error` fields.
 
-`cancelled` is intentional, confirmed stop. `stopped` is supervision loss,
-runtime timeout, or unconfirmed stop. Restart reconciles a shell as
-`stopped/runtime_lost` and a lost stable delegate generation as
-`failed/runtime_lost`, after which the delegate is idle. `supervision_lost`
-means an owning runtime became unable to supervise nested shell work while Serf
-was otherwise live. `not_controllable` is a synchronous routing/control error,
-not a terminal status reason.
+`cancelled` is intentional, confirmed stop. `stopped` is work Serf cannot
+attribute to normal failure or confirmed cancellation: a runtime timeout, a
+lost runtime, or a cancellation it could not confirm. Restart reconciles a
+shell as `stopped/runtime_lost` and a lost stable delegate generation as
+`failed/runtime_lost`, after which the delegate is idle. `not_controllable` is
+a synchronous routing/control error, not a terminal status reason.
 
 The following diagram is the shell lifecycle; delegate lifecycle is the
 two-state `running`/`idle` model above.
@@ -232,7 +231,7 @@ stateDiagram-v2
     running --> completed: success / exit 0
     running --> failed: error / exit nonzero / denied
     running --> cancelled: job_stop confirmed
-    running --> stopped: runtime_lost / stop_unconfirmed / run_timeout
+    running --> stopped: runtime_lost / cancelled / run_timeout
     completed --> [*]
     failed --> [*]
     cancelled --> [*]
@@ -502,10 +501,15 @@ Return shape when messaging a running target:
   "reason": null,
   "running_in_background": true,
   "timed_out": false,
-  "action": "steered",
-  "transcript_ref": "local:01JCHILD..."
+  "action": "steered"
 }
 ```
+
+A live steer carries no `transcript_ref` — the steer branch never resolves
+one, and the field is omitted rather than sent empty
+(`agent/delegate_runtime.go#delegateRuntime.send`,
+`agent/session_tools_jobs.go#delegateSendResult`). `delegate_id` is the only
+identity a steered result carries.
 
 Return shape when starting an idle delegate's next run:
 
@@ -521,6 +525,68 @@ Return shape when starting an idle delegate's next run:
   "transcript_ref": "local:01JCHILD..."
 }
 ```
+
+Once a resumed generation is dispatched its `transcript_ref` is set and
+stable for that generation, so `delegate_id` + `transcript_ref` together are
+the result's identity whenever a `transcript_ref` is present at all.
+
+**`delegate_send` contract facts settled 2026-08-17.** These four facts
+were the ambiguity that blocked repairing
+`test/scenarios/job-send-message-surface.md` (kata `badq`/`fknv`); each is
+pinned here because callers of this tool read this document, not the
+implementation, and every claim below was re-traced to its emitting Go on
+the date given.
+
+- **A `job_id` (or any other unrecognized/unauthorized) target fails with
+  the bare tool error `not_controllable: delegate` — nothing else.** There
+  is no `job_`-prefix check anywhere on the send path; `to` is handed
+  straight to the delegate tree's id lookup
+  (`agent/delegate_tree_controller.go#delegateTreeController.authorizeMutationLocked`),
+  which returns `errDelegateNotControllable`
+  (`agent/delegate_tree_controller.go#errDelegateNotControllable`) for any id
+  it does not hold, including a syntactically valid `job_` handle. That error
+  carries an empty `DelegateID`
+  (`agent/job_delegate.go#sendMessageFailed`), so
+  `stableDelegateSendTool` (`agent/session_tools.go#stableDelegateSendTool`)
+  returns the raw `error.Error()` text with no result JSON and no id
+  interpolated into it — there is no structured `reason: "not_controllable"`
+  envelope on THIS path, unlike the `job_stop` non-direct-descendant case
+  above. The similar-looking string `job_id is a job/turn handle` is real but
+  belongs only to the internal watch-delivery validator
+  (`agent/job_watch.go#validateWatchSendDeliveryTarget`); `delegate_send`
+  never calls it and never produces it.
+- **A `delegate_send` result's identity is `delegate_id` plus (once set)
+  `transcript_ref` — never a job field.** `sendMessageResult`
+  (`agent/job_delegate.go#sendMessageResult`) and its wire form
+  `delegateSendResult` (`agent/session_tools_jobs.go#delegateSendResult`)
+  declare no `job_id`, `started_job_id`, `current_job_id`, or
+  `latest_job_id` field, and nothing in the tree emits any of those four
+  names on this path.
+- **`action: "started"` is the still-running/timed-out shape; a wait that
+  resolves in time reports `action: "completed"`.** Starting an idle
+  delegate's next generation always builds the result with `action:
+  "started"` first
+  (`agent/delegate_runtime.go#delegateRuntime.send`); if `max_wait_ms` was 0
+  the call returns that shape immediately. If a positive wait was given and
+  it resolves before the ceiling, `action` is overwritten to `"completed"`,
+  `running_in_background` becomes `false`, and the reply's `output` and
+  `structured_result` fields are populated. If the wait ceiling is hit
+  first, the result keeps `action: "started"` and gains `timed_out: true`
+  with no reply content — that generation is not finished, only the wait is.
+  A caller reading `action` alone cannot tell "just started, no wait
+  requested" from "still running, wait expired"; check `timed_out` to
+  distinguish them.
+- **`max_wait_ms` is silently clamped to 60000, on this tool as on every
+  other job-control wait.** `clampJobBlockTimeout`
+  (`agent/session_tools_jobs.go#clampJobBlockTimeout`) caps every inline
+  wait — including `delegate_send`'s — at `maxJobBlockTimeoutMS`
+  (`agent/session_tools_jobs.go#maxJobBlockTimeoutMS`), 60000 ms, before it
+  reaches the wait. A caller asking for more silently gets 60000; nothing
+  reports the request was reduced. `delegate` creation itself accepts no
+  `max_wait_ms` at all and rejects the argument outright with
+  `invalid_request: delegate creation does not accept max_wait_ms`
+  (`agent/session_tools.go#stableDelegateCreateTool`) — the wait only
+  applies to `delegate_send`, never to creation.
 
 ### `job_watch`
 
@@ -893,7 +959,7 @@ ref (`job:` for shell, session ref for delegate).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), or `budget_exhausted` (it hit the per-watch delivery budget) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
 
@@ -941,7 +1007,7 @@ Semantics:
 - Stopping does not require or imply acknowledgement.
 - If a shell job already completed before stop lands, return its actual terminal status.
 - If shell stop is confirmed, terminal status is `cancelled` with reason `stopped_by_parent`.
-- If no live shell handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `stop_unconfirmed` or `runtime_lost`.
+- If no live shell handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `runtime_lost`.
 - If a shell is still running after timeout, status remains `running` with reason `stop_pending`, and a later terminal notification remains guaranteed.
 - A shell return classifies the result in `outcome`: `cancelled_by_request` (the stop cancelled a live job), `already_terminal` (the job had already finished before the stop), `completed_during_stop` (the job finished on its own as the stop landed), or `stop_requested` (still finalizing, e.g. reason `stop_pending`). `previous_status` reports the status the job held immediately before the stop signal, so a race between completion and cancellation is unambiguous.
 - A stable delegate stop records its admission-time lifecycle and preserves that classification across same-target retries and provider-free restart. Incomplete at `max_wait_ms` returns current `status="running"`, `reason="stop_pending"`, and `outcome="stop_requested"`. Completed stop returns current `status="idle"`; admission while active returns `previous_status="running"` and `outcome="cancelled_by_request"`, while admission when already idle/no-work returns `previous_status="idle"` and `outcome="already_idle"`.

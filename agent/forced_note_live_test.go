@@ -110,6 +110,10 @@ func TestForcedNoteLive(t *testing.T) {
 		close(done)
 	}()
 
+	// TRIPWIRE: two real provider round-trips (a large first turn plus a
+	// compaction-triggering second turn) against the live OpenAI API; 7m
+	// covers real latency variance and only fires if the live call itself
+	// wedges.
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
 

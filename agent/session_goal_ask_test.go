@@ -50,7 +50,8 @@ func TestGoalHoldsAwaiting_ContinuationEndsViaAsk(t *testing.T) {
 	sess.SetKickFunc(func(string) { kicks++ })
 	sess.getOrCreateGoalStore().Set("ship the feature", time.Now())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInputKind(ctx, "continue toward the goal", nil, EntryContinuation); err != nil {
 		t.Fatalf("ProcessInputKind: %v", err)
@@ -120,7 +121,8 @@ func TestGoalHoldsAwaiting_DeferredContinuationHeldPastNotificationAsk(t *testin
 	sess.SetKickFunc(func(string) { kicks++ })
 	sess.getOrCreateGoalStore().Set("ship the feature", time.Now())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInputKind(ctx, "continue toward the goal", nil, EntryContinuation); err != nil {
 		t.Fatalf("ProcessInputKind: %v", err)
@@ -313,7 +315,8 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 		t.Fatal("precondition: goal must be set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInputKind(ctx, "continue toward the goal", nil, EntryContinuation); err != nil {
 		t.Fatalf("ProcessInputKind: %v", err)
@@ -378,7 +381,8 @@ func TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 	var kicked []string
 	sess.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

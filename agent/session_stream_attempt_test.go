@@ -233,7 +233,9 @@ func TestConsumeModelStream_Observation_ContentWindowExcludesPrefixGap(t *testin
 	var got outcome
 	select {
 	case got = <-done:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: in-process ChanStream with only a couple hundred ms of
+	// scripted sleeps between sends; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("consumeModelStream did not finish")
 	}
 

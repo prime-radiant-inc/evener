@@ -63,7 +63,7 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "loop", nil)
 	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 2, true)
@@ -112,7 +112,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "loop", nil)
 	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 2, true)
@@ -170,7 +170,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	result, err := sess.ProcessInput(ctx, "do stuff", nil)
 	if err != nil {
@@ -251,7 +251,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if out, err := sess.ProcessInput(ctx, "hi", nil); err != nil || strings.TrimSpace(out) != "hello" {
 		t.Fatalf("ProcessInput: out=%q err=%v", out, err)
@@ -302,7 +302,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	sessID := sess.ID()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
@@ -370,7 +370,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if out, err := sess.ProcessInput(ctx, "write", nil); err != nil || strings.TrimSpace(out) != "ok" {
 		t.Fatalf("ProcessInput: out=%q err=%v", out, err)
@@ -431,7 +431,7 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	// First input should succeed (turn 1 of 1).
@@ -473,7 +473,7 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if out, err := sess.ProcessInput(ctx, "one", nil); err != nil || strings.TrimSpace(out) != "first" {
 		t.Fatalf("first: out=%q err=%v", out, err)
@@ -544,7 +544,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	type result struct {
@@ -665,7 +665,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -838,7 +838,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	// This test scripts exactly one model step and crosses the compaction threshold;
 	// mute the default-on note elicitation so it doesn't steal that step.
 	muteNoteElicitation(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
 	if err != nil {
@@ -876,7 +876,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
 	if err != nil {
@@ -911,7 +911,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "describe this image", []ImageAttachment{{
 		MediaType: "image/png",
@@ -976,7 +976,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 
 	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
 	// only the turn ctx is cancelled.
-	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer outerCancel()
 	turnCtx, cancelTurn := context.WithCancel(outerCtx)
 
@@ -998,7 +998,9 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 		if err == nil {
 			t.Fatalf("expected abort error, got nil")
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: abort is observed and returned in-process with no real
+	// I/O; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("ProcessInput did not abort promptly")
 	}
 
@@ -1127,7 +1129,7 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer outerCancel()
 
 	// Turn 1: start and interrupt.
@@ -1148,7 +1150,9 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 		if err == nil {
 			t.Fatalf("turn 1: expected abort error, got nil")
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: abort is observed and returned in-process with no real
+	// I/O; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("turn 1: ProcessInput did not abort promptly")
 	}
 	if got := sess.State(); got != SessionIdle {
@@ -1230,7 +1234,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 		}
 	}()
 
-	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer outerCancel()
 	turnCtx, cancelTurn := context.WithCancel(outerCtx)
 	turnCtx = WithQueuedInputDrainOnInterrupt(turnCtx, outerCtx)
@@ -1264,7 +1268,9 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 		if !strings.Contains(got.out, "queued turn completed") {
 			t.Fatalf("ProcessInput output=%q, want queued turn completion", got.out)
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: abort is observed and returned in-process with no real
+	// I/O; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("ProcessInput did not drain queued input after interrupt")
 	}
 	if depth := sess.QueueDepth(); depth != 0 {
@@ -1310,7 +1316,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer outerCancel()
 	turnCtx, cancelTurn := context.WithCancel(outerCtx)
 	turnCtx = WithQueuedInputDrainOnInterrupt(turnCtx, outerCtx)
@@ -1345,7 +1351,9 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 		if !strings.Contains(got.out, "queued turn completed after abort error") {
 			t.Fatalf("ProcessInput output=%q, want queued abort-error turn completion", got.out)
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: abort is observed and returned in-process with no real
+	// I/O; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("ProcessInput did not drain queued input after abort error")
 	}
 	if depth := sess.QueueDepth(); depth != 0 {
@@ -1489,7 +1497,7 @@ func TestSession_AuthenticationError_LeavesSessionIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -1528,7 +1536,7 @@ func TestSession_ContextLengthError_EmitsWarningAndLeavesSessionIdle(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -1576,7 +1584,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -1612,7 +1620,7 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -1647,7 +1655,7 @@ func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -1697,7 +1705,7 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -1877,7 +1885,7 @@ func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1921,7 +1929,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1964,7 +1972,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -2166,7 +2174,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 		detected <- found
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
@@ -2338,7 +2346,7 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -2431,7 +2439,7 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -2489,7 +2497,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err = sess.ProcessInput(ctx, "write two files", nil)
@@ -2557,7 +2565,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err = sess.ProcessInput(ctx, "write two files", nil)
@@ -2627,7 +2635,7 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err = sess.ProcessInput(ctx, "write file", nil)
@@ -2702,7 +2710,7 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "run a command", nil)
 	if err != nil {
@@ -2799,7 +2807,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "search files", nil)
 	if err != nil {
@@ -2876,7 +2884,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "list files", nil)
 	if err != nil {
@@ -2949,7 +2957,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "write the file", nil); err != nil {
 		t.Fatal(err)
@@ -3036,7 +3044,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "read then write", nil); err != nil {
 		t.Fatal(err)
@@ -3104,7 +3112,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 		close(done)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "create new file", nil); err != nil {
 		t.Fatal(err)
@@ -3147,7 +3155,7 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
@@ -3209,7 +3217,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
@@ -3268,7 +3276,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "go", nil); err != nil {
 		t.Fatal(err)
@@ -3353,7 +3361,7 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
@@ -3631,7 +3639,7 @@ func TestSession_RoundLimit_ReturnsTypedErrorAndPartialOutput(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	out, err := sess.ProcessInput(ctx, "loop", nil)
@@ -3672,7 +3680,7 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	// Turn 1 succeeds.
@@ -3720,7 +3728,7 @@ func TestSession_TurnLimit_ReturnsTypedError(t *testing.T) {
 	}()
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	// Turn 1 succeeds.

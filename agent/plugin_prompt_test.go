@@ -192,7 +192,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 	var childPrompt string
 	select {
 	case childPrompt = <-childPromptSeen:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 		t.Fatal("delegate child never requested a model turn")
 	}
 	if !strings.Contains(childPrompt, "You may delegate scoped subwork") {

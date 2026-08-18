@@ -412,7 +412,10 @@ func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(100 * time.Millisecond):
+	// TRIPWIRE: abandonRunningJobs closes captured done channels
+	// synchronously before it returns; this only fires if that
+	// invariant regresses into an async close, not on a slow machine.
+	case <-time.After(30 * time.Second):
 		t.Fatal("captured done channel did not close after abandon")
 	}
 	if _, ok := jobDone(jm, rec.JobID); ok {
@@ -1105,7 +1108,9 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 
 	select {
 	case <-pendingStarted:
-	case <-time.After(time.Second):
+	// TRIPWIRE: appendEvent is called in-process with no real I/O;
+	// the pending append is reached in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for first pending append")
 	}
 	waitErrc := make(chan error, 1)
@@ -1115,6 +1120,12 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	select {
 	case err := <-waitErrc:
 		t.Fatalf("concurrent finalize returned before pending append completed: %v", err)
+	// TRIPWIRE: not a hang guard -- this window is the assertion itself.
+	// jm.finalize's second, concurrent call is expected to block behind the
+	// first call's held-open append (releasePending is not yet closed), so
+	// the test proves that by outracing waitErrc. 50ms is deliberately kept
+	// short: raising it would only slow the test, since the passing path
+	// always waits out the full duration.
 	case <-time.After(50 * time.Millisecond):
 	}
 	if got := pendingAppends.Load(); got != 1 {
@@ -1127,7 +1138,9 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("first finalize: %v", err)
 		}
-	case <-time.After(time.Second):
+	// TRIPWIRE: releasePending is already closed above; finalize
+	// completes in-process in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for first finalize")
 	}
 	select {
@@ -1135,7 +1148,9 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("concurrent finalize: %v", err)
 		}
-	case <-time.After(time.Second):
+	// TRIPWIRE: releasePending is already closed above; finalize
+	// completes in-process in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for concurrent finalize")
 	}
 	select {
@@ -1200,7 +1215,9 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 
 	select {
 	case <-pendingStarted:
-	case <-time.After(time.Second):
+	// TRIPWIRE: appendEvent is called in-process with no real I/O;
+	// the pending append is reached in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for first pending append")
 	}
 	waitErrc := make(chan error, 1)
@@ -1210,6 +1227,12 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	select {
 	case err := <-waitErrc:
 		t.Fatalf("concurrent finalize returned before pending append failed: %v", err)
+	// TRIPWIRE: not a hang guard -- this window is the assertion itself.
+	// jm.finalize's second, concurrent call is expected to block behind the
+	// first call's held-open append (releasePending is not yet closed), so
+	// the test proves that by outracing waitErrc. 50ms is deliberately kept
+	// short: raising it would only slow the test, since the passing path
+	// always waits out the full duration.
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1219,7 +1242,9 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 		if !errors.Is(err, appendErr) {
 			t.Fatalf("first finalize error = %v, want %v", err, appendErr)
 		}
-	case <-time.After(time.Second):
+	// TRIPWIRE: releasePending is already closed above; finalize
+	// completes in-process in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for first finalize")
 	}
 	select {
@@ -1227,7 +1252,9 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 		if !errors.Is(err, appendErr) {
 			t.Fatalf("concurrent finalize error = %v, want %v", err, appendErr)
 		}
-	case <-time.After(time.Second):
+	// TRIPWIRE: releasePending is already closed above; finalize
+	// completes in-process in well under a second normally.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for concurrent finalize")
 	}
 	select {

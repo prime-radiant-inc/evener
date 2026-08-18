@@ -136,7 +136,18 @@ func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	// The lock recovers; the open timer's retry re-locks it.
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
-	waitForCondition(t, 3*time.Second, "open-timer retry re-locks the lane", func() bool {
+	// fireOpenLaneResidueSweep does register on sweepWG, but the fake clock
+	// fires it via `go w.fn()` from inside Advance -- there is no
+	// happens-before edge between that Add(1) and a bare sweepWG.Wait()
+	// called from here, so a naive wait on sweepWG can observe the counter
+	// still at zero and return before the retry pass even starts (unlike
+	// Close(), which only joins sweepWG after taking the same mutex the
+	// callback Adds under). Polling the actual side effect is the only
+	// race-free signal available from a test in this package.
+	// TRIPWIRE: the retry pass runs over an in-memory scripted git boundary
+	// with no real I/O, so it normally finishes in well under a second; 30s
+	// only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "open-timer retry re-locks the lane", func() bool {
 		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
@@ -175,7 +186,18 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
-	waitForCondition(t, 3*time.Second, "dedicated retry timer re-locks the lane", func() bool {
+	// fireLaneReLockRetry does register on sweepWG, but the fake clock fires
+	// it via `go w.fn()` from inside Advance -- there is no happens-before
+	// edge between that Add(1) and a bare sweepWG.Wait() called from here, so
+	// a naive wait on sweepWG can observe the counter still at zero and
+	// return before the retry even starts (unlike Close(), which only joins
+	// sweepWG after taking the same mutex the callback Adds under). Polling
+	// the actual side effect is the only race-free signal available from a
+	// test in this package.
+	// TRIPWIRE: the retry runs over an in-memory scripted git boundary with
+	// no real I/O, so it normally finishes in well under a second; 30s only
+	// fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, "dedicated retry timer re-locks the lane", func() bool {
 		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})

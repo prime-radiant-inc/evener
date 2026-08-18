@@ -103,6 +103,9 @@ func loopDetectionSession(t *testing.T, window int, present []string, reads []st
 		messages <- got
 	}()
 
+	// TRIPWIRE: every round here is a scripted in-process adapter call with no
+	// real I/O; the whole loop normally completes in well under a second. 30s
+	// only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {

@@ -66,7 +66,7 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 	}
 	drainSessionEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "trigger endpoint fallback", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

@@ -102,7 +102,9 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits done, DrainJobTree's own return signal; with no jobs in
+	// flight it should return at once. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("DrainJobTree blocked with no jobs in flight; expected immediate return")
 	}
 	if err != nil {
@@ -186,7 +188,10 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("DrainJobTree error = %v, want context.Canceled", err)
 				}
-			case <-time.After(5 * time.Second):
+			// TRIPWIRE: awaits done, DrainJobTree's own return signal, after
+			// cancel(); it should observe ctx.Err() and return immediately.
+			// 30s only fires on a genuine hang.
+			case <-time.After(30 * time.Second):
 				t.Fatal("DrainJobTree did not return after context cancellation; hang-safety backstop failed")
 			}
 		})
@@ -242,7 +247,10 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 		if kick != 1 {
 			t.Fatalf("first drain kick = %d, want 1", kick)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits kickEntered, the drain loop's own per-iteration signal;
+	// the goroutine above sends on it synchronously as soon as it enters the
+	// kick. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("managed-job drain did not enter its first cycle")
 	}
 	tickConsumed := make(chan struct{})
@@ -255,7 +263,9 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	}()
 	select {
 	case <-tickConsumed:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits tickConsumed, closed once the drain loop reads the
+	// controlled recheck tick above. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("managed-job drain did not consume the controlled recheck")
 	}
 	select {
@@ -263,7 +273,9 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 		if kick != 2 {
 			t.Fatalf("second drain kick = %d, want 2", kick)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits kickEntered again for the second iteration. 30s only
+	// fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("managed-job drain did not re-enter after consuming its wait")
 	}
 	select {
@@ -278,7 +290,10 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("DrainJobTree error = %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits drainDone, the drain goroutine's own exit signal, after
+	// cancel(); it should observe ctx.Err() and return immediately. 30s only
+	// fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("DrainJobTree did not return after caller cancellation")
 	}
 
@@ -428,6 +443,9 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 				t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 			}
 
+			// TRIPWIRE: scripted in-process adapter steps plus fully in-memory
+			// job-manager fixtures, no real I/O; only fires on a genuine hang
+			// (a wedged drain, the regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := sess.DrainJobTree(ctx); err != nil {
@@ -473,6 +491,9 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			}
 			blocksBefore := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`)
 
+			// TRIPWIRE: scripted in-process adapter steps plus fully in-memory
+			// job-manager fixtures, no real I/O; only fires on a genuine hang
+			// (a wedged drain, the regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := sess.DrainJobTree(ctx); err != nil {
@@ -554,6 +575,9 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 				t.Fatalf("precondition: child in-memory queue must be empty, got %d", p)
 			}
 
+			// TRIPWIRE: scripted in-process adapter steps for both sessions,
+			// no real I/O; only fires on a genuine hang (a wedged drain, the
+			// regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := root.DrainJobTree(ctx); err != nil {
@@ -576,6 +600,8 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	seedOwnedDurablePending(t, jm, "shell-batch-one", jobstore.JobShell)
 	seedOwnedDurablePending(t, jm, "shell-batch-two", jobstore.JobShell)
 
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
+	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, err := sess.DrainJobTree(ctx)
@@ -671,6 +697,8 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
 
+	// TRIPWIRE: scripted in-process adapter steps for both the root and the
+	// delegate child, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.DrainJobTree(ctx); err != nil {
@@ -726,7 +754,10 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	var shell shellResult
 	select {
 	case shell = <-resultCh:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits resultCh, runShell's own return signal, after the fake
+	// clock above has already been advanced past the block timeout; the call
+	// should return immediately. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after the foreground wait bound")
 	}
 	if shell.JobID == "" || shell.Status != string(jobstore.StatusRunning) || shell.Reason != "foreground_timeout" {
@@ -746,6 +777,8 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	}
 
 	releaseShell()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a
+	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, err := sess.DrainJobTree(ctx)

@@ -314,8 +314,17 @@ runner_logdirs() {
 	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
 }
 
+# Both ceilings below bound a fixture process reaching a state (a marker file
+# existing, a pid gone), not any work this suite is timing — the poll returns
+# the moment the state is true, so a long ceiling is free on every healthy
+# run. It only spends time once the fixture is genuinely stuck. 200 attempts
+# (2s) was tight enough that forking through env -> run-module-tests.sh ->
+# a nested subshell -> the fixture binary could still be waiting for its
+# first CPU slice when the ceiling hit, under concurrent gate load (kata
+# y6rq) — the fixture hadn't failed, it just hadn't been scheduled yet. 30s
+# is past anything a busy-but-healthy machine has shown for that chain.
 wait_for_file() {
-	local path="$1" attempts="${2:-200}"
+	local path="$1" attempts="${2:-3000}"
 	while [ "$attempts" -gt 0 ]; do
 		[ -f "$path" ] && return 0
 		sleep 0.01
@@ -325,7 +334,7 @@ wait_for_file() {
 }
 
 wait_for_process_exit() {
-	local pid="$1" attempts=200
+	local pid="$1" attempts=2000
 	while [ "$attempts" -gt 0 ]; do
 		kill -0 "$pid" 2>/dev/null || return 0
 		sleep 0.01
@@ -456,6 +465,45 @@ assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other f
 assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
 assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
+# kata 5gvk: scripts/gate-capability-preflight.sh exports
+# SERF_GATE_CAPABILITY_SKIP when it classified a sandbox capability as
+# blocked. The runner must union that pattern into root's -skip so the
+# known-infeasible TestE2E_/TestTUITmuxE2E_ family is skipped instead of
+# failing into a denied bind/exec - but ONLY for root: agent has its own,
+# unrelated TestE2E_* tests (agent/session_escalation_e2e_test.go), and
+# unioning the pattern into every module would silently skip those too.
+new_case
+out="$case_dir/capability-skip.out"
+if run_tests ". agent" "$out" SERF_GATE_CAPABILITY_SKIP='^(TestE2E_|TestTUITmuxE2E_)'; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a capability-driven skip pattern alone does not fail the run"
+root_args="$(arguments_for .)"
+agent_args="$(arguments_for agent)"
+assert_has_word "$root_args" "-skip" "root's invocation still carries -skip"
+case "$root_args" in
+	*"-skip "*"TestE2E_"*"TestTUITmuxE2E_"*) ok "root's -skip pattern carries the capability skip pattern" ;;
+	*) bad "root's -skip pattern does not carry the capability skip pattern (got: $root_args)" ;;
+esac
+case "$agent_args" in
+	*"TestE2E_"*) bad "agent's -skip pattern was wrongly widened by the root-only capability skip (got: $agent_args)" ;;
+	*) ok "agent's -skip pattern is untouched by the root-only capability skip" ;;
+esac
+# A run that narrows root's surface says so in its own output, not only in the
+# preflight summary that ran before it. This script is also invoked directly
+# (ROOT_FULL=1 make test), where an inherited or hand-set value would otherwise
+# narrow the surface and still report PASS with no trace of it.
+assert_has "$out" "SERF_GATE_CAPABILITY_SKIP is set" "a capability-narrowed run names the narrowing in its own output"
+
+# The absence case: no SERF_GATE_CAPABILITY_SKIP set (the ordinary path, and
+# what an unrestricted host's preflight exports) leaves -skip exactly as
+# before - this is the "green path unchanged" half of kata 5gvk's contract.
+new_case
+out="$case_dir/no-capability-skip.out"
+if run_tests "." "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a run with nothing capability-blocked exits zero"
+root_args="$(arguments_for .)"
+assert_not_has_word "$root_args" "TestE2E_" "root's -skip carries no capability pattern when nothing is blocked"
+assert_not_has "$out" "SERF_GATE_CAPABILITY_SKIP" "an unnarrowed run says nothing about a capability skip"
+
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict
 # lines, two writers on one log, and a failure dump with nothing in it.
@@ -550,16 +598,29 @@ ready_fifo="$state/root-list.ready"
 mkfifo "$ready_fifo"
 (
 	exec 8>"$ready_fifo"
-	exec sleep 6
+	exec sleep 25
 ) &
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
-# Timeout 2, not the 1-second floor: the runner's sweep fires 1.0-2.0s after
-# spawn (integer SECONDS granularity), and at 1 the sweep raced the fixture's
-# own establishment under load — seen twice as "leaves its descendant alive".
-# 2 keeps the deliberate trip cheap while clearing the establishment window.
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=2 FAKE_READY_FIFO="$ready_fifo"
-start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
+# Timeout 8, not the 2 a prior pass settled on (itself raised once already
+# from a 1-second floor): SERF_ROOT_PACKAGE_LIST_TIMEOUT starts counting the
+# instant run_root_package_list forks the fixture `go list`, before that
+# child has necessarily had its first CPU slice — under concurrent gate load,
+# forking through env -> run-module-tests.sh -> a nested subshell -> the
+# fixture binary can itself take several seconds of pure scheduling delay,
+# with no work done yet. Both 1 and 2 still raced that establishment under
+# load (kata y6rq: "did not reach held go list", both as this sweep firing
+# first and, separately, as the outer watchdog below firing first) — the
+# fixture hadn't hung, it hadn't been scheduled. 8 is bounded reproduction
+# evidence, not a guess: 40 concurrent selftest runs across three waves
+# (12/16/12) at host load 16-32 held clean at 8 with zero failures, while the
+# same waves against the un-widened 2/5 pair reproduced the exact ledger
+# failure text repeatedly at the same load (kata y6rq report has the counts).
+# It still keeps the deliberate trip an order of magnitude below the 30s
+# production default. The ready-keeper and both watchdog delays below scale
+# with it so establishment has real room before either backstop fires.
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 FAKE_LIST_DOWNLOAD_DIAGNOSTIC=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=8 FAKE_READY_FIFO="$ready_fifo"
+start_fixture_watchdog "$runner_pid" 20 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
 startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
 startup_ready=0
@@ -573,7 +634,7 @@ if [ "$startup_ready" -eq 1 ]; then
 	exec 9<&-
 	kill "$ready_keeper_pid" 2>/dev/null || :
 	wait "$ready_keeper_pid" 2>/dev/null || :
-	start_fixture_watchdog "$runner_pid" 5 "$state/root-list.watchdog" "" ""
+	start_fixture_watchdog "$runner_pid" 20 "$state/root-list.watchdog" "" ""
 	watchdog_pid="$fixture_watchdog_pid"
 	if wait "$runner_pid"; then rc=0; else rc=$?; fi
 	stop_fixture_watchdog "$watchdog_pid"

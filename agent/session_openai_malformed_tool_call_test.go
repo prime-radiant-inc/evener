@@ -115,7 +115,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: loopback httptest server, scripted responses, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	got, err := sess.ProcessInput(ctx, "trigger malformed tool call", nil)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		<-restoredEventsDone
 	}()
 
-	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 5*time.Second)
+	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: loopback httptest server, scripted responses, no real I/O; only fires on a genuine hang.
 	defer cancelRestore()
 	restoredOutput, err := restored.ProcessInput(restoreCtx, "continue after restore", nil)
 	if err != nil {

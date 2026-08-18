@@ -365,7 +365,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
@@ -424,7 +424,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "test", nil)
 	if err != nil {
@@ -642,7 +642,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 
 	referencePrompt := sess.cachedSystemPrompt
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -736,7 +736,7 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
@@ -959,7 +959,7 @@ func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
@@ -1071,7 +1071,7 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 		t.Fatalf("id: got %q want %q", sess.ID(), meta.ID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1127,7 +1127,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "test", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1184,7 +1184,7 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

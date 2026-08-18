@@ -241,7 +241,7 @@ Every field is optional; unset means "inherit from the layer below"
 | `supports_long_cache_retention` | bool | when true, emit `prompt_cache_key` + `prompt_cache_retention: "24h"` (and, with `cache_control_format = "anthropic"`, add `ttl: "1h"` to the ephemeral markers) — see "Prompt caching through gateways" below |
 | `send_session_affinity_headers` | bool | when true and the request carries a session id, send the `session_id` / `x-client-request-id` / `x-session-affinity` request headers so a gateway can pin a conversation's turns to one backend/cache |
 | `lock_temperature` / `lock_top_p` / `lock_frequency_penalty` / `lock_presence_penalty` | bool | drop that sampling param from the request |
-| `tool_choice_auto_only` | bool | force any `tool_choice` other than `auto`/`none` down to `auto` |
+| `tool_choice_auto_only` | bool | downgrade any non-`auto`/`none` `tool_choice` a caller sends down to `auto` — a gateway-side backstop; serf's own agent layer never sends a forcing `tool_choice` in the first place, see [Tool choice: serf never forces it](#tool-choice-serf-never-forces-it) |
 | `max_stop_sequences` | int (≥0) | truncate the `stop` array to this length |
 | `strip_empty_content` | bool | drop empty-text content parts before sending |
 | `no_json_schema` | bool | downgrade `response_format: json_schema` to `json_object` |
@@ -665,6 +665,54 @@ instances now try `/responses` first and fall back to `/chat/completions` on
 endpoint/model mismatch; explicit `api_style="chat-completions"` remains forced
 Chat Completions.
 
+### Tool choice: serf never forces it
+
+`Session.buildModelRequest` (`agent/session_model_call.go`) sends
+`ToolChoice: &llm.ToolChoice{Mode: "auto"}` on every main model call, and
+never a forcing mode (`"required"` or a named tool). This is deliberate and
+regression-guarded, not an oversight the two adapter-side knobs above happen
+to compensate for.
+
+**Why.** A model that cannot honor a forcing `tool_choice` has no legal way
+to stop, and serf targets arbitrary models on arbitrary gateways where that
+capability is not knowable in advance. Measured against glm-5.2-vision (full
+system prompt, interleaved arms in one window): `auto` finished cleanly 3/3,
+one tool call, under 15s. `required` never terminated 3/3, emitting
+83/237/373 tool calls with no `finish_reason` before the run budget cut it
+off, one response repeating a single byte-identical call 231 times.
+
+**Enforcement moved from the wire to software.** Nothing about the
+result-tool contract weakened. `decideNoToolCalls` steers bare text back
+toward a tool call, and a delegate that ends its turn without communicating
+still gets `communicateNudge` — see `TestBareText_RedirectsToCommunicate`.
+The wire-level guarantee a forcing `tool_choice` used to buy is now bought by
+that software loop instead.
+
+**The regression guard:** `TestProcessInput_ToolChoiceIsNeverForced`
+(`agent/session_dod_definition_test.go`) fails if `ToolChoice.Mode` is ever
+anything but `"auto"`. Its doc comment carries the same evidence above — read
+it before arguing with this section.
+
+**`llm/` keeps full `"required"` support on purpose.** `llm/` is a general
+provider adapter library, not agent-specific: its adapter tests cover
+`"required"` translation across the anthropic/google/openai/openaicompat
+builders, and `tool_choice_auto_only` (above) exists so a gateway can
+downgrade a forcing request it receives from *some other* caller down to
+`auto`. Do not delete this as dead code because the agent layer never
+exercises it — the separation is deliberate: `llm/` supports forcing,
+`agent/` declines to use it.
+
+**Why this reverses 5f7a72800 safely.** `5f7a72800` ("Require communicate
+tool calls across runtimes", 2026-04) introduced the forcing `tool_choice`
+because at the time bare text was only steered back to a tool call in
+non-interactive mode — forcing on the wire was the only enforcement that
+covered every runtime. `decideNoToolCalls` and `communicateNudge` now cover
+every runtime in software, so the wire-level forcing that closed that gap in
+April is redundant today, and (per the measurement above) actively unsafe
+against models/gateways that can't honor it. The reversal is safe *because*
+the software enforcement it depended on was completed, not because the
+original problem stopped mattering.
+
 ## Reasoning effort
 
 One per-session knob ordered `minimal < low < medium < high < xhigh == max`
@@ -687,9 +735,10 @@ suffix, a provider namespace, and dated/family snapshots.
 `reasoning_effort` enum directly. Anthropic adaptive-thinking models (opus-4-6,
 sonnet-4-6) send `output_config.effort`; legacy models (opus-4-5, kimi-for-coding)
 map the effort to a `thinking.budget_tokens` via `llm.ReasoningBudget`. When
-thinking is enabled the Anthropic builder downgrades a forced `tool_choice` to
-`auto` and keeps `max_tokens` above the thinking budget (Anthropic rejects both
-otherwise).
+thinking is enabled the Anthropic builder downgrades any non-`auto` `tool_choice`
+it is given to `auto` and keeps `max_tokens` above the thinking budget (Anthropic
+rejects both otherwise) — a defensive backstop, since serf's agent layer only
+ever sends `auto` (see [Tool choice: serf never forces it](#tool-choice-serf-never-forces-it)).
 
 **Setting it.** Launch: `--reasoning-effort`, `SERF_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip (per-model

@@ -3,6 +3,7 @@ package serf_test
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,11 +168,6 @@ var scenarioNeedleAllowed = map[scenarioNeedleException]string{
 	{cardAttentionNeedsYou, "seen_awaiting"}: "the shell variable this card polls into",
 	{cardAuthDevicePollConcurrent, "elapsed_ms"}: "the shell variable this card computes at :108 and asserts at :126; " +
 		"it is not serf vocabulary and only ever resolved by riding inside group_elapsed_ms",
-
-	{cardJobDelegateResultSchema, "delegate_session_busy"}: "canonical code at docs/job-control.md " +
-		"\"Status and reason model\"; this card quotes it precisely to say nothing in the Go source emits it here",
-	{cardJobStopAndChildren, "stop_unconfirmed"}: "canonical stop reason in docs/job-control.md's reason " +
-		"table, quoted as contract; no Go emitter exists — the gap is in the contract, not the card",
 }
 
 // scenarioNeedleException is one card's exemption for one needle.
@@ -505,6 +501,250 @@ func scenarioNeedleSkippedPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// ---- kata xmag: docs/job-control.md's reason-code table vs Go emitters ----
+//
+// 8g3j's needle audit above checks that a CARD never asserts on a token
+// production cannot emit. It does not check the inverse claim docs/job-control.md
+// itself makes: that its "Status and reason model" table is a complete,
+// accurate account of what the shell/delegate job surface actually returns.
+// Kata xmag found three codes in that table with no Go emitter anywhere in
+// the tree (`stop_unconfirmed`, `supervision_lost`, `delegate_session_busy`)
+// and, running the same check on the table's own codes rather than a card's
+// quotes of them, several more: `awaiting_permission` and `permission_denied`
+// have never had a Go emitter either, `startup_failed` is a typo for the
+// `start_failed` the code actually emits, and `finalize_failed`,
+// `forward_failed`, `missing_terminal`, `terminal_error`, and a `cancelled`
+// reason under `stopped` are real, currently-undocumented wire vocabulary.
+// See kata xmag's report for the per-code provenance (git log -S evidence:
+// never built vs. deliberately removed) each ruling rests on.
+
+// jobControlReasonDoc is the normative contract this audit and 8g3j's needle
+// audit both check cards and code against.
+const jobControlReasonDoc = "docs/job-control.md"
+
+// jobControlReasonTableHeader anchors the pipe-table in "Status and reason
+// model" whose "Normative reasons" column is this audit's forward-direction
+// source.
+var jobControlReasonTableHeader = regexp.MustCompile(`(?m)^\| Value \| Surface \| Meaning \| Normative reasons \| Owner attention \|\n`)
+
+// jobControlReasonCanonicalCodesSentence anchors the "Canonical codes
+// include" prose sentence in the same section, which lists synchronous
+// tool-error codes outside the table proper. delegate_session_busy lived
+// here, not in the table -- kata xmag's fix removes it from this sentence.
+var jobControlReasonCanonicalCodesSentence = regexp.MustCompile(`(?s)Canonical codes include.*?\.\n`)
+
+// jobControlReasonCanonicalUnaudited names codes in the "Canonical codes
+// include" sentence that kata xmag deliberately does NOT rule on, alongside
+// why. Unlike the table's "Normative reasons" (which claims completeness per
+// status), this sentence hedges with "include" -- a weaker claim -- and three
+// of its codes turned out to need more than a grep to settle:
+// `permission_required` has no Go emitter, but a synchronous
+// permission-denial path may simply not exist yet, which is a design
+// question, not a naming slip; `target_not_messageable` and
+// `target_not_resumable` have no bare-string emitter either, but
+// `NotResumableReason`/`Resumable` typed fields carry the same concept
+// through session_tools_jobs.go, `job-delegate-result-schema.md`, and
+// agent/internal/delegatestore -- possibly the string convention was
+// superseded by a structured field the way `delegate_session_busy` was
+// superseded by live-steering, which this kata's report flags as a
+// follow-up rather than rules on here. Widening this audit to those codes
+// without that investigation would risk a wrong ruling on a normative doc.
+var jobControlReasonCanonicalUnaudited = map[string]bool{
+	"permission_required":    true,
+	"target_not_messageable": true,
+	"target_not_resumable":   true,
+}
+
+// jobControlReasonEmitterFiles are the files that construct the terminal
+// Status+Reason a model-facing job or delegate result carries: the shell and
+// delegate job managers, the tool handlers that translate their outcomes,
+// and the two durable-store fold/reconcile paths that classify a restart.
+// This is the reverse-direction half of the audit's source scope. It
+// deliberately excludes job_watch.go (a separate, already-documented
+// end_reason vocabulary at "recent_watches" -- `cleared`, `replaced`,
+// `budget_exhausted`, `auto_removed_terminal`, `job_manager_closed`) and the
+// sprawling delegate_tree_*.go lease-retry machinery, whose
+// errDelegateTargetBusy sentinel ("target_busy") is internal control flow
+// compared/joined with errors.Is and never formatted into a model-facing
+// Reason string. Scoping to a whole tree scan here would flag dozens of
+// unrelated fields that also happen to be named Reason (LLM finish reasons,
+// session/turn lifecycle, hook payloads).
+var jobControlReasonEmitterFiles = []string{
+	"agent/job_shell.go",
+	"agent/job_delegate.go",
+	"agent/jobs.go",
+	"agent/session_tools_jobs.go",
+	"agent/delegate_tree_finish.go",
+	"agent/internal/jobstore/reconcile.go",
+	"agent/internal/delegatestore/fold.go",
+}
+
+// jobControlReasonAssignment matches a literal string assigned to a field or
+// local named (case-insensitively) "reason" -- `Reason: "x"`, `Reason =
+// "x"`, `reason = "x"`. The \b before "eason" keeps "endReason" and
+// "stopReason" -- different fields carrying different vocabularies -- from
+// matching.
+var jobControlReasonAssignment = regexp.MustCompile(`(?i)\breason\s*[:=]\s*"([a-z][a-z0-9_]*)"`)
+
+// TestJobControlReasonTableCodesHaveGoEmitters is kata xmag's forward
+// direction: every code the "Status and reason model" table's Normative
+// reasons column names, and every code the adjoining "Canonical codes
+// include" sentence names, must be a string some Go production code path can
+// actually put on the wire. A card can be exempted from the needle audit
+// with a documented reason; the contract itself cannot -- this test has no
+// allowlist, on purpose, because docs/job-control.md is supposed to already
+// be true.
+func TestJobControlReasonTableCodesHaveGoEmitters(t *testing.T) {
+	raw, err := os.ReadFile(jobControlReasonDoc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", jobControlReasonDoc, err)
+	}
+	text := string(raw)
+	loc := jobControlReasonTableHeader.FindStringIndex(text)
+	if loc == nil {
+		t.Fatalf("%s: the reason-table header has moved or been reworded; "+
+			"update jobControlReasonTableHeader to match", jobControlReasonDoc)
+	}
+	rest := text[loc[1]:]
+	tableBody, _, found := strings.Cut(rest, "\n\n")
+	if !found {
+		t.Fatalf("%s: could not find the blank line ending the reason table", jobControlReasonDoc)
+	}
+
+	canon := jobControlReasonCanonicalCodesSentence.FindString(text)
+	if canon == "" {
+		t.Fatalf("%s: the \"Canonical codes include\" sentence has moved or "+
+			"been reworded; update jobControlReasonCanonicalCodesSentence to match", jobControlReasonDoc)
+	}
+
+	source := jobControlReasonGoSource(t)
+	seen := map[string]bool{}
+	var findings []string
+	check := func(section string, skipUnaudited bool) {
+		for _, found := range scenarioAssertedNeedles(section) {
+			if seen[found.needle] {
+				continue
+			}
+			seen[found.needle] = true
+			if skipUnaudited && jobControlReasonCanonicalUnaudited[found.needle] {
+				continue
+			}
+			if !scenarioNeedleInSource(source, found.needle) {
+				findings = append(findings, found.needle)
+			}
+		}
+	}
+	check(tableBody, false)
+	check(canon, true)
+	if len(seen) == 0 {
+		t.Fatalf("no reason codes extracted from %s's table or canonical-codes "+
+			"sentence -- the extractor is reading the wrong text", jobControlReasonDoc)
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("%s names %d reason code(s) with no Go emitter anywhere in "+
+			"production source (kata xmag). Either implement the emitter or "+
+			"remove the code from the table/sentence:\n%s",
+			jobControlReasonDoc, len(findings), strings.Join(findings, "\n"))
+	}
+	for code := range jobControlReasonCanonicalUnaudited {
+		if !seen[code] {
+			t.Errorf("jobControlReasonCanonicalUnaudited names %q, but it no "+
+				"longer appears in the canonical-codes sentence -- the exemption "+
+				"is stale, remove it", code)
+		}
+	}
+}
+
+// TestJobControlReasonCodesEmittedAreDocumented is kata xmag's reverse
+// direction: every literal Reason string the model-facing job/delegate
+// surface actually constructs (see jobControlReasonEmitterFiles) must appear
+// somewhere in docs/job-control.md -- not necessarily the table itself, since
+// e.g. synchronous routing codes are documented in their own tool sections.
+func TestJobControlReasonCodesEmittedAreDocumented(t *testing.T) {
+	raw, err := os.ReadFile(jobControlReasonDoc)
+	if err != nil {
+		t.Fatalf("reading %s: %v", jobControlReasonDoc, err)
+	}
+	doc := string(raw)
+
+	codes := 0
+	var findings []string
+	for _, path := range jobControlReasonEmitterFiles {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, m := range jobControlReasonAssignment.FindAllStringSubmatch(string(src), -1) {
+			code := m[1]
+			codes++
+			if !scenarioNeedleInSource(doc, code) {
+				findings = append(findings, path+": "+code)
+			}
+		}
+	}
+	if codes == 0 {
+		t.Fatalf("no Reason string literals matched across jobControlReasonEmitterFiles " +
+			"-- the pattern or file list is stale")
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("these Reason literals are constructed by the job/delegate "+
+			"surface but appear nowhere in %s (kata xmag). Document them, or "+
+			"if they are genuinely internal-only, narrow "+
+			"jobControlReasonAssignment/jobControlReasonEmitterFiles to exclude them:\n%s",
+			jobControlReasonDoc, strings.Join(findings, "\n"))
+	}
+}
+
+// jobControlReasonGoSource concatenates every production Go source file into
+// one haystack, exactly like scenarioNeedleProductionSource's walk but
+// narrowed to compiled Go: kata xmag's acceptance is specifically "a Go
+// emitter", and widening the haystack to TS/JS or the embedded bundled
+// prose (as the general needle audit does for its own, different reason)
+// would let a code pass by virtue of appearing in a skill runbook's prose
+// rather than because any code path can put it on the wire -- which is
+// exactly how the general needle audit above already misses
+// `supervision_lost`'s absent Go emitter (it lives in
+// internal/bundled/skills/doctoring-serf/references/failure-modes.md).
+func jobControlReasonGoSource(t *testing.T) string {
+	t.Helper()
+	var b strings.Builder
+	files := 0
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != "." && (strings.HasPrefix(entry.Name(), ".") ||
+				scenarioNeedleSkipDirNames[entry.Name()] ||
+				slices.Contains(scenarioNeedleSkipRoots, filepath.ToSlash(path))) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(entry.Name()) != ".go" || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files++
+		b.Write(raw)
+		b.WriteByte('\n')
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the source tree: %v", err)
+	}
+	if files < 100 {
+		t.Fatalf("Go production source haystack holds only %d files -- the walk "+
+			"is reading the wrong tree and every code would report as absent", files)
+	}
+	return b.String()
 }
 
 func scenarioNeedleProductionFile(path, name string) bool {

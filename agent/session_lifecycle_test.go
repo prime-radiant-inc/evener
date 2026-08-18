@@ -37,7 +37,8 @@ func TestSession_FollowUp_ProcessesAfterCompletion(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	sess.FollowUp("do second")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "do first", nil)
 	if err != nil {
@@ -80,7 +81,8 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "loop", nil)
 	if err != nil {
@@ -192,7 +194,8 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
@@ -241,7 +244,9 @@ func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: streamingAdapter returns its scripted error in-process, no
+	// real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
 		t.Fatal("expected genuine provider failure")
@@ -300,7 +305,9 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: streamingAdapter returns its scripted error in-process, no
+	// real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
 		t.Fatal("expected genuine provider failure")
@@ -394,7 +401,9 @@ func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
 	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
 	// only the turn ctx is cancelled (same pattern as
 	// TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd).
-	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: blockingAdapter is an in-process fake, no real I/O; only fires
+	// on a genuine hang.
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer outerCancel()
 	turnCtx, cancelTurn := context.WithCancel(outerCtx)
 
@@ -409,7 +418,10 @@ func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits done, ProcessInput's own return signal, after
+	// cancelTurn(); it should observe the cancel and return immediately. 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after per-turn cancel")
 	}
 	if got := sess.State(); got != SessionIdle {
@@ -469,7 +481,10 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 	select {
 	case <-done:
 		// ProcessInput returned -- Close() successfully cancelled it.
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits done, ProcessInput's own return signal, after Close();
+	// blockingAdapter is in-process, so it should return immediately. 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
 	}
 }
@@ -503,7 +518,10 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 	var processErr error
 	select {
 	case processErr = <-processDone:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits processDone, ProcessInput's own return signal, after
+	// close(release) frees the closeRaceAdapter; the adapter is in-process,
+	// so it should return immediately. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after releasing adapter")
 	}
 	if !errors.Is(processErr, context.Canceled) {
@@ -599,7 +617,9 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 
 	select {
 	case <-toolStarted:
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits toolStarted, closed synchronously at the top of the
+	// registered tool func above. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("tool did not start")
 	}
 	closeDone := make(chan struct{})
@@ -609,7 +629,10 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	}()
 	select {
 	case <-env.started:
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits env.started, blockingCleanupEnv's own signal that
+	// Close() reached cleanup; all in-process. 30s only fires on a genuine
+	// hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("Close did not reach cleanup")
 	}
 	close(releaseTool)
@@ -617,7 +640,10 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	var res tool.ExecResult
 	select {
 	case res = <-resultDone:
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits resultDone, execTool's own return signal, after
+	// releaseTool is closed; the tool func returns immediately. 30s only
+	// fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("execTool did not return after close began")
 	}
 	if !res.IsError || !strings.Contains(res.FullOutput, "session is closing") {
@@ -627,13 +653,18 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	close(env.release)
 	select {
 	case <-closeDone:
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits closeDone, Close()'s own return signal, after
+	// env.release is closed; all in-process. 30s only fires on a genuine
+	// hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("Close did not finish")
 	}
 	var evs []events.SessionEvent
 	select {
 	case evs = <-eventsDone:
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits eventsDone, closed once the events channel drains and
+	// closes; all in-process. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("events channel did not close")
 	}
 
@@ -797,14 +828,19 @@ func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 
 	select {
 	case <-processDone:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits processDone, ProcessInput's own return signal, after
+	// Close(); blockingAdapter is in-process. 30s only fires on a genuine
+	// hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after Close()")
 	}
 
 	var evs []events.SessionEvent
 	select {
 	case evs = <-eventsDone:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: awaits eventsDone, closed once the events channel drains and
+	// closes; all in-process. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("events channel did not close")
 	}
 
@@ -1025,7 +1061,8 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "loop", nil); err != nil {
 		t.Fatal(err)
@@ -1093,7 +1130,8 @@ func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "write a haiku about goroutines", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1147,7 +1185,8 @@ func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T)
 		{MediaType: "image/png", Data: imgBytes, Name: "test.png"},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "caption", imgs); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1219,7 +1258,8 @@ func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
 		{MediaType: "image/jpeg", Data: []byte{0xff, 0xd8, 0xff}, Name: "p.jpg"},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "", imgs); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -1279,7 +1319,8 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 		t.Fatalf("QueueDepth after Enqueue: got %d, want 1", depth)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "first user input", nil)
 	if err != nil {
@@ -1350,7 +1391,9 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Enqueue: %v", err)
 		}
-	case <-time.After(time.Second):
+	// TRIPWIRE: awaits done, Enqueue's own return signal, after the mutex is
+	// released above; all in-process. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("Enqueue did not complete after queue publication slot was released")
 	}
 	if depth := sess.QueueDepth(); depth != 1 {

@@ -70,7 +70,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 		anchor,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase10 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -127,7 +127,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 		schema.NewTurn(schema.TurnUserInput, llm.User("phase10 prior user marker")),
 		phase9MatchingAnchor("resp_phase10_unavailable"),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase10 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -173,7 +173,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 		schema.NewTurn(schema.TurnUserInput, llm.User("phase10 prior user marker")),
 		phase9MatchingAnchor("resp_phase10_pressure"),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase10 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

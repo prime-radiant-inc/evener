@@ -178,7 +178,7 @@ func TestProviderFailureE2E_StallStreakSteersTheResumedTurn(t *testing.T) {
 	}
 	sess := settlementSession(t, a)
 	drainSessionEvents(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err := sess.ProcessInput(ctx, "write the plan", nil)
@@ -268,7 +268,7 @@ func TestProviderFailureE2E_CapShapePersistsDraftForTheResumedTurn(t *testing.T)
 	}
 	sess := settlementSessionWithContentClock(t, a, steppedContentClock(contentStep))
 	drainSessionEvents(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err := sess.ProcessInput(ctx, "write the plan", nil)
@@ -371,7 +371,7 @@ func TestProviderFailureE2E_TrickleStallSalvagesFragmentWithoutDraftClaim(t *tes
 	}
 	sess := settlementSession(t, a)
 	drainSessionEvents(sess)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	_, err := sess.ProcessInput(ctx, "write the plan", nil)

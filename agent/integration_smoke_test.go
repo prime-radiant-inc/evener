@@ -23,6 +23,12 @@ import (
 // work via OAuth. Update here to retarget all live integration tests at once.
 const integrationTestModel = "gpt-5.4-mini"
 
+// intentionallyShortTimeout is the independent variable in
+// TestIntegration_Timeout, not a hang guard: it must be far shorter than any
+// real completion so ProcessInput is forced to return via context
+// cancellation rather than success, proving the session honors ctx.
+const intentionallyShortTimeout = 1 * time.Second
+
 func skipWithoutAPIKey(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SERF_LIVE_TESTS") != "1" {
@@ -79,6 +85,9 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1);
+	// only fires on a genuine hang or provider outage, never ordinary model
+	// latency.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -124,6 +133,9 @@ func TestIntegration_FileReadAndEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1)
+	// that also does a file read+edit; only fires on a genuine hang or
+	// provider outage.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -153,6 +165,9 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1);
+	// only fires on a genuine hang or provider outage, never ordinary model
+	// latency.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -209,6 +224,8 @@ func TestIntegration_LargeFileReadDoesNotCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1)
+	// reading a large file; only fires on a genuine hang or provider outage.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -229,6 +246,9 @@ func TestIntegration_Steering(t *testing.T) {
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1)
+	// plus steering injection; only fires on a genuine hang or provider
+	// outage.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
@@ -288,6 +308,9 @@ func TestIntegration_Delegate(t *testing.T) {
 	}
 	collectEvents := drainEvents(sess)
 
+	// TRIPWIRE: bounds a live OpenAI ProcessInput call (SERF_LIVE_TESTS=1)
+	// that also drives a delegated subagent through several rounds; only
+	// fires on a genuine hang or provider outage.
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -357,7 +380,7 @@ func TestIntegration_Timeout(t *testing.T) {
 	_ = drainEvents(sess)
 
 	// Use a very short timeout. The LLM call won't complete in 1 second.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), intentionallyShortTimeout)
 	defer cancel()
 
 	start := time.Now()

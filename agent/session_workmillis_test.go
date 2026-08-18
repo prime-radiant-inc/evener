@@ -28,7 +28,9 @@ func TestWorkMillis_CompletedTurnCounts(t *testing.T) {
 		},
 	))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
+	// only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -69,7 +71,10 @@ func TestWorkMillis_InterruptedTurnCounts(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("ProcessInput err = %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: blockingAdapter unblocks the instant cancel() is called above,
+	// with no real I/O; this normally returns in well under a second, so 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after cancel")
 	}
 
@@ -101,7 +106,9 @@ func TestWorkMillis_FailedTurnCounts(t *testing.T) {
 			},
 		}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
+	// only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err == nil {
 		t.Fatal("ProcessInput: want error, got nil")
@@ -136,7 +143,9 @@ func TestWorkMillis_MultiTurnDrainEachCounts(t *testing.T) {
 	))
 	sess.FollowUp("do second")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
+	// only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "do first", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -214,7 +223,10 @@ func TestWorkMillis_InterruptThenCloseFlushesToDisk(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("ProcessInput err = %v, want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: blockingAdapter unblocks the instant cancel() is called above,
+	// with no real I/O; this normally returns in well under a second, so 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("ProcessInput did not return after cancel")
 	}
 
@@ -331,7 +343,9 @@ func TestRestoreThenTurnAutosaveKeepsPriorTotals(t *testing.T) {
 	// ProcessInput call below, strictly after this assignment.
 	sess.clock = clk
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
+	// only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

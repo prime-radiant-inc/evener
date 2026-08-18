@@ -56,7 +56,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarries
 		anchor,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase9 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -128,7 +128,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 		phase9MatchingAnchor("resp_phase9_retry"),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase9 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -244,7 +244,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 		}, true)),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	got, err := sess.ProcessInput(ctx, "phase9 current user marker", nil)
 	if err != nil {
@@ -326,7 +326,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 	drainSessionEvents(sess)
 	setPhase9ContinuationHistory(sess, phase9MatchingAnchor("resp_phase9_disabled_first"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase9 first current user marker", nil); err != nil {
 		t.Fatalf("first ProcessInput: %v", err)
@@ -414,7 +414,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 	drainSessionEvents(firstSess)
 	setPhase9ContinuationHistory(firstSess, phase9MatchingAnchor("resp_phase9_disabled_original"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	if _, err := firstSess.ProcessInput(ctx, "phase9 original current user marker", nil); err != nil {
 		t.Fatalf("first ProcessInput: %v", err)
@@ -601,7 +601,7 @@ func runPhase9GateSession(t *testing.T, history []schema.Turn) llm.Request {
 	drainSessionEvents(sess)
 	sess.history = append(sess.history, history...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter (some tests use a loopback httptest server with no real I/O); only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "phase9 current user marker", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

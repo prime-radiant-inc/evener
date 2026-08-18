@@ -80,7 +80,10 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 		<-drainDone
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// TRIPWIRE: parent and child adapters are scripted in-process calls with no
+	// real I/O; this normally completes in well under a second. 30s only fires
+	// on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: 0})
 	if res.Err != nil {

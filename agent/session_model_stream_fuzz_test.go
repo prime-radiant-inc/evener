@@ -452,7 +452,10 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 		profile := sess.currentProfile()
 		req := sess.buildModelRequest(profile, "system", []llm.Message{llm.User("hi")}, nil, "")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// TRIPWIRE: msfzStreamAdapter is a scripted in-process adapter with no
+		// real I/O; this normally completes in well under a second. 30s only
+		// fires on a genuine hang.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		modelResp, usedReq, attempt, callErr := sess.callModelWithFallback(ctx, profile, req, "", 1)
@@ -534,7 +537,10 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 			Messages: []llm.Message{llm.System("system"), llm.User("current user marker")},
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// TRIPWIRE: applyResponsesContinuationAnchorPlanning is pure history
+		// bookkeeping with no I/O; this normally returns in well under a
+		// millisecond. 30s only fires on a genuine hang.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		out := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)

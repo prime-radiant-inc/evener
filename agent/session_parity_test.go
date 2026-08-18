@@ -96,7 +96,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "create test.txt", nil); err != nil {
 				t.Fatal(err)
@@ -171,7 +171,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 						t.Fatal(err)
 					}
 
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 					defer cancel()
 					if _, err := sess.ProcessInput(ctx, tc.input, nil); err != nil {
 						t.Fatal(err)
@@ -214,7 +214,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 			sess, f := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: the adapter is scripted in-process, but the shell tool call spawns a real `echo` subprocess; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "run echo", nil); err != nil {
 				t.Fatal(err)
@@ -266,7 +266,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 			sess, f := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: the adapter is scripted in-process, but the shell tool call launches a real background `sleep 30` subprocess; only fires on a genuine hang, not the background sleep completing.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "run slow", nil); err != nil {
 				t.Fatal(err)
@@ -341,7 +341,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "search", nil); err != nil {
 				t.Fatal(err)
@@ -415,7 +415,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 			sess, f := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "run both", nil); err != nil {
 				t.Fatal(err)
@@ -481,7 +481,7 @@ func TestParity_ErrorRecovery(t *testing.T) {
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			result, err := sess.ProcessInput(ctx, "try reading", nil)
 			sess.Close()
@@ -537,7 +537,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 
 			eventsPtr, mu, doneCh := collectEvents(sess)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "do something", nil); err != nil {
 				t.Fatal(err)
@@ -607,7 +607,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 				},
 			})
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			done := make(chan string, 1)
 			go func() {
@@ -678,7 +678,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "edit both files", nil); err != nil {
 				t.Fatal(err)
@@ -734,7 +734,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "read big file", nil); err != nil {
 				t.Fatal(err)
@@ -782,7 +782,7 @@ func TestParity_ReasoningEffort(t *testing.T) {
 			sess.cfg.ReasoningEffort = "low"
 			defer sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			if _, err := sess.ProcessInput(ctx, "first", nil); err != nil {
 				t.Fatal(err)

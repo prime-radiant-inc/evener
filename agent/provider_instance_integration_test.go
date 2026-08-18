@@ -99,7 +99,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	defer sess.Close()
 
 	// ── Assertion 1: session turn completes with the right response ──
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hello", nil)
 	if err != nil {

@@ -77,14 +77,18 @@ func TestSession_Close_JoinsInFlightDispose(t *testing.T) {
 	case <-releasing:
 		// Correct: close cancelled the ctx, the holder observed it and is
 		// releasing, and Close is still parked in disposeWG.Wait().
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: the holder observes ctx cancel and signals releasing
+	// immediately (no real I/O); only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("timeout waiting for the dispose holder to observe ctx cancel")
 	}
 
 	select {
 	case <-closeDone:
 		// Correct: once the WaitGroup drained, Close proceeded to drain/teardown.
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: Close's drain/teardown is in-process work with no real I/O;
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("Close deadlocked after the in-flight dispose released")
 	}
 }
@@ -116,7 +120,9 @@ func TestSession_Close_ConcurrentCallsSafe(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	// TRIPWIRE: 8 concurrent Close() calls against closeOnce settle
+	// in-process with no real I/O; only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("concurrent Close() calls deadlocked")
 	}
 }

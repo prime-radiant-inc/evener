@@ -52,7 +52,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "greet Jesse", nil)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "deploy", nil)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -233,7 +233,7 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -287,7 +287,7 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()

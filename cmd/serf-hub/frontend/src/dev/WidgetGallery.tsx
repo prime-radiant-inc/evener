@@ -7,8 +7,14 @@ interface GallerySectionModule {
 
 // One module per widget, stream-owned (src/dev/gallery-sections/<name>.tsx)
 // so adding a widget's gallery section never conflicts with another
-// stream's. Sorted by path so the page order is stable across builds.
-const SECTION_MODULES = import.meta.glob<GallerySectionModule>("./gallery-sections/*.tsx", { eager: true });
+// stream's. Sorted by path so the page order is stable across builds. The
+// exclusion pattern matches SurfaceGallery.tsx's own (kata dw3s) - it keeps
+// any future colocated gallery-sections/*.test.tsx out of the glob, since a
+// test module with no default export would render as `undefined`.
+const SECTION_MODULES = import.meta.glob<GallerySectionModule>(
+  ["./gallery-sections/*.tsx", "!./gallery-sections/*.test.tsx"],
+  { eager: true },
+);
 
 const SECTIONS = Object.keys(SECTION_MODULES)
   .sort()

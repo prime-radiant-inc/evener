@@ -9,8 +9,11 @@
 // renderer the moment TurnBlock itself is imported, exactly the way a real
 // SessionPane gets them.
 
+import { useEffect } from "react";
 import { TurnBlock } from "../../panes/session/transcript/TurnBlock";
+import { itemScopeKey } from "../../panes/session/transcript/tools/subagentModuleStore";
 import type { ItemModel, TurnModel } from "../../protocol/model";
+import { setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
@@ -55,6 +58,15 @@ const agentOpenerItem = item({
   startedAt: "2026-08-13T15:04:08Z",
 });
 
+// kata dw3s: representative shell rows in each of the three states a reader
+// actually needs to see without clicking anything - collapsed (the default
+// for any completed, non-failed call - ToolCallItem.tsx's own "every row
+// with a body starts collapsed" rule), forced open (fixtureExpandedIds
+// below), and failed (exit code nonzero auto-expands - "the only
+// default-expanded state anywhere is a failed call once it settles"). Both
+// stay a run of exactly two adjacent tool calls (toolGrouping.ts's
+// MIN_GROUP_SIZE is 3) so neither folds into a ToolCallCluster - a cluster
+// would hide exactly the rows this section exists to show.
 const shellItem = item({
   id: "tool_shell_1",
   toolName: "shell",
@@ -64,14 +76,45 @@ const shellItem = item({
   output: "ok  \tprime-radiant-inc/serf/internal/jobstore\t2.104s\n",
 });
 
-const readItem = item({
-  id: "tool_read_1",
-  toolName: "read_file",
+const shellExpandedItem = item({
+  id: "tool_shell_expanded_1",
+  toolName: "shell",
   status: "completed",
-  callId: "call_read_1",
-  argumentsJSON: JSON.stringify({ file_path: "internal/jobstore/prune.go", offset: 40, limit: 12 }),
+  callId: "call_shell_expanded_1",
+  argumentsJSON: JSON.stringify({ command: "go test ./internal/jobstore/... -run TestPrune -race -count=5 -v" }),
   output:
-    "func (s *Store) prune(ctx context.Context) error {\n\ttail, err := s.buildTail(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(tail, s.tailPath())\n}\n",
+    "=== RUN   TestPruneConcurrentSnapshotRead\n--- PASS: TestPruneConcurrentSnapshotRead (0.42s)\nPASS\nok  \tprime-radiant-inc/serf/internal/jobstore\t2.31s\n",
+});
+
+// exitCode (not a parsed output footer) is the primary failure signal
+// shellTool.tsx's shellExitCode() reads, so setting it directly is the
+// honest way to fabricate a failed shell call.
+const shellFailedItem = item({
+  id: "tool_shell_failed_1",
+  toolName: "shell",
+  status: "completed",
+  callId: "call_shell_failed_1",
+  exitCode: 1,
+  argumentsJSON: JSON.stringify({ command: "go test ./internal/jobstore/... -run TestPrune -race -count=5" }),
+  output:
+    "--- FAIL: TestPruneConcurrentSnapshotRead (0.11s)\n    prune_test.go:88: read a half-written tail file\nFAIL\nexit status 1\nFAIL\tprime-radiant-inc/serf/internal/jobstore\t0.14s\n",
+});
+
+// The edit diff row (edit_file): editTools.tsx synthesizes its diff from the
+// old_string/new_string call arguments, not from any output text, so those
+// two strings are the whole fixture.
+const editItem = item({
+  id: "tool_edit_1",
+  toolName: "edit_file",
+  status: "completed",
+  callId: "call_edit_1",
+  argumentsJSON: JSON.stringify({
+    file_path: "internal/jobstore/prune.go",
+    old_string:
+      "\ttail, err := s.buildTail(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(tail, s.tailPath())",
+    new_string:
+      "\ttail, err := s.buildTail(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\t// Atomic rename: a concurrent reader never sees a half-written tail.\n\treturn os.Rename(tail, s.tailPath())",
+  }),
 });
 
 // A subagent module row (the delegate descriptor, subagentModule.tsx):
@@ -128,19 +171,46 @@ const turn: TurnModel = {
   status: "completed",
   startedAt: "2026-08-13T15:03:55Z",
   completedAt: "2026-08-13T15:04:20Z",
-  items: [userItem, thinkItem, agentOpenerItem, shellItem, readItem, delegateItem, askItem, agentContinuationItem],
+  items: [
+    userItem,
+    thinkItem,
+    agentOpenerItem,
+    shellItem,
+    shellExpandedItem,
+    shellFailedItem,
+    editItem,
+    delegateItem,
+    askItem,
+    agentContinuationItem,
+  ],
 };
 
 const EXCHANGE_OPENERS = new Set(["agent_1"]);
 
+// ToolCallItem's default-collapsed rule is a per-item disclosureStore entry
+// (widgets/disclosure/disclosureStore.ts), the same store the real pane
+// writes to when a reader clicks a row - so demonstrating the "expanded"
+// state here means seeding that store, exactly like a reader's own click
+// would, rather than inventing a second way to open a row. Run once per
+// mount (not per render) so an explicit collapse-it-again click made while
+// browsing the gallery sticks instead of being fought back open.
+const FORCE_EXPANDED_IDS = [shellExpandedItem.id, editItem.id];
+
 export default function TranscriptSurfaceSection() {
+  useEffect(() => {
+    for (const id of FORCE_EXPANDED_IDS) {
+      setDisclosureOpen(itemScopeKey(SESSION_REF, id), true);
+    }
+  }, []);
+
   return (
     <section>
       <h2>Transcript</h2>
       <p className={styles.note}>
-        One turn: a user message, a settled thought with a headed (step-rail) body, a shell call, a file read, a
-        finished subagent module, an unanswered ask_user card, and a follow-up agent message. Rendered through the real
-        TurnBlock skeleton with a fabricated TurnModel - no store, no network.
+        One turn: a user message, a settled thought with a headed (step-rail) body, three shell calls (collapsed, forced
+        open, and failed/auto-expanded), an edit diff row, a finished subagent module, an unanswered ask_user card, and
+        a follow-up agent message. Rendered through the real TurnBlock skeleton with a fabricated TurnModel - no store,
+        no network.
       </p>
       <ThemeFlip>
         <TurnBlock turn={turn} sessionRef={SESSION_REF} exchangeOpeners={EXCHANGE_OPENERS} agentLabel="claude" />

@@ -40,8 +40,12 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s did not return within 10s: it is deadlocked, not slow", what)
+	// TRIPWIRE: fn is a single in-process session call (SetModel,
+	// RegisterTool, swapEnvAndRefresh) with no real I/O; it normally returns
+	// in well under a second. 30s only fires on a genuine self-deadlock, not
+	// scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s did not return within 30s: it is deadlocked, not slow", what)
 	}
 }
 

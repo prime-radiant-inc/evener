@@ -77,6 +77,71 @@ expected_calls=$(printf 'lint\t\nbuild\t\n')
 actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
 assert_eq "$actual_calls" "$expected_calls" "build failure stops test"
 
+# kata 5gvk: FAKE_GATE_PROBE_BLOCKED forces scripts/gate-capability-preflight.sh
+# to report the named capabilities BLOCKED without touching the real host, so
+# the gate's classify-once/skip-not-fail/structured-summary contract is
+# provable without an actually restricted sandbox.
+run_gate_blocked() {
+	blocked="$1"
+	failure="$2"
+	output="$3"
+	rm -f "$work/calls"
+	if env -u ROOT_FULL FAKE_STATE="$work" FAKE_FAIL_TARGET="$failure" FAKE_GATE_PROBE_BLOCKED="$blocked" \
+		"$real_make" -C "$repo_root" -j 4 MAKE="$fake_make" merge-approval-gate \
+		>"$output" 2>&1; then
+		gate_rc=0
+	else
+		gate_rc=$?
+	fi
+}
+
+# The all-available path, forced: an EMPTY FAKE_GATE_PROBE_BLOCKED reports
+# every capability AVAILABLE without consulting the host. Asserting this
+# against the real probe instead would make the assertion a claim about the
+# machine running the selftest - a host with no Chrome, or no writable git
+# cache directory, genuinely has a blocked capability, and this suite runs
+# inside `make test-dev-tooling`, a merge-approval-gate phase. The gate would
+# then fail on exactly the restricted hosts kata 5gvk exists to keep it green
+# on. run_gate above still drives the REAL probe end to end, so the
+# serf-gate-probe -> preflight-parser wire contract stays covered.
+run_gate_blocked "" "" "$work/all-available.out"
+assert_eq "$gate_rc" "0" "the all-available green path exits zero"
+assert_not_has "$work/all-available.out" "BLOCKED" "the all-available green path reports nothing blocked"
+
+run_gate_blocked "loopback-bind" "" "$work/blocked-loopback.out"
+assert_eq "$gate_rc" "0" "a blocked capability alone does not fail the gate"
+expected_calls=$(printf 'lint\t\nbuild\t\ntest\t1\ntest-dev-tooling\t\n')
+actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
+assert_eq "$actual_calls" "$expected_calls" "a blocked capability still runs every feasible phase, in order"
+assert_has "$work/blocked-loopback.out" "BLOCKED loopback-bind" "the blocked capability is named in the structured summary"
+assert_has "$work/blocked-loopback.out" "go run ./cmd/serf-gate-probe -only=loopback-bind" "the summary carries an exact reprobe command"
+assert_has "$work/blocked-loopback.out" "rerun once fixed" "the summary carries an exact rerun command for the skipped tests"
+blocked_lines="$(grep -c 'BLOCKED loopback-bind' "$work/blocked-loopback.out" 2>/dev/null || echo 0)"
+assert_eq "$blocked_lines" "1" "the capability is classified once, not once per phase"
+
+# Two capabilities the kata names have no known gate consumer yet
+# (scripts/gate-surface-lib.sh's registry, kata 5gvk's premise check). They
+# must still classify and report honestly - never silently dropped.
+run_gate_blocked "chrome-cdp git-cache" "" "$work/blocked-no-consumer.out"
+assert_eq "$gate_rc" "0" "capabilities with no gate consumer still do not fail the gate"
+assert_has "$work/blocked-no-consumer.out" "BLOCKED chrome-cdp" "chrome-cdp is classified and reported even with nothing to skip"
+assert_has "$work/blocked-no-consumer.out" "BLOCKED git-cache" "git-cache is classified and reported even with nothing to skip"
+assert_has "$work/blocked-no-consumer.out" "no gate component currently depends on this" "a capability with no consumer says so honestly"
+
+# A blocked capability must never mask a genuine failure elsewhere - the
+# structured summary and a real FAIL are reported together, not one instead
+# of the other.
+run_gate_blocked "loopback-bind" "build" "$work/blocked-and-failed.out"
+if [ "$gate_rc" -ne 0 ]; then
+	ok "a genuine failure alongside a blocked capability still fails the gate"
+else
+	bad "a genuine failure alongside a blocked capability still fails the gate"
+fi
+expected_calls=$(printf 'lint\t\nbuild\t\n')
+actual_calls="$(cat "$work/calls" 2>/dev/null || :)"
+assert_eq "$actual_calls" "$expected_calls" "a genuine failure still stops later phases even when something is blocked"
+assert_has "$work/blocked-and-failed.out" "BLOCKED loopback-bind" "the blocked-capability summary still appears alongside a real failure"
+
 # Run the real Makefile in a throwaway tree, faking only the external
 # commands (go, npm, git) and the scripts it shells out to, so it proves
 # make-level target wiring — web-preflight before the frontend build, the

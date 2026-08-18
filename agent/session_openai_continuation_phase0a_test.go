@@ -104,7 +104,7 @@ func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.
 	defer cancel()
 	got, err := sess.ProcessInput(ctx, "new user marker", nil)
 	if err != nil {

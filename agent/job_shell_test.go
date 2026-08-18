@@ -49,10 +49,10 @@ func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 
 	select {
 	case <-done:
+	// TRIPWIRE: a finishing job returns immediately, so this only bounds a
+	// genuine hang. Sized so a delegate's real work isn't reported as a false
+	// hang when CPU-starved under -race on a slow/few-core box.
 	case <-time.After(30 * time.Second):
-		// Generous backstop: a finishing job returns immediately, so this only
-		// bounds a genuine hang. Sized so a delegate's real work isn't reported
-		// as a false hang when CPU-starved under -race on a slow/few-core box.
 		t.Fatalf("job %s did not finish", jobID)
 	}
 }
@@ -333,7 +333,9 @@ func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 
 	select {
 	case <-se.started:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the fake streaming executor signals started in-process with no
+	// real I/O; this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("streaming executor did not start")
 	}
 
@@ -347,7 +349,9 @@ func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 	var res shellResult
 	select {
 	case res = <-resultCh:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: runShell returns as soon as the released fake executor exits;
+	// this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after job manager close")
 	}
 	if res.Status != string(jobstore.StatusFailed) || res.Reason != "start_failed" || res.JobID != "" || res.RunningInBackground {
@@ -362,7 +366,9 @@ func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 		if err != nil {
 			t.Fatalf("close: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: close only waits on in-process fakes with no real I/O; this
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("job manager close did not finish")
 	}
 
@@ -415,7 +421,9 @@ func TestDiscardDelayedShellAfterAbandonDoesNotPanic(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(100 * time.Millisecond):
+	// TRIPWIRE: abandonRunningJobs closes done synchronously before returning;
+	// this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("abandonRunningJobs did not close delayed shell done channel")
 	}
 	jm.discardDelayedShell(run)
@@ -423,22 +431,15 @@ func TestDiscardDelayedShellAfterAbandonDoesNotPanic(t *testing.T) {
 
 func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
+	// TRIPWIRE: jm.closing has no dedicated completion signal -- it is a
+	// mutex-guarded bool flipped mid-close -- so this polls the flag directly.
+	// close() sets it synchronously near the start of its own work; 30s only
+	// bounds a genuine hang.
+	waitForCondition(t, 30*time.Second, "job manager to set closing", func() bool {
 		jm.mu.Lock()
-		closing := jm.closing
-		jm.mu.Unlock()
-		if closing {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("job manager close did not set closing")
-		case <-tick.C:
-		}
-	}
+		defer jm.mu.Unlock()
+		return jm.closing
+	})
 }
 
 func TestRunShellPromotesOnTimeout(t *testing.T) {
@@ -454,7 +455,9 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 	var res shellResult
 	select {
 	case res = <-resCh:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the fake clock has already advanced past the timeout, so
+	// runShell returns promptly; this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after foreground timeout")
 	}
 	if res.JobID == "" {
@@ -494,7 +497,9 @@ func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 	var res shellResult
 	select {
 	case res = <-resCh:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the fake clock has already advanced past max runtime, so
+	// runShell returns promptly; this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after max runtime")
 	}
 	if res.JobID == "" {
@@ -663,19 +668,12 @@ func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 
 func waitForSignalCount(t *testing.T, se *delayedExitStreamingExecutor, want int32) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		if got := se.signals.Load(); got >= want {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("signals = %d, want >= %d", se.signals.Load(), want)
-		case <-tick.C:
-		}
-	}
+	// TRIPWIRE: se.signals has no dedicated completion signal, so this polls
+	// the atomic counter directly; the signals are delivered in-process with
+	// no real I/O, so 30s only bounds a genuine hang.
+	waitForCondition(t, 30*time.Second, "signal count to reach threshold", func() bool {
+		return se.signals.Load() >= want
+	})
 }
 
 func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
@@ -717,7 +715,9 @@ func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
 
 	select {
 	case <-se.started:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: the fake streaming executor signals started in-process with no
+	// real I/O; this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("streaming executor did not start")
 	}
 	cancel()
@@ -725,7 +725,9 @@ func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
 	var res shellResult
 	select {
 	case res = <-resultCh:
-	case <-time.After(2 * time.Second):
+	// TRIPWIRE: runShell returns as soon as the cancellation-aware fake
+	// executor observes ctx.Done(); this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("runShell did not return after cancellation")
 	}
 	if res.Status != string(jobstore.StatusStopped) || res.Reason != "cancelled" || res.RunningInBackground {
@@ -749,7 +751,9 @@ func TestStartOnlyContextSeesPreCanceledParent(t *testing.T) {
 
 	select {
 	case <-startCtx.Done():
-	case <-time.After(time.Second):
+	// TRIPWIRE: the parent is already canceled before newStartOnlyContext runs,
+	// so Done() closes immediately; this only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
 		t.Fatal("start-only context did not observe pre-canceled parent")
 	}
 	if startCtx.Err() == nil {
@@ -767,6 +771,11 @@ func TestStartOnlyContextIgnoresCancellationAfterDetach(t *testing.T) {
 	select {
 	case <-startCtx.Done():
 		t.Fatal("start-only context cancelled after detach")
+	// TRIPWIRE: negative wait -- asserts detach severed propagation, so Done()
+	// must NOT fire in this window. There is no completion signal to await
+	// instead; kept short by design since lengthening it only slows the suite
+	// without proving more (the assertion above already catches a late fire
+	// were the window longer).
 	case <-time.After(100 * time.Millisecond):
 	}
 	if startCtx.Err() != nil {

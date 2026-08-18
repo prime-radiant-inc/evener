@@ -9,8 +9,14 @@ interface GallerySectionModule {
 // so adding a surface's gallery section never conflicts with another
 // stream's - the same discovery idiom WidgetGallery.tsx uses for
 // gallery-sections/*.tsx. Sorted by path so the page order is stable across
-// builds.
-const SECTION_MODULES = import.meta.glob<GallerySectionModule>("./surface-sections/*.tsx", { eager: true });
+// builds. The exclusion pattern keeps a section's own colocated
+// *.test.tsx (kata dw3s added the first one, surface-sections/transcript.test.tsx)
+// out of the glob - without it, a test module with no default export renders
+// as `undefined`, an invalid element type.
+const SECTION_MODULES = import.meta.glob<GallerySectionModule>(
+  ["./surface-sections/*.tsx", "!./surface-sections/*.test.tsx"],
+  { eager: true },
+);
 
 const SECTIONS = Object.keys(SECTION_MODULES)
   .sort()

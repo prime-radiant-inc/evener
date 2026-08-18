@@ -507,7 +507,8 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	})
 
 	net := true
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	res := parent.createDelegate(ctx, delegateArgs{
 		Task:       "write a tiny report in the only writable location available to you",

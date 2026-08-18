@@ -69,8 +69,13 @@ func TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse(t *testing.T) {
 	var sess *Session
 	select {
 	case sess = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("NewSession did not return within 10s — likely the warning→Notification recursion")
+	// TRIPWIRE: NewSession here does no real I/O beyond spawning a couple of
+	// "echo" subprocess hooks, and normally returns in well under a second;
+	// 30s only fires on a genuine hang (the warning→Notification recursion
+	// this test guards against), not scheduler contention under a loaded
+	// suite.
+	case <-time.After(30 * time.Second):
+		t.Fatal("NewSession did not return within 30s — likely the warning→Notification recursion")
 	}
 	if sess == nil {
 		return

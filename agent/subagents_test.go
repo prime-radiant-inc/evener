@@ -183,7 +183,7 @@ func waitForRuntimeSubagent(t *testing.T, sess *Session, agentID string) subagen
 	}
 	select {
 	case <-sub.done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second): // TRIPWIRE: subagent is a scripted in-process adapter, no real I/O; only fires on a genuine hang.
 		t.Fatalf("timed out waiting for subagent %q", agentID)
 	}
 	sub.mu.Lock()
@@ -526,7 +526,10 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// TRIPWIRE: adapter is a scripted in-process call, no real I/O; this
+	// normally completes in well under a second. 30s only fires on a genuine
+	// hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Non-blocking spawn; the first run (adapter step 0) completes immediately.

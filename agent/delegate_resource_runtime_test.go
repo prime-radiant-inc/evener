@@ -389,6 +389,34 @@ func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing
 	}
 }
 
+// parentCloseColdRestoreJoinWindow bounds how long a broken close may take to
+// walk past an in-flight cold restore before this test declares it did not wait.
+// With the tree-stop drain neutered, close arrives at the join in single-digit
+// milliseconds (measured), so this leaves roughly two orders of magnitude of
+// margin; it is dead time only on the green path.
+const parentCloseColdRestoreJoinWindow = time.Second
+
+// TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects proves the
+// ordering by a POSITIVE observation taken on the closing goroutine, not by
+// watching Close fail to return.
+//
+// "Close has not returned yet" is unfalsifiable here, and measurably so (kata
+// 0t1y): parent close blocks on the in-flight cold restore through a chain of
+// redundant joins — the delegate-tree stop drain in closeRuntimeTree, and behind
+// it subagentManager.waitForReconstructions — so deleting any single one leaves
+// Close still parked for as long as the restore is held: measured at 10s with
+// drainStopForClose neutered, and past a 2s window with waitForReconstructions
+// deleted. A test that only checks Close has not returned therefore stays green
+// against every one of them.
+//
+// So this test observes close from inside, at the in-flight-restore join it
+// reaches only after the tree-stop drain has released it, and asserts a fact
+// about the RESTORE at that instant: its side effects had already run. The
+// ordering is established by the production code, not by the test's own
+// sequencing — the test still holds releaseRestore while it watches for that
+// arrival, so an early arrival is recorded with the restore demonstrably parked.
+// The window below bounds only how long a broken close is given to arrive; the
+// arrival itself is the evidence, and it is read after the fact.
 func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
@@ -397,6 +425,7 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 	}
 	restoreReady := make(chan struct{})
 	releaseRestore := make(chan struct{})
+	restoreSideEffectsRan := make(chan struct{})
 	closeEntered := make(chan struct{})
 	previousCloseBudgetMintHook := closeBudgetMintHook
 	var closeEnteredOnce sync.Once
@@ -407,10 +436,28 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 		closeEnteredOnce.Do(func() { close(closeEntered) })
 	}
 	defer func() { closeBudgetMintHook = previousCloseBudgetMintHook }()
+
+	// The observation point: close reaching its in-flight-restore join. Record
+	// whether the cold restore's side effects had already run when close got
+	// here. A close that walked past the restore records false.
+	restoreDrainedAtJoin := make(chan bool, 1)
+	root.subagents.testBeforeReconstructionWait = func() {
+		drained := false
+		select {
+		case <-restoreSideEffectsRan:
+			drained = true
+		default:
+		}
+		select {
+		case restoreDrainedAtJoin <- drained:
+		default:
+		}
+	}
 	root.cfg.testOnly.sessionInitFault = func(point string) error {
 		if point == "reconcile_lost_jobs" {
 			close(restoreReady)
 			<-releaseRestore
+			close(restoreSideEffectsRan)
 		}
 		return nil
 	}
@@ -426,14 +473,30 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 		close(closeDone)
 	}()
 	<-closeEntered
+	// While the restore is held, close must not reach the join at all. Any
+	// arrival here is recorded with the restore provably parked in its side
+	// effects, so the observation is positive rather than an absence.
 	select {
-	case <-closeDone:
+	case drained := <-restoreDrainedAtJoin:
 		close(releaseRestore)
 		<-sendDone
-		t.Fatal("parent Close returned before cold-restore side effects drained")
-	default:
+		<-closeDone
+		t.Fatalf("parent Close reached its in-flight-restore join while the cold restore was still parked in its side effects (side effects drained: %v)", drained)
+	case <-time.After(parentCloseColdRestoreJoinWindow):
 	}
 	close(releaseRestore)
+	select {
+	case drained := <-restoreDrainedAtJoin:
+		if !drained {
+			<-sendDone
+			<-closeDone
+			t.Fatal("parent Close reached its in-flight-restore join before the cold restore's side effects ran")
+		}
+	case <-time.After(5 * time.Second):
+		<-sendDone
+		<-closeDone
+		t.Fatal("parent Close never reached its in-flight-restore join")
+	}
 	select {
 	case <-closeDone:
 	case <-time.After(5 * time.Second):

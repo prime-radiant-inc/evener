@@ -50,6 +50,9 @@ func awaitWithin(t *testing.T, budget time.Duration, what string, fn func()) {
 // than as the contract being broken.
 func registerConsumer(t *testing.T, s *Session, consume func(events.SessionEvent)) {
 	t.Helper()
+	// TRIPWIRE: ConsumeEventsLossless registers synchronously against an
+	// in-process channel; this normally returns in well under a millisecond.
+	// 10s only fires on a genuine hang.
 	awaitWithin(t, 10*time.Second, "ConsumeEventsLossless returning once registered", func() {
 		s.ConsumeEventsLossless(consume, func() {})
 	})
@@ -77,6 +80,10 @@ func registerConsumer(t *testing.T, s *Session, consume func(events.SessionEvent
 func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
 	s := losslessTestSession("no-consumer")
 
+	// TRIPWIRE: emitN sends on a buffered in-process channel with nothing
+	// draining it; this normally completes in well under a millisecond once
+	// the buffer is full. 10s only fires if a regression makes the send block
+	// forever instead of dropping.
 	awaitWithin(t, 10*time.Second, "emitting past the buffer with nobody reading", func() {
 		emitN(s, testEventBuffer*3)
 	})
@@ -110,6 +117,9 @@ func TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer(t *testing.T) {
 		}
 	})
 
+	// TRIPWIRE: the consumer only sleeps 1ms per event for the first eighth of
+	// the buffer, so the whole emit normally finishes in a fraction of a
+	// second. 30s only fires on a genuine hang.
 	awaitWithin(t, 30*time.Second, "emitting past the buffer with a slow consumer", func() {
 		emitN(s, total)
 	})
@@ -169,6 +179,9 @@ func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
 	// goroutine that competes for the same channel. A bare recover would let a
 	// regression read as a pass.
 	recovered := make(chan any, 1)
+	// TRIPWIRE: a rejected second registration recovers synchronously with no
+	// I/O; this normally returns in well under a millisecond. 10s only fires
+	// if the rejection stops happening and the call blocks instead.
 	awaitWithin(t, 10*time.Second, "a second registration", func() {
 		defer func() { recovered <- recover() }()
 		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
@@ -202,6 +215,9 @@ func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 	s.eventsMu.Unlock()
 
 	drained := make(chan struct{})
+	// TRIPWIRE: registering on an already-closed session hits the early-return
+	// guard synchronously; this normally returns in well under a millisecond.
+	// 10s only fires if the guard stops short-circuiting and the call blocks.
 	awaitWithin(t, 10*time.Second, "registering on a closed session", func() {
 		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() { close(drained) })
 	})
@@ -212,6 +228,8 @@ func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 	// absent, and neither should be allowed to consume the package timeout.
 	select {
 	case <-drained:
+	// TRIPWIRE: onDrained fires synchronously with no I/O, so this normally
+	// closes in well under a millisecond; 10s only fires on a genuine hang.
 	case <-time.After(10 * time.Second):
 		t.Fatal("registering on a closed session never ran onDrained; a caller waiting on it waits forever")
 	}
@@ -255,6 +273,9 @@ func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
 
 	// And it genuinely survives crossing its own buffer, which is the failure
 	// the mark would cause.
+	// TRIPWIRE: emitN sends on an in-process channel with nothing draining it;
+	// this normally completes in well under a millisecond. 10s only fires if a
+	// regression makes the send block forever instead of dropping.
 	awaitWithin(t, 10*time.Second, "a spawned child emitting past its buffer", func() {
 		emitN(child, testEventBuffer*2)
 	})

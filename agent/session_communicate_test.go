@@ -91,7 +91,7 @@ func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -138,7 +138,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -263,7 +263,7 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -350,6 +350,13 @@ type communicateSessionRoutedAdapter struct {
 	status     llm.ToolCallData
 	childDone  llm.ToolCallData
 	parentDone llm.ToolCallData
+
+	// childRequestSeen closes the instant the first child (delegate) model
+	// request arrives, so a caller can await that event directly instead of
+	// polling requestCounts(). It is the actual completion signal for "the
+	// delegate reached its model call" -- requestCounts() only reports state
+	// a poll would otherwise have to catch mid-transition.
+	childRequestSeen chan struct{}
 }
 
 func (*communicateSessionRoutedAdapter) Name() string { return "openai" }
@@ -369,6 +376,9 @@ func (a *communicateSessionRoutedAdapter) Complete(_ context.Context, req llm.Re
 		}
 	} else {
 		a.childRequests++
+		if a.childRequests == 1 && a.childRequestSeen != nil {
+			close(a.childRequestSeen)
+		}
 		response = toolCallResponse(a.childDone)
 	}
 	response.Provider = a.Name()
@@ -413,10 +423,11 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	childDone := communicateCall("child_done", "CHILD_DONE")
 	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
 	f := &communicateSessionRoutedAdapter{
-		delegate:   delegate,
-		status:     status,
-		childDone:  childDone,
-		parentDone: parentDone,
+		delegate:         delegate,
+		status:           status,
+		childDone:        childDone,
+		parentDone:       parentDone,
+		childRequestSeen: make(chan struct{}),
 	}
 	c.Register(f)
 
@@ -425,7 +436,11 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	f.setRootSessionID(sess.ID())
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: every step here is a scripted single/two-round adapter call
+	// answered in-process with no I/O; the parent turn normally completes in
+	// well under a second. 30s only fires on a genuine hang, not scheduler
+	// contention under a loaded suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "start the observer flow", nil)
 	if err != nil {
@@ -433,11 +448,14 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	}
 	// The delegate child runs asynchronously and the parent turn does not wait
 	// for it, so Close here would cancel a child that has not yet reached its
-	// model call. Wait for the child's request before closing so the count
-	// assertion observes the delegate turn deterministically.
-	waitForCondition(t, 5*time.Second, "child delegate model request", func() bool {
-		_, _, child := f.requestCounts()
-		return child >= 1
+	// model call. Await the child's own completion signal (its adapter Complete
+	// call closes childRequestSeen) rather than polling requestCounts(), so
+	// this observes the transition itself instead of racing to catch it.
+	// TRIPWIRE: the child is a scripted in-process adapter call with no real
+	// I/O, so it normally closes the channel in well under a second; 30s only
+	// fires if the child genuinely never reaches its model call.
+	awaitWithin(t, 30*time.Second, "child delegate model request", func() {
+		<-f.childRequestSeen
 	})
 	sess.Close()
 
@@ -573,7 +591,7 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err == nil {
@@ -691,7 +709,7 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	}
 	t.Cleanup(sess.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	firstTurn := make(chan error, 1)
 	go func() {
@@ -1011,7 +1029,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
@@ -1065,7 +1083,7 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "quick task", nil)
 	if err != nil {

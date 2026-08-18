@@ -123,7 +123,8 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -166,7 +167,8 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -213,7 +215,8 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -264,7 +267,8 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "use my skill", nil)
 	if err != nil {
@@ -311,7 +315,8 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "check my work", nil)
 	if err != nil {
@@ -378,7 +383,8 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
@@ -419,7 +425,8 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()

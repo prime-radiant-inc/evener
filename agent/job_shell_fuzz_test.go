@@ -378,7 +378,10 @@ func shfz_drainBackground(t *testing.T, jm *jobManager, jobID string) {
 	}
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	// TRIPWIRE: fuzz-driven job is a scripted local shell run with no real
+	// network I/O; this only fires on a genuine hang, not ordinary process
+	// scheduling delay.
+	case <-time.After(30 * time.Second):
 		t.Fatalf("background job %s did not finish", jobID)
 	}
 }

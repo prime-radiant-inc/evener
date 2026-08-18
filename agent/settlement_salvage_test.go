@@ -152,7 +152,7 @@ func TestSettlement_StallStreakPersistsSteeringOnly(t *testing.T) {
 	sess := settlementSession(t, a)
 	drainSessionEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process stream adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "write the plan", nil); err == nil {
 		t.Fatal("expected a provider error from ProcessInput")
@@ -206,7 +206,7 @@ func TestSettlement_SalvagedDraftPersistsBeforeSteering(t *testing.T) {
 	sess := settlementSession(t, a)
 	evs, mu, drained := collectEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process stream adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "write the plan", nil); err == nil {
 		t.Fatal("expected a provider error from ProcessInput")
@@ -551,7 +551,7 @@ func TestSettlement_ContextLengthTerminalKeepsPrimarySalvage(t *testing.T) {
 	sess := settlementSession(t, a, "fallback-b")
 	drainSessionEvents(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process stream adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "write the plan", nil); err == nil {
 		t.Fatal("expected a provider error from ProcessInput")

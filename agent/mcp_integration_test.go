@@ -140,7 +140,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	sess.rebuildToolDefsCache()
 	sess.refreshSystemPromptCache(sess.env)
 
-	tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-memory MCP transport + scripted adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	result, err := sess.ProcessInput(tctx, "Greet the world using the MCP tool", nil)

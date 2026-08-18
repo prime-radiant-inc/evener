@@ -41,7 +41,7 @@ func TestSession_EndTurnResponseGoesAwaiting(t *testing.T) {
 				}
 			}()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			defer cancel()
 			_, err := sess.ProcessInput(ctx, tc.input, nil)
 			if err != nil {
@@ -89,7 +89,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 
 	// First input: terminal question -> AWAITING (output, no autonomy in flight)

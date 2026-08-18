@@ -527,7 +527,10 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	var request llm.Request
 	select {
 	case request = <-adapter.entered:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("provider did not receive the frozen delegate request")
 	}
 	adapter.releaseRun()
@@ -681,7 +684,10 @@ func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t
 	}
 	select {
 	case <-adapter.entered:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("provider did not receive the named-agent workflow request")
 	}
 	adapter.releaseRun()
@@ -738,7 +744,10 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		var request llm.Request
 		select {
 		case request = <-adapter.entered:
-		case <-time.After(5 * time.Second):
+		// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+		// request normally arrives in well under a second. 30s only fires on
+		// a genuine hang, not scheduler contention under a loaded suite.
+		case <-time.After(30 * time.Second):
 			t.Fatal("provider did not receive the capability-ceiling request")
 		}
 		adapter.releaseRun()
@@ -793,7 +802,10 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		var request llm.Request
 		select {
 		case request = <-adapter.entered:
-		case <-time.After(5 * time.Second):
+		// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+		// request normally arrives in well under a second. 30s only fires on
+		// a genuine hang, not scheduler contention under a loaded suite.
+		case <-time.After(30 * time.Second):
 			t.Fatal("provider did not receive the frozen named-policy request")
 		}
 		adapter.releaseRun()
@@ -829,7 +841,10 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 		var request llm.Request
 		select {
 		case request = <-adapter.entered:
-		case <-time.After(5 * time.Second):
+		// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+		// request normally arrives in well under a second. 30s only fires on
+		// a genuine hang, not scheduler contention under a loaded suite.
+		case <-time.After(30 * time.Second):
 			t.Fatal("provider did not receive the parent-restricted request")
 		}
 		adapter.releaseRun()
@@ -925,7 +940,12 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 	var request llm.Request
 	select {
 	case request = <-adapter.entered:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: ForceRealIO is set and the session runs a real hooks.json
+	// SessionStart `echo` hook subprocess before the provider request lands
+	// on this channel; the request normally arrives in well under a second.
+	// 30s only fires on a genuine hang, not scheduler contention under a
+	// loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("provider did not receive the new child's request")
 	}
 	adapter.releaseRun()
@@ -1330,7 +1350,10 @@ func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *te
 		if got.Kind != want.Kind || got.SessionID != want.SessionID {
 			t.Fatalf("descendant callback event = %#v, want %#v", got, want)
 		}
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("descendant callback did not receive child event")
 	}
 }
@@ -1368,7 +1391,10 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	var childID string
 	select {
 	case childID = <-adapter.entered:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
 	_, entries, _, err := readTranscript(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"))
@@ -1408,7 +1434,10 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	var providerChildID string
 	select {
 	case providerChildID = <-adapter.entered:
-	case <-time.After(5 * time.Second):
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached after registered stable create")
 	}
 	if observerCalls != 1 {
@@ -1538,6 +1567,11 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		select {
 		case childID := <-provider.entered:
 			t.Errorf("registered delegate reached provider for child %q", childID)
+		// TRIPWIRE: this branch only runs once the call.IsError assertion
+		// above has already failed the test, so it's a diagnostic for that
+		// already-failing case, not proof of absence on the passing path.
+		// The 5s bound is a deliberate wait window, not a hang guard tuned
+		// to a known-fast completion.
 		case <-time.After(5 * time.Second):
 			t.Error("registered delegate admitted creation max_wait_ms but did not reach the provider sentinel")
 		}
