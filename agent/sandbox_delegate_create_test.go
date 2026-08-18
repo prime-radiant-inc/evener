@@ -109,6 +109,32 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 
 }
 
+// TestPrepareSubagentRun_TerminalFinishCapturesScratchPath proves kata tpb0's
+// scratch-path wiring against a real sandboxed env: stableDelegateFinish reads
+// the delegate's own SessionScratchDir into the terminal packet metadata, the
+// same absolute path the sandboxed child actually has as $SERF_SCRATCH_DIR.
+func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+
+	prepared := prepareWithDelegateSandbox(t, s, lane, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+
+	le, ok := prepared.sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Wrapper == nil {
+		t.Fatal("sandboxed child env must have a kernel wrapper with a scratch dir")
+	}
+	wantScratch := le.SessionScratchDir()
+	if wantScratch == "" {
+		t.Fatal("sandboxed child env reports no scratch dir")
+	}
+
+	metadata := decodeDelegatePacketMetadata(t, *prepared.sub.stableDelegateFinish("", context.Canceled).packet)
+	if got := metadata["scratch_path"]; got != wantScratch {
+		t.Fatalf("terminal metadata[scratch_path] = %#v, want %q", got, wantScratch)
+	}
+}
+
 // TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent: a tighter
 // per-delegate box (restricted) OVERRIDES a looser sandboxed parent (workspace-write
 // + an out-of-lane extra writable root). The child is restricted and the parent's
