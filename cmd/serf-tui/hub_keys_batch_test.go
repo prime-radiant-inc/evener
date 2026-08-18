@@ -28,6 +28,18 @@ func TestBatchedRunesApplyIndividuallyOnDashboard(t *testing.T) {
 	}
 }
 
+func TestBatchedSlashCommandStaysComposerText(t *testing.T) {
+	m := newSessionHubModel(nil)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/interrupt")})
+	got := updated.(hubModel)
+	if got.commandPalette != nil {
+		t.Fatalf("a coalesced '/interrupt' typed at the composer must stay composer text; it opened the palette")
+	}
+	if got.session.input.Value() != "/interrupt" {
+		t.Fatalf("composer should hold the typed command, got %q", got.session.input.Value())
+	}
+}
+
 func TestBatchedPasteStaysOneMessage(t *testing.T) {
 	m := newHubModel(nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/ops"), Paste: true})

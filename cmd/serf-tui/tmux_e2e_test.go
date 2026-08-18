@@ -570,8 +570,16 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
+	// Await each selection render before the next press, the way
+	// TestTUITmuxE2E_BrowseAndFork does: consecutive printable command keys
+	// sent back-to-back can coalesce into one pty read on a loaded machine
+	// and arrive as a single batched KeyMsg, which browse mode reads as
+	// composer text rather than three commands (kata fazd — this test's CI
+	// failure pane had "kk" sitting in the composer).
 	app.SendKeys("k")
+	app.WaitFor("▶ ▍ ✓ exec")
 	app.SendKeys("k")
+	app.WaitFor("▶ ┃  > initial question")
 	app.SendKeys("f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 	app.TypeText(" with edit")

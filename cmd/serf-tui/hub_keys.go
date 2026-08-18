@@ -8,16 +8,6 @@ import (
 )
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// A single pty read can carry several printable keystrokes: tmux
-	// coalesces rapid writes when the pane's reader lags, and bubbletea
-	// reports every rune of one read as one KeyMsg. Replay such a batch one
-	// rune at a time, or every handler below that matches on msg.String()
-	// sees one unmatchable "kkf" instead of three keys (kata fazd: "/ops"
-	// dropped on the dashboard, "kk" typed into the composer). Bracketed
-	// paste stays whole — it is text for whatever input has focus, not keys.
-	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
-		return m.replayKeyBurst(msg)
-	}
 	if msg.String() == "ctrl+x" && len(m.notices) > 0 {
 		m.dismissNotice()
 		return m, nil
@@ -112,6 +102,18 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.dashboardFilterActive {
 		return m.updateHubFilterKey(msg)
+	}
+	// From here down, printable runes are commands, and a single pty read can
+	// carry several of them: tmux coalesces rapid writes when the pane's
+	// reader lags, and bubbletea reports every rune of one read as one
+	// KeyMsg. Replay such a batch one rune at a time or the switch below sees
+	// one unmatchable "/ops" instead of the keys the sender typed and drops
+	// it silently (kata fazd). Only here: everywhere a text surface has
+	// focus — the composer, the palette and dashboard filters, the panels —
+	// a batch IS the typed text and must stay whole (a split "/interrupt"
+	// in the composer would open the palette instead).
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste {
+		return m.replayKeyBurst(msg)
 	}
 	rows := m.dashboardRows()
 	switch msg.String() {
