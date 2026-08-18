@@ -608,11 +608,10 @@ func TestJobControlReasonTableCodesHaveGoEmitters(t *testing.T) {
 			"update jobControlReasonTableHeader to match", jobControlReasonDoc)
 	}
 	rest := text[loc[1]:]
-	end := strings.Index(rest, "\n\n")
-	if end < 0 {
+	tableBody, _, found := strings.Cut(rest, "\n\n")
+	if !found {
 		t.Fatalf("%s: could not find the blank line ending the reason table", jobControlReasonDoc)
 	}
-	tableBody := rest[:end]
 
 	canon := jobControlReasonCanonicalCodesSentence.FindString(text)
 	if canon == "" {
