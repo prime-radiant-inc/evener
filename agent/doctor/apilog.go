@@ -260,13 +260,21 @@ const apiHealthRecordedEmptyCaveat = "recorded_empty reflects the compact counts
 // (explicitAPIAttemptErrorClass): a quota-exhausted 429 now lands as
 // error_class="quota_exceeded", distinct from an ordinary rate-limit 429.
 //
-// The caveat survives that fix because it is still true of older logs, which
-// recorded both conditions as error_class="rate_limit". A zero therefore means
-// "no quota errors" only for a log written after the fix; on an older one it
-// still means "cannot tell". Emitted unconditionally, like RecordedEmptyCaveat,
-// so the caveat travels with the count it qualifies rather than living only in
-// source comments.
-const apiHealthErrorsByClassQuotaCaveat = "errors_by_class.quota counts attempts recorded with error_class=\"quota_exceeded\", which the transport layer emits by classifying from the adapter's typed error. Logs written before that fix recorded a quota-exhausted 429 and an ordinary rate-limit 429 identically (status_code=429, error_class=\"rate_limit\"), so a 0 on an older session means \"cannot tell\" rather than \"no quota errors\". A runbook check on apilog.errors_by_class.quota is meaningful only against logs from a current build."
+// A zero still falls short of "no quota errors", for two separate reasons:
+//
+//   - Coverage. Only an attempt the adapter reported as a provider rejection
+//     (an HTTP error status) has its typed error consulted at all. A quota
+//     condition that surfaces mid-stream on a 200, or under a status the
+//     transport does not map to a kind (402, say), records as
+//     error_class="unknown" and is counted under retryable. So the bucket
+//     counts quota-classified provider rejections, not quota events.
+//   - Age. Older logs recorded both 429 conditions as error_class="rate_limit",
+//     so on one of those a zero means "cannot tell" rather than anything about
+//     quota at all.
+//
+// Emitted unconditionally, like RecordedEmptyCaveat, so the caveat travels with
+// the count it qualifies rather than living only in source comments.
+const apiHealthErrorsByClassQuotaCaveat = "errors_by_class.quota counts attempts recorded with error_class=\"quota_exceeded\", which the transport layer emits when a provider rejects a call with an error its adapter typed as a spent allowance. A 0 therefore means \"no quota-classified provider rejections\", not \"no quota errors\": a quota condition that surfaces mid-stream on a 200, or under a status the transport does not map to a kind (e.g. 402), is recorded as error_class=\"unknown\" and counted under retryable. Logs written before that classification existed recorded a quota-exhausted 429 and an ordinary rate-limit 429 identically (status_code=429, error_class=\"rate_limit\"), so a 0 on an older session means \"cannot tell\". A runbook check on apilog.errors_by_class.quota is meaningful only against logs from a current build, and only for quota the provider surfaced as a rejection."
 
 // APIHealthResult is apilog --health's one-line verdict: every attempt group
 // in a session's whole API log (never truncated the way APILog's row/
@@ -397,24 +405,35 @@ func APIHealth(stateBase, selector string) (APIHealthResult, error) {
 // over durable evidence instead of a live error value, and documents where
 // that substitution is a judgment call rather than an exact reconstruction:
 //
-//   - quota: reached via an explicit error_class=="quota_exceeded"
-//     (llm.KindQuotaExceeded.String()). llm.Classify reaches the same verdict
-//     from a typed *quotaExceededError (llm/errors.go), which is built by
-//     inspecting the response BODY for provider-specific quota signals. The
-//     apilog schema does not persist those signals, but it does not need to:
-//     the transport layer classifies from that same typed error
+//   - quota: reached only via an explicit error_class=="quota_exceeded"
+//     (llm.KindQuotaExceeded.String()). This function makes no inference of
+//     its own -- it reads a verdict the transport layer already recorded
 //     (explicitAPIAttemptErrorClass,
-//     llm/providers/internal/transport/api_attempt.go), so the distinction
-//     survives into the recorded field. Logs written before that fix recorded
-//     a quota-exhausted 429 as error_class="rate_limit" and land in retryable
-//     instead -- see apiHealthErrorsByClassQuotaCaveat. Nothing here guesses
-//     quota from the error message's text, which would misclassify ordinary
-//     rate limits as quota.
+//     llm/providers/internal/transport/api_attempt.go) from the adapter's
+//     typed *quotaExceededError, so the distinction between a spent allowance
+//     and an ordinary rate limit survives into the log without apilog having
+//     to persist the response body.
+//
+//     What that verdict is worth is the producer's business, and the producer
+//     is not uniform: llm/errors.go builds *quotaExceededError from a parsed
+//     usage-limit body on a 429 or 403, but on a 400/422 classifyByMessage
+//     also builds one from a bare "quota"/"billing" substring in the error
+//     message. So a quota count can include a message-derived classification.
+//     That is the producer's judgment call to revisit; the doctor's contract
+//     is to report the recorded class faithfully rather than to re-derive or
+//     second-guess it, and in particular never to guess quota from text the
+//     producer did not classify that way.
+//
+//     Logs written before the transport layer read the typed error recorded a
+//     quota-exhausted 429 as error_class="rate_limit" and land in retryable
+//     instead -- see apiHealthErrorsByClassQuotaCaveat.
+//
 //   - permanent: outcome==caller_cancellation (mirrors Classify's
 //     context.Canceled/*AbortError branch), or status_code in
 //     {400,401,403,404,413,422}, or -- when no status_code is recorded --
 //     error_class in {invalid_request, authentication, access_denied,
 //     not_found, context_length, content_filter}.
+//
 //   - retryable: status_code in {408,429,500,502,503,504}, or -- when no
 //     status_code is recorded -- error_class in {timeout, rate_limit,
 //     server}, or anything else. This default (not permanent) mirrors
@@ -446,9 +465,9 @@ func classifyAPIErrorClass(outcome apilog.AttemptOutcomeClass, statusCode *int, 
 
 // RenderAPIHealth renders an APIHealthResult as a one-line verdict a batch
 // study scans across many sessions at once, plus a `*`-marked footnote reading
-// ErrorsByClassQuotaCaveat -- the verdict line alone would let a reader of an
-// older session's log mistake "quota=0" for "no quota errors occurred" rather
-// than "that log predates the recorded distinction, so it cannot tell."
+// ErrorsByClassQuotaCaveat -- the verdict line alone would let a reader mistake
+// "quota=0" for "no quota errors occurred" rather than the narrower "no quota
+// the provider surfaced as a rejection, in a log new enough to record it."
 func RenderAPIHealth(r APIHealthResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s: attempts=%d recorded_empty=%d retry_storm_groups=%d unsettled_groups=%d errors_by_class(quota=%d* permanent=%d retryable=%d)\n",
