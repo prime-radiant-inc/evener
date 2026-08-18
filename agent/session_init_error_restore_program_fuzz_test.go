@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/clock"
@@ -122,6 +124,7 @@ func sierTestConfig() testConfig {
 	return testConfig{
 		skipGitSnapshot: true,
 		noSyncJobStore:  true,
+		metaFS:          afero.NewMemMapFs(),
 		environmentInfo: func(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {
 			return schema.EnvironmentInfo{WorkingDir: env.WorkingDirectory(), Platform: "sier", Today: clk.Now().UTC().Format("2006-01-02")}
 		},
@@ -253,9 +256,9 @@ func sierFallbackValidation(t *testing.T, r *sierReader, client *llm.Client, pro
 func sierRestoreWrapper(t *testing.T, client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, stateDir string) {
 	t.Helper()
 	meta := sierMeta()
-	sess, err := RestoreSessionFromMeta(client, profile, env, meta, stateDir)
+	sess, err := RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}
 	defer sess.Close()
 	if sess.id != meta.ID {

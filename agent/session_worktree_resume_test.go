@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/worktree"
@@ -112,7 +114,7 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(launchDir), meta,
-		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}},
+		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, metaFS: afero.NewMemMapFs()}},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
@@ -819,7 +821,8 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	wtGit(t, r.mainRoot, "worktree", "unlock", path)
 	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
 
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	metaFS := afero.NewMemMapFs()
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir, testOnly: testConfig{metaFS: metaFS}}))
 
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
@@ -859,7 +862,8 @@ func TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey(t *testin
 		t.Fatalf("test setup: alias resolves to %q, want %q", resolved, path)
 	}
 
-	sess := newSession(t, withDir(alias), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	metaFS := afero.NewMemMapFs()
+	sess := newSession(t, withDir(alias), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir, testOnly: testConfig{metaFS: metaFS}}))
 
 	if got := sess.Meta().WorktreePath; got != path {
 		t.Errorf("Meta().WorktreePath = %q, want canonical %q (symlink-spelled launch cwd escaped canonicalization)", got, path)

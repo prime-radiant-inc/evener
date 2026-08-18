@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -254,6 +256,7 @@ func modelCallTailSessionWithClient(t *testing.T, client *llm.Client, profile *p
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true
 	cfg.testOnly.noSyncJobStore = true
+	cfg.testOnly.metaFS = afero.NewMemMapFs()
 	s, err := NewSession(client, profile, &agenttest.DenyEnv{WorkDir: t.TempDir(), Seed: 100}, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
