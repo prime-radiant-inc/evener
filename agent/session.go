@@ -406,6 +406,17 @@ type Session struct {
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaIsSubagent bool
 
+	// restoredMetaParentSessionID is the spawn parent read from the persisted
+	// meta.ParentSessionID during RestoreSessionFromMetaWithConfig, alongside
+	// restoredMetaIsSubagent and for the same reason: the empty spawn carrier of
+	// a bare `serve --resume <delegate-id>` would otherwise make Meta() rewrite
+	// the delegate as parentless, and the hub's tree needs the pair (a session
+	// flagged is_subagent with no parent id is hidden from the top level and has
+	// no row to nest under). Fork lineage does NOT flow through here — it lives
+	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
+	// it is set once before the session goes live and never mutated after.
+	restoredMetaParentSessionID string
+
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
 	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a
