@@ -356,15 +356,38 @@ func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublicat
 // merge every accepted send exactly as in the unperturbed test.
 func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
-	// The hook fires on the finalization goroutine exactly inside the window:
-	// durable NotifyPending written, in-memory queue still empty (the stable
-	// path defers the enqueue), job still in the running map. Sleeping here is
-	// the deterministic stand-in for CI scheduler load: it is long enough that
-	// at least two 250ms recheck passes run rematerializeDurablePendings inside
-	// the window regardless of ticker phase.
+	// Hold the window open until the drain loop's own recheck has provably run
+	// rematerializeDurablePendings inside it: windowHeld blocks the
+	// finalization goroutine between the NotifyPending append and the
+	// NotifyDelivered transition, and the rematerialize-load hook — wired to
+	// the drain's 250ms recheck kick — proves the pass happened rather than
+	// assuming it from wall time.
+	windowHeld := make(chan struct{})
+	recheckSawWindow := make(chan struct{})
+	releaseWindow := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseWindow) }) })
+	var pendingOnce, recheckOnce sync.Once
 	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
-		time.Sleep(2*drainRecheckInterval + 100*time.Millisecond)
+		pendingOnce.Do(func() {
+			close(windowHeld)
+			<-releaseWindow
+		})
 	}
+	fixture.child.sess.jobManager.testOnlyAfterRematerializeDurableLoad = func() {
+		select {
+		case <-windowHeld:
+			recheckOnce.Do(func() { close(recheckSawWindow) })
+		default:
+		}
+	}
+	go func() {
+		select {
+		case <-recheckSawWindow:
+			releaseOnce.Do(func() { close(releaseWindow) })
+		case <-time.After(30 * time.Second): // TRIPWIRE: the drain's 250ms recheck fires rematerialize inside the window within one interval; 30s only fires on a genuine hang.
+		}
+	}()
 	requireDrainReturnHandoffMergesSteering(t, fixture)
 }
 
