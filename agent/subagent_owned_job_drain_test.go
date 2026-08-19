@@ -340,7 +340,36 @@ func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(
 }
 
 func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublication(t *testing.T) {
+	requireDrainReturnHandoffMergesSteering(t, newOwnedJobDrainFixture(t))
+}
+
+// TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow is #243's
+// CI flake made deterministic: it holds armFinalizedJob's
+// NotifyPending→NotifyDelivered window open across multiple drain recheck
+// passes, so the drain loop's own kick → rematerializeDurablePendings provably
+// runs against the transiently-NotifyPending shell record with an empty
+// in-memory queue. The pre-#237 rematerialize re-enqueued that record, and the
+// drain ran a phantom notification turn BEFORE the handoff sends landed — the
+// phantom stole the continuation's slot (CI observed 12 provider requests with
+// none of the accepted sends in it). With the running-map skip the drain
+// cannot see the mid-finalization record at all, and the handoff below must
+// merge every accepted send exactly as in the unperturbed test.
+func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.T) {
 	fixture := newOwnedJobDrainFixture(t)
+	// The hook fires on the finalization goroutine exactly inside the window:
+	// durable NotifyPending written, in-memory queue still empty (the stable
+	// path defers the enqueue), job still in the running map. Sleeping here is
+	// the deterministic stand-in for CI scheduler load: it is long enough that
+	// at least two 250ms recheck passes run rematerializeDurablePendings inside
+	// the window regardless of ticker phase.
+	fixture.child.sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
+		time.Sleep(2*drainRecheckInterval + 100*time.Millisecond)
+	}
+	requireDrainReturnHandoffMergesSteering(t, fixture)
+}
+
+func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrainFixture) {
+	t.Helper()
 	type handoffResult struct {
 		finalizing bool
 		running    bool
