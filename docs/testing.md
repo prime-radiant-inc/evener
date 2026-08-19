@@ -901,9 +901,7 @@ EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
 
 Supported runtime environment variables are defined in the `envvars` package
 and documented in `docs/environment.md`. Production code, help text, and test
-helpers should use those rows instead of hard-coded env names. The default test
-suite includes an audit that fails when a supported env var is used as a raw Go
-string outside `envvars`.
+helpers should use those rows instead of hard-coded env names.
 
 When adding a runtime env var:
 

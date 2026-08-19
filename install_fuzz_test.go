@@ -12,6 +12,33 @@ import (
 	"testing"
 )
 
+// installedBins returns the EVENER_INSTALL_BINS list from the Makefile — the
+// single source of truth for which binaries a release install contains, and
+// the same source install.sh's `bins` line and `make dist` are kept in sync
+// with. Reading it here, rather than hardcoding a parallel copy, keeps the
+// fixture archive below honest: a sixth binary can't silently break the
+// fixture the way evener-migrate once did (Release archive did not contain
+// evener-migrate).
+func installedBins(t testing.TB) []string {
+	t.Helper()
+
+	body, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if rest, ok := strings.CutPrefix(line, "EVENER_INSTALL_BINS :="); ok {
+			bins := strings.Fields(rest)
+			if len(bins) == 0 {
+				t.Fatal("EVENER_INSTALL_BINS assignment in Makefile has no binaries")
+			}
+			return bins
+		}
+	}
+	t.Fatal("EVENER_INSTALL_BINS assignment not found in Makefile")
+	return nil
+}
+
 // FuzzInstallScript drives the release installer through its environment,
 // platform, archive-validation, and filesystem branches. Network and platform
 // discovery are replaced at the process boundary; installation and symlink
