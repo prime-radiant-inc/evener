@@ -1,0 +1,16 @@
+name: Setup Go and Node toolchain
+description: >-
+  setup-go pinned to go.work plus setup-node 22 with the hub frontend's npm
+  cache. Used by every job that builds or tests both the Go and web sides.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: go.work
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: cmd/evener-hub/frontend/package-lock.json

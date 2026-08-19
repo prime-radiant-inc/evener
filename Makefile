@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: build build-runtime build-go build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-llmcall build-migrate dist install install-home install-system test-install tools test-dev-tooling test test-short test-fuzz test-race merge-approval-gate e2e-cover vet lint lint-naming lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry generate mutation-floor clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-coverage-global fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog test-coverage-floor web-coverage-floor web-coverage-floor-selftest coverage-gaps coverage-gaps-selftest coverage-union coverage-union-selftest merge-into-branch merge-into-branch-selftest test-timing-budget test-timing-budget-selftest test-rebaseline
 
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
@@ -114,6 +114,15 @@ install-home: install
 
 install-system: PREFIX := /usr/local
 install-system: install
+
+# tools installs the CI-pinned lint/scanner versions from .tool-versions, so
+# a local `make lint` runs exactly what CI runs.
+tools:
+	@set -eu; \
+	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
+	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"; \
+	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
 
 test-install:
 	go test -count=1 -run '^TestInstallHomeGeneratedHome$$' .

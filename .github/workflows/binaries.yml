@@ -31,15 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.work
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+      - uses: ./.github/actions/setup-toolchain
 
       - name: Build archive
         env:
