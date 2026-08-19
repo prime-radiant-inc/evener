@@ -1,6 +1,6 @@
 {
   "name": "read-file-image-600px",
-  "description": "read_file image read: the ImageGallery large variant displays the image whole at up to 600px square - a wide image capped by max-width, a tall image capped by max-height, and a small image left at its natural size (never upscaled, never cropped)",
+  "description": "read_file image read: the ImageGallery large variant shows the image whole at up to 600px square - wide capped by max-width, tall by max-height, small left natural (never upscaled)",
   "cssFiles": [
     "styles/tokens.css",
     "styles/global.css",

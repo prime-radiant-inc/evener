@@ -163,11 +163,9 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     ) : null;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
-  // owned by any one descriptor - rendered here, once, so every current and
-  // future tool gets it for free rather than each body wiring it in itself.
-  // A descriptor may still say HOW large they render (outputImageSize -
-  // read_file's image reads display the picture itself at up to 600px
-  // square instead of a 96px thumbnail).
+  // owned by any one descriptor - rendered here, once, so every tool gets
+  // it for free. A descriptor may still set HOW large they render
+  // (outputImageSize).
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
   // Two independent failure signals, OR'd: the generic wire one (error text /
   // honest status) and the descriptor's own (a shell command that ran and

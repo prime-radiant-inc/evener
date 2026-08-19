@@ -34,15 +34,12 @@
   object-fit: cover;
 }
 
-/* The large variant (ImageGallery's size="large" - read_file image reads):
-   the image displays whole at up to 600px square, aspect preserved, instead
-   of the 96px cover-crop thumbnail. Both rules must come AFTER their base
-   classes in this file: they are equal-specificity single-class selectors,
-   so source order is what lets them override .thumb's fixed 96px width and
-   .thumbImg's fixed 96px box. */
+/* size="large" (read_file image reads): the image whole at up to 600px
+   square instead of a 96px cover crop. These rules must follow their base
+   classes in this file - equal-specificity single-class selectors, so only
+   source order overrides the fixed 96px box. */
 .thumbLarge {
-  /* Hug the (already max-capped) image rather than pin to 96px; never escape
-     the strip when the pane is narrower than 600px. */
+  /* Hug the capped image; never escape the strip in a narrow pane. */
   width: auto;
   max-width: 100%;
 }

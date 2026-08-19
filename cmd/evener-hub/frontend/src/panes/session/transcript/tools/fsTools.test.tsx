@@ -55,17 +55,12 @@ test("read_file: body renders the output text", () => {
 });
 
 // --- read_file body: image/document marker (kata 1nr4) --------------------
-// agent/internal/tool/registry.go's ParseImageResult cuts a ReadFile image
-// response at its first "\n", keeping only the header
-// ("[image: png, N bytes, base64 data follows]") as the tool result's own
-// Output text - the base64 itself goes into a separate ImageData field that
-// never reaches item.output. An IMAGE read's body renders nothing at all:
-// the image itself displays below (ToolCallItem's <ImageGallery
-// images={item.outputImages} />, at read_file's requested up-to-600px size),
-// so the header - and especially its byte-count parenthetical - is noise next
-// to the picture. A DOCUMENT (PDF) read keeps its header (minus the stale
-// "base64 data follows" phrase): there is no in-transcript PDF preview for
-// that header to duplicate.
+// An image read's body renders nothing: the image displays below via
+// ToolCallItem's ImageGallery at read_file's up-to-600px size, so the
+// "[image: png, N bytes]" header is noise. A PDF read keeps its header
+// (minus the stale "base64 data follows" phrase - registry.go's
+// ParseImageResult routes the payload elsewhere) since no in-transcript
+// PDF preview duplicates it.
 
 test("read_file: an image read's body renders nothing - the gallery carries the image, so the '[image: png, N bytes]' header is noise", () => {
   const d = toolRendererFor("read_file");

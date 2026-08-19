@@ -49,13 +49,10 @@ export interface ToolRendererDescriptor {
   monoSummary?: boolean;
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   // outputImageSize sizes the generic output-images gallery ToolCallItem
-  // renders after the body (ItemModel.outputImages - the wire's
-  // ToolCallEndData.OutputImages). Undefined (every other tool) keeps the
-  // default 96px thumbnails; "large" displays each image at up to 600px
-  // square. The one case today is read_file: an image read's picture IS the
-  // call's output, not a thumbnail of it, and its body deliberately renders
-  // nothing for an image read (fsTools.tsx's ReadFileOutputBody), so the
-  // gallery is the whole expanded content.
+  // renders after the body: undefined keeps the default 96px thumbnails,
+  // "large" displays each image whole at up to 600px square. The one case
+  // today is read_file, whose image reads are the call's output itself (and
+  // whose body renders nothing for them - fsTools.tsx).
   outputImageSize?: "large";
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one

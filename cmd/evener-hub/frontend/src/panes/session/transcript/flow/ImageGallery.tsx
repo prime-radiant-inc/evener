@@ -29,11 +29,10 @@ import styles from "./imagegallery.module.css";
 
 export interface ImageGalleryProps {
   images: ItemImage[] | undefined;
-  // Undefined renders the default 96px cover-crop thumbnails. "large"
-  // displays each image itself at up to 600px square (aspect preserved, never
-  // cropped) - the one caller today is a read_file image read, where the
-  // picture IS the tool call's output (toolRenderers.ts's outputImageSize).
-  // The click-to-open lightbox is the same in both sizes.
+  // Undefined: the default 96px cover-crop thumbnails. "large": each image
+  // whole at up to 600px square (aspect preserved) - the one caller today
+  // is read_file's image read (toolRenderers.ts's outputImageSize). The
+  // click-to-open lightbox is the same in both sizes.
   size?: "large";
 }
 

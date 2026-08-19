@@ -1,25 +1,17 @@
-// read_file image read (ImageGallery size="large", reached through
-// toolRenderers.ts's outputImageSize): the image displays whole at up to
-// 600px square. Before this, a read image rendered as the default 96px
-// cover-crop thumbnail - the reader got a postage stamp of a screenshot the
-// agent had just read, plus a "[image: png, N bytes]" header that is gone
-// now too (that part is jsdom-covered in fsTools.test.tsx; this case guards
-// the geometry jsdom cannot see).
+// read_file image read (ImageGallery size="large"): the image displays
+// whole at up to 600px square. This case guards the geometry jsdom cannot
+// see; the dropped "[image: ...]" header is jsdom-covered in
+// fsTools.test.tsx.
 //
-// Three geometric invariants, one per fixture:
-//
-//   1. WIDE (1200x800 source) renders 600x400: max-width alone caps it, and
-//      the aspect ratio survives the cap (a fixed square box would read
-//      600x600; a cover crop would read 600x600 too - both fail here).
-//   2. TALL (400x1200 source) renders 200x600: max-height alone caps it, so
+// Three invariants, one per fixture:
+//   1. WIDE (1200x800) renders 600x400 - capped by max-width alone, aspect
+//      intact (a fixed square box would read 600x600 and fail).
+//   2. TALL (400x1200) renders 200x600 - capped by max-height alone, so
 //      neither declaration can cover for the other's deletion.
-//   3. SMALL (100x50 source) renders a natural 100x50: "up to 600px" means
-//      never upscale - a fixed 600px box fails this even with both max
-//      declarations intact.
+//   3. SMALL (100x50) renders a natural 100x50 - "up to" never upscales.
 //
-// What this case does NOT cover: the click-through lightbox (jsdom-covered
-// in ImageGallery.test.tsx) and panes narrower than 600px (the strip's own
-// wrapping, not the 600px cap).
+// NOT covered: the lightbox (jsdom, ImageGallery.test.tsx) and panes
+// narrower than 600px (strip wrapping, not this cap).
 const TOLERANCE = 0.5; // sub-pixel layout rounding, not a fudge factor
 
 function near(actual, expected) {
