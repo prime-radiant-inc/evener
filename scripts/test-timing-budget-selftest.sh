@@ -90,7 +90,7 @@ printf 'SUM\tpkgC\t16.0\n' >"$measured"
 printf '{"perTestCeilingSeconds": 2, "packages": {"pkgC": 10.0}}\n' >"$budget"
 env TMPDIR="$work/tmp" CI=true bash "$script" --no-web --budget "$budget" --measured "$measured" --check >"$out" 2>&1
 assert_eq "$?" "1" "CI=true with no --strict/--local flag is treated as strict"
-env TMPDIR="$work/tmp" bash "$script" --no-web --budget "$budget" --measured "$measured" --check >"$out" 2>&1
+env -u CI TMPDIR="$work/tmp" bash "$script" --no-web --budget "$budget" --measured "$measured" --check >"$out" 2>&1
 assert_eq "$?" "0" "an unset CI with no --strict/--local flag is treated as warn-only (local)"
 env TMPDIR="$work/tmp" CI=true bash "$script" --no-web --budget "$budget" --measured "$measured" --check --local >"$out" 2>&1
 assert_eq "$?" "0" "--local overrides CI=true"
