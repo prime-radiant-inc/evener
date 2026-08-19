@@ -251,13 +251,13 @@ git commit -m "tools: add bounded transcript v2 upgrader"
 ### Task 3: Same-checkout runtime pair builds
 
 **Files:**
-- Create: `scripts/build-runtime-pair.sh`
+- Create: `scripts/ops/build-runtime-pair.sh`
 - Create: `runtime_pair_build_test.go`
 - Modify: `Makefile`
 
 **Interfaces:**
 - Consumes: Make's existing `LDFLAGS` value and `go` resolved through `PATH`.
-- Produces: `scripts/build-runtime-pair.sh`, private phony `build-runtime`, and public aliases `build`, `build-hub`, and `build-all`.
+- Produces: `scripts/ops/build-runtime-pair.sh`, private phony `build-runtime`, and public aliases `build`, `build-hub`, and `build-all`.
 
 - [ ] **Step 1: Write failing build behavior tests**
 
@@ -287,7 +287,7 @@ Run:
 go test . -run 'TestRuntimePairBuild|TestMakeRuntimeAliases' -count=1
 ```
 
-Expected: FAIL because `scripts/build-runtime-pair.sh` and the shared target do
+Expected: FAIL because `scripts/ops/build-runtime-pair.sh` and the shared target do
 not exist.
 
 - [ ] **Step 3: Add the staged pair build script**
@@ -329,7 +329,7 @@ Add `build-runtime` to `.PHONY`, replace the two one-binary recipes, and dedupe
 build: build-runtime
 
 build-runtime:
-	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
+	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
 
 build-hub: build-runtime
 
@@ -356,7 +356,7 @@ and modified state match.
 - [ ] **Step 6: Commit the paired build infrastructure**
 
 ```bash
-git add Makefile scripts/build-runtime-pair.sh runtime_pair_build_test.go
+git add Makefile scripts/ops/build-runtime-pair.sh runtime_pair_build_test.go
 git commit -m "build: rebuild evener runtime binaries as a pair"
 ```
 

@@ -2,6 +2,7 @@ package evener_test
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,24 +66,42 @@ var mktempAllowedScripts = map[string]bool{
 	"fuzz-triage.sh":              true,
 }
 
+// scriptShellFiles returns every .sh file under scripts/, recursively. The
+// scripts/ directory was reorganized into subdirectories (lib/, gate/,
+// coverage/, fuzz/, e2e/, ops/, web/), so a flat os.ReadDir misses every file
+// in a subdirectory. The audit must walk the tree.
+func scriptShellFiles(t *testing.T) []string {
+	t.Helper()
+	var paths []string
+	if err := filepath.WalkDir("scripts", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".sh") {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
+		t.Fatalf("walk scripts/: %v", err)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 // TestNoScriptCreatesScratchOutsideTMPDIR keeps the swept scripts swept: the
 // coverage runners and every *-selftest.sh, which the dev-tooling wave isolates
 // by TMPDIR and then checks for leftovers.
 func TestNoScriptCreatesScratchOutsideTMPDIR(t *testing.T) {
 	t.Parallel()
-	entries, err := os.ReadDir("scripts")
-	if err != nil {
-		t.Fatalf("read scripts/: %v", err)
-	}
+	paths := scriptShellFiles(t)
 	var offenders []string
 	seenAllowed := map[string]bool{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join("scripts", e.Name()))
+	for _, path := range paths {
+		name := filepath.Base(path)
+		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
+			t.Fatalf("read %s: %v", path, err)
 		}
 		for i, line := range strings.Split(string(body), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -93,11 +112,11 @@ func TestNoScriptCreatesScratchOutsideTMPDIR(t *testing.T) {
 			if at < 0 || !mktempEscapesTMPDIR(trimmed[at:]) {
 				continue
 			}
-			if mktempAllowedScripts[e.Name()] {
-				seenAllowed[e.Name()] = true
+			if mktempAllowedScripts[name] {
+				seenAllowed[name] = true
 				continue
 			}
-			offenders = append(offenders, fmt.Sprintf("scripts/%s:%d: %s", e.Name(), i+1, trimmed))
+			offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
 		}
 	}
 	sort.Strings(offenders)
@@ -165,35 +184,30 @@ var scratchDirAllowedScripts = map[string]bool{}
 // a failing test is what keeps the convention from being folklore.
 func TestScratchDirCannotResolveToCWD(t *testing.T) {
 	t.Parallel()
-	entries, err := os.ReadDir("scripts")
-	if err != nil {
-		t.Fatalf("read scripts/: %v", err)
-	}
+	paths := scriptShellFiles(t)
 	var unchecked, swallowed []string
 	seenAllowed := map[string]bool{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join("scripts", e.Name()))
+	for _, path := range paths {
+		name := filepath.Base(path)
+		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
+			t.Fatalf("read %s: %v", path, err)
 		}
-		isSelftest := strings.HasSuffix(e.Name(), "-selftest.sh")
+		isSelftest := strings.HasSuffix(name, "-selftest.sh")
 		for i, line := range strings.Split(string(body), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
-			where := fmt.Sprintf("scripts/%s:%d: %s", e.Name(), i+1, trimmed)
+			where := fmt.Sprintf("%s:%d: %s", path, i+1, trimmed)
 			if strings.Contains(trimmed, "$(scratch_dir") {
 				swallowed = append(swallowed, where)
 			}
 			if !isSelftest || !uncheckedMktempAssignment(trimmed) {
 				continue
 			}
-			if scratchDirAllowedScripts[e.Name()] {
-				seenAllowed[e.Name()] = true
+			if scratchDirAllowedScripts[name] {
+				seenAllowed[name] = true
 				continue
 			}
 			unchecked = append(unchecked, where)
@@ -204,7 +218,7 @@ func TestScratchDirCannotResolveToCWD(t *testing.T) {
 		t.Errorf("this mktemp is unchecked, so a failed mktemp leaves the variable empty "+
 			"and any later `cd` canonicalization of it resolves to the suite's own working "+
 			"directory, which its cleanup then deletes (kata 5hs2); build scratch with "+
-			"`scratch_dir <var> <prefix>` from scripts/scratch-lib.sh:\n  %s", o)
+			"`scratch_dir <var> <prefix>` from scripts/lib/scratch-lib.sh:\n  %s", o)
 	}
 	sort.Strings(swallowed)
 	for _, o := range swallowed {
@@ -368,23 +382,14 @@ var recursiveDeleteAllowedLines = map[string]int{
 // handed the wrong one.
 func TestNoScriptFeedsVariableToRecursiveDelete(t *testing.T) {
 	t.Parallel()
-	entries, err := os.ReadDir("scripts")
-	if err != nil {
-		t.Fatalf("read scripts/: %v", err)
-	}
+	paths := scriptShellFiles(t)
 	// Everything under scripts/, plus the repo-root shell that ships to
 	// machines this audit will never run on: install.sh is curl|sh'd into a
 	// user's shell, where a clobbered delete would be someone else's home.
-	paths := []string{"install.sh"}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sh") {
-			continue
-		}
-		paths = append(paths, filepath.Join("scripts", e.Name()))
-	}
+	allPaths := append([]string{"install.sh"}, paths...)
 	counts := map[string]int{}
 	var offenders []string
-	for _, path := range paths {
+	for _, path := range allPaths {
 		name := filepath.Base(path)
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -408,7 +413,7 @@ func TestNoScriptFeedsVariableToRecursiveDelete(t *testing.T) {
 	for _, o := range offenders {
 		t.Errorf("this recursive delete takes a variable a caller can clobber (kata 5hs2 "+
 			"deleted a home directory this way); mint scratch with `scratch_dir <var> <prefix>` "+
-			"and reclaim it with the no-argument `scratch_rm` from scripts/scratch-lib.sh:\n  %s", o)
+			"and reclaim it with the no-argument `scratch_rm` from scripts/lib/scratch-lib.sh:\n  %s", o)
 	}
 	for name, want := range recursiveDeleteAllowedLines {
 		if got := counts[name]; got < want {

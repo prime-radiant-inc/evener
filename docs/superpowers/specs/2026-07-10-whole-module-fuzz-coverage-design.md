@@ -61,13 +61,13 @@ does not change the coverage contract.
 
 ### 1. Coverage Manifest And Measurement
 
-`scripts/run-fuzz.sh` remains the authoritative target manifest, but its entries
+`scripts/fuzz/run-fuzz.sh` remains the authoritative target manifest, but its entries
 are mechanically audited against discovered native `func Fuzz...` declarations.
 The audit fails for missing, stale, or duplicate registrations. Native targets
 and rapid/stateful entries remain explicitly tagged; ordinary `test` entries
 remain reachability checks and are excluded from fuzz coverage.
 
-`scripts/fuzz-coverage-global.sh` becomes an all-workspace runner. For each
+`scripts/fuzz/fuzz-coverage-global.sh` becomes an all-workspace runner. For each
 module/package it runs every registered native target in deterministic seed-replay
 mode and every registered rapid/stateful target using the fixed seed bank, each
 with `-tags evenerfuzz` and a package-local coverage profile. It unions those

@@ -146,7 +146,7 @@ No WS1 dependency. Pure additive infra.
 - All parallel *editing* lanes use `isolation: "worktree"` (the Plan-12 lesson — a
   non-isolated lane wrote to the wrong tree and another's destructive git command
   risk). Lanes report registry lines + any prod-seam need; the parent serializes
-  `scripts/run-fuzz.sh`, `go.mod`, and the floors.
+  `scripts/fuzz/run-fuzz.sh`, `go.mod`, and the floors.
 
 ## Decisions (RESOLVED 2026-07-01)
 

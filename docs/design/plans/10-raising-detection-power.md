@@ -84,14 +84,14 @@ we want. Re-deriving is cheap: it is the inverse of a known fix.
 - `fuzz/mutations/manifest.tsv` — one row per mutation:
   `id <TAB> target(module:FuzzName) <TAB> patchfile <TAB> description`.
 - `fuzz/mutations/<id>.patch` — the fault.
-- `scripts/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
+- `scripts/fuzz/fuzz-oracle-audit.sh` — the harness (mirrors `fuzz-triage.sh`/
   `fuzz-bisect.sh` conventions: env seams `EVENER_FUZZ_RUNNER`, throwaway worktree,
   honest reporting). For each mutation: worktree-at-HEAD → `git apply` (loud on
   failure) → `go test -tags evenerfuzz -run '^<FuzzName>$' <pkg>` → assert non-zero
   → clean up. Then a **gap report**: every native target in `run-fuzz.sh --list`
   with no mutation is flagged "unaudited oracle" (informational at first; a soft
   gate later, like `fuzz-gap-check`).
-- `scripts/fuzz-oracle-audit-selftest.sh` — deterministic, real-git: a throwaway
+- `scripts/fuzz/fuzz-oracle-audit-selftest.sh` — deterministic, real-git: a throwaway
   module whose target's oracle catches one injected fault and is blind to
   another; assert the audit reports caught/blind correctly (the
   `fuzz-bisect-selftest.sh` pattern).
