@@ -38,6 +38,7 @@ import (
 	"text/tabwriter"
 
 	"primeradiant.com/evener/internal/devtool/covstmt"
+	"primeradiant.com/evener/internal/devtool/gatesurface"
 )
 
 // coverageFloorConfig wires the coverage-floor command to its environment.
@@ -341,7 +342,11 @@ func blessCovFloors(path string, modules []string, measured map[string]covFloorM
 
 // runCoverageFloor is the subcommand entry: it wires coverageFloor to the real
 // environment and a runGoTest that runs `go test -cover -coverprofile` for the
-// module, exactly as the shell script did.
+// module. Workspace modules (agent, auth, etc.) are run from inside their
+// directory, since under go.work a bare module name is not a valid package
+// path from the root. The root module (".") uses the gate's -run/-skip
+// filters from internal/devtool/gatesurface and -short, matching `make test`,
+// so fuzz-family tests are excluded from the coverage measurement.
 func runCoverageFloor(args []string) int {
 	cfg := coverageFloorConfig{
 		args:   args,
@@ -349,7 +354,24 @@ func runCoverageFloor(args []string) int {
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 		runGoTest: func(module, profilePath string) error {
-			cmd := exec.Command("go", "test", "-cover", "-coverprofile="+profilePath, module)
+			dir := "."
+			pkg := module
+			if module != "." {
+				if info, err := os.Stat(module); err == nil && info.IsDir() {
+					dir = module
+					pkg = "./..."
+				}
+			}
+			args := []string{"test", "-cover", "-coverprofile=" + profilePath}
+			if module == "." {
+				args = append(args,
+					"-run", gatesurface.TestRun,
+					"-skip", gatesurface.FuzzTestSkip,
+					"-short")
+			}
+			args = append(args, pkg)
+			cmd := exec.Command("go", args...)
+			cmd.Dir = dir
 			cmd.Stdout = os.Stderr
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
