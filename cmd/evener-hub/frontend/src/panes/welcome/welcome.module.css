@@ -21,6 +21,33 @@
   word-break: break-word;
 }
 
+/* Issue #197: the resume-candidate "Jump back in: {title}" button is a primary
+ * Button whose 200-rune title is forced to white-space:nowrap by
+ * button.module.css (correct for most buttons - catastrophic here, where the
+ * label is the widest thing in the column, not the narrowest). Override that
+ * LOCALLY for buttons in this welcome .actions column so the long title wraps
+ * instead of inflating the flex layout past the viewport - the same override
+ * .examples button below applies for the identical reason. Wrapping reopens
+ * the bug .button's nowrap exists to prevent (button.module.css pins
+ * height: 32px on .md, so a wrapped label spills out of the box - 19px of
+ * clipped text at 390px in the layoutguard probe), so the box also gets
+ * height: auto with the desktop height kept as a floor. The phone tap floor
+ * is re-declared in the media block because this rule's higher specificity
+ * would otherwise beat button.module.css's own @media min-height. This rule
+ * stays ABOVE .examples button so that rule's larger 44px floor still wins
+ * for the suggestion buttons on desktop. */
+.actions button {
+  white-space: normal;
+  height: auto;
+  min-height: 32px;
+}
+
+@media (max-width: 899px) {
+  .actions button {
+    min-height: var(--tap-min);
+  }
+}
+
 .orientation {
   max-width: 36rem;
   margin: var(--space-3) 0 0;
@@ -50,18 +77,6 @@
   min-height: 44px;
   white-space: normal;
   text-align: left;
-}
-
-/* Issue #197: the resume-candidate "Jump back in: {title}" button is a primary
- * Button whose 200-rune title is forced to white-space:nowrap by
- * button.module.css (correct for most buttons - catastrophic here, where the
- * label is the widest thing in the column, not the narrowest). Override that
- * LOCALLY for buttons in this welcome .actions column so the long title wraps
- * instead of inflating the flex layout past the viewport. Mirrors the
- * .examples button override above for the same reason. */
-.actions button {
-  white-space: normal;
-  text-align: center;
 }
 
 /* T6: a quiet hint row teaching the chords, below the task suggestions -
