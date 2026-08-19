@@ -139,11 +139,13 @@ echo "fuzz-bisect: bisecting $good..$bad …"
 git -C "$repo_root" bisect start "$bad" "$good" >/dev/null
 bisect_out="$(git -C "$repo_root" bisect run "$probe" 2>&1)"
 
-culprit="$(printf '%s\n' "$bisect_out" | grep -iE 'is the first bad commit' | head -n1)"
+# git ≥2.55 quotes the bisect terms ("is the first 'bad' commit", git.git
+# 0c0f93e7fa); older gits print "is the first bad commit". Match both.
+culprit="$(printf '%s\n' "$bisect_out" | grep -iE "is the first '?bad'? commit" | head -n1)"
 echo "==============================================================="
 if [ -n "$culprit" ]; then
 	echo "fuzz-bisect: introduced by:"
-	printf '%s\n' "$bisect_out" | sed -n '/is the first bad commit/,/^$/p' | sed 's/^/    /'
+	printf '%s\n' "$bisect_out" | sed -E -n "/is the first '?bad'? commit/,/^$/p" | sed 's/^/    /'
 else
 	echo "fuzz-bisect: bisection did not converge cleanly; raw output:"
 	printf '%s\n' "$bisect_out" | sed 's/^/    /'
