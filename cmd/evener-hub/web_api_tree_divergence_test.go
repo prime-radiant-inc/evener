@@ -15,8 +15,8 @@ import (
 // applying the invariant.
 func TestAppThreadTreeEntries_ForkedRemoteThreadStampsDivergenceTurn(t *testing.T) {
 	thread := appwire.Thread{
-		Source:   "remote",
-		ID:       "child-thread-1",
+		Source:    "remote",
+		ID:        "child-thread-1",
 		SessionID: "child-session-1",
 		Evener: appwire.EvenerThread{
 			Ref:       "remote:child-thread-1",
@@ -43,8 +43,8 @@ func TestAppThreadTreeEntries_ForkedRemoteThreadStampsDivergenceTurn(t *testing.
 // a fork).
 func TestAppThreadTreeEntries_NoParentLeavesDivergenceTurnZero(t *testing.T) {
 	thread := appwire.Thread{
-		Source:   "remote",
-		ID:       "standalone-thread",
+		Source:    "remote",
+		ID:        "standalone-thread",
 		SessionID: "standalone-session",
 		Evener: appwire.EvenerThread{
 			Ref: "remote:standalone-thread",

@@ -24,6 +24,11 @@ func TestIsClaude5OrNewer_Opus47And48(t *testing.T) {
 		{"claude-opus-4-8", true},
 		// Regression guard: 4.6 is old-shape — only 4.7+ changed.
 		{"claude-opus-4-6", false},
+		// No catalog entry at all: the ID-generation fallback stays
+		// conservative for pre-5 generations (the catalog, not the parse,
+		// owns the 4.7+ boundary). Pins the fallback's false branch, which
+		// every catalogued pre-5 ID skips.
+		{"claude-opus-4-3", false},
 	}
 	for _, tc := range cases {
 		if got := isClaude5OrNewer(tc.model); got != tc.want {
@@ -40,7 +45,7 @@ func TestBuildRequestBody_Opus47_OmitsSamplingParams(t *testing.T) {
 	topP := 0.9
 	req := llm.Request{
 		Model:       "claude-opus-4-7",
-		Messages:     []llm.Message{llm.User("hi")},
+		Messages:    []llm.Message{llm.User("hi")},
 		Temperature: &temp,
 		TopP:        &topP,
 	}
