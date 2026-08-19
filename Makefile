@@ -288,7 +288,15 @@ test-fuzz:
 # `@$(MAKE)` lines) so that export reaches every phase; the gate still stops
 # at the first failing phase either way, same as before.
 merge-approval-gate:
-	@eval "$$(scripts/gate/gate-capability-preflight.sh)" && \
+	@if [ ! -x scripts/gate/gate-capability-preflight.sh ]; then \
+		echo 'merge-approval-gate: capability preflight script missing or not executable: scripts/gate/gate-capability-preflight.sh' >&2; \
+		exit 1; \
+	fi && \
+	preflight="$$(scripts/gate/gate-capability-preflight.sh)" || { \
+		echo 'merge-approval-gate: capability preflight script failed before emitting its verdict: scripts/gate/gate-capability-preflight.sh' >&2; \
+		exit 1; \
+	} && \
+	eval "$$preflight" && \
 		$(MAKE) lint && \
 		$(MAKE) build && \
 		ROOT_FULL=1 $(MAKE) test && \

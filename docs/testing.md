@@ -184,9 +184,12 @@ ROOT_FULL=1 make test
 make test-dev-tooling
 ~~~
 
-Before any phase runs, `merge-approval-gate` evaluates
-`scripts/gate/gate-capability-preflight.sh` (`eval "$(scripts/gate/gate-capability-preflight.sh)"`),
-which classifies four sandbox-sensitive host capabilities ONCE via
+Before any phase runs, `merge-approval-gate` runs
+`scripts/gate/gate-capability-preflight.sh` and evaluates its output. The
+recipe fails closed: a preflight that is missing, not executable, or exits
+nonzero before emitting its verdict stops the gate with exit 1 instead of
+silently proceeding uncertain (issue #181). The preflight classifies four
+sandbox-sensitive host capabilities ONCE via
 `go run ./cmd/evener-gate-probe`: loopback binds, a Chrome/Chromium binary,
 process inspection via `ps`, and a writable external git cache directory
 (kata 5gvk). Each probe is bounded (it classifies blocked rather than hanging
