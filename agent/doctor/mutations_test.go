@@ -15,6 +15,7 @@ const storeWithBothOutcomes = `{
   "active_turn_id": "01TURNSTART",
   "accepted_turns": 1,
   "queue_held": true,
+  "steering_held": true,
   "journal": {
     "cm-start": {
       "client_mutation_id": "cm-start",
@@ -280,6 +281,7 @@ func TestMutations_RenderCarriesTheDecisiveFields(t *testing.T) {
 		"input queue: 1 entry",
 		"q1  mutation=cm-queued  items=1",
 		"queue: held (parked by a Stop; waiting on the user)",
+		"steering: held (parked by a Stop; waiting on the user)",
 		"pending executions: 1",
 		"cm-start  method=turn/start  execution=running  turn=01TURNSTART  projection=pending",
 	} {

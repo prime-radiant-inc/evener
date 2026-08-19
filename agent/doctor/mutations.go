@@ -33,7 +33,11 @@ type MutationReport struct {
 	InputQueue    []QueuedInputView    `json:"input_queue"`
 	// QueueHeld reports a queue parked by a Stop: the entries above are real and
 	// nothing will claim them until the user asks (kata wms7).
-	QueueHeld         bool                   `json:"queue_held"`
+	QueueHeld bool `json:"queue_held"`
+	// SteeringHeld reports pending user steering parked by a Stop: the steer
+	// stays in pending executions and nothing delivers it until the user asks
+	// (issue #174, #146 Option C — park in place).
+	SteeringHeld      bool                   `json:"steering_held"`
 	PendingExecutions []PendingExecutionView `json:"pending_executions"`
 }
 
@@ -99,6 +103,7 @@ func Mutations(stateBase, selector string) (MutationReport, error) {
 	report.AcceptedTurns = store.AcceptedTurns
 	report.QueueRevision = store.QueueRevision
 	report.QueueHeld = store.QueueHeld
+	report.SteeringHeld = store.SteeringHeld
 	for _, record := range store.Journal {
 		view := MutationRecordView{
 			ClientMutationID: record.ClientMutationID,
@@ -155,6 +160,7 @@ type clientMutationStoreFile struct {
 	Journal                map[string]clientMutationStoreRecord  `json:"journal"`
 	InputQueue             []clientMutationStoreQueueEntry       `json:"input_queue"`
 	QueueHeld              bool                                  `json:"queue_held"`
+	SteeringHeld           bool                                  `json:"steering_held"`
 	QueueRevision          uint64                                `json:"queue_revision"`
 	NextTurnSequence       uint64                                `json:"next_turn_sequence"`
 	NextQueueEntrySequence uint64                                `json:"next_queue_entry_sequence"`
@@ -283,6 +289,9 @@ func RenderMutations(r MutationReport) string {
 	}
 	if r.QueueHeld {
 		fmt.Fprintf(&b, "queue: held (parked by a Stop; waiting on the user)\n")
+	}
+	if r.SteeringHeld {
+		fmt.Fprintf(&b, "steering: held (parked by a Stop; waiting on the user)\n")
 	}
 
 	fmt.Fprintf(&b, "pending executions: %d\n", len(r.PendingExecutions))
