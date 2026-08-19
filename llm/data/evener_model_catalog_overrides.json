@@ -182,7 +182,11 @@
   "claude-opus-4-7": {
     "aliases": [
       "opus"
-    ]
+    ],
+    "claude5_request_shape": true
+  },
+  "claude-opus-4-8": {
+    "claude5_request_shape": true
   },
   "claude-haiku-4-5": {
     "aliases": [
