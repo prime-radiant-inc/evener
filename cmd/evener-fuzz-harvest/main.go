@@ -8,7 +8,7 @@
 // survive), so committed seeds carry no PII or secrets by construction. An
 // always-on abort gate (known-secret regexes + entropy quarantine) drops any
 // seed in which a secret survived and fails the run. --keep-values (gated to a
-// designated capture box, ignored for a personal ~/.evener) preserves real values
+// designated capture box, ignored for a personal evener state root) preserves real values
 // for local-only campaigns and is never committed.
 package main
 

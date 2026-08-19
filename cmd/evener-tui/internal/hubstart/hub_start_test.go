@@ -187,6 +187,7 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
 	hubBin := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, hubBin)
 

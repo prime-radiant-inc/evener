@@ -1154,6 +1154,23 @@ func tuiCoverEnvPrefix() string {
 	return ""
 }
 
+// tuiIsolatedEnvPrefix creates a throwaway HOME (with its own XDG config/
+// state/cache subdirectories) for a tmux-launched evener-tui and returns the
+// "HOME=... XDG_CONFIG_HOME=... ..." shell prefix that redirects it there.
+// Without this, evener-tui's startup guard (cmdutil.EnsureUserConfigDirs,
+// called from main.go before anything else) reads the real machine's HOME/
+// XDG environment — which can refuse to start on a machine with an unmigrated
+// legacy/interim Evener home root, or worse, touch the developer's real
+// ~/.config/evener and ~/.local/state/evener.
+func tuiIsolatedEnvPrefix(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	return "HOME=" + shellQuote(home) +
+		" XDG_CONFIG_HOME=" + shellQuote(filepath.Join(home, "config")) +
+		" XDG_STATE_HOME=" + shellQuote(filepath.Join(home, "state")) +
+		" XDG_CACHE_HOME=" + shellQuote(filepath.Join(home, "cache")) + " "
+}
+
 func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height int) *tmuxTUI {
 	t.Helper()
 	acquireTmuxSlot(t)
@@ -1164,7 +1181,7 @@ func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height i
 	session := uniqueTmuxSessionName()
 	socket := session
 	stateDir := t.TempDir()
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// Register cleanup the instant the session (and its dedicated server)
 	// exist, before any later setup step below that can itself t.Fatalf: a
@@ -1196,7 +1213,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// See the matching comment in startTUITmuxSized: register cleanup as
 	// soon as the session/server exist, not only once the tmuxTUI value
