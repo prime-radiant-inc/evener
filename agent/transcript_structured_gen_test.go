@@ -60,7 +60,7 @@ func generateTranscript(s schemagen.Source) ([]byte, error) {
 	if err := g.emit(g.header()); err != nil {
 		return nil, err
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := g.emit(g.entry()); err != nil {
 			return nil, err
 		}
@@ -194,7 +194,7 @@ func (g *transcriptGen) agentTasks() []any {
 	s := g.s
 	n := s.IntRange(0, 2, "n_tasks")
 	out := make([]any, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		out = append(out, map[string]any{
 			"id":          s.IntRange(1, 100, "task_id"),
 			"type":        pick(s, taskTypes, "task_type"),
@@ -263,7 +263,7 @@ func (g *transcriptGen) message(kind schema.TurnKind) map[string]any {
 	switch kind {
 	case schema.TurnAssistant:
 		n := s.IntRange(0, 4, "asst_parts")
-		for i := 0; i < n; i++ {
+		for range n {
 			switch s.Intn(3, "asst_part_kind") {
 			case 0:
 				parts = append(parts, g.textPart())
@@ -277,7 +277,7 @@ func (g *transcriptGen) message(kind schema.TurnKind) map[string]any {
 		parts = g.toolResultParts()
 	default:
 		n := s.IntRange(0, 3, "msg_parts")
-		for i := 0; i < n; i++ {
+		for range n {
 			parts = append(parts, g.contentPart())
 		}
 	}
@@ -384,7 +384,7 @@ func (g *transcriptGen) toolResultParts() []any {
 	// repair territory).
 	if len(g.pending) > 0 && s.Bool("resolve_pending") {
 		k := s.IntRange(0, len(g.pending), "resolve_n")
-		for i := 0; i < k; i++ {
+		for i := range k {
 			parts = append(parts, g.toolResultPart(g.pending[i]))
 		}
 		g.pending = g.pending[k:]
@@ -392,7 +392,7 @@ func (g *transcriptGen) toolResultParts() []any {
 	// Emit results for IDs that were never called (orphaned RESULTS).
 	if s.Bool("orphan_results") {
 		m := s.IntRange(0, 2, "orphan_n")
-		for i := 0; i < m; i++ {
+		for range m {
 			parts = append(parts, g.toolResultPart("orphan_"+strconv.Itoa(g.orphanSeq)))
 			g.orphanSeq++
 		}
@@ -513,7 +513,7 @@ func (g *transcriptGen) usage() map[string]any {
 func (g *transcriptGen) stringList(label string) []any {
 	n := g.s.IntRange(0, 3, label+"_n")
 	out := make([]any, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		out = append(out, pick(g.s, transcriptText, label+"_v"))
 	}
 	return out
