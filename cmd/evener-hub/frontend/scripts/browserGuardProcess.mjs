@@ -121,13 +121,28 @@ function signalProcessGroup(processGroupId, signal) {
 }
 
 function signalProfileProcess(processIdentity, signal) {
+  // Measured on real macOS Chrome (issue #119): Crashpad DOUBLE-SPAWNS its
+  // handler. An intermediate process becomes a new group leader, spawns
+  // chrome_crashpad_handler into that group, and exits — so the handler's
+  // pgid is a dead intermediate's pid, never the handler's own pid.
+  // kill(-pid) is therefore always ESRCH, and a direct pid signal
+  // intermittently gets EPERM once the handler is orphaned to launchd. The
+  // only signal that reliably lands is the group id captured at discovery:
+  // POSIX keeps a live group's id reserved while the group exists, so
+  // kill(-pgid) can only reach the handler's own group.
+  const { pgid } = processIdentity;
+  if (!Number.isInteger(pgid) || pgid <= 0) {
+    // Live-fire guard: a fabricated identity (a test injecting
+    // findProfileProcesses without injecting signalProfileProcess) has no
+    // discovered pgid. Refuse loudly instead of SIGKILLing whatever real
+    // process group happens to own a made-up id.
+    throw new Error(
+      `refusing to signal profile process ${processIdentity.pid} without a pgid captured at discovery; ` +
+        "identities must come from findMacOSProfileProcesses (tests must inject signalProfileProcess)",
+    );
+  }
   try {
-    // The Crashpad helper is spawned in its own process group
-    // (POSIX_SPAWN_SETEXGROUP), so signal its group (-pid), not the bare
-    // pid. A direct pid signal intermittently gets EPERM once the helper is
-    // orphaned (reparented to launchd); a group signal to the helper's own
-    // group reliably reaches it (issue #119).
-    process.kill(-processIdentity.pid, signal);
+    process.kill(-pgid, signal);
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
@@ -135,7 +150,12 @@ function signalProfileProcess(processIdentity, signal) {
   }
 }
 
-function killProfileProcess(processIdentity, signalProfile) {
+function killProfileProcess(processIdentity, signalProfile, isProfileProcessRunning) {
+  // Never signal a possibly-reused pid: re-verify the identity (pid + argv,
+  // via ps) immediately before every signal. Between capture and signal —
+  // seconds, across the graceful-close/TERM/KILL teardown — the helper may
+  // exit and the pid be reused by an unrelated process.
+  if (!isProfileProcessRunning(processIdentity)) return;
   try {
     signalProfile(processIdentity, "SIGKILL");
   } catch (error) {
@@ -148,12 +168,12 @@ function reportCleanupFailure(error) {
 }
 
 function listSystemProcesses() {
-  return execFileSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  return execFileSync("/bin/ps", ["-axo", "pid=,pgid=,command="], { encoding: "utf8" });
 }
 
 function listSystemProcess(pid) {
   try {
-    return execFileSync("/bin/ps", ["-p", String(pid), "-o", "pid=,command="], { encoding: "utf8" });
+    return execFileSync("/bin/ps", ["-p", String(pid), "-o", "pid=,pgid=,command="], { encoding: "utf8" });
   } catch (error) {
     if (error?.status === 1) return "";
     throw error;
@@ -162,9 +182,9 @@ function listSystemProcess(pid) {
 
 function parseProcesses(processList) {
   return processList.split("\n").flatMap((line) => {
-    const match = line.match(/^\s*(\d+)\s+(.+)$/);
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
     if (!match) return [];
-    return [{ pid: Number(match[1]), command: match[2] }];
+    return [{ pid: Number(match[1]), pgid: Number(match[2]), command: match[3] }];
   });
 }
 
@@ -179,8 +199,11 @@ export function findMacOSProfileProcesses(
 ) {
   if (platform !== "darwin") return [];
   const databaseArg = `--database=${path.join(realpathSync(profileDir), "Crashpad")}`;
-  return parseProcesses(listProcesses()).flatMap(({ pid, command }) =>
-    commandMatchesProfileProcess(command, databaseArg) ? [{ pid, databaseArg }] : [],
+  // The pgid captured here is what signalProfileProcess targets: the handler's
+  // group leader is a dead intermediate (see signalProfileProcess), so the
+  // group id is only discoverable from ps, never derivable from the pid.
+  return parseProcesses(listProcesses()).flatMap(({ pid, pgid, command }) =>
+    commandMatchesProfileProcess(command, databaseArg) ? [{ pid, pgid, databaseArg }] : [],
   );
 }
 
@@ -451,16 +474,15 @@ export function createBrowserProcessCleanup({
     cleanupPromise = (async () => {
       try {
         const profileProcessesBeforeClose = findProfileProcesses(profileDir);
-        // The Crashpad helper (`chrome_crashpad_handler`) is spawned by Chrome in
-        // its own process group (POSIX_SPAWN_SETEXGROUP), so the group teardown
-        // `process.kill(-chromePgid)` below never reaches it. SIGKILL each escaped
-        // helper's own group NOW, while Chrome is still alive and the helper is
-        // still a descendant of this process: signaling after the group teardown
-        // intermittently gets EPERM once the helper is orphaned (reparented to
-        // launchd), and without any signal the helper is only polled then
-        // rejected, escaping cleanup ~1 run in 3 (issue #119).
+        // Crashpad's handler lives in a process group of its own — one led by
+        // a dead intermediate, never by Chrome and never by the handler itself
+        // (see signalProfileProcess) — so the group teardown
+        // `process.kill(-chromePgid)` below never reaches it. SIGKILL each
+        // discovered helper's captured group NOW: without any signal the
+        // helper is only polled then rejected, escaping cleanup ~1 run in 3
+        // (issue #119).
         for (const processIdentity of profileProcessesBeforeClose) {
-          killProfileProcess(processIdentity, signalProfile);
+          killProfileProcess(processIdentity, signalProfile, isProfileProcessRunning);
         }
         await Promise.all(
           children.map(({ child, processGroupId, gracefulClose }) =>
@@ -486,10 +508,12 @@ export function createBrowserProcessCleanup({
           ).values(),
         ];
         // Reap any helpers that escaped DURING the group close (the late-helper
-        // path) and confirm the pre-close helpers are gone; SIGKILL is a no-op
-        // (ESRCH) on anything the pre-close pass already reaped.
+        // path) and confirm the pre-close helpers are gone. The teardown above
+        // can take seconds, so killProfileProcess's identity re-check is what
+        // keeps this pass from signaling a pid captured before the close that
+        // has since exited and been reused.
         for (const processIdentity of profileProcesses) {
-          killProfileProcess(processIdentity, signalProfile);
+          killProfileProcess(processIdentity, signalProfile, isProfileProcessRunning);
         }
         await Promise.all(
           profileProcesses.map((processIdentity) =>
