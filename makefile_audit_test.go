@@ -25,11 +25,6 @@ import (
 // re-read the delete in that diff. Keys are the line as recursiveDeleteLineText
 // normalizes it, so they carry no trailing continuation backslash.
 var makefileVariableFedDeletes = map[string]string{
-	`rm -rf "$$dir" || finish_status=1;`: "test-web's log directory: minted on the same recipe by a checked " +
-		`mktemp -d "${TMPDIR:-/tmp}/evener-test-web.XXXXXX" || exit 1, ` +
-		"so $$dir is either a fresh temp directory or the recipe already exited",
-	`rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; };`: "test-web-browser's log directory: " +
-		`minted on the same recipe by a checked mktemp -d "${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX" || exit 1`,
 	`rm -rf "$(EVENER_DIST_BIN_DIR)" "$(EVENER_DIST_ARCHIVE)"`: "dist's own output paths, both rooted at DIST_DIR " +
 		"(default `dist`) and named for the build's GOOS/GOARCH. This is the weakest entry of the three: " +
 		"`make dist DIST_DIR=` roots both operands at `/` instead, and nothing in the recipe refuses that",

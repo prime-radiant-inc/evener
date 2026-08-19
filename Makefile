@@ -55,96 +55,19 @@ build-web: web-preflight
 	cd cmd/evener-hub/frontend && NODE_DISABLE_COMPILE_CACHE=1 npm run build
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
-# then lint (mirrors the Go test+lint split, but the frontend toolchain
-# doesn't need separate targets per check).
-# The three checks are independent readers of the same sources, so they run
-# concurrently and the target's wall time is the slowest one (vitest) instead
-# of the sum. Each writes its own log; a failure replays exactly the failing
-# check's output.
+# then lint. The three checks are independent readers of the same sources, so
+# the script runs them concurrently with per-check private HOME/TMPDIR/XDG
+# roots; wall time is the slowest one (vitest) instead of the sum. A failure
+# replays exactly the failing check's log.
 test-web: web-preflight
-	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web.XXXXXX")" || exit 1; \
-	pids=""; started=""; fail=0; complete=0; \
-	stop_checks() { \
-		for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; \
-		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
-		pids=""; \
-	}; \
-	finish() { \
-		finish_status=$$?; \
-		[ "$$complete" -eq 1 ] || stop_checks; \
-		if [ "$$complete" -eq 1 ] && [ "$$fail" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
-			rm -rf "$$dir" || finish_status=1; \
-		else \
-			printf 'full logs: %s\n' "$$dir" >&2; \
-		fi; \
-		trap - 0; exit "$$finish_status"; \
-	}; \
-	interrupted() { stop_checks; exit "$$1"; }; \
-	trap finish 0; \
-	trap 'interrupted 129' 1; trap 'interrupted 130' 2; trap 'interrupted 143' 15; \
-	for c in typecheck test lint; do \
-		check_dir="$$dir/$$c"; \
-		if ! mkdir -p "$$check_dir/home" "$$check_dir/tmp" "$$check_dir/xdg-config" "$$check_dir/xdg-cache" "$$check_dir/xdg-state"; then fail=1; break; fi; \
-		HOME="$$check_dir/home" TMPDIR="$$check_dir/tmp" XDG_CONFIG_HOME="$$check_dir/xdg-config" XDG_CACHE_HOME="$$check_dir/xdg-cache" XDG_STATE_HOME="$$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run $$c >"$$dir/$$c.log" 2>&1 & \
-		pids="$$pids $$!"; started="$$started $$c"; \
-	done; \
-	set -- $$pids; \
-	for c in $$started; do \
-		pid=$$1; shift; \
-		if wait "$$pid"; then check_status=0; else check_status=$$?; fi; \
-		pids="$$*"; \
-		printf '%s\n' "$$check_status" >"$$dir/$$c.status"; \
-	done; \
-	for c in typecheck test lint; do \
-		if [ "$$(cat "$$dir/$$c.status" 2>/dev/null || echo 1)" = 0 ]; then \
-			printf 'PASS  web-%s\n' "$$c"; \
-		else \
-			printf 'FAIL  web-%s\n' "$$c"; [ ! -f "$$dir/$$c.log" ] || cat "$$dir/$$c.log"; fail=1; \
-		fi; \
-	done; \
-	complete=1; \
-	exit $$fail
+	@scripts/web/test-web.sh
 
 # test-web-browser runs the real browser-only frontend guards. They stay out
 # of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
-# Run every guard so one missing browser or failing case does not hide the
-# remaining guard's verdict; return the first nonzero status.
+# The script runs every guard so one missing browser or failing case does not
+# hide the remaining guard's verdict; exit status is the first nonzero one.
 test-web-browser: web-preflight
-	@set -u; cd cmd/evener-hub/frontend && \
-	dir="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-web-browser.XXXXXX")" || exit 1; \
-	guard_pid=""; status=0; complete=0; \
-	stop_guard() { [ -z "$$guard_pid" ] || { kill -TERM "$$guard_pid" 2>/dev/null || :; wait "$$guard_pid" 2>/dev/null || :; guard_pid=""; }; }; \
-	finish_browser() { \
-		finish_status=$$?; stop_guard; \
-		if [ "$$complete" -eq 1 ] && [ "$$status" -eq 0 ] && [ "$$finish_status" -eq 0 ]; then \
-			rm -rf "$$dir" || { finish_status=1; printf 'full logs: %s\n' "$$dir" >&2; }; \
-		else \
-			printf 'full logs: %s\n' "$$dir" >&2; \
-		fi; \
-		trap - 0; exit "$$finish_status"; \
-	}; \
-	interrupted_browser() { stop_guard; exit "$$1"; }; \
-	trap finish_browser 0; \
-	trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interrupted_browser 143' 15; \
-	for guard in layoutguard overflowguard spawnguard; do \
-		guard_dir="$$dir/$$guard"; \
-		mkdir -p "$$guard_dir/home" "$$guard_dir/tmp" "$$guard_dir/xdg-config" "$$guard_dir/xdg-cache" "$$guard_dir/xdg-state" || exit 1; \
-		HOME="$$guard_dir/home" TMPDIR="$$guard_dir/tmp" XDG_CONFIG_HOME="$$guard_dir/xdg-config" XDG_CACHE_HOME="$$guard_dir/xdg-cache" XDG_STATE_HOME="$$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$$guard/run.mjs" >"$$dir/$$guard.log" 2>&1 & \
-		guard_pid=$$!; \
-		if wait "$$guard_pid"; then \
-			guard_pid=""; \
-			printf 'PASS  web-%s\n' "$$guard"; \
-		else \
-			guard_status=$$?; \
-			guard_pid=""; \
-			printf 'FAIL  web-%s (exit %s)\n' "$$guard" "$$guard_status" >&2; \
-			cat "$$dir/$$guard.log"; \
-			[ "$$status" -ne 0 ] || status="$$guard_status"; \
-		fi; \
-	done; \
-	complete=1; \
-	exit "$$status"
+	@scripts/web/test-web-browser.sh
 
 build-tui:
 	go build -o evener-tui ./cmd/evener-tui/
