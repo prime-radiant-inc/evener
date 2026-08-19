@@ -27,6 +27,10 @@ cat >"$fake_make" <<'FAKE_MAKE'
 set -u
 target="${!#}"
 printf '%s\t%s\n' "$target" "${ROOT_FULL:-}" >>"$FAKE_STATE/calls"
+# What each phase actually INHERITED for the capability skip. Recorded
+# separately from calls so the phase-order assertions keep their two-field
+# shape; see the skip-propagation case below for why it is recorded at all.
+printf '%s\t%s\n' "$target" "${EVENER_GATE_CAPABILITY_SKIP-<unset>}" >>"$FAKE_STATE/skips"
 printf 'recursive stdout: %s\n' "$target"
 printf 'recursive stderr: %s\n' "$target" >&2
 if [ "${FAKE_FAIL_TARGET:-}" = "$target" ]; then
@@ -85,8 +89,8 @@ run_gate_blocked() {
 	blocked="$1"
 	failure="$2"
 	output="$3"
-	rm -f "$work/calls"
-	if env -u ROOT_FULL FAKE_STATE="$work" FAKE_FAIL_TARGET="$failure" FAKE_GATE_PROBE_BLOCKED="$blocked" \
+	rm -f "$work/calls" "$work/skips"
+	if env -u ROOT_FULL -u EVENER_GATE_CAPABILITY_SKIP FAKE_STATE="$work" FAKE_FAIL_TARGET="$failure" FAKE_GATE_PROBE_BLOCKED="$blocked" \
 		"$real_make" -C "$repo_root" -j 4 MAKE="$fake_make" merge-approval-gate \
 		>"$output" 2>&1; then
 		gate_rc=0
@@ -118,6 +122,25 @@ assert_has "$work/blocked-loopback.out" "go run ./cmd/evener-dev capability-pref
 assert_has "$work/blocked-loopback.out" "rerun once fixed" "the summary carries an exact rerun command for the skipped tests"
 blocked_lines="$(grep -c 'BLOCKED loopback-bind' "$work/blocked-loopback.out" 2>/dev/null || echo 0)"
 assert_eq "$blocked_lines" "1" "the capability is classified once, not once per phase"
+
+# Classifying a capability as blocked is only half the contract: the skip
+# pattern has to REACH the phases, or the gate prints an accurate summary and
+# then runs the infeasible tests anyway. PR #222 shipped exactly that half - a
+# preflight whose verdict never expanded into the test phase - so the recipe's
+# `export` is asserted here rather than assumed. Every phase must inherit the
+# pattern, not just the one that consumes it: which phase reads it is the
+# recipe's business, and a phase that silently got `<unset>` is the bug.
+expected_skips=$(printf 'lint\t^(TestE2E_|TestTUITmuxE2E_)\nbuild\t^(TestE2E_|TestTUITmuxE2E_)\ntest\t^(TestE2E_|TestTUITmuxE2E_)\ntest-dev-tooling\t^(TestE2E_|TestTUITmuxE2E_)\n')
+actual_skips="$(cat "$work/skips" 2>/dev/null || :)"
+assert_eq "$actual_skips" "$expected_skips" "a blocked capability's skip pattern reaches every phase"
+
+# The mirror case: nothing blocked means every phase inherits an EMPTY skip,
+# never an unset one. run-module-tests.sh runs under `set -u`, and an inherited
+# value from the caller's environment would silently narrow the gate's surface.
+run_gate_blocked "" "" "$work/all-available-skip.out"
+expected_skips=$(printf 'lint\t\nbuild\t\ntest\t\ntest-dev-tooling\t\n')
+actual_skips="$(cat "$work/skips" 2>/dev/null || :)"
+assert_eq "$actual_skips" "$expected_skips" "an all-available preflight exports an empty skip, not an unset one"
 
 # Two capabilities the kata names have no known gate consumer yet
 # (scripts/gate-surface-lib.sh's registry, kata 5gvk's premise check). They
