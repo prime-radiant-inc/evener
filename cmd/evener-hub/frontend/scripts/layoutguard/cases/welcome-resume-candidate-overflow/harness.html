@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>welcome-resume-candidate-overflow layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+  }
+
+  .fixtures { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Each fixture simulates a phone of the matrix width: the pane fills the
+     wrapper exactly the way it fills a StackHost slot. The height is fixed
+     so .pane's height:100% chain resolves the way it does in the real shell
+     (an auto-height wrapper would collapse .body's flex: 1 1 0 to nothing). */
+  .fixture { height: 700px; overflow: hidden; }
+
+  /* KeyHint's own module is not under test; a bare kbd stand-in keeps the
+     hint rows honest without dragging keyhint.module.css into the case. */
+  .kbdStandIn {
+    padding: 0 4px;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-caption);
+  }
+</style>
+</head>
+<body>
+<main class="fixtures"></main>
+
+<!-- Welcome.tsx's real structure: PaneScaffold > .body > EmptyState
+     (.emptyState > .title/.action) > welcome .actions column. The header is
+     present but display:none at this mobile width, as in production.
+     NOTE the raw-stylesheet collisions CSS Modules would normally hash apart:
+     panescaffold's .actions/.title also match welcome's .actions and
+     emptystate's .title here. welcome.module.css/emptystate.module.css load
+     LAST, so their declarations win every conflicting property; the leaked
+     extras (flex:none, margin-left:auto on a block-level or full-width box,
+     nowrap+ellipsis on the short "No session open" title) are geometrically
+     inert at these widths. -->
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="pane">
+      <div class="header"><h2 class="title">Welcome</h2></div>
+      <div class="body" data-pane-body tabindex="-1">
+        <div class="emptyState" data-testid="empty-state">
+          <p class="title">No session open</p>
+          <div class="action">
+            <div class="actions" data-actions>
+              <button class="button primary md" data-resume type="button"></button>
+              <button class="button secondary md" data-new-session type="button">New session</button>
+              <p class="orientation">A session can read and edit the repository, run commands, and delegate work to helpers.</p>
+              <div class="examples" data-examples>
+                <p class="examplesLabel">Try a task to get started</p>
+                <button class="button quiet sm" data-example type="button">Find and fix the root cause of a flaky test</button>
+                <button class="button quiet sm" data-example type="button">Audit error handling across the auth package</button>
+                <button class="button quiet sm" data-example type="button">Explain how requests flow from router to handler</button>
+              </div>
+              <div class="hints" data-hints>
+                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">K</span><span>command palette</span></div>
+                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">I</span><span>focus the composer</span></div>
+                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">J</span><span>next session needing you</span></div>
+                <p class="hintFooter"><span class="kbdStandIn">?</span><span>inside the command palette shows all shortcuts.</span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<script>
+// Spliced by run.mjs from case.json's widthMatrix (see widthMatrix.mjs).
+const WIDTH_MATRIX = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+// ~170 chars with spaces plus a server-style trailing ellipsis, matching
+// tree.go's maxTitleRunes=200 scale - several times any phone width when
+// forced onto one line.
+const LONG_TITLE =
+  "This means that we're going to cover all of the binary names, all of the " +
+  "command entry points, and every alias the installer ships, in one pass so " +
+  "nothing is missed…";
+
+const FIXTURES = [];
+const main = document.querySelector(".fixtures");
+const template = document.getElementById("fixture-template");
+
+for (const spec of WIDTH_MATRIX) {
+  for (const candidate of [false, true]) {
+    const root = template.content.firstElementChild.cloneNode(true);
+    root.style.width = `${spec.width}px`;
+    const resume = root.querySelector("[data-resume]");
+    if (candidate) {
+      resume.textContent = `Jump back in: ${LONG_TITLE} · 2h`;
+    } else {
+      resume.remove();
+    }
+    main.appendChild(root);
+    FIXTURES.push({ width: spec.width, candidate, root });
+  }
+}
+
+function rectOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+}
+
+function buttonBox(element, bodyRect) {
+  const rect = rectOf(element);
+  return {
+    rect,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+    // Positive = that edge is painted outside the pane body and gets cut by
+    // its overflow-x: clip (the marker-less mid-string fragment of #197).
+    leftClippedPx: bodyRect.left - rect.left,
+    rightClippedPx: rect.right - bodyRect.right,
+    textAlign: getComputedStyle(element).textAlign,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  };
+}
+
+window.measure = () =>
+  FIXTURES.map(({ width, candidate, root }) => {
+    const body = root.querySelector("[data-pane-body]");
+    const bodyRect = rectOf(body);
+    const resume = root.querySelector("[data-resume]");
+    return {
+      width,
+      candidate,
+      body: { rect: bodyRect, clientWidth: body.clientWidth },
+      actions: rectOf(root.querySelector("[data-actions]")),
+      examplesDiv: rectOf(root.querySelector("[data-examples]")),
+      hints: rectOf(root.querySelector("[data-hints]")),
+      resume: resume ? buttonBox(resume, bodyRect) : null,
+      newSession: buttonBox(root.querySelector("[data-new-session]"), bodyRect),
+      examples: [...root.querySelectorAll("[data-example]")].map((el) => buttonBox(el, bodyRect)),
+    };
+  });
+</script>
+</body>
+</html>
