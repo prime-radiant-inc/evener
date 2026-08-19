@@ -26,26 +26,21 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
   return count > 0 ? `lines ${offset}-${offset + count - 1}` : `lines ${offset}`;
 }
 
-// read_file's own output for an image/PDF read mirrors agent/execenv/
-// local.go's ReadFile: a "[image: FORMAT, N bytes, base64 data follows]" (or
-// "[document: ...]") header. The base64 payload never actually reaches this
-// text - agent/internal/tool/registry.go's ParseImageResult cuts the
-// ReadFile string at its first "\n" and keeps only this header as the tool
-// result's own Output, routing the decoded bytes through a separate field -
-// so "base64 data follows" is stale/misleading by the time a reader sees it
-// (kata 1nr4): nothing ever follows it here. BINARY_PAYLOAD_HEADER detects
-// that shape so ReadFileOutputBody, below, can show just the honest header
-// (dropping that phrase, and dropping any payload that DID make it into
-// output - an older daemon, say - rather than ever rendering it as text).
-// The real image renders as a thumbnail alongside, via ToolCallItem's
-// <ImageGallery images={item.outputImages} />, once the file resolves as a
-// supported image (output_images.go's read_file case).
-const BINARY_PAYLOAD_HEADER = /^\[(?:image|document): [^\]]+, base64 data follows\]/;
+// read_file's output for an image/PDF read is a "[image: FORMAT, N bytes,
+// base64 data follows]" (or "[document: ...]") header: registry.go's
+// ParseImageResult cuts the string at its first "\n" and routes the bytes
+// elsewhere, so nothing ever "follows" here (kata 1nr4). An image read's
+// body renders nothing - the image displays at this descriptor's
+// outputImageSize ("large"), and the header is noise next to the picture.
+// A PDF has no such preview, so its body keeps the header minus the stale
+// phrase (and minus any payload an older daemon left in output).
+const BINARY_PAYLOAD_HEADER = /^\[(image|document): [^\]]+, base64 data follows\]/;
 
 function ReadFileOutputBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   const match = BINARY_PAYLOAD_HEADER.exec(output);
   if (match === null) return <TailFoldedOutputBody item={item} live={live} />;
+  if (match[1] === "image") return null;
   return <CodeBlock text={match[0].replace(", base64 data follows]", "]")} copyLabel="Copy output" />;
 }
 
@@ -64,6 +59,9 @@ function readFileTarget(item: ItemModel): string {
 registerToolRenderer({
   match: "read_file",
   icon: "file",
+  // An image read displays the picture itself at up to 600px square, not a
+  // 96px thumbnail - the picture IS this call's output.
+  outputImageSize: "large",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     return `Read ${readFileTarget(item)} · ${readLineRange(args, item.output ?? "")}`;

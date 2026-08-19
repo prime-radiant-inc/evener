@@ -29,12 +29,19 @@ import styles from "./imagegallery.module.css";
 
 export interface ImageGalleryProps {
   images: ItemImage[] | undefined;
+  // Undefined: the default 96px cover-crop thumbnails. "large": each image
+  // whole at up to 600px square (aspect preserved) - the one caller today
+  // is read_file's image read (toolRenderers.ts's outputImageSize). The
+  // click-to-open lightbox is the same in both sizes.
+  size?: "large";
 }
 
 const CLASS = {
   strip: requireClass(styles.strip, "imagegallery.module.css", "strip"),
   thumb: requireClass(styles.thumb, "imagegallery.module.css", "thumb"),
+  thumbLarge: requireClass(styles.thumbLarge, "imagegallery.module.css", "thumbLarge"),
   thumbImg: requireClass(styles.thumbImg, "imagegallery.module.css", "thumbImg"),
+  thumbImgLarge: requireClass(styles.thumbImgLarge, "imagegallery.module.css", "thumbImgLarge"),
   caption: requireClass(styles.caption, "imagegallery.module.css", "caption"),
   lightboxImg: requireClass(styles.lightboxImg, "imagegallery.module.css", "lightboxImg"),
   lightboxCaption: requireClass(styles.lightboxCaption, "imagegallery.module.css", "lightboxCaption"),
@@ -57,7 +64,7 @@ function captionFor(image: ItemImage): string | undefined {
   return image.name ?? image.path ?? image.source;
 }
 
-export function ImageGallery({ images: supplied }: ImageGalleryProps) {
+export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
   // null = closed; a number is the open lightbox's current index.
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   // A src the browser refused to load. A descriptor names bytes some server
@@ -130,11 +137,11 @@ export function ImageGallery({ images: supplied }: ImageGalleryProps) {
             key={image.src + i}
             type="button"
             data-testid="image-gallery-thumb"
-            className={CLASS.thumb}
+            className={size === "large" ? `${CLASS.thumb} ${CLASS.thumbLarge}` : CLASS.thumb}
             onClick={() => setOpenIndex(i)}
           >
             <img
-              className={CLASS.thumbImg}
+              className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
               src={image.src}
               alt={altFor(i, total)}
               onError={() => markUnloadable(image.src)}

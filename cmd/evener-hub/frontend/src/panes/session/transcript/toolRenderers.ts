@@ -48,6 +48,12 @@ export interface ToolRendererDescriptor {
   // terminal); shell opts in because its summary IS a command.
   monoSummary?: boolean;
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
+  // outputImageSize sizes the generic output-images gallery ToolCallItem
+  // renders after the body: undefined keeps the default 96px thumbnails,
+  // "large" displays each image whole at up to 600px square. The one case
+  // today is read_file, whose image reads are the call's output itself (and
+  // whose body renders nothing for them - fsTools.tsx).
+  outputImageSize?: "large";
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one
   // ToolCallItem derives from ItemModel.error/status. It exists because a
