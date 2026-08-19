@@ -15,7 +15,7 @@ package gatesurface
 // structured-generator reachability proofs that remain under make fuzz.
 //
 // Ported verbatim from scripts/lib/gate-surface-lib.sh's GATE_FUZZ_TEST_SKIP.
-var FuzzTestSkip = `(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)`
+var FuzzTestSkip = `(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)`
 
 // TestRun is the regex for which tests the gate runs. The gate runs ordinary
 // Test/Example functions only; without this filter `go test` also executes
