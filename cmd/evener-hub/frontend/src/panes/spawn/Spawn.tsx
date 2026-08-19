@@ -43,6 +43,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
@@ -111,7 +112,8 @@ const CLASS = {
   branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
-  actionBand: requireClass(styles.actionBand, "spawn.module.css", "actionBand"),
+  leading: requireClass(styles.leading, "spawn.module.css", "leading"),
+  modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
   mobilePromptHeading: requireClass(styles.mobilePromptHeading, "spawn.module.css", "mobilePromptHeading"),
@@ -713,8 +715,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
           <PromptCard
             data-testid="spawn-prompt-card"
-            controlsClassName={CLASS.actionBand}
-            controlsTestId="spawn-mobile-actions"
+            controlsTestId="spawn-controls"
             field={
               <Textarea
                 ref={textareaRef}
@@ -741,15 +742,41 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               />
             }
             leading={
-              <IconButton
-                label="Attach image"
-                icon={<AttachIcon />}
-                variant="quiet"
-                size="xs"
-                type="button"
-                data-testid="spawn-attach"
-                onClick={() => fileInputRef.current?.click()}
-              />
+              /* The composer's own leading cluster (Composer.tsx's .leading):
+                 attach, then the model trigger. Both stay INSIDE the card's
+                 control row at every width, which is what "reuse the
+                 composer's UI" means (issue #198) - the pane used to hand
+                 this row a class that turned it into a fixed viewport band on
+                 a phone, stranding the paperclip at the bottom of the screen,
+                 far from the prompt it attaches to. */
+              <div className={CLASS.leading}>
+                <IconButton
+                  label="Attach image"
+                  icon={<AttachIcon />}
+                  variant="quiet"
+                  size="xs"
+                  type="button"
+                  data-testid="spawn-attach"
+                  onClick={() => fileInputRef.current?.click()}
+                />
+                {/* Phone only (the class is display:none until the 899px
+                    block): desktop sets the model in the configuration row
+                    below, so an in-card trigger there would be a second
+                    control for one setting. The label follows the same rules
+                    the desktop field's does - the required-choice word when
+                    the hub has confirmed no default (kata xgk8), otherwise
+                    the chosen model or "(default)". */}
+                <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
+                  <ModelSwitchTrigger
+                    label={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
+                    value={model}
+                    loadCatalog={loadCatalog}
+                    onPick={(entry) => handleModelChange(`${entry.provider}/${entry.model}`)}
+                    data-testid="spawn-model-trigger"
+                    valueTestId="spawn-model-value"
+                  />
+                </span>
+              </div>
             }
             actions={
               <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
@@ -828,7 +855,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             )}
           </div>
 
-          <div className={CLASS.cfgModel}>
+          {/* data-testid on the wrapper, not the trigger: the trigger is
+              ModelCatalog's own button and has no hook to give, and the pane
+              now renders a SECOND "— change model" button (the card's
+              phone-only ModelSwitchTrigger). A test or a scenario driving the
+              desktop field has to say which one it means. */}
+          <div className={CLASS.cfgModel} data-testid="spawn-desktop-model">
             <span className={CLASS.fieldLabel} id="spawn-model-label">
               Model
             </span>
@@ -863,11 +895,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             harness={harness || "evener"}
             harnessOptions={harnessOptions}
             onHarnessChange={handleHarnessChange}
-            model={model}
-            modelDisplay={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
-            modelRequired={modelRequired}
-            loadCatalog={loadCatalog}
-            onModelChange={handleModelChange}
             cwd={cwd}
             onCwdChange={setCwd}
             complete={complete}

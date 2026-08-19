@@ -114,12 +114,20 @@ function workingDir(): HTMLElement {
   return screen.getByLabelText("Working directory");
 }
 
-// The Model field's closed trigger (ModelField -> ModelCatalog): a plain
-// button, not a labelable control (see AdvancedOptions.tsx's own note on the
-// composite-widget label pattern), so it is found by its "— change model"
-// accessible-name suffix rather than by label.
+// The DESKTOP Model field's closed trigger (ModelField -> ModelCatalog): a
+// plain button, not a labelable control (see AdvancedOptions.tsx's own note on
+// the composite-widget label pattern), so it is found by its "— change model"
+// accessible-name suffix rather than by label - scoped to its own field
+// wrapper, because the prompt card now carries a second such button (the
+// phone-only ModelSwitchTrigger) and Advanced options can carry a third.
 function modelTrigger(): HTMLElement {
-  return screen.getByRole("button", { name: /change model/i });
+  return within(screen.getByTestId("spawn-desktop-model")).getByRole("button", { name: /change model/i });
+}
+
+/** The prompt card's own model trigger - the phone's way to set the model,
+ * and the same control the session composer carries (issue #198). */
+function cardModelTrigger(): HTMLElement {
+  return screen.getByTestId("spawn-model-trigger");
 }
 
 /** The trigger's rendered path. It also carries a chevron and a screen-reader
@@ -200,16 +208,65 @@ test("the configuration row is working directory, model and effort - and nothing
   expect(screen.getByLabelText("Effort")).toBeTruthy();
 });
 
-test("mobile Spawn exposes Treatment A rows and a pinned action band without losing auto-grow", async () => {
+// Issue #198: the phone's attach button and model trigger are the composer's,
+// in the composer's place - the card's own control row - rather than a fixed
+// band at the foot of the viewport and a bespoke sheet in the settings list.
+// The row order below is the whole remaining Treatment A list: Model left it
+// when the card took the job.
+test("mobile Spawn sets attachments and the model from inside the prompt card, not from the settings rows", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
-  ).toEqual(["Harness", "Model", "Working directory", "Branch", "Reasoning effort", "Access mode"]);
-  expect(screen.getByTestId("spawn-mobile-actions").querySelector("[data-testid='spawn-submit']")).toBeTruthy();
+  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode"]);
+
+  const card = screen.getByTestId("spawn-prompt-card");
+  const controls = screen.getByTestId("spawn-controls");
+  expect(card.contains(controls)).toBe(true);
+  expect(card.contains(screen.getByTestId("spawn-attach"))).toBe(true);
+  expect(card.contains(cardModelTrigger())).toBe(true);
+  expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
+});
+
+// The card's trigger is the phone's Model field, so it has to say what that
+// field says: "(default)" while the hub's own default will do, the chosen id
+// once someone picks one.
+test("the card's model trigger reads (default) until a model is picked, then names it", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+
+  await user.click(cardModelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.clear(combo);
+  await user.type(combo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("openai/gpt-5"));
+  // One model, one state: the desktop field reads the pick too.
+  expect(modelTrigger().textContent).toContain("openai/gpt-5");
+});
+
+// kata xgk8: a hub with no default to fall back on must not offer "(default)"
+// anywhere, including on the card - the word reads exactly like Effort's own
+// working default and invites a submit the daemon refuses.
+test("the card's model trigger names the required choice when the hub has no default", async () => {
+  const user = userEvent.setup();
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+      f.on("model/list", () => ({ data: [] }));
+    }),
+  );
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("Choose a model"));
 });
 
 test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
@@ -862,15 +919,15 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const modelPickers = screen.getAllByRole("button", { name: /change model/i });
-  // [0] is the top-level chip; the Advanced-panel one is whichever else opens
-  // a picker - pick the last one added (Advanced options render after it).
+  // The Advanced-panel picker is the last one added: the card's trigger and
+  // the top-level chip both render above it.
   await user.click(modelPickers[modelPickers.length - 1]!);
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "gpt-5");
   await user.click(await screen.findByText("openai/gpt-5"));
 
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
-  expect(screen.getAllByRole("button", { name: /change model/i })[0]?.textContent).toContain("(default)"); // top-level chip untouched
+  expect(modelTrigger().textContent).toContain("(default)"); // top-level chip untouched
 });
 
 // --- uncredentialed-default fallback ---------------------------------------

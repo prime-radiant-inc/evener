@@ -1,0 +1,25 @@
+{
+  "name": "spawn-attach-in-card",
+  "description": "spawn's prompt card keeps its whole control row - attach, the model trigger, and Start - inside the card at phone width, exactly where the session composer keeps them (issue #198)",
+  "cssFiles": [
+    "styles/tokens.css",
+    "styles/global.css",
+    "widgets/promptcard/promptcard.module.css",
+    "widgets/textarea/textarea.module.css",
+    "widgets/button/button.module.css",
+    "widgets/tooltip/tooltip.module.css",
+    "panes/session/chrome/modelswitch.module.css",
+    "panes/spawn/spawn.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "spawn.module.css: the @media (max-width: 899px) .actionBand block (position: fixed; bottom: 0; min-height: 76px) restored, with the control row spelled class=\"controls actionBand\" and the attach button as its direct child - i.e. exactly what Spawn.tsx's controlsClassName={CLASS.actionBand} produced before this case existed",
+    "verified": "2026-08-19",
+    "expect": "fail"
+  }
+}
