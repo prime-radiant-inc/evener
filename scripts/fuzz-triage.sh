@@ -260,8 +260,6 @@ test(fuzz): regression for $surface/$oracle $sig12
 
 Auto-filed by scripts/fuzz-triage.sh. The committed regression test is red on
 main until the bug is fixed; $detail.
-
-Claude-Session: https://claude.ai/code/session_0111JibAhU1kVtGpvgYeGJRV
 EOF
 	)"
 	if ! commit_to_branch "$branch" "$base_branch" "$msg" "$artifact" "$ledger" "$buckets" "$test_path"; then
@@ -286,9 +284,7 @@ EOF
 	if [ -n "$url" ]; then
 		ledger_write '.[$k] += {pr:$pr}' --arg k "$sigkey" --arg pr "$url"
 		# Amend the crash branch's ledger with the PR url — again without a checkout.
-		commit_to_branch "$branch" "$branch" "chore(fuzz): record PR url for $sig12
-
-Claude-Session: https://claude.ai/code/session_0111JibAhU1kVtGpvgYeGJRV" "$ledger" || true
+		commit_to_branch "$branch" "$branch" "chore(fuzz): record PR url for $sig12" "$ledger" || true
 		git_repo push origin "$branch" || true
 		note "opened PR $url"
 	else
