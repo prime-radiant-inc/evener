@@ -362,13 +362,9 @@ func runCoverageFloor(args []string) int {
 					dir = module
 				}
 			}
-			args := []string{"test", "-cover", "-coverprofile=" + profilePath}
-			if module == "." {
-				args = append(args,
-					"-run", gatesurface.TestRun,
-					"-skip", gatesurface.FuzzTestSkip,
-					"-short")
-			}
+			args := []string{"test", "-cover", "-coverprofile=" + profilePath,
+				"-run", gatesurface.TestRun,
+				"-skip", gatesurface.FuzzTestSkip}
 			args = append(args, pkg)
 			cmd := exec.Command("go", args...)
 			cmd.Dir = dir
