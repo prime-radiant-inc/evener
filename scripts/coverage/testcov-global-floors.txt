@@ -4,16 +4,19 @@
 # A partial --bless (--modules X) PRESERVES every other module's floor, and
 # --bless carries this comment header through, so a reset's reason survives.
 #
-# 2026-08-19 MEASUREMENT-BASIS UPDATE. The coverage-floor Go tool now measures
-# every module uniformly: `go test -cover ./...` from inside the module
-# directory, with the gate's -run/-skip filters from internal/devtool/gatesurface
-# (no -short, matching make test-full). The root module's floor dropped from
-# 80.0 to 75.1 because the old shell script used -coverpkg=./... which
-# over-counted the denominator by including nested-module packages; the Go
-# tool measures only the packages each module actually owns.
-. 75.2
-agent 86.8
-auth 95.2
+# 2026-08-19 MEASUREMENT-BASIS UPDATE. The coverage-floor Go tool now uses
+# -coverpkg=./... (matching the old shell script) to instrument all packages
+# in the module for cross-package coverage, plus the gate's -run/-skip
+# filters from internal/devtool/gatesurface and -short. For the root module
+# under go.work, -coverpkg=./... expands to all workspace packages including
+# nested modules, so the tool computes the coverpkg list from `go list ./...`
+# which lists only the current module's own packages.
+#
+# invariant is deliberately absent: Hold compiles to an empty function in a
+# production build, so the module has zero statements and no floor is definable.
+. 80.0
+agent 87.9
+auth 94.9
 envvars 100.0
 identifier 95.0
-llm 88.6
+llm 90.0

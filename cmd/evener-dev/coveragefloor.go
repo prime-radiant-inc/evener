@@ -362,9 +362,29 @@ func runCoverageFloor(args []string) int {
 					dir = module
 				}
 			}
-			args := []string{"test", "-cover", "-coverprofile=" + profilePath,
+			// Under go.work, -coverpkg=./... from the root module expands to
+			// every workspace package including nested modules (agent, auth,
+			// llm, etc.), inflating the denominator with code the root module's
+			// own tests never run. Compute the coverpkg list from `go list ./...`
+			// which, under go.work, lists only the current module's packages.
+			coverpkg := "./..."
+			if module == "." {
+				listCmd := exec.Command("go", "list", "./...")
+				listCmd.Dir = dir
+				out, err := listCmd.Output()
+				if err == nil {
+					pkgs := strings.TrimSpace(string(out))
+					if pkgs != "" {
+						coverpkg = strings.ReplaceAll(pkgs, "\n", ",")
+					}
+				}
+			}
+			args := []string{"test",
+				"-coverpkg=" + coverpkg,
+				"-coverprofile=" + profilePath,
 				"-run", gatesurface.TestRun,
-				"-skip", gatesurface.FuzzTestSkip}
+				"-skip", gatesurface.FuzzTestSkip,
+				"-short"}
 			args = append(args, pkg)
 			cmd := exec.Command("go", args...)
 			cmd.Dir = dir
