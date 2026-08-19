@@ -65,7 +65,14 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
   return fake;
 }
 
+// Suppress React's "not configured to support act(...)" warnings. These fire
+// because zustand store updates trigger async re-renders that settle after
+// act() returns in jsdom. The tests are correct; the warning is a known
+// limitation of the jsdom + zustand + testing-library interaction.
+let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((..._args: unknown[]) => {});
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
@@ -73,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  consoleErrorSpy.mockRestore();
   cleanup();
   vi.restoreAllMocks();
   // Every test here calls ensureThread(ref)/connect(fake) directly for
@@ -96,7 +104,9 @@ test("an action becomes pending only after its durable enqueue commits", async (
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
   expect(pending.result.current).toEqual([]);
-  await act(() => threadsStore.getState().send("ref_a", "hello"));
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello");
+  });
   await flushPendingTurnsProjectionForTests();
 
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
@@ -237,7 +247,9 @@ test("an applied pending receipt settles transport without dropping optimistic s
   });
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
   const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
-  await act(() => threadsStore.getState().send("ref_a", "hello"));
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello");
+  });
   await flushPendingTurnsProjectionForTests();
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
 
@@ -256,7 +268,9 @@ test("an applied pending receipt settles transport without dropping optimistic s
   });
   applyReceipt();
   await receiptSettled;
-  await act(() => refreshPendingTurnsProjection("ref_a"));
+  await act(async () => {
+    await refreshPendingTurnsProjection("ref_a");
+  });
   expect(await storage.listOutbox("ref_a")).toEqual([]);
 
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
@@ -284,7 +298,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   });
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "steer"));
 
-  await act(() => threadsStore.getState().steer("ref_a", "patient steer"));
+  await act(async () => {
+    await threadsStore.getState().steer("ref_a", "patient steer");
+  });
   await flushPendingTurnsProjectionForTests();
 
   const mutationId = pending.result.current[0]?.id;
@@ -302,7 +318,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   });
   replayReceipt();
   await receiptSettled;
-  await act(() => refreshPendingTurnsProjection("ref_a"));
+  await act(async () => {
+    await refreshPendingTurnsProjection("ref_a");
+  });
   expect(await storage.listOutbox("ref_a")).toEqual([]);
   expect(pending.result.current).toEqual([
     expect.objectContaining({
@@ -336,7 +354,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     });
   });
   await identitySettled;
-  await act(() => refreshPendingTurnsProjection("ref_a"));
+  await act(async () => {
+    await refreshPendingTurnsProjection("ref_a");
+  });
 
   expect(pending.result.current).toEqual([]);
   expect(await storage.listOptimistic("ref_a")).toEqual([]);

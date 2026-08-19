@@ -65,7 +65,15 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
+// Suppress console.error noise from React's error-boundary logging during
+// tests that deliberately trigger chunk-load failures. The errors are
+// expected; the boundary catches them. Without this, the test output is
+// polluted with React's "The above error occurred in one of your React
+// components" stack traces.
+let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((..._args: unknown[]) => {});
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();
@@ -80,6 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  consoleErrorSpy.mockRestore();
   cleanup();
   window.history.pushState({}, "", "/");
   // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
