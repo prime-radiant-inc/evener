@@ -40,7 +40,7 @@ func TestSessionModelTestNoFiveOrTenSecondBounds(t *testing.T) {
 	}
 
 	var offenders []string
-	for _, line := range strings.Split(string(src), "\n") {
+	for line := range strings.SplitSeq(string(src), "\n") {
 		for _, bound := range residueBounds {
 			if strings.Contains(line, bound) {
 				offenders = append(offenders, line)
