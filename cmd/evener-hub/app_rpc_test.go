@@ -6986,9 +6986,15 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 
 func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	runDir := t.TempDir()
+	// stateRoot and launchRoot are deliberately distinct: HubStateRoot and
+	// LaunchConfigRoot must resolve independently. Aliasing them (as a
+	// previous version of this test did) would let a regression that wires
+	// ThreadStart's launch resolution back onto HubStateRoot pass silently,
+	// since both fields would coincidentally point at the same directory.
 	stateRoot := t.TempDir()
+	launchRoot := t.TempDir()
 	cwd := t.TempDir()
-	c := newHubLaunchController(stateRoot)
+	c := newHubLaunchController(launchRoot)
 	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
 		Layer:  "global",
@@ -7018,7 +7024,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:           runDir,
 		HubStateRoot:     stateRoot,
-		LaunchConfigRoot: stateRoot,
+		LaunchConfigRoot: launchRoot,
 		Spawner:          spawner,
 		Past:             hubcore.NewPastIndex(""),
 	})

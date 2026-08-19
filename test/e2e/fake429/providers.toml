@@ -6,7 +6,7 @@
 # The host:port in base_url below is filled in by the launch script with
 # fake429's actual kernel-assigned address (never a fixed port — kata 68fm)
 # before this file is copied into the disposable hub's own
-# $HOME/.evener/providers.toml. Copy it by hand and substitute the same way if
+# $HOME/.config/evener/providers.toml. Copy it by hand and substitute the same way if
 # you are wiring fake429 into a hub without the script; the token the
 # script's sed replaces is the literal string on the base_url line, not
 # anything in this comment block.
